@@ -1,1 +1,0 @@
-poetry run python -m downloader.run_downloader

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Dict
 
-from downloader.json_logger import JsonLogger, log_event
+from dashboard_downloader.json_logger import JsonLogger, log_event
 
 
 def audit_bucket(

@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
-from downloader.config import MERGE_BUCKET_DB_SPECS
+from dashboard_downloader.config import MERGE_BUCKET_DB_SPECS
 
 
 TYPE_MAP = {

@@ -210,7 +210,7 @@ def run_all_stores(
 ) -> Dict[str, Dict[str, Dict[str, object]]]:
     """
     Opens a persistent profile for each store, goes to the store's TMS dashboard,
-    downloads all FILE_SPECS where download=True, saves into downloader/data/,
+    downloads all FILE_SPECS where download=True, saves into dashboard_downloader/data/,
     and finally performs merges per merge_bucket.
     """
     logger = logger or JsonLogger()

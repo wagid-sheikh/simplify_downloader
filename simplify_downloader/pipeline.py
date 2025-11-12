@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from downloader.json_logger import JsonLogger, log_event
-from downloader.run_downloads import run_all_stores
+from dashboard_downloader.json_logger import JsonLogger, log_event
+from dashboard_downloader.run_downloads import run_all_stores
 
 from .audit import audit_bucket
 from .cleanup import cleanup_bucket

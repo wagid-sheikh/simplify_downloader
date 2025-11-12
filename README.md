@@ -7,10 +7,25 @@ Automated pipeline for Simplify TumbleDry MIS downloads including merge, ingesti
 ```bash
 poetry install
 poetry run pytest
-poetry run python -m simplify_downloader run --stores_list "UN3668,KN3817"
+
+# Prepare the database (creates tables / applies migrations)
+poetry run python -m simplify_downloader db upgrade
+
+# Execute the full download → ingest → audit pipeline
+./scripts/run_dashboard_pipeline.sh --stores_list "UN3668,KN3817"
 ```
 
-Set `DATABASE_URL` to a Postgres asyncpg connection string.
+To trigger just the dashboard downloader workflow (without touching the
+database), use the helper script which ensures execution from the project
+root:
+
+```bash
+./scripts/run_dashboard_downloader.sh
+```
+
+Both scripts honour the optional `--stores_list` flag and expect a
+`DATABASE_URL` environment variable pointing at the target Postgres instance
+when ingestion is desired.
 
 ## Docker
 

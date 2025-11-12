@@ -1,4 +1,4 @@
-# downloader/first_login.py
+# dashboard_downloader/first_login.py
 from __future__ import annotations
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
 from .config import LOGIN_URL, HOME_URL, storage_state_path
