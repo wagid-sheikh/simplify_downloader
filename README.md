@@ -1,2 +1,33 @@
 # simplify_downloader
-Simplify Data Downloading
+
+Automated pipeline for Simplify TumbleDry MIS downloads including merge, ingestion, audit, and cleanup.
+
+## Quick start
+
+```bash
+poetry install
+poetry run pytest
+poetry run python -m simplify_downloader run --stores_list "UN3668,KN3817"
+```
+
+Set `DATABASE_URL` to a Postgres asyncpg connection string.
+
+## Docker
+
+```bash
+docker compose up --build
+```
+
+This starts Postgres (no public port) and runs the pipeline container.
+
+## Database migrations
+
+```bash
+poetry run python -m simplify_downloader db upgrade
+```
+
+## Tests
+
+```bash
+poetry run pytest
+```

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
 from datetime import datetime
 
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError, Page
@@ -14,6 +14,7 @@ from .config import (
     FILE_SPECS,
     MERGED_NAMES,
 )
+from .json_logger import JsonLogger, log_event
 
 def _ensure_profile_dir(store_name: str) -> Path:
     p = PKG_ROOT / "profiles" / store_name
@@ -124,10 +125,19 @@ def _merge_bucket(files: List[Path], output: Path) -> None:
                     writer.writerow(row)
                     rows_written += 1
 
-    if rows_written == 0:
-        print(f"[merge] Created empty (header-only) file: {output.name}")
-    else:
-        print(f"[merge] {output.name} — merged {rows_written} rows from {len(files)} file(s)")
+    _ = rows_written
+
+
+def _count_rows(csv_path: Path) -> int:
+    if not csv_path.exists():
+        return 0
+    with csv_path.open("r", newline="", encoding="utf-8", errors="ignore") as handle:
+        reader = csv.reader(handle)
+        try:
+            next(reader)
+        except StopIteration:
+            return 0
+        return sum(1 for _ in reader)
 
 def filter_merged_missed_leads(input_path: Path, output_path: Path) -> None:
     """
@@ -194,18 +204,23 @@ def filter_merged_missed_leads(input_path: Path, output_path: Path) -> None:
 
     print(f"[filter] {output_path.name} — kept {len(rows_out)} rows after filtering.")
 
-def run_all_stores() -> None:
+def run_all_stores(
+    stores: Dict[str, dict] | None = None,
+    logger: JsonLogger | None = None,
+) -> Dict[str, Dict[str, Dict[str, object]]]:
     """
     Opens a persistent profile for each store, goes to the store's TMS dashboard,
     downloads all FILE_SPECS where download=True, saves into downloader/data/,
     and finally performs merges per merge_bucket.
     """
+    logger = logger or JsonLogger()
     merged_buckets: Dict[str, List[Path]] = {}
+    download_counts: Dict[str, Dict[str, Dict[str, object]]] = {}
 
     with sync_playwright() as p:
         # NOTE: On macOS we can keep channel="chrome" if you prefer;
         # leaving it off keeps it portable for Linux server (Chromium).
-        for store_name, cfg in STORES.items():
+        for store_name, cfg in (stores or STORES).items():
             user_dir = _ensure_profile_dir(store_name)
             sc = cfg["store_code"]
             dashboard_url = cfg["dashboard_url"]
@@ -224,7 +239,14 @@ def run_all_stores() -> None:
                 # Hit the dashboard directly (cookie/session should be present from first_login)
                 page.goto(dashboard_url, wait_until="domcontentloaded")
 
-                print(f"[{store_name}] At dashboard → {dashboard_url}")
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    message="store dashboard reached",
+                    store_code=sc,
+                    bucket=None,
+                    extras={"dashboard_url": dashboard_url},
+                )
 
                 for spec in FILE_SPECS:
                     if not spec.get("download", True):
@@ -232,9 +254,20 @@ def run_all_stores() -> None:
 
                     saved = _download_one_spec(page, sc, spec)
                     if saved and spec.get("merge_bucket"):
-                        merged_buckets.setdefault(spec["merge_bucket"], []).append(saved)
+                        bucket = spec["merge_bucket"]
+                        merged_buckets.setdefault(bucket, []).append(saved)
+                        download_counts.setdefault(bucket, {})[sc] = {
+                            "rows": _count_rows(saved),
+                            "path": str(saved),
+                        }
 
-                print(f"[{store_name}] Done.")
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    message="store download completed",
+                    store_code=sc,
+                    bucket=None,
+                )
 
             finally:
                 ctx.close()
@@ -244,12 +277,31 @@ def run_all_stores() -> None:
         out_name = MERGED_NAMES.get(bucket, f"Merged_{bucket}_{datetime.now().strftime('%Y%m%d')}.csv")
         out_path = DATA_DIR / out_name
         _merge_bucket(files, out_path)
+        log_event(
+            logger=logger,
+            phase="merge",
+            bucket=bucket,
+            merged_file=str(out_path),
+            counts={
+                "download_total": sum(
+                    entry["rows"] for entry in download_counts.get(bucket, {}).values()
+                ),
+                "merged_rows": _count_rows(out_path),
+            },
+            message="merge complete",
+        )
+        download_counts.setdefault(bucket, {})["__merged__"] = {
+            "rows": _count_rows(out_path),
+            "path": str(out_path),
+        }
 
         # Auto-filter for missed_leads bucket
         if bucket == "missed_leads":
             filtered_name = f"filtered_merged_missed_leads_{datetime.now().strftime('%Y%m%d')}.csv"
             filtered_path = DATA_DIR / filtered_name
             filter_merged_missed_leads(out_path, filtered_path)
+
+    return download_counts
 
 if __name__ == "__main__":
     run_all_stores()
