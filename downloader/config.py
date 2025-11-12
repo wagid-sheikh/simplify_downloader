@@ -3,6 +3,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 import os
 from datetime import datetime
+from typing import Dict, Iterable, List
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 PKG_ROOT = Path(__file__).resolve().parent            # .../simplify_downloader/downloader
@@ -54,6 +55,17 @@ STORES = {
         "dashboard_url": tms_dashboard_url(TD_KN3817_STORE_CODE),
     },
 }
+
+
+def stores_from_list(store_ids: Iterable[str]) -> Dict[str, dict]:
+    """Return a subset of STORES keyed by the provided identifiers."""
+    normalized = [s.strip().upper() for s in store_ids if s]
+    return {key: STORES[key] for key in normalized if key in STORES}
+
+
+def env_stores_list() -> List[str]:
+    raw = os.getenv("stores_list") or os.getenv("STORES_LIST") or ""
+    return [part.strip() for part in raw.split(",") if part.strip()]
 
 # ── File specs from HAR (label + url template + filename + flags) ────────────
 #  - key: stable identifier for logging
@@ -126,8 +138,8 @@ MERGED_NAMES = {
 MERGE_BUCKET_DB_SPECS = {
     "missed_leads": {
         "table_name": "missed_leads",
-        # pickup_no is unique per store; include store_code for safety.
-        "dedupe_keys": ["store_code", "pickup_no"],
+        # dedupe by store_code + mobile_number per upsert requirements.
+        "dedupe_keys": ["store_code", "mobile_number"],
         "column_map": {
             "id": "pickup_row_id",                     # numeric id in CSV; store as TEXT/BIGINT
             "mobile_number": "mobile_number",
@@ -166,7 +178,8 @@ MERGE_BUCKET_DB_SPECS = {
 
     "undelivered_all": {
         "table_name": "undelivered_orders",
-        "dedupe_keys": ["store_code", "order_id"],
+        # order_id uniquely identifies the record across stores.
+        "dedupe_keys": ["order_id"],
         "column_map": {
             "order_id": "order_id",
             "order_date": "order_date",
