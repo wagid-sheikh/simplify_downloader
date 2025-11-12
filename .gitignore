@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.build/
+dist/
+build/
+*.egg-info/
+.eggs/
+.mypy_cache/
+.pytype/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+*.log
+
+# Virtualenv / Poetry
+.env/
+.venv/
+venv/
+env/
+poetry.lock # (optional: keep if you want lockfile tracked; otherwise ignore)
+# If you DO want to keep lockfile, remove the line above.
+
+# IDE / OS
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Playwright / Chromium profiles & downloads
+downloader/profiles/
+downloader/data/
+
+# App secrets
+.env            # keep your secrets out of git
+
+# Node (if ever introduced by Playwright tools)
+node_modules/
+
+# Test artifacts
+reports/
