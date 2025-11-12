@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from downloader.json_logger import JsonLogger
+from dashboard_downloader.json_logger import JsonLogger
 
 
 def configure_logging(logger: JsonLogger) -> None:

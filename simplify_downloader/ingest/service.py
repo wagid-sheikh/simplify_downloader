@@ -7,8 +7,8 @@ from typing import Any, Dict, Iterable, List
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from downloader.config import MERGE_BUCKET_DB_SPECS
-from downloader.json_logger import JsonLogger, log_event
+from dashboard_downloader.config import MERGE_BUCKET_DB_SPECS
+from dashboard_downloader.json_logger import JsonLogger, log_event
 
 from ..db import session_scope
 from .models import BUCKET_MODEL_MAP

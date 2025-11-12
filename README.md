@@ -10,6 +10,13 @@ poetry run pytest
 poetry run python -m simplify_downloader run --stores_list "UN3668,KN3817"
 ```
 
+To trigger just the dashboard downloader workflow (without the full pipeline),
+use the helper script which ensures execution from the project root:
+
+```bash
+./scripts/run_dashboard_downloader.sh
+```
+
 Set `DATABASE_URL` to a Postgres asyncpg connection string.
 
 ## Docker

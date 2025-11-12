@@ -1,7 +1,7 @@
-# File: downloader/utils.py
+# File: dashboard_downloader/utils.py
 from pathlib import Path
 from typing import Literal
-from downloader import page_selectors
+from dashboard_downloader import page_selectors
 from playwright.sync_api import sync_playwright
 from . import config
 

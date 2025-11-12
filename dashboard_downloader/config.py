@@ -1,4 +1,4 @@
-# File: downloader/config.py
+# File: dashboard_downloader/config.py
 from pathlib import Path
 from dotenv import load_dotenv
 import os
@@ -6,12 +6,12 @@ from datetime import datetime
 from typing import Dict, Iterable, List
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-PKG_ROOT = Path(__file__).resolve().parent            # .../simplify_downloader/downloader
+PKG_ROOT = Path(__file__).resolve().parent            # .../simplify_downloader/dashboard_downloader
 PROJECT_ROOT = PKG_ROOT.parent                        # .../simplify_downloader
 
 ENV_PATH = PROJECT_ROOT / ".env"                      # keep .env at project root
-PROFILES_DIR = PKG_ROOT / "profiles"                  # .../downloader/profiles
-DATA_DIR = PKG_ROOT / "data"                          # .../downloader/data
+PROFILES_DIR = PKG_ROOT / "profiles"                  # .../dashboard_downloader/profiles
+DATA_DIR = PKG_ROOT / "data"                          # .../dashboard_downloader/data
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Load env
