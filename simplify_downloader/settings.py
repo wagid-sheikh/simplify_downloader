@@ -5,7 +5,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from downloader.config import DATA_DIR, MERGE_BUCKET_DB_SPECS, MERGED_NAMES, STORES, env_stores_list, stores_from_list
+from dashboard_downloader.config import (
+    DATA_DIR,
+    MERGE_BUCKET_DB_SPECS,
+    MERGED_NAMES,
+    STORES,
+    env_stores_list,
+    stores_from_list,
+)
 
 
 @dataclass

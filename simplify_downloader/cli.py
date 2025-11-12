@@ -5,7 +5,7 @@ import asyncio
 import os
 from typing import List, Optional
 
-from downloader.json_logger import JsonLogger, get_logger, new_run_id
+from dashboard_downloader.json_logger import JsonLogger, get_logger, new_run_id
 
 from .pipeline import run_pipeline
 from .settings import load_settings

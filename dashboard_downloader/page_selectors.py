@@ -1,4 +1,4 @@
-# File: downloader/page_selectors.py
+# File: dashboard_downloader/page_selectors.py
 LOGIN_USERNAME = "input[name='user_name']"
 LOGIN_PASSWORD = "input[name='password']"
 LOGIN_SUBMIT   = "button[type='submit']"
