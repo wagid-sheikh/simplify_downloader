@@ -8,7 +8,7 @@ from typing import List, Optional
 from dashboard_downloader.json_logger import JsonLogger, get_logger, new_run_id
 from dashboard_downloader.settings import load_settings
 
-from simplify_downloader.common.db import run_alembic_upgrade
+from common.db import run_alembic_upgrade
 
 
 def configure_logging(logger: JsonLogger) -> None:

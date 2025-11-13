@@ -1,5 +1,3 @@
-"""Compatibility wrappers for database helpers."""
-
-from .common.db import run_alembic_upgrade, session_scope
+from common.db import run_alembic_upgrade, session_scope
 
 __all__ = ["run_alembic_upgrade", "session_scope"]
