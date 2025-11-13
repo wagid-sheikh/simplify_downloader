@@ -32,15 +32,9 @@ async def session_scope(database_url: str) -> AsyncIterator[AsyncSession]:
         yield session
 
 
-def _sync_url(database_url: str) -> str:
-    if database_url.startswith("postgresql+asyncpg"):
-        return database_url.replace("postgresql+asyncpg", "postgresql", 1)
-    return database_url
-
-
 def run_alembic_upgrade(revision: str) -> None:
     alembic_cfg = Config(os.getenv("ALEMBIC_CONFIG", "alembic.ini"))
     db_url = os.getenv("DATABASE_URL")
     if db_url:
-        alembic_cfg.set_main_option("sqlalchemy.url", _sync_url(db_url))
+        alembic_cfg.set_main_option("sqlalchemy.url", db_url)
     command.upgrade(alembic_cfg, revision)

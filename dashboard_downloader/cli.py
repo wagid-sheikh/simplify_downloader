@@ -28,7 +28,7 @@ async def _run_async(args: argparse.Namespace) -> int:
 
     if not settings.dry_run and settings.database_url:
         log_event(logger=logger, phase="db", message="running migrations")
-        run_alembic_upgrade("head")
+        await asyncio.to_thread(run_alembic_upgrade, "head")
 
     from dashboard_downloader.pipeline import run_pipeline
 
