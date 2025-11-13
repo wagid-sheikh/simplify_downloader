@@ -1085,10 +1085,10 @@ async def run_all_stores(
         }
 
         # Auto-filter for missed_leads bucket
-        #if bucket == "missed_leads":
-        #    filtered_name = f"filtered_merged_missed_leads_{datetime.now().strftime('%Y%m%d')}.csv"
-        #    filtered_path = DATA_DIR / filtered_name
-        #    filter_merged_missed_leads(out_path, filtered_path)
+        if bucket == "missed_leads":
+            filtered_name = f"filtered_merged_missed_leads_{datetime.now().strftime('%Y%m%d')}.csv"
+            filtered_path = DATA_DIR / filtered_name
+            filter_merged_missed_leads(out_path, filtered_path)
 
     return download_counts
 
