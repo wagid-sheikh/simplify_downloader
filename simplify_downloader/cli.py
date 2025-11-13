@@ -6,10 +6,14 @@ import os
 from typing import List, Optional
 
 from dashboard_downloader.json_logger import JsonLogger, get_logger, new_run_id
+from dashboard_downloader.settings import load_settings
 
-from .pipeline import run_pipeline
-from .settings import load_settings
-from .utils import configure_logging
+from common.db import run_alembic_upgrade
+
+
+def configure_logging(logger: JsonLogger) -> None:
+    """Hook to extend logging configuration if needed."""
+    _ = logger
 
 
 async def _run_async(args: argparse.Namespace) -> int:
@@ -21,6 +25,8 @@ async def _run_async(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         run_id=run_id,
     )
+    from dashboard_downloader.pipeline import run_pipeline
+
     await run_pipeline(settings=settings, logger=logger)
     logger.close()
     return 0
@@ -47,8 +53,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.command == "db" and args.db_command == "upgrade":
         revision = args.revision
         os.environ.setdefault("ALEMBIC_CONFIG", "alembic.ini")
-        from .db import run_alembic_upgrade
-
         run_alembic_upgrade(revision)
         return 0
     parser.error("Unknown command")
