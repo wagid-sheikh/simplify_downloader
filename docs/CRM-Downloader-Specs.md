@@ -1,256 +1,403 @@
-
-# **SRS: CRM Data Download Module**
+# SRS: CRM Data Download Module
 
 ### **System Context**
 
-This module — *CRM Data Download* — extends the existing automation platform that already performs other Playwright-based data download and ingestion operations (the *Existing Data Download System*).
-It adds independent logic and scheduling to download **sales data from two CRM systems** used in The Shaw Ventures’ laundry operations:
+This module — *CRM Data Download* — extends the existing automation platform / data download system that already performs other Playwright-based data download and ingestion operations (the *Existing Data Download System*).
 
-* **CRM1:** TumbleDry (subs.quickdrycleaning.com + reports.quickdrycleaning.com)
-* **CRM2:** UClean (store.ucleanlaundry.com)
+It adds independent logic and scheduling to download **sales data Excel reports** from two CRM systems used in The Shaw Ventures’ laundry operations:
 
-Each CRM has **two independent store accounts** (total **4 credentials**) that must be logged in separately and maintained as separate Playwright storage states.
+- **TumbleDry CRM** (subs.quickdrycleaning.com + reports.quickdrycleaning.com)
+- **UClean CRM** (store.ucleanlaundry.com)
 
----
-
-## **1. Objectives**
-
-The purpose of this module is to:
-
-* Automate downloading of daily or intra-day **sales data reports** from both CRM systems.
-* Maintain separate browser sessions for each store credential.
-* Schedule independent downloads multiple times per day.
-* Ingest the downloaded files into PostgreSQL staging tables.
-* Maintain an internal audit ledger of downloads, ingestion status, and timestamps.
-
-This module will run independently of other download modules in the system but will **reuse core system utilities**, such as:
-
-* Environment/config management
-* Logging and cron job framework
-* Database and ingestion utilities
-* File management utilities
+Each CRM has **two independent store accounts** (total four stores).
+Each store must be handled separately with its own authentication, Playwright storage state, and ingestion pipeline.
 
 ---
 
-## **2. Functional Requirements**
+# **1. Objectives**
 
-### **2.1 Supported Systems and Credentials**
+The module must:
 
-| CRM                  | Store Name              | Store Code | Login URL                                                                        | Report Source                                                                                                | Frequency     |
-| -------------------- | ----------------------- | ---------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------- |
-| **TumbleDry (CRM1)** | Uttam Nagar             | a668       | [https://subs.quickdrycleaning.com/a668](https://subs.quickdrycleaning.com/a668) | [https://reports.quickdrycleaning.com/en/order-report](https://reports.quickdrycleaning.com/en/order-report) | 3–4 times/day |
-| **TumbleDry (CRM1)** | Kirti Nagar             | a817       | [https://subs.quickdrycleaning.com/a817](https://subs.quickdrycleaning.com/a817) | [https://reports.quickdrycleaning.com/en/order-report](https://reports.quickdrycleaning.com/en/order-report) | 3–4 times/day |
-| **UClean (CRM2)**    | Sector 56, Gurugram     | –          | [https://store.ucleanlaundry.com/login](https://store.ucleanlaundry.com/login)   | /api/v1/sales/export-report?type=GST&format=excel                                                            | 3–4 times/day |
-| **UClean (CRM2)**    | Sushant Lok 1, Gurugram | –          | [https://store.ucleanlaundry.com/login](https://store.ucleanlaundry.com/login)   | /api/v1/stores/generateGST?franchise=UCLEAN                                                                  | 3–4 times/day |
-
-Each store operates in an isolated CRM account and requires its own login and stored Playwright session.
+1. Automate downloading daily/intra-day Excel sales reports from:
+   - **TumbleDry Uttam Nagar**
+   - **TumbleDry Kirti Nagar**
+   - **UClean Sector 56**
+   - **UClean Sushant Lok**
+2. Maintain **separate browser sessions** per store using unique Playwright storage files.
+3. Schedule downloads **3–4 times per day per store**.
+4. Store all downloaded files using a **canonical filename convention**.
+5. Maintain **download ledger** entries including date range, md5, store, CRM, and status.
+6. Load raw data into **staging tables**:
+   - `stg_td_order_report`
+   - `stg_uc_gst_report`
+7. Transform and merge into a **unified `orders` table** with:
+   - Idempotent upsert behavior
+   - Unified payment, tax, order timestamps, and status normalization
+   - Unique business keys
+8. Ensure **idempotency at 3 levels**:
+   - File level (md5)
+   - Ingestion run (ingest_audit)
+   - Record level (unique business keys)
 
 ---
 
-### **2.2 Login & Authorization**
+# **2. Functional Requirements**
 
-* Each store must be **authorized individually** (first run via headed Chrome).
-* Once login is complete and OTP/device authorization is done, the Playwright session (`storage_state.json`) is saved per store:
+## **2.1 Supported Systems and Credentials**
 
+| CRM       | Store       | Code | Login URL                              | Report URL                                           | Frequency |
+| --------- | ----------- | ---- | -------------------------------------- | ---------------------------------------------------- | --------- |
+| TumbleDry | Uttam Nagar | a668 | https://subs.quickdrycleaning.com/a668 | https://reports.quickdrycleaning.com/en/order-report | 3–4/day   |
+| TumbleDry | Kirti Nagar | a817 | https://subs.quickdrycleaning.com/a817 | https://reports.quickdrycleaning.com/en/order-report | 3–4/day   |
+| UClean    | Sector 56   | –    | https://store.ucleanlaundry.com/login  | `/api/v1/sales/export-report?type=GST&format=excel`  | 3–4/day   |
+| UClean    | Sushant Lok | –    | https://store.ucleanlaundry.com/login  | `/api/v1/stores/generateGST`                         | 3–4/day   |
+
+Each store = separate logical source with its own session file and scheduling.
+
+---
+
+## **2.2 Login & Authorization**
+
+### TumbleDry & UClean (common rules):
+
+- First login must be done **in headed mode**, storing storage_state.json under:
   ```
   profiles/td_a668.json
   profiles/td_a817.json
   profiles/uc_sector56.json
   profiles/uc_sushantlok1.json
   ```
-* The storage states are portable to the Linux deployment environment.
+- These storage files must be **portable** to Linux VM.
+- During normal runs:
+  - **No OTP**
+  - Playwright must load storage_state
+  - If session expired → module must log a clear error and exit for that store only.
 
 ---
 
-### **2.3 Download Flow**
+## **2.3 Download Flow**
 
-#### **2.3.1 TumbleDry**
+### **2.3.1 TumbleDry**
 
-1. Launch Chrome (Playwright channel: `"chrome"`) using the stored session.
-2. Visit the store-specific legacy URL:
+Steps:
 
+1. Launch Chrome with store storage state.
+2. Hit:
    ```
    https://subs.quickdrycleaning.com/<storeCode>/App/Reports/OrderReport.aspx
    ```
-3. Navigate to the reports app:
-
+3. Navigate to:
    ```
    https://reports.quickdrycleaning.com/en/order-report
    ```
-4. Automatically or manually trigger the **Export** action (detected via `page.expect_download()`).
-5. Capture and save the file as:
+4. Select date range.
+5. Click Export → capture via `page.expect_download()`.
+6. Save file using canonical name.
 
-   ```
-   TD_OrderReport_<StoreName>_<FromDate>_to_<ToDate>.xlsx
-   ```
-6. Close browser and persist updated cookies.
+### **2.3.2 UClean**
 
-#### **2.3.2 UClean**
+Steps:
 
-1. Launch Chrome with store’s session (via saved storage JSON).
-2. Visit login/dashboard URL (`https://store.ucleanlaundry.com/login`).
-3. Navigate or trigger API/Export action based on active tenant:
+1. Launch Chrome with storage state.
+2. Login using stored session.
+3. Trigger export via API endpoints:
+   - `GET /api/v1/sales/export-report?type=GST&format=excel`
+   - OR `POST /api/v1/stores/generateGST`
+4. Save file.
 
-   * Direct GET: `/api/v1/sales/export-report?type=GST&format=excel`
-   * or POST: `/api/v1/stores/generateGST?franchise=UCLEAN`
-4. Capture download via `page.expect_download()` and save as:
+**Common rules:**
 
-   ```
-   UC_GST_<StoreName>_<FromDate>_to_<ToDate>.xlsx
-   ```
-5. Close browser and persist updated cookies.
+- One run can process multiple stores.
+- One store failure must **not block** others.
+- Each file = recorded in download_ledger.
 
 ---
 
-### **2.4 File Management**
+## **2.4 File Management**
 
-* All downloads are stored in a single directory (configurable, default: `./downloads`).
-* Filenames follow a canonical convention:
+### Canonical filename:
 
-  ```
-  <CRM>_<ReportType>_<StoreName>_<From>_to_<To>.xlsx
-  ```
-* Each completed file is recorded in a **download ledger table**.
-* After ingestion, files are **deleted automatically** (unless retention flag is set).
+```
+<CRM>_<ReportType>_<StoreName>_<FromDate>_to_<ToDate>.xlsx
+```
 
----
+Examples:
 
-### **2.5 PostgreSQL Ingestion**
+```
+TD_OrderReport_UttamNagar_2025-11-12_to_2025-11-12.xlsx
+UC_GST_Sector56_2025-11-12_to_2025-11-12.xlsx
+```
 
-After each download:
+### Storage:
 
-1. Compute file hash (MD5) and log it to `download_ledger`.
-2. Parse XLSX → stage table:
+- Default directory: `./downloads/`
+- After ingestion:
+  - Delete unless `--keep-files` is used.
 
-   * `stg_td_order_report`
-   * `stg_uc_gst_report`
-3. Upsert to fact tables:
+### `download_ledger` fields:
 
-   * `fact_td_orders`
-   * `fact_uc_gst`
-4. Record ingestion summary in:
-
-   ```
-   ingest_audit(run_id, crm, store, from_date, to_date, inserted_rows, md5, started_at, finished_at, status)
-   ```
-
----
-
-### **2.6 Scheduling**
-
-| Module                     | Schedule      | Notes                          |
-| -------------------------- | ------------- | ------------------------------ |
-| **Existing data download** | Once daily    | Other data, runs separately    |
-| **CRM Data Download**      | 3–4 times/day | Sales data for all four stores |
-
-* Each CRM Data Download run is isolated and stateless beyond the saved session.
-* Date windows are computed dynamically based on `download_ledger` or CLI arguments.
+- crm
+- store
+- filename
+- from_date
+- to_date
+- md5_hash
+- downloaded_at
+- status (downloaded / skipped / failed / duplicate)
 
 ---
 
-### **2.7 CLI / Automation Interface**
+# **2.5 PostgreSQL Ingestion & Transformation**
 
-All operations integrate into the existing system CLI or cron orchestration.
+## **2.5.1 Audit Tables**
 
-#### **Commands**
+### `download_ledger`
 
-| Command                                                                         | Description                 |
-| ------------------------------------------------------------------------------- | --------------------------- |
-| `crm_download bootstrap --crm td --store a668`                                  | Bootstrap login for a store |
-| `crm_download download --crm td --store a817 --from 2025-11-12 --to 2025-11-12` | Run single store download   |
-| `crm_download download --crm uc --store all --from today --to today`            | Run for all UClean stores   |
+Tracks every download attempt.
 
-#### **Arguments**
+### `ingest_audit`
 
-* `--crm` → `td` or `uc`
-* `--store` → specific store code or `all`
-* `--from`, `--to` → date range
-* `--headless` → optional override (default from config)
-* `--keep-files` → skip cleanup after ingestion
+Tracks ingestion summaries:
 
----
-
-## **3. Non-Functional Requirements**
-
-### **3.1 Compatibility**
-
-* macOS (development), Ubuntu Linux (production)
-* Playwright (channel `"chrome"`)
-* Python ≥ 3.12
-
-### **3.2 Performance**
-
-* Each download completes in ≤ 60s (network dependent)
-* Concurrent multi-store downloads optional via threading or cron-level parallelism
-
-### **3.3 Reliability**
-
-* Resilient to intermittent login prompts or expired sessions (prompts manual re-bootstrap)
-* Each store operates independently — failure of one doesn’t block others
-
-### **3.4 Logging & Monitoring**
-
-* Leverages existing system logger
-* Logs per run:
-
-  ```
-  [timestamp] [crm/store] [event] [filename or error]
-  ```
-* Exit codes integrate with cron failure alerts
-
-### **3.5 Security**
-
-* No plaintext credentials in code
-* Uses `.env` or system config for usernames/passwords
-* OTP handled manually on first bootstrap only
+- run_id
+- crm, store
+- from_date, to_date
+- inserted_rows
+- updated_rows
+- md5_hash
+- started_at, finished_at
+- status
+- error_message
 
 ---
 
-## **4. Deliverables**
+## **2.5.2 Staging Tables**
 
-1. **`multi_crm_downloader.py`**
+### `stg_td_order_report`
 
-   * Single module implementing bootstrap and download logic.
-2. **`profiles/` Directory**
+- Mirrors TumbleDry Excel columns exactly (order id, invoice, datetime, gross, tax, net, payment mode, etc.)
+- Adds:
+  - source_system = 'TD'
+  - store_code
+  - cost_center
+  - file_md5
+  - load_batch_id
 
-   * Contains Playwright storage state per store.
-3. **Database Schema Extensions**
+### `stg_uc_gst_report`
 
-   * `download_ledger`
-   * `ingest_audit`
-   * `stg_td_order_report`, `fact_td_orders`
-   * `stg_uc_gst_report`, `fact_uc_gst`
-4. **Cron Definitions**
-
-   * `crm_download_td.sh` – runs all TumbleDry stores
-   * `crm_download_uc.sh` – runs all UClean stores
-
----
-
-## **5. Integration Points**
-
-| Component                  | Description                                               |
-| -------------------------- | --------------------------------------------------------- |
-| **Existing Config System** | Reuse env vars and file paths                             |
-| **Shared DB Connector**    | Use same PostgreSQL connection                            |
-| **Shared Logging**         | Follow standard logging format                            |
-| **Scheduler (cron)**       | Run under same cron orchestration but at higher frequency |
-| **Ingestion Layer**        | Reuse existing Excel → Postgres utilities                 |
+- Mirrors UClean Excel columns (bill id, invoice, taxable, GST, total, mode)
+- Adds:
+  - source_system = 'UC'
+  - store_name
+  - cost_center
+  - file_md5
+  - load_batch_id
 
 ---
 
-## **6. Future Enhancements**
+## **2.5.3 Unified `orders` Table**
 
-* Auto re-authentication if OTP/device expires.
-* Parallel store downloads via async Playwright contexts.
-* Automatic export button click using stored selectors.
-* Error notification via email or webhook (failed downloads).
-* Configurable retention policy for downloaded files.
+### **Purpose**
+
+A single-source-of-truth fact table for sales analytics.
+
+### **Schema (logical)**
+
+```
+orders (
+  id BIGSERIAL PRIMARY KEY,
+  cost_center TEXT NOT NULL,
+  source_system TEXT NOT NULL,
+  source_store_code TEXT,
+  source_order_id TEXT NOT NULL,
+  source_invoice_no TEXT,
+  order_datetime TIMESTAMPTZ NOT NULL,
+  order_date DATE NOT NULL,
+
+  customer_name TEXT,
+  customer_mobile TEXT,
+  customer_code TEXT,
+
+  gross_amount NUMERIC(12,2),
+  discount_amount NUMERIC(12,2),
+  taxable_amount NUMERIC(12,2),
+  tax_amount NUMERIC(12,2),
+  net_amount NUMERIC(12,2),
+
+  payment_mode_summary JSONB,
+  payment_status TEXT,
+  order_status TEXT,
+
+  source_payload JSONB,
+  source_hash TEXT NOT NULL,
+
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+### **Business Key**
+
+```
+(cost_center, source_system, source_order_id)
+```
+
+### **Unique Constraint**
+
+Ensures idempotency and no duplicates:
+
+```
+UNIQUE(cost_center, source_system, source_order_id)
+```
+
+### **Mapping Rules**
+
+#### TumbleDry
+
+- Order No → source_order_id
+- Invoice No → source_invoice_no
+- Booking/Bill Date & Time → order_datetime
+- money fields map directly
+- store_code → cost_center via mapping table
+
+#### UClean
+
+- Bill ID → source_order_id
+- Bill No → source_invoice_no
+- Bill Date → order_datetime
+- taxable, gst, total → numeric fields
+- store/franchise → cost_center via lookup
+
+#### Manual Sources
+
+- Similar structure but:
+  - source_system = 'MANUAL'
 
 ---
 
-✅ **Outcome**
-This SRS defines a **modular, session-persistent Playwright automation** that integrates cleanly with your existing system while maintaining per-store isolation.
-Codex should treat this as a **self-contained submodule** named `crm_data_download`, adhering to existing system architecture, env config patterns, and logging structure.
+## **2.5.4 Idempotent Merge Logic**
+
+1. Load staging rows with `file_md5` & `load_batch_id`.
+2. Convert to unified `orders` rows with computed:
+   - cost_center
+   - source_system
+   - source_order_id
+   - source_invoice_no
+   - source_hash
+3. UPSERT logic:
+   - If not exists → INSERT
+   - If exists but hash differs → UPDATE
+   - If hash same → SKIP
+4. Ingest audit updated accordingly.
+
+---
+
+# **2.6 Scheduling**
+
+| Module            | Schedule          |
+| ----------------- | ----------------- |
+| Existing download | Daily             |
+| CRM Download      | 3–4 times per day |
+
+- Date windows computed automatically from last successful ingestion.
+- Overlapping runs are allowed due to idempotency.
+
+---
+
+# **2.7 CLI Interface**
+
+### Commands:
+
+| Command                                                                         | Description       |
+| ------------------------------------------------------------------------------- | ----------------- |
+| `crm_download bootstrap --crm td --store a668`                                  | Bootstrap login   |
+| `crm_download download --crm td --store a817 --from 2025-11-12 --to 2025-11-12` | Download & ingest |
+| `crm_download download --crm uc --store all --from today --to today`            | All UC stores     |
+
+### Parameters:
+
+- `--crm`
+- `--store`
+- `--from`
+- `--to`
+- `--headless`
+- `--keep-files`
+
+---
+
+# **2.8 Error Handling & Alerts**
+
+- Failures logged with store + date context.
+- Partial failures allowed.
+- Missing data → NO_DATA (not a failure).
+- Future: webhook/email alerts.
+
+---
+
+# **3. Non-Functional Requirements**
+
+## 3.1 Compatibility
+
+- macOS dev, Ubuntu prod
+- Python 3.12+
+- Playwright with `"chrome"` channel
+
+## 3.2 Performance
+
+- Per-store runtime < 60 sec
+- Optional async parallelization
+
+## 3.3 Reliability
+
+- Resilient to session expiry
+- One store failure does not stop others
+
+## 3.4 Logging
+
+Unified log format:
+
+```
+[timestamp] [level] [crm/store] [event] [filename/error]
+```
+
+## 3.5 Security
+
+- No plaintext credentials in code
+- Storage states protected
+- OTP only during bootstrap
+
+---
+
+# **4. Deliverables**
+
+1. `multi_crm_downloader.py`
+2. Storage profiles
+3. DB schema:
+   - download_ledger
+   - ingest_audit
+   - stg_td_order_report
+   - stg_uc_gst_report
+   - orders
+4. Cron wrappers
+
+---
+
+# **5. Integration Points**
+
+- Shared config
+- Shared db connector
+- Shared logging
+- Cron scheduler
+- Common DataFrame → Postgres utilities
+
+---
+
+# **6. Future Enhancements**
+
+- Auto re-auth
+- Async multi-store downloads
+- Webhook/email alerts
+- Archival auto-cleanups
+- Smart UI selector updates
 
 ---
