@@ -5,15 +5,16 @@ from pathlib import Path
 from dashboard_downloader.json_logger import JsonLogger, log_event
 from dashboard_downloader.run_downloads import run_all_stores
 
-from .audit import audit_bucket
-from .cleanup import cleanup_bucket
-from .ingest.service import ingest_bucket
+from common.audit import audit_bucket
+from common.cleanup import cleanup_bucket
+from common.ingest.service import ingest_bucket
+
 from .settings import PipelineSettings
 
 
 async def run_pipeline(*, settings: PipelineSettings, logger: JsonLogger) -> None:
     log_event(logger=logger, phase="orchestrator", message="pipeline start")
-    download_summary = run_all_stores(stores=settings.stores, logger=logger)
+    download_summary = await run_all_stores(stores=settings.stores, logger=logger)
 
     for bucket, store_info in download_summary.items():
         merged_meta = store_info.get("__merged__")
