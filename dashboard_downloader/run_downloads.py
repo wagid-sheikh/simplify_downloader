@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from pathlib import Path
 import re
 from typing import Iterable
@@ -19,12 +20,13 @@ from common.ingest.service import _looks_like_html
 
 from . import page_selectors
 from .config import (
-    STORES,
+    DEFAULT_STORE_CODES,
     PKG_ROOT,
     DATA_DIR,
     FILE_SPECS,
     MERGED_NAMES,
     LOGIN_URL,
+    stores_from_list,
     storage_state_path,
 )
 from .json_logger import JsonLogger, log_event
@@ -117,8 +119,11 @@ def _looks_like_login_html_bytes(payload: bytes) -> bool:
 
     return _looks_like_login_html_text(decoded)
 
-def _ensure_profile_dir(store_name: str) -> Path:
-    p = PKG_ROOT / "profiles" / store_name
+def _ensure_profile_dir(store_name: str | Path) -> Path:
+    if isinstance(store_name, Path):
+        p = store_name
+    else:
+        p = PKG_ROOT / "profiles" / store_name
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -950,6 +955,7 @@ def filter_merged_missed_leads(input_path: Path, output_path: Path) -> None:
 async def run_all_stores(
     stores: Dict[str, dict] | None = None,
     logger: JsonLogger | None = None,
+    raw_store_env: str | None = None,
 ) -> Dict[str, Dict[str, Dict[str, object]]]:
     """
     Opens a persistent profile for each store, goes to the store's TMS dashboard,
@@ -960,11 +966,30 @@ async def run_all_stores(
     merged_buckets: Dict[str, List[Path]] = {}
     download_counts: Dict[str, Dict[str, Dict[str, object]]] = {}
 
+    resolved_stores = stores or stores_from_list(DEFAULT_STORE_CODES)
+    env_value = raw_store_env if raw_store_env is not None else os.getenv("stores_list") or os.getenv("STORES_LIST") or ""
+    log_event(
+        logger=logger,
+        phase="download",
+        store_code=None,
+        bucket=None,
+        message="resolved stores for run",
+        extras={
+            "raw_STORES_LIST": env_value,
+            "store_codes": [cfg.get("store_code") for cfg in resolved_stores.values()],
+        },
+    )
+
     async with async_playwright() as p:
         # NOTE: On macOS we can keep channel="chrome" if you prefer;
         # leaving it off keeps it portable for Linux server (Chromium).
-        for store_name, cfg in (stores or STORES).items():
-            user_dir = _ensure_profile_dir(store_name)
+        for store_name, cfg in resolved_stores.items():
+            profile_dir_cfg = cfg.get("profile_dir")
+            profile_key = cfg.get("profile_key") or store_name
+            if profile_dir_cfg:
+                user_dir = _ensure_profile_dir(Path(profile_dir_cfg))
+            else:
+                user_dir = _ensure_profile_dir(profile_key)
             sc = cfg["store_code"]
 
             storage_state_cfg = cfg.get("storage_state")

@@ -14,7 +14,11 @@ from .settings import PipelineSettings
 
 async def run_pipeline(*, settings: PipelineSettings, logger: JsonLogger) -> None:
     log_event(logger=logger, phase="orchestrator", message="pipeline start")
-    download_summary = await run_all_stores(stores=settings.stores, logger=logger)
+    download_summary = await run_all_stores(
+        stores=settings.stores,
+        logger=logger,
+        raw_store_env=settings.raw_store_env,
+    )
 
     for bucket, store_info in download_summary.items():
         merged_meta = store_info.get("__merged__")

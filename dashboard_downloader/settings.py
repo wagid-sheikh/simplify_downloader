@@ -7,9 +7,9 @@ from typing import Dict, List, Optional
 
 from dashboard_downloader.config import (
     DATA_DIR,
+    DEFAULT_STORE_CODES,
     MERGE_BUCKET_DB_SPECS,
     MERGED_NAMES,
-    STORES,
     env_stores_list,
     stores_from_list,
 )
@@ -20,6 +20,7 @@ class PipelineSettings:
     run_id: str
     data_dir: Path = DATA_DIR
     stores: Dict[str, dict] = field(default_factory=dict)
+    raw_store_env: str = ""
     merged_names: Dict[str, str] = field(default_factory=lambda: MERGED_NAMES)
     merge_bucket_specs: Dict[str, dict] = field(default_factory=lambda: MERGE_BUCKET_DB_SPECS)
     dry_run: bool = False
@@ -28,10 +29,11 @@ class PipelineSettings:
 
 
 def load_settings(*, stores_list: Optional[str], dry_run: bool, run_id: str) -> PipelineSettings:
+    raw_env = os.getenv("stores_list") or os.getenv("STORES_LIST") or ""
     env_list = env_stores_list()
     cli_list = [s.strip() for s in (stores_list.split(",") if stores_list else []) if s.strip()]
-    final_list: List[str] = cli_list or env_list or list(STORES.keys())
+    final_list: List[str] = cli_list or env_list or list(DEFAULT_STORE_CODES)
     selected = stores_from_list(final_list)
     if not selected:
-        selected = STORES
-    return PipelineSettings(run_id=run_id, stores=selected, dry_run=dry_run)
+        selected = stores_from_list(DEFAULT_STORE_CODES)
+    return PipelineSettings(run_id=run_id, stores=selected, raw_store_env=raw_env, dry_run=dry_run)
