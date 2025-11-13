@@ -45,7 +45,7 @@ def test_is_login_page_detects_login_html_fallback():
         <html>
             <body>
                 <form>
-                    <input type='text' name='username' />
+                    <input type='text' name='user_name' />
                     <input type='password' name='password' />
                 </form>
             </body>
@@ -86,8 +86,9 @@ def test_looks_like_login_html_bytes_detects_login_markup():
     payload = b"""
         <html>
             <body>
-                <input type='password' id='username'>
-                <button id='login'>Log In</button>
+                <input type='text' name='user_name'>
+                <input type='password' name='password'>
+                <button type='submit'>Log In</button>
             </body>
         </html>
     """

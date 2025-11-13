@@ -53,17 +53,6 @@ def _login_tokens() -> Iterable[str]:
     selector_tokens.update(_tokens_from_selector(page_selectors.LOGIN_PASSWORD))
     selector_tokens.update(_tokens_from_selector(page_selectors.LOGIN_SUBMIT))
 
-    # Historical fallbacks for older login forms and to handle non-selector
-    # heuristics in HTML snippets.
-    selector_tokens.update(
-        {
-            'name="username"',
-            'id="username"',
-            'name="login"',
-            'id="login"',
-        }
-    )
-
     return tuple(sorted(selector_tokens))
 
 
@@ -276,32 +265,6 @@ async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -
     except Exception as exc:  # pragma: no cover - defensive against Playwright quirks
         navigation_error = exc
 
-    # After submitting the login form Playwright occasionally never reaches the
-    # "networkidle" state even though the navigation completed successfully.
-    # Instead of crashing the pipeline, fall back through progressively less
-    # strict load-state waits before continuing. This mirrors how a human would
-    # simply check the resulting page instead of waiting for a specific browser
-    # event.
-    load_state_timeout: PlaywrightTimeoutError | None = None
-    for state, timeout in (("networkidle", 20_000), ("domcontentloaded", 10_000), ("load", 10_000)):
-        try:
-            await page.wait_for_load_state(state, timeout=timeout)
-            load_state_timeout = None
-            break
-        except PlaywrightTimeoutError as exc:  # pragma: no cover - depends on remote latency
-            load_state_timeout = exc
-            continue
-
-    if load_state_timeout is not None:
-        log_event(
-            logger=logger,
-            phase="download",
-            status="warn",
-            store_code=store_cfg.get("store_code"),
-            bucket=None,
-            message="login load-state wait timed out; continuing with page content checks",
-        )
-
     if navigation_error is not None:
         log_event(
             logger=logger,
@@ -311,6 +274,38 @@ async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -
             bucket=None,
             message="login navigation signalled a timeout; validating page content",
             extras={"error": str(navigation_error)},
+        )
+
+    # Prefer explicit confirmation that the login form disappeared over generic
+    # load-state events.
+    login_form_cleared = False
+    login_form_error: Exception | None = None
+    for state, timeout in (("detached", 30_000), ("hidden", 15_000)):
+        try:
+            await page.wait_for_selector(
+                page_selectors.LOGIN_USERNAME,
+                state=state,
+                timeout=timeout,
+            )
+            login_form_cleared = True
+            login_form_error = None
+            break
+        except PlaywrightTimeoutError as exc:  # pragma: no cover - depends on remote latency
+            login_form_error = exc
+            continue
+        except Exception as exc:  # pragma: no cover - defensive against Playwright quirks
+            login_form_error = exc
+            break
+
+    if not login_form_cleared and login_form_error is not None:
+        log_event(
+            logger=logger,
+            phase="download",
+            status="warn",
+            store_code=store_cfg.get("store_code"),
+            bucket=None,
+            message="login form still present after submission; checking page content",
+            extras={"error": str(login_form_error)},
         )
 
     try:
@@ -364,7 +359,28 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
     # Always start from an explicit login visit so the flow mirrors a real user.
     await _perform_login_flow(page, store_cfg, logger)
 
-    await page.goto(dashboard_url, wait_until="networkidle")
+    await page.goto(dashboard_url, wait_until="domcontentloaded")
+
+    dashboard_controls_ready = False
+    controls_error: Exception | None = None
+    try:
+        await page.wait_for_selector(page_selectors.DOWNLOAD_LINKS, timeout=30_000)
+        dashboard_controls_ready = True
+    except PlaywrightTimeoutError as exc:  # pragma: no cover - depends on remote latency
+        controls_error = exc
+    except Exception as exc:  # pragma: no cover - defensive against Playwright quirks
+        controls_error = exc
+
+    if not dashboard_controls_ready and controls_error is not None:
+        log_event(
+            logger=logger,
+            phase="download",
+            status="warn",
+            store_code=store_cfg.get("store_code"),
+            bucket=None,
+            message="dashboard download controls not detected; validating page content",
+            extras={"error": str(controls_error)},
+        )
 
     try:
         page_content = await page.content()
