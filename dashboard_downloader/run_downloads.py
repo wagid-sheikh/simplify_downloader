@@ -7,6 +7,8 @@ from datetime import datetime
 
 from playwright.async_api import async_playwright, TimeoutError as PWTimeoutError, Page
 
+from common.ingest.service import _looks_like_html
+
 from .config import (
     STORES,
     PKG_ROOT,
@@ -71,6 +73,9 @@ def _merge_bucket(files: List[Path], output: Path) -> None:
             if not f or not f.exists() or f.stat().st_size == 0:
                 continue
 
+            if _looks_like_html(f):
+                continue
+
             with f.open("r", newline="", encoding="utf-8", errors="ignore") as in_f:
                 reader = csv.reader(in_f)
                 try:
@@ -93,6 +98,10 @@ def _merge_bucket(files: List[Path], output: Path) -> None:
 def _count_rows(csv_path: Path) -> int:
     if not csv_path.exists():
         return 0
+
+    if _looks_like_html(csv_path):
+        return 0
+
     with csv_path.open("r", newline="", encoding="utf-8", errors="ignore") as handle:
         reader = csv.reader(handle)
         try:

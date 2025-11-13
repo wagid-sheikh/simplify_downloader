@@ -6,7 +6,36 @@ from typing import Any, Dict, Iterable, Optional
 
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
-from dashboard_downloader.config import MERGE_BUCKET_DB_SPECS
+try:
+    from dashboard_downloader.config import MERGE_BUCKET_DB_SPECS
+except ModuleNotFoundError:
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    project_root = Path(__file__).resolve().parents[2]
+    package_dir = project_root / "dashboard_downloader"
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
+    package_spec = importlib.util.spec_from_file_location(
+        "dashboard_downloader", package_dir / "__init__.py"
+    )
+    if package_spec and package_spec.loader:
+        package = importlib.util.module_from_spec(package_spec)
+        package_spec.loader.exec_module(package)
+        package.__path__ = [str(package_dir)]
+        sys.modules["dashboard_downloader"] = package
+
+    config_spec = importlib.util.spec_from_file_location(
+        "dashboard_downloader.config", package_dir / "config.py"
+    )
+    if not config_spec or not config_spec.loader:
+        raise
+    config_module = importlib.util.module_from_spec(config_spec)
+    config_spec.loader.exec_module(config_module)
+    sys.modules["dashboard_downloader.config"] = config_module
+    MERGE_BUCKET_DB_SPECS = config_module.MERGE_BUCKET_DB_SPECS
 
 
 TYPE_MAP = {
@@ -125,4 +154,13 @@ def coerce_csv_row(bucket: str, row: Dict[str, Any], header_map: Dict[str, str])
         validated = model(**coerced)
     except ValidationError as err:
         raise ValueError(str(err)) from err
-    return validated.model_dump()
+    data = validated.model_dump()
+
+    required_columns = set(spec.get("required_columns", []))
+    required_columns.update(spec.get("dedupe_keys", []))
+
+    missing = [column for column in required_columns if data.get(column) is None]
+    if missing:
+        raise ValueError(f"Missing required values for: {', '.join(sorted(missing))}")
+
+    return data
