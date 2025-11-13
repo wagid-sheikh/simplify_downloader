@@ -12,7 +12,29 @@ PROJECT_ROOT = PKG_ROOT.parent                        # .../simplify_downloader
 ENV_PATH = PROJECT_ROOT / ".env"                      # keep .env at project root
 PROFILES_DIR = PKG_ROOT / "profiles"                  # .../dashboard_downloader/profiles
 DATA_DIR = PKG_ROOT / "data"                          # .../dashboard_downloader/data
+PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+def storage_state_path(filename: str | None = None) -> Path:
+    """Return the path to the shared Playwright storage state JSON.
+
+    Parameters
+    ----------
+    filename:
+        Override the default storage state filename.  When omitted we look for
+        ``TD_STORAGE_STATE_FILENAME`` in the environment and fall back to a
+        sensible default.
+    
+    Notes
+    -----
+    The file lives inside :data:`PROFILES_DIR` so that it travels with the
+    other migratable browser artefacts when copying between machines.
+    """
+
+    name = filename or os.getenv("TD_STORAGE_STATE_FILENAME", "storage_state.json")
+    path = PROFILES_DIR / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 # Load env
 load_dotenv(ENV_PATH)
