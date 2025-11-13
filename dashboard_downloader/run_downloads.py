@@ -9,6 +9,7 @@ from playwright.async_api import async_playwright, TimeoutError as PWTimeoutErro
 
 from common.ingest.service import _looks_like_html
 
+from . import page_selectors
 from .config import (
     STORES,
     PKG_ROOT,
@@ -53,6 +54,69 @@ async def _download_one_spec(page: Page, sc: str, spec: Dict) -> Path | None:
     except PWTimeoutError:
         print(f"  - Timeout while downloading: {spec['key']} ({url})")
         return None
+
+
+async def _is_login_page(page: Page) -> bool:
+    """Heuristic check to determine whether the current page is the login form."""
+
+    url = page.url.lower()
+    if "login" in url:
+        return True
+
+    try:
+        locator = page.locator(page_selectors.LOGIN_USERNAME)
+        return await locator.count() > 0
+    except Exception:  # pragma: no cover - defensive; locator failures shouldn't break flow
+        return False
+
+
+async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> None:
+    """Navigate to the dashboard, refreshing the login session when required."""
+
+    dashboard_url = store_cfg["dashboard_url"]
+    await page.goto(dashboard_url, wait_until="domcontentloaded")
+
+    if not await _is_login_page(page):
+        return
+
+    username = store_cfg.get("username")
+    password = store_cfg.get("password")
+    if not username or not password:
+        raise RuntimeError(f"Missing credentials for store_code={store_cfg.get('store_code')}")
+
+    log_event(
+        logger=logger,
+        phase="download",
+        status="warn",
+        store_code=store_cfg.get("store_code"),
+        bucket=None,
+        message="session expired; attempting re-login",
+    )
+
+    await page.fill(page_selectors.LOGIN_USERNAME, username)
+    await page.fill(page_selectors.LOGIN_PASSWORD, password)
+    await page.click(page_selectors.LOGIN_SUBMIT)
+    await page.wait_for_load_state("networkidle")
+    await page.goto(dashboard_url, wait_until="networkidle")
+
+    if await _is_login_page(page):
+        log_event(
+            logger=logger,
+            phase="download",
+            status="error",
+            store_code=store_cfg.get("store_code"),
+            bucket=None,
+            message="login failed; still on login page",
+        )
+        raise RuntimeError("Automated login failed; manual login required")
+
+    log_event(
+        logger=logger,
+        phase="download",
+        store_code=store_cfg.get("store_code"),
+        bucket=None,
+        message="session refreshed via login",
+    )
 
 def _merge_bucket(files: List[Path], output: Path) -> None:
     """
@@ -207,8 +271,8 @@ async def run_all_stores(
 
             try:
                 page = await ctx.new_page()
-                # Hit the dashboard directly (cookie/session should be present from first_login)
-                await page.goto(dashboard_url, wait_until="domcontentloaded")
+                # Hit the dashboard and automatically refresh the session when needed.
+                await _ensure_dashboard(page, cfg, logger)
 
                 log_event(
                     logger=logger,
