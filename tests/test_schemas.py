@@ -1,4 +1,4 @@
-from simplify_downloader.ingest.schemas import coerce_csv_row, normalize_headers
+from simplify_downloader.common.ingest.schemas import coerce_csv_row, normalize_headers
 
 
 def test_bool_coercion_true():
