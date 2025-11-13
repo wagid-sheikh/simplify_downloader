@@ -1,4 +1,4 @@
-from simplify_downloader import main
+from dashboard_downloader.cli import main
 
 if __name__ == "__main__":
     raise SystemExit(main())
