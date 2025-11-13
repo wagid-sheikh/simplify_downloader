@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, List
 from datetime import datetime
 
-from playwright.async_api import async_playwright, TimeoutError as PWTimeoutError, Page
+from playwright.async_api import async_playwright, Page
 
 from common.ingest.service import _looks_like_html
 
@@ -27,33 +27,67 @@ def _ensure_profile_dir(store_name: str) -> Path:
 def _render(template: str, sc: str) -> str:
     return template.format(sc=sc, ymd=datetime.now().strftime("%Y%m%d"))
 
-async def _download_one_spec(page: Page, sc: str, spec: Dict) -> Path | None:
+async def _download_one_spec(page: Page, sc: str, spec: Dict, *, logger: JsonLogger) -> Path | None:
     url = _render(spec["url_template"], sc)
     out_name = _render(spec["out_name_template"], sc)
     final_path = DATA_DIR / out_name
 
     # Fire the download
     try:
-        async with page.expect_download(timeout=60_000) as dinfo:
-            await page.evaluate(
-                """url => {
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = '';
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                }""",
-                url,
-            )
-        download = await dinfo.value
-        final_path.parent.mkdir(parents=True, exist_ok=True)
-        # Prefer our explicit out_name
-        await download.save_as(str(final_path))
-        return final_path
-    except PWTimeoutError:
-        print(f"  - Timeout while downloading: {spec['key']} ({url})")
+        response = await page.context.request.get(url, timeout=60_000)
+    except Exception as exc:
+        log_event(
+            logger=logger,
+            phase="download",
+            status="error",
+            store_code=sc,
+            bucket=None,
+            message=f"request failed for {spec['key']}",
+            extras={"url": url, "error": str(exc)},
+        )
         return None
+
+    if response.status != 200:
+        log_event(
+            logger=logger,
+            phase="download",
+            status="error",
+            store_code=sc,
+            bucket=None,
+            message=f"unexpected status {response.status} for {spec['key']}",
+            extras={"url": url},
+        )
+        return None
+
+    body = await response.body()
+    if not body:
+        log_event(
+            logger=logger,
+            phase="download",
+            status="warn",
+            store_code=sc,
+            bucket=None,
+            message=f"empty response for {spec['key']}",
+            extras={"url": url},
+        )
+        return None
+
+    sniff = body[:256].lower()
+    if sniff.strip().startswith(b"<html"):
+        log_event(
+            logger=logger,
+            phase="download",
+            status="error",
+            store_code=sc,
+            bucket=None,
+            message=f"html response for {spec['key']} (likely login page)",
+            extras={"url": url},
+        )
+        return None
+
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    final_path.write_bytes(body)
+    return final_path
 
 
 async def _is_login_page(page: Page) -> bool:
@@ -318,7 +352,7 @@ async def run_all_stores(
                     if not spec.get("download", True):
                         continue
 
-                    saved = await _download_one_spec(page, sc, spec)
+                    saved = await _download_one_spec(page, sc, spec, logger=logger)
                     if saved and spec.get("merge_bucket"):
                         bucket = spec["merge_bucket"]
                         merged_buckets.setdefault(bucket, []).append(saved)
