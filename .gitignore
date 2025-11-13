@@ -208,7 +208,7 @@ __marimo__/
 
 .DS_Store
 
-# data
+data
 profiles
 logs
 *.log
