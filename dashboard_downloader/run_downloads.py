@@ -307,7 +307,6 @@ async def _download_one_spec(page: Page, store_cfg: Dict, spec: Dict, *, logger:
     url = _render(spec["url_template"], sc)
     out_name = _render(spec["out_name_template"], sc)
     final_path = DATA_DIR / out_name
-    dashboard_url = store_cfg["dashboard_url"]
 
     def _log(status: str, message: str, *, extras: Dict | None = None) -> None:
         log_event(
@@ -320,20 +319,26 @@ async def _download_one_spec(page: Page, store_cfg: Dict, spec: Dict, *, logger:
             extras={"url": url, **(extras or {})},
         )
 
+    request = page.context.request
     attempted_refresh = False
 
     while True:
         try:
-            response = await page.goto(url, wait_until="networkidle")
+            response = await request.get(url)
         except Exception as exc:
-            _log("error", f"navigation failed for {spec['key']}", extras={"error": str(exc)})
+            _log("error", f"request failed for {spec['key']}", extras={"error": str(exc)})
             return None
 
         if response is None:
             _log("error", f"no response returned for {spec['key']}")
             return None
 
-        status = response.status
+        try:
+            status = response.status
+        except Exception as exc:  # pragma: no cover - defensive guard
+            status = None
+            _log("warn", f"unable to read status for {spec['key']}", extras={"error": str(exc)})
+
         try:
             body = await response.body()
         except Exception as exc:
@@ -343,12 +348,6 @@ async def _download_one_spec(page: Page, store_cfg: Dict, spec: Dict, *, logger:
         if status == 200 and body and not _looks_like_login_html_bytes(body):
             final_path.parent.mkdir(parents=True, exist_ok=True)
             final_path.write_bytes(body)
-            # Return to the dashboard view so subsequent actions mimic a user flow.
-            try:
-                await page.goto(dashboard_url, wait_until="domcontentloaded")
-            except Exception:
-                # Best effort; even if this fails the saved file is valid.
-                pass
             return final_path
 
         needs_refresh = False
@@ -358,14 +357,13 @@ async def _download_one_spec(page: Page, store_cfg: Dict, spec: Dict, *, logger:
             needs_refresh = True
         elif not body:
             _log("warn", f"empty response for {spec['key']}")
-        elif _looks_like_login_html_bytes(body) or await _is_login_page(page):
-            _log(
-                "warn",
-                f"html response for {spec['key']} — authentication likely expired",
-            )
+        elif _looks_like_login_html_bytes(body):
+            _log("warn", f"html/login-like response for {spec['key']} — refreshing session")
             needs_refresh = True
-        else:
+        elif status != 200:
             _log("error", f"unexpected status {status} for {spec['key']}")
+        else:
+            _log("error", f"unexpected response content for {spec['key']}")
 
         if not needs_refresh:
             return None
