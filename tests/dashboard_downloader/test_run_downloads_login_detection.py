@@ -55,6 +55,21 @@ def test_is_login_page_detects_login_html_fallback():
     assert run(_is_login_page(page)) is True
 
 
+def test_is_login_page_detects_login_html_from_selectors():
+    html = f"""
+        <html>
+            <body>
+                <form>
+                    <input type='text' name='user_name' />
+                    <{page_selectors.LOGIN_PASSWORD.split('[')[0]} type='password' name='password' />
+                </form>
+            </body>
+        </html>
+    """
+    page = FakePage(url="https://example.com/dashboard", locator_count=0, html=html)
+    assert run(_is_login_page(page)) is True
+
+
 def test_is_login_page_returns_false_for_dashboard():
     html = """
         <html>
