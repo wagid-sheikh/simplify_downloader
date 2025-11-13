@@ -70,6 +70,8 @@ _LOGIN_ERROR_PATTERNS = (
     "incorrect password",
     "need to login",
     "need to log in",
+    "need to be logged in",
+    "you need to be logged in",
     "please login",
     "please log in",
 )
@@ -79,16 +81,17 @@ def _looks_like_login_html_text(html: str) -> bool:
     if not html:
         return False
 
+    error_hint = _extract_login_error(html)
+    if error_hint:
+        return True
+
     normalized = _normalize_html_tokens(html)
 
     has_password_field = "type=\"password\"" in normalized or "name=\"password\"" in normalized
     if has_password_field and any(token in normalized for token in _login_tokens()):
         return True
 
-    if "login" in normalized or "log in" in normalized or "sign in" in normalized:
-        return True
-
-    return any(pattern in normalized for pattern in _LOGIN_ERROR_PATTERNS)
+    return False
 
 
 def _extract_login_error(html: str | None) -> str | None:
@@ -383,10 +386,6 @@ async def _download_one_spec(page: Page, store_cfg: Dict, spec: Dict, *, logger:
 async def _is_login_page(page: Page) -> bool:
     """Heuristic check to determine whether the current page is the login form."""
 
-    url = (page.url or "").lower()
-    if "login" in url:
-        return True
-
     # Primary signal: does our explicit username locator resolve?
     try:
         locator = page.locator(page_selectors.LOGIN_USERNAME)
@@ -410,6 +409,107 @@ async def _is_login_page(page: Page) -> bool:
         return True
 
     return _looks_like_login_html_text(content)
+
+
+async def _navigate_via_home_to_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> None:
+    """Navigate from the home page to the store dashboard via the tracker card."""
+
+    store_code = store_cfg.get("store_code")
+
+    def _log(status: str, message: str, *, extras: Dict | None = None) -> None:
+        log_event(
+            logger=logger,
+            phase="download",
+            status=status,
+            store_code=store_code,
+            bucket=None,
+            message=message,
+            extras=extras,
+        )
+
+    home_url = store_cfg.get("home_url")
+    if not home_url:
+        home_url = LOGIN_URL
+        if home_url.endswith("/login"):
+            home_url = home_url[: -len("/login")]
+        else:
+            parts = home_url.rstrip("/").rsplit("/", 1)
+            home_url = parts[0] if len(parts) == 2 else home_url
+
+    _log("info", "navigating via home to dashboard", extras={"home_url": home_url})
+
+    response = await page.goto(home_url, wait_until="domcontentloaded")
+    response_status = None
+    if response is not None:
+        try:
+            response_status = response.status
+        except Exception:  # pragma: no cover - defensive
+            response_status = None
+
+    _log(
+        "info",
+        "home page loaded",
+        extras={"home_url": home_url, "current_url": page.url, "response_status": response_status},
+    )
+
+    if await _is_login_page(page):
+        _log("info", "home page requires authentication; invoking login flow")
+        await _perform_login_flow(page, store_cfg, logger)
+        if await _is_login_page(page):
+            _log(
+                "error",
+                "home navigation remained on login page",
+                extras={"home_url": home_url, "current_url": page.url},
+            )
+            raise RuntimeError("Home navigation returned to login page")
+
+    tracker_heading = page.locator("h5.card-title:has-text(\"Daily Operations Tracker\")")
+
+    try:
+        await tracker_heading.first.wait_for(state="visible", timeout=30_000)
+    except Exception as exc:
+        _log(
+            "error",
+            "daily operations tracker heading not found",
+            extras={"home_url": home_url, "error": str(exc)},
+        )
+        raise
+
+    tracker_card = tracker_heading.locator(
+        "xpath=ancestor-or-self::*[self::a or contains(concat(' ', normalize-space(@class), ' '), ' card ')][1]"
+    )
+
+    click_target = tracker_card.first if await tracker_card.count() > 0 else tracker_heading.first
+
+    navigation_response = None
+    try:
+        async with page.expect_navigation(wait_until="domcontentloaded", timeout=60_000) as nav_info:
+            await click_target.click()
+        navigation_response = await nav_info
+    except PlaywrightTimeoutError as exc:
+        _log(
+            "error",
+            "navigation via home timed out after clicking tracker",
+            extras={"error": str(exc)},
+        )
+        raise
+
+    response_status = None
+    if navigation_response is not None:
+        try:
+            response_status = navigation_response.status
+        except Exception:  # pragma: no cover - defensive
+            response_status = None
+
+    _log(
+        "info",
+        "daily operations tracker clicked",
+        extras={
+            "post_click_url": page.url,
+            "response_status": response_status,
+            "dashboard_url": store_cfg.get("dashboard_url"),
+        },
+    )
 
 
 async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -> None:
@@ -621,64 +721,106 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
         extras={"current_url": page.url, "response_status": response_status},
     )
 
-    if await _is_login_page(page):
-        _log(
-            "info",
-            "dashboard redirected to login; attempting automated login",
-            extras={"dashboard_url": dashboard_url, "login_url": page.url},
-        )
-        await _perform_login_flow(page, store_cfg, logger)
-        response = await page.goto(dashboard_url, wait_until="domcontentloaded")
-        response_status = None
-        if response is not None:
-            try:
-                response_status = response.status
-            except Exception:  # pragma: no cover - defensive
-                response_status = None
-        _log(
-            "info",
-            "dashboard reloaded after login",
-            extras={"current_url": page.url, "response_status": response_status},
-        )
+    attempted_home_nav = False
+    performed_login_flow = False
 
     dashboard_controls_ready = False
     controls_error: Exception | None = None
-    try:
-        await page.wait_for_selector(page_selectors.DOWNLOAD_LINKS, timeout=30_000)
-        dashboard_controls_ready = True
-    except PlaywrightTimeoutError as exc:  # pragma: no cover - depends on remote latency
-        controls_error = exc
-    except Exception as exc:  # pragma: no cover - defensive against Playwright quirks
-        controls_error = exc
+    page_error_hint: str | None = None
+    login_page_detected = False
 
-    if not dashboard_controls_ready and controls_error is not None:
-        _log(
-            "warn",
-            "dashboard download controls not detected; validating page content",
-            extras={"error": str(controls_error)},
-        )
+    async def _inspect_dashboard_state() -> None:
+        nonlocal dashboard_controls_ready, controls_error, page_error_hint, login_page_detected
 
-    try:
-        page_content = await page.content()
-    except Exception:  # pragma: no cover - defensive
-        page_content = None
+        controls_error = None
+        try:
+            await page.wait_for_selector(page_selectors.DOWNLOAD_LINKS, timeout=30_000)
+            dashboard_controls_ready = True
+        except PlaywrightTimeoutError as exc:  # pragma: no cover - depends on remote latency
+            controls_error = exc
+            dashboard_controls_ready = False
+        except Exception as exc:  # pragma: no cover - defensive against Playwright quirks
+            controls_error = exc
+            dashboard_controls_ready = False
 
-    page_error_hint = _extract_login_error(page_content) if page_content else None
-    if page_error_hint:
-        _log(
-            "error",
-            "dashboard refused session",
-            extras={"error": page_error_hint, "current_url": page.url},
-        )
-        raise RuntimeError("Unable to reach dashboard after login; site reports error")
+        if not dashboard_controls_ready and controls_error is not None:
+            _log(
+                "warn",
+                "dashboard download controls not detected; validating page content",
+                extras={"error": str(controls_error)},
+            )
 
-    if await _is_login_page(page):
-        _log(
-            "error",
-            "login loop detected when opening dashboard",
-            extras={"current_url": page.url, "error_hint": page_error_hint},
-        )
-        raise RuntimeError("Automated login failed; manual login required")
+        try:
+            page_content = await page.content()
+        except Exception:  # pragma: no cover - defensive
+            page_content = None
+
+        page_error_hint = _extract_login_error(page_content) if page_content else None
+        login_page_detected = await _is_login_page(page)
+
+    while True:
+        await _inspect_dashboard_state()
+
+        if dashboard_controls_ready:
+            break
+
+        if login_page_detected:
+            if not performed_login_flow:
+                _log(
+                    "info",
+                    "dashboard redirected to login; attempting automated login",
+                    extras={"dashboard_url": dashboard_url, "login_url": page.url},
+                )
+                await _perform_login_flow(page, store_cfg, logger)
+                performed_login_flow = True
+                _log(
+                    "info",
+                    "attempting home navigation after automated login",
+                    extras={"dashboard_url": dashboard_url, "current_url": page.url},
+                )
+                try:
+                    await _navigate_via_home_to_dashboard(page, store_cfg, logger)
+                except Exception as exc:
+                    _log("error", "home navigation failed after login", extras={"error": str(exc)})
+                    raise
+                attempted_home_nav = True
+                continue
+
+            _log(
+                "error",
+                "login loop detected when opening dashboard",
+                extras={"current_url": page.url, "error_hint": page_error_hint},
+            )
+            raise RuntimeError("Automated login failed; manual login required")
+
+        if page_error_hint:
+            if not attempted_home_nav:
+                attempted_home_nav = True
+                _log(
+                    "warn",
+                    "dashboard reported login-style error; attempting home navigation",
+                    extras={
+                        "dashboard_url": dashboard_url,
+                        "error_hint": page_error_hint,
+                        "current_url": page.url,
+                    },
+                )
+                try:
+                    await _navigate_via_home_to_dashboard(page, store_cfg, logger)
+                except Exception as exc:
+                    _log("error", "home navigation failed", extras={"error": str(exc)})
+                    raise
+                continue
+
+            _log(
+                "error",
+                "dashboard refused session",
+                extras={"error": page_error_hint, "current_url": page.url},
+            )
+            raise RuntimeError("Unable to reach dashboard after login; site reports error")
+
+        # No login indicators or explicit errors; nothing more to attempt.
+        break
 
     _log(
         "info",
