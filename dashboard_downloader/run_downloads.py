@@ -127,9 +127,12 @@ async def _prime_context_with_storage_state(
     store_code: str,
     logger: JsonLogger,
 ) -> None:
+    browser = ctx.browser
+    if browser is None:  # pragma: no cover - defensive
+        return
+
     try:
-        raw = storage_state_file.read_text()
-        storage_state = json.loads(raw)
+        priming_ctx = await browser.new_context(storage_state=str(storage_state_file))
     except Exception as exc:  # pragma: no cover - defensive guardrails
         log_event(
             logger=logger,
@@ -137,31 +140,100 @@ async def _prime_context_with_storage_state(
             status="warn",
             store_code=store_code,
             bucket=None,
-            message="unable to read storage state",
+            message="unable to load storage state",
             extras={"storage_state": str(storage_state_file), "error": str(exc)},
         )
         return
 
-    cookies = storage_state.get("cookies") or []
-    if cookies:
+    cookies_applied = 0
+
+    try:
+        cookies: List[dict] = []
         try:
-            await ctx.add_cookies(cookies)
-        except Exception as exc:  # pragma: no cover - Playwright runtime guard
+            cookies = await priming_ctx.cookies()
+        except Exception as exc:  # pragma: no cover - runtime guard
             log_event(
                 logger=logger,
                 phase="download",
                 status="warn",
                 store_code=store_code,
                 bucket=None,
-                message="unable to apply cookies from storage state",
+                message="unable to read cookies from storage state",
                 extras={"error": str(exc)},
             )
 
+        if cookies:
+            sanitized: List[dict] = []
+            for cookie in cookies:
+                cleaned = {k: v for k, v in cookie.items() if v is not None}
+                # Playwright expects ``expires`` to be numeric when present. Drop
+                # session markers (None) to avoid TypeErrors on some versions.
+                if "expires" in cleaned and isinstance(cleaned["expires"], (int, float)):
+                    pass
+                else:
+                    cleaned.pop("expires", None)
+                sanitized.append(cleaned)
+
+            cookies_applied = len(sanitized)
+
+            try:
+                await ctx.add_cookies(sanitized)
+            except Exception as exc:  # pragma: no cover - Playwright runtime guard
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    status="warn",
+                    store_code=store_code,
+                    bucket=None,
+                    message="unable to apply cookies from storage state",
+                    extras={"error": str(exc)},
+                )
+
+        try:
+            storage_state = await priming_ctx.storage_state()
+        except Exception as exc:  # pragma: no cover - runtime guard
+            log_event(
+                logger=logger,
+                phase="download",
+                status="warn",
+                store_code=store_code,
+                bucket=None,
+                message="unable to read localStorage data from storage state",
+                extras={"error": str(exc)},
+            )
+            storage_state = None
+    finally:
+        await priming_ctx.close()
+
+    if not storage_state:
+        if cookies_applied:
+            log_event(
+                logger=logger,
+                phase="download",
+                status="info",
+                store_code=store_code,
+                bucket=None,
+                message="storage state cookies primed",
+                extras={"cookies": cookies_applied, "origins": 0},
+            )
+        return
+
     origins = storage_state.get("origins") or []
     if not origins:
+        if cookies_applied:
+            log_event(
+                logger=logger,
+                phase="download",
+                status="info",
+                store_code=store_code,
+                bucket=None,
+                message="storage state cookies primed",
+                extras={"cookies": cookies_applied, "origins": 0},
+            )
         return
 
     page = await ctx.new_page()
+    hydrated_origins = 0
     try:
         for origin in origins:
             origin_url = origin.get("origin")
@@ -182,7 +254,13 @@ async def _prime_context_with_storage_state(
                 )
                 continue
 
-            for entry in origin.get("localStorage", []):
+            entries = origin.get("localStorage", [])
+            if not entries:
+                continue
+
+            origin_hydrated = False
+
+            for entry in entries:
                 name = entry.get("name")
                 value = entry.get("value")
                 if name is None or value is None:
@@ -204,8 +282,24 @@ async def _prime_context_with_storage_state(
                         message="unable to persist localStorage entry",
                         extras={"origin": origin_url, "key": name, "error": str(exc)},
                     )
+                    continue
+
+                origin_hydrated = True
+
+            if origin_hydrated:
+                hydrated_origins += 1
     finally:
         await page.close()
+
+    log_event(
+        logger=logger,
+        phase="download",
+        status="info",
+        store_code=store_code,
+        bucket=None,
+        message="storage state primed",
+        extras={"cookies": cookies_applied, "origins": hydrated_origins},
+    )
 
 def _render(template: str, sc: str) -> str:
     return template.format(sc=sc, ymd=datetime.now().strftime("%Y%m%d"))
