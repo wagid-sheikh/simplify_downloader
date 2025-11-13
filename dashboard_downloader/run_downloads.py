@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, List
 from datetime import datetime
 
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError, Page
+from playwright.async_api import async_playwright, TimeoutError as PWTimeoutError, Page
 
 from .config import (
     STORES,
@@ -21,55 +21,18 @@ def _ensure_profile_dir(store_name: str) -> Path:
     p.mkdir(parents=True, exist_ok=True)
     return p
 
-def _inject_download_and_wait(page: Page, url: str, timeout_ms: int = 60_000) -> Path | None:
-    """
-    Triggers a download for a direct CSV endpoint by injecting an <a download> element
-    and clicking it (wrapped in expect_download).
-    Returns the temp path Playwright uses, or None if it times out.
-    """
-    try:
-        with page.expect_download(timeout=timeout_ms) as dinfo:
-            page.evaluate(
-                """url => {
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = '';
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                }""",
-                url,
-            )
-        download = dinfo.value
-        return Path(download.path())
-    except PWTimeoutError:
-        return None
-
-def _save_download(page: Page, temp_path: Path, final_path: Path) -> None:
-    # When we have a temp path, Playwright still wants save_as() to copy to the final.
-    # We re-open the last download handle via page.wait_for_event("download") is not needed
-    # because we already have it; instead, save by re-triggering evaluate and letting
-    # Playwright handle save_as on the last download object we captured.
-    # Simpler: just use final_path.parent.mkdir and then call download.save_as() earlier.
-    # But here, we will do the save right after expect_download returns.
-    final_path.parent.mkdir(parents=True, exist_ok=True)
-    # We cannot copy the temp_path directly because Playwright manages it.
-    # The right way is to call save_as on the download handle when we catch it.
-    # So in this function we won't do anything; kept for structure.
-    pass
-
 def _render(template: str, sc: str) -> str:
     return template.format(sc=sc, ymd=datetime.now().strftime("%Y%m%d"))
 
-def _download_one_spec(page: Page, sc: str, spec: Dict) -> Path | None:
+async def _download_one_spec(page: Page, sc: str, spec: Dict) -> Path | None:
     url = _render(spec["url_template"], sc)
     out_name = _render(spec["out_name_template"], sc)
     final_path = DATA_DIR / out_name
 
     # Fire the download
     try:
-        with page.expect_download(timeout=60_000) as dinfo:
-            page.evaluate(
+        async with page.expect_download(timeout=60_000) as dinfo:
+            await page.evaluate(
                 """url => {
                     const a = document.createElement('a');
                     a.href = url;
@@ -80,11 +43,10 @@ def _download_one_spec(page: Page, sc: str, spec: Dict) -> Path | None:
                 }""",
                 url,
             )
-        download = dinfo.value
+        download = await dinfo.value
         final_path.parent.mkdir(parents=True, exist_ok=True)
-        suggested = download.suggested_filename or out_name
         # Prefer our explicit out_name
-        download.save_as(str(final_path))
+        await download.save_as(str(final_path))
         return final_path
     except PWTimeoutError:
         print(f"  - Timeout while downloading: {spec['key']} ({url})")
@@ -204,7 +166,7 @@ def filter_merged_missed_leads(input_path: Path, output_path: Path) -> None:
 
     print(f"[filter] {output_path.name} — kept {len(rows_out)} rows after filtering.")
 
-def run_all_stores(
+async def run_all_stores(
     stores: Dict[str, dict] | None = None,
     logger: JsonLogger | None = None,
 ) -> Dict[str, Dict[str, Dict[str, object]]]:
@@ -217,7 +179,7 @@ def run_all_stores(
     merged_buckets: Dict[str, List[Path]] = {}
     download_counts: Dict[str, Dict[str, Dict[str, object]]] = {}
 
-    with sync_playwright() as p:
+    async with async_playwright() as p:
         # NOTE: On macOS we can keep channel="chrome" if you prefer;
         # leaving it off keeps it portable for Linux server (Chromium).
         for store_name, cfg in (stores or STORES).items():
@@ -225,7 +187,7 @@ def run_all_stores(
             sc = cfg["store_code"]
             dashboard_url = cfg["dashboard_url"]
 
-            ctx = p.chromium.launch_persistent_context(
+            ctx = await p.chromium.launch_persistent_context(
                 user_data_dir=str(user_dir),
                 headless=True,
                 accept_downloads=True,
@@ -235,9 +197,9 @@ def run_all_stores(
             )
 
             try:
-                page = ctx.new_page()
+                page = await ctx.new_page()
                 # Hit the dashboard directly (cookie/session should be present from first_login)
-                page.goto(dashboard_url, wait_until="domcontentloaded")
+                await page.goto(dashboard_url, wait_until="domcontentloaded")
 
                 log_event(
                     logger=logger,
@@ -252,7 +214,7 @@ def run_all_stores(
                     if not spec.get("download", True):
                         continue
 
-                    saved = _download_one_spec(page, sc, spec)
+                    saved = await _download_one_spec(page, sc, spec)
                     if saved and spec.get("merge_bucket"):
                         bucket = spec["merge_bucket"]
                         merged_buckets.setdefault(bucket, []).append(saved)
@@ -270,7 +232,7 @@ def run_all_stores(
                 )
 
             finally:
-                ctx.close()
+                await ctx.close()
 
     # ---- Merges (by bucket) ----
     for bucket, files in merged_buckets.items():
@@ -304,5 +266,7 @@ def run_all_stores(
     return download_counts
 
 if __name__ == "__main__":
-    run_all_stores()
+    import asyncio
+
+    asyncio.run(run_all_stores())
 
