@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 import re
 from typing import Iterable
 from typing import Dict, List
 from datetime import datetime
 
-from playwright.async_api import async_playwright, Page, TimeoutError as PlaywrightTimeoutError
+from playwright.async_api import (
+    async_playwright,
+    BrowserContext,
+    Page,
+    TimeoutError as PlaywrightTimeoutError,
+)
 
 from common.ingest.service import _looks_like_html
 
@@ -112,6 +118,94 @@ def _ensure_profile_dir(store_name: str) -> Path:
     p = PKG_ROOT / "profiles" / store_name
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+async def _prime_context_with_storage_state(
+    ctx: BrowserContext,
+    storage_state_file: Path,
+    *,
+    store_code: str,
+    logger: JsonLogger,
+) -> None:
+    try:
+        raw = storage_state_file.read_text()
+        storage_state = json.loads(raw)
+    except Exception as exc:  # pragma: no cover - defensive guardrails
+        log_event(
+            logger=logger,
+            phase="download",
+            status="warn",
+            store_code=store_code,
+            bucket=None,
+            message="unable to read storage state",
+            extras={"storage_state": str(storage_state_file), "error": str(exc)},
+        )
+        return
+
+    cookies = storage_state.get("cookies") or []
+    if cookies:
+        try:
+            await ctx.add_cookies(cookies)
+        except Exception as exc:  # pragma: no cover - Playwright runtime guard
+            log_event(
+                logger=logger,
+                phase="download",
+                status="warn",
+                store_code=store_code,
+                bucket=None,
+                message="unable to apply cookies from storage state",
+                extras={"error": str(exc)},
+            )
+
+    origins = storage_state.get("origins") or []
+    if not origins:
+        return
+
+    page = await ctx.new_page()
+    try:
+        for origin in origins:
+            origin_url = origin.get("origin")
+            if not origin_url:
+                continue
+
+            try:
+                await page.goto(origin_url, wait_until="domcontentloaded")
+            except Exception as exc:  # pragma: no cover - remote navigation guard
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    status="warn",
+                    store_code=store_code,
+                    bucket=None,
+                    message="unable to initialize localStorage for origin",
+                    extras={"origin": origin_url, "error": str(exc)},
+                )
+                continue
+
+            for entry in origin.get("localStorage", []):
+                name = entry.get("name")
+                value = entry.get("value")
+                if name is None or value is None:
+                    continue
+
+                try:
+                    await page.evaluate(
+                        "window.localStorage.setItem(arguments[0], arguments[1]);",
+                        name,
+                        value,
+                    )
+                except Exception as exc:  # pragma: no cover - runtime guard
+                    log_event(
+                        logger=logger,
+                        phase="download",
+                        status="warn",
+                        store_code=store_code,
+                        bucket=None,
+                        message="unable to persist localStorage entry",
+                        extras={"origin": origin_url, "key": name, "error": str(exc)},
+                    )
+    finally:
+        await page.close()
 
 def _render(template: str, sc: str) -> str:
     return template.format(sc=sc, ymd=datetime.now().strftime("%Y%m%d"))
@@ -592,10 +686,16 @@ async def run_all_stores(
                 default_state = storage_state_path()
                 if default_state.exists():
                     storage_state_file = default_state
-            if storage_state_file is not None:
-                context_kwargs["storage_state"] = str(storage_state_file)
 
             ctx = await p.chromium.launch_persistent_context(**context_kwargs)
+
+            if storage_state_file is not None:
+                await _prime_context_with_storage_state(
+                    ctx,
+                    storage_state_file,
+                    store_code=sc,
+                    logger=logger,
+                )
 
             try:
                 page = await ctx.new_page()
