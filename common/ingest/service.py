@@ -7,12 +7,11 @@ from typing import Any, Dict, Iterable, List
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from dashboard_downloader.config import MERGE_BUCKET_DB_SPECS
-from dashboard_downloader.json_logger import JsonLogger, log_event
+from simplify_downloader.dashboard_downloader.json_logger import JsonLogger, log_event
 
 from ..db import session_scope
 from .models import BUCKET_MODEL_MAP
-from .schemas import coerce_csv_row, normalize_headers
+from .schemas import MERGE_BUCKET_DB_SPECS, coerce_csv_row, normalize_headers
 
 
 def _batched(iterable: Iterable[Dict[str, Any]], size: int) -> Iterable[List[Dict[str, Any]]]:
@@ -26,9 +25,26 @@ def _batched(iterable: Iterable[Dict[str, Any]], size: int) -> Iterable[List[Dic
         yield batch
 
 
+def _looks_like_html(csv_path: Path) -> bool:
+    """Return True when the file appears to contain an HTML document."""
+
+    try:
+        with csv_path.open("r", encoding="utf-8", errors="ignore") as handle:
+            sample = handle.read(2048)
+    except OSError:
+        return False
+
+    lowered = sample.lower()
+    return "<html" in lowered[:512] or "<!doctype html" in lowered[:512]
+
+
 def _load_csv_rows(bucket: str, csv_path: Path) -> Iterable[Dict[str, Any]]:
     if not csv_path.exists():
         return []
+
+    if _looks_like_html(csv_path):
+        return []
+
     with csv_path.open("r", newline="", encoding="utf-8", errors="ignore") as handle:
         reader = csv.DictReader(handle)
         if not reader.fieldnames:

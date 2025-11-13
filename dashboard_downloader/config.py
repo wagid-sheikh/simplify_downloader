@@ -140,6 +140,8 @@ MERGE_BUCKET_DB_SPECS = {
         "table_name": "missed_leads",
         # dedupe by store_code + mobile_number per upsert requirements.
         "dedupe_keys": ["store_code", "mobile_number"],
+        # Columns that must contain values for the row to be ingested.
+        "required_columns": ["pickup_row_id", "store_code", "mobile_number"],
         "column_map": {
             ("id", "pickup_row_id", "pickup row id"): "pickup_row_id",  # numeric id in CSV
             "mobile_number": "mobile_number",
@@ -180,6 +182,7 @@ MERGE_BUCKET_DB_SPECS = {
         "table_name": "undelivered_orders",
         # order_id uniquely identifies the record across stores.
         "dedupe_keys": ["order_id"],
+        "required_columns": ["order_id"],
         "column_map": {
             "order_id": "order_id",
             "order_date": "order_date",
@@ -214,6 +217,7 @@ MERGE_BUCKET_DB_SPECS = {
         "table_name": "repeat_customers",
         # Only three columns; dedupe on store+mobile. Status is 'Yes' now but may change.
         "dedupe_keys": ["store_code", "mobile_no"],
+        "required_columns": ["store_code", "mobile_no"],
         "column_map": {
             "Store Code": "store_code",
             "Mobile No.": "mobile_no",
