@@ -5,7 +5,7 @@ import asyncio
 import os
 from typing import List, Optional
 
-from dashboard_downloader.json_logger import JsonLogger, get_logger, new_run_id
+from dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from dashboard_downloader.settings import load_settings
 
 from simplify_downloader.common.db import run_alembic_upgrade
@@ -25,6 +25,11 @@ async def _run_async(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         run_id=run_id,
     )
+
+    if not settings.dry_run and settings.database_url:
+        log_event(logger=logger, phase="db", message="running migrations")
+        run_alembic_upgrade("head")
+
     from dashboard_downloader.pipeline import run_pipeline
 
     await run_pipeline(settings=settings, logger=logger)
