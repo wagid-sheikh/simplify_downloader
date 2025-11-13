@@ -18,8 +18,7 @@ if config.config_file_name is not None:
 
 db_url = os.getenv("DATABASE_URL")
 if db_url:
-    sync_url = db_url.replace("postgresql+asyncpg", "postgresql", 1)
-    config.set_main_option("sqlalchemy.url", sync_url)
+    config.set_main_option("sqlalchemy.url", db_url)
 
 
 def run_migrations_offline() -> None:
