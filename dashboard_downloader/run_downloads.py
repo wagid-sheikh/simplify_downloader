@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+from typing import Iterable
 from typing import Dict, List
 from datetime import datetime
 
@@ -19,6 +20,50 @@ from .config import (
 )
 from .json_logger import JsonLogger, log_event
 
+
+def _normalize_html_tokens(html: str) -> str:
+    return html.lower().replace("'", '"')
+
+
+def _login_tokens() -> Iterable[str]:
+    return (
+        "name=\"user_name\"",
+        "name=\"username\"",
+        "id=\"user_name\"",
+        "id=\"username\"",
+        "name=\"login\"",
+        "id=\"login\"",
+    )
+
+
+def _looks_like_login_html_text(html: str) -> bool:
+    if not html:
+        return False
+
+    normalized = _normalize_html_tokens(html)
+
+    has_password_field = "type=\"password\"" in normalized or "name=\"password\"" in normalized
+    if not has_password_field:
+        return False
+
+    if any(token in normalized for token in _login_tokens()):
+        return True
+
+    return "login" in normalized or "log in" in normalized or "sign in" in normalized
+
+
+def _looks_like_login_html_bytes(payload: bytes) -> bool:
+    if not payload:
+        return False
+
+    snippet = payload[:4096]
+    try:
+        decoded = snippet.decode("utf-8", errors="ignore")
+    except Exception:  # pragma: no cover - extremely defensive
+        return False
+
+    return _looks_like_login_html_text(decoded)
+
 def _ensure_profile_dir(store_name: str) -> Path:
     p = PKG_ROOT / "profiles" / store_name
     p.mkdir(parents=True, exist_ok=True)
@@ -27,67 +72,70 @@ def _ensure_profile_dir(store_name: str) -> Path:
 def _render(template: str, sc: str) -> str:
     return template.format(sc=sc, ymd=datetime.now().strftime("%Y%m%d"))
 
-async def _download_one_spec(page: Page, sc: str, spec: Dict, *, logger: JsonLogger) -> Path | None:
+async def _download_one_spec(page: Page, store_cfg: Dict, spec: Dict, *, logger: JsonLogger) -> Path | None:
+    sc = store_cfg["store_code"]
     url = _render(spec["url_template"], sc)
     out_name = _render(spec["out_name_template"], sc)
     final_path = DATA_DIR / out_name
 
-    # Fire the download
-    try:
-        response = await page.context.request.get(url, timeout=60_000)
-    except Exception as exc:
+    def _log(status: str, message: str, *, extras: Dict | None = None) -> None:
         log_event(
             logger=logger,
             phase="download",
-            status="error",
+            status=status,
             store_code=sc,
             bucket=None,
-            message=f"request failed for {spec['key']}",
-            extras={"url": url, "error": str(exc)},
+            message=message,
+            extras={"url": url, **(extras or {})},
         )
-        return None
 
-    if response.status != 200:
-        log_event(
-            logger=logger,
-            phase="download",
-            status="error",
-            store_code=sc,
-            bucket=None,
-            message=f"unexpected status {response.status} for {spec['key']}",
-            extras={"url": url},
-        )
-        return None
+    attempted_refresh = False
 
-    body = await response.body()
-    if not body:
-        log_event(
-            logger=logger,
-            phase="download",
-            status="warn",
-            store_code=sc,
-            bucket=None,
-            message=f"empty response for {spec['key']}",
-            extras={"url": url},
-        )
-        return None
+    while True:
+        try:
+            response = await page.context.request.get(url, timeout=60_000)
+        except Exception as exc:
+            _log("error", f"request failed for {spec['key']}", extras={"error": str(exc)})
+            return None
 
-    sniff = body[:256].lower()
-    if sniff.strip().startswith(b"<html"):
-        log_event(
-            logger=logger,
-            phase="download",
-            status="error",
-            store_code=sc,
-            bucket=None,
-            message=f"html response for {spec['key']} (likely login page)",
-            extras={"url": url},
-        )
-        return None
+        status = response.status
+        body = await response.body()
 
-    final_path.parent.mkdir(parents=True, exist_ok=True)
-    final_path.write_bytes(body)
-    return final_path
+        if status == 200 and body and not _looks_like_login_html_bytes(body):
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            final_path.write_bytes(body)
+            return final_path
+
+        needs_refresh = False
+
+        if status in {401, 403}:
+            _log("warn", f"received {status} for {spec['key']} — refreshing session")
+            needs_refresh = True
+        elif not body:
+            _log("warn", f"empty response for {spec['key']}")
+        elif _looks_like_login_html_bytes(body):
+            _log(
+                "warn",
+                f"html response for {spec['key']} — authentication likely expired",
+            )
+            needs_refresh = True
+        else:
+            _log("error", f"unexpected status {status} for {spec['key']}")
+
+        if not needs_refresh:
+            return None
+
+        if attempted_refresh:
+            _log("error", f"retry after session refresh failed for {spec['key']}")
+            return None
+
+        attempted_refresh = True
+
+        try:
+            await _ensure_dashboard(page, store_cfg, logger)
+        except Exception as exc:
+            _log("error", f"session refresh failed for {spec['key']}", extras={"error": str(exc)})
+            return None
 
 
 async def _is_login_page(page: Page) -> bool:
@@ -116,23 +164,7 @@ async def _is_login_page(page: Page) -> bool:
     if not content:
         return False
 
-    normalized = content.replace("'", '"')
-
-    has_password_field = "type=\"password\"" in normalized or "name=\"password\"" in normalized
-    if not has_password_field:
-        return False
-
-    login_field_tokens = (
-        "name=\"user_name\"",
-        "name=\"username\"",
-        "id=\"user_name\"",
-        "id=\"username\"",
-    )
-    if any(token in normalized for token in login_field_tokens):
-        return True
-
-    # As a final guard, look for generic login wording near the password field.
-    return "login" in normalized or "log in" in normalized or "sign in" in normalized
+    return _looks_like_login_html_text(content)
 
 
 async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> None:
@@ -352,7 +384,7 @@ async def run_all_stores(
                     if not spec.get("download", True):
                         continue
 
-                    saved = await _download_one_spec(page, sc, spec, logger=logger)
+                    saved = await _download_one_spec(page, cfg, spec, logger=logger)
                     if saved and spec.get("merge_bucket"):
                         bucket = spec["merge_bucket"]
                         merged_buckets.setdefault(bucket, []).append(saved)
