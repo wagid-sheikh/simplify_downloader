@@ -141,7 +141,7 @@ MERGE_BUCKET_DB_SPECS = {
         # dedupe by store_code + mobile_number per upsert requirements.
         "dedupe_keys": ["store_code", "mobile_number"],
         "column_map": {
-            "id": "pickup_row_id",                     # numeric id in CSV; store as TEXT/BIGINT
+            ("id", "pickup_row_id", "pickup row id"): "pickup_row_id",  # numeric id in CSV
             "mobile_number": "mobile_number",
             "pickup_no": "pickup_no",
             "pickup_created_date": "pickup_created_date",
