@@ -127,177 +127,172 @@ async def _prime_context_with_storage_state(
     store_code: str,
     logger: JsonLogger,
 ) -> None:
-    browser = ctx.browser
-    if browser is None:  # pragma: no cover - defensive
-        return
-
     try:
-        priming_ctx = await browser.new_context(storage_state=str(storage_state_file))
-    except Exception as exc:  # pragma: no cover - defensive guardrails
+        raw_state = storage_state_file.read_text()
+    except FileNotFoundError:
         log_event(
             logger=logger,
             phase="download",
             status="warn",
             store_code=store_code,
             bucket=None,
-            message="unable to load storage state",
+            message="storage state file missing",
+            extras={"storage_state": str(storage_state_file)},
+        )
+        return
+    except Exception as exc:  # pragma: no cover - runtime guard
+        log_event(
+            logger=logger,
+            phase="download",
+            status="warn",
+            store_code=store_code,
+            bucket=None,
+            message="unable to read storage state",
+            extras={"storage_state": str(storage_state_file), "error": str(exc)},
+        )
+        return
+
+    try:
+        storage_state = json.loads(raw_state)
+    except json.JSONDecodeError as exc:
+        log_event(
+            logger=logger,
+            phase="download",
+            status="warn",
+            store_code=store_code,
+            bucket=None,
+            message="invalid storage state JSON",
             extras={"storage_state": str(storage_state_file), "error": str(exc)},
         )
         return
 
     cookies_applied = 0
+    cookies = storage_state.get("cookies") or []
+    if cookies:
+        sanitized: List[dict] = []
+        for cookie in cookies:
+            cleaned = {k: v for k, v in cookie.items() if v is not None}
+            expires = cleaned.get("expires")
+            if expires is None or not isinstance(expires, (int, float)):
+                cleaned.pop("expires", None)
+            sanitized.append(cleaned)
 
-    try:
-        cookies: List[dict] = []
         try:
-            cookies = await priming_ctx.cookies()
-        except Exception as exc:  # pragma: no cover - runtime guard
-            log_event(
-                logger=logger,
-                phase="download",
-                status="warn",
-                store_code=store_code,
-                bucket=None,
-                message="unable to read cookies from storage state",
-                extras={"error": str(exc)},
-            )
-
-        if cookies:
-            sanitized: List[dict] = []
-            for cookie in cookies:
-                cleaned = {k: v for k, v in cookie.items() if v is not None}
-                # Playwright expects ``expires`` to be numeric when present. Drop
-                # session markers (None) to avoid TypeErrors on some versions.
-                if "expires" in cleaned and isinstance(cleaned["expires"], (int, float)):
-                    pass
-                else:
-                    cleaned.pop("expires", None)
-                sanitized.append(cleaned)
-
+            await ctx.add_cookies(sanitized)
             cookies_applied = len(sanitized)
-
-            try:
-                await ctx.add_cookies(sanitized)
-            except Exception as exc:  # pragma: no cover - Playwright runtime guard
-                log_event(
-                    logger=logger,
-                    phase="download",
-                    status="warn",
-                    store_code=store_code,
-                    bucket=None,
-                    message="unable to apply cookies from storage state",
-                    extras={"error": str(exc)},
-                )
-
-        try:
-            storage_state = await priming_ctx.storage_state()
-        except Exception as exc:  # pragma: no cover - runtime guard
+        except Exception as exc:  # pragma: no cover - Playwright runtime guard
             log_event(
                 logger=logger,
                 phase="download",
                 status="warn",
                 store_code=store_code,
                 bucket=None,
-                message="unable to read localStorage data from storage state",
+                message="unable to apply cookies from storage state",
                 extras={"error": str(exc)},
             )
-            storage_state = None
-    finally:
-        await priming_ctx.close()
-
-    if not storage_state:
-        if cookies_applied:
-            log_event(
-                logger=logger,
-                phase="download",
-                status="info",
-                store_code=store_code,
-                bucket=None,
-                message="storage state cookies primed",
-                extras={"cookies": cookies_applied, "origins": 0},
-            )
-        return
 
     origins = storage_state.get("origins") or []
-    if not origins:
-        if cookies_applied:
+    hydrated_origins = 0
+    priming_page: Page | None = None
+
+    if origins:
+        log_event(
+            logger=logger,
+            phase="download",
+            status="info",
+            store_code=store_code,
+            bucket=None,
+            message="creating priming page for storage state",
+            extras={"origin_count": len(origins)},
+        )
+        try:
+            priming_page = await ctx.new_page()
+        except Exception as exc:  # pragma: no cover - runtime guard
             log_event(
                 logger=logger,
                 phase="download",
-                status="info",
+                status="warn",
                 store_code=store_code,
                 bucket=None,
-                message="storage state cookies primed",
-                extras={"cookies": cookies_applied, "origins": 0},
+                message="unable to create priming page",
+                extras={"error": str(exc)},
             )
-        return
+            priming_page = None
 
-    page = await ctx.new_page()
-    hydrated_origins = 0
-    try:
-        for origin in origins:
-            origin_url = origin.get("origin")
-            if not origin_url:
-                continue
-
+        if priming_page is not None:
             try:
-                await page.goto(origin_url, wait_until="domcontentloaded")
-            except Exception as exc:  # pragma: no cover - remote navigation guard
-                log_event(
-                    logger=logger,
-                    phase="download",
-                    status="warn",
-                    store_code=store_code,
-                    bucket=None,
-                    message="unable to initialize localStorage for origin",
-                    extras={"origin": origin_url, "error": str(exc)},
-                )
-                continue
+                for origin in origins:
+                    origin_url = origin.get("origin")
+                    if not origin_url:
+                        continue
 
-            entries = origin.get("localStorage", [])
-            if not entries:
-                continue
+                    try:
+                        await priming_page.goto(origin_url, wait_until="domcontentloaded")
+                    except Exception as exc:  # pragma: no cover - remote navigation guard
+                        log_event(
+                            logger=logger,
+                            phase="download",
+                            status="warn",
+                            store_code=store_code,
+                            bucket=None,
+                            message="unable to initialize localStorage for origin",
+                            extras={"origin": origin_url, "error": str(exc)},
+                        )
+                        continue
 
-            origin_hydrated = False
+                    entries = origin.get("localStorage") or []
+                    if not entries:
+                        continue
 
-            for entry in entries:
-                name = entry.get("name")
-                value = entry.get("value")
-                if name is None or value is None:
-                    continue
+                    origin_hydrated = False
+                    for entry in entries:
+                        name = entry.get("name")
+                        value = entry.get("value")
+                        if name is None or value is None:
+                            continue
 
+                        try:
+                            await priming_page.evaluate(
+                                "window.localStorage.setItem(arguments[0], arguments[1]);",
+                                name,
+                                value,
+                            )
+                            origin_hydrated = True
+                        except Exception as exc:  # pragma: no cover - runtime guard
+                            log_event(
+                                logger=logger,
+                                phase="download",
+                                status="warn",
+                                store_code=store_code,
+                                bucket=None,
+                                message="unable to persist localStorage entry",
+                                extras={"origin": origin_url, "key": name, "error": str(exc)},
+                            )
+
+                    if origin_hydrated:
+                        hydrated_origins += 1
+            finally:
                 try:
-                    await page.evaluate(
-                        "window.localStorage.setItem(arguments[0], arguments[1]);",
-                        name,
-                        value,
-                    )
-                except Exception as exc:  # pragma: no cover - runtime guard
+                    await priming_page.close()
+                finally:
                     log_event(
                         logger=logger,
                         phase="download",
-                        status="warn",
+                        status="info",
                         store_code=store_code,
                         bucket=None,
-                        message="unable to persist localStorage entry",
-                        extras={"origin": origin_url, "key": name, "error": str(exc)},
+                        message="priming page closed",
+                        extras={"origin_count": len(origins)},
                     )
-                    continue
 
-                origin_hydrated = True
-
-            if origin_hydrated:
-                hydrated_origins += 1
-    finally:
-        await page.close()
-
+    status_message = "storage state primed" if origins else "storage state cookies primed"
     log_event(
         logger=logger,
         phase="download",
         status="info",
         store_code=store_code,
         bucket=None,
-        message="storage state primed",
+        message=status_message,
         extras={"cookies": cookies_applied, "origins": hydrated_origins},
     )
 
@@ -435,10 +430,10 @@ async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -
             extras=extras,
         )
 
-    current_url = (page.url or "").lower()
-    if not current_url or "login" not in current_url:
+    current_url = page.url or ""
+    if not current_url or "login" not in current_url.lower():
         await page.goto(LOGIN_URL, wait_until="domcontentloaded")
-        current_url = (page.url or "").lower()
+        current_url = page.url or ""
 
     if not await _is_login_page(page):
         # Storage state/session cookies already landed us past login.
@@ -448,24 +443,74 @@ async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -
     if not username or not password:
         raise RuntimeError(f"Missing credentials for store_code={store_code}")
 
+    username_locator = page.locator(page_selectors.LOGIN_USERNAME)
+    password_locator = page.locator(page_selectors.LOGIN_PASSWORD)
+    submit_locator = page.locator(page_selectors.LOGIN_SUBMIT)
+
     _log(
         "info",
-        "opening login page for session refresh",
-        extras={"login_url": page.url},
+        "preparing automated login",
+        extras={
+            "store_code": store_code,
+            "current_url": page.url,
+            "login_url": LOGIN_URL,
+            "username": username,
+            "password_len": len(password),
+            "login_username_selector": page_selectors.LOGIN_USERNAME,
+            "login_password_selector": page_selectors.LOGIN_PASSWORD,
+            "login_submit_selector": page_selectors.LOGIN_SUBMIT,
+        },
     )
 
     await page.wait_for_selector(page_selectors.LOGIN_USERNAME, timeout=15_000)
-    await page.fill(page_selectors.LOGIN_USERNAME, username)
-    await page.fill(page_selectors.LOGIN_PASSWORD, password)
+
+    username_locator_present: bool | None = None
+    password_locator_present: bool | None = None
+    submit_locator_present: bool | None = None
+    username_locator_error: str | None = None
+    password_locator_error: str | None = None
+    submit_locator_error: str | None = None
+    username_fill_error: str | None = None
+    password_fill_error: str | None = None
+    submit_click_error: str | None = None
+
+    try:
+        count = await username_locator.count()
+        username_locator_present = count > 0
+    except Exception as exc:  # pragma: no cover - defensive logging only
+        username_locator_error = str(exc)
+
+    try:
+        await page.fill(page_selectors.LOGIN_USERNAME, username)
+    except Exception as exc:
+        username_fill_error = str(exc)
+
+    try:
+        count = await password_locator.count()
+        password_locator_present = count > 0
+    except Exception as exc:  # pragma: no cover - defensive logging only
+        password_locator_error = str(exc)
+
+    try:
+        await page.fill(page_selectors.LOGIN_PASSWORD, password)
+    except Exception as exc:
+        password_fill_error = str(exc)
 
     navigation_error: Exception | None = None
     try:
         async with page.expect_navigation(wait_until="domcontentloaded", timeout=60_000):
+            try:
+                count = await submit_locator.count()
+                submit_locator_present = count > 0
+            except Exception as exc:  # pragma: no cover - defensive logging only
+                submit_locator_error = str(exc)
+
             await page.click(page_selectors.LOGIN_SUBMIT)
     except PlaywrightTimeoutError as exc:  # pragma: no cover - depends on remote latency
         navigation_error = exc
     except Exception as exc:  # pragma: no cover - defensive against Playwright quirks
         navigation_error = exc
+        submit_click_error = str(exc)
 
     if navigation_error is not None:
         _log(
@@ -517,7 +562,32 @@ async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -
             )
             raise RuntimeError("Automated login failed; site reports login error")
 
-    _log("info", "login submission completed", extras={"post_login_url": page.url})
+    still_login_page = await _is_login_page(page)
+
+    extras = {
+        "post_login_url": page.url,
+        "navigation_error": str(navigation_error) if navigation_error else None,
+        "login_form_cleared": login_form_cleared,
+        "login_form_error": str(login_form_error) if login_form_error else None,
+        "still_login_page": still_login_page,
+        "username_locator_present": username_locator_present,
+        "password_locator_present": password_locator_present,
+        "submit_locator_present": submit_locator_present,
+        "username_locator_error": username_locator_error,
+        "password_locator_error": password_locator_error,
+        "submit_locator_error": submit_locator_error,
+        "username_fill_error": username_fill_error,
+        "password_fill_error": password_fill_error,
+        "submit_click_error": submit_click_error,
+    }
+
+    if content_after_login:
+        extras["login_error_hint"] = _extract_login_error(content_after_login)
+
+    # Drop None values for cleaner logs.
+    extras = {k: v for k, v in extras.items() if v is not None}
+
+    _log("info", "login submission completed", extras=extras)
 
 
 async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> None:
@@ -538,14 +608,38 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
         )
 
     _log("info", "opening dashboard", extras={"target_url": dashboard_url})
-    await page.goto(dashboard_url, wait_until="domcontentloaded")
-    _log("info", "dashboard navigation completed", extras={"current_url": page.url})
+    response = await page.goto(dashboard_url, wait_until="domcontentloaded")
+    response_status = None
+    if response is not None:
+        try:
+            response_status = response.status
+        except Exception:  # pragma: no cover - defensive
+            response_status = None
+    _log(
+        "info",
+        "dashboard navigation completed",
+        extras={"current_url": page.url, "response_status": response_status},
+    )
 
     if await _is_login_page(page):
-        _log("info", "dashboard redirected to login; attempting automated login", extras={"login_url": page.url})
+        _log(
+            "info",
+            "dashboard redirected to login; attempting automated login",
+            extras={"dashboard_url": dashboard_url, "login_url": page.url},
+        )
         await _perform_login_flow(page, store_cfg, logger)
-        await page.goto(dashboard_url, wait_until="domcontentloaded")
-        _log("info", "dashboard reloaded after login", extras={"current_url": page.url})
+        response = await page.goto(dashboard_url, wait_until="domcontentloaded")
+        response_status = None
+        if response is not None:
+            try:
+                response_status = response.status
+            except Exception:  # pragma: no cover - defensive
+                response_status = None
+        _log(
+            "info",
+            "dashboard reloaded after login",
+            extras={"current_url": page.url, "response_status": response_status},
+        )
 
     dashboard_controls_ready = False
     controls_error: Exception | None = None
@@ -569,21 +663,20 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
     except Exception:  # pragma: no cover - defensive
         page_content = None
 
-    if page_content:
-        error_msg = _extract_login_error(page_content)
-        if error_msg:
-            _log(
-                "error",
-                "dashboard refused session", 
-                extras={"error": error_msg},
-            )
-            raise RuntimeError("Unable to reach dashboard after login; site reports error")
+    page_error_hint = _extract_login_error(page_content) if page_content else None
+    if page_error_hint:
+        _log(
+            "error",
+            "dashboard refused session",
+            extras={"error": page_error_hint, "current_url": page.url},
+        )
+        raise RuntimeError("Unable to reach dashboard after login; site reports error")
 
     if await _is_login_page(page):
         _log(
             "error",
             "login loop detected when opening dashboard",
-            extras={"current_url": page.url},
+            extras={"current_url": page.url, "error_hint": page_error_hint},
         )
         raise RuntimeError("Automated login failed; manual login required")
 
@@ -736,6 +829,7 @@ async def run_all_stores(
 
             storage_state_cfg = cfg.get("storage_state")
             storage_state_file = None
+            storage_state_source: str | None = None
             if storage_state_cfg:
                 storage_state_file = Path(storage_state_cfg)
                 if not storage_state_file.exists():
@@ -749,6 +843,8 @@ async def run_all_stores(
                         extras={"storage_state": str(storage_state_file)},
                     )
                     storage_state_file = None
+                else:
+                    storage_state_source = "store_cfg"
 
             context_kwargs = dict(
                 user_data_dir=str(user_dir),
@@ -764,10 +860,23 @@ async def run_all_stores(
                 default_state = storage_state_path()
                 if default_state.exists():
                     storage_state_file = default_state
+                    storage_state_source = "default"
 
             ctx = await p.chromium.launch_persistent_context(**context_kwargs)
 
             if storage_state_file is not None:
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    status="info",
+                    store_code=sc,
+                    bucket=None,
+                    message="loading storage state",
+                    extras={
+                        "storage_state": str(storage_state_file),
+                        "source": storage_state_source or "unspecified",
+                    },
+                )
                 await _prime_context_with_storage_state(
                     ctx,
                     storage_state_file,
@@ -776,6 +885,14 @@ async def run_all_stores(
                 )
 
             try:
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    status="info",
+                    store_code=sc,
+                    bucket=None,
+                    message="creating primary page for store",
+                )
                 page = await ctx.new_page()
                 # Hit the dashboard and automatically refresh the session when needed.
                 await _ensure_dashboard(page, cfg, logger)
