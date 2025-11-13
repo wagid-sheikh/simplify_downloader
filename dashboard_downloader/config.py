@@ -39,6 +39,26 @@ def storage_state_path(filename: str | None = None) -> Path:
 # Load env
 load_dotenv(ENV_PATH)
 
+# ── Storage state helpers ───────────────────────────────────────────────────
+
+def _storage_state_filename_for(store_key: str) -> str | None:
+    env_var = f"TD_{store_key}_STORAGE_STATE_FILENAME"
+    return os.getenv(env_var)
+
+
+def storage_state_for_store(store_key: str) -> Path:
+    """Return the storage_state path for a given store.
+
+    Allows overriding the default filename via ``TD_<STORE>_STORAGE_STATE_FILENAME``.
+    When unset, falls back to :func:`storage_state_path` with its default naming.
+    """
+
+    override = _storage_state_filename_for(store_key)
+    if override:
+        return storage_state_path(override)
+    return storage_state_path()
+
+
 # ── URLs ─────────────────────────────────────────────────────────────────────
 BASE_WEB = "https://simplifytumbledry.in"
 LOGIN_URL = f"{BASE_WEB}/home/login"
@@ -67,6 +87,7 @@ STORES = {
         "password": TD_UN3668_PASSWORD,
         "store_code": TD_UN3668_STORE_CODE,
         "profile_dir": PROFILES_DIR / "UN3668",
+        "storage_state": storage_state_for_store("UN3668"),
         "dashboard_url": tms_dashboard_url(TD_UN3668_STORE_CODE),
     },
     "KN3817": {
@@ -74,6 +95,7 @@ STORES = {
         "password": TD_KN3817_PASSWORD,
         "store_code": TD_KN3817_STORE_CODE,
         "profile_dir": PROFILES_DIR / "KN3817",
+        "storage_state": storage_state_for_store("KN3817"),
         "dashboard_url": tms_dashboard_url(TD_KN3817_STORE_CODE),
     },
 }

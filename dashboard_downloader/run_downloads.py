@@ -19,6 +19,7 @@ from .config import (
     FILE_SPECS,
     MERGED_NAMES,
     LOGIN_URL,
+    storage_state_path,
 )
 from .json_logger import JsonLogger, log_event
 
@@ -561,7 +562,23 @@ async def run_all_stores(
             user_dir = _ensure_profile_dir(store_name)
             sc = cfg["store_code"]
 
-            ctx = await p.chromium.launch_persistent_context(
+            storage_state_cfg = cfg.get("storage_state")
+            storage_state_file = None
+            if storage_state_cfg:
+                storage_state_file = Path(storage_state_cfg)
+                if not storage_state_file.exists():
+                    log_event(
+                        logger=logger,
+                        phase="download",
+                        status="warn",
+                        store_code=sc,
+                        bucket=None,
+                        message="storage state not found; falling back to credential login",
+                        extras={"storage_state": str(storage_state_file)},
+                    )
+                    storage_state_file = None
+
+            context_kwargs = dict(
                 user_data_dir=str(user_dir),
                 headless=False,
                 accept_downloads=True,
@@ -569,6 +586,16 @@ async def run_all_stores(
                 channel="chrome",
                 args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
             )
+
+            if storage_state_file is None and storage_state_cfg is None:
+                # Provide a sane default for callers that rely on first_login.py.
+                default_state = storage_state_path()
+                if default_state.exists():
+                    storage_state_file = default_state
+            if storage_state_file is not None:
+                context_kwargs["storage_state"] = str(storage_state_file)
+
+            ctx = await p.chromium.launch_persistent_context(**context_kwargs)
 
             try:
                 page = await ctx.new_page()
