@@ -269,34 +269,53 @@ async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -
 
     navigation_error: Exception | None = None
     try:
-        async with page.expect_navigation(wait_until="networkidle", timeout=60_000):
+        async with page.expect_navigation(wait_until="domcontentloaded", timeout=60_000):
             await page.click(page_selectors.LOGIN_SUBMIT)
     except PlaywrightTimeoutError as exc:  # pragma: no cover - depends on remote latency
         navigation_error = exc
+    except Exception as exc:  # pragma: no cover - defensive against Playwright quirks
+        navigation_error = exc
 
-    await page.wait_for_load_state("networkidle")
+    # After submitting the login form Playwright occasionally never reaches the
+    # "networkidle" state even though the navigation completed successfully.
+    # Instead of crashing the pipeline, fall back through progressively less
+    # strict load-state waits before continuing. This mirrors how a human would
+    # simply check the resulting page instead of waiting for a specific browser
+    # event.
+    load_state_timeout: PlaywrightTimeoutError | None = None
+    for state, timeout in (("networkidle", 20_000), ("domcontentloaded", 10_000), ("load", 10_000)):
+        try:
+            await page.wait_for_load_state(state, timeout=timeout)
+            load_state_timeout = None
+            break
+        except PlaywrightTimeoutError as exc:  # pragma: no cover - depends on remote latency
+            load_state_timeout = exc
+            continue
+
+    if load_state_timeout is not None:
+        log_event(
+            logger=logger,
+            phase="download",
+            status="warn",
+            store_code=store_cfg.get("store_code"),
+            bucket=None,
+            message="login load-state wait timed out; continuing with page content checks",
+        )
+
+    if navigation_error is not None:
+        log_event(
+            logger=logger,
+            phase="download",
+            status="warn",
+            store_code=store_cfg.get("store_code"),
+            bucket=None,
+            message="login navigation signalled a timeout; validating page content",
+            extras={"error": str(navigation_error)},
+        )
 
     try:
         content_after_login = await page.content()
     except Exception:  # pragma: no cover - defensive, shouldn't normally fail
-        content_after_login = None
-
-    if content_after_login:
-        error_msg = _extract_login_error(content_after_login)
-        if error_msg:
-            log_event(
-                logger=logger,
-                phase="download",
-                status="error",
-                store_code=store_cfg.get("store_code"),
-                bucket=None,
-                message=f"login failed; site responded with: {error_msg}",
-            )
-            raise RuntimeError("Automated login failed; site reports login error")
-
-    try:
-        content_after_login = await page.content()
-    except Exception:
         content_after_login = None
 
     if content_after_login:
