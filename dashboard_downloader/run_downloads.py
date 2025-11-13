@@ -66,6 +66,18 @@ def _login_tokens() -> Iterable[str]:
     return tuple(sorted(selector_tokens))
 
 
+_LOGIN_ERROR_PATTERNS = (
+    "invalid username",
+    "invalid password",
+    "incorrect username",
+    "incorrect password",
+    "need to login",
+    "need to log in",
+    "please login",
+    "please log in",
+)
+
+
 def _looks_like_login_html_text(html: str) -> bool:
     if not html:
         return False
@@ -73,13 +85,24 @@ def _looks_like_login_html_text(html: str) -> bool:
     normalized = _normalize_html_tokens(html)
 
     has_password_field = "type=\"password\"" in normalized or "name=\"password\"" in normalized
-    if not has_password_field:
-        return False
-
-    if any(token in normalized for token in _login_tokens()):
+    if has_password_field and any(token in normalized for token in _login_tokens()):
         return True
 
-    return "login" in normalized or "log in" in normalized or "sign in" in normalized
+    if "login" in normalized or "log in" in normalized or "sign in" in normalized:
+        return True
+
+    return any(pattern in normalized for pattern in _LOGIN_ERROR_PATTERNS)
+
+
+def _extract_login_error(html: str | None) -> str | None:
+    if not html:
+        return None
+
+    normalized = _normalize_html_tokens(html)
+    for pattern in _LOGIN_ERROR_PATTERNS:
+        if pattern in normalized:
+            return pattern
+    return None
 
 
 def _looks_like_login_html_bytes(payload: bytes) -> bool:
@@ -187,12 +210,15 @@ async def _is_login_page(page: Page) -> bool:
     # return the login form HTML while keeping the original dashboard URL, so we need
     # to look at the content directly.
     try:
-        content = (await page.content()).lower()
+        content = (await page.content()) or ""
     except Exception:  # pragma: no cover - if Playwright can't give us content just bail
         return False
 
     if not content:
         return False
+
+    if _extract_login_error(content):
+        return True
 
     return _looks_like_login_html_text(content)
 
@@ -225,6 +251,24 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
     await page.click(page_selectors.LOGIN_SUBMIT)
     await page.wait_for_load_state("networkidle")
     await page.goto(dashboard_url, wait_until="networkidle")
+
+    try:
+        content_after_login = await page.content()
+    except Exception:
+        content_after_login = None
+
+    if content_after_login:
+        error_msg = _extract_login_error(content_after_login)
+        if error_msg:
+            log_event(
+                logger=logger,
+                phase="download",
+                status="error",
+                store_code=store_cfg.get("store_code"),
+                bucket=None,
+                message=f"login failed; site responded with: {error_msg}",
+            )
+            raise RuntimeError("Automated login failed; site reports login error")
 
     if await _is_login_page(page):
         log_event(
