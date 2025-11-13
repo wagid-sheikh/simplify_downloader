@@ -5,9 +5,9 @@ from pathlib import Path
 from dashboard_downloader.json_logger import JsonLogger, log_event
 from dashboard_downloader.run_downloads import run_all_stores
 
-from common.audit import audit_bucket
-from common.cleanup import cleanup_bucket
-from common.ingest.service import ingest_bucket
+from simplify_downloader.common.audit import audit_bucket
+from simplify_downloader.common.cleanup import cleanup_bucket
+from simplify_downloader.common.ingest.service import ingest_bucket
 
 from .settings import PipelineSettings
 
