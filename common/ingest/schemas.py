@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from functools import lru_cache
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
@@ -66,8 +66,41 @@ def bucket_model(bucket: str) -> type[BucketRow]:
     return create_model(f"{bucket.title()}Row", __base=BucketRow, **fields)
 
 
+def _normalize_variants(header: str) -> Iterable[str]:
+    """Yield common normalized variants for a header string."""
+
+    normalized = header.strip().lower()
+    if not normalized:
+        return []
+
+    variants = {normalized}
+    # Replace spaces/underscores/dashes with alternate forms to improve matching.
+    variants.add(normalized.replace(" ", ""))
+    variants.add(normalized.replace(" ", "_"))
+    variants.add(normalized.replace("_", ""))
+    variants.add(normalized.replace("_", " "))
+    variants.add(normalized.replace("-", ""))
+    variants.add(normalized.replace("-", "_"))
+    variants.add(normalized.replace("-", " "))
+
+    return variants
+
+
 def normalize_headers(headers: list[str]) -> Dict[str, str]:
-    return {header.lower(): header for header in headers}
+    mapping: Dict[str, str] = {}
+    for header in headers:
+        for variant in _normalize_variants(header):
+            mapping.setdefault(variant, header)
+    return mapping
+
+
+def _header_lookup(header_map: Dict[str, str], key: str) -> str | None:
+    """Return the canonical header for a provided lookup key using variants."""
+
+    for variant in _normalize_variants(key):
+        if variant in header_map:
+            return header_map[variant]
+    return None
 
 
 def coerce_csv_row(bucket: str, row: Dict[str, Any], header_map: Dict[str, str]) -> Dict[str, Any]:
@@ -75,8 +108,16 @@ def coerce_csv_row(bucket: str, row: Dict[str, Any], header_map: Dict[str, str])
     column_map = spec["column_map"]
     coerced: Dict[str, Any] = {}
     for csv_key, dest_key in column_map.items():
-        lookup = header_map.get(csv_key.lower())
-        value = row.get(lookup) if lookup else row.get(csv_key)
+        keys = (csv_key,) if isinstance(csv_key, str) else tuple(csv_key)
+        value = None
+        for key in keys:
+            lookup = _header_lookup(header_map, key)
+            if lookup is not None:
+                value = row.get(lookup)
+            if value is None:
+                value = row.get(key)
+            if value is not None:
+                break
         kind = spec["coerce"].get(dest_key, "str")
         coerced[dest_key] = _coerce_value(kind, value)
     model = bucket_model(bucket)
