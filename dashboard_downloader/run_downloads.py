@@ -7,7 +7,7 @@ from typing import Iterable
 from typing import Dict, List
 from datetime import datetime
 
-from playwright.async_api import async_playwright, Page
+from playwright.async_api import async_playwright, Page, TimeoutError as PlaywrightTimeoutError
 
 from common.ingest.service import _looks_like_html
 
@@ -18,6 +18,7 @@ from .config import (
     DATA_DIR,
     FILE_SPECS,
     MERGED_NAMES,
+    LOGIN_URL,
 )
 from .json_logger import JsonLogger, log_event
 
@@ -130,6 +131,7 @@ async def _download_one_spec(page: Page, store_cfg: Dict, spec: Dict, *, logger:
     url = _render(spec["url_template"], sc)
     out_name = _render(spec["out_name_template"], sc)
     final_path = DATA_DIR / out_name
+    dashboard_url = store_cfg["dashboard_url"]
 
     def _log(status: str, message: str, *, extras: Dict | None = None) -> None:
         log_event(
@@ -146,17 +148,31 @@ async def _download_one_spec(page: Page, store_cfg: Dict, spec: Dict, *, logger:
 
     while True:
         try:
-            response = await page.context.request.get(url, timeout=60_000)
+            response = await page.goto(url, wait_until="networkidle")
         except Exception as exc:
-            _log("error", f"request failed for {spec['key']}", extras={"error": str(exc)})
+            _log("error", f"navigation failed for {spec['key']}", extras={"error": str(exc)})
+            return None
+
+        if response is None:
+            _log("error", f"no response returned for {spec['key']}")
             return None
 
         status = response.status
-        body = await response.body()
+        try:
+            body = await response.body()
+        except Exception as exc:
+            _log("error", f"unable to read body for {spec['key']}", extras={"error": str(exc)})
+            body = b""
 
         if status == 200 and body and not _looks_like_login_html_bytes(body):
             final_path.parent.mkdir(parents=True, exist_ok=True)
             final_path.write_bytes(body)
+            # Return to the dashboard view so subsequent actions mimic a user flow.
+            try:
+                await page.goto(dashboard_url, wait_until="domcontentloaded")
+            except Exception:
+                # Best effort; even if this fails the saved file is valid.
+                pass
             return final_path
 
         needs_refresh = False
@@ -166,7 +182,7 @@ async def _download_one_spec(page: Page, store_cfg: Dict, spec: Dict, *, logger:
             needs_refresh = True
         elif not body:
             _log("warn", f"empty response for {spec['key']}")
-        elif _looks_like_login_html_bytes(body):
+        elif _looks_like_login_html_bytes(body) or await _is_login_page(page):
             _log(
                 "warn",
                 f"html response for {spec['key']} — authentication likely expired",
@@ -223,34 +239,60 @@ async def _is_login_page(page: Page) -> bool:
     return _looks_like_login_html_text(content)
 
 
-async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> None:
-    """Navigate to the dashboard, refreshing the login session when required."""
-
-    dashboard_url = store_cfg["dashboard_url"]
-    await page.goto(dashboard_url, wait_until="domcontentloaded")
-
-    if not await _is_login_page(page):
-        return
+async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -> None:
+    """Explicitly visit the login form and authenticate like a human user."""
 
     username = store_cfg.get("username")
     password = store_cfg.get("password")
+
+    await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+
+    if not await _is_login_page(page):
+        # Already authenticated; nothing to do.
+        return
+
     if not username or not password:
         raise RuntimeError(f"Missing credentials for store_code={store_cfg.get('store_code')}")
 
     log_event(
         logger=logger,
         phase="download",
-        status="warn",
+        status="info",
         store_code=store_cfg.get("store_code"),
         bucket=None,
-        message="session expired; attempting re-login",
+        message="opening login page for session refresh",
     )
 
+    await page.wait_for_selector(page_selectors.LOGIN_USERNAME, timeout=15_000)
     await page.fill(page_selectors.LOGIN_USERNAME, username)
     await page.fill(page_selectors.LOGIN_PASSWORD, password)
-    await page.click(page_selectors.LOGIN_SUBMIT)
+
+    navigation_error: Exception | None = None
+    try:
+        async with page.expect_navigation(wait_until="networkidle", timeout=60_000):
+            await page.click(page_selectors.LOGIN_SUBMIT)
+    except PlaywrightTimeoutError as exc:  # pragma: no cover - depends on remote latency
+        navigation_error = exc
+
     await page.wait_for_load_state("networkidle")
-    await page.goto(dashboard_url, wait_until="networkidle")
+
+    try:
+        content_after_login = await page.content()
+    except Exception:  # pragma: no cover - defensive, shouldn't normally fail
+        content_after_login = None
+
+    if content_after_login:
+        error_msg = _extract_login_error(content_after_login)
+        if error_msg:
+            log_event(
+                logger=logger,
+                phase="download",
+                status="error",
+                store_code=store_cfg.get("store_code"),
+                bucket=None,
+                message=f"login failed; site responded with: {error_msg}",
+            )
+            raise RuntimeError("Automated login failed; site reports login error")
 
     try:
         content_after_login = await page.content()
@@ -271,6 +313,10 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
             raise RuntimeError("Automated login failed; site reports login error")
 
     if await _is_login_page(page):
+        if navigation_error is not None:
+            raise RuntimeError(
+                "Automated login did not navigate away from login page; manual verification required"
+            )
         log_event(
             logger=logger,
             phase="download",
@@ -284,9 +330,59 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
     log_event(
         logger=logger,
         phase="download",
+        status="info",
         store_code=store_cfg.get("store_code"),
         bucket=None,
-        message="session refreshed via login",
+        message="login completed successfully",
+    )
+
+
+async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> None:
+    """Navigate to the dashboard, refreshing the login session when required."""
+
+    dashboard_url = store_cfg["dashboard_url"]
+
+    # Always start from an explicit login visit so the flow mirrors a real user.
+    await _perform_login_flow(page, store_cfg, logger)
+
+    await page.goto(dashboard_url, wait_until="networkidle")
+
+    try:
+        page_content = await page.content()
+    except Exception:  # pragma: no cover - defensive
+        page_content = None
+
+    if page_content:
+        error_msg = _extract_login_error(page_content)
+        if error_msg:
+            log_event(
+                logger=logger,
+                phase="download",
+                status="error",
+                store_code=store_cfg.get("store_code"),
+                bucket=None,
+                message=f"dashboard refused session with: {error_msg}",
+            )
+            raise RuntimeError("Unable to reach dashboard after login; site reports error")
+
+    if await _is_login_page(page):
+        log_event(
+            logger=logger,
+            phase="download",
+            status="error",
+            store_code=store_cfg.get("store_code"),
+            bucket=None,
+            message="login loop detected when opening dashboard",
+        )
+        raise RuntimeError("Automated login failed; manual login required")
+
+    log_event(
+        logger=logger,
+        phase="download",
+        store_code=store_cfg.get("store_code"),
+        bucket=None,
+        message="store dashboard reached",
+        extras={"dashboard_url": store_cfg.get("dashboard_url")},
     )
 
 def _merge_bucket(files: List[Path], output: Path) -> None:
@@ -429,7 +525,6 @@ async def run_all_stores(
         for store_name, cfg in (stores or STORES).items():
             user_dir = _ensure_profile_dir(store_name)
             sc = cfg["store_code"]
-            dashboard_url = cfg["dashboard_url"]
 
             ctx = await p.chromium.launch_persistent_context(
                 user_data_dir=str(user_dir),
@@ -444,15 +539,6 @@ async def run_all_stores(
                 page = await ctx.new_page()
                 # Hit the dashboard and automatically refresh the session when needed.
                 await _ensure_dashboard(page, cfg, logger)
-
-                log_event(
-                    logger=logger,
-                    phase="download",
-                    message="store dashboard reached",
-                    store_code=sc,
-                    bucket=None,
-                    extras={"dashboard_url": dashboard_url},
-                )
 
                 for spec in FILE_SPECS:
                     if not spec.get("download", True):
