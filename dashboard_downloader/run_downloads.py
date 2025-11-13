@@ -59,15 +59,46 @@ async def _download_one_spec(page: Page, sc: str, spec: Dict) -> Path | None:
 async def _is_login_page(page: Page) -> bool:
     """Heuristic check to determine whether the current page is the login form."""
 
-    url = page.url.lower()
+    url = (page.url or "").lower()
     if "login" in url:
         return True
 
+    # Primary signal: does our explicit username locator resolve?
     try:
         locator = page.locator(page_selectors.LOGIN_USERNAME)
-        return await locator.count() > 0
+        if await locator.count() > 0:
+            return True
     except Exception:  # pragma: no cover - defensive; locator failures shouldn't break flow
+        pass
+
+    # Fallback: inspect the rendered HTML for common login markers. Some environments
+    # return the login form HTML while keeping the original dashboard URL, so we need
+    # to look at the content directly.
+    try:
+        content = (await page.content()).lower()
+    except Exception:  # pragma: no cover - if Playwright can't give us content just bail
         return False
+
+    if not content:
+        return False
+
+    normalized = content.replace("'", '"')
+
+    has_password_field = "type=\"password\"" in normalized or "name=\"password\"" in normalized
+    if not has_password_field:
+        return False
+
+    login_field_tokens = (
+        "name=\"user_name\"",
+        "name=\"username\"",
+        "id=\"user_name\"",
+        "id=\"username\"",
+    )
+    if any(token in normalized for token in login_field_tokens):
+        return True
+
+    # As a final guard, look for generic login wording near the password field.
+    return "login" in normalized or "log in" in normalized or "sign in" in normalized
 
 
 async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> None:
