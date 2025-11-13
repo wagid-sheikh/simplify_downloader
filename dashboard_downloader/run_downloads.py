@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+import re
 from typing import Iterable
 from typing import Dict, List
 from datetime import datetime
@@ -25,15 +26,44 @@ def _normalize_html_tokens(html: str) -> str:
     return html.lower().replace("'", '"')
 
 
+_ATTR_SELECTOR_PATTERN = re.compile(r"\[([^=\]\s]+)\s*=\s*['\"]?([^'\"\]]+)['\"]?\]")
+_ID_SELECTOR_PATTERN = re.compile(r"#([A-Za-z0-9_-]+)")
+
+
+def _tokens_from_selector(selector: str) -> Iterable[str]:
+    tokens: set[str] = set()
+    for segment in selector.split(","):
+        part = segment.strip()
+        if not part:
+            continue
+
+        for attr, value in _ATTR_SELECTOR_PATTERN.findall(part):
+            tokens.add(f'{attr.lower()}="{value}"')
+
+        for match in _ID_SELECTOR_PATTERN.findall(part):
+            tokens.add(f'id="{match}"')
+
+    return tokens
+
+
 def _login_tokens() -> Iterable[str]:
-    return (
-        "name=\"user_name\"",
-        "name=\"username\"",
-        "id=\"user_name\"",
-        "id=\"username\"",
-        "name=\"login\"",
-        "id=\"login\"",
+    selector_tokens = set()
+    selector_tokens.update(_tokens_from_selector(page_selectors.LOGIN_USERNAME))
+    selector_tokens.update(_tokens_from_selector(page_selectors.LOGIN_PASSWORD))
+    selector_tokens.update(_tokens_from_selector(page_selectors.LOGIN_SUBMIT))
+
+    # Historical fallbacks for older login forms and to handle non-selector
+    # heuristics in HTML snippets.
+    selector_tokens.update(
+        {
+            'name="username"',
+            'id="username"',
+            'name="login"',
+            'id="login"',
+        }
     )
+
+    return tuple(sorted(selector_tokens))
 
 
 def _looks_like_login_html_text(html: str) -> bool:
