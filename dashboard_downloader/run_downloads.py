@@ -422,23 +422,36 @@ async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -
 
     username = store_cfg.get("username")
     password = store_cfg.get("password")
+    store_code = store_cfg.get("store_code")
 
-    await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+    def _log(status: str, message: str, *, extras: Dict | None = None) -> None:
+        log_event(
+            logger=logger,
+            phase="download",
+            status=status,
+            store_code=store_code,
+            bucket=None,
+            message=message,
+            extras=extras,
+        )
+
+    current_url = (page.url or "").lower()
+    if not current_url or "login" not in current_url:
+        await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+        current_url = (page.url or "").lower()
 
     if not await _is_login_page(page):
-        # Already authenticated; nothing to do.
+        # Storage state/session cookies already landed us past login.
+        _log("info", "login page bypassed; session already active", extras={"current_url": page.url})
         return
 
     if not username or not password:
-        raise RuntimeError(f"Missing credentials for store_code={store_cfg.get('store_code')}")
+        raise RuntimeError(f"Missing credentials for store_code={store_code}")
 
-    log_event(
-        logger=logger,
-        phase="download",
-        status="info",
-        store_code=store_cfg.get("store_code"),
-        bucket=None,
-        message="opening login page for session refresh",
+    _log(
+        "info",
+        "opening login page for session refresh",
+        extras={"login_url": page.url},
     )
 
     await page.wait_for_selector(page_selectors.LOGIN_USERNAME, timeout=15_000)
@@ -455,13 +468,9 @@ async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -
         navigation_error = exc
 
     if navigation_error is not None:
-        log_event(
-            logger=logger,
-            phase="download",
-            status="warn",
-            store_code=store_cfg.get("store_code"),
-            bucket=None,
-            message="login navigation signalled a timeout; validating page content",
+        _log(
+            "warn",
+            "login navigation signalled a timeout; validating page state",
             extras={"error": str(navigation_error)},
         )
 
@@ -487,13 +496,9 @@ async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -
             break
 
     if not login_form_cleared and login_form_error is not None:
-        log_event(
-            logger=logger,
-            phase="download",
-            status="warn",
-            store_code=store_cfg.get("store_code"),
-            bucket=None,
-            message="login form still present after submission; checking page content",
+        _log(
+            "warn",
+            "login form still present after submission; checking page content",
             extras={"error": str(login_form_error)},
         )
 
@@ -505,50 +510,42 @@ async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -
     if content_after_login:
         error_msg = _extract_login_error(content_after_login)
         if error_msg:
-            log_event(
-                logger=logger,
-                phase="download",
-                status="error",
-                store_code=store_cfg.get("store_code"),
-                bucket=None,
-                message=f"login failed; site responded with: {error_msg}",
+            _log(
+                "error",
+                "login failed; site returned explicit error",
+                extras={"error": error_msg},
             )
             raise RuntimeError("Automated login failed; site reports login error")
 
-    if await _is_login_page(page):
-        if navigation_error is not None:
-            raise RuntimeError(
-                "Automated login did not navigate away from login page; manual verification required"
-            )
-        log_event(
-            logger=logger,
-            phase="download",
-            status="error",
-            store_code=store_cfg.get("store_code"),
-            bucket=None,
-            message="login failed; still on login page",
-        )
-        raise RuntimeError("Automated login failed; manual login required")
-
-    log_event(
-        logger=logger,
-        phase="download",
-        status="info",
-        store_code=store_cfg.get("store_code"),
-        bucket=None,
-        message="login completed successfully",
-    )
+    _log("info", "login submission completed", extras={"post_login_url": page.url})
 
 
 async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> None:
     """Navigate to the dashboard, refreshing the login session when required."""
 
     dashboard_url = store_cfg["dashboard_url"]
+    store_code = store_cfg.get("store_code")
 
-    # Always start from an explicit login visit so the flow mirrors a real user.
-    await _perform_login_flow(page, store_cfg, logger)
+    def _log(status: str, message: str, *, extras: Dict | None = None) -> None:
+        log_event(
+            logger=logger,
+            phase="download",
+            status=status,
+            store_code=store_code,
+            bucket=None,
+            message=message,
+            extras=extras,
+        )
 
+    _log("info", "opening dashboard", extras={"target_url": dashboard_url})
     await page.goto(dashboard_url, wait_until="domcontentloaded")
+    _log("info", "dashboard navigation completed", extras={"current_url": page.url})
+
+    if await _is_login_page(page):
+        _log("info", "dashboard redirected to login; attempting automated login", extras={"login_url": page.url})
+        await _perform_login_flow(page, store_cfg, logger)
+        await page.goto(dashboard_url, wait_until="domcontentloaded")
+        _log("info", "dashboard reloaded after login", extras={"current_url": page.url})
 
     dashboard_controls_ready = False
     controls_error: Exception | None = None
@@ -561,13 +558,9 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
         controls_error = exc
 
     if not dashboard_controls_ready and controls_error is not None:
-        log_event(
-            logger=logger,
-            phase="download",
-            status="warn",
-            store_code=store_cfg.get("store_code"),
-            bucket=None,
-            message="dashboard download controls not detected; validating page content",
+        _log(
+            "warn",
+            "dashboard download controls not detected; validating page content",
             extras={"error": str(controls_error)},
         )
 
@@ -579,33 +572,24 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
     if page_content:
         error_msg = _extract_login_error(page_content)
         if error_msg:
-            log_event(
-                logger=logger,
-                phase="download",
-                status="error",
-                store_code=store_cfg.get("store_code"),
-                bucket=None,
-                message=f"dashboard refused session with: {error_msg}",
+            _log(
+                "error",
+                "dashboard refused session", 
+                extras={"error": error_msg},
             )
             raise RuntimeError("Unable to reach dashboard after login; site reports error")
 
     if await _is_login_page(page):
-        log_event(
-            logger=logger,
-            phase="download",
-            status="error",
-            store_code=store_cfg.get("store_code"),
-            bucket=None,
-            message="login loop detected when opening dashboard",
+        _log(
+            "error",
+            "login loop detected when opening dashboard",
+            extras={"current_url": page.url},
         )
         raise RuntimeError("Automated login failed; manual login required")
 
-    log_event(
-        logger=logger,
-        phase="download",
-        store_code=store_cfg.get("store_code"),
-        bucket=None,
-        message="store dashboard reached",
+    _log(
+        "info",
+        "store dashboard reached",
         extras={"dashboard_url": store_cfg.get("dashboard_url")},
     )
 
