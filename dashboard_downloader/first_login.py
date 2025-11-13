@@ -1,8 +1,20 @@
 # dashboard_downloader/first_login.py
 from __future__ import annotations
+from pathlib import Path
+
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
-from .config import LOGIN_URL, HOME_URL, storage_state_path
-from . import page_selectors as sel
+
+if __package__ in (None, ""):
+    import sys
+
+    _HERE = Path(__file__).resolve().parent
+    sys.path.insert(0, str(_HERE.parent))
+
+    from dashboard_downloader.config import HOME_URL, LOGIN_URL, storage_state_path  # type: ignore  # noqa: E402
+    from dashboard_downloader import page_selectors as sel  # type: ignore  # noqa: E402
+else:
+    from .config import HOME_URL, LOGIN_URL, storage_state_path
+    from . import page_selectors as sel
 
 def first_login_headed(username: str, password: str) -> None:
     """

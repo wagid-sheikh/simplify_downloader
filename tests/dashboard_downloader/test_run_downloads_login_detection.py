@@ -1,7 +1,7 @@
 import asyncio
 
 from dashboard_downloader import page_selectors
-from dashboard_downloader.run_downloads import _is_login_page
+from dashboard_downloader.run_downloads import _is_login_page, _looks_like_login_html_bytes
 
 
 class FakeLocator:
@@ -65,3 +65,21 @@ def test_is_login_page_returns_false_for_dashboard():
     """
     page = FakePage(url="https://example.com/dashboard", locator_count=0, html=html)
     assert run(_is_login_page(page)) is False
+
+
+def test_looks_like_login_html_bytes_detects_login_markup():
+    payload = b"""
+        <html>
+            <body>
+                <input type='password' id='username'>
+                <button id='login'>Log In</button>
+            </body>
+        </html>
+    """
+
+    assert _looks_like_login_html_bytes(payload) is True
+
+
+def test_looks_like_login_html_bytes_rejects_csv():
+    payload = b"header1,header2\nvalue1,value2\n"
+    assert _looks_like_login_html_bytes(payload) is False
