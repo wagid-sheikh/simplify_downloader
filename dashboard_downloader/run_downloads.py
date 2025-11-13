@@ -547,7 +547,7 @@ async def run_all_stores(
 
             ctx = await p.chromium.launch_persistent_context(
                 user_data_dir=str(user_dir),
-                headless=True,
+                headless=False,
                 accept_downloads=True,
                 # macOS dev: uncomment next line to force system Chrome
                 channel="chrome",
