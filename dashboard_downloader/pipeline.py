@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from dashboard_downloader.json_logger import JsonLogger, log_event
-from dashboard_downloader.run_downloads import run_all_stores, run_all_stores_single_session
+from dashboard_downloader.run_downloads import run_all_stores_single_session
 
 from simplify_downloader.common.audit import audit_bucket
 from simplify_downloader.common.cleanup import cleanup_bucket
@@ -15,19 +14,11 @@ from .settings import PipelineSettings
 
 async def run_pipeline(*, settings: PipelineSettings, logger: JsonLogger) -> None:
     log_event(logger=logger, phase="orchestrator", message="pipeline start")
-    single_session = os.getenv("SIMPLIFY_SINGLE_SESSION") == "1"
 
-    if single_session:
-        download_summary = await run_all_stores_single_session(
-            settings=settings,
-            logger=logger,
-        )
-    else:
-        download_summary = await run_all_stores(
-            stores=settings.stores,
-            logger=logger,
-            raw_store_env=settings.raw_store_env,
-        )
+    download_summary = await run_all_stores_single_session(
+        settings=settings,
+        logger=logger,
+    )
 
     for bucket, store_info in download_summary.items():
         merged_meta = store_info.get("__merged__")

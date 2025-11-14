@@ -42,7 +42,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # Existing multi-session pipeline
-    run_parser = subparsers.add_parser("run", help="Execute full pipeline (multi-session)")
+    run_parser = subparsers.add_parser("run", help="Execute full pipeline")
     run_parser.add_argument("--stores_list", type=str, default=None, help="Comma separated store keys")
     run_parser.add_argument("--dry_run", action="store_true", help="Skip DB writes")
     run_parser.add_argument("--run_id", type=str, default=None, help="Override generated run id")
@@ -65,14 +65,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "run":
-        # existing behaviour — multi-session
+        # existing behaviour — now single-session under the hood
         return asyncio.run(_run_async(args))
 
     if args.command == "run-single-session":
-        # Hint to the pipeline / settings that we want the single-session runner.
-        # This does NOT break existing behaviour; old code will just ignore it
-        # if Codex hasn’t wired it yet.
-        os.environ["SIMPLIFY_SINGLE_SESSION"] = "1"
         return asyncio.run(_run_async(args))
 
     if args.command == "db" and args.db_command == "upgrade":
