@@ -306,7 +306,7 @@ MERGE_BUCKET_DB_SPECS = {
         "dedupe_keys": ["order_id"],
         "required_columns": ["order_id"],
         "column_map": {
-            "order_id": "order_id",
+            ("order_id", "order_no"): "order_id",
             "order_date": "order_date",
             "store_code": "store_code",
             "store_name": "store_name",
