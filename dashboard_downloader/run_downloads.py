@@ -32,6 +32,14 @@ from .config import (
 from .json_logger import JsonLogger, log_event
 
 
+DASHBOARD_DOWNLOAD_CONTROL_TIMEOUT_MS = 90_000
+
+
+class SkipStoreDashboardError(Exception):
+    """Raised when a store's dashboard cannot be used (no controls, no creds, etc.)."""
+    pass
+
+
 def _normalize_html_tokens(html: str) -> str:
     return html.lower().replace("'", '"')
 
@@ -724,51 +732,46 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
         extras={"current_url": page.url, "response_status": response_status},
     )
 
-    attempted_home_nav = False
     performed_login_flow = False
 
-    dashboard_controls_ready = False
-    controls_error: Exception | None = None
-    page_error_hint: str | None = None
-    login_page_detected = False
-
-    async def _inspect_dashboard_state() -> None:
-        nonlocal dashboard_controls_ready, controls_error, page_error_hint, login_page_detected
-
-        controls_error = None
+    if await _is_login_page(page):
+        _log(
+            "info",
+            "dashboard requires login; attempting automated login",
+            extras={"dashboard_url": dashboard_url, "current_url": page.url},
+        )
+        await _perform_login_flow(page, store_cfg, logger)
+        performed_login_flow = True
         try:
-            await page.wait_for_selector(page_selectors.DOWNLOAD_LINKS, timeout=30_000)
-            dashboard_controls_ready = True
-        except PlaywrightTimeoutError as exc:  # pragma: no cover - depends on remote latency
-            controls_error = exc
-            dashboard_controls_ready = False
-        except Exception as exc:  # pragma: no cover - defensive against Playwright quirks
-            controls_error = exc
-            dashboard_controls_ready = False
+            await _navigate_via_home_to_dashboard(page, store_cfg, logger)
+        except Exception as exc:
+            _log("error", "home navigation failed after login", extras={"error": str(exc)})
+            raise
 
-        if not dashboard_controls_ready and controls_error is not None:
+    while True:
+        try:
+            await page.wait_for_selector(
+                page_selectors.DOWNLOAD_LINKS,
+                state="visible",
+                timeout=DASHBOARD_DOWNLOAD_CONTROL_TIMEOUT_MS,
+            )
+            break
+        except PlaywrightTimeoutError as exc:
             _log(
                 "warn",
                 "dashboard download controls not detected; validating page content",
-                extras={"error": str(controls_error)},
+                extras={"error": str(exc)},
             )
 
-        try:
-            page_content = await page.content()
-        except Exception:  # pragma: no cover - defensive
-            page_content = None
+            if await _is_login_page(page):
+                if performed_login_flow:
+                    _log(
+                        "error",
+                        "login loop detected when opening dashboard",
+                        extras={"current_url": page.url},
+                    )
+                    raise RuntimeError("Automated login failed; manual login required")
 
-        page_error_hint = _extract_login_error(page_content) if page_content else None
-        login_page_detected = await _is_login_page(page)
-
-    while True:
-        await _inspect_dashboard_state()
-
-        if dashboard_controls_ready:
-            break
-
-        if login_page_detected:
-            if not performed_login_flow:
                 _log(
                     "info",
                     "dashboard redirected to login; attempting automated login",
@@ -776,54 +779,38 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
                 )
                 await _perform_login_flow(page, store_cfg, logger)
                 performed_login_flow = True
-                _log(
-                    "info",
-                    "attempting home navigation after automated login",
-                    extras={"dashboard_url": dashboard_url, "current_url": page.url},
-                )
                 try:
                     await _navigate_via_home_to_dashboard(page, store_cfg, logger)
-                except Exception as exc:
-                    _log("error", "home navigation failed after login", extras={"error": str(exc)})
+                except Exception as nav_exc:
+                    _log(
+                        "error",
+                        "home navigation failed after login",
+                        extras={"error": str(nav_exc)},
+                    )
                     raise
-                attempted_home_nav = True
                 continue
 
-            _log(
-                "error",
-                "login loop detected when opening dashboard",
-                extras={"current_url": page.url, "error_hint": page_error_hint},
-            )
-            raise RuntimeError("Automated login failed; manual login required")
-
-        if page_error_hint:
-            if not attempted_home_nav:
-                attempted_home_nav = True
+            has_creds = bool(store_cfg.get("username") and store_cfg.get("password"))
+            if not has_creds:
                 _log(
                     "warn",
-                    "dashboard reported login-style error; attempting home navigation",
-                    extras={
-                        "dashboard_url": dashboard_url,
-                        "error_hint": page_error_hint,
-                        "current_url": page.url,
-                    },
+                    "dashboard controls not found and no credentials for store; skipping store",
+                    extras={"current_url": page.url},
                 )
-                try:
-                    await _navigate_via_home_to_dashboard(page, store_cfg, logger)
-                except Exception as exc:
-                    _log("error", "home navigation failed", extras={"error": str(exc)})
-                    raise
-                continue
+                raise SkipStoreDashboardError(
+                    f"Skipping store_code={store_code}: no download controls visible and no credentials configured."
+                )
 
+            raise RuntimeError(
+                f"Dashboard controls not found for store_code={store_code}; verify layout or selectors."
+            )
+        except Exception as exc:
             _log(
                 "error",
-                "dashboard refused session",
-                extras={"error": page_error_hint, "current_url": page.url},
+                "unexpected error while waiting for dashboard controls",
+                extras={"error": str(exc)},
             )
-            raise RuntimeError("Unable to reach dashboard after login; site reports error")
-
-        # No login indicators or explicit errors; nothing more to attempt.
-        break
+            raise
 
     _log(
         "info",
@@ -1060,7 +1047,20 @@ async def run_all_stores(
                 )
                 page = await ctx.new_page()
                 # Hit the dashboard and automatically refresh the session when needed.
-                await _ensure_dashboard(page, cfg, logger)
+                try:
+                    await _ensure_dashboard(page, cfg, logger)
+                except SkipStoreDashboardError as exc:
+                    log_event(
+                        logger=logger,
+                        phase="download",
+                        status="warn",
+                        store_code=sc,
+                        bucket=None,
+                        message="skipping store due to dashboard unavailability",
+                        extras={"reason": str(exc)},
+                    )
+                    await page.close()
+                    continue
 
                 for spec in FILE_SPECS:
                     if not spec.get("download", True):
