@@ -9,6 +9,8 @@ from typing import Any, Dict, Iterable, List
 from datetime import datetime
 from urllib.parse import urlparse
 
+import magic
+
 from playwright.async_api import (
     async_playwright,
     BrowserContext,
@@ -51,6 +53,36 @@ def _normalize_url_path(path: str | None) -> str:
 _LOGIN_URL_PARTS = urlparse(LOGIN_URL)
 _LOGIN_HOST = (_LOGIN_URL_PARTS.hostname or "").lower()
 _LOGIN_PATH = _normalize_url_path(_LOGIN_URL_PARTS.path)
+
+
+def _validate_downloaded_csv(csv_path: Path, *, body: bytes) -> tuple[bool, str | None]:
+    try:
+        mime_type = magic.from_buffer(body, mime=True)
+    except Exception as exc:
+        return False, f"unable to detect MIME type: {exc}"
+
+    if not mime_type:
+        return False, "missing MIME type"
+
+    normalized_mime = mime_type.lower()
+    if not any(hint in normalized_mime for hint in ("csv", "excel", "plain")):
+        return False, f"unexpected MIME type: {mime_type}"
+
+    try:
+        with csv_path.open("r", newline="", encoding="utf-8", errors="ignore") as handle:
+            sample = handle.read(2048)
+            if not sample or not sample.strip():
+                return False, "empty or whitespace-only content"
+            handle.seek(0)
+            try:
+                sniff_sample = sample if sample.endswith("\n") else f"{sample}\n"
+                csv.Sniffer().sniff(sniff_sample)
+            except csv.Error as exc:
+                return False, f"csv sniff failed: {exc}"
+    except OSError as exc:
+        return False, f"unable to read file: {exc}"
+
+    return True, None
 
 
 class SkipStoreDashboardError(Exception):
@@ -379,6 +411,22 @@ async def _download_one_spec(page: Page, store_cfg: Dict, spec: Dict, *, logger:
         if status == 200 and body and not _looks_like_login_html_bytes(body):
             final_path.parent.mkdir(parents=True, exist_ok=True)
             final_path.write_bytes(body)
+            is_valid, reason = _validate_downloaded_csv(final_path, body=body)
+            if not is_valid:
+                _log(
+                    "warn",
+                    f"discarding invalid CSV download for {spec['key']}",
+                    extras={"reason": reason} if reason else None,
+                )
+                try:
+                    final_path.unlink(missing_ok=True)
+                except OSError as exc:
+                    _log(
+                        "warn",
+                        f"unable to delete invalid download for {spec['key']}",
+                        extras={"error": str(exc)},
+                    )
+                return None
             return final_path
 
         needs_refresh = False
