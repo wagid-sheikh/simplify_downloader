@@ -303,7 +303,7 @@ MERGE_BUCKET_DB_SPECS = {
     "undelivered_all": {
         "table_name": "undelivered_orders",
         # order_id uniquely identifies the record across stores.
-        "dedupe_keys": ["order_id"],
+        "dedupe_keys": ["store_code", "order_id"],
         "required_columns": ["order_id"],
         "column_map": {
             ("order_id", "order_no"): "order_id",
