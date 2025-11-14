@@ -38,23 +38,105 @@ def _looks_like_html(csv_path: Path) -> bool:
     return "<html" in lowered[:512] or "<!doctype html" in lowered[:512]
 
 
-def _load_csv_rows(bucket: str, csv_path: Path) -> Iterable[Dict[str, Any]]:
+MAX_FAILURE_LOGS = 5
+MAX_VALUE_LENGTH = 128
+
+
+def _compact_row(raw_row: Dict[str, Any]) -> Dict[str, Any]:
+    compact: Dict[str, Any] = {}
+    for key, value in raw_row.items():
+        text = "" if value is None else str(value)
+        if len(text) > MAX_VALUE_LENGTH:
+            compact[key] = text[: MAX_VALUE_LENGTH - 3] + "..."
+        else:
+            compact[key] = text
+    return compact
+
+
+def _load_csv_rows(
+    bucket: str,
+    csv_path: Path,
+    logger: JsonLogger | None = None,
+) -> Iterable[Dict[str, Any]]:
+    total_rows = 0
+    coerced_rows = 0
+    failed_rows = 0
+    suppressed_failures = 0
+    failure_logs_emitted = 0
+
+    def emit_summary(message: str = "csv ingest summary", *, status: str | None = None) -> None:
+        if not logger:
+            return
+        log_event(
+            logger=logger,
+            phase="ingest",
+            status=status or ("warn" if failed_rows else "info"),
+            bucket=bucket,
+            merged_file=str(csv_path),
+            counts={
+                "total_rows": total_rows,
+                "coerced_rows": coerced_rows,
+                "failed_rows": failed_rows,
+            },
+            message=message,
+        )
+
     if not csv_path.exists():
+        emit_summary("csv file not found")
         return []
 
     if _looks_like_html(csv_path):
+        emit_summary("csv file appears to contain HTML")
         return []
 
-    with csv_path.open("r", newline="", encoding="utf-8", errors="ignore") as handle:
-        reader = csv.DictReader(handle)
-        if not reader.fieldnames:
-            return []
-        header_map = normalize_headers(reader.fieldnames)
-        for raw_row in reader:
-            try:
-                yield coerce_csv_row(bucket, raw_row, header_map)
-            except ValueError:
-                continue
+    def iterator() -> Iterable[Dict[str, Any]]:
+        nonlocal total_rows, coerced_rows, failed_rows, suppressed_failures, failure_logs_emitted
+        with csv_path.open("r", newline="", encoding="utf-8", errors="ignore") as handle:
+            reader = csv.DictReader(handle)
+            if not reader.fieldnames:
+                emit_summary("csv file missing header row", status="warn")
+                return
+            header_map = normalize_headers(reader.fieldnames)
+            for row_index, raw_row in enumerate(reader, start=1):
+                total_rows += 1
+                try:
+                    coerced_row = coerce_csv_row(bucket, raw_row, header_map)
+                except ValueError as exc:
+                    failed_rows += 1
+                    if logger:
+                        if failure_logs_emitted < MAX_FAILURE_LOGS:
+                            failure_logs_emitted += 1
+                            log_event(
+                                logger=logger,
+                                phase="ingest",
+                                status="warn",
+                                bucket=bucket,
+                                merged_file=str(csv_path),
+                                message="failed to coerce csv row",
+                                row_index=row_index,
+                                error=str(exc),
+                                raw_row=_compact_row(raw_row),
+                            )
+                        else:
+                            suppressed_failures += 1
+                    continue
+                coerced_rows += 1
+                yield coerced_row
+
+        if logger and suppressed_failures > 0:
+            log_event(
+                logger=logger,
+                phase="ingest",
+                status="warn",
+                bucket=bucket,
+                merged_file=str(csv_path),
+                message=(
+                    f"{suppressed_failures} additional rows failed coercion; further failures suppressed"
+                ),
+            )
+        emit_summary()
+
+    return iterator()
 
 
 async def _upsert_batch(
@@ -100,7 +182,7 @@ async def ingest_bucket(
     totals = {"rows": 0}
     async with session_scope(database_url) as session:
         async with session.begin():
-            for batch in _batched(_load_csv_rows(bucket, csv_path), batch_size):
+            for batch in _batched(_load_csv_rows(bucket, csv_path, logger), batch_size):
                 affected = await _upsert_batch(session, bucket, batch)
                 totals["rows"] += affected
 
