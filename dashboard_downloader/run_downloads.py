@@ -443,24 +443,35 @@ def _finalize_merges(
     logger: JsonLogger,
 ) -> None:
     for bucket, files in merged_buckets.items():
-        out_name = MERGED_NAMES.get(
-            bucket,
-            f"Merged_{bucket}_{datetime.now().strftime('%Y%m%d')}.csv",
-        )
-        out_path = DATA_DIR / out_name
-        _merge_bucket(files, out_path)
+        if not files:
+            continue
+
+        if bucket not in MERGED_NAMES:
+            log_event(
+                logger=logger,
+                phase="merge",
+                bucket=bucket,
+                message="no merged filename configured; skipping bucket",
+                status="warn",
+            )
+            continue
+
+        merged_path = _manual_merge_bucket(bucket, files)
+        if not merged_path:
+            continue
+
         bucket_downloads = download_counts.get(bucket, {})
         download_total = sum(
             entry.get("rows", 0)
             for key, entry in bucket_downloads.items()
             if key != "__merged__" and isinstance(entry, dict)
         )
-        merged_rows = _count_rows(out_path)
+        merged_rows = _count_rows(merged_path)
         log_event(
             logger=logger,
             phase="merge",
             bucket=bucket,
-            merged_file=str(out_path),
+            merged_file=str(merged_path),
             counts={
                 "download_total": download_total,
                 "merged_rows": merged_rows,
@@ -469,21 +480,47 @@ def _finalize_merges(
         )
         download_counts.setdefault(bucket, {})["__merged__"] = {
             "rows": merged_rows,
-            "path": str(out_path),
+            "path": str(merged_path),
         }
 
-        # Auto-filter for missed_leads bucket
-        # if bucket == "missed_leads":
-        #     filtered_name = f"filtered_merged_missed_leads_{datetime.now().strftime('%Y%m%d')}.csv"
-        #     filtered_path = DATA_DIR / filtered_name
-        #     filter_merged_missed_leads(out_path, filtered_path)
+
+def _manual_merge_bucket(bucket: str, files: List[Path]) -> Path | None:
+    if not files:
+        return None
+
+    merged_name = MERGED_NAMES.get(bucket)
+    if not merged_name:
+        return None
+
+    merged_path = DATA_DIR / merged_name
+
+    with merged_path.open("wb") as out_f:
+        first = True
+        for file_path in files:
+            if not file_path.exists():
+                continue
+
+            data = file_path.read_bytes()
+            if first:
+                out_f.write(data)
+                first = False
+                continue
+
+            try:
+                header_end = data.index(b"\n")
+            except ValueError:
+                continue
+
+            out_f.write(data[header_end + 1 :])
+
+    return merged_path
 
 
 async def _bootstrap_session_via_home_and_tracker(
     page: Page,
     store_cfg: Dict[str, Any],
     logger: JsonLogger,
-) -> None:
+) -> Page:
     store_code = store_cfg.get("store_code")
 
     def _log(status: str, message: str, *, extras: Dict | None = None) -> None:
@@ -500,95 +537,92 @@ async def _bootstrap_session_via_home_and_tracker(
     login_url = store_cfg.get("login_url") or LOGIN_URL
     home_url = store_cfg.get("home_url") or HOME_URL
 
+    username = store_cfg.get("username")
+    password = store_cfg.get("password")
+
     _log(
         "info",
         "starting single-session bootstrap",
         extras={"login_url": login_url, "home_url": home_url},
     )
 
-    response = await page.goto(login_url, wait_until="domcontentloaded")
-    response_status = None
-    if response is not None:
-        try:
-            response_status = response.status
-        except Exception:  # pragma: no cover - defensive
-            response_status = None
+    await page.goto(login_url, wait_until="domcontentloaded")
 
-    _log(
-        "info",
-        "login page requested",
-        extras={"current_url": page.url, "response_status": response_status},
-    )
-
-    if await _is_login_page(page, logger):
-        _log("info", "login page detected; performing login")
-        await _perform_login_flow(page, store_cfg, logger)
-        if await _is_login_page(page, logger):
-            _log(
-                "error",
-                "login flow did not redirect away from login page",
-                extras={"current_url": page.url},
-            )
-            raise RuntimeError("Login flow did not complete during bootstrap")
-
-    current_path = _normalize_url_path(urlparse(page.url or "").path)
-    desired_home_path = _normalize_url_path(urlparse(home_url).path)
-
-    if current_path != desired_home_path:
-        response = await page.goto(home_url, wait_until="domcontentloaded")
-        response_status = None
-        if response is not None:
-            try:
-                response_status = response.status
-            except Exception:  # pragma: no cover - defensive
-                response_status = None
+    if username and password:
+        _log("info", "filling login form for bootstrap")
+        await page.fill(page_selectors.LOGIN_USERNAME, username)
+        await page.fill(page_selectors.LOGIN_PASSWORD, password)
+        await page.click(page_selectors.LOGIN_SUBMIT)
+    else:
         _log(
-            "info",
-            "home page requested after login",
-            extras={"current_url": page.url, "response_status": response_status},
+            "warn",
+            "missing credentials for bootstrap; relying on existing session",
+            extras={"username_present": bool(username), "password_present": bool(password)},
         )
 
-    tracker_heading = page.locator("h5.card-title:has-text(\"Daily Operations Tracker\")")
+    try:
+        await page.wait_for_url(f"{home_url}*", timeout=60_000)
+    except PlaywrightTimeoutError as exc:
+        _log(
+            "error",
+            "home navigation after login timed out",
+            extras={"error": str(exc), "current_url": page.url},
+        )
+        raise
+
+    await page.wait_for_timeout(2000)
+
+    tracker_heading = page.locator(
+        "h5.card-title",
+        has_text="Daily Operations Tracker",
+    )
+
     try:
         await tracker_heading.first.wait_for(state="visible", timeout=30_000)
     except Exception as exc:
         _log(
             "error",
-            "daily operations tracker heading not found during bootstrap",
+            "daily operations tracker heading not found",
             extras={"error": str(exc)},
         )
         raise
 
-    tracker_card = tracker_heading.locator(
-        "xpath=ancestor-or-self::*[self::a or contains(concat(' ', normalize-space(@class), ' '), ' card ')][1]"
-    )
-    click_target = tracker_card.first if await tracker_card.count() > 0 else tracker_heading.first
+    tracker_target = tracker_heading.first
+    context = page.context
 
-    navigation_response = None
     try:
-        async with page.expect_navigation(wait_until="domcontentloaded", timeout=60_000) as nav_info:
-            await click_target.click()
-        navigation_response = await nav_info
-    except PlaywrightTimeoutError as exc:
+        async with context.expect_page() as page_info:
+            await tracker_target.click()
+        tms_page = await page_info.value
+        await tms_page.wait_for_load_state("domcontentloaded")
+        await tms_page.wait_for_timeout(2000)
         _log(
-            "error",
-            "navigation to tracker timed out during bootstrap",
-            extras={"error": str(exc)},
+            "info",
+            "tms page opened in new tab",
+            extras={"tms_url": tms_page.url},
         )
-        raise
-
-    response_status = None
-    if navigation_response is not None:
+        return tms_page
+    except PlaywrightTimeoutError:
+        _log("warn", "no new tab detected; falling back to same page")
         try:
-            response_status = navigation_response.status
-        except Exception:  # pragma: no cover - defensive
-            response_status = None
+            async with page.expect_navigation(wait_until="domcontentloaded", timeout=60_000):
+                await tracker_target.click()
+        except PlaywrightTimeoutError as exc:
+            _log(
+                "error",
+                "navigation to TMS page timed out",
+                extras={"error": str(exc)},
+            )
+            raise
 
-    _log(
-        "info",
-        "bootstrap via home and tracker complete",
-        extras={"current_url": page.url, "response_status": response_status},
-    )
+        await page.wait_for_load_state("domcontentloaded")
+        await page.wait_for_timeout(2000)
+        _log(
+            "info",
+            "tms page opened in same tab",
+            extras={"tms_url": page.url},
+        )
+        return page
 
 
 async def _switch_to_store_dashboard_and_download(
@@ -600,7 +634,7 @@ async def _switch_to_store_dashboard_and_download(
     merged_buckets: Dict[str, List[Path]],
     download_counts: Dict[str, Dict[str, Dict[str, object]]],
 ) -> None:
-    _ = settings  # retained for future use; settings can influence downstream flows.
+    _ = settings
     store_code = store_cfg.get("store_code")
 
     def _log(status: str, message: str, *, extras: Dict | None = None) -> None:
@@ -629,68 +663,60 @@ async def _switch_to_store_dashboard_and_download(
         extras={"target_url": target_url},
     )
 
-    response = await page.goto(target_url, wait_until="domcontentloaded")
-    response_status = None
-    if response is not None:
+    await page.goto(target_url, wait_until="domcontentloaded")
+    _log("info", "store dashboard reached", extras={"dashboard_url": target_url})
+
+    request = page.context.request
+
+    for spec in FILE_SPECS:
+        if not spec.get("download", False):
+            continue
+
+        url = _render(spec["url_template"], store_code)
+        out_name = _render(spec["out_name_template"], store_code)
+        final_path = DATA_DIR / out_name
+
         try:
-            response_status = response.status
-        except Exception:  # pragma: no cover - defensive
-            response_status = None
+            response = await request.get(url)
+        except Exception as exc:
+            _log(
+                "error",
+                f"request failed for {spec['key']}",
+                extras={"url": url, "error": str(exc)},
+            )
+            continue
 
-    if await _is_login_page(page, logger):
-        _log(
-            "warn",
-            "dashboard navigation returned to login page; skipping store",
-            extras={"current_url": page.url},
-        )
-        raise SkipStoreDashboardError(
-            f"Skipping store_code={store_code}: session returned to login page during single-session run."
-        )
-
-    try:
-        await page.wait_for_selector(
-            page_selectors.DOWNLOAD_LINKS,
-            state="visible",
-            timeout=DASHBOARD_DOWNLOAD_CONTROL_TIMEOUT_MS,
-        )
-    except PlaywrightTimeoutError as exc:
-        content = None
+        status = None
         try:
-            content = await page.content()
-        except Exception:  # pragma: no cover - defensive
-            content = None
+            status = response.status
+        except Exception:
+            status = None
 
-        normalized = _normalize_html_tokens(content or "")
-        if "notice: you need to be logged in to view this page!" in normalized:
+        if status != 200:
             _log(
                 "warn",
-                "store dashboard reported login requirement; skipping store",
-                extras={"current_url": page.url},
+                f"unexpected status for {spec['key']}",
+                extras={"url": url, "status": status},
             )
-            raise SkipStoreDashboardError(
-                f"Skipping store_code={store_code}: dashboard reported login requirement."
-            )
+            continue
+
+        body = await response.body()
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        final_path.write_bytes(body)
 
         _log(
-            "error",
-            "store dashboard controls not found during single-session run",
-            extras={"error": str(exc), "current_url": page.url},
+            "info",
+            f"download complete for {spec['key']}",
+            extras={"url": url, "path": str(final_path), "status": status},
         )
-        raise
 
-    _log(
-        "info",
-        "store dashboard reached",
-        extras={"dashboard_url": target_url, "response_status": response_status},
-    )
-
-    await _download_specs_for_store(
-        page,
-        store_cfg,
-        logger=logger,
-        merged_buckets=merged_buckets,
-        download_counts=download_counts,
-    )
+        bucket = spec.get("merge_bucket")
+        if bucket:
+            merged_buckets.setdefault(bucket, []).append(final_path)
+            download_counts.setdefault(bucket, {})[store_code] = {
+                "rows": _count_rows(final_path),
+                "path": str(final_path),
+            }
 
 
 async def _is_login_page(page: Page, logger: JsonLogger | None = None) -> bool:
@@ -1149,46 +1175,6 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
         extras={"dashboard_url": store_cfg.get("dashboard_url")},
     )
 
-def _merge_bucket(files: List[Path], output: Path) -> None:
-    """
-    Simple CSV merge: writes header from the first file, then appends rows from all files.
-    Skips empty/missing files gracefully.
-    """
-    if not files:
-        print(f"[merge] No files to merge for {output.name}")
-        return
-
-    written_header = False
-    rows_written = 0
-
-    with output.open("w", newline="", encoding="utf-8") as out_f:
-        writer = None
-
-        for f in files:
-            if not f or not f.exists() or f.stat().st_size == 0:
-                continue
-
-            if _looks_like_html(f):
-                continue
-
-            with f.open("r", newline="", encoding="utf-8", errors="ignore") as in_f:
-                reader = csv.reader(in_f)
-                try:
-                    header = next(reader)
-                except StopIteration:
-                    continue
-
-                if not written_header:
-                    writer = csv.writer(out_f)
-                    writer.writerow(header)
-                    written_header = True
-
-                for row in reader:
-                    writer.writerow(row)
-                    rows_written += 1
-
-    _ = rows_written
-
 
 def _count_rows(csv_path: Path) -> int:
     if not csv_path.exists():
@@ -1515,15 +1501,16 @@ async def run_all_stores_single_session(
                 logger=logger,
             )
 
-        page = await ctx.new_page()
-        await _bootstrap_session_via_home_and_tracker(page, first_store_cfg, logger)
+        pages = ctx.pages
+        home_page = pages[0] if pages else await ctx.new_page()
+        tms_page = await _bootstrap_session_via_home_and_tracker(home_page, first_store_cfg, logger)
 
         try:
             for _, cfg in store_items:
                 sc = cfg.get("store_code")
                 try:
                     await _switch_to_store_dashboard_and_download(
-                        page,
+                        tms_page,
                         cfg,
                         logger=logger,
                         settings=settings,
@@ -1550,20 +1537,12 @@ async def run_all_stores_single_session(
                     bucket=None,
                 )
         finally:
-            try:
-                page_is_closed = getattr(page, "is_closed", None)
-                if callable(page_is_closed):
-                    if not page.is_closed():
-                        await page.close()
-                else:
-                    await page.close()
-            finally:
-                ctx_is_closed = getattr(ctx, "is_closed", None)
-                if callable(ctx_is_closed):
-                    if not ctx.is_closed():
-                        await ctx.close()
-                else:
+            ctx_is_closed = getattr(ctx, "is_closed", None)
+            if callable(ctx_is_closed):
+                if not ctx.is_closed():
                     await ctx.close()
+            else:
+                await ctx.close()
 
     _finalize_merges(merged_buckets, download_counts, logger=logger)
 
