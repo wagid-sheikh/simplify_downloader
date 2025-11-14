@@ -714,56 +714,20 @@ async def _switch_to_store_dashboard_and_download(
     await page.goto(target_url, wait_until="domcontentloaded")
     _log("info", "store dashboard reached", extras={"dashboard_url": target_url})
 
-    request = page.context.request
-
     for spec in FILE_SPECS:
-        if not spec.get("download", False):
+        if not spec.get("download", True):
             continue
 
-        url = _render(spec["url_template"], store_code)
-        out_name = _render(spec["out_name_template"], store_code)
-        final_path = DATA_DIR / out_name
-
-        try:
-            response = await request.get(url)
-        except Exception as exc:
-            _log(
-                "error",
-                f"request failed for {spec['key']}",
-                extras={"url": url, "error": str(exc)},
-            )
+        saved = await _download_one_spec(page, store_cfg, spec, logger=logger)
+        if not saved:
             continue
-
-        status = None
-        try:
-            status = response.status
-        except Exception:
-            status = None
-
-        if status != 200:
-            _log(
-                "warn",
-                f"unexpected status for {spec['key']}",
-                extras={"url": url, "status": status},
-            )
-            continue
-
-        body = await response.body()
-        final_path.parent.mkdir(parents=True, exist_ok=True)
-        final_path.write_bytes(body)
-
-        _log(
-            "info",
-            f"download complete for {spec['key']}",
-            extras={"url": url, "path": str(final_path), "status": status},
-        )
 
         bucket = spec.get("merge_bucket")
         if bucket:
-            merged_buckets.setdefault(bucket, []).append(final_path)
+            merged_buckets.setdefault(bucket, []).append(saved)
             download_counts.setdefault(bucket, {})[store_code] = {
-                "rows": _count_rows(final_path),
-                "path": str(final_path),
+                "rows": _count_rows(saved),
+                "path": str(saved),
             }
 
 

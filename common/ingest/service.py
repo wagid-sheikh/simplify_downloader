@@ -103,6 +103,23 @@ async def ingest_bucket(
             for batch in _batched(_load_csv_rows(bucket, csv_path), batch_size):
                 affected = await _upsert_batch(session, bucket, batch)
                 totals["rows"] += affected
+
+    file_size = 0
+    if csv_path.exists():
+        try:
+            file_size = csv_path.stat().st_size
+        except OSError:
+            file_size = 0
+
+    if file_size > 0 and totals["rows"] == 0:
+        log_event(
+            logger=logger,
+            phase="ingest",
+            bucket=bucket,
+            merged_file=str(csv_path),
+            status="warn",
+            message="non-empty merged file produced zero ingested rows",
+        )
     log_event(
         logger=logger,
         phase="ingest",
