@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
-from typing import Any, Dict, Iterable, List
+from typing import Dict, Iterable, List
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -24,14 +24,11 @@ from .config import (
     PKG_ROOT,
     DATA_DIR,
     FILE_SPECS,
-    HOME_URL,
     MERGED_NAMES,
     LOGIN_URL,
     stores_from_list,
     storage_state_path,
-    tms_dashboard_url,
 )
-from .settings import PipelineSettings
 from .json_logger import JsonLogger, log_event
 
 
@@ -410,287 +407,6 @@ async def _download_one_spec(page: Page, store_cfg: Dict, spec: Dict, *, logger:
         except Exception as exc:
             _log("error", f"session refresh failed for {spec['key']}", extras={"error": str(exc)})
             return None
-
-
-async def _download_specs_for_store(
-    page: Page,
-    store_cfg: Dict,
-    *,
-    logger: JsonLogger,
-    merged_buckets: Dict[str, List[Path]],
-    download_counts: Dict[str, Dict[str, Dict[str, object]]],
-) -> None:
-    sc = store_cfg["store_code"]
-
-    for spec in FILE_SPECS:
-        if not spec.get("download", True):
-            continue
-
-        saved = await _download_one_spec(page, store_cfg, spec, logger=logger)
-        if saved and spec.get("merge_bucket"):
-            bucket = spec["merge_bucket"]
-            merged_buckets.setdefault(bucket, []).append(saved)
-            download_counts.setdefault(bucket, {})[sc] = {
-                "rows": _count_rows(saved),
-                "path": str(saved),
-            }
-
-
-def _finalize_merges(
-    merged_buckets: Dict[str, List[Path]],
-    download_counts: Dict[str, Dict[str, Dict[str, object]]],
-    *,
-    logger: JsonLogger,
-) -> None:
-    for bucket, files in merged_buckets.items():
-        out_name = MERGED_NAMES.get(
-            bucket,
-            f"Merged_{bucket}_{datetime.now().strftime('%Y%m%d')}.csv",
-        )
-        out_path = DATA_DIR / out_name
-        _merge_bucket(files, out_path)
-        bucket_downloads = download_counts.get(bucket, {})
-        download_total = sum(
-            entry.get("rows", 0)
-            for key, entry in bucket_downloads.items()
-            if key != "__merged__" and isinstance(entry, dict)
-        )
-        merged_rows = _count_rows(out_path)
-        log_event(
-            logger=logger,
-            phase="merge",
-            bucket=bucket,
-            merged_file=str(out_path),
-            counts={
-                "download_total": download_total,
-                "merged_rows": merged_rows,
-            },
-            message="merge complete",
-        )
-        download_counts.setdefault(bucket, {})["__merged__"] = {
-            "rows": merged_rows,
-            "path": str(out_path),
-        }
-
-        # Auto-filter for missed_leads bucket
-        # if bucket == "missed_leads":
-        #     filtered_name = f"filtered_merged_missed_leads_{datetime.now().strftime('%Y%m%d')}.csv"
-        #     filtered_path = DATA_DIR / filtered_name
-        #     filter_merged_missed_leads(out_path, filtered_path)
-
-
-async def _bootstrap_session_via_home_and_tracker(
-    page: Page,
-    store_cfg: Dict[str, Any],
-    logger: JsonLogger,
-) -> None:
-    store_code = store_cfg.get("store_code")
-
-    def _log(status: str, message: str, *, extras: Dict | None = None) -> None:
-        log_event(
-            logger=logger,
-            phase="download",
-            status=status,
-            store_code=store_code,
-            bucket=None,
-            message=message,
-            extras=extras,
-        )
-
-    login_url = store_cfg.get("login_url") or LOGIN_URL
-    home_url = store_cfg.get("home_url") or HOME_URL
-
-    _log(
-        "info",
-        "starting single-session bootstrap",
-        extras={"login_url": login_url, "home_url": home_url},
-    )
-
-    response = await page.goto(login_url, wait_until="domcontentloaded")
-    response_status = None
-    if response is not None:
-        try:
-            response_status = response.status
-        except Exception:  # pragma: no cover - defensive
-            response_status = None
-
-    _log(
-        "info",
-        "login page requested",
-        extras={"current_url": page.url, "response_status": response_status},
-    )
-
-    if await _is_login_page(page, logger):
-        _log("info", "login page detected; performing login")
-        await _perform_login_flow(page, store_cfg, logger)
-        if await _is_login_page(page, logger):
-            _log(
-                "error",
-                "login flow did not redirect away from login page",
-                extras={"current_url": page.url},
-            )
-            raise RuntimeError("Login flow did not complete during bootstrap")
-
-    current_path = _normalize_url_path(urlparse(page.url or "").path)
-    desired_home_path = _normalize_url_path(urlparse(home_url).path)
-
-    if current_path != desired_home_path:
-        response = await page.goto(home_url, wait_until="domcontentloaded")
-        response_status = None
-        if response is not None:
-            try:
-                response_status = response.status
-            except Exception:  # pragma: no cover - defensive
-                response_status = None
-        _log(
-            "info",
-            "home page requested after login",
-            extras={"current_url": page.url, "response_status": response_status},
-        )
-
-    tracker_heading = page.locator("h5.card-title:has-text(\"Daily Operations Tracker\")")
-    try:
-        await tracker_heading.first.wait_for(state="visible", timeout=30_000)
-    except Exception as exc:
-        _log(
-            "error",
-            "daily operations tracker heading not found during bootstrap",
-            extras={"error": str(exc)},
-        )
-        raise
-
-    tracker_card = tracker_heading.locator(
-        "xpath=ancestor-or-self::*[self::a or contains(concat(' ', normalize-space(@class), ' '), ' card ')][1]"
-    )
-    click_target = tracker_card.first if await tracker_card.count() > 0 else tracker_heading.first
-
-    navigation_response = None
-    try:
-        async with page.expect_navigation(wait_until="domcontentloaded", timeout=60_000) as nav_info:
-            await click_target.click()
-        navigation_response = await nav_info
-    except PlaywrightTimeoutError as exc:
-        _log(
-            "error",
-            "navigation to tracker timed out during bootstrap",
-            extras={"error": str(exc)},
-        )
-        raise
-
-    response_status = None
-    if navigation_response is not None:
-        try:
-            response_status = navigation_response.status
-        except Exception:  # pragma: no cover - defensive
-            response_status = None
-
-    _log(
-        "info",
-        "bootstrap via home and tracker complete",
-        extras={"current_url": page.url, "response_status": response_status},
-    )
-
-
-async def _switch_to_store_dashboard_and_download(
-    page: Page,
-    store_cfg: Dict[str, Any],
-    *,
-    logger: JsonLogger,
-    settings: PipelineSettings,
-    merged_buckets: Dict[str, List[Path]],
-    download_counts: Dict[str, Dict[str, Dict[str, object]]],
-) -> None:
-    _ = settings  # retained for future use; settings can influence downstream flows.
-    store_code = store_cfg.get("store_code")
-
-    def _log(status: str, message: str, *, extras: Dict | None = None) -> None:
-        log_event(
-            logger=logger,
-            phase="download",
-            status=status,
-            store_code=store_code,
-            bucket=None,
-            message=message,
-            extras=extras,
-        )
-
-    target_url = store_cfg.get("dashboard_url")
-    if not target_url:
-        sc = store_cfg.get("store_code")
-        if not sc:
-            raise RuntimeError("Store configuration missing dashboard_url and store_code")
-        target_url = tms_dashboard_url(sc)
-        store_cfg["dashboard_url"] = target_url
-    target_url = str(target_url)
-
-    _log(
-        "info",
-        "navigating to store dashboard in single session",
-        extras={"target_url": target_url},
-    )
-
-    response = await page.goto(target_url, wait_until="domcontentloaded")
-    response_status = None
-    if response is not None:
-        try:
-            response_status = response.status
-        except Exception:  # pragma: no cover - defensive
-            response_status = None
-
-    if await _is_login_page(page, logger):
-        _log(
-            "warn",
-            "dashboard navigation returned to login page; skipping store",
-            extras={"current_url": page.url},
-        )
-        raise SkipStoreDashboardError(
-            f"Skipping store_code={store_code}: session returned to login page during single-session run."
-        )
-
-    try:
-        await page.wait_for_selector(
-            page_selectors.DOWNLOAD_LINKS,
-            state="visible",
-            timeout=DASHBOARD_DOWNLOAD_CONTROL_TIMEOUT_MS,
-        )
-    except PlaywrightTimeoutError as exc:
-        content = None
-        try:
-            content = await page.content()
-        except Exception:  # pragma: no cover - defensive
-            content = None
-
-        normalized = _normalize_html_tokens(content or "")
-        if "notice: you need to be logged in to view this page!" in normalized:
-            _log(
-                "warn",
-                "store dashboard reported login requirement; skipping store",
-                extras={"current_url": page.url},
-            )
-            raise SkipStoreDashboardError(
-                f"Skipping store_code={store_code}: dashboard reported login requirement."
-            )
-
-        _log(
-            "error",
-            "store dashboard controls not found during single-session run",
-            extras={"error": str(exc), "current_url": page.url},
-        )
-        raise
-
-    _log(
-        "info",
-        "store dashboard reached",
-        extras={"dashboard_url": target_url, "response_status": response_status},
-    )
-
-    await _download_specs_for_store(
-        page,
-        store_cfg,
-        logger=logger,
-        merged_buckets=merged_buckets,
-        download_counts=download_counts,
-    )
 
 
 async def _is_login_page(page: Page, logger: JsonLogger | None = None) -> bool:
@@ -1393,13 +1109,18 @@ async def run_all_stores(
                     await page.close()
                     continue
 
-                await _download_specs_for_store(
-                    page,
-                    cfg,
-                    logger=logger,
-                    merged_buckets=merged_buckets,
-                    download_counts=download_counts,
-                )
+                for spec in FILE_SPECS:
+                    if not spec.get("download", True):
+                        continue
+
+                    saved = await _download_one_spec(page, cfg, spec, logger=logger)
+                    if saved and spec.get("merge_bucket"):
+                        bucket = spec["merge_bucket"]
+                        merged_buckets.setdefault(bucket, []).append(saved)
+                        download_counts.setdefault(bucket, {})[sc] = {
+                            "rows": _count_rows(saved),
+                            "path": str(saved),
+                        }
 
                 log_event(
                     logger=logger,
@@ -1413,159 +1134,33 @@ async def run_all_stores(
                 await ctx.close()
 
     # ---- Merges (by bucket) ----
-    _finalize_merges(merged_buckets, download_counts, logger=logger)
+    for bucket, files in merged_buckets.items():
+        out_name = MERGED_NAMES.get(bucket, f"Merged_{bucket}_{datetime.now().strftime('%Y%m%d')}.csv")
+        out_path = DATA_DIR / out_name
+        _merge_bucket(files, out_path)
+        log_event(
+            logger=logger,
+            phase="merge",
+            bucket=bucket,
+            merged_file=str(out_path),
+            counts={
+                "download_total": sum(
+                    entry["rows"] for entry in download_counts.get(bucket, {}).values()
+                ),
+                "merged_rows": _count_rows(out_path),
+            },
+            message="merge complete",
+        )
+        download_counts.setdefault(bucket, {})["__merged__"] = {
+            "rows": _count_rows(out_path),
+            "path": str(out_path),
+        }
 
-    return download_counts
-
-
-async def run_all_stores_single_session(
-    *,
-    settings: PipelineSettings,
-    logger: JsonLogger,
-) -> Dict[str, Dict[str, Dict[str, object]]]:
-    """Run dashboard downloads for all stores using a single persistent session."""
-
-    merged_buckets: Dict[str, List[Path]] = {}
-    download_counts: Dict[str, Dict[str, Dict[str, object]]] = {}
-
-    resolved_stores = settings.stores or {}
-    if not resolved_stores:
-        resolved_stores = stores_from_list(DEFAULT_STORE_CODES)
-
-    env_value = getattr(settings, "raw_store_env", "")
-    log_event(
-        logger=logger,
-        phase="download",
-        store_code=None,
-        bucket=None,
-        message="resolved stores for single-session run",
-        extras={
-            "raw_STORES_LIST": env_value,
-            "store_codes": [cfg.get("store_code") for cfg in resolved_stores.values()],
-        },
-    )
-
-    store_items = list(resolved_stores.items())
-    if not store_items:
-        _finalize_merges(merged_buckets, download_counts, logger=logger)
-        return download_counts
-
-    first_store_name, first_store_cfg = store_items[0]
-    profile_dir_cfg = first_store_cfg.get("profile_dir")
-    profile_key = first_store_cfg.get("profile_key") or first_store_name
-    if profile_dir_cfg:
-        user_dir = _ensure_profile_dir(Path(profile_dir_cfg))
-    else:
-        user_dir = _ensure_profile_dir(profile_key)
-
-    storage_state_cfg = first_store_cfg.get("storage_state")
-    storage_state_file = None
-    storage_state_source: str | None = None
-    if storage_state_cfg:
-        storage_state_candidate = Path(storage_state_cfg)
-        if storage_state_candidate.exists():
-            storage_state_file = storage_state_candidate
-            storage_state_source = "store_cfg"
-        else:
-            log_event(
-                logger=logger,
-                phase="download",
-                status="warn",
-                store_code=first_store_cfg.get("store_code"),
-                bucket=None,
-                message="storage state not found; falling back to credential login",
-                extras={"storage_state": str(storage_state_candidate)},
-            )
-            storage_state_file = None
-
-    if storage_state_file is None and storage_state_cfg is None:
-        default_state = storage_state_path()
-        if default_state.exists():
-            storage_state_file = default_state
-            storage_state_source = "default"
-
-    context_kwargs = dict(
-        user_data_dir=str(user_dir),
-        headless=False,
-        accept_downloads=True,
-        channel="chrome",
-        args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-    )
-
-    async with async_playwright() as p:
-        ctx = await p.chromium.launch_persistent_context(**context_kwargs)
-
-        if storage_state_file is not None:
-            log_event(
-                logger=logger,
-                phase="download",
-                status="info",
-                store_code=first_store_cfg.get("store_code"),
-                bucket=None,
-                message="loading storage state for single-session run",
-                extras={
-                    "storage_state": str(storage_state_file),
-                    "source": storage_state_source or "unspecified",
-                },
-            )
-            await _prime_context_with_storage_state(
-                ctx,
-                storage_state_file,
-                store_code=first_store_cfg.get("store_code", ""),
-                logger=logger,
-            )
-
-        page = await ctx.new_page()
-        await _bootstrap_session_via_home_and_tracker(page, first_store_cfg, logger)
-
-        try:
-            for _, cfg in store_items:
-                sc = cfg.get("store_code")
-                try:
-                    await _switch_to_store_dashboard_and_download(
-                        page,
-                        cfg,
-                        logger=logger,
-                        settings=settings,
-                        merged_buckets=merged_buckets,
-                        download_counts=download_counts,
-                    )
-                except SkipStoreDashboardError as exc:
-                    log_event(
-                        logger=logger,
-                        phase="download",
-                        status="warn",
-                        store_code=sc,
-                        bucket=None,
-                        message="skipping store due to dashboard unavailability",
-                        extras={"reason": str(exc)},
-                    )
-                    continue
-
-                log_event(
-                    logger=logger,
-                    phase="download",
-                    message="store download completed",
-                    store_code=sc,
-                    bucket=None,
-                )
-        finally:
-            try:
-                page_is_closed = getattr(page, "is_closed", None)
-                if callable(page_is_closed):
-                    if not page.is_closed():
-                        await page.close()
-                else:
-                    await page.close()
-            finally:
-                ctx_is_closed = getattr(ctx, "is_closed", None)
-                if callable(ctx_is_closed):
-                    if not ctx.is_closed():
-                        await ctx.close()
-                else:
-                    await ctx.close()
-
-    _finalize_merges(merged_buckets, download_counts, logger=logger)
+        # Auto-filter for missed_leads bucket
+        #if bucket == "missed_leads":
+        #    filtered_name = f"filtered_merged_missed_leads_{datetime.now().strftime('%Y%m%d')}.csv"
+        #    filtered_path = DATA_DIR / filtered_name
+        #    filter_merged_missed_leads(out_path, filtered_path)
 
     return download_counts
 

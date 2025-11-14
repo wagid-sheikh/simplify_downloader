@@ -41,11 +41,22 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="simplify_downloader")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    run_parser = subparsers.add_parser("run", help="Execute full pipeline")
+    # Existing multi-session pipeline
+    run_parser = subparsers.add_parser("run", help="Execute full pipeline (multi-session)")
     run_parser.add_argument("--stores_list", type=str, default=None, help="Comma separated store keys")
     run_parser.add_argument("--dry_run", action="store_true", help="Skip DB writes")
     run_parser.add_argument("--run_id", type=str, default=None, help="Override generated run id")
 
+    # NEW: single-session pipeline command
+    run_single_parser = subparsers.add_parser(
+        "run-single-session",
+        help="Execute full pipeline using a single browser session for all stores",
+    )
+    run_single_parser.add_argument("--stores_list", type=str, default=None, help="Comma separated store keys")
+    run_single_parser.add_argument("--dry_run", action="store_true", help="Skip DB writes")
+    run_single_parser.add_argument("--run_id", type=str, default=None, help="Override generated run id")
+
+    # DB command as before
     db_parser = subparsers.add_parser("db", help="Database operations")
     db_sub = db_parser.add_subparsers(dest="db_command", required=True)
     upgrade_parser = db_sub.add_parser("upgrade", help="Run Alembic upgrade head")
@@ -54,11 +65,21 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "run":
+        # existing behaviour — multi-session
         return asyncio.run(_run_async(args))
+
+    if args.command == "run-single-session":
+        # Hint to the pipeline / settings that we want the single-session runner.
+        # This does NOT break existing behaviour; old code will just ignore it
+        # if Codex hasn’t wired it yet.
+        os.environ["SIMPLIFY_SINGLE_SESSION"] = "1"
+        return asyncio.run(_run_async(args))
+
     if args.command == "db" and args.db_command == "upgrade":
         revision = args.revision
         os.environ.setdefault("ALEMBIC_CONFIG", "alembic.ini")
         run_alembic_upgrade(revision)
         return 0
+
     parser.error("Unknown command")
     return 1
