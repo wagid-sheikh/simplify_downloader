@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Date, Float, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Date,
+    Float,
+    Integer,
+    PrimaryKeyConstraint,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -34,12 +42,12 @@ class MissedLead(Base):
 class UndeliveredOrder(Base):
     __tablename__ = "undelivered_orders"
     __table_args__ = (
-        UniqueConstraint("order_id", name="uq_undelivered_order_id"),
+        PrimaryKeyConstraint("order_id", "store_code", name="pk_undelivered_order"),
     )
 
-    order_id: Mapped[str] = mapped_column(String, primary_key=True)
+    order_id: Mapped[str] = mapped_column(String, nullable=False)
     order_date: Mapped[Date | None] = mapped_column(Date)
-    store_code: Mapped[str | None] = mapped_column(String)
+    store_code: Mapped[str] = mapped_column(String, nullable=False)
     store_name: Mapped[str | None] = mapped_column(String)
     taxable_amount: Mapped[float | None] = mapped_column(Float)
     net_amount: Mapped[float | None] = mapped_column(Float)
