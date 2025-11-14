@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 from pathlib import Path
 import re
 from typing import Any, Dict, Iterable, List
@@ -1268,154 +1267,6 @@ def filter_merged_missed_leads(input_path: Path, output_path: Path) -> None:
 
     print(f"[filter] {output_path.name} — kept {len(rows_out)} rows after filtering.")
 
-async def run_all_stores(
-    stores: Dict[str, dict] | None = None,
-    logger: JsonLogger | None = None,
-    raw_store_env: str | None = None,
-) -> Dict[str, Dict[str, Dict[str, object]]]:
-    """
-    Opens a persistent profile for each store, goes to the store's TMS dashboard,
-    downloads all FILE_SPECS where download=True, saves into dashboard_downloader/data/,
-    and finally performs merges per merge_bucket.
-    """
-    logger = logger or JsonLogger()
-    merged_buckets: Dict[str, List[Path]] = {}
-    download_counts: Dict[str, Dict[str, Dict[str, object]]] = {}
-
-    resolved_stores = stores or stores_from_list(DEFAULT_STORE_CODES)
-    env_value = raw_store_env if raw_store_env is not None else os.getenv("stores_list") or os.getenv("STORES_LIST") or ""
-    log_event(
-        logger=logger,
-        phase="download",
-        store_code=None,
-        bucket=None,
-        message="resolved stores for run",
-        extras={
-            "raw_STORES_LIST": env_value,
-            "store_codes": [cfg.get("store_code") for cfg in resolved_stores.values()],
-        },
-    )
-
-    async with async_playwright() as p:
-        # NOTE: On macOS we can keep channel="chrome" if you prefer;
-        # leaving it off keeps it portable for Linux server (Chromium).
-        for store_name, cfg in resolved_stores.items():
-            profile_dir_cfg = cfg.get("profile_dir")
-            profile_key = cfg.get("profile_key") or store_name
-            if profile_dir_cfg:
-                user_dir = _ensure_profile_dir(Path(profile_dir_cfg))
-            else:
-                user_dir = _ensure_profile_dir(profile_key)
-            sc = cfg["store_code"]
-
-            storage_state_cfg = cfg.get("storage_state")
-            storage_state_file = None
-            storage_state_source: str | None = None
-            if storage_state_cfg:
-                storage_state_file = Path(storage_state_cfg)
-                if not storage_state_file.exists():
-                    log_event(
-                        logger=logger,
-                        phase="download",
-                        status="warn",
-                        store_code=sc,
-                        bucket=None,
-                        message="storage state not found; falling back to credential login",
-                        extras={"storage_state": str(storage_state_file)},
-                    )
-                    storage_state_file = None
-                else:
-                    storage_state_source = "store_cfg"
-
-            context_kwargs = dict(
-                user_data_dir=str(user_dir),
-                headless=False,
-                accept_downloads=True,
-                # macOS dev: uncomment next line to force system Chrome
-                channel="chrome",
-                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-            )
-
-            if storage_state_file is None and storage_state_cfg is None:
-                # Provide a sane default for callers that rely on first_login.py.
-                default_state = storage_state_path()
-                if default_state.exists():
-                    storage_state_file = default_state
-                    storage_state_source = "default"
-
-            ctx = await p.chromium.launch_persistent_context(**context_kwargs)
-
-            if storage_state_file is not None:
-                log_event(
-                    logger=logger,
-                    phase="download",
-                    status="info",
-                    store_code=sc,
-                    bucket=None,
-                    message="loading storage state",
-                    extras={
-                        "storage_state": str(storage_state_file),
-                        "source": storage_state_source or "unspecified",
-                    },
-                )
-                await _prime_context_with_storage_state(
-                    ctx,
-                    storage_state_file,
-                    store_code=sc,
-                    logger=logger,
-                )
-
-            try:
-                log_event(
-                    logger=logger,
-                    phase="download",
-                    status="info",
-                    store_code=sc,
-                    bucket=None,
-                    message="creating primary page for store",
-                )
-                page = await ctx.new_page()
-                # Hit the dashboard and automatically refresh the session when needed.
-                try:
-                    await _ensure_dashboard(page, cfg, logger)
-                except SkipStoreDashboardError as exc:
-                    log_event(
-                        logger=logger,
-                        phase="download",
-                        status="warn",
-                        store_code=sc,
-                        bucket=None,
-                        message="skipping store due to dashboard unavailability",
-                        extras={"reason": str(exc)},
-                    )
-                    await page.close()
-                    continue
-
-                await _download_specs_for_store(
-                    page,
-                    cfg,
-                    logger=logger,
-                    merged_buckets=merged_buckets,
-                    download_counts=download_counts,
-                )
-
-                log_event(
-                    logger=logger,
-                    phase="download",
-                    message="store download completed",
-                    store_code=sc,
-                    bucket=None,
-                )
-
-            finally:
-                await ctx.close()
-
-    # ---- Merges (by bucket) ----
-    _finalize_merges(merged_buckets, download_counts, logger=logger)
-
-    return download_counts
-
-
 async def run_all_stores_single_session(
     *,
     settings: PipelineSettings,
@@ -1559,9 +1410,4 @@ async def run_all_stores_single_session(
     _finalize_merges(merged_buckets, download_counts, logger=logger)
 
     return download_counts
-
-if __name__ == "__main__":
-    import asyncio
-
-    asyncio.run(run_all_stores())
 
