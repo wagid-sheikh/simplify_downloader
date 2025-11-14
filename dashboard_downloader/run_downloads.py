@@ -5,9 +5,9 @@ import json
 import os
 from pathlib import Path
 import re
-from typing import Iterable
-from typing import Dict, List
+from typing import Dict, Iterable, List
 from datetime import datetime
+from urllib.parse import urlparse
 
 from playwright.async_api import (
     async_playwright,
@@ -33,6 +33,21 @@ from .json_logger import JsonLogger, log_event
 
 
 DASHBOARD_DOWNLOAD_CONTROL_TIMEOUT_MS = 90_000
+
+
+def _normalize_url_path(path: str | None) -> str:
+    if not path:
+        return "/"
+    normalized = path.strip()
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+    normalized = normalized.rstrip("/")
+    return normalized or "/"
+
+
+_LOGIN_URL_PARTS = urlparse(LOGIN_URL)
+_LOGIN_HOST = (_LOGIN_URL_PARTS.hostname or "").lower()
+_LOGIN_PATH = _normalize_url_path(_LOGIN_URL_PARTS.path)
 
 
 class SkipStoreDashboardError(Exception):
@@ -394,32 +409,44 @@ async def _download_one_spec(page: Page, store_cfg: Dict, spec: Dict, *, logger:
             return None
 
 
-async def _is_login_page(page: Page) -> bool:
-    """Heuristic check to determine whether the current page is the login form."""
+async def _is_login_page(page: Page, logger: JsonLogger | None = None) -> bool:
+    """Determine whether the current page is the Simplify login form."""
 
-    # Primary signal: does our explicit username locator resolve?
+    current_url = page.url or ""
+    if not current_url:
+        return False
+
+    parsed = urlparse(current_url)
+    host = (parsed.hostname or "").lower()
+    path = _normalize_url_path(parsed.path)
+
+    if not host:
+        return False
+
+    if host.endswith("tms.simplifytumbledry.in"):
+        return False
+
+    host_matches = host == _LOGIN_HOST or (
+        _LOGIN_HOST and host.endswith(f".{_LOGIN_HOST}")
+    )
+
+    if not host_matches or path != _LOGIN_PATH:
+        return False
+
     try:
-        locator = page.locator(page_selectors.LOGIN_USERNAME)
-        if await locator.count() > 0:
-            return True
+        username_count = await page.locator(page_selectors.LOGIN_USERNAME).count()
     except Exception:  # pragma: no cover - defensive; locator failures shouldn't break flow
-        pass
+        return False
 
-    # Fallback: inspect the rendered HTML for common login markers. Some environments
-    # return the login form HTML while keeping the original dashboard URL, so we need
-    # to look at the content directly.
     try:
-        content = (await page.content()) or ""
-    except Exception:  # pragma: no cover - if Playwright can't give us content just bail
+        password_count = await page.locator(page_selectors.LOGIN_PASSWORD).count()
+    except Exception:  # pragma: no cover - defensive
         return False
 
-    if not content:
-        return False
-
-    if _extract_login_error(content):
+    if username_count > 0 and password_count > 0:
         return True
 
-    return _looks_like_login_html_text(content)
+    return False
 
 
 async def _navigate_via_home_to_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> None:
@@ -463,10 +490,10 @@ async def _navigate_via_home_to_dashboard(page: Page, store_cfg: Dict, logger: J
         extras={"home_url": home_url, "current_url": page.url, "response_status": response_status},
     )
 
-    if await _is_login_page(page):
+    if await _is_login_page(page, logger):
         _log("info", "home page requires authentication; invoking login flow")
         await _perform_login_flow(page, store_cfg, logger)
-        if await _is_login_page(page):
+        if await _is_login_page(page, logger):
             _log(
                 "error",
                 "home navigation remained on login page",
@@ -546,7 +573,7 @@ async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -
         await page.goto(LOGIN_URL, wait_until="domcontentloaded")
         current_url = page.url or ""
 
-    if not await _is_login_page(page):
+    if not await _is_login_page(page, logger):
         # Storage state/session cookies already landed us past login.
         _log("info", "login page bypassed; session already active", extras={"current_url": page.url})
         return
@@ -673,7 +700,7 @@ async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -
             )
             raise RuntimeError("Automated login failed; site reports login error")
 
-    still_login_page = await _is_login_page(page)
+    still_login_page = await _is_login_page(page, logger)
 
     extras = {
         "post_login_url": page.url,
@@ -733,8 +760,19 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
     )
 
     performed_login_flow = False
+    has_creds = bool(store_cfg.get("username") and store_cfg.get("password"))
 
-    if await _is_login_page(page):
+    if await _is_login_page(page, logger):
+        if not has_creds:
+            _log(
+                "warn",
+                "login page detected but credentials missing; skipping store",
+                extras={"dashboard_url": dashboard_url, "current_url": page.url},
+            )
+            raise SkipStoreDashboardError(
+                f"Skipping store_code={store_code}: login required but credentials are not configured."
+            )
+
         _log(
             "info",
             "dashboard requires login; attempting automated login",
@@ -763,7 +801,17 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
                 extras={"error": str(exc)},
             )
 
-            if await _is_login_page(page):
+            if await _is_login_page(page, logger):
+                if not has_creds:
+                    _log(
+                        "warn",
+                        "dashboard redirected to login but credentials are missing; skipping store",
+                        extras={"current_url": page.url},
+                    )
+                    raise SkipStoreDashboardError(
+                        f"Skipping store_code={store_code}: redirected to login without credentials."
+                    )
+
                 if performed_login_flow:
                     _log(
                         "error",
@@ -790,7 +838,6 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
                     raise
                 continue
 
-            has_creds = bool(store_cfg.get("username") and store_cfg.get("password"))
             if not has_creds:
                 _log(
                     "warn",
