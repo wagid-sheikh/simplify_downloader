@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -72,3 +74,38 @@ def test_missing_required_raises_value_error():
         assert "pickup_row_id" in str(exc)
     else:
         raise AssertionError("Expected ValueError for missing required column")
+
+
+def test_undelivered_uses_order_no_for_order_id():
+    headers = [
+        "order_no",
+        "order_date",
+        "store_code",
+    ]
+    header_map = normalize_headers(headers)
+    row = {
+        "order_no": "ORD-123",
+        "order_date": "2024-03-20",
+        "store_code": "SC001",
+    }
+
+    result = coerce_csv_row("undelivered_all", row, header_map)
+
+    assert result["order_id"] == "ORD-123"
+
+
+def test_undelivered_missing_order_id_and_order_no_raises():
+    headers = [
+        "order_date",
+        "store_code",
+    ]
+    header_map = normalize_headers(headers)
+    row = {
+        "order_date": "2024-03-20",
+        "store_code": "SC001",
+    }
+
+    with pytest.raises(ValueError) as excinfo:
+        coerce_csv_row("undelivered_all", row, header_map)
+
+    assert "order_id" in str(excinfo.value)
