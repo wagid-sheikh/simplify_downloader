@@ -4,7 +4,7 @@ from __future__ import annotations
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "0003_undelivered_composite_pk"
+revision = "0003_undelivered_pk"
 down_revision = "0002_undelivered_uc"
 branch_labels = None
 depends_on = None
