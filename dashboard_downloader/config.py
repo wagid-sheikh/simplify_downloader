@@ -3,7 +3,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 import os
 from datetime import datetime
-from typing import Dict, Iterable, List
+from typing import Any, Dict, Iterable, List
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 PKG_ROOT = Path(__file__).resolve().parent            # .../simplify_downloader/dashboard_downloader
@@ -81,30 +81,101 @@ TD_UN3668_STORE_CODE = os.getenv("TD_UN3668_STORE_CODE", "A668")
 TD_KN3817_STORE_CODE = os.getenv("TD_KN3817_STORE_CODE", "A817")
 
 # ── Store registry ───────────────────────────────────────────────────────────
+
+
+def _apply_store_defaults(
+    base: Dict[str, Any], *, store_code: str, profile_key: str | None = None
+) -> Dict[str, Any]:
+    """Return a copy of ``base`` with derived defaults for dashboard access."""
+
+    normalized_code = store_code.strip().upper()
+    profile_label = (profile_key or normalized_code).strip() or normalized_code
+
+    cfg: Dict[str, Any] = dict(base)
+    cfg["store_code"] = normalized_code
+    cfg.setdefault("home_url", HOME_URL)
+    cfg.setdefault("login_url", LOGIN_URL)
+    cfg.setdefault("dashboard_url", tms_dashboard_url(normalized_code))
+    cfg.setdefault("profile_key", profile_label)
+
+    profile_dir = cfg.get("profile_dir")
+    if profile_dir is None:
+        profile_dir_path = PROFILES_DIR / profile_label
+    else:
+        profile_dir_path = Path(profile_dir)
+    cfg["profile_dir"] = profile_dir_path
+
+    if not cfg.get("storage_state"):
+        cfg["storage_state"] = storage_state_for_store(profile_label)
+
+    return cfg
+
+
+def _known_store(store_key: str, *, username: str, password: str, store_code: str) -> Dict[str, Any]:
+    base = {
+        "username": username,
+        "password": password,
+        "profile_dir": PROFILES_DIR / store_key,
+        "storage_state": storage_state_for_store(store_key),
+    }
+    return _apply_store_defaults(base, store_code=store_code, profile_key=store_key)
+
+
 STORES = {
-    "UN3668": {
-        "username": TD_UN3668_USERNAME,
-        "password": TD_UN3668_PASSWORD,
-        "store_code": TD_UN3668_STORE_CODE,
-        "profile_dir": PROFILES_DIR / "UN3668",
-        "storage_state": storage_state_for_store("UN3668"),
-        "dashboard_url": tms_dashboard_url(TD_UN3668_STORE_CODE),
-    },
-    "KN3817": {
-        "username": TD_KN3817_USERNAME,
-        "password": TD_KN3817_PASSWORD,
-        "store_code": TD_KN3817_STORE_CODE,
-        "profile_dir": PROFILES_DIR / "KN3817",
-        "storage_state": storage_state_for_store("KN3817"),
-        "dashboard_url": tms_dashboard_url(TD_KN3817_STORE_CODE),
-    },
+    "UN3668": _known_store(
+        "UN3668",
+        username=TD_UN3668_USERNAME,
+        password=TD_UN3668_PASSWORD,
+        store_code=TD_UN3668_STORE_CODE,
+    ),
+    "KN3817": _known_store(
+        "KN3817",
+        username=TD_KN3817_USERNAME,
+        password=TD_KN3817_PASSWORD,
+        store_code=TD_KN3817_STORE_CODE,
+    ),
 }
 
 
+DEFAULT_STORE_CODES = [cfg["store_code"] for cfg in STORES.values()]
+
+
+def _find_known_store_by_code(store_code: str) -> str | None:
+    normalized = store_code.strip().upper()
+    for name, cfg in STORES.items():
+        if cfg.get("store_code", "").upper() == normalized:
+            return name
+    return None
+
+
 def stores_from_list(store_ids: Iterable[str]) -> Dict[str, dict]:
-    """Return a subset of STORES keyed by the provided identifiers."""
-    normalized = [s.strip().upper() for s in store_ids if s]
-    return {key: STORES[key] for key in normalized if key in STORES}
+    """Resolve store configurations for the provided identifiers or codes."""
+
+    resolved: Dict[str, dict] = {}
+    for raw in store_ids:
+        if not raw:
+            continue
+        token = raw.strip()
+        if not token:
+            continue
+
+        normalized = token.upper()
+
+        if normalized in STORES:
+            cfg = dict(STORES[normalized])
+            resolved[cfg["store_code"]] = cfg
+            continue
+
+        alias = _find_known_store_by_code(normalized)
+        if alias:
+            cfg = dict(STORES[alias])
+            resolved[cfg["store_code"]] = cfg
+            continue
+
+        cfg = _apply_store_defaults({}, store_code=normalized, profile_key=normalized)
+        resolved[cfg["store_code"]] = cfg
+
+    return resolved
 
 
 def env_stores_list() -> List[str]:

@@ -70,7 +70,15 @@ async def _upsert_batch(
     dedupe_keys = spec["dedupe_keys"]
     update_cols = {col: stmt.excluded[col] for col in rows[0].keys() if col not in dedupe_keys}
     stmt = stmt.on_conflict_do_update(index_elements=dedupe_keys, set_=update_cols)
+    primary_cols = list(model.__table__.primary_key.columns)
+    if primary_cols:
+        stmt = stmt.returning(*primary_cols)
+
     result = await session.execute(stmt)
+
+    if result.returns_rows:
+        return len(result.fetchall())
+
     return result.rowcount or 0
 
 
