@@ -337,6 +337,12 @@ async def extract_dashboard_summary(
         }
     )
 
+    gstin_column_name: Optional[str] = None
+    for candidate in ("gstin", "store_gstin"):
+        if candidate in dashboard_data:
+            gstin_column_name = candidate
+            break
+
     found_metrics: set[str] = set()
     sections_with_data: set[str] = set()
 
@@ -413,6 +419,34 @@ async def extract_dashboard_summary(
             "failed to extract dashboard title",
             extras={"error": str(exc)},
         )
+
+    user_bit_text: Optional[str] = None
+    if gstin_column_name:
+        user_bit_locator = page.locator("li.user_bit a")
+        try:
+            if await user_bit_locator.count() > 0:
+                user_bit_text = await user_bit_locator.first.inner_text()
+        except Exception as exc:  # pragma: no cover
+            _log(
+                "warn",
+                "failed to extract gstin from navbar",
+                extras={"error": str(exc)},
+            )
+        if user_bit_text:
+            gstin_match = re.search(r"\b[0-9A-Z]{15}\b", user_bit_text)
+            if gstin_match:
+                dashboard_data[gstin_column_name] = gstin_match.group(0)
+
+    if gstin_column_name and dashboard_data.get(gstin_column_name) is None:
+        fallback_gstin = store_cfg.get("gstin") or store_cfg.get("store_gstin")
+        if fallback_gstin:
+            dashboard_data[gstin_column_name] = fallback_gstin
+        else:
+            _log(
+                "warn",
+                "gstin not found on dashboard",
+                extras={"user_bit_text": user_bit_text},
+            )
 
     # Launch date
     launch_locator = page.locator("h3.section-title:has-text(\"Launch Date\")")
@@ -503,17 +537,17 @@ async def extract_dashboard_summary(
     # Delivery
     delivery_rows, delivery_headers, delivery_found = await _collect_section("Delivery")
     if delivery_found:
-        await _parse_label_section(delivery_rows, DELIVERY_LABEL_TO_METRIC, _set_metric)
+        await _parse_delivery(delivery_rows, delivery_headers, _set_metric)
 
     # Repeat Customers
     repeat_rows, repeat_headers, repeat_found = await _collect_section("Repeat Customers")
     if repeat_found:
-        await _parse_label_section(repeat_rows, REPEAT_LABEL_TO_METRIC, _set_metric)
+        await _parse_repeat_customers(repeat_rows, repeat_headers, _set_metric)
 
     # Package
     package_rows, package_headers, package_found = await _collect_section("Package")
     if package_found:
-        await _parse_package(package_rows, _set_metric)
+        await _parse_package(package_rows, package_headers, _set_metric)
 
     for metric in DASHBOARD_SUMMARY_COLUMNS:
         if metric not in found_metrics and dashboard_data.get(metric) is None:
@@ -636,7 +670,7 @@ async def _extract_table_rows(locator: Locator) -> List[List[str]]:
 
 async def _parse_revenue(rows: List[List[str]], headers: List[str], set_metric) -> None:
     column_map: Dict[int, str] = {}
-    for idx in range(1, len(headers)):
+    for idx in range(len(headers)):
         normalized = _normalize_label(headers[idx])
         metric = REVENUE_HEADER_TO_METRIC.get(normalized)
         if metric:
@@ -672,53 +706,37 @@ def _find_revenue_row(rows: List[List[str]]) -> Optional[List[str]]:
 
 
 async def _parse_pickup(rows: List[List[str]], headers: List[str], set_metric) -> None:
-    column_types: Dict[int, str] = {}
-    for idx in range(1, len(headers)):
-        column_type = _classify_pickup_column(headers[idx])
-        if column_type:
-            column_types[idx] = column_type
-    for row in rows:
-        if len(row) < 2:
+    if not rows or not headers:
+        return
+    data_row = rows[0]
+    for idx, header_text in enumerate(headers):
+        if idx >= len(data_row):
             continue
-        row_type = _identify_pickup_row(row[0])
-        if not row_type:
+        label = _normalize_label(header_text)
+        if not label:
             continue
-        metric_map = PICKUP_ROW_METRICS[row_type]
-        for idx in range(1, len(row)):
-            column_type = column_types.get(idx)
-            if not column_type:
-                continue
-            metric = metric_map.get(column_type)
-            if not metric:
-                continue
-            set_metric(metric, row[idx])
-
-
-def _classify_pickup_column(header_text: str) -> Optional[str]:
-    normalized = _normalize_label(header_text)
-    lower = header_text.lower()
-    if not normalized:
-        return None
-    if "%" in header_text or "pct" in normalized or "percentage" in lower:
-        return "conv_pct"
-    if "conversion" in lower:
-        return "conv_count"
-    if "count" in lower or "orders" in lower or "customers" in lower or "total" in lower:
-        return "count"
-    return None
-
-
-def _identify_pickup_row(text: str) -> Optional[str]:
-    normalized = _normalize_label(text)
-    if not normalized:
-        return None
-    if "new" in normalized:
-        return "new"
-    if "existing" in normalized:
-        return "existing"
-    if "total" in normalized:
-        return "total"
-    return None
+        if "new" in label:
+            row_type = "new"
+        elif "existing" in label:
+            row_type = "existing"
+        elif "total" in label:
+            row_type = "total"
+        else:
+            continue
+        lower = header_text.lower()
+        if "%" in header_text or "pct" in label or "percentage" in lower:
+            column_type = "conv_pct"
+        elif "conv" in lower:
+            column_type = "conv_count"
+        else:
+            column_type = "count"
+        metric_map = PICKUP_ROW_METRICS.get(row_type)
+        if not metric_map:
+            continue
+        metric = metric_map.get(column_type)
+        if not metric:
+            continue
+        set_metric(metric, data_row[idx])
 
 
 async def _parse_label_section(rows: List[List[str]], mapping: Dict[str, str], set_metric) -> None:
@@ -735,18 +753,46 @@ async def _parse_label_section(rows: List[List[str]], mapping: Dict[str, str], s
         set_metric(metric, value)
 
 
-async def _parse_package(rows: List[List[str]], set_metric) -> None:
-    for row in rows:
-        if len(row) < 2:
+async def _parse_delivery(rows: List[List[str]], headers: List[str], set_metric) -> None:
+    if not rows or not headers:
+        return
+    data_row = rows[0]
+    for idx, header in enumerate(headers):
+        label = _normalize_label(header)
+        metric = DELIVERY_LABEL_TO_METRIC.get(label)
+        if not metric:
             continue
-        label = _normalize_label(row[0])
+        if idx >= len(data_row):
+            continue
+        set_metric(metric, data_row[idx])
+
+
+async def _parse_repeat_customers(rows: List[List[str]], headers: List[str], set_metric) -> None:
+    if not rows or not headers:
+        return
+    data_row = rows[0]
+    for idx, header in enumerate(headers):
+        label = _normalize_label(header)
+        metric = REPEAT_LABEL_TO_METRIC.get(label)
+        if not metric:
+            continue
+        if idx >= len(data_row):
+            continue
+        set_metric(metric, data_row[idx])
+
+
+async def _parse_package(rows: List[List[str]], headers: List[str], set_metric) -> None:
+    if not rows or not headers:
+        return
+    data_row = rows[0]
+    for idx, header in enumerate(headers):
+        label = _normalize_label(header)
         metric = _identify_package_metric(label)
         if not metric:
             continue
-        value = _value_from_row(row)
-        if value is None:
+        if idx >= len(data_row):
             continue
-        set_metric(metric, value)
+        set_metric(metric, data_row[idx])
 
 
 def _identify_package_metric(label: str) -> Optional[str]:
