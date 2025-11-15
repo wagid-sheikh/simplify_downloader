@@ -6,6 +6,7 @@ import os
 from typing import List, Optional
 
 from dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
+from dashboard_downloader.run_downloads import LoginBootstrapError
 from dashboard_downloader.settings import load_settings
 
 from simplify_downloader.common.db import run_alembic_upgrade
@@ -32,9 +33,48 @@ async def _run_async(args: argparse.Namespace) -> int:
 
     from dashboard_downloader.pipeline import run_pipeline
 
-    await run_pipeline(settings=settings, logger=logger)
-    logger.close()
-    return 0
+    try:
+        await run_pipeline(settings=settings, logger=logger)
+    except LoginBootstrapError as exc:
+        log_event(
+            logger=logger,
+            phase="orchestrator",
+            status="error",
+            store_code=None,
+            bucket=None,
+            message="pipeline failed during login bootstrap",
+            extras={"error": str(exc), "exc_type": type(exc).__name__},
+        )
+        return 1
+    except Exception as exc:
+        log_event(
+            logger=logger,
+            phase="orchestrator",
+            status="error",
+            store_code=None,
+            bucket=None,
+            message="pipeline failed with unexpected error",
+            extras={"error": str(exc), "exc_type": type(exc).__name__},
+        )
+        return 1
+    else:
+        failure_info = getattr(settings, "single_session_failure", None)
+        if failure_info:
+            extras = dict(failure_info)
+            extras.setdefault("exc_type", "LoginBootstrapError")
+            log_event(
+                logger=logger,
+                phase="orchestrator",
+                status="error",
+                store_code=None,
+                bucket=None,
+                message="pipeline failed during login bootstrap",
+                extras=extras,
+            )
+            return 1
+        return 0
+    finally:
+        logger.close()
 
 
 def main(argv: Optional[List[str]] = None) -> int:

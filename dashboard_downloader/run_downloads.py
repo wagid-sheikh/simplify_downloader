@@ -14,8 +14,8 @@ from playwright.async_api import (
     async_playwright,
     BrowserContext,
     Page,
-    TimeoutError as PlaywrightTimeoutError,
 )
+from playwright._impl._errors import TimeoutError as PlaywrightTimeoutError
 
 from common.ingest.service import _looks_like_html
 
@@ -38,6 +38,12 @@ from .json_logger import JsonLogger, log_event
 
 
 DASHBOARD_DOWNLOAD_CONTROL_TIMEOUT_MS = 90_000
+
+
+class LoginBootstrapError(RuntimeError):
+    """Raised when the single-session login/bootstrap fails in a non-recoverable way."""
+
+    pass
 
 
 def _normalize_url_path(path: str | None) -> str:
@@ -570,6 +576,8 @@ async def _bootstrap_session_via_home_and_tracker(
     page: Page,
     store_cfg: Dict[str, Any],
     logger: JsonLogger,
+    *,
+    settings: PipelineSettings | None = None,
 ) -> Page:
     store_code = store_cfg.get("store_code")
 
@@ -600,9 +608,47 @@ async def _bootstrap_session_via_home_and_tracker(
 
     if username and password:
         _log("info", "filling login form for bootstrap")
-        await page.fill(page_selectors.LOGIN_USERNAME, username)
-        await page.fill(page_selectors.LOGIN_PASSWORD, password)
-        await page.click(page_selectors.LOGIN_SUBMIT)
+
+        timeout_ms = getattr(settings, "playwright_timeout_ms", None) or 30_000
+        login_form_present = False
+        try:
+            await page.wait_for_selector(
+                page_selectors.LOGIN_USERNAME,
+                timeout=timeout_ms,
+            )
+            login_form_present = True
+        except PlaywrightTimeoutError:
+            login_form_present = False
+
+        if login_form_present:
+            await page.fill(page_selectors.LOGIN_USERNAME, username)
+            await page.fill(page_selectors.LOGIN_PASSWORD, password)
+            await page.click(page_selectors.LOGIN_SUBMIT)
+        else:
+            already_logged_in = False
+            try:
+                logout_locator = page.locator("a[href*='/login/logout']")
+                tickets_locator = page.locator("a[href*='client/tickets']")
+                if await logout_locator.count() > 0 or await tickets_locator.count() > 0:
+                    already_logged_in = True
+            except Exception:
+                already_logged_in = False
+
+            if already_logged_in:
+                _log(
+                    "info",
+                    "login form not found; assuming user is already logged in",
+                    extras={"login_selector": page_selectors.LOGIN_USERNAME},
+                )
+            else:
+                _log(
+                    "error",
+                    "login form did not appear during bootstrap",
+                    extras={"login_selector": page_selectors.LOGIN_USERNAME},
+                )
+                raise LoginBootstrapError(
+                    "Login form not found during single-session bootstrap"
+                )
     else:
         _log(
             "warn",
@@ -1386,9 +1432,16 @@ async def run_all_stores_single_session(
 
         pages = ctx.pages
         home_page = pages[0] if pages else await ctx.new_page()
-        tms_page = await _bootstrap_session_via_home_and_tracker(home_page, first_store_cfg, logger)
+        tms_page: Page | None = None
 
         try:
+            tms_page = await _bootstrap_session_via_home_and_tracker(
+                home_page,
+                first_store_cfg,
+                logger,
+                settings=settings,
+            )
+
             for _, cfg in store_items:
                 sc = cfg.get("store_code")
                 try:
@@ -1419,6 +1472,29 @@ async def run_all_stores_single_session(
                     store_code=sc,
                     bucket=None,
                 )
+        except LoginBootstrapError as exc:
+            failed_store_codes = [
+                (cfg.get("store_code") or name or "<unknown>")
+                for name, cfg in store_items
+            ]
+            failure_extras = {
+                "error": str(exc),
+                "failed_store_codes": failed_store_codes,
+                "login_selector": page_selectors.LOGIN_USERNAME,
+            }
+            log_event(
+                logger=logger,
+                phase="download",
+                status="error",
+                store_code=None,
+                bucket=None,
+                message="single-session bootstrap failed",
+                extras=failure_extras,
+            )
+            if settings is not None:
+                setattr(settings, "single_session_failure", failure_extras)
+            _finalize_merges(merged_buckets, download_counts, logger=logger)
+            return {}
         finally:
             ctx_is_closed = getattr(ctx, "is_closed", None)
             if callable(ctx_is_closed):
