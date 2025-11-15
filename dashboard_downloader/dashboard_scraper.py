@@ -337,11 +337,12 @@ async def extract_dashboard_summary(
         }
     )
 
-    gstin_column_name: Optional[str] = None
-    for candidate in ("gstin", "store_gstin"):
-        if candidate in dashboard_data:
-            gstin_column_name = candidate
-            break
+    # Determine GSTIN column name if present
+    gstin_column_name = None
+    if "gstin" in dashboard_data:
+        gstin_column_name = "gstin"
+    elif "store_gstin" in dashboard_data:
+        gstin_column_name = "store_gstin"
 
     found_metrics: set[str] = set()
     sections_with_data: set[str] = set()
@@ -420,33 +421,25 @@ async def extract_dashboard_summary(
             extras={"error": str(exc)},
         )
 
+    # Extract GSTIN from navbar user bit if possible
     user_bit_text: Optional[str] = None
-    if gstin_column_name:
-        user_bit_locator = page.locator("li.user_bit a")
+    if gstin_column_name is not None:
         try:
+            user_bit_locator = page.locator("li.user_bit a")
             if await user_bit_locator.count() > 0:
                 user_bit_text = await user_bit_locator.first.inner_text()
-        except Exception as exc:  # pragma: no cover
-            _log(
-                "warn",
-                "failed to extract gstin from navbar",
-                extras={"error": str(exc)},
-            )
-        if user_bit_text:
-            gstin_match = re.search(r"\b[0-9A-Z]{15}\b", user_bit_text)
-            if gstin_match:
-                dashboard_data[gstin_column_name] = gstin_match.group(0)
+        except Exception:
+            user_bit_text = None
 
-    if gstin_column_name and dashboard_data.get(gstin_column_name) is None:
-        fallback_gstin = store_cfg.get("gstin") or store_cfg.get("store_gstin")
-        if fallback_gstin:
-            dashboard_data[gstin_column_name] = fallback_gstin
-        else:
-            _log(
-                "warn",
-                "gstin not found on dashboard",
-                extras={"user_bit_text": user_bit_text},
-            )
+        if user_bit_text:
+            m = re.search(r"\b[0-9A-Z]{15}\b", user_bit_text)
+            if m:
+                dashboard_data[gstin_column_name] = m.group(0)
+
+        if dashboard_data.get(gstin_column_name) is None:
+            fallback_gstin = store_cfg.get("gstin") or store_cfg.get("store_gstin")
+            if fallback_gstin:
+                dashboard_data[gstin_column_name] = fallback_gstin
 
     # Launch date
     launch_locator = page.locator("h3.section-title:has-text(\"Launch Date\")")
@@ -559,6 +552,13 @@ async def extract_dashboard_summary(
                 "dashboard metric missing",
                 extras={"metric": metric},
             )
+
+    if gstin_column_name is not None and dashboard_data.get(gstin_column_name) is None:
+        _log(
+            "warn",
+            "gstin not found on dashboard",
+            extras={"store_code": store_code, "user_bit_text": user_bit_text},
+        )
 
     return dashboard_data
 
@@ -753,44 +753,59 @@ async def _parse_label_section(rows: List[List[str]], mapping: Dict[str, str], s
         set_metric(metric, value)
 
 
-async def _parse_delivery(rows: List[List[str]], headers: List[str], set_metric) -> None:
+async def _parse_delivery(
+    rows: List[List[str]],
+    headers: List[str],
+    set_metric,
+) -> None:
     if not rows or not headers:
         return
+
     data_row = rows[0]
     for idx, header in enumerate(headers):
+        if idx >= len(data_row):
+            continue
         label = _normalize_label(header)
         metric = DELIVERY_LABEL_TO_METRIC.get(label)
         if not metric:
             continue
-        if idx >= len(data_row):
-            continue
         set_metric(metric, data_row[idx])
 
 
-async def _parse_repeat_customers(rows: List[List[str]], headers: List[str], set_metric) -> None:
+async def _parse_repeat_customers(
+    rows: List[List[str]],
+    headers: List[str],
+    set_metric,
+) -> None:
     if not rows or not headers:
         return
+
     data_row = rows[0]
     for idx, header in enumerate(headers):
+        if idx >= len(data_row):
+            continue
         label = _normalize_label(header)
         metric = REPEAT_LABEL_TO_METRIC.get(label)
         if not metric:
             continue
-        if idx >= len(data_row):
-            continue
         set_metric(metric, data_row[idx])
 
 
-async def _parse_package(rows: List[List[str]], headers: List[str], set_metric) -> None:
+async def _parse_package(
+    rows: List[List[str]],
+    headers: List[str],
+    set_metric,
+) -> None:
     if not rows or not headers:
         return
+
     data_row = rows[0]
     for idx, header in enumerate(headers):
+        if idx >= len(data_row):
+            continue
         label = _normalize_label(header)
         metric = _identify_package_metric(label)
         if not metric:
-            continue
-        if idx >= len(data_row):
             continue
         set_metric(metric, data_row[idx])
 
