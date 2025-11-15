@@ -28,6 +28,7 @@ from .config import (
     HOME_URL,
     MERGED_NAMES,
     LOGIN_URL,
+    TMS_BASE,
     stores_from_list,
     storage_state_path,
     tms_dashboard_url,
@@ -38,6 +39,8 @@ from .json_logger import JsonLogger, log_event
 
 
 DASHBOARD_DOWNLOAD_CONTROL_TIMEOUT_MS = 90_000
+DEFAULT_TMS_PROBE_URL = f"{TMS_BASE}/client/tickets"
+BOOTSTRAP_ARTIFACTS_DIR = DATA_DIR / "bootstrap_artifacts"
 
 
 class LoginBootstrapError(RuntimeError):
@@ -194,6 +197,168 @@ def _ensure_profile_dir(store_name: str | Path) -> Path:
     return p
 
 
+def _ensure_bootstrap_artifacts_dir() -> Path:
+    BOOTSTRAP_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    return BOOTSTRAP_ARTIFACTS_DIR
+
+
+async def _capture_bootstrap_artifacts(
+    page: Page,
+    *,
+    store_code: str | None,
+    prefix: str,
+) -> Dict[str, str]:
+    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    normalized_store = (store_code or "unknown").replace("/", "_")
+    base_name = f"{prefix}_{normalized_store}_{timestamp}"
+
+    artifacts_dir = _ensure_bootstrap_artifacts_dir()
+    screenshot_path = artifacts_dir / f"{base_name}.png"
+    html_path = artifacts_dir / f"{base_name}.html"
+
+    extras: Dict[str, str] = {"artifacts_dir": str(artifacts_dir)}
+
+    try:
+        await page.screenshot(path=str(screenshot_path), full_page=True)
+        extras["screenshot"] = str(screenshot_path)
+    except Exception as exc:  # pragma: no cover - depends on browser state
+        extras["screenshot_error"] = str(exc)
+
+    try:
+        html_content = await page.content()
+        html_path.write_text(html_content, encoding="utf-8")
+        extras["html_dump"] = str(html_path)
+    except Exception as exc:  # pragma: no cover - depends on browser state
+        extras["html_error"] = str(exc)
+
+    return extras
+
+
+async def _persist_storage_state(
+    ctx: BrowserContext,
+    *,
+    target_path: Path | None,
+    logger: JsonLogger,
+    store_code: str | None,
+) -> Path | None:
+    destination = target_path or storage_state_path()
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:  # pragma: no cover - defensive guard
+        pass
+
+    try:
+        await ctx.storage_state(path=str(destination))
+    except Exception as exc:  # pragma: no cover - Playwright runtime guard
+        log_event(
+            logger=logger,
+            phase="download",
+            status="warn",
+            store_code=store_code,
+            bucket=None,
+            message="bootstrap: unable to persist storage state after login",
+            extras={"storage_state": str(destination), "error": str(exc)},
+        )
+        return None
+
+    log_event(
+        logger=logger,
+        phase="download",
+        status="info",
+        store_code=store_code,
+        bucket=None,
+        message="bootstrap: storage state updated after login",
+        extras={"storage_state": str(destination)},
+    )
+    return destination
+
+
+_TMS_UI_SELECTORS = (
+    "nav.navbar",
+    "#kt_app_sidebar",
+    "#kt_aside",
+    "#kt_app_sidebar_menu",
+    "a[href*='client/tickets']",
+    "a[href*='/logout']",
+    "a:has-text('Tickets')",
+    "a:has-text('Dashboard')",
+)
+
+
+async def _tms_ui_detected(page: Page) -> bool:
+    current_url = page.url or ""
+    parsed = urlparse(current_url)
+    host = (parsed.hostname or "").lower()
+
+    if not host or "tms.simplifytumbledry.in" not in host:
+        return False
+
+    for selector in _TMS_UI_SELECTORS:
+        try:
+            locator = page.locator(selector)
+            if await locator.count() > 0:
+                return True
+        except Exception:  # pragma: no cover - locator guard
+            continue
+
+    try:
+        content = await page.content()
+    except Exception:  # pragma: no cover - depends on remote state
+        return False
+
+    normalized = _normalize_html_tokens(content)
+    if "client/tickets" in normalized or "partner_dashboard" in normalized:
+        return True
+
+    return False
+
+
+async def _run_tms_probe(
+    context: BrowserContext,
+    *,
+    probe_url: str,
+    logger: JsonLogger,
+    store_code: str | None,
+) -> tuple[bool, Dict[str, Any]]:
+    probe_page: Page | None = None
+    extras: Dict[str, Any] = {"probe_url": probe_url}
+    session_active = False
+
+    try:
+        probe_page = await context.new_page()
+        await probe_page.goto(probe_url, wait_until="domcontentloaded")
+        extras["current_url"] = probe_page.url
+
+        if await _tms_ui_detected(probe_page):
+            session_active = True
+        else:
+            if await _is_login_page(probe_page, logger):
+                extras["login_detected"] = True
+            else:
+                try:
+                    html = await probe_page.content()
+                except Exception:  # pragma: no cover - content guard
+                    html = ""
+                if html and _looks_like_login_html_text(html):
+                    extras["login_html_detected"] = True
+                else:
+                    parsed = urlparse(probe_page.url or "")
+                    host = (parsed.hostname or "").lower()
+                    session_active = bool(host and "tms.simplifytumbledry.in" in host)
+    except PlaywrightTimeoutError as exc:
+        extras["error"] = str(exc)
+    except Exception as exc:  # pragma: no cover - navigation/runtime guard
+        extras["error"] = str(exc)
+    finally:
+        if probe_page is not None:
+            try:
+                await probe_page.close()
+            except Exception:  # pragma: no cover - close guard
+                pass
+
+    return session_active, extras
+
+
 async def _prime_context_with_storage_state(
     ctx: BrowserContext,
     storage_state_file: Path,
@@ -242,6 +407,7 @@ async def _prime_context_with_storage_state(
 
     cookies_applied = 0
     cookies = storage_state.get("cookies") or []
+    cookie_domains: set[str] = set()
     if cookies:
         sanitized: List[dict] = []
         for cookie in cookies:
@@ -249,6 +415,9 @@ async def _prime_context_with_storage_state(
             expires = cleaned.get("expires")
             if expires is None or not isinstance(expires, (int, float)):
                 cleaned.pop("expires", None)
+            domain = cleaned.get("domain")
+            if isinstance(domain, str) and domain:
+                cookie_domains.add(domain)
             sanitized.append(cleaned)
 
         try:
@@ -360,6 +529,10 @@ async def _prime_context_with_storage_state(
                     )
 
     status_message = "storage state primed" if origins else "storage state cookies primed"
+    extras: Dict[str, Any] = {"cookies": cookies_applied, "origins": hydrated_origins}
+    if cookie_domains:
+        extras["cookie_domains"] = sorted(cookie_domains)
+
     log_event(
         logger=logger,
         phase="download",
@@ -367,7 +540,7 @@ async def _prime_context_with_storage_state(
         store_code=store_code,
         bucket=None,
         message=status_message,
-        extras={"cookies": cookies_applied, "origins": hydrated_origins},
+        extras=extras,
     )
 
 def _render(template: str, sc: str) -> str:
@@ -578,6 +751,8 @@ async def _bootstrap_session_via_home_and_tracker(
     logger: JsonLogger,
     *,
     settings: PipelineSettings | None = None,
+    storage_state_file: Path | None = None,
+    storage_state_source: str | None = None,
 ) -> Page:
     async def _is_tms_logged_in(target_page: Page) -> bool:
         url = target_page.url or ""
@@ -616,39 +791,210 @@ async def _bootstrap_session_via_home_and_tracker(
 
     login_url = store_cfg.get("login_url") or LOGIN_URL
     home_url = store_cfg.get("home_url") or HOME_URL
-
-    username = store_cfg.get("username")
-    password = store_cfg.get("password")
+    probe_url = store_cfg.get("tms_probe_url") or DEFAULT_TMS_PROBE_URL
 
     _log(
         "info",
         "starting single-session bootstrap",
-        extras={"login_url": login_url, "home_url": home_url},
+        extras={"login_url": login_url, "home_url": home_url, "probe_url": probe_url},
     )
 
     context = page.context
+    session_active, probe_extras = await _run_tms_probe(
+        context,
+        probe_url=probe_url,
+        logger=logger,
+        store_code=store_code,
+    )
 
-    tms_url = "https://tms.simplifytumbledry.in/client/tickets"
-    tms_page = await context.new_page()
-    await tms_page.goto(tms_url, wait_until="domcontentloaded")
+    login_message_logged = not session_active
+    if session_active:
+        log_event(
+            logger=logger,
+            phase="download",
+            status="info",
+            store_code=store_code,
+            bucket=None,
+            message="bootstrap: existing TMS session detected, skipping login",
+            extras=probe_extras,
+        )
+    else:
+        log_event(
+            logger=logger,
+            phase="download",
+            status="info",
+            store_code=store_code,
+            bucket=None,
+            message="bootstrap: TMS probe redirected to login, performing fresh login",
+            extras=probe_extras,
+        )
 
-    if await _is_tms_logged_in(tms_page):
-        _log(
-            "info",
-            "TMS session reused without login",
-            extras={"tms_url": tms_page.url},
+    login_attempted = False
+
+    async def _execute_login(reason: str) -> None:
+        nonlocal login_attempted, session_active, login_message_logged
+        if login_attempted:
+            return
+
+        username = store_cfg.get("username")
+        password = store_cfg.get("password")
+
+        if not username or not password:
+            _log(
+                "error",
+                "bootstrap: credentials missing for login attempt",
+                extras={
+                    "login_reason": reason,
+                    "username_present": bool(username),
+                    "password_present": bool(password),
+                },
+            )
+            raise LoginBootstrapError("Login required but credentials are not configured")
+
+        if not login_message_logged:
+            extras = dict(probe_extras)
+            extras.update({
+                "login_reason": reason,
+                "current_url": page.url,
+            })
+            log_event(
+                logger=logger,
+                phase="download",
+                status="info",
+                store_code=store_code,
+                bucket=None,
+                message="bootstrap: TMS probe redirected to login, performing fresh login",
+                extras=extras,
+            )
+            login_message_logged = True
+
+        login_attempted = True
+        _log("info", "filling login form for bootstrap")
+
+        await page.goto(login_url, wait_until="domcontentloaded")
+        await _perform_login_flow(page, store_cfg, logger)
+
+        verify_page: Page | None = None
+        verify_url: str | None = None
+        try:
+            verify_page = await context.new_page()
+            await verify_page.goto(probe_url, wait_until="domcontentloaded")
+            verify_url = verify_page.url
+
+            if not await _tms_ui_detected(verify_page):
+                artifact_extras = await _capture_bootstrap_artifacts(
+                    verify_page,
+                    store_code=store_code,
+                    prefix="post_login_probe",
+                )
+                failure_extras: Dict[str, Any] = {
+                    "probe_url": probe_url,
+                    "current_url": verify_url,
+                    **artifact_extras,
+                }
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    status="error",
+                    store_code=store_code,
+                    bucket=None,
+                    message="bootstrap: login did not lead to TMS, aborting to avoid rate limit",
+                    extras=failure_extras,
+                )
+                raise LoginBootstrapError("Login did not establish a valid TMS session")
+        except PlaywrightTimeoutError as exc:
+            failure_extras = {
+                "probe_url": probe_url,
+                "error": str(exc),
+            }
+            log_event(
+                logger=logger,
+                phase="download",
+                status="error",
+                store_code=store_code,
+                bucket=None,
+                message="bootstrap: login did not lead to TMS, aborting to avoid rate limit",
+                extras=failure_extras,
+            )
+            raise LoginBootstrapError("Login probe timed out") from exc
+        finally:
+            if verify_page is not None:
+                try:
+                    await verify_page.close()
+                except Exception:  # pragma: no cover - close guard
+                    pass
+
+        saved_state = await _persist_storage_state(
+            context,
+            target_path=storage_state_file,
+            logger=logger,
+            store_code=store_code,
         )
         return tms_page
 
-    await tms_page.close()
+        success_extras: Dict[str, Any] = {
+            "probe_url": probe_url,
+            "tms_url": verify_url,
+        }
+        if saved_state is not None:
+            success_extras["storage_state"] = str(saved_state)
+        if storage_state_source:
+            success_extras["storage_state_source"] = storage_state_source
 
-    if not (username and password):
-        _log(
-            "error",
-            "TMS session invalid and credentials missing",
-            extras={"username_present": bool(username), "password_present": bool(password)},
+        log_event(
+            logger=logger,
+            phase="download",
+            status="info",
+            store_code=store_code,
+            bucket=None,
+            message="bootstrap: login successful, TMS session established",
+            extras=success_extras,
         )
-        raise LoginBootstrapError("Unable to authenticate without credentials")
+
+        session_active = True
+
+    if not session_active:
+        await _execute_login("tms_probe")
+
+    # Navigate to the home page to open the tracker/TMS tab.
+    while True:
+        try:
+            await page.goto(home_url, wait_until="domcontentloaded")
+        except PlaywrightTimeoutError as exc:
+            _log(
+                "error",
+                "home navigation after bootstrap timed out",
+                extras={"error": str(exc), "current_url": page.url},
+            )
+            raise
+
+        if await _is_login_page(page, logger):
+            if login_attempted:
+                artifact_extras = await _capture_bootstrap_artifacts(
+                    page,
+                    store_code=store_code,
+                    prefix="home_login_after_auth",
+                )
+                failure_extras = {
+                    "home_url": home_url,
+                    "current_url": page.url,
+                    **artifact_extras,
+                }
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    status="error",
+                    store_code=store_code,
+                    bucket=None,
+                    message="bootstrap: login did not lead to TMS, aborting to avoid rate limit",
+                    extras=failure_extras,
+                )
+                raise LoginBootstrapError("Home page still requires login after authentication")
+
+            await _execute_login("home_requires_login")
+            continue
+
+        break
 
     _log("info", "TMS session not authenticated; performing login")
 
@@ -693,10 +1039,7 @@ async def _bootstrap_session_via_home_and_tracker(
             )
         raise
 
-    await login_page.fill(page_selectors.LOGIN_USERNAME, username)
-    await login_page.fill(page_selectors.LOGIN_PASSWORD, password)
-    await login_page.click(page_selectors.LOGIN_SUBMIT)
-    await login_page.wait_for_load_state("networkidle")
+    tracker_target = tracker_heading.first
 
     tms_page = await context.new_page()
     await tms_page.goto(tms_url, wait_until="domcontentloaded")
@@ -1426,6 +1769,18 @@ async def run_all_stores_single_session(
                 store_code=first_store_cfg.get("store_code", ""),
                 logger=logger,
             )
+            log_event(
+                logger=logger,
+                phase="download",
+                status="info",
+                store_code=first_store_cfg.get("store_code"),
+                bucket=None,
+                message="bootstrap: using stored browser state for single-session run",
+                extras={
+                    "storage_state": str(storage_state_file),
+                    "source": storage_state_source or "unspecified",
+                },
+            )
 
         pages = ctx.pages
         home_page = pages[0] if pages else await ctx.new_page()
@@ -1437,6 +1792,8 @@ async def run_all_stores_single_session(
                 first_store_cfg,
                 logger,
                 settings=settings,
+                storage_state_file=storage_state_file,
+                storage_state_source=storage_state_source,
             )
 
             for _, cfg in store_items:
