@@ -579,6 +579,28 @@ async def _bootstrap_session_via_home_and_tracker(
     *,
     settings: PipelineSettings | None = None,
 ) -> Page:
+    async def _is_tms_logged_in(target_page: Page) -> bool:
+        url = target_page.url or ""
+        if "tms.simplifytumbledry.in" not in url:
+            return False
+
+        try:
+            logout_locator = target_page.locator("a[href*='login/logout']")
+            if await logout_locator.count() > 0:
+                return True
+
+            sidebar_locator = target_page.locator("ul.newnav.nav.nav-sidebar")
+            if await sidebar_locator.count() > 0:
+                return True
+
+            title_locator = target_page.locator("h1.dashboard-title")
+            if await title_locator.count() > 0:
+                return True
+        except Exception:
+            return False
+
+        return False
+
     store_code = store_cfg.get("store_code")
 
     def _log(status: str, message: str, *, extras: Dict | None = None) -> None:
@@ -604,121 +626,96 @@ async def _bootstrap_session_via_home_and_tracker(
         extras={"login_url": login_url, "home_url": home_url},
     )
 
-    await page.goto(login_url, wait_until="domcontentloaded")
-
-    if username and password:
-        _log("info", "filling login form for bootstrap")
-
-        timeout_ms = getattr(settings, "playwright_timeout_ms", None) or 30_000
-        login_form_present = False
-        try:
-            await page.wait_for_selector(
-                page_selectors.LOGIN_USERNAME,
-                timeout=timeout_ms,
-            )
-            login_form_present = True
-        except PlaywrightTimeoutError:
-            login_form_present = False
-
-        if login_form_present:
-            await page.fill(page_selectors.LOGIN_USERNAME, username)
-            await page.fill(page_selectors.LOGIN_PASSWORD, password)
-            await page.click(page_selectors.LOGIN_SUBMIT)
-        else:
-            already_logged_in = False
-            try:
-                logout_locator = page.locator("a[href*='/login/logout']")
-                tickets_locator = page.locator("a[href*='client/tickets']")
-                if await logout_locator.count() > 0 or await tickets_locator.count() > 0:
-                    already_logged_in = True
-            except Exception:
-                already_logged_in = False
-
-            if already_logged_in:
-                _log(
-                    "info",
-                    "login form not found; assuming user is already logged in",
-                    extras={"login_selector": page_selectors.LOGIN_USERNAME},
-                )
-            else:
-                _log(
-                    "error",
-                    "login form did not appear during bootstrap",
-                    extras={"login_selector": page_selectors.LOGIN_USERNAME},
-                )
-                raise LoginBootstrapError(
-                    "Login form not found during single-session bootstrap"
-                )
-    else:
-        _log(
-            "warn",
-            "missing credentials for bootstrap; relying on existing session",
-            extras={"username_present": bool(username), "password_present": bool(password)},
-        )
-
-    try:
-        await page.wait_for_url(f"{home_url}*", timeout=60_000)
-    except PlaywrightTimeoutError as exc:
-        _log(
-            "error",
-            "home navigation after login timed out",
-            extras={"error": str(exc), "current_url": page.url},
-        )
-        raise
-
-    await page.wait_for_timeout(2000)
-
-    tracker_heading = page.locator(
-        "h5.card-title",
-        has_text="Daily Operations Tracker",
-    )
-
-    try:
-        await tracker_heading.first.wait_for(state="visible", timeout=30_000)
-    except Exception as exc:
-        _log(
-            "error",
-            "daily operations tracker heading not found",
-            extras={"error": str(exc)},
-        )
-        raise
-
-    tracker_target = tracker_heading.first
     context = page.context
 
-    try:
-        async with context.expect_page() as page_info:
-            await tracker_target.click()
-        tms_page = await page_info.value
-        await tms_page.wait_for_load_state("domcontentloaded")
-        await tms_page.wait_for_timeout(2000)
+    tms_url = "https://tms.simplifytumbledry.in/client/tickets"
+    tms_page = await context.new_page()
+    await tms_page.goto(tms_url, wait_until="domcontentloaded")
+
+    if await _is_tms_logged_in(tms_page):
         _log(
             "info",
-            "tms page opened in new tab",
+            "TMS session reused without login",
             extras={"tms_url": tms_page.url},
         )
         return tms_page
-    except PlaywrightTimeoutError:
-        _log("warn", "no new tab detected; falling back to same page")
-        try:
-            async with page.expect_navigation(wait_until="domcontentloaded", timeout=60_000):
-                await tracker_target.click()
-        except PlaywrightTimeoutError as exc:
-            _log(
-                "error",
-                "navigation to TMS page timed out",
-                extras={"error": str(exc)},
-            )
-            raise
 
-        await page.wait_for_load_state("domcontentloaded")
-        await page.wait_for_timeout(2000)
+    await tms_page.close()
+
+    if not (username and password):
         _log(
-            "info",
-            "tms page opened in same tab",
-            extras={"tms_url": page.url},
+            "error",
+            "TMS session invalid and credentials missing",
+            extras={"username_present": bool(username), "password_present": bool(password)},
         )
-        return page
+        raise LoginBootstrapError("Unable to authenticate without credentials")
+
+    _log("info", "TMS session not authenticated; performing login")
+
+    login_page = await context.new_page()
+    await login_page.goto(login_url, wait_until="domcontentloaded")
+
+    timeout_ms = getattr(settings, "playwright_timeout_ms", None) or 30_000
+    try:
+        await login_page.wait_for_selector(
+            page_selectors.LOGIN_USERNAME,
+            timeout=timeout_ms,
+        )
+        await login_page.wait_for_selector(
+            page_selectors.LOGIN_PASSWORD,
+            timeout=timeout_ms,
+        )
+    except PlaywrightTimeoutError as exc:
+        html = await login_page.content()
+        try:
+            await login_page.screenshot(path="login_timeout.png", full_page=True)
+        except Exception:
+            pass
+        if html:
+            try:
+                Path("login_timeout.html").write_text(html, encoding="utf-8")
+            except Exception:
+                pass
+        _log(
+            "error",
+            "login form did not appear, possible rate limiting or layout change",
+            extras={"login_url": login_page.url, "error": str(exc)},
+        )
+        if html:
+            log_event(
+                logger=logger,
+                phase="download",
+                status="debug",
+                store_code=store_code,
+                bucket=None,
+                message="login page html snapshot",
+                extras={"length": len(html)},
+            )
+        raise
+
+    await login_page.fill(page_selectors.LOGIN_USERNAME, username)
+    await login_page.fill(page_selectors.LOGIN_PASSWORD, password)
+    await login_page.click(page_selectors.LOGIN_SUBMIT)
+    await login_page.wait_for_load_state("networkidle")
+
+    tms_page = await context.new_page()
+    await tms_page.goto(tms_url, wait_until="domcontentloaded")
+    await login_page.close()
+
+    if not await _is_tms_logged_in(tms_page):
+        _log(
+            "error",
+            "login completed but TMS still looks logged out",
+            extras={"tms_url": tms_page.url},
+        )
+        raise RuntimeError("TMS still logged out after login")
+
+    _log(
+        "info",
+        "TMS login performed and session established",
+        extras={"tms_url": tms_page.url},
+    )
+    return tms_page
 
 
 async def _switch_to_store_dashboard_and_download(
