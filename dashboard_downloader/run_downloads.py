@@ -754,28 +754,6 @@ async def _bootstrap_session_via_home_and_tracker(
     storage_state_file: Path | None = None,
     storage_state_source: str | None = None,
 ) -> Page:
-    async def _is_tms_logged_in(target_page: Page) -> bool:
-        url = target_page.url or ""
-        if "tms.simplifytumbledry.in" not in url:
-            return False
-
-        try:
-            logout_locator = target_page.locator("a[href*='login/logout']")
-            if await logout_locator.count() > 0:
-                return True
-
-            sidebar_locator = target_page.locator("ul.newnav.nav.nav-sidebar")
-            if await sidebar_locator.count() > 0:
-                return True
-
-            title_locator = target_page.locator("h1.dashboard-title")
-            if await title_locator.count() > 0:
-                return True
-        except Exception:
-            return False
-
-        return False
-
     store_code = store_cfg.get("store_code")
 
     def _log(status: str, message: str, *, extras: Dict | None = None) -> None:
@@ -807,7 +785,6 @@ async def _bootstrap_session_via_home_and_tracker(
         store_code=store_code,
     )
 
-    login_message_logged = not session_active
     if session_active:
         log_event(
             logger=logger,
@@ -818,6 +795,7 @@ async def _bootstrap_session_via_home_and_tracker(
             message="bootstrap: existing TMS session detected, skipping login",
             extras=probe_extras,
         )
+        login_message_logged = False
     else:
         log_event(
             logger=logger,
@@ -828,10 +806,11 @@ async def _bootstrap_session_via_home_and_tracker(
             message="bootstrap: TMS probe redirected to login, performing fresh login",
             extras=probe_extras,
         )
+        login_message_logged = True
 
     login_attempted = False
 
-    async def _execute_login(reason: str) -> None:
+    async def _ensure_logged_in(reason: str) -> None:
         nonlocal login_attempted, session_active, login_message_logged
         if login_attempted:
             return
@@ -930,7 +909,6 @@ async def _bootstrap_session_via_home_and_tracker(
             logger=logger,
             store_code=store_code,
         )
-        return tms_page
 
         success_extras: Dict[str, Any] = {
             "probe_url": probe_url,
@@ -954,9 +932,9 @@ async def _bootstrap_session_via_home_and_tracker(
         session_active = True
 
     if not session_active:
-        await _execute_login("tms_probe")
+        await _ensure_logged_in("tms_probe")
 
-    # Navigate to the home page to open the tracker/TMS tab.
+    # Navigate to the home page to confirm access before opening the TMS tab.
     while True:
         try:
             await page.goto(home_url, wait_until="domcontentloaded")
@@ -991,73 +969,82 @@ async def _bootstrap_session_via_home_and_tracker(
                 )
                 raise LoginBootstrapError("Home page still requires login after authentication")
 
-            await _execute_login("home_requires_login")
+            await _ensure_logged_in("home_requires_login")
             continue
 
         break
 
-    _log("info", "TMS session not authenticated; performing login")
+    async def _open_authenticated_tms_page() -> Page:
+        nonlocal session_active
 
-    login_page = await context.new_page()
-    await login_page.goto(login_url, wait_until="domcontentloaded")
-
-    timeout_ms = getattr(settings, "playwright_timeout_ms", None) or 30_000
-    try:
-        await login_page.wait_for_selector(
-            page_selectors.LOGIN_USERNAME,
-            timeout=timeout_ms,
-        )
-        await login_page.wait_for_selector(
-            page_selectors.LOGIN_PASSWORD,
-            timeout=timeout_ms,
-        )
-    except PlaywrightTimeoutError as exc:
-        html = await login_page.content()
-        try:
-            await login_page.screenshot(path="login_timeout.png", full_page=True)
-        except Exception:
-            pass
-        if html:
+        while True:
+            tms_page: Page | None = None
             try:
-                Path("login_timeout.html").write_text(html, encoding="utf-8")
-            except Exception:
+                tms_page = await context.new_page()
+                await tms_page.goto(probe_url, wait_until="domcontentloaded")
+            except PlaywrightTimeoutError as exc:
+                if tms_page is not None:
+                    try:
+                        await tms_page.close()
+                    except Exception:  # pragma: no cover - close guard
+                        pass
+                _log(
+                    "error",
+                    "tms navigation after bootstrap timed out",
+                    extras={"probe_url": probe_url, "error": str(exc)},
+                )
+                raise
+
+            if await _tms_ui_detected(tms_page):
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    status="info",
+                    store_code=store_code,
+                    bucket=None,
+                    message="tms page opened in new tab",
+                    extras={"tms_url": tms_page.url, "probe_url": probe_url},
+                )
+                return tms_page
+
+            if not login_attempted:
+                try:
+                    await tms_page.close()
+                except Exception:  # pragma: no cover - close guard
+                    pass
+                session_active = False
+                await _ensure_logged_in("tms_page_open")
+                continue
+
+            artifact_extras = await _capture_bootstrap_artifacts(
+                tms_page,
+                store_code=store_code,
+                prefix="tms_open_failed",
+            )
+            failure_extras = {
+                "probe_url": probe_url,
+                "current_url": tms_page.url,
+                **artifact_extras,
+            }
+            try:
+                await tms_page.close()
+            except Exception:  # pragma: no cover - close guard
                 pass
-        _log(
-            "error",
-            "login form did not appear, possible rate limiting or layout change",
-            extras={"login_url": login_page.url, "error": str(exc)},
-        )
-        if html:
+
             log_event(
                 logger=logger,
                 phase="download",
-                status="debug",
+                status="error",
                 store_code=store_code,
                 bucket=None,
-                message="login page html snapshot",
-                extras={"length": len(html)},
+                message="bootstrap: login did not lead to TMS, aborting to avoid rate limit",
+                extras=failure_extras,
             )
-        raise
+            raise LoginBootstrapError(
+                "TMS navigation after bootstrap did not show authenticated UI",
+            )
 
-    tracker_target = tracker_heading.first
-
-    tms_page = await context.new_page()
-    await tms_page.goto(tms_url, wait_until="domcontentloaded")
-    await login_page.close()
-
-    if not await _is_tms_logged_in(tms_page):
-        _log(
-            "error",
-            "login completed but TMS still looks logged out",
-            extras={"tms_url": tms_page.url},
-        )
-        raise RuntimeError("TMS still logged out after login")
-
-    _log(
-        "info",
-        "TMS login performed and session established",
-        extras={"tms_url": tms_page.url},
-    )
+    tms_page = await _open_authenticated_tms_page()
     return tms_page
 
 
