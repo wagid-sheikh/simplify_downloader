@@ -50,3 +50,53 @@ documents = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True)),
     sa.Column("created_by", sa.String(length=64)),
 )
+
+
+pipelines = sa.Table(
+    "pipelines",
+    metadata,
+    sa.Column("id", sa.BigInteger()),
+    sa.Column("code", sa.Text()),
+    sa.Column("description", sa.Text()),
+)
+
+
+notification_profiles = sa.Table(
+    "notification_profiles",
+    metadata,
+    sa.Column("id", sa.BigInteger()),
+    sa.Column("pipeline_id", sa.BigInteger()),
+    sa.Column("code", sa.Text()),
+    sa.Column("description", sa.Text()),
+    sa.Column("env", sa.Text()),
+    sa.Column("scope", sa.Text()),
+    sa.Column("attach_mode", sa.Text()),
+    sa.Column("is_active", sa.Boolean()),
+)
+
+
+email_templates = sa.Table(
+    "email_templates",
+    metadata,
+    sa.Column("id", sa.BigInteger()),
+    sa.Column("profile_id", sa.BigInteger()),
+    sa.Column("name", sa.Text()),
+    sa.Column("subject_template", sa.Text()),
+    sa.Column("body_template", sa.Text()),
+    sa.Column("is_active", sa.Boolean()),
+)
+
+
+notification_recipients = sa.Table(
+    "notification_recipients",
+    metadata,
+    sa.Column("id", sa.BigInteger()),
+    sa.Column("profile_id", sa.BigInteger()),
+    sa.Column("store_code", sa.Text()),
+    sa.Column("env", sa.Text()),
+    sa.Column("email_address", sa.Text()),
+    sa.Column("display_name", sa.Text()),
+    sa.Column("send_as", sa.Text()),
+    sa.Column("is_active", sa.Boolean()),
+    sa.Column("created_at", sa.DateTime(timezone=True)),
+)

@@ -148,11 +148,10 @@ async def _run(env: str | None = None) -> None:
     await record_documents(
         database_url=database_url,
         pipeline_name=PIPELINE_NAME,
+        run_id=run_id,
         report_date=period_end,
-        period_label=period_label,
         artifacts=pdfs,
-        reference_key="report_month",
-        doc_subtype="monthly_pdf",
+        doc_type="store_monthly_pdf",
     )
     tracker.mark_phase("persist_documents", "ok")
 

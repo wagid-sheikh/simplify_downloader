@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
 import sqlalchemy as sa
@@ -12,7 +12,7 @@ from common.db import session_scope
 from .db_tables import documents, pipeline_run_summaries
 
 
-PIPELINE_NAME = "dashboard_daily"
+PIPELINE_NAME = "simplify_dashboard_daily"
 
 
 def _utc_now() -> datetime:
@@ -296,30 +296,4 @@ async def fetch_summary_for_run(database_url: str, run_id: str) -> Mapping[str, 
         return result.mappings().first()
 
 
-async def fetch_report_documents(
-    database_url: str,
-    *,
-    report_date: date | None,
-    started_at: datetime,
-) -> List[Mapping[str, Any]]:
-    async with session_scope(database_url) as session:
-        stmt = (
-            sa.select(
-                documents.c.file_path,
-                documents.c.file_name,
-                documents.c.reference_id_2.label("store_code"),
-            )
-            .where(documents.c.doc_type == "pipeline_report")
-            .where(documents.c.doc_subtype == "store_daily_pdf")
-            .where(documents.c.reference_name_1 == "pipeline_name")
-            .where(documents.c.reference_id_1 == PIPELINE_NAME)
-            .where(documents.c.status == "ok")
-        )
-        if report_date:
-            stmt = stmt.where(documents.c.reference_name_3 == "report_date").where(
-                documents.c.reference_id_3 == report_date.isoformat()
-            )
-        window_start = started_at - timedelta(hours=24)
-        stmt = stmt.where(documents.c.created_at >= window_start)
-        result = await session.execute(stmt)
-        return list(result.mappings())
+
