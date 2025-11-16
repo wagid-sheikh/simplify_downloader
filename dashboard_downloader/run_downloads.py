@@ -37,7 +37,7 @@ from .json_logger import JsonLogger, log_event
 
 
 DASHBOARD_DOWNLOAD_CONTROL_TIMEOUT_MS = 90_000
-DEFAULT_TMS_PROBE_URL = f"{TMS_BASE}/client/tickets"
+DEFAULT_SESSION_PROBE_URL = HOME_URL
 BOOTSTRAP_ARTIFACTS_DIR = DATA_DIR / "bootstrap_artifacts"
 
 
@@ -60,6 +60,20 @@ def _normalize_url_path(path: str | None) -> str:
 _LOGIN_URL_PARTS = urlparse(LOGIN_URL)
 _LOGIN_HOST = (_LOGIN_URL_PARTS.hostname or "").lower()
 _LOGIN_PATH = _normalize_url_path(_LOGIN_URL_PARTS.path)
+_TD_BASE_PARTS = urlparse(TMS_BASE)
+_TD_BASE_HOST = (_TD_BASE_PARTS.hostname or "").lower()
+
+
+def _url_within_td_base(url: str | None) -> bool:
+    if not url or not _TD_BASE_HOST:
+        return False
+
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+
+    return host == _TD_BASE_HOST or host.endswith(f".{_TD_BASE_HOST}")
 
 
 def _validate_downloaded_csv(csv_path: Path, *, body: bytes) -> tuple[bool, str | None]:
@@ -280,47 +294,7 @@ async def _persist_storage_state(
     return destination
 
 
-_TMS_UI_SELECTORS = (
-    "nav.navbar",
-    "#kt_app_sidebar",
-    "#kt_aside",
-    "#kt_app_sidebar_menu",
-    "a[href*='client/tickets']",
-    "a[href*='/logout']",
-    "a:has-text('Tickets')",
-    "a:has-text('Dashboard')",
-)
-
-
-async def _tms_ui_detected(page: Page) -> bool:
-    current_url = page.url or ""
-    parsed = urlparse(current_url)
-    host = (parsed.hostname or "").lower()
-
-    if not host or "tms.simplifytumbledry.in" not in host:
-        return False
-
-    for selector in _TMS_UI_SELECTORS:
-        try:
-            locator = page.locator(selector)
-            if await locator.count() > 0:
-                return True
-        except Exception:  # pragma: no cover - locator guard
-            continue
-
-    try:
-        content = await page.content()
-    except Exception:  # pragma: no cover - depends on remote state
-        return False
-
-    normalized = _normalize_html_tokens(content)
-    if "client/tickets" in normalized or "partner_dashboard" in normalized:
-        return True
-
-    return False
-
-
-async def _run_tms_probe(
+async def _run_session_probe(
     context: BrowserContext,
     *,
     probe_url: str,
@@ -336,22 +310,20 @@ async def _run_tms_probe(
         await probe_page.goto(probe_url, wait_until="domcontentloaded")
         extras["current_url"] = probe_page.url
 
-        if await _tms_ui_detected(probe_page):
-            session_active = True
+        if await _is_login_page(probe_page, logger):
+            extras["login_detected"] = True
         else:
-            if await _is_login_page(probe_page, logger):
-                extras["login_detected"] = True
+            if _url_within_td_base(probe_page.url):
+                session_active = True
             else:
                 try:
                     html = await probe_page.content()
                 except Exception:  # pragma: no cover - content guard
                     html = ""
-                if html and _looks_like_login_html_text(html):
+                if html and not _looks_like_login_html_text(html):
+                    session_active = True
+                elif html and _looks_like_login_html_text(html):
                     extras["login_html_detected"] = True
-                else:
-                    parsed = urlparse(probe_page.url or "")
-                    host = (parsed.hostname or "").lower()
-                    session_active = bool(host and "tms.simplifytumbledry.in" in host)
     except PlaywrightTimeoutError as exc:
         extras["error"] = str(exc)
     except Exception as exc:  # pragma: no cover - navigation/runtime guard
@@ -791,7 +763,11 @@ async def _bootstrap_session_via_home_and_tracker(
 
     login_url = store_cfg.get("login_url") or LOGIN_URL
     home_url = store_cfg.get("home_url") or HOME_URL
-    probe_url = store_cfg.get("tms_probe_url") or DEFAULT_TMS_PROBE_URL
+    probe_url = (
+        store_cfg.get("session_probe_url")
+        or store_cfg.get("tms_probe_url")
+        or DEFAULT_SESSION_PROBE_URL
+    )
 
     _log(
         "info",
@@ -800,7 +776,7 @@ async def _bootstrap_session_via_home_and_tracker(
     )
 
     context = page.context
-    session_active, probe_extras = await _run_tms_probe(
+    session_active, probe_extras = await _run_session_probe(
         context,
         probe_url=probe_url,
         logger=logger,
@@ -814,7 +790,7 @@ async def _bootstrap_session_via_home_and_tracker(
             status="info",
             store_code=store_code,
             bucket=None,
-            message="bootstrap: existing TMS session detected, skipping login",
+            message="bootstrap: existing session detected, skipping login",
             extras=probe_extras,
         )
         login_message_logged = False
@@ -825,7 +801,7 @@ async def _bootstrap_session_via_home_and_tracker(
             status="info",
             store_code=store_code,
             bucket=None,
-            message="bootstrap: TMS probe redirected to login, performing fresh login",
+            message="bootstrap: probe redirected to login, performing fresh login",
             extras=probe_extras,
         )
         login_message_logged = True
@@ -861,7 +837,7 @@ async def _bootstrap_session_via_home_and_tracker(
                 status="info",
                 store_code=store_code,
                 bucket=None,
-                message="bootstrap: TMS probe redirected to login, performing fresh login",
+                message="bootstrap: probe redirected to login, performing fresh login",
                 extras=extras,
             )
             login_message_logged = True
@@ -870,7 +846,7 @@ async def _bootstrap_session_via_home_and_tracker(
         _log("info", "filling login form for bootstrap")
 
         await page.goto(login_url, wait_until="domcontentloaded")
-        await _perform_login_flow(
+        login_result = await _perform_login_flow(
             page,
             store_cfg,
             logger,
@@ -878,38 +854,20 @@ async def _bootstrap_session_via_home_and_tracker(
             password=password,
         )
 
-        verify_page: Page | None = None
-        verify_url: str | None = None
-        try:
-            verify_page = await context.new_page()
-            await verify_page.goto(probe_url, wait_until="domcontentloaded")
-            verify_url = verify_page.url
+        post_login_url = login_result.get("post_login_url")
+        still_login_page = login_result.get("still_login_page")
 
-            if not await _tms_ui_detected(verify_page):
-                artifact_extras = await _capture_bootstrap_artifacts(
-                    verify_page,
-                    store_code=store_code,
-                    prefix="post_login_probe",
-                )
-                failure_extras: Dict[str, Any] = {
-                    "probe_url": probe_url,
-                    "current_url": verify_url,
-                    **artifact_extras,
-                }
-                log_event(
-                    logger=logger,
-                    phase="download",
-                    status="error",
-                    store_code=store_code,
-                    bucket=None,
-                    message="bootstrap: login did not lead to TMS, aborting to avoid rate limit",
-                    extras=failure_extras,
-                )
-                raise LoginBootstrapError("Login did not establish a valid TMS session")
-        except PlaywrightTimeoutError as exc:
-            failure_extras = {
+        if still_login_page or not _url_within_td_base(post_login_url):
+            artifact_extras = await _capture_bootstrap_artifacts(
+                page,
+                store_code=store_code,
+                prefix="post_login_probe",
+            )
+            failure_extras: Dict[str, Any] = {
                 "probe_url": probe_url,
-                "error": str(exc),
+                "post_login_url": post_login_url,
+                "still_login_page": still_login_page,
+                **artifact_extras,
             }
             log_event(
                 logger=logger,
@@ -917,16 +875,12 @@ async def _bootstrap_session_via_home_and_tracker(
                 status="error",
                 store_code=store_code,
                 bucket=None,
-                message="bootstrap: login did not lead to TMS, aborting to avoid rate limit",
+                message="bootstrap: login did not reach Simplify home, aborting",
                 extras=failure_extras,
             )
-            raise LoginBootstrapError("Login probe timed out") from exc
-        finally:
-            if verify_page is not None:
-                try:
-                    await verify_page.close()
-                except Exception:  # pragma: no cover - close guard
-                    pass
+            raise LoginBootstrapError(
+                "Login did not reach the Simplify dashboard after submission",
+            )
 
         saved_state = await _persist_storage_state(
             context,
@@ -937,7 +891,7 @@ async def _bootstrap_session_via_home_and_tracker(
 
         success_extras: Dict[str, Any] = {
             "probe_url": probe_url,
-            "tms_url": verify_url,
+            "post_login_url": post_login_url,
         }
         if saved_state is not None:
             success_extras["storage_state"] = str(saved_state)
@@ -950,16 +904,16 @@ async def _bootstrap_session_via_home_and_tracker(
             status="info",
             store_code=store_code,
             bucket=None,
-            message="bootstrap: login successful, TMS session established",
+            message="bootstrap: login successful, Simplify session established",
             extras=success_extras,
         )
 
         session_active = True
 
     if not session_active:
-        await _ensure_logged_in("tms_probe")
+        await _ensure_logged_in("session_probe")
 
-    # Navigate to the home page to confirm access before opening the TMS tab.
+    # Navigate to the home page to confirm access before proceeding to dashboards.
     while True:
         try:
             await page.goto(home_url, wait_until="domcontentloaded")
@@ -989,7 +943,7 @@ async def _bootstrap_session_via_home_and_tracker(
                     status="error",
                     store_code=store_code,
                     bucket=None,
-                    message="bootstrap: login did not lead to TMS, aborting to avoid rate limit",
+                    message="bootstrap: home still requires login after authentication",
                     extras=failure_extras,
                 )
                 raise LoginBootstrapError("Home page still requires login after authentication")
@@ -999,78 +953,7 @@ async def _bootstrap_session_via_home_and_tracker(
 
         break
 
-    async def _open_authenticated_tms_page() -> Page:
-        nonlocal session_active
-
-        while True:
-            tms_page: Page | None = None
-            try:
-                tms_page = await context.new_page()
-                await tms_page.goto(probe_url, wait_until="domcontentloaded")
-            except PlaywrightTimeoutError as exc:
-                if tms_page is not None:
-                    try:
-                        await tms_page.close()
-                    except Exception:  # pragma: no cover - close guard
-                        pass
-                _log(
-                    "error",
-                    "tms navigation after bootstrap timed out",
-                    extras={"probe_url": probe_url, "error": str(exc)},
-                )
-                raise
-
-            if await _tms_ui_detected(tms_page):
-                log_event(
-                    logger=logger,
-                    phase="download",
-                    status="info",
-                    store_code=store_code,
-                    bucket=None,
-                    message="tms page opened in new tab",
-                    extras={"tms_url": tms_page.url, "probe_url": probe_url},
-                )
-                return tms_page
-
-            if not login_attempted:
-                try:
-                    await tms_page.close()
-                except Exception:  # pragma: no cover - close guard
-                    pass
-                session_active = False
-                await _ensure_logged_in("tms_page_open")
-                continue
-
-            artifact_extras = await _capture_bootstrap_artifacts(
-                tms_page,
-                store_code=store_code,
-                prefix="tms_open_failed",
-            )
-            failure_extras = {
-                "probe_url": probe_url,
-                "current_url": tms_page.url,
-                **artifact_extras,
-            }
-            try:
-                await tms_page.close()
-            except Exception:  # pragma: no cover - close guard
-                pass
-
-            log_event(
-                logger=logger,
-                phase="download",
-                status="error",
-                store_code=store_code,
-                bucket=None,
-                message="bootstrap: login did not lead to TMS, aborting to avoid rate limit",
-                extras=failure_extras,
-            )
-            raise LoginBootstrapError(
-                "TMS navigation after bootstrap did not show authenticated UI",
-            )
-
-    tms_page = await _open_authenticated_tms_page()
-    return tms_page
+    return page
 
 
 async def _switch_to_store_dashboard_and_download(
@@ -1315,7 +1198,7 @@ async def _perform_login_flow(
     *,
     username: str,
     password: str,
-) -> None:
+) -> Dict[str, Any]:
     """Explicitly visit the login form and authenticate like a human user."""
 
     store_code = store_cfg.get("store_code")
@@ -1489,6 +1372,8 @@ async def _perform_login_flow(
     extras = {k: v for k, v in extras.items() if v is not None}
 
     _log("info", "login submission completed", extras=extras)
+
+    return extras
 
 
 async def _ensure_dashboard(
@@ -1828,10 +1713,10 @@ async def run_all_stores_single_session(
 
         pages = ctx.pages
         home_page = pages[0] if pages else await ctx.new_page()
-        tms_page: Page | None = None
+        session_page: Page | None = None
 
         try:
-            tms_page = await _bootstrap_session_via_home_and_tracker(
+            session_page = await _bootstrap_session_via_home_and_tracker(
                 home_page,
                 first_store_cfg,
                 logger,
@@ -1844,7 +1729,7 @@ async def run_all_stores_single_session(
                 sc = cfg.get("store_code")
                 try:
                     await _switch_to_store_dashboard_and_download(
-                        tms_page,
+                        session_page,
                         cfg,
                         logger=logger,
                         settings=settings,
