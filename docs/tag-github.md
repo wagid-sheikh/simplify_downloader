@@ -10,3 +10,9 @@ git push origin v1.12
 git tag -a v1.13 -m "Full Refactored & working single-session pipeline"
 
 git push origin v1.13
+
+
+
+git tag -a v1.14 -m "Single Session Working with re-use of logged in session and full data ingest working"
+
+git push origin v1.14

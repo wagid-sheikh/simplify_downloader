@@ -421,3 +421,115 @@ Do **not** change existing pipeline entrypoints in this task.
 ---
 
 **Implement exactly this behavior, with no fallback to `STORES_LIST` for reports, and with email strictly conditional on (PDFs exist) + (email env correctly set).**
+
+
+---
+
+## 7. First-Run / T-1 Data Missing Behavior (IMPORTANT)
+
+On the **first day** we run reports for a store, there may be **no T-1 (previous day) data** or historical baseline in the DB.
+
+You **must not crash** or fail the report in this case.
+
+**Rules:**
+
+1. `build_store_context` MUST:
+
+   * Still generate a report for **T (the requested `report_date`)** as long as there is **some data for that store on T** (e.g. today’s dashboard summary / pickups / deliveries).
+   * Treat any **missing T-1 or historical fields** (used for comparisons, trends, or thresholds) as:
+
+     * `None`, `0`, or `"N/A"` (pick one consistent representation per field), and
+     * Adjust any derived text notes accordingly (e.g. “No previous data available for comparison yet.”).
+
+2. Only raise the “no data for this store/date” style exception if:
+
+   * There is **no usable data at all** for the requested `report_date` T for that store (i.e. not even today’s dashboard summary row).
+
+3. `run_store_reports.py` MUST:
+
+   * Handle this “no data for this store/date” exception gracefully:
+
+     * Log a clear warning for that store.
+     * Skip that store.
+     * Continue with other stores without crashing the whole run.
+
+In short:
+
+> If there is **T data but no T-1** → ✅ generate report for T with limited comparisons.
+> If there is **no T data** for that store/date → ⚠️ log and skip, do not crash the job.
+
+---
+
+Here is the **cleanest possible instruction** to add to the Codex task so that the daily PDF reporting module **automatically wires itself into the existing single-session pipeline**, without breaking isolation or duplicating login logic.
+
+Use this as an **add-on section** (again, no code):
+
+---
+
+## 8. Automatic Triggering in Single-Session Pipeline (Wiring Rule)
+
+When this report module (V1) is implemented, it **must integrate cleanly** with the existing **single-session scraping/ingest pipeline** *without duplicating login logic* and **without creating a second browser session**.
+
+**Rules:**
+
+1. The report runner (`run_store_reports.py`) is a **separate entrypoint**, but:
+
+   * It must be designed so that it can be **optionally invoked as the final step** of the existing pipeline.
+   * The single-session pipeline should be able to call:
+
+     ```bash
+     python -m dashboard_downloader.run_store_reports --report-date <DATE>
+     ```
+
+     **in the same process run** *after* scraping is finished.
+
+2. The report runner **must NOT**:
+
+   * Perform any scraping,
+   * Perform any login,
+   * Launch Playwright except for PDF generation (HTML → PDF only),
+   * Touch the browser context used by scraping.
+
+3. The existing pipeline will **reuse the same run_id** and pass it to the report runner (if invoked inside the same session), so:
+
+   * All JSON logs from the report generation step must include the inherited run_id.
+   * This keeps the entire scraping → ingest → report chain traceable as a **single logical run**.
+
+4. No special coupling is required:
+
+   * The single-session script will simply call the report runner as **the last step** using `subprocess` or direct Python invocation.
+   * Therefore, the report runner must be **pure**, **standalone**, and **idempotent**, relying only on:
+
+     * the DB,
+     * HTML template,
+     * env vars.
+
+5. The report runner must be designed to:
+
+   * Execute correctly whether invoked:
+
+     1. **Manually**
+     2. **From cron**
+     3. **Automatically by the scraping pipeline**
+
+   Without assuming anything about browser state, login state, or cookies.
+
+**In summary:**
+
+> Once implemented, the report module should run automatically at the end of the single-session scraping pipeline by simply invoking the new report entrypoint. No login and no scraping must occur again. The PDF and email generation must operate purely from the ingested DB data in the same run.
+
+---
+
+## 10. Future TODO's
+After completing the task, update .env.example to ensure all needed variables are present that must be configured in .env
+---
+## 11. Future TODO's
+DO NOT DEVELOP THIS YET, this section is just a roadmap for this sub-module
+V2: Store-wise email routing
+V3: Weekly + monthly summaries
+V4: WhatsApp auto-send
+V5: HTML report viewer in the TSV-RSM admin panel
+V6: Multi-store combined analytics
+Naming this V1 helps Codex and your future self know:
+This is the foundational implementation.
+Later tasks will extend it, not rewrite it.
