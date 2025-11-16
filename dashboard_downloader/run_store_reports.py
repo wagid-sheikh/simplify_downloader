@@ -5,7 +5,7 @@ import asyncio
 import os
 import smtplib
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
@@ -343,19 +343,30 @@ async def _generate_reports(
             store_code=code,
             extras={"report_date": report_date.isoformat(), "output_path": str(output_path)},
         )
-        await _persist_document_record(
-            database_url=database_url,
-            report_date=report_date,
-            store_code=code,
-            run_id=run_id,
-            file_name=output_path.name,
-            file_path=output_path,
-            status="ok",
-            error_message=None,
-            logger=logger,
-        )
         if aggregator:
             aggregator.register_pdf_success(code, str(output_path))
+
+        try:
+            await _persist_document_record(
+                database_url=database_url,
+                report_date=report_date,
+                store_code=code,
+                run_id=run_id,
+                file_name=output_path.name,
+                file_path=output_path,
+                status="ok",
+                error_message=None,
+                logger=logger,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            log_event(
+                logger=logger,
+                phase="report",
+                status="warning",
+                message="unexpected error while recording document",
+                store_code=code,
+                extras={"error": str(exc), "file_name": output_path.name},
+            )
     return generated
 
 
