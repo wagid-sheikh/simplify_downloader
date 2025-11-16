@@ -200,16 +200,17 @@ async def _persist_document_record(
         size = file_path.stat().st_size
         path_str = str(file_path)
 
+    period_reference = report_date.isoformat()
     values = {
         "doc_type": "pipeline_report",
         "doc_subtype": "store_daily_pdf",
         "doc_date": report_date,
-        "reference_name_1": "pipeline",
+        "reference_name_1": "pipeline_name",
         "reference_id_1": PIPELINE_NAME,
-        "reference_name_2": "run_id",
-        "reference_id_2": run_id,
-        "reference_name_3": "store_code",
-        "reference_id_3": store_code,
+        "reference_name_2": "store_code",
+        "reference_id_2": store_code,
+        "reference_name_3": "report_date",
+        "reference_id_3": period_reference,
         "file_name": file_name,
         "mime_type": "application/pdf",
         "file_size_bytes": size,
@@ -220,6 +221,7 @@ async def _persist_document_record(
         "status": status,
         "error_message": error_message,
         "created_by": "pipeline",
+        "created_at": datetime.now(timezone.utc),
     }
 
     try:

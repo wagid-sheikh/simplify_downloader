@@ -150,7 +150,11 @@ async def _finalize_summary_and_email(
     attachments_snapshot: list[dict] = []
     if database_url:
         try:
-            attachments_snapshot = await fetch_report_documents(database_url, aggregator.run_id)
+            attachments_snapshot = await fetch_report_documents(
+                database_url,
+                report_date=aggregator.report_date,
+                started_at=aggregator.started_at,
+            )
         except Exception as exc:  # pragma: no cover - defensive
             log_event(
                 logger=logger,
@@ -277,7 +281,11 @@ async def _handle_report_email(
         return
 
     try:
-        document_rows = await fetch_report_documents(database_url, aggregator.run_id)
+        document_rows = await fetch_report_documents(
+            database_url,
+            report_date=aggregator.report_date,
+            started_at=aggregator.started_at,
+        )
     except Exception as exc:  # pragma: no cover - defensive
         log_event(
             logger=logger,
