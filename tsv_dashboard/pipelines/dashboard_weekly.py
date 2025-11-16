@@ -6,6 +6,8 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List
 
+from dashboard_downloader.notifications import send_notifications_for_run
+
 from .base import (
     PipelinePhaseTracker,
     check_existing_run,
@@ -13,7 +15,6 @@ from .base import (
     resolve_run_env,
     update_summary_record,
 )
-from .emailing import load_email_config, send_report_email
 from .reporting import (
     PdfArtifact,
     fetch_store_period_rows,
@@ -23,7 +24,19 @@ from .reporting import (
     record_documents,
 )
 
-PIPELINE_NAME = "dashboard_weekly"
+PIPELINE_NAME = "simplify_dashboard_weekly"
+
+
+async def _dispatch_notifications(run_id: str, tracker: PipelinePhaseTracker) -> None:
+    try:
+        await send_notifications_for_run(PIPELINE_NAME, run_id)
+        tracker.mark_phase("send_email", "ok")
+    except Exception as exc:  # pragma: no cover - defensive guardrail
+        tracker.mark_phase("send_email", "warning")
+        tracker.add_summary(
+            f"Notification dispatch failed; see logs for details ({exc})."
+        )
+        tracker.overall = "warning"
 
 
 def _compute_period(today: date) -> tuple[date, date]:
@@ -99,11 +112,14 @@ async def _run(env: str | None = None) -> None:
         )
         tracker.mark_phase("render_pdfs", "warning")
         tracker.mark_phase("persist_documents", "warning")
-        tracker.mark_phase("send_email", "warning")
         tracker.overall = "warning"
         finished_at = datetime.now(timezone.utc)
         record = tracker.build_record(finished_at)
         await persist_summary_record(database_url, record)
+        await _dispatch_notifications(run_id, tracker)
+        final_finished_at = datetime.now(timezone.utc)
+        final_record = tracker.build_record(final_finished_at)
+        await update_summary_record(database_url, run_id, final_record)
         return
 
     pdfs: List[PdfArtifact] = []
@@ -157,30 +173,10 @@ async def _run(env: str | None = None) -> None:
     )
     tracker.mark_phase("persist_documents", "ok")
 
-    attachments = [(artifact.store_code, artifact.file_path) for artifact in pdfs]
     pre_finished_at = datetime.now(timezone.utc)
     pre_record = tracker.build_record(pre_finished_at)
     await persist_summary_record(database_url, pre_record)
-    summary_text = pre_record["summary_text"]
-    email_config = load_email_config()
-    if email_config and attachments:
-        try:
-            send_report_email(
-                config=email_config,
-                pipeline_name=PIPELINE_NAME,
-                period_label=period_label,
-                summary_text=summary_text,
-                artifacts=attachments,
-            )
-            tracker.mark_phase("send_email", "ok")
-        except Exception:
-            tracker.mark_phase("send_email", "warning")
-            tracker.add_summary("Email delivery failed; see logs for SMTP issue.")
-            tracker.overall = "warning"
-    else:
-        tracker.mark_phase("send_email", "warning")
-        tracker.add_summary("Email skipped because SMTP configuration or attachments were missing.")
-        tracker.overall = "warning"
+    await _dispatch_notifications(run_id, tracker)
 
     final_finished_at = datetime.now(timezone.utc)
     final_record = tracker.build_record(final_finished_at)
