@@ -7,6 +7,7 @@ from typing import List, Optional
 
 from dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from dashboard_downloader.run_downloads import LoginBootstrapError
+from dashboard_downloader.run_summary import RunAggregator
 from dashboard_downloader.settings import load_settings
 
 from simplify_downloader.common.db import run_alembic_upgrade
@@ -26,6 +27,10 @@ async def _run_async(args: argparse.Namespace) -> int:
         dry_run=args.dry_run,
         run_id=run_id,
     )
+    run_env = os.getenv("RUN_ENV") or os.getenv("ENVIRONMENT") or "dev"
+    store_codes = list(settings.stores.keys()) if settings.stores else []
+    aggregator = RunAggregator(run_id=run_id, run_env=run_env, store_codes=store_codes)
+    logger.attach_aggregator(aggregator)
 
     if not settings.dry_run and settings.database_url:
         log_event(logger=logger, phase="db", message="running migrations")
@@ -34,7 +39,7 @@ async def _run_async(args: argparse.Namespace) -> int:
     from dashboard_downloader.pipeline import run_pipeline
 
     try:
-        await run_pipeline(settings=settings, logger=logger)
+        await run_pipeline(settings=settings, logger=logger, aggregator=aggregator)
     except LoginBootstrapError as exc:
         log_event(
             logger=logger,
