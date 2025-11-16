@@ -72,25 +72,24 @@ async def persist_document(
     *,
     database_url: str,
     pipeline_name: str,
+    run_id: str,
     store_code: str,
     report_date: date,
-    period_label: str,
     file_path: Path,
-    reference_key: str,
-    doc_subtype: str,
+    doc_type: str,
 ) -> None:
     async with session_scope(database_url) as session:
         await session.execute(
             documents.insert().values(
-                doc_type="pipeline_report",
-                doc_subtype=doc_subtype,
+                doc_type=doc_type,
+                doc_subtype="pipeline_report",
                 doc_date=report_date,
-                reference_name_1="pipeline_name",
+                reference_name_1="pipeline",
                 reference_id_1=pipeline_name,
-                reference_name_2="store_code",
-                reference_id_2=store_code,
-                reference_name_3=reference_key,
-                reference_id_3=period_label,
+                reference_name_2="run_id",
+                reference_id_2=run_id,
+                reference_name_3="store_code",
+                reference_id_3=store_code,
                 file_name=file_path.name,
                 mime_type="application/pdf",
                 file_size_bytes=file_path.stat().st_size if file_path.exists() else None,
@@ -107,22 +106,20 @@ async def record_documents(
     *,
     database_url: str,
     pipeline_name: str,
+    run_id: str,
     report_date: date,
-    period_label: str,
     artifacts: Sequence[PdfArtifact],
-    reference_key: str,
-    doc_subtype: str,
+    doc_type: str,
 ) -> None:
     for artifact in artifacts:
         await persist_document(
             database_url=database_url,
             pipeline_name=pipeline_name,
+            run_id=run_id,
             store_code=artifact.store_code,
             report_date=report_date,
-            period_label=period_label,
             file_path=artifact.file_path,
-            reference_key=reference_key,
-            doc_subtype=doc_subtype,
+            doc_type=doc_type,
         )
 
 
