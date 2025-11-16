@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 from datetime import datetime, date
 from decimal import Decimal, InvalidOperation
@@ -95,6 +96,39 @@ def _normalize_space(text: str | None) -> str:
     if not text:
         return ""
     return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def _normalize_table_header_text(text: str | None) -> str:
+    if not text:
+        return ""
+    normalized = html.unescape(text)
+    normalized = normalized.replace("\xa0", " ")
+    normalized = normalized.replace("\r", " ").replace("\n", " ")
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.strip().lower()
+
+
+def _first_token(text: str | None) -> str | None:
+    if not text:
+        return None
+    stripped = text.strip()
+    if not stripped:
+        return None
+    parts = re.split(r"\s+", stripped, maxsplit=1)
+    return parts[0] if parts else None
+
+
+_NUMERIC_TOKEN = re.compile(r"^-?\d+(?:\.\d+)?$")
+
+
+def _numeric_cell_value(text: str | None) -> str | None:
+    token = _first_token(text)
+    if token is None:
+        return None
+    normalized = token.replace(",", "")
+    if _NUMERIC_TOKEN.match(normalized):
+        return normalized
+    return None
 
 
 @dataclass
@@ -334,6 +368,7 @@ async def extract_dashboard_summary(
             "store_name": None,
             "dashboard_date": None,
             "launch_date": None,
+            "gstin": None,
         }
     )
 
@@ -427,14 +462,28 @@ async def extract_dashboard_summary(
         try:
             user_bit_locator = page.locator("li.user_bit a")
             if await user_bit_locator.count() > 0:
-                user_bit_text = await user_bit_locator.first.inner_text()
+                raw_user_bit = await user_bit_locator.first.inner_text()
+                if raw_user_bit:
+                    user_bit_text = re.sub(r"\s+", " ", raw_user_bit).strip()
         except Exception:
             user_bit_text = None
 
         if user_bit_text:
-            m = re.search(r"\b[0-9A-Z]{15}\b", user_bit_text)
-            if m:
-                dashboard_data[gstin_column_name] = m.group(0)
+            parts = user_bit_text.split(" ")
+            if len(parts) >= 2:
+                gstin_candidate = parts[-1].strip()
+                if re.fullmatch(r"[0-9A-Z]{15}", gstin_candidate):
+                    dashboard_data[gstin_column_name] = gstin_candidate
+                else:
+                    _log(
+                        "warn",
+                        "invalid gstin candidate in navbar",
+                        extras={
+                            "store_code": store_code,
+                            "user_bit_text": user_bit_text,
+                            "candidate": gstin_candidate,
+                        },
+                    )
 
         if dashboard_data.get(gstin_column_name) is None:
             fallback_gstin = store_cfg.get("gstin") or store_cfg.get("store_gstin")
@@ -474,35 +523,42 @@ async def extract_dashboard_summary(
             extras={"error": str(exc)},
         )
 
-    async def _collect_section(section_name: str) -> Tuple[List[List[str]], List[str], bool]:
+    async def _collect_section(
+        section_name: str,
+        *,
+        table_after_heading: bool = False,
+    ) -> Tuple[List[List[str]], List[str], bool]:
         config = SECTION_CONFIGS[section_name]
-        heading_locator = page.locator(
-            "xpath=//h3[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), \"%s\")]"
-            % section_name.lower()
-        )
-        try:
-            heading_count = await heading_locator.count()
-        except Exception:
-            heading_count = 0
-        heading_present = heading_count > 0
+        if table_after_heading:
+            table_locator, heading_present = await _table_after_heading_locator(page, section_name)
+        else:
+            heading_locator = page.locator(
+                "xpath=//h3[contains(translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), \"%s\")]"
+                % section_name.lower()
+            )
+            try:
+                heading_count = await heading_locator.count()
+            except Exception:
+                heading_count = 0
+            heading_present = heading_count > 0
 
-        candidate_tables: List[Locator] = []
-        for idx in range(heading_count):
-            heading = heading_locator.nth(idx)
-            candidate_tables.extend(await _expand_tables(heading.locator("xpath=following-sibling::table")))
-            candidate_tables.extend(
-                await _expand_tables(
-                    heading.locator(
-                        "xpath=ancestor::*[self::section or contains(concat(' ', normalize-space(@class), ' '), ' card ')][1]//table"
+            candidate_tables: List[Locator] = []
+            for idx in range(heading_count):
+                heading = heading_locator.nth(idx)
+                candidate_tables.extend(await _expand_tables(heading.locator("xpath=following-sibling::table")))
+                candidate_tables.extend(
+                    await _expand_tables(
+                        heading.locator(
+                            "xpath=ancestor::*[self::section or contains(concat(' ', normalize-space(@class), ' '), ' card ')][1]//table"
+                        )
                     )
                 )
-            )
-            candidate_tables.extend(await _expand_tables(heading.locator("xpath=parent::*//table")))
+                candidate_tables.extend(await _expand_tables(heading.locator("xpath=parent::*//table")))
 
-        page_tables_locator = page.locator("table")
-        candidate_tables.extend(await _expand_tables(page_tables_locator))
+            page_tables_locator = page.locator("table")
+            candidate_tables.extend(await _expand_tables(page_tables_locator))
 
-        table_locator = await _select_table(candidate_tables, config)
+            table_locator = await _select_table(candidate_tables, config)
         if table_locator is None:
             if not heading_present:
                 _log("warn", "section heading missing", extras={"section": section_name})
@@ -528,12 +584,16 @@ async def extract_dashboard_summary(
         await _parse_pickup(pickup_rows, pickup_headers, _set_metric)
 
     # Delivery
-    delivery_rows, delivery_headers, delivery_found = await _collect_section("Delivery")
+    delivery_rows, delivery_headers, delivery_found = await _collect_section(
+        "Delivery", table_after_heading=True
+    )
     if delivery_found:
         await _parse_delivery(delivery_rows, delivery_headers, _set_metric)
 
     # Repeat Customers
-    repeat_rows, repeat_headers, repeat_found = await _collect_section("Repeat Customers")
+    repeat_rows, repeat_headers, repeat_found = await _collect_section(
+        "Repeat Customers", table_after_heading=True
+    )
     if repeat_found:
         await _parse_repeat_customers(repeat_rows, repeat_headers, _set_metric)
 
@@ -572,6 +632,36 @@ async def _expand_tables(locator: Locator) -> List[Locator]:
     for idx in range(count):
         tables.append(locator.nth(idx))
     return tables
+
+
+async def _table_after_heading_locator(
+    page: Page, section_name: str
+) -> Tuple[Optional[Locator], bool]:
+    headings = page.locator("h3.section-title")
+    try:
+        count = await headings.count()
+    except Exception:
+        return None, False
+    normalized_target = section_name.strip().lower()
+    heading_present = False
+    for idx in range(count):
+        heading = headings.nth(idx)
+        try:
+            text = await heading.inner_text()
+        except Exception:
+            continue
+        normalized_text = re.sub(r"\s+", " ", (text or "").strip()).lower()
+        if normalized_text == normalized_target:
+            heading_present = True
+            table_locator = heading.locator(
+                "xpath=following-sibling::table[contains(concat(' ', normalize-space(@class), ' '), ' table-bordered ')][1]"
+            )
+            try:
+                if await table_locator.count() > 0:
+                    return table_locator.first, True
+            except Exception:
+                return None, True
+    return None, heading_present
 
 
 async def _select_table(candidates: List[Locator], config: SectionConfig) -> Optional[Locator]:
@@ -762,14 +852,33 @@ async def _parse_delivery(
         return
 
     data_row = rows[0]
-    for idx, header in enumerate(headers):
+    normalized_headers = [_normalize_table_header_text(header) for header in headers]
+    for idx, normalized_header in enumerate(normalized_headers):
         if idx >= len(data_row):
             continue
-        label = _normalize_label(header)
+        cell_value = data_row[idx]
+        if not normalized_header:
+            continue
+        if "tat (%)" in normalized_header or "tat%" in normalized_header:
+            set_metric("delivery_tat_pct", cell_value)
+            continue
+        if "undel." in normalized_header or "undel" in normalized_header:
+            if "> 10" in normalized_header or ">10" in normalized_header:
+                numeric_value = _numeric_cell_value(cell_value)
+                if numeric_value is not None:
+                    set_metric("delivery_undel_over_10_days", numeric_value)
+                continue
+            if "total" in normalized_header:
+                numeric_value = _numeric_cell_value(cell_value)
+                if numeric_value is not None:
+                    set_metric("delivery_total_undelivered", numeric_value)
+                continue
+
+        label = _normalize_label(headers[idx])
         metric = DELIVERY_LABEL_TO_METRIC.get(label)
         if not metric:
             continue
-        set_metric(metric, data_row[idx])
+        set_metric(metric, cell_value)
 
 
 async def _parse_repeat_customers(
@@ -781,14 +890,25 @@ async def _parse_repeat_customers(
         return
 
     data_row = rows[0]
-    for idx, header in enumerate(headers):
+    normalized_headers = [_normalize_table_header_text(header) for header in headers]
+    for idx, normalized_header in enumerate(normalized_headers):
         if idx >= len(data_row):
             continue
-        label = _normalize_label(header)
+        cell_value = data_row[idx]
+        if not normalized_header:
+            continue
+        if "customer (6 months ago)" in normalized_header:
+            set_metric("repeat_customer_base_6m", cell_value)
+            continue
+        if "total base (%)" in normalized_header:
+            set_metric("repeat_total_base_pct", cell_value)
+            continue
+
+        label = _normalize_label(headers[idx])
         metric = REPEAT_LABEL_TO_METRIC.get(label)
         if not metric:
             continue
-        set_metric(metric, data_row[idx])
+        set_metric(metric, cell_value)
 
 
 async def _parse_package(
