@@ -34,7 +34,7 @@ from .config import (
     tms_dashboard_url,
 )
 from .dashboard_scraper import extract_dashboard_summary
-from .settings import PipelineSettings
+from .settings import GLOBAL_CREDENTIAL_ERROR, PipelineSettings
 from .json_logger import JsonLogger, log_event
 
 
@@ -97,6 +97,15 @@ def _validate_downloaded_csv(csv_path: Path, *, body: bytes) -> tuple[bool, str 
 class SkipStoreDashboardError(Exception):
     """Raised when a store's dashboard cannot be used (no controls, no creds, etc.)."""
     pass
+
+
+def _resolve_global_credentials(settings: PipelineSettings | None) -> tuple[str, str]:
+    if settings is None:
+        return "", ""
+
+    username = (getattr(settings, "global_username", "") or "").strip()
+    password = (getattr(settings, "global_password", "") or "").strip()
+    return username, password
 
 
 
@@ -546,7 +555,14 @@ async def _prime_context_with_storage_state(
 def _render(template: str, sc: str) -> str:
     return template.format(sc=sc, ymd=datetime.now().strftime("%Y%m%d"))
 
-async def _download_one_spec(page: Page, store_cfg: Dict, spec: Dict, *, logger: JsonLogger) -> Path | None:
+async def _download_one_spec(
+    page: Page,
+    store_cfg: Dict,
+    spec: Dict,
+    *,
+    logger: JsonLogger,
+    settings: PipelineSettings,
+) -> Path | None:
     sc = store_cfg["store_code"]
     url = _render(spec["url_template"], sc)
     out_name = _render(spec["out_name_template"], sc)
@@ -635,7 +651,7 @@ async def _download_one_spec(page: Page, store_cfg: Dict, spec: Dict, *, logger:
         attempted_refresh = True
 
         try:
-            await _ensure_dashboard(page, store_cfg, logger)
+            await _ensure_dashboard(page, store_cfg, logger, settings=settings)
         except Exception as exc:
             _log("error", f"session refresh failed for {spec['key']}", extras={"error": str(exc)})
             return None
@@ -648,6 +664,7 @@ async def _download_specs_for_store(
     logger: JsonLogger,
     merged_buckets: Dict[str, List[Path]],
     download_counts: Dict[str, Dict[str, Dict[str, object]]],
+    settings: PipelineSettings,
 ) -> None:
     sc = store_cfg["store_code"]
 
@@ -655,7 +672,13 @@ async def _download_specs_for_store(
         if not spec.get("download", True):
             continue
 
-        saved = await _download_one_spec(page, store_cfg, spec, logger=logger)
+        saved = await _download_one_spec(
+            page,
+            store_cfg,
+            spec,
+            logger=logger,
+            settings=settings,
+        )
         if saved and spec.get("merge_bucket"):
             bucket = spec["merge_bucket"]
             merged_buckets.setdefault(bucket, []).append(saved)
@@ -755,6 +778,7 @@ async def _bootstrap_session_via_home_and_tracker(
     storage_state_source: str | None = None,
 ) -> Page:
     store_code = store_cfg.get("store_code")
+    username, password = _resolve_global_credentials(settings)
 
     def _log(status: str, message: str, *, extras: Dict | None = None) -> None:
         log_event(
@@ -815,20 +839,17 @@ async def _bootstrap_session_via_home_and_tracker(
         if login_attempted:
             return
 
-        username = store_cfg.get("username")
-        password = store_cfg.get("password")
-
         if not username or not password:
             _log(
                 "error",
-                "bootstrap: credentials missing for login attempt",
+                GLOBAL_CREDENTIAL_ERROR,
                 extras={
                     "login_reason": reason,
                     "username_present": bool(username),
                     "password_present": bool(password),
                 },
             )
-            raise LoginBootstrapError("Login required but credentials are not configured")
+            raise LoginBootstrapError(GLOBAL_CREDENTIAL_ERROR)
 
         if not login_message_logged:
             extras = dict(probe_extras)
@@ -851,7 +872,13 @@ async def _bootstrap_session_via_home_and_tracker(
         _log("info", "filling login form for bootstrap")
 
         await page.goto(login_url, wait_until="domcontentloaded")
-        await _perform_login_flow(page, store_cfg, logger)
+        await _perform_login_flow(
+            page,
+            store_cfg,
+            logger,
+            username=username,
+            password=password,
+        )
 
         verify_page: Page | None = None
         verify_url: str | None = None
@@ -1110,7 +1137,13 @@ async def _switch_to_store_dashboard_and_download(
         if not spec.get("download", True):
             continue
 
-        saved = await _download_one_spec(page, store_cfg, spec, logger=logger)
+        saved = await _download_one_spec(
+            page,
+            store_cfg,
+            spec,
+            logger=logger,
+            settings=settings,
+        )
         if not saved:
             continue
 
@@ -1163,7 +1196,14 @@ async def _is_login_page(page: Page, logger: JsonLogger | None = None) -> bool:
     return False
 
 
-async def _navigate_via_home_to_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> None:
+async def _navigate_via_home_to_dashboard(
+    page: Page,
+    store_cfg: Dict,
+    logger: JsonLogger,
+    *,
+    username: str,
+    password: str,
+) -> None:
     """Navigate from the home page to the store dashboard via the tracker card."""
 
     store_code = store_cfg.get("store_code")
@@ -1206,7 +1246,13 @@ async def _navigate_via_home_to_dashboard(page: Page, store_cfg: Dict, logger: J
 
     if await _is_login_page(page, logger):
         _log("info", "home page requires authentication; invoking login flow")
-        await _perform_login_flow(page, store_cfg, logger)
+        await _perform_login_flow(
+            page,
+            store_cfg,
+            logger,
+            username=username,
+            password=password,
+        )
         if await _is_login_page(page, logger):
             _log(
                 "error",
@@ -1264,11 +1310,16 @@ async def _navigate_via_home_to_dashboard(page: Page, store_cfg: Dict, logger: J
     )
 
 
-async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -> None:
+async def _perform_login_flow(
+    page: Page,
+    store_cfg: Dict,
+    logger: JsonLogger,
+    *,
+    username: str,
+    password: str,
+) -> None:
     """Explicitly visit the login form and authenticate like a human user."""
 
-    username = store_cfg.get("username")
-    password = store_cfg.get("password")
     store_code = store_cfg.get("store_code")
 
     def _log(status: str, message: str, *, extras: Dict | None = None) -> None:
@@ -1293,7 +1344,7 @@ async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -
         return
 
     if not username or not password:
-        raise RuntimeError(f"Missing credentials for store_code={store_code}")
+        raise RuntimeError(GLOBAL_CREDENTIAL_ERROR)
 
     username_locator = page.locator(page_selectors.LOGIN_USERNAME)
     password_locator = page.locator(page_selectors.LOGIN_PASSWORD)
@@ -1442,7 +1493,13 @@ async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -
     _log("info", "login submission completed", extras=extras)
 
 
-async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> None:
+async def _ensure_dashboard(
+    page: Page,
+    store_cfg: Dict,
+    logger: JsonLogger,
+    *,
+    settings: PipelineSettings,
+) -> None:
     """Navigate to the dashboard, refreshing the login session when required."""
 
     dashboard_url = store_cfg["dashboard_url"]
@@ -1474,28 +1531,39 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
     )
 
     performed_login_flow = False
-    has_creds = bool(store_cfg.get("username") and store_cfg.get("password"))
+    username, password = _resolve_global_credentials(settings)
+    has_creds = bool(username and password)
 
     if await _is_login_page(page, logger):
         if not has_creds:
             _log(
                 "warn",
-                "login page detected but credentials missing; skipping store",
+                GLOBAL_CREDENTIAL_ERROR,
                 extras={"dashboard_url": dashboard_url, "current_url": page.url},
             )
-            raise SkipStoreDashboardError(
-                f"Skipping store_code={store_code}: login required but credentials are not configured."
-            )
+            raise SkipStoreDashboardError(GLOBAL_CREDENTIAL_ERROR)
 
         _log(
             "info",
             "dashboard requires login; attempting automated login",
             extras={"dashboard_url": dashboard_url, "current_url": page.url},
         )
-        await _perform_login_flow(page, store_cfg, logger)
+        await _perform_login_flow(
+            page,
+            store_cfg,
+            logger,
+            username=username,
+            password=password,
+        )
         performed_login_flow = True
         try:
-            await _navigate_via_home_to_dashboard(page, store_cfg, logger)
+            await _navigate_via_home_to_dashboard(
+                page,
+                store_cfg,
+                logger,
+                username=username,
+                password=password,
+            )
         except Exception as exc:
             _log("error", "home navigation failed after login", extras={"error": str(exc)})
             raise
@@ -1519,12 +1587,10 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
                 if not has_creds:
                     _log(
                         "warn",
-                        "dashboard redirected to login but credentials are missing; skipping store",
+                        GLOBAL_CREDENTIAL_ERROR,
                         extras={"current_url": page.url},
                     )
-                    raise SkipStoreDashboardError(
-                        f"Skipping store_code={store_code}: redirected to login without credentials."
-                    )
+                    raise SkipStoreDashboardError(GLOBAL_CREDENTIAL_ERROR)
 
                 if performed_login_flow:
                     _log(
@@ -1539,10 +1605,22 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
                     "dashboard redirected to login; attempting automated login",
                     extras={"dashboard_url": dashboard_url, "login_url": page.url},
                 )
-                await _perform_login_flow(page, store_cfg, logger)
+                await _perform_login_flow(
+                    page,
+                    store_cfg,
+                    logger,
+                    username=username,
+                    password=password,
+                )
                 performed_login_flow = True
                 try:
-                    await _navigate_via_home_to_dashboard(page, store_cfg, logger)
+                    await _navigate_via_home_to_dashboard(
+                        page,
+                        store_cfg,
+                        logger,
+                        username=username,
+                        password=password,
+                    )
                 except Exception as nav_exc:
                     _log(
                         "error",
@@ -1555,12 +1633,10 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
             if not has_creds:
                 _log(
                     "warn",
-                    "dashboard controls not found and no credentials for store; skipping store",
+                    GLOBAL_CREDENTIAL_ERROR,
                     extras={"current_url": page.url},
                 )
-                raise SkipStoreDashboardError(
-                    f"Skipping store_code={store_code}: no download controls visible and no credentials configured."
-                )
+                raise SkipStoreDashboardError(GLOBAL_CREDENTIAL_ERROR)
 
             raise RuntimeError(
                 f"Dashboard controls not found for store_code={store_code}; verify layout or selectors."

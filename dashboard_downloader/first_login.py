@@ -61,8 +61,9 @@ def first_login_headed(username: str, password: str) -> None:
 
 if __name__ == "__main__":
     import os
-    user = os.getenv("TD_UN3668_USERNAME", "")
-    pwd  = os.getenv("TD_UN3668_PASSWORD", "")
+
+    user = os.getenv("TD_GLOBAL_USERNAME", "")
+    pwd = os.getenv("TD_GLOBAL_PASSWORD", "")
     if not user or not pwd:
-        raise SystemExit("Missing TD_UN3668_USERNAME/TD_UN3668_PASSWORD in .env")
+        raise SystemExit("Missing TD_GLOBAL_USERNAME/TD_GLOBAL_PASSWORD in .env")
     first_login_headed(user, pwd)

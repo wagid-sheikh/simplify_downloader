@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import argparse
-import argparse
 import asyncio
 import os
-from pathlib import Path
 from typing import List, Optional
 
 from dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from dashboard_downloader.run_downloads import LoginBootstrapError
 from dashboard_downloader.run_summary import RunAggregator
-from dashboard_downloader.settings import PipelineSettings, load_settings
+from dashboard_downloader.settings import (
+    GLOBAL_CREDENTIAL_ERROR,
+    PipelineSettings,
+    load_settings,
+)
 
 from simplify_downloader.common.db import run_alembic_upgrade
 
@@ -29,18 +31,11 @@ def _validate_prerequisites(*, settings: PipelineSettings, logger: JsonLogger, d
     if not dry_run and not settings.database_url:
         errors.append("DATABASE_URL must be configured unless --dry_run is supplied")
 
-    for store_code, cfg in settings.stores.items():
-        username = (cfg.get("username") or "").strip()
-        password = (cfg.get("password") or "").strip()
-        if not username or not password:
-            errors.append(f"store {store_code}: missing username/password credentials")
-        storage_state = cfg.get("storage_state")
-        if storage_state:
-            storage_path = Path(storage_state)
-            if not storage_path.exists():
-                errors.append(f"store {store_code}: storage state missing at {storage_path}")
-        else:
-            errors.append(f"store {store_code}: storage state path not configured")
+    if not settings.stores:
+        errors.append("At least one store must be enabled before running the pipeline")
+
+    if not settings.global_username or not settings.global_password:
+        errors.append(GLOBAL_CREDENTIAL_ERROR)
 
     if errors:
         for message in errors:
