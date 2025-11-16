@@ -328,19 +328,19 @@ def _build_email_plans(
     return plans
 
 
-async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
+async def _load_notification_resources(
+    pipeline_name: str, run_id: str
+) -> tuple[dict[str, Any] | None, list[str]]:
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
-        logger.info("Skipping notifications: DATABASE_URL is not configured")
-        return
+        return None, ["DATABASE_URL is not configured"]
 
     async with session_scope(database_url) as session:
         pipeline_row = (
             await session.execute(sa.select(pipelines).where(pipelines.c.code == pipeline_name))
         ).mappings().first()
         if not pipeline_row:
-            logger.warning("No pipeline definition found", extra={"pipeline": pipeline_name})
-            return
+            return None, [f"pipeline {pipeline_name} is not registered in notification metadata"]
 
         run_row = (
             await session.execute(
@@ -348,8 +348,7 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
             )
         ).mappings().first()
         if not run_row:
-            logger.warning("No run summary found for notifications", extra={"run_id": run_id})
-            return
+            return None, [f"run summary {run_id} not found"]
 
         docs_rows = (
             await session.execute(
@@ -371,8 +370,7 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
             )
         ).mappings().all()
         if not profiles_rows:
-            logger.info("No active notification profiles found", extra={"pipeline": pipeline_name})
-            return
+            return None, [f"no active notification profiles found for pipeline {pipeline_name}"]
 
         profile_ids = [row["id"] for row in profiles_rows]
         templates_rows = (
@@ -383,7 +381,7 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
                 .where(email_templates.c.name == "default")
             )
         ).mappings().all()
-        templates_by_profile = {row["profile_id"]: row for row in templates_rows}
+        templates_by_profile = {row["profile_id"]: dict(row) for row in templates_rows}
 
         recipients_rows = (
             await session.execute(
@@ -394,15 +392,35 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
             )
         ).mappings().all()
 
-    pipeline_data = dict(pipeline_row)
-    run_data = dict(run_row)
-    documents_list = _group_documents([dict(row) for row in docs_rows])
-    profiles_data = [dict(row) for row in profiles_rows]
-    templates_map = {key: dict(value) for key, value in templates_by_profile.items()}
     recipients_by_profile: dict[int, list[dict[str, Any]]] = {}
     for row in recipients_rows:
         data = dict(row)
         recipients_by_profile.setdefault(data["profile_id"], []).append(data)
+
+    resources = {
+        "pipeline": dict(pipeline_row),
+        "run": dict(run_row),
+        "docs": _group_documents([dict(row) for row in docs_rows]),
+        "profiles": [dict(row) for row in profiles_rows],
+        "templates": templates_by_profile,
+        "recipients": recipients_by_profile,
+    }
+    return resources, []
+
+
+async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
+    resources, errors = await _load_notification_resources(pipeline_name, run_id)
+    if errors:
+        for message in errors:
+            logger.warning(message, extra={"pipeline": pipeline_name, "run_id": run_id})
+        return
+
+    pipeline_data = resources["pipeline"]
+    run_data = resources["run"]
+    documents_list = resources["docs"]
+    profiles_data = resources["profiles"]
+    templates_map = resources["templates"]
+    recipients_by_profile = resources["recipients"]
 
     context = {
         "pipeline_name": pipeline_name,
@@ -440,3 +458,63 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
         "Notification dispatch complete",
         extra={"pipeline": pipeline_name, "run_id": run_id, "emails_sent": sent, "emails_planned": len(plans)},
     )
+
+
+async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str]:
+    """Return any findings for the notifications CLI diagnostic command."""
+
+    findings: list[str] = []
+    resources, errors = await _load_notification_resources(pipeline_name, run_id)
+    findings.extend(errors)
+
+    if not _load_smtp_config():
+        findings.append("SMTP configuration is incomplete (REPORT_EMAIL_SMTP_* and REPORT_EMAIL_FROM)")
+
+    if not resources:
+        return findings
+
+    pipeline_data = resources["pipeline"]
+    run_data = resources["run"]
+    documents_list = resources["docs"]
+    profiles_data = resources["profiles"]
+    templates_map = resources["templates"]
+    recipients_by_profile = resources["recipients"]
+
+    context = {
+        "pipeline_name": pipeline_name,
+        "pipeline_description": pipeline_data["description"],
+        "run_id": run_id,
+        "run_env": run_data["run_env"],
+        "report_date": run_data.get("report_date").isoformat() if run_data.get("report_date") else "",
+        "overall_status": run_data.get("overall_status"),
+        "summary_text": run_data.get("summary_text", ""),
+    }
+
+    plans = _build_email_plans(
+        pipeline_code=pipeline_name,
+        profiles=profiles_data,
+        templates=templates_map,
+        recipients=recipients_by_profile,
+        docs=documents_list,
+        context=context,
+    )
+    if not plans:
+        findings.append("No notification emails would be scheduled for this run. Check recipients/templates/docs.")
+    else:
+        planned_profiles = {plan.profile_code for plan in plans}
+        for profile in profiles_data:
+            if profile["code"] not in planned_profiles:
+                findings.append(
+                    f"Profile {profile['code']} is active but has no matching recipients or documents for run {run_id}."
+                )
+
+    expected_doc_types = {
+        doc_type
+        for (pipeline_code, _), doc_type in STORE_PROFILE_DOC_TYPES.items()
+        if pipeline_code == pipeline_name
+    }
+    for doc_type in expected_doc_types:
+        if not any(record.doc_type == doc_type for record in documents_list):
+            findings.append(f"No documents of type {doc_type} recorded for run {run_id}.")
+
+    return findings
