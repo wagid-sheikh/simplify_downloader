@@ -142,25 +142,23 @@ async def _finalize_summary_and_email(
 ) -> None:
     database_url = settings.database_url
     attachment_count = len(getattr(aggregator, "pdf_records", []) or [])
-    skip_email_message: str | None = None
-    if attachment_count == 0:
-        skip_email_message = "no reports generated, skipping email"
-        aggregator.plan_email(
-            recipients=[],
-            attachment_count=0,
-            message=skip_email_message,
-        )
-        aggregator.finalize_email(
+    summary_only = attachment_count == 0
+    plan_message = (
+        "summary-only notification scheduled (no documents generated)"
+        if summary_only
+        else "notification dispatch scheduled"
+    )
+    aggregator.plan_email(
+        recipients=[],
+        attachment_count=attachment_count,
+        message=plan_message,
+    )
+    if summary_only:
+        log_event(
+            logger=logger,
+            phase="report_email",
             status="info",
-            message=skip_email_message,
-            recipients=[],
-            attachment_count=0,
-        )
-    else:
-        aggregator.plan_email(
-            recipients=[],
-            attachment_count=attachment_count,
-            message="notification dispatch scheduled",
+            message="no documents generated; summary-only notification will be sent",
         )
 
     summary_inserted = False
@@ -199,28 +197,21 @@ async def _finalize_summary_and_email(
 
     final_finished_at = datetime.now(timezone.utc)
     if not database_url:
-        if attachment_count:
-            warning_message = "cannot send report emails without database access"
-            aggregator.finalize_email(
-                status="warning",
-                message=warning_message,
-                recipients=[],
-                attachment_count=attachment_count,
-            )
-            log_event(
-                logger=logger,
-                phase="report_email",
-                status="warning",
-                message=warning_message,
-                extras={"attachments": attachment_count},
-            )
-        elif skip_email_message:
-            log_event(
-                logger=logger,
-                phase="report_email",
-                status="info",
-                message=skip_email_message,
-            )
+        warning_message = "cannot send notifications without database access"
+        status = "warning" if attachment_count else "info"
+        aggregator.finalize_email(
+            status=status,
+            message=warning_message,
+            recipients=[],
+            attachment_count=attachment_count,
+        )
+        log_event(
+            logger=logger,
+            phase="report_email",
+            status=status,
+            message=warning_message,
+            extras={"attachments": attachment_count},
+        )
         return
 
     try:
@@ -255,27 +246,23 @@ async def _finalize_summary_and_email(
             extras={"error": str(exc)},
         )
 
-    if skip_email_message:
-        log_event(
-            logger=logger,
-            phase="report_email",
-            status="info",
-            message=skip_email_message,
-        )
-        return
-
     try:
         await send_notifications_for_run(aggregator.pipeline_name, aggregator.run_id)
+        success_message = (
+            "summary-only notification dispatched (no documents generated)"
+            if summary_only
+            else "notification dispatch completed"
+        )
         log_event(
             logger=logger,
             phase="report_email",
             status="info",
-            message="notification dispatch completed",
+            message=success_message,
             extras={"pipeline_name": aggregator.pipeline_name, "run_id": aggregator.run_id},
         )
         aggregator.finalize_email(
             status="info",
-            message="notification dispatch completed",
+            message=success_message,
             recipients=[],
             attachment_count=attachment_count,
         )

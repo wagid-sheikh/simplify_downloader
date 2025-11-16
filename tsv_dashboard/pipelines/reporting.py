@@ -9,12 +9,13 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence
 import sqlalchemy as sa
 
 from dashboard_downloader.db_tables import documents
+from common.date_utils import normalize_store_codes
 from simplify_downloader.common.dashboard_store import store_dashboard_summary, store_master
 from simplify_downloader.common.db import session_scope
 
 from .base import PipelinePhaseTracker, persist_summary_record
 
-REPORTS_ROOT = Path("reports")
+REPORTS_ROOT = Path(os.getenv("REPORTS_ROOT", "reports")).resolve()
 TEMPLATE_NAME = "aggregate_report.html"
 
 
@@ -27,8 +28,10 @@ def parse_store_list(raw: str | None) -> list[str]:
 def get_report_store_codes() -> list[str]:
     stores = parse_store_list(os.getenv("REPORT_STORES_LIST"))
     if not stores:
-        stores = ["A668", "A817", "A526"]
-    return sorted({code.upper() for code in stores})
+        raise RuntimeError(
+            "REPORT_STORES_LIST must be configured with comma-separated store codes for reporting pipelines"
+        )
+    return normalize_store_codes(stores)
 
 
 async def fetch_store_period_rows(

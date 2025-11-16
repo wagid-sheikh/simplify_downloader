@@ -27,6 +27,10 @@ Both scripts honour the optional `--stores_list` flag and expect a
 `DATABASE_URL` environment variable pointing at the target Postgres instance
 when ingestion is desired.
 
+See [`docs/configuration.md`](docs/configuration.md) for the authoritative list
+of required environment variables, filesystem paths, and security guardrails
+before running the pipelines in any environment.
+
 ## Docker
 
 ```bash

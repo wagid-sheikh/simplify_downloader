@@ -12,6 +12,7 @@ from typing import Iterable, List, Sequence, Tuple
 
 import sqlalchemy as sa
 
+from common.date_utils import get_daily_report_date
 from common.db import session_scope
 
 from dashboard_downloader.db_tables import documents
@@ -24,7 +25,7 @@ from dashboard_downloader.report_generator import (
 from dashboard_downloader.run_summary import PIPELINE_NAME, RunAggregator
 
 DEFAULT_TEMPLATE_DIR = Path(__file__).with_name("templates")
-DEFAULT_REPORTS_ROOT = Path("reports")
+DEFAULT_REPORTS_ROOT = Path(os.getenv("REPORTS_ROOT", "reports")).resolve()
 
 __all__ = [
     "resolve_report_date",
@@ -56,7 +57,7 @@ def parse_store_list(raw: str | None) -> List[str]:
 def resolve_report_date(arg_value: str | None = None) -> date:
     if arg_value:
         return date.fromisoformat(arg_value)
-    return date.today() - timedelta(days=1)
+    return get_daily_report_date()
 
 
 def _parse_address_list(raw: str | None) -> List[str]:
