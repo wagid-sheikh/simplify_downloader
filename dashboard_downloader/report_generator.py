@@ -375,8 +375,6 @@ async def build_store_context(
 
     context: Dict[str, Any] = {
         "store_name": summary_row.get("store_name") or normalized_code,
-        "store_code": summary_row.get("store_code") or normalized_code,
-        "city": summary_row.get("city") or "N/A",
         "report_date": report_date.isoformat(),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "run_id": run_id,

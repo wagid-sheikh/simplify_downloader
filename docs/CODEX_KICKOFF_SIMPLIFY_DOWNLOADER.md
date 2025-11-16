@@ -8,7 +8,7 @@
 
 ## Scope — Deliver in One Pass
 
-* **`stores_list` parsing (comma‑separated)** — CLI flag `--stores_list` overrides env `stores_list`.
+* **`STORES_LIST` parsing (comma‑separated)** — CLI flag `--stores_list` overrides env `STORES_LIST`.
 * **Automatic pipeline**: **download → merge → async ingest (Postgres) → audit counts → conditional cleanup**.
 * **Boolean rule**: `is_order_placed` → `1=True`, `0=False`, **anything else=False**.
 * **DB via SQLAlchemy 2.0 async (asyncpg) + Pydantic validation** (advisable) + **Alembic** (standard: create tables, revisions, upgrades).
@@ -152,9 +152,9 @@ MERGE_BUCKET_DB_SPECS = {
 
 ---
 
-## `stores_list` Input
+## `STORES_LIST` Input
 
-* Accept `--stores_list "A668,A817,A564,A789"` (CLI) > env `stores_list`.
+* Accept `--stores_list "A668,A817,A564,A789"` (CLI) > env `STORES_LIST`.
 * Normalize: split, trim, drop empties, de‑dupe preserving order.
 * Empty → exit non‑zero with a clear message.
 
@@ -265,7 +265,7 @@ For each bucket & run date:
 ## Acceptance Criteria
 
 * Pipeline runs end‑to‑end inside Docker: **download → merge → ingest → audit → cleanup**.
-* `stores_list` honored; downloader/merger unchanged except for wiring and counters.
+* `STORES_LIST` honored; downloader/merger unchanged except for wiring and counters.
 * `is_order_placed` coercion enforced (`1=True`, `0/other=False`).
 * ORM models + Pydantic models match `MERGE_BUCKET_DB_SPECS`.
 * Alembic manages schema; initial revision matches models; later changes via normal revisions.

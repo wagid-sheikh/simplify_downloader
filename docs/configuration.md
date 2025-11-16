@@ -11,9 +11,10 @@ required vs optional settings.
 | --- | --- | --- |
 | Database | `DATABASE_URL`, `ALEMBIC_CONFIG` | Needed for ingestion, summaries, document persistence, and notifications. |
 | Timezone | `PIPELINE_TIMEZONE` | All helpers in `common/date_utils.py` use this timezone to compute daily/weekly/monthly periods. Default is `Asia/Kolkata`. |
-| Scraping credentials | `TD_GLOBAL_USERNAME`, `TD_GLOBAL_PASSWORD`, `TD_<STORE>_STORE_CODE` | Global CRM login reused for every enabled store; store codes only control URL selection. |
-| Store selection | `stores_list` / `STORES_LIST` **(daily)**, `REPORT_STORES_LIST` **(reporting/PDF/notifications)** | Mutually exclusive knobs. The CLI fails fast if conflicting definitions are detected. |
-| Notifications | `REPORT_EMAIL_FROM`, `REPORT_EMAIL_SMTP_HOST`, `REPORT_EMAIL_SMTP_PORT`, `REPORT_EMAIL_SMTP_USERNAME`, `REPORT_EMAIL_SMTP_PASSWORD` | Used exclusively by `send_notifications_for_run`. |
+| Scraping credentials | `TD_GLOBAL_USERNAME`, `TD_GLOBAL_PASSWORD` | Single CRM login for every store. `TD_GLOBAL_USERNAME` also doubles as the primary store code. |
+| Store selection | `--stores_list` CLI flag or `STORES_LIST` env **(daily)**, `REPORT_STORES_LIST` **(reporting/PDF/notifications)** | Provide at least one comma-separated store code via CLI or env before a run. |
+| Base endpoints | `TD_BASE_URL`, `TD_LOGIN_URL`, `TD_STORE_DASHBOARD_PATH` | Required for routing the shared session through CRM login and the TMS dashboards. |
+| Notifications | `REPORT_EMAIL_FROM`, `REPORT_EMAIL_SMTP_HOST`, `REPORT_EMAIL_SMTP_PORT`, `REPORT_EMAIL_SMTP_USERNAME`, `REPORT_EMAIL_SMTP_PASSWORD`, `REPORT_EMAIL_USE_TLS` | SMTP transport only. Recipients/templates live in the database. |
 
 ## 2. Optional but recommended
 
@@ -21,13 +22,13 @@ required vs optional settings.
 | --- | --- | --- |
 | Reports & artifacts | `REPORTS_ROOT`, `JSON_LOG_FILE` | Point both at persistent volumes so Docker/Compose deployments keep history. |
 | PDF rendering | `PDF_RENDER_BACKEND`, `PDF_RENDER_HEADLESS`, `PDF_RENDER_CHROME_EXECUTABLE` | Tune based on whether Chrome is system-installed or bundled. |
-| TMS endpoints | `TD_BASE_URL`, `TMS_BASE`, `TD_STORE_DASHBOARD_PATH` | Override only in staging where URLs differ. |
+| Dashboard endpoints | `TD_BASE_URL`, `TD_LOGIN_URL`, `TD_STORE_DASHBOARD_PATH`, `TD_HOME_URL` | Override only in staging where URLs differ. |
 | Batch tuning | `INGEST_BATCH_SIZE` | Adjust ingestion chunking for constrained CPUs. |
 
 ## 3. Runtime validation guarantees
 
 * `dashboard_downloader.settings.load_settings` now rejects conflicting
-  `stores_list` / `STORES_LIST` definitions and verifies that every
+  `--stores_list` / `STORES_LIST` definitions and verifies that every
   `REPORT_STORES_LIST` entry exists in the scraping scope to avoid generating
   PDFs for stores with no data.
 * Reporting pipelines call `tsv_dashboard.pipelines.reporting.get_report_store_codes`
@@ -41,12 +42,10 @@ required vs optional settings.
 
 ## 4. Secrets, PII, and artefact hygiene
 
-* **Playwright storage state** files (`TD_*_STORAGE_STATE_FILENAME` and
-  `TD_STORAGE_STATE_FILENAME`) contain authenticated cookies. Store them on a
-  secure volume with `chmod 600` semantics, rotate them whenever credentials
-  change, and never commit them to git. The new `REPORTS_ROOT` default points to
-  a relative directory so that operators can mount a dedicated secrets volume
-  in production.
+* **Playwright storage state** (`TD_STORAGE_STATE_FILENAME`) contains authenticated cookies.
+  Store it on a secure volume with `chmod 600` semantics, rotate it whenever credentials
+  change, and never commit it to git. The default location sits under `dashboard_downloader/profiles`
+  so that containers can mount a dedicated secrets volume in production.
 * **Logs** produced by `JsonLogger` should be routed to an environment-specific
   location (e.g., `JSON_LOG_FILE=/var/log/simplify/downloader.jsonl`). The
   ingestion and reporting pipelines never log raw CSV rows or customer data;

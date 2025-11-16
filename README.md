@@ -12,7 +12,7 @@ poetry run pytest
 poetry run python -m simplify_downloader db upgrade
 
 # Execute the full download → ingest → audit pipeline
-./scripts/run_dashboard_pipeline.sh --stores_list "UN3668,KN3817"
+./scripts/run_dashboard_pipeline.sh --stores_list "A668,A817"
 ```
 
 To trigger just the dashboard downloader workflow (without touching the
@@ -23,9 +23,9 @@ root:
 ./scripts/run_dashboard_downloader.sh
 ```
 
-Both scripts honour the optional `--stores_list` flag and expect a
-`DATABASE_URL` environment variable pointing at the target Postgres instance
-when ingestion is desired.
+Both scripts honour the optional `--stores_list` flag (or the `STORES_LIST`
+environment variable) and expect a `DATABASE_URL` environment variable pointing
+at the target Postgres instance when ingestion is desired.
 
 See [`docs/configuration.md`](docs/configuration.md) for the authoritative list
 of required environment variables, filesystem paths, and security guardrails

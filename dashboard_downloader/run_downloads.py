@@ -21,7 +21,6 @@ from common.ingest.service import _looks_like_html
 
 from . import page_selectors
 from .config import (
-    DEFAULT_STORE_CODES,
     PKG_ROOT,
     DATA_DIR,
     FILE_SPECS,
@@ -29,7 +28,6 @@ from .config import (
     MERGED_NAMES,
     LOGIN_URL,
     TMS_BASE,
-    stores_from_list,
     storage_state_path,
     tms_dashboard_url,
 )
@@ -1747,8 +1745,6 @@ async def run_all_stores_single_session(
     download_counts: Dict[str, Dict[str, Dict[str, object]]] = {}
 
     resolved_stores = settings.stores or {}
-    if not resolved_stores:
-        resolved_stores = stores_from_list(DEFAULT_STORE_CODES)
 
     env_value = getattr(settings, "raw_store_env", "")
     log_event(
@@ -1776,31 +1772,16 @@ async def run_all_stores_single_session(
     else:
         user_dir = _ensure_profile_dir(profile_key)
 
-    storage_state_cfg = first_store_cfg.get("storage_state")
+    storage_state_candidate = first_store_cfg.get("storage_state")
+    if storage_state_candidate:
+        storage_state_candidate = Path(storage_state_candidate)
+    else:
+        storage_state_candidate = storage_state_path()
     storage_state_file = None
     storage_state_source: str | None = None
-    if storage_state_cfg:
-        storage_state_candidate = Path(storage_state_cfg)
-        if storage_state_candidate.exists():
-            storage_state_file = storage_state_candidate
-            storage_state_source = "store_cfg"
-        else:
-            log_event(
-                logger=logger,
-                phase="download",
-                status="warn",
-                store_code=first_store_cfg.get("store_code"),
-                bucket=None,
-                message="storage state not found; falling back to credential login",
-                extras={"storage_state": str(storage_state_candidate)},
-            )
-            storage_state_file = None
-
-    if storage_state_file is None and storage_state_cfg is None:
-        default_state = storage_state_path()
-        if default_state.exists():
-            storage_state_file = default_state
-            storage_state_source = "default"
+    if storage_state_candidate.exists():
+        storage_state_file = storage_state_candidate
+        storage_state_source = "shared"
 
     context_kwargs = dict(
         user_data_dir=str(user_dir),
