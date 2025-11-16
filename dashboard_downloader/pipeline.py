@@ -4,6 +4,10 @@ from pathlib import Path
 
 from dashboard_downloader.json_logger import JsonLogger, log_event
 from dashboard_downloader.run_downloads import run_all_stores_single_session
+from dashboard_downloader.run_store_reports import (
+    resolve_report_date,
+    run_store_reports_for_date,
+)
 
 from simplify_downloader.common.audit import audit_bucket
 from simplify_downloader.common.cleanup import cleanup_bucket
@@ -64,3 +68,42 @@ async def run_pipeline(*, settings: PipelineSettings, logger: JsonLogger) -> Non
         )
 
     log_event(logger=logger, phase="orchestrator", message="pipeline complete")
+
+    await _run_reporting_tail_step(settings=settings, logger=logger)
+
+
+async def _run_reporting_tail_step(*, settings: PipelineSettings, logger: JsonLogger) -> None:
+    try:
+        report_date = resolve_report_date()
+    except Exception as exc:  # pragma: no cover - defensive
+        log_event(
+            logger=logger,
+            phase="orchestrator",
+            status="warning",
+            message="reporting tail step skipped due to invalid report date",
+            extras={"error": str(exc)},
+        )
+        return
+
+    try:
+        await run_store_reports_for_date(
+            report_date,
+            logger=logger,
+            run_id=settings.run_id,
+            database_url=settings.database_url,
+        )
+        log_event(
+            logger=logger,
+            phase="orchestrator",
+            status="info",
+            message="reporting tail step completed",
+            extras={"report_date": report_date.isoformat()},
+        )
+    except Exception as exc:  # pragma: no cover - safeguard
+        log_event(
+            logger=logger,
+            phase="orchestrator",
+            status="warning",
+            message="reporting tail step encountered an unexpected error",
+            extras={"error": str(exc)},
+        )
