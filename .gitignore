@@ -213,3 +213,6 @@ data/*
 profiles
 logs
 *.log
+
+reports
+reports/*

@@ -1,288 +1,314 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <title>Store Daily Report - {{ store_name }}</title>
-    <style>
-      body {
-        font-family: "Inter", "Helvetica Neue", Arial, sans-serif;
-        margin: 24px;
-        color: #1c1c1c;
-      }
-      header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        border-bottom: 2px solid #ececec;
-        padding-bottom: 12px;
-        margin-bottom: 24px;
-      }
-      header .meta {
-        font-size: 12px;
-        color: #4f4f4f;
-      }
-      header img {
-        height: 48px;
-        width: auto;
-      }
-      .overall-health {
-        display: flex;
-        gap: 16px;
-        align-items: center;
-        background: #f3f7ff;
-        border-radius: 8px;
-        padding: 16px;
-        margin-bottom: 24px;
-      }
-      .overall-health .score {
-        font-size: 48px;
-        font-weight: 600;
-        color: #1f3a93;
-      }
-      .status-excellent {
-        border-left: 6px solid #20bf6b;
-      }
-      .status-good {
-        border-left: 6px solid #2d98da;
-      }
-      .status-warning {
-        border-left: 6px solid #f39c12;
-      }
-      .status-critical {
-        border-left: 6px solid #e74c3c;
-      }
-      .kpi-table,
-      .snapshot-table {
-        width: 100%;
-        border-collapse: collapse;
-        margin-bottom: 24px;
-      }
-      .kpi-table th,
-      .kpi-table td,
-      .snapshot-table th,
-      .snapshot-table td {
-        border: 1px solid #e1e1e1;
-        padding: 10px;
-        text-align: left;
-        font-size: 13px;
-      }
-      .kpi-table th,
-      .snapshot-table th {
-        background: #fafafa;
-        font-weight: 600;
-      }
-      .kpi-status-excellent {
-        color: #20bf6b;
-        font-weight: 600;
-      }
-      .kpi-status-good {
-        color: #2d98da;
-        font-weight: 600;
-      }
-      .kpi-status-poor {
-        color: #f39c12;
-        font-weight: 600;
-      }
-      .kpi-status-critical {
-        color: #e74c3c;
-        font-weight: 600;
-      }
-      .kpi-status-missing {
-        color: #9b9b9b;
-        font-weight: 600;
-      }
-      .recommendations {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        gap: 16px;
-      }
-      .recommendations section {
-        background: #f9f9f9;
-        border-radius: 8px;
-        padding: 16px;
-      }
-      .recommendations h3 {
-        margin-top: 0;
-        margin-bottom: 8px;
-        font-size: 16px;
-      }
-      .recommendations ul {
-        padding-left: 18px;
-        margin: 0;
-        font-size: 13px;
-      }
-      .recommendations li {
-        margin-bottom: 6px;
-      }
-      footer {
-        margin-top: 32px;
-        font-size: 11px;
-        color: #7f8c8d;
-        text-align: center;
-      }
-    </style>
-  </head>
-  <body>
-    <header>
-      <div>
-        <h1 style="margin: 0;">{{ store_name }} ({{ store_code }})</h1>
-        <div class="meta">
-          <div>City: {{ city }}</div>
-          <div>Report date: {{ report_date }}</div>
-          <div>Generated at: {{ generated_at }}</div>
-          <div>Run ID: {{ run_id }}</div>
-        </div>
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Store Daily Report - {{ store_name }}</title>
+  <style>
+    body {
+      font-family: "Inter", "Helvetica Neue", Arial, sans-serif;
+      margin: 24px;
+      color: #1c1c1c;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 2px solid #ececec;
+      padding-bottom: 12px;
+      margin-bottom: 24px;
+    }
+
+    header .meta {
+      font-size: 12px;
+      color: #4f4f4f;
+    }
+
+    header img {
+      height: 48px;
+      width: auto;
+    }
+
+    .overall-health {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      background: #f3f7ff;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 24px;
+    }
+
+    .overall-health .score {
+      font-size: 48px;
+      font-weight: 600;
+      color: #1f3a93;
+    }
+
+    .status-excellent {
+      border-left: 6px solid #20bf6b;
+    }
+
+    .status-good {
+      border-left: 6px solid #2d98da;
+    }
+
+    .status-warning {
+      border-left: 6px solid #f39c12;
+    }
+
+    .status-critical {
+      border-left: 6px solid #e74c3c;
+    }
+
+    .kpi-table,
+    .snapshot-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 24px;
+    }
+
+    .kpi-table th,
+    .kpi-table td,
+    .snapshot-table th,
+    .snapshot-table td {
+      border: 1px solid #e1e1e1;
+      padding: 10px;
+      text-align: left;
+      font-size: 13px;
+    }
+
+    .kpi-table th,
+    .snapshot-table th {
+      background: #fafafa;
+      font-weight: 600;
+    }
+
+    .kpi-status-excellent {
+      color: #20bf6b;
+      font-weight: 600;
+    }
+
+    .kpi-status-good {
+      color: #2d98da;
+      font-weight: 600;
+    }
+
+    .kpi-status-poor {
+      color: #f39c12;
+      font-weight: 600;
+    }
+
+    .kpi-status-critical {
+      color: #e74c3c;
+      font-weight: 600;
+    }
+
+    .kpi-status-missing {
+      color: #9b9b9b;
+      font-weight: 600;
+    }
+
+    .recommendations {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+    }
+
+    .recommendations section {
+      background: #f9f9f9;
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .recommendations h3 {
+      margin-top: 0;
+      margin-bottom: 8px;
+      font-size: 16px;
+    }
+
+    .recommendations ul {
+      padding-left: 18px;
+      margin: 0;
+      font-size: 13px;
+    }
+
+    .recommendations li {
+      margin-bottom: 6px;
+    }
+
+    footer {
+      margin-top: 32px;
+      font-size: 11px;
+      color: #7f8c8d;
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <header>
+    <div>
+      <h1 style="margin: 0;">{{ store_name }} ({{ store_code }})</h1>
+      <div class="meta">
+        <div>City: {{ city }}</div>
+        <div>Report date: {{ report_date }}</div>
+        <div>Generated at: {{ generated_at }}</div>
+        <div>Run ID: {{ run_id }}</div>
       </div>
-      {% if logo_src %}
-      <img src="{{ logo_src }}" alt="Store logo" />
-      {% else %}
-      <div style="font-size: 12px; color: #9b9b9b;">TSV Simplify</div>
-      {% endif %}
-    </header>
-
-    <section class="overall-health {{ overall_health_status_class }}">
-      <div class="score">{{ overall_health_score }}</div>
-      <div>
-        <h2 style="margin: 0 0 6px 0;">{{ overall_health_label }}</h2>
-        <p style="margin: 0;">{{ overall_health_summary }}</p>
-      </div>
-    </section>
-
-    <h2>Primary KPIs</h2>
-    <table class="kpi-table">
-      <thead>
-        <tr>
-          <th>KPI</th>
-          <th>Value</th>
-          <th>Status</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>Pickup conversion (total)</td>
-          <td>{{ pickup_conversion_total_pct or 'N/A' }}%</td>
-          <td class="{{ pickup_conversion_total_status_class }}">{{ pickup_conversion_total_status_label }}</td>
-        </tr>
-        <tr>
-          <td>Pickup conversion (new)</td>
-          <td>{{ pickup_conversion_new_pct or 'N/A' }}%</td>
-          <td class="{{ pickup_conversion_new_status_class }}">{{ pickup_conversion_new_status_label }}</td>
-        </tr>
-        <tr>
-          <td>Delivery within TAT</td>
-          <td>{{ delivery_tat_pct or 'N/A' }}%</td>
-          <td class="{{ delivery_tat_status_class }}">{{ delivery_tat_status_label }}</td>
-        </tr>
-        <tr>
-          <td>Undelivered &gt;10 days</td>
-          <td>{{ undelivered_10_plus_count or 'N/A' }}</td>
-          <td class="{{ undelivered_10_plus_status_class }}">{{ undelivered_10_plus_status_label }}</td>
-        </tr>
-        <tr>
-          <td>Total undelivered orders</td>
-          <td>{{ undelivered_total_count or 'N/A' }}</td>
-          <td class="{{ undelivered_total_status_class }}">{{ undelivered_total_status_label }}</td>
-        </tr>
-        <tr>
-          <td>Repeat customer contribution</td>
-          <td>{{ repeat_customer_pct or 'N/A' }}%</td>
-          <td class="{{ repeat_customer_status_class }}">{{ repeat_customer_status_label }}</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <h2>Secondary Indicators</h2>
-    <table class="kpi-table">
-      <thead>
-        <tr>
-          <th>Metric</th>
-          <th>Value</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>FTD revenue</td>
-          <td>₹ {{ ftd_revenue or '0.0' }}</td>
-        </tr>
-        <tr>
-          <td>High value orders (&gt;₹800)</td>
-          <td>{{ high_value_orders_count or 0 }}</td>
-        </tr>
-        <tr>
-          <td>Undelivered snapshot today</td>
-          <td>{{ undelivered_snapshot_count }}</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <h2>Today's Operating Snapshot</h2>
-    <table class="snapshot-table">
-      <thead>
-        <tr>
-          <th>Metric</th>
-          <th>Total</th>
-          <th>Note</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>Leads captured</td>
-          <td>{{ leads_total }}</td>
-          <td>{{ leads_note }}</td>
-        </tr>
-        <tr>
-          <td>Pickups</td>
-          <td>{{ pickups_total }}</td>
-          <td>{{ pickups_note }}</td>
-        </tr>
-        <tr>
-          <td>Deliveries</td>
-          <td>{{ deliveries_total }}</td>
-          <td>{{ deliveries_note }}</td>
-        </tr>
-        <tr>
-          <td>New customers</td>
-          <td>{{ new_customers_count }}</td>
-          <td>{{ new_customers_note }}</td>
-        </tr>
-        <tr>
-          <td>Repeat customers</td>
-          <td>{{ repeat_customers_count }}</td>
-          <td>{{ repeat_customers_note }}</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <h2>Recommendations</h2>
-    <div class="recommendations">
-      <section>
-        <h3>Highlights</h3>
-        <ul>
-          {% for item in highlights %}
-          <li>{{ item }}</li>
-          {% endfor %}
-        </ul>
-      </section>
-      <section>
-        <h3>Focus Areas</h3>
-        <ul>
-          {% for item in focus_areas %}
-          <li>{{ item }}</li>
-          {% endfor %}
-        </ul>
-      </section>
-      <section>
-        <h3>Actions for Tomorrow</h3>
-        <ul>
-          {% for item in actions_tomorrow %}
-          <li>{{ item }}</li>
-          {% endfor %}
-        </ul>
-      </section>
     </div>
+    {% if logo_src %}
+    <img src="{{ logo_src }}" alt="Store logo" />
+    {% else %}
+    <div style="font-size: 12px; color: #9b9b9b;">Store Performance Report</div>
+    {% endif %}
+  </header>
 
-    <footer>
-      TSV Simplify Downloader • Automated dashboard insights • {{ report_date }}
-    </footer>
-  </body>
+  <section class="overall-health {{ overall_health_status_class }}">
+    <div class="score">{{ overall_health_score }}</div>
+    <div>
+      <h2 style="margin: 0 0 6px 0;">{{ overall_health_label }}</h2>
+      <p style="margin: 0;">{{ overall_health_summary }}</p>
+    </div>
+  </section>
+
+  <h2>Primary KPIs</h2>
+  <table class="kpi-table">
+    <thead>
+      <tr>
+        <th>KPI</th>
+        <th>Value</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Pickup conversion (total)</td>
+        <td>{{ pickup_conversion_total_pct or 'N/A' }}%</td>
+        <td class="{{ pickup_conversion_total_status_class }}">{{ pickup_conversion_total_status_label }}</td>
+      </tr>
+      <tr>
+        <td>Pickup conversion (new)</td>
+        <td>{{ pickup_conversion_new_pct or 'N/A' }}%</td>
+        <td class="{{ pickup_conversion_new_status_class }}">{{ pickup_conversion_new_status_label }}</td>
+      </tr>
+      <tr>
+        <td>Delivery within TAT</td>
+        <td>{{ delivery_tat_pct or 'N/A' }}%</td>
+        <td class="{{ delivery_tat_status_class }}">{{ delivery_tat_status_label }}</td>
+      </tr>
+      <tr>
+        <td>Undelivered &gt;10 days</td>
+        <td>{{ undelivered_10_plus_count or 'N/A' }}</td>
+        <td class="{{ undelivered_10_plus_status_class }}">{{ undelivered_10_plus_status_label }}</td>
+      </tr>
+      <tr>
+        <td>Total undelivered orders</td>
+        <td>{{ undelivered_total_count or 'N/A' }}</td>
+        <td class="{{ undelivered_total_status_class }}">{{ undelivered_total_status_label }}</td>
+      </tr>
+      <tr>
+        <td>Repeat customer contribution</td>
+        <td>{{ repeat_customer_pct or 'N/A' }}%</td>
+        <td class="{{ repeat_customer_status_class }}">{{ repeat_customer_status_label }}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Secondary Indicators</h2>
+  <table class="kpi-table">
+    <thead>
+      <tr>
+        <th>Metric</th>
+        <th>Value</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>FTD revenue</td>
+        <td>₹ {{ ftd_revenue or '0.0' }}</td>
+      </tr>
+      <tr>
+        <td>High value orders (&gt;₹800)</td>
+        <td>{{ high_value_orders_count or 0 }}</td>
+      </tr>
+      <tr>
+        <td>Undelivered snapshot today</td>
+        <td>{{ undelivered_snapshot_count }}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Today's Operating Snapshot</h2>
+  <table class="snapshot-table">
+    <thead>
+      <tr>
+        <th>Metric</th>
+        <th>Total</th>
+        <th>Note</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Leads captured</td>
+        <td>{{ leads_total }}</td>
+        <td>{{ leads_note }}</td>
+      </tr>
+      <tr>
+        <td>Pickups</td>
+        <td>{{ pickups_total }}</td>
+        <td>{{ pickups_note }}</td>
+      </tr>
+      <tr>
+        <td>Deliveries</td>
+        <td>{{ deliveries_total }}</td>
+        <td>{{ deliveries_note }}</td>
+      </tr>
+      <tr>
+        <td>New customers</td>
+        <td>{{ new_customers_count }}</td>
+        <td>{{ new_customers_note }}</td>
+      </tr>
+      <tr>
+        <td>Repeat customers</td>
+        <td>{{ repeat_customers_count }}</td>
+        <td>{{ repeat_customers_note }}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Recommendations</h2>
+  <div class="recommendations">
+    <section>
+      <h3>Highlights</h3>
+      <ul>
+        {% for item in highlights %}
+        <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+    <section>
+      <h3>Focus Areas</h3>
+      <ul>
+        {% for item in focus_areas %}
+        <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+    <section>
+      <h3>Actions for Tomorrow</h3>
+      <ul>
+        {% for item in actions_tomorrow %}
+        <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+    </section>
+  </div>
+
+  <footer>
+    TSV Simplify Downloader • Automated dashboard insights • {{ report_date }}
+  </footer>
+</body>
+
 </html>
