@@ -11,7 +11,7 @@ required vs optional settings.
 | --- | --- | --- |
 | Database | `DATABASE_URL`, `ALEMBIC_CONFIG` | Needed for ingestion, summaries, document persistence, and notifications. |
 | Timezone | `PIPELINE_TIMEZONE` | All helpers in `common/date_utils.py` use this timezone to compute daily/weekly/monthly periods. Default is `Asia/Kolkata`. |
-| Scraping credentials | `TD_<STORE>_USERNAME`, `TD_<STORE>_PASSWORD`, `TD_<STORE>_STORE_CODE` | Provide one row per Playwright profile. The defaults only act as placeholders. |
+| Scraping credentials | `TD_GLOBAL_USERNAME`, `TD_GLOBAL_PASSWORD`, `TD_<STORE>_STORE_CODE` | Global CRM login reused for every enabled store; store codes only control URL selection. |
 | Store selection | `stores_list` / `STORES_LIST` **(daily)**, `REPORT_STORES_LIST` **(reporting/PDF/notifications)** | Mutually exclusive knobs. The CLI fails fast if conflicting definitions are detected. |
 | Notifications | `REPORT_EMAIL_FROM`, `REPORT_EMAIL_SMTP_HOST`, `REPORT_EMAIL_SMTP_PORT`, `REPORT_EMAIL_SMTP_USERNAME`, `REPORT_EMAIL_SMTP_PASSWORD` | Used exclusively by `send_notifications_for_run`. |
 

@@ -71,10 +71,8 @@ def tms_dashboard_url(store_code: str) -> str:
     return f"{TMS_BASE}{TD_STORE_DASHBOARD_PATH.format(store_code=store_code)}"
 
 # ── Credentials (from .env) ─────────────────────────────────────────────────
-TD_UN3668_USERNAME = os.getenv("TD_UN3668_USERNAME", "")
-TD_UN3668_PASSWORD = os.getenv("TD_UN3668_PASSWORD", "")
-TD_KN3817_USERNAME = os.getenv("TD_KN3817_USERNAME", "")
-TD_KN3817_PASSWORD = os.getenv("TD_KN3817_PASSWORD", "")
+TD_GLOBAL_USERNAME = os.getenv("TD_GLOBAL_USERNAME", "")
+TD_GLOBAL_PASSWORD = os.getenv("TD_GLOBAL_PASSWORD", "")
 
 # Store codes (actual TMS store codes, not human codes)
 TD_UN3668_STORE_CODE = os.getenv("TD_UN3668_STORE_CODE", "A668")
@@ -111,10 +109,8 @@ def _apply_store_defaults(
     return cfg
 
 
-def _known_store(store_key: str, *, username: str, password: str, store_code: str) -> Dict[str, Any]:
+def _known_store(store_key: str, *, store_code: str) -> Dict[str, Any]:
     base = {
-        "username": username,
-        "password": password,
         "profile_dir": PROFILES_DIR / store_key,
         "storage_state": storage_state_for_store(store_key),
     }
@@ -124,17 +120,19 @@ def _known_store(store_key: str, *, username: str, password: str, store_code: st
 STORES = {
     "UN3668": _known_store(
         "UN3668",
-        username=TD_UN3668_USERNAME,
-        password=TD_UN3668_PASSWORD,
         store_code=TD_UN3668_STORE_CODE,
     ),
     "KN3817": _known_store(
         "KN3817",
-        username=TD_KN3817_USERNAME,
-        password=TD_KN3817_PASSWORD,
         store_code=TD_KN3817_STORE_CODE,
     ),
 }
+
+
+def global_credentials() -> tuple[str, str]:
+    """Return the global CRM username/password pair."""
+
+    return TD_GLOBAL_USERNAME.strip(), TD_GLOBAL_PASSWORD.strip()
 
 
 DEFAULT_STORE_CODES = [cfg["store_code"] for cfg in STORES.values()]

@@ -11,8 +11,22 @@ from dashboard_downloader.config import (
     MERGE_BUCKET_DB_SPECS,
     MERGED_NAMES,
     env_stores_list,
+    global_credentials,
     stores_from_list,
 )
+
+
+GLOBAL_CREDENTIAL_ERROR = "Global CRM credentials (username/password) are missing/invalid."
+
+
+def _default_global_username() -> str:
+    username, _ = global_credentials()
+    return username or ""
+
+
+def _default_global_password() -> str:
+    _, password = global_credentials()
+    return password or ""
 
 
 @dataclass
@@ -26,6 +40,8 @@ class PipelineSettings:
     dry_run: bool = False
     ingest_batch_size: int = field(default_factory=lambda: int(os.getenv("INGEST_BATCH_SIZE", "3000")))
     database_url: Optional[str] = field(default_factory=lambda: os.getenv("DATABASE_URL"))
+    global_username: str = field(default_factory=_default_global_username)
+    global_password: str = field(default_factory=_default_global_password)
 
 
 def _split_codes(raw: str | None) -> List[str]:

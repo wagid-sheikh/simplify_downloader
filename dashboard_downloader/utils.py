@@ -8,9 +8,8 @@ from . import config
 Store = Literal["UN3668", "KN3817"]
 
 def user_pass_for(store: Store) -> tuple[str, str]:
-    if store == "UN3668":
-        return config.TD_UN3668_USERNAME, config.TD_UN3668_PASSWORD
-    return config.TD_KN3817_USERNAME, config.TD_KN3817_PASSWORD
+    _ = store
+    return config.TD_GLOBAL_USERNAME, config.TD_GLOBAL_PASSWORD
 
 def profile_dir(store: Store) -> Path:
     p = config.PROFILES_DIR / store
