@@ -20,6 +20,12 @@ from dashboard_downloader.report_generator import (
 DEFAULT_TEMPLATE_DIR = Path(__file__).with_name("templates")
 DEFAULT_REPORTS_ROOT = Path("reports")
 
+__all__ = [
+    "resolve_report_date",
+    "parse_store_list",
+    "run_store_reports_for_date",
+]
+
 
 @dataclass
 class EmailSettings:
@@ -34,13 +40,13 @@ class EmailSettings:
     use_tls: bool
 
 
-def _parse_store_list(raw: str | None) -> List[str]:
+def parse_store_list(raw: str | None) -> List[str]:
     if not raw:
         return []
     return [token.strip().upper() for token in raw.split(",") if token.strip()]
 
 
-def _resolve_report_date(arg_value: str | None) -> date:
+def resolve_report_date(arg_value: str | None = None) -> date:
     if arg_value:
         return date.fromisoformat(arg_value)
     return date.today() - timedelta(days=1)
@@ -129,6 +135,10 @@ def _send_email(settings: EmailSettings, message: EmailMessage) -> None:
             client.send_message(message)
 
 
+def get_configured_store_codes() -> List[str]:
+    return parse_store_list(os.getenv("REPORT_STORES_LIST"))
+
+
 def _log_skip(logger: JsonLogger) -> None:
     log_event(
         logger=logger,
@@ -189,7 +199,7 @@ async def _send_email_if_configured(
             logger=logger,
             phase="report_email",
             status="error",
-            message="report email failed",
+            message="report_email: failed",
             extras={"error": str(exc)},
         )
         return
@@ -198,7 +208,7 @@ async def _send_email_if_configured(
         logger=logger,
         phase="report_email",
         status="ok",
-        message="report email sent",
+        message="report_email: ok",
         extras={
             "report_date": report_date.isoformat(),
             "store_codes": [code for code, _ in pdf_records],
@@ -238,7 +248,7 @@ async def _generate_reports(
             log_event(
                 logger=logger,
                 phase="report",
-                status="warn",
+                status="warning",
                 message="no data available for report date",
                 store_code=code,
                 extras={"report_date": report_date.isoformat(), "error": str(exc)},
@@ -269,7 +279,11 @@ async def _generate_reports(
                 status="error",
                 message="failed to render pdf",
                 store_code=code,
-                extras={"report_date": report_date.isoformat(), "error": str(exc), "path": str(output_path)},
+                extras={
+                    "report_date": report_date.isoformat(),
+                    "error": str(exc),
+                    "output_path": str(output_path),
+                },
             )
             continue
 
@@ -280,9 +294,50 @@ async def _generate_reports(
             status="ok",
             message="report pdf generated",
             store_code=code,
-            extras={"report_date": report_date.isoformat(), "path": str(output_path)},
+            extras={"report_date": report_date.isoformat(), "output_path": str(output_path)},
         )
     return generated
+
+
+async def run_store_reports_for_date(
+    report_date: date,
+    *,
+    logger: JsonLogger,
+    run_id: str,
+    database_url: str | None,
+    store_codes: Sequence[str] | None = None,
+    template_path: str | Path = DEFAULT_TEMPLATE_DIR,
+    reports_root: str | Path = DEFAULT_REPORTS_ROOT,
+) -> List[Tuple[str, Path]]:
+    codes = list(store_codes) if store_codes else get_configured_store_codes()
+    if not codes:
+        _log_skip(logger)
+        return []
+
+    if not database_url:
+        log_event(
+            logger=logger,
+            phase="report",
+            status="error",
+            message="DATABASE_URL is required for report generation",
+        )
+        return []
+
+    template_dir = Path(template_path)
+    reports_dir = Path(reports_root)
+
+    pdf_records = await _generate_reports(
+        codes,
+        report_date,
+        logger=logger,
+        run_id=run_id,
+        database_url=database_url,
+        template_path=template_dir,
+        reports_root=reports_dir,
+    )
+
+    await _send_email_if_configured(logger, report_date, pdf_records)
+    return pdf_records
 
 
 async def main(argv: Iterable[str] | None = None) -> int:
@@ -291,7 +346,7 @@ async def main(argv: Iterable[str] | None = None) -> int:
     logger = get_logger(run_id=run_id)
 
     try:
-        report_date = _resolve_report_date(args.report_date)
+        report_date = resolve_report_date(args.report_date)
     except ValueError:
         log_event(
             logger=logger,
@@ -303,37 +358,15 @@ async def main(argv: Iterable[str] | None = None) -> int:
         logger.close()
         return 1
 
-    store_codes = _parse_store_list(os.getenv("REPORT_STORES_LIST"))
-    if not store_codes:
-        _log_skip(logger)
-        logger.close()
-        return 0
-
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
-        log_event(
-            logger=logger,
-            phase="report",
-            status="error",
-            message="DATABASE_URL is required for report generation",
-        )
-        logger.close()
-        return 1
-
-    template_path = Path(args.template_path)
-    reports_root = Path(args.reports_dir)
-
-    pdf_records = await _generate_reports(
-        store_codes,
+    await run_store_reports_for_date(
         report_date,
         logger=logger,
         run_id=run_id,
-        database_url=database_url,
-        template_path=template_path,
-        reports_root=reports_root,
+        database_url=os.getenv("DATABASE_URL"),
+        store_codes=parse_store_list(os.getenv("REPORT_STORES_LIST")),
+        template_path=Path(args.template_path),
+        reports_root=Path(args.reports_dir),
     )
-
-    await _send_email_if_configured(logger, report_date, pdf_records)
     logger.close()
     return 0
 
