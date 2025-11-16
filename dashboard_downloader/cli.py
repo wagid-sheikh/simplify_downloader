@@ -13,6 +13,7 @@ from dashboard_downloader.settings import (
     PipelineSettings,
     load_settings,
 )
+from dashboard_downloader.config import TD_BASE_URL, TD_LOGIN_URL, TD_STORE_DASHBOARD_PATH
 
 from simplify_downloader.common.db import run_alembic_upgrade
 
@@ -26,16 +27,20 @@ class PrerequisiteValidationError(Exception):
     """Raised when required inputs are missing before a run starts."""
 
 
-def _validate_prerequisites(*, settings: PipelineSettings, logger: JsonLogger, dry_run: bool) -> None:
+def _validate_prerequisites(*, settings: PipelineSettings, logger: JsonLogger) -> None:
     errors: list[str] = []
-    if not dry_run and not settings.database_url:
-        errors.append("DATABASE_URL must be configured unless --dry_run is supplied")
-
     if not settings.stores:
-        errors.append("At least one store must be enabled before running the pipeline")
+        errors.append("At least one store code must be provided via --stores_list or STORES_LIST")
 
     if not settings.global_username or not settings.global_password:
         errors.append(GLOBAL_CREDENTIAL_ERROR)
+
+    if not TD_BASE_URL:
+        errors.append("TD_BASE_URL is required")
+    if not TD_LOGIN_URL:
+        errors.append("TD_LOGIN_URL is required")
+    if not TD_STORE_DASHBOARD_PATH:
+        errors.append("TD_STORE_DASHBOARD_PATH is required")
 
     if errors:
         for message in errors:
@@ -47,18 +52,29 @@ async def _run_async(args: argparse.Namespace) -> int:
     run_id = args.run_id or new_run_id()
     logger = get_logger(run_id=run_id)
     configure_logging(logger)
-    settings = load_settings(
-        stores_list=args.stores_list,
-        dry_run=args.dry_run,
-        run_id=run_id,
-    )
+    try:
+        settings = load_settings(
+            stores_list=args.stores_list,
+            dry_run=args.dry_run,
+            run_id=run_id,
+        )
+    except ValueError as exc:
+        log_event(
+            logger=logger,
+            phase="prereq",
+            status="error",
+            message=str(exc),
+        )
+        logger.close()
+        return 2
+
     run_env = os.getenv("RUN_ENV") or os.getenv("ENVIRONMENT") or "dev"
     store_codes = list(settings.stores.keys()) if settings.stores else []
     aggregator = RunAggregator(run_id=run_id, run_env=run_env, store_codes=store_codes)
     logger.attach_aggregator(aggregator)
 
     try:
-        _validate_prerequisites(settings=settings, logger=logger, dry_run=args.dry_run)
+        _validate_prerequisites(settings=settings, logger=logger)
     except PrerequisiteValidationError:
         return 2
 

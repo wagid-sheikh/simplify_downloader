@@ -7,7 +7,6 @@ from typing import Dict, Iterable, List, Optional
 
 from dashboard_downloader.config import (
     DATA_DIR,
-    DEFAULT_STORE_CODES,
     MERGE_BUCKET_DB_SPECS,
     MERGED_NAMES,
     env_stores_list,
@@ -54,13 +53,11 @@ def _normalized(values: Iterable[str]) -> List[str]:
     return sorted({token.strip().upper() for token in values if token and token.strip()})
 
 
-def _validate_store_selector_sources(*, cli: List[str], env_lower: str | None, env_upper: str | None) -> None:
+def _validate_store_selector_sources(*, cli: List[str], env_upper: str | None) -> None:
     sources: List[tuple[str, List[str]]] = []
     if cli:
         sources.append(("CLI --stores_list", _normalized(cli)))
-    if env_lower:
-        sources.append(("stores_list env", _normalized(_split_codes(env_lower))))
-    if env_upper and env_upper != env_lower:
+    if env_upper:
         sources.append(("STORES_LIST env", _normalized(_split_codes(env_upper))))
 
     if not sources:
@@ -91,17 +88,18 @@ def _ensure_report_store_alignment(selected: Dict[str, dict]) -> None:
 
 
 def load_settings(*, stores_list: Optional[str], dry_run: bool, run_id: str) -> PipelineSettings:
-    raw_lower_env = os.getenv("stores_list")
     raw_upper_env = os.getenv("STORES_LIST")
-    _validate_store_selector_sources(cli=_split_codes(stores_list), env_lower=raw_lower_env, env_upper=raw_upper_env)
+    cli_values = _split_codes(stores_list)
+    _validate_store_selector_sources(cli=cli_values, env_upper=raw_upper_env)
 
-    raw_env = raw_lower_env or raw_upper_env or ""
     env_list = env_stores_list()
     cli_list = [s.strip() for s in (stores_list.split(",") if stores_list else []) if s.strip()]
-    final_list: List[str] = cli_list or env_list or list(DEFAULT_STORE_CODES)
+    final_list: List[str] = cli_list or env_list
+    if not final_list:
+        raise ValueError("At least one store code must be provided via --stores_list or STORES_LIST")
+
+    raw_env = raw_upper_env or ""
     selected = stores_from_list(final_list)
-    if not selected:
-        selected = stores_from_list(DEFAULT_STORE_CODES)
 
     _ensure_report_store_alignment(selected)
     return PipelineSettings(run_id=run_id, stores=selected, raw_store_env=raw_env, dry_run=dry_run)

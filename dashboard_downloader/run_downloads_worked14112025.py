@@ -1001,7 +1001,7 @@ async def run_all_stores(
     download_counts: Dict[str, Dict[str, Dict[str, object]]] = {}
 
     resolved_stores = stores or stores_from_list(DEFAULT_STORE_CODES)
-    env_value = raw_store_env if raw_store_env is not None else os.getenv("stores_list") or os.getenv("STORES_LIST") or ""
+    env_value = raw_store_env if raw_store_env is not None else os.getenv("STORES_LIST") or ""
     log_event(
         logger=logger,
         phase="download",

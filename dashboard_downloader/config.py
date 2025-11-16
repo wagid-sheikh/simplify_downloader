@@ -16,20 +16,7 @@ PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 def storage_state_path(filename: str | None = None) -> Path:
-    """Return the path to the shared Playwright storage state JSON.
-
-    Parameters
-    ----------
-    filename:
-        Override the default storage state filename.  When omitted we look for
-        ``TD_STORAGE_STATE_FILENAME`` in the environment and fall back to a
-        sensible default.
-    
-    Notes
-    -----
-    The file lives inside :data:`PROFILES_DIR` so that it travels with the
-    other migratable browser artefacts when copying between machines.
-    """
+    """Return the path to the single shared Playwright storage state JSON."""
 
     name = filename or os.getenv("TD_STORAGE_STATE_FILENAME", "storage_state.json")
     path = PROFILES_DIR / name
@@ -39,32 +26,14 @@ def storage_state_path(filename: str | None = None) -> Path:
 # Load env
 load_dotenv(ENV_PATH)
 
-# ── Storage state helpers ───────────────────────────────────────────────────
-
-def _storage_state_filename_for(store_key: str) -> str | None:
-    env_var = f"TD_{store_key}_STORAGE_STATE_FILENAME"
-    return os.getenv(env_var)
-
-
-def storage_state_for_store(store_key: str) -> Path:
-    """Return the storage_state path for a given store.
-
-    Allows overriding the default filename via ``TD_<STORE>_STORAGE_STATE_FILENAME``.
-    When unset, falls back to :func:`storage_state_path` with its default naming.
-    """
-
-    override = _storage_state_filename_for(store_key)
-    if override:
-        return storage_state_path(override)
-    return storage_state_path()
-
-
 # ── URLs ─────────────────────────────────────────────────────────────────────
-BASE_WEB = "https://simplifytumbledry.in"
-LOGIN_URL = f"{BASE_WEB}/home/login"
-HOME_URL  = f"{BASE_WEB}/home"
+TD_BASE_URL = os.getenv("TD_BASE_URL", os.getenv("TMS_BASE", "https://tms.simplifytumbledry.in")).rstrip("/")
+TD_LOGIN_URL = os.getenv("TD_LOGIN_URL", "https://simplifytumbledry.in/home/login")
+TD_HOME_URL = os.getenv("TD_HOME_URL", TD_LOGIN_URL.rsplit("/", 1)[0])
 
-TMS_BASE = os.getenv("TMS_BASE", "https://tms.simplifytumbledry.in").rstrip("/")
+LOGIN_URL = TD_LOGIN_URL
+HOME_URL = TD_HOME_URL
+TMS_BASE = TD_BASE_URL
 TD_STORE_DASHBOARD_PATH = os.getenv("TD_STORE_DASHBOARD_PATH", "/mis/partner_dashboard?store_code={store_code}")
 
 def tms_dashboard_url(store_code: str) -> str:
@@ -73,13 +42,6 @@ def tms_dashboard_url(store_code: str) -> str:
 # ── Credentials (from .env) ─────────────────────────────────────────────────
 TD_GLOBAL_USERNAME = os.getenv("TD_GLOBAL_USERNAME", "")
 TD_GLOBAL_PASSWORD = os.getenv("TD_GLOBAL_PASSWORD", "")
-
-# Store codes (actual TMS store codes, not human codes)
-TD_UN3668_STORE_CODE = os.getenv("TD_UN3668_STORE_CODE", "A668")
-TD_KN3817_STORE_CODE = os.getenv("TD_KN3817_STORE_CODE", "A817")
-
-# ── Store registry ───────────────────────────────────────────────────────────
-
 
 def _apply_store_defaults(
     base: Dict[str, Any], *, store_code: str, profile_key: str | None = None
@@ -104,46 +66,15 @@ def _apply_store_defaults(
     cfg["profile_dir"] = profile_dir_path
 
     if not cfg.get("storage_state"):
-        cfg["storage_state"] = storage_state_for_store(profile_label)
+        cfg["storage_state"] = storage_state_path()
 
     return cfg
-
-
-def _known_store(store_key: str, *, store_code: str) -> Dict[str, Any]:
-    base = {
-        "profile_dir": PROFILES_DIR / store_key,
-        "storage_state": storage_state_for_store(store_key),
-    }
-    return _apply_store_defaults(base, store_code=store_code, profile_key=store_key)
-
-
-STORES = {
-    "UN3668": _known_store(
-        "UN3668",
-        store_code=TD_UN3668_STORE_CODE,
-    ),
-    "KN3817": _known_store(
-        "KN3817",
-        store_code=TD_KN3817_STORE_CODE,
-    ),
-}
 
 
 def global_credentials() -> tuple[str, str]:
     """Return the global CRM username/password pair."""
 
     return TD_GLOBAL_USERNAME.strip(), TD_GLOBAL_PASSWORD.strip()
-
-
-DEFAULT_STORE_CODES = [cfg["store_code"] for cfg in STORES.values()]
-
-
-def _find_known_store_by_code(store_code: str) -> str | None:
-    normalized = store_code.strip().upper()
-    for name, cfg in STORES.items():
-        if cfg.get("store_code", "").upper() == normalized:
-            return name
-    return None
 
 
 def stores_from_list(store_ids: Iterable[str]) -> Dict[str, dict]:
@@ -158,18 +89,6 @@ def stores_from_list(store_ids: Iterable[str]) -> Dict[str, dict]:
             continue
 
         normalized = token.upper()
-
-        if normalized in STORES:
-            cfg = dict(STORES[normalized])
-            resolved[cfg["store_code"]] = cfg
-            continue
-
-        alias = _find_known_store_by_code(normalized)
-        if alias:
-            cfg = dict(STORES[alias])
-            resolved[cfg["store_code"]] = cfg
-            continue
-
         cfg = _apply_store_defaults({}, store_code=normalized, profile_key=normalized)
         resolved[cfg["store_code"]] = cfg
 
@@ -177,8 +96,12 @@ def stores_from_list(store_ids: Iterable[str]) -> Dict[str, dict]:
 
 
 def env_stores_list() -> List[str]:
-    raw = os.getenv("stores_list") or os.getenv("STORES_LIST") or ""
+    raw = os.getenv("STORES_LIST") or ""
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+# Compatibility constant (no default stores in the new single-session model)
+DEFAULT_STORE_CODES: List[str] = []
 
 # ── File specs from HAR (label + url template + filename + flags) ────────────
 #  - key: stable identifier for logging
