@@ -167,42 +167,41 @@ async def persist_dashboard_summary(
 
     async with session_scope(database_url) as session:
         async with session.begin():
-            existing_store = await session.execute(
-                sa.select(
-                    store_master.c.id,
-                    store_master.c.store_name,
-                    store_master.c.launch_date,
-                ).where(store_master.c.store_code == store_code)
+            _log(
+                logger=logger,
+                store_code=store_code,
+                status="info",
+                message="persisting store master",
+                extras={"store_code": store_code, "gstin": dashboard_data.get("gstin")},
             )
-            store_row = existing_store.one_or_none()
 
-            store_id: int
-            if store_row is None:
-                insert_stmt = (
-                    pg_insert(store_master)
-                    .values(
-                        store_code=store_code,
-                        store_name=dashboard_data.get("store_name"),
-                        launch_date=dashboard_data.get("launch_date"),
-                        is_active=True,
-                    )
-                    .returning(store_master.c.id)
-                )
-                store_id = (await session.execute(insert_stmt)).scalar_one()
-            else:
-                store_id = store_row.id
-                updates: Dict[str, Any] = {}
-                name = dashboard_data.get("store_name")
-                if name and name != store_row.store_name:
-                    updates["store_name"] = name
-                launch_date = dashboard_data.get("launch_date")
-                if launch_date and launch_date != store_row.launch_date:
-                    updates["launch_date"] = launch_date
-                if updates:
-                    updates["updated_at"] = sa.func.now()
-                    await session.execute(
-                        store_master.update().where(store_master.c.id == store_id).values(**updates)
-                    )
+            store_insert = pg_insert(store_master).values(
+                store_code=store_code,
+                store_name=dashboard_data.get("store_name"),
+                launch_date=dashboard_data.get("launch_date"),
+                gstin=dashboard_data.get("gstin"),
+                is_active=True,
+            )
+            update_values = {
+                "store_name": sa.func.coalesce(
+                    store_insert.excluded.store_name, store_master.c.store_name
+                ),
+                "launch_date": sa.func.coalesce(
+                    store_insert.excluded.launch_date, store_master.c.launch_date
+                ),
+                "gstin": sa.func.coalesce(
+                    store_insert.excluded.gstin, store_master.c.gstin
+                ),
+                "is_active": sa.true(),
+                "updated_at": sa.func.now(),
+            }
+            store_insert = (
+                store_insert.on_conflict_do_update(
+                    index_elements=[store_master.c.store_code],
+                    set_=update_values,
+                ).returning(store_master.c.id)
+            )
+            store_id = (await session.execute(store_insert)).scalar_one()
 
             run_time = datetime.now(timezone.utc)
             insert_values = {
