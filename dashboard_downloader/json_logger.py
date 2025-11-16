@@ -25,12 +25,17 @@ class JsonLogger:
         self.default_context: Dict[str, Any] = {"run_id": self.run_id}
         file_path = os.getenv("JSON_LOG_FILE")
         self.file_handle = open(file_path, "a", encoding="utf-8") if file_path else None
+        self.aggregator = None
 
     def bind(self, **kwargs: Any) -> "JsonLogger":
         child = JsonLogger(run_id=self.run_id, stream=self.stream)
         child.default_context = {**self.default_context, **kwargs}
         child.file_handle = self.file_handle
+        child.aggregator = self.aggregator
         return child
+
+    def attach_aggregator(self, aggregator: Any) -> None:
+        self.aggregator = aggregator
 
     def _emit(self, payload: Dict[str, Any]) -> None:
         event = {**self.default_context, **payload}
@@ -43,7 +48,13 @@ class JsonLogger:
             self.file_handle.flush()
 
     def info(self, *, phase: str, status: str = "ok", message: str = "", **fields: Any) -> None:
-        self._emit({"phase": phase, "status": status, "message": message, **fields})
+        payload = {"phase": phase, "status": status, "message": message, **fields}
+        if self.aggregator:
+            try:
+                self.aggregator.record_log_event(payload)
+            except Exception:
+                pass
+        self._emit(payload)
 
     def warn(self, *, phase: str, message: str, **fields: Any) -> None:
         self.info(phase=phase, status="warn", message=message, **fields)

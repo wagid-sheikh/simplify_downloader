@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
+from playwright.async_api import async_playwright
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -410,7 +412,6 @@ async def build_store_context(
 
 async def render_store_report_pdf(store_context: Dict, template_path: str | Path, output_path: str | Path) -> None:
     from jinja2 import Environment, FileSystemLoader, select_autoescape
-    from playwright.async_api import async_playwright
 
     template_dir = Path(template_path)
     template_dir.mkdir(parents=True, exist_ok=True)
@@ -423,10 +424,28 @@ async def render_store_report_pdf(store_context: Dict, template_path: str | Path
 
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    await render_pdf_with_configured_browser(html, output_path)
+
+
+async def render_pdf_with_configured_browser(html_content: str, output_path: str | Path) -> None:
+    backend = os.getenv("PDF_RENDER_BACKEND", "bundled_chromium").lower()
+    headless = os.getenv("PDF_RENDER_HEADLESS", "true").lower() == "true"
+    chrome_exec = os.getenv("PDF_RENDER_CHROME_EXECUTABLE")
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        if backend == "local_chrome":
+            if not chrome_exec:
+                raise RuntimeError(
+                    "PDF_RENDER_CHROME_EXECUTABLE must be set when PDF_RENDER_BACKEND=local_chrome"
+                )
+            browser = await p.chromium.launch(
+                executable_path=chrome_exec,
+                headless=headless,
+            )
+        else:
+            browser = await p.chromium.launch(headless=headless)
+
         page = await browser.new_page()
-        await page.set_content(html, wait_until="networkidle")
-        await page.pdf(path=str(output_path), format="A4", print_background=True)
+        await page.set_content(html_content, wait_until="networkidle")
+        await page.pdf(path=str(output_path), print_background=True, format="A4")
         await browser.close()
