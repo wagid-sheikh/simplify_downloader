@@ -1,7 +1,11 @@
 import asyncio
 
 from dashboard_downloader import page_selectors
-from dashboard_downloader.run_downloads import _is_login_page, _looks_like_login_html_bytes
+from dashboard_downloader.config import LOGIN_URL
+from dashboard_downloader.run_downloads import (
+    _is_login_page,
+    _looks_like_login_html_bytes,
+)
 
 
 class FakeLocator:
@@ -13,14 +17,19 @@ class FakeLocator:
 
 
 class FakePage:
-    def __init__(self, *, url: str = "", locator_count: int = 0, html: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        url: str = "",
+        locator_counts: dict[str, int] | None = None,
+        html: str = "",
+    ) -> None:
         self.url = url
-        self._locator_count = locator_count
+        self._locator_counts = locator_counts or {}
         self._html = html
 
     def locator(self, selector: str) -> FakeLocator:
-        assert selector == page_selectors.LOGIN_USERNAME
-        return FakeLocator(self._locator_count)
+        return FakeLocator(self._locator_counts.get(selector, 0))
 
     async def content(self) -> str:
         return self._html
@@ -31,12 +40,18 @@ def run(coro):
 
 
 def test_is_login_page_detects_login_in_url():
-    page = FakePage(url="https://example.com/login")
+    page = FakePage(url=LOGIN_URL)
     assert run(_is_login_page(page)) is True
 
 
 def test_is_login_page_detects_locator_presence():
-    page = FakePage(url="https://example.com/dashboard", locator_count=1)
+    page = FakePage(
+        url="https://example.com/dashboard",
+        locator_counts={
+            page_selectors.LOGIN_USERNAME: 1,
+            page_selectors.LOGIN_PASSWORD: 1,
+        },
+    )
     assert run(_is_login_page(page)) is True
 
 
@@ -51,7 +66,7 @@ def test_is_login_page_detects_login_html_fallback():
             </body>
         </html>
     """
-    page = FakePage(url="https://example.com/dashboard", locator_count=0, html=html)
+    page = FakePage(url="https://example.com/dashboard", html=html)
     assert run(_is_login_page(page)) is True
 
 
@@ -66,7 +81,7 @@ def test_is_login_page_detects_login_html_from_selectors():
             </body>
         </html>
     """
-    page = FakePage(url="https://example.com/dashboard", locator_count=0, html=html)
+    page = FakePage(url="https://example.com/dashboard", html=html)
     assert run(_is_login_page(page)) is True
 
 
@@ -78,7 +93,7 @@ def test_is_login_page_returns_false_for_dashboard():
             </body>
         </html>
     """
-    page = FakePage(url="https://example.com/dashboard", locator_count=0, html=html)
+    page = FakePage(url="https://example.com/dashboard", html=html)
     assert run(_is_login_page(page)) is False
 
 

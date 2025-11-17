@@ -216,3 +216,4 @@ logs
 
 reports
 reports/*
+tests/config.db

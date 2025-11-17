@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import smtplib
 from dataclasses import dataclass
 from email.message import EmailMessage
@@ -20,6 +19,7 @@ from dashboard_downloader.db_tables import (
     pipeline_run_summaries,
     pipelines,
 )
+from simplify_downloader.config import config
 
 logger = logging.getLogger(__name__)
 
@@ -60,22 +60,14 @@ class EmailPlan:
     attachments: list[Path]
 
 
-def _load_smtp_config() -> SmtpConfig | None:
-    host = os.getenv("REPORT_EMAIL_SMTP_HOST")
-    port_raw = os.getenv("REPORT_EMAIL_SMTP_PORT")
-    if not host or not port_raw:
-        return None
-    sender = os.getenv("REPORT_EMAIL_FROM", "reports@tsv.com")
-    username = os.getenv("REPORT_EMAIL_SMTP_USERNAME")
-    password = os.getenv("REPORT_EMAIL_SMTP_PASSWORD")
-    use_tls = os.getenv("REPORT_EMAIL_USE_TLS", "true").lower() == "true"
+def _load_smtp_config() -> SmtpConfig:
     return SmtpConfig(
-        host=host,
-        port=int(port_raw),
-        sender=sender,
-        username=username,
-        password=password,
-        use_tls=use_tls,
+        host=config.report_email_smtp_host,
+        port=config.report_email_smtp_port,
+        sender=config.report_email_from,
+        username=config.report_email_smtp_username or None,
+        password=config.report_email_smtp_password or None,
+        use_tls=config.report_email_use_tls,
     )
 
 
@@ -350,9 +342,7 @@ def _build_email_plans(
 async def _load_notification_resources(
     pipeline_name: str, run_id: str
 ) -> tuple[dict[str, Any] | None, list[str]]:
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
-        return None, ["DATABASE_URL is not configured"]
+    database_url = config.database_url
 
     async with session_scope(database_url) as session:
         pipeline_row = (

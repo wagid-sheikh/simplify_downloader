@@ -1077,20 +1077,30 @@ async def _is_login_page(page: Page, logger: JsonLogger | None = None) -> bool:
         _LOGIN_HOST and host.endswith(f".{_LOGIN_HOST}")
     )
 
-    if not host_matches or path != _LOGIN_PATH:
-        return False
+    if host_matches and path == _LOGIN_PATH:
+        return True
 
+    username_count = 0
+    password_count = 0
     try:
         username_count = await page.locator(page_selectors.LOGIN_USERNAME).count()
     except Exception:  # pragma: no cover - defensive; locator failures shouldn't break flow
-        return False
+        pass
 
     try:
         password_count = await page.locator(page_selectors.LOGIN_PASSWORD).count()
     except Exception:  # pragma: no cover - defensive
-        return False
+        pass
 
     if username_count > 0 and password_count > 0:
+        return True
+
+    try:
+        html = await page.content()
+    except Exception:  # pragma: no cover - defensive fetch
+        html = ""
+
+    if html and _looks_like_login_html_text(html):
         return True
 
     return False

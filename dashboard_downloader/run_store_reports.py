@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
@@ -20,9 +19,10 @@ from dashboard_downloader.report_generator import (
     render_store_report_pdf,
 )
 from dashboard_downloader.run_summary import PIPELINE_NAME, RunAggregator
+from simplify_downloader.config import config
 
 DEFAULT_TEMPLATE_DIR = Path(__file__).with_name("templates")
-DEFAULT_REPORTS_ROOT = Path(os.getenv("REPORTS_ROOT", "reports")).resolve()
+DEFAULT_REPORTS_ROOT = Path(config.reports_root).resolve()
 
 __all__ = [
     "resolve_report_date",
@@ -44,7 +44,7 @@ def resolve_report_date(arg_value: str | None = None) -> date:
 
 
 def get_configured_store_codes() -> List[str]:
-    return parse_store_list(os.getenv("REPORT_STORES_LIST"))
+    return [code.upper() for code in config.report_stores_list]
 
 
 def _log_skip(logger: JsonLogger) -> None:
@@ -276,12 +276,13 @@ async def run_store_reports_for_date(
     template_path: str | Path = DEFAULT_TEMPLATE_DIR,
     reports_root: str | Path = DEFAULT_REPORTS_ROOT,
 ) -> List[Tuple[str, Path]]:
-    codes = list(store_codes) if store_codes else get_configured_store_codes()
+    codes = [code.upper() for code in store_codes] if store_codes else get_configured_store_codes()
+    resolved_db_url = database_url or config.database_url
     if not codes:
         _log_skip(logger)
         return []
 
-    if not database_url:
+    if not resolved_db_url:
         log_event(
             logger=logger,
             phase="report",
@@ -300,7 +301,7 @@ async def run_store_reports_for_date(
         report_date,
         logger=logger,
         run_id=run_id,
-        database_url=database_url,
+        database_url=resolved_db_url,
         template_path=template_dir,
         reports_root=reports_dir,
         aggregator=aggregator,
@@ -331,8 +332,8 @@ async def main(argv: Iterable[str] | None = None) -> int:
         report_date,
         logger=logger,
         run_id=run_id,
-        database_url=os.getenv("DATABASE_URL"),
-        store_codes=parse_store_list(os.getenv("REPORT_STORES_LIST")),
+        database_url=config.database_url,
+        store_codes=config.report_stores_list,
         template_path=Path(args.template_path),
         reports_root=Path(args.reports_dir),
     )

@@ -426,9 +426,11 @@ async def render_store_report_pdf(store_context: Dict, template_path: str | Path
 
 
 async def render_pdf_with_configured_browser(html_content: str, output_path: str | Path) -> None:
-    backend = os.getenv("PDF_RENDER_BACKEND", "bundled_chromium").lower()
-    headless = os.getenv("PDF_RENDER_HEADLESS", "true").lower() == "true"
-    chrome_exec = os.getenv("PDF_RENDER_CHROME_EXECUTABLE")
+    from simplify_downloader.config import config
+
+    backend = config.pdf_render_backend.lower()
+    headless = config.pdf_render_headless
+    chrome_exec = config.pdf_render_chrome_executable
 
     async with async_playwright() as p:
         if backend == "local_chrome":

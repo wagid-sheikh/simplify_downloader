@@ -60,10 +60,10 @@ def first_login_headed(username: str, password: str) -> None:
         print(f"Saved storage state → {storage_state_path()}")
 
 if __name__ == "__main__":
-    import os
+    from simplify_downloader.config import config
 
-    user = os.getenv("TD_GLOBAL_USERNAME", "")
-    pwd = os.getenv("TD_GLOBAL_PASSWORD", "")
+    user = config.td_global_username
+    pwd = config.td_global_password
     if not user or not pwd:
-        raise SystemExit("Missing TD_GLOBAL_USERNAME/TD_GLOBAL_PASSWORD in .env")
+        raise SystemExit("Missing TD_GLOBAL_USERNAME/TD_GLOBAL_PASSWORD in system_config")
     first_login_headed(user, pwd)

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List
 
 from dashboard_downloader.notifications import send_notifications_for_run
+from simplify_downloader.config import config
 
 from .base import (
     PipelinePhaseTracker,
@@ -54,9 +54,7 @@ async def _run(env: str | None = None) -> None:
     run_env = resolve_run_env(env)
     run_id = uuid.uuid4().hex
     tracker = PipelinePhaseTracker(pipeline_name=PIPELINE_NAME, env=run_env, run_id=run_id)
-    database_url = os.getenv("DATABASE_URL")
-    if not database_url:
-        raise RuntimeError("DATABASE_URL is required for weekly pipeline")
+    database_url = config.database_url
 
     stores = get_report_store_codes()
     today = date.today()
