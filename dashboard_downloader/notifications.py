@@ -223,7 +223,26 @@ def _build_store_plans(
     for store_code in sorted(grouped):
         store_records = grouped[store_code]
         to, cc, bcc = _collect_recipient_lists(recipients, store_code=store_code)
-        if not to:
+        if not to and cc:
+            logger.info(
+                "store recipients fallback to CC",
+                extra={
+                    "pipeline_code": pipeline_code,
+                    "profile_code": profile.get("code"),
+                    "store_code": store_code,
+                },
+            )
+            to = cc
+            cc = []
+        if not to and not cc:
+            logger.warning(
+                "no active recipients for store report; email skipped",
+                extra={
+                    "pipeline_code": pipeline_code,
+                    "profile_code": profile.get("code"),
+                    "store_code": store_code,
+                },
+            )
             continue
         attachments = _paths_for_documents(store_records)
         if profile.get("attach_mode") == "per_store_pdf" and not attachments:
