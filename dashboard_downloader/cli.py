@@ -13,7 +13,12 @@ from dashboard_downloader.settings import (
     PipelineSettings,
     load_settings,
 )
-from dashboard_downloader.config import TD_BASE_URL, TD_LOGIN_URL, TD_STORE_DASHBOARD_PATH
+from dashboard_downloader.config import (
+    TD_BASE_URL,
+    TD_LOGIN_URL,
+    TD_STORE_DASHBOARD_PATH,
+    TMS_BASE,
+)
 
 from simplify_downloader.common.db import run_alembic_upgrade
 
@@ -37,6 +42,8 @@ def _validate_prerequisites(*, settings: PipelineSettings, logger: JsonLogger) -
 
     if not TD_BASE_URL:
         errors.append("TD_BASE_URL is required")
+    if not TMS_BASE:
+        errors.append("TMS_BASE is required")
     if not TD_LOGIN_URL:
         errors.append("TD_LOGIN_URL is required")
     if not TD_STORE_DASHBOARD_PATH:

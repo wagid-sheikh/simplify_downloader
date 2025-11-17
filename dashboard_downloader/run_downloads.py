@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import csv
 import json
 from pathlib import Path
@@ -7,8 +8,12 @@ import re
 from typing import Any, Dict, Iterable, List
 from datetime import datetime
 from urllib.parse import urlparse
+import contextlib
 
-import magic
+try:
+    import magic
+except ImportError:  # pragma: no cover - optional runtime dependency
+    magic = None
 
 from playwright.async_api import (
     async_playwright,
@@ -28,6 +33,7 @@ from .config import (
     MERGED_NAMES,
     LOGIN_URL,
     TMS_BASE,
+    TD_BASE_URL,
     storage_state_path,
     tms_dashboard_url,
 )
@@ -60,7 +66,7 @@ def _normalize_url_path(path: str | None) -> str:
 _LOGIN_URL_PARTS = urlparse(LOGIN_URL)
 _LOGIN_HOST = (_LOGIN_URL_PARTS.hostname or "").lower()
 _LOGIN_PATH = _normalize_url_path(_LOGIN_URL_PARTS.path)
-_TD_BASE_PARTS = urlparse(TMS_BASE)
+_TD_BASE_PARTS = urlparse(TD_BASE_URL)
 _TD_BASE_HOST = (_TD_BASE_PARTS.hostname or "").lower()
 
 
@@ -77,17 +83,17 @@ def _url_within_td_base(url: str | None) -> bool:
 
 
 def _validate_downloaded_csv(csv_path: Path, *, body: bytes) -> tuple[bool, str | None]:
-    try:
-        mime_type = magic.from_buffer(body, mime=True)
-    except Exception as exc:
-        return False, f"unable to detect MIME type: {exc}"
+    mime_type: str | None = None
+    if magic is not None:
+        try:
+            mime_type = magic.from_buffer(body, mime=True)
+        except Exception as exc:
+            return False, f"unable to detect MIME type: {exc}"
 
-    if not mime_type:
-        return False, "missing MIME type"
-
-    normalized_mime = mime_type.lower()
-    if not any(hint in normalized_mime for hint in ("csv", "excel", "plain")):
-        return False, f"unexpected MIME type: {mime_type}"
+    if mime_type:
+        normalized_mime = mime_type.lower()
+        if not any(hint in normalized_mime for hint in ("csv", "excel", "plain")):
+            return False, f"unexpected MIME type: {mime_type}"
 
     try:
         with csv_path.open("r", newline="", encoding="utf-8", errors="ignore") as handle:
@@ -532,7 +538,7 @@ async def _download_one_spec(
     *,
     logger: JsonLogger,
     settings: PipelineSettings,
-) -> Path | None:
+) -> tuple[Path | None, Page]:
     sc = store_cfg["store_code"]
     url = _render(spec["url_template"], sc)
     out_name = _render(spec["out_name_template"], sc)
@@ -557,11 +563,11 @@ async def _download_one_spec(
             response = await request.get(url)
         except Exception as exc:
             _log("error", f"request failed for {spec['key']}", extras={"error": str(exc)})
-            return None
+            return None, page
 
         if response is None:
             _log("error", f"no response returned for {spec['key']}")
-            return None
+            return None, page
 
         try:
             status = response.status
@@ -593,8 +599,8 @@ async def _download_one_spec(
                         f"unable to delete invalid download for {spec['key']}",
                         extras={"error": str(exc)},
                     )
-                return None
-            return final_path
+                return None, page
+            return final_path, page
 
         needs_refresh = False
 
@@ -612,19 +618,19 @@ async def _download_one_spec(
             _log("error", f"unexpected response content for {spec['key']}")
 
         if not needs_refresh:
-            return None
+            return None, page
 
         if attempted_refresh:
             _log("error", f"retry after session refresh failed for {spec['key']}")
-            return None
+            return None, page
 
         attempted_refresh = True
 
         try:
-            await _ensure_dashboard(page, store_cfg, logger, settings=settings)
+            page = await _ensure_dashboard(page, store_cfg, logger, settings=settings)
         except Exception as exc:
             _log("error", f"session refresh failed for {spec['key']}", extras={"error": str(exc)})
-            return None
+            return None, page
 
 
 async def _download_specs_for_store(
@@ -642,7 +648,7 @@ async def _download_specs_for_store(
         if not spec.get("download", True):
             continue
 
-        saved = await _download_one_spec(
+        saved, page = await _download_one_spec(
             page,
             store_cfg,
             spec,
@@ -747,6 +753,9 @@ async def _bootstrap_session_via_home_and_tracker(
     storage_state_file: Path | None = None,
     storage_state_source: str | None = None,
 ) -> Page:
+    if page is None:
+        raise RuntimeError("TMS session page is not available")
+
     store_code = store_cfg.get("store_code")
     username, password = _resolve_global_credentials(settings)
 
@@ -953,7 +962,15 @@ async def _bootstrap_session_via_home_and_tracker(
 
         break
 
-    return page
+    tms_page = await _navigate_via_home_to_dashboard(
+        page,
+        store_cfg,
+        logger,
+        username=username,
+        password=password,
+    )
+
+    return tms_page
 
 
 async def _switch_to_store_dashboard_and_download(
@@ -964,7 +981,7 @@ async def _switch_to_store_dashboard_and_download(
     settings: PipelineSettings,
     merged_buckets: Dict[str, List[Path]],
     download_counts: Dict[str, Dict[str, Dict[str, object]]],
-) -> None:
+) -> Page:
     store_code = store_cfg.get("store_code")
 
     def _log(status: str, message: str, *, extras: Dict | None = None) -> None:
@@ -1018,7 +1035,7 @@ async def _switch_to_store_dashboard_and_download(
         if not spec.get("download", True):
             continue
 
-        saved = await _download_one_spec(
+        saved, page = await _download_one_spec(
             page,
             store_cfg,
             spec,
@@ -1035,6 +1052,8 @@ async def _switch_to_store_dashboard_and_download(
                 "rows": _count_rows(saved),
                 "path": str(saved),
             }
+
+    return page
 
 
 async def _is_login_page(page: Page, logger: JsonLogger | None = None) -> bool:
@@ -1084,8 +1103,8 @@ async def _navigate_via_home_to_dashboard(
     *,
     username: str,
     password: str,
-) -> None:
-    """Navigate from the home page to the store dashboard via the tracker card."""
+) -> Page:
+    """Navigate from the home page to the TMS dashboard via the tracker card."""
 
     store_code = store_cfg.get("store_code")
 
@@ -1160,18 +1179,85 @@ async def _navigate_via_home_to_dashboard(
 
     click_target = tracker_card.first if await tracker_card.count() > 0 else tracker_heading.first
 
-    navigation_response = None
+    context = page.context
+    existing_page_ids = {id(p) for p in context.pages}
+    popup_task = asyncio.create_task(context.wait_for_event("page"))
+    nav_task = asyncio.create_task(
+        page.wait_for_navigation(wait_until="domcontentloaded", timeout=60_000)
+    )
+
     try:
-        async with page.expect_navigation(wait_until="domcontentloaded", timeout=60_000) as nav_info:
-            await click_target.click()
-        navigation_response = await nav_info
-    except PlaywrightTimeoutError as exc:
+        await click_target.click()
+    except Exception as exc:
+        for task in (popup_task, nav_task):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         _log(
             "error",
-            "navigation via home timed out after clicking tracker",
+            "failed to click daily operations tracker",
             extras={"error": str(exc)},
         )
         raise
+
+    popup_page: Page | None = None
+    navigation_response = None
+    done, pending = await asyncio.wait(
+        {popup_task, nav_task}, return_when=asyncio.FIRST_COMPLETED, timeout=60
+    )
+
+    for task in pending:
+        task.cancel()
+    for task in pending:
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    if not done:
+        _log(
+            "error",
+            "no navigation or popup detected after clicking tracker",
+            extras={"home_url": home_url},
+        )
+        raise RuntimeError("Daily operations tracker navigation timed out")
+
+    if nav_task in done:
+        try:
+            navigation_response = nav_task.result()
+        except PlaywrightTimeoutError:
+            navigation_response = None
+        except Exception as exc:
+            _log(
+                "warn",
+                "unexpected error while waiting for navigation",
+                extras={"error": str(exc)},
+            )
+
+    if popup_task in done:
+        try:
+            popup_page = popup_task.result()
+        except Exception as exc:
+            popup_page = None
+            _log(
+                "warn",
+                "unexpected error while waiting for TMS popup",
+                extras={"error": str(exc)},
+            )
+
+    if popup_page is None:
+        for candidate in context.pages:
+            if id(candidate) not in existing_page_ids:
+                popup_page = candidate
+                break
+
+    tms_page = popup_page or page
+    try:
+        await tms_page.wait_for_load_state("domcontentloaded")
+    except Exception as exc:
+        _log(
+            "warn",
+            "tms page load warning",
+            extras={"error": str(exc), "current_url": tms_page.url},
+        )
 
     response_status = None
     if navigation_response is not None:
@@ -1184,11 +1270,14 @@ async def _navigate_via_home_to_dashboard(
         "info",
         "daily operations tracker clicked",
         extras={
-            "post_click_url": page.url,
+            "post_click_url": tms_page.url,
             "response_status": response_status,
             "dashboard_url": store_cfg.get("dashboard_url"),
+            "new_page": popup_page is not None,
         },
     )
+
+    return tms_page
 
 
 async def _perform_login_flow(
@@ -1382,7 +1471,7 @@ async def _ensure_dashboard(
     logger: JsonLogger,
     *,
     settings: PipelineSettings,
-) -> None:
+) -> Page:
     """Navigate to the dashboard, refreshing the login session when required."""
 
     dashboard_url = store_cfg["dashboard_url"]
@@ -1537,6 +1626,8 @@ async def _ensure_dashboard(
         "store dashboard reached",
         extras={"dashboard_url": store_cfg.get("dashboard_url")},
     )
+
+    return page
 
 
 def _count_rows(csv_path: Path) -> int:
@@ -1728,7 +1819,7 @@ async def run_all_stores_single_session(
             for _, cfg in store_items:
                 sc = cfg.get("store_code")
                 try:
-                    await _switch_to_store_dashboard_and_download(
+                    session_page = await _switch_to_store_dashboard_and_download(
                         session_page,
                         cfg,
                         logger=logger,

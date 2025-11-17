@@ -27,13 +27,13 @@ def storage_state_path(filename: str | None = None) -> Path:
 load_dotenv(ENV_PATH)
 
 # ── URLs ─────────────────────────────────────────────────────────────────────
-TD_BASE_URL = os.getenv("TD_BASE_URL", os.getenv("TMS_BASE", "https://tms.simplifytumbledry.in")).rstrip("/")
-TD_LOGIN_URL = os.getenv("TD_LOGIN_URL", "https://simplifytumbledry.in/home/login")
+TD_BASE_URL = os.getenv("TD_BASE_URL", "https://simplifytumbledry.in").rstrip("/")
+TD_LOGIN_URL = os.getenv("TD_LOGIN_URL", f"{TD_BASE_URL}/home/login")
 TD_HOME_URL = os.getenv("TD_HOME_URL", TD_LOGIN_URL.rsplit("/", 1)[0])
 
 LOGIN_URL = TD_LOGIN_URL
 HOME_URL = TD_HOME_URL
-TMS_BASE = TD_BASE_URL
+TMS_BASE = (os.getenv("TMS_BASE") or TD_BASE_URL).rstrip("/")
 TD_STORE_DASHBOARD_PATH = os.getenv("TD_STORE_DASHBOARD_PATH", "/mis/partner_dashboard?store_code={store_code}")
 
 def tms_dashboard_url(store_code: str) -> str:
