@@ -1,30 +1,22 @@
 from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import asyncio
-import os
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 
 from dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
-from dashboard_downloader.run_downloads import LoginBootstrapError
-from dashboard_downloader.run_summary import RunAggregator
-from dashboard_downloader.settings import (
-    GLOBAL_CREDENTIAL_ERROR,
-    PipelineSettings,
-    load_settings,
-)
-from dashboard_downloader.config import (
-    TD_BASE_URL,
-    TD_LOGIN_URL,
-    TD_STORE_DASHBOARD_PATH,
-    TMS_BASE,
-)
-
 from simplify_downloader.common.db import run_alembic_upgrade
+
+if TYPE_CHECKING:  # pragma: no cover - import cycles avoided at runtime
+    from dashboard_downloader.run_summary import RunAggregator
+    from dashboard_downloader.settings import PipelineSettings
+    from simplify_downloader.config import Config
 
 
 def configure_logging(logger: JsonLogger) -> None:
     """Hook to extend logging configuration if needed."""
+
     _ = logger
 
 
@@ -32,21 +24,27 @@ class PrerequisiteValidationError(Exception):
     """Raised when required inputs are missing before a run starts."""
 
 
-def _validate_prerequisites(*, settings: PipelineSettings, logger: JsonLogger) -> None:
+def _validate_prerequisites(
+    *,
+    settings: PipelineSettings,
+    logger: JsonLogger,
+    app_config: Config,
+    credential_error: str,
+) -> None:
     errors: list[str] = []
     if not settings.stores:
         errors.append("At least one store code must be provided via --stores_list or STORES_LIST")
 
     if not settings.global_username or not settings.global_password:
-        errors.append(GLOBAL_CREDENTIAL_ERROR)
+        errors.append(credential_error)
 
-    if not TD_BASE_URL:
+    if not app_config.td_base_url:
         errors.append("TD_BASE_URL is required")
-    if not TMS_BASE:
+    if not app_config.tms_base:
         errors.append("TMS_BASE is required")
-    if not TD_LOGIN_URL:
+    if not app_config.td_login_url:
         errors.append("TD_LOGIN_URL is required")
-    if not TD_STORE_DASHBOARD_PATH:
+    if not app_config.td_store_dashboard_path:
         errors.append("TD_STORE_DASHBOARD_PATH is required")
 
     if errors:
@@ -56,6 +54,11 @@ def _validate_prerequisites(*, settings: PipelineSettings, logger: JsonLogger) -
 
 
 async def _run_async(args: argparse.Namespace) -> int:
+    from simplify_downloader.config import config as runtime_config
+    from dashboard_downloader.run_downloads import LoginBootstrapError
+    from dashboard_downloader.run_summary import RunAggregator
+    from dashboard_downloader.settings import GLOBAL_CREDENTIAL_ERROR, load_settings
+
     run_id = args.run_id or new_run_id()
     logger = get_logger(run_id=run_id)
     configure_logging(logger)
@@ -75,27 +78,29 @@ async def _run_async(args: argparse.Namespace) -> int:
         logger.close()
         return 2
 
-    run_env = os.getenv("RUN_ENV") or os.getenv("ENVIRONMENT") or "dev"
+    run_env = runtime_config.run_env or runtime_config.environment
     store_codes = list(settings.stores.keys()) if settings.stores else []
-    aggregator = RunAggregator(run_id=run_id, run_env=run_env, store_codes=store_codes)
+    aggregator: RunAggregator = RunAggregator(run_id=run_id, run_env=run_env, store_codes=store_codes)
     logger.attach_aggregator(aggregator)
 
     try:
-        _validate_prerequisites(settings=settings, logger=logger)
+        _validate_prerequisites(
+            settings=settings,
+            logger=logger,
+            app_config=runtime_config,
+            credential_error=GLOBAL_CREDENTIAL_ERROR,
+        )
     except PrerequisiteValidationError:
         return 2
 
     if getattr(args, "run_migrations", False):
-        if not settings.database_url:
-            log_event(
-                logger=logger,
-                phase="db",
-                status="warning",
-                message="skipping migrations because DATABASE_URL is not configured",
-            )
-        else:
-            log_event(logger=logger, phase="db", message="running migrations")
-            await asyncio.to_thread(run_alembic_upgrade, "head")
+        log_event(logger=logger, phase="db", message="running migrations")
+        await asyncio.to_thread(
+            run_alembic_upgrade,
+            revision="head",
+            database_url=runtime_config.database_url,
+            alembic_config_path=runtime_config.alembic_config,
+        )
 
     from dashboard_downloader.pipeline import run_pipeline
 
@@ -147,7 +152,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="simplify_downloader")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # Existing multi-session pipeline
     run_parser = subparsers.add_parser("run", help="Execute full pipeline")
     run_parser.add_argument("--stores_list", type=str, default=None, help="Comma separated store keys")
     run_parser.add_argument("--dry_run", action="store_true", help="Skip DB writes")
@@ -159,7 +163,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Run Alembic migrations before executing the pipeline",
     )
 
-    # NEW: single-session pipeline command
     run_single_parser = subparsers.add_parser(
         "run-single-session",
         help="Execute full pipeline using a single browser session for all stores",
@@ -174,68 +177,58 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Run Alembic migrations before executing the pipeline",
     )
 
-    weekly_parser = subparsers.add_parser(
-        "run-weekly", help="Execute the weekly reporting pipeline"
-    )
+    weekly_parser = subparsers.add_parser("run-weekly", help="Execute the weekly reporting pipeline")
     weekly_parser.add_argument("--env", dest="run_env", default=None, help="Override RUN_ENV for summaries")
 
-    monthly_parser = subparsers.add_parser(
-        "run-monthly", help="Execute the monthly reporting pipeline"
-    )
+    monthly_parser = subparsers.add_parser("run-monthly", help="Execute the monthly reporting pipeline")
     monthly_parser.add_argument("--env", dest="run_env", default=None, help="Override RUN_ENV for summaries")
 
-    # DB command as before
     db_parser = subparsers.add_parser("db", help="Database operations")
     db_sub = db_parser.add_subparsers(dest="db_command", required=True)
     upgrade_parser = db_sub.add_parser("upgrade", help="Run Alembic upgrade head")
     upgrade_parser.add_argument("--revision", default="head")
-    db_check_parser = db_sub.add_parser("check", help="Validate required tables and notification seeds")
+    db_sub.add_parser("check", help="Validate required tables and notification seeds")
 
-    notifications_parser = subparsers.add_parser(
-        "notifications", help="Notification diagnostics"
-    )
-    notifications_sub = notifications_parser.add_subparsers(
-        dest="notifications_command", required=True
-    )
+    notifications_parser = subparsers.add_parser("notifications", help="Notification diagnostics")
+    notifications_sub = notifications_parser.add_subparsers(dest="notifications_command", required=True)
     notif_test_parser = notifications_sub.add_parser("test", help="Validate SMTP/profiles/docs for a run")
     notif_test_parser.add_argument("--pipeline", required=True, help="Pipeline code (e.g. simplify_dashboard_daily)")
     notif_test_parser.add_argument("--run-id", required=True, help="Existing run_id to inspect")
 
     args = parser.parse_args(argv)
 
-    if args.command == "run":
-        # existing behaviour — now single-session under the hood
-        return asyncio.run(_run_async(args))
-
-    if args.command == "run-single-session":
+    if args.command in {"run", "run-single-session"}:
         return asyncio.run(_run_async(args))
 
     if args.command == "run-weekly":
+        from simplify_downloader.config import config as runtime_config
         from tsv_dashboard.pipelines import dashboard_weekly
 
-        dashboard_weekly.run_pipeline(env=args.run_env)
+        dashboard_weekly.run_pipeline(env=args.run_env or runtime_config.run_env)
         return 0
 
     if args.command == "run-monthly":
+        from simplify_downloader.config import config as runtime_config
         from tsv_dashboard.pipelines import dashboard_monthly
 
-        dashboard_monthly.run_pipeline(env=args.run_env)
+        dashboard_monthly.run_pipeline(env=args.run_env or runtime_config.run_env)
         return 0
 
     if args.command == "db" and args.db_command == "upgrade":
-        revision = args.revision
-        os.environ.setdefault("ALEMBIC_CONFIG", "alembic.ini")
-        run_alembic_upgrade(revision)
+        from simplify_downloader.config import config as runtime_config
+
+        run_alembic_upgrade(
+            revision=args.revision,
+            database_url=runtime_config.database_url,
+            alembic_config_path=runtime_config.alembic_config,
+        )
         return 0
 
     if args.command == "db" and args.db_command == "check":
-        database_url = os.getenv("DATABASE_URL")
-        if not database_url:
-            print("DATABASE_URL must be configured for db check")
-            return 1
+        from simplify_downloader.config import config as runtime_config
         from dashboard_downloader.db_health import check_database_health
 
-        errors = asyncio.run(check_database_health(database_url))
+        errors = asyncio.run(check_database_health(runtime_config.database_url))
         if errors:
             for issue in errors:
                 print(f"[db-check] {issue}")
@@ -256,3 +249,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     parser.error("Unknown command")
     return 1
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

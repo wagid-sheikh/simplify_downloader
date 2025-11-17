@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
@@ -32,9 +31,7 @@ async def session_scope(database_url: str) -> AsyncIterator[AsyncSession]:
         yield session
 
 
-def run_alembic_upgrade(revision: str) -> None:
-    alembic_cfg = Config(os.getenv("ALEMBIC_CONFIG", "alembic.ini"))
-    db_url = os.getenv("DATABASE_URL")
-    if db_url:
-        alembic_cfg.set_main_option("sqlalchemy.url", db_url)
+def run_alembic_upgrade(*, revision: str, database_url: str, alembic_config_path: str) -> None:
+    alembic_cfg = Config(alembic_config_path)
+    alembic_cfg.set_main_option("sqlalchemy.url", database_url)
     command.upgrade(alembic_cfg, revision)

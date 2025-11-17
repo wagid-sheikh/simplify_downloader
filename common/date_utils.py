@@ -1,24 +1,19 @@
 """Shared helpers for timezone-aware report date calculations."""
 from __future__ import annotations
 
-import os
 from datetime import date, datetime, timedelta
+from functools import lru_cache
 from typing import Iterable, List, Tuple
 from zoneinfo import ZoneInfo
 
-DEFAULT_TIMEZONE = "Asia/Kolkata"
 
-
+@lru_cache(maxsize=1)
 def get_timezone() -> ZoneInfo:
-    """Return the configured pipeline timezone.
+    """Return the configured pipeline timezone."""
 
-    The timezone can be overridden via the ``PIPELINE_TIMEZONE`` environment
-    variable.  All pipelines (daily, weekly, monthly) rely on this helper so
-    that date boundaries remain consistent regardless of the machine locale.
-    """
+    from simplify_downloader.config import config
 
-    name = os.getenv("PIPELINE_TIMEZONE", DEFAULT_TIMEZONE)
-    return ZoneInfo(name)
+    return ZoneInfo(config.pipeline_timezone)
 
 
 def aware_now(tz: ZoneInfo | None = None) -> datetime:

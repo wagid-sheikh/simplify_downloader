@@ -1,47 +1,42 @@
 # File: dashboard_downloader/config.py
 from pathlib import Path
-from dotenv import load_dotenv
-import os
+from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, Iterable, List
 
+from simplify_downloader.config import config
+
 # ── Paths ────────────────────────────────────────────────────────────────────
 PKG_ROOT = Path(__file__).resolve().parent            # .../simplify_downloader/dashboard_downloader
-PROJECT_ROOT = PKG_ROOT.parent                        # .../simplify_downloader
-
-ENV_PATH = PROJECT_ROOT / ".env"                      # keep .env at project root
 PROFILES_DIR = PKG_ROOT / "profiles"                  # .../dashboard_downloader/profiles
 DATA_DIR = PKG_ROOT / "data"                          # .../dashboard_downloader/data
 PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+
 def storage_state_path(filename: str | None = None) -> Path:
     """Return the path to the single shared Playwright storage state JSON."""
 
-    name = filename or os.getenv("TD_STORAGE_STATE_FILENAME", "storage_state.json")
+    name = filename or config.td_storage_state_filename
     path = PROFILES_DIR / name
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
-# Load env
-load_dotenv(ENV_PATH)
 
 # ── URLs ─────────────────────────────────────────────────────────────────────
-TD_BASE_URL = os.getenv("TD_BASE_URL", "https://simplifytumbledry.in").rstrip("/")
-TD_LOGIN_URL = os.getenv("TD_LOGIN_URL", f"{TD_BASE_URL}/home/login")
-TD_HOME_URL = os.getenv("TD_HOME_URL", TD_LOGIN_URL.rsplit("/", 1)[0])
+TD_BASE_URL = config.td_base_url
+TD_LOGIN_URL = config.td_login_url
+TD_HOME_URL = config.td_home_url
 
 LOGIN_URL = TD_LOGIN_URL
 HOME_URL = TD_HOME_URL
-TMS_BASE = (os.getenv("TMS_BASE") or TD_BASE_URL).rstrip("/")
-TD_STORE_DASHBOARD_PATH = os.getenv("TD_STORE_DASHBOARD_PATH", "/mis/partner_dashboard?store_code={store_code}")
+TMS_BASE = config.tms_base
+TD_STORE_DASHBOARD_PATH = config.td_store_dashboard_path
 
 def tms_dashboard_url(store_code: str) -> str:
     return f"{TMS_BASE}{TD_STORE_DASHBOARD_PATH.format(store_code=store_code)}"
 
-# ── Credentials (from .env) ─────────────────────────────────────────────────
-TD_GLOBAL_USERNAME = os.getenv("TD_GLOBAL_USERNAME", "")
-TD_GLOBAL_PASSWORD = os.getenv("TD_GLOBAL_PASSWORD", "")
+# ── Credentials ─────────────────────────────────────────────────────────────
 
 def _apply_store_defaults(
     base: Dict[str, Any], *, store_code: str, profile_key: str | None = None
@@ -74,7 +69,7 @@ def _apply_store_defaults(
 def global_credentials() -> tuple[str, str]:
     """Return the global CRM username/password pair."""
 
-    return TD_GLOBAL_USERNAME.strip(), TD_GLOBAL_PASSWORD.strip()
+    return config.td_global_username.strip(), config.td_global_password.strip()
 
 
 def stores_from_list(store_ids: Iterable[str]) -> Dict[str, dict]:
@@ -96,8 +91,7 @@ def stores_from_list(store_ids: Iterable[str]) -> Dict[str, dict]:
 
 
 def env_stores_list() -> List[str]:
-    raw = os.getenv("STORES_LIST") or ""
-    return [part.strip() for part in raw.split(",") if part.strip()]
+    return list(config.stores_list)
 
 
 # Compatibility constant (no default stores in the new single-session model)

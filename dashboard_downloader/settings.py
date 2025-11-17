@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
@@ -13,6 +12,7 @@ from dashboard_downloader.config import (
     global_credentials,
     stores_from_list,
 )
+from simplify_downloader.config import config
 
 
 GLOBAL_CREDENTIAL_ERROR = "Global CRM credentials (username/password) are missing/invalid."
@@ -37,8 +37,8 @@ class PipelineSettings:
     merged_names: Dict[str, str] = field(default_factory=lambda: MERGED_NAMES)
     merge_bucket_specs: Dict[str, dict] = field(default_factory=lambda: MERGE_BUCKET_DB_SPECS)
     dry_run: bool = False
-    ingest_batch_size: int = field(default_factory=lambda: int(os.getenv("INGEST_BATCH_SIZE", "3000")))
-    database_url: Optional[str] = field(default_factory=lambda: os.getenv("DATABASE_URL"))
+    ingest_batch_size: int = field(default_factory=lambda: config.ingest_batch_size)
+    database_url: Optional[str] = field(default_factory=lambda: config.database_url)
     global_username: str = field(default_factory=_default_global_username)
     global_password: str = field(default_factory=_default_global_password)
 
@@ -73,8 +73,7 @@ def _validate_store_selector_sources(*, cli: List[str], env_upper: str | None) -
 
 
 def _ensure_report_store_alignment(selected: Dict[str, dict]) -> None:
-    report_raw = os.getenv("REPORT_STORES_LIST")
-    report_codes = _normalized(_split_codes(report_raw))
+    report_codes = _normalized(config.report_stores_list)
     if not report_codes:
         return
 
@@ -88,7 +87,7 @@ def _ensure_report_store_alignment(selected: Dict[str, dict]) -> None:
 
 
 def load_settings(*, stores_list: Optional[str], dry_run: bool, run_id: str) -> PipelineSettings:
-    raw_upper_env = os.getenv("STORES_LIST")
+    raw_upper_env = ",".join(config.stores_list)
     cli_values = _split_codes(stores_list)
     _validate_store_selector_sources(cli=cli_values, env_upper=raw_upper_env)
 

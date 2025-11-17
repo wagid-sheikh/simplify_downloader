@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 import time
 from contextlib import contextmanager
@@ -16,19 +15,38 @@ def new_run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S%f")
 
 
+def _default_log_file_path() -> str | None:
+    from simplify_downloader.config import config
+
+    raw = config.json_log_file.strip()
+    return raw or None
+
+
+_AUTO = object()
+
+
 class JsonLogger:
     """Emit newline-delimited JSON events."""
 
-    def __init__(self, run_id: Optional[str] = None, stream=None):
+    def __init__(
+        self,
+        run_id: Optional[str] = None,
+        stream=None,
+        *,
+        log_file_path: str | None | object = _AUTO,
+    ):
         self.run_id = run_id or new_run_id()
         self.stream = stream or sys.stdout
         self.default_context: Dict[str, Any] = {"run_id": self.run_id}
-        file_path = os.getenv("JSON_LOG_FILE")
+        if log_file_path is _AUTO:
+            file_path = _default_log_file_path()
+        else:
+            file_path = log_file_path
         self.file_handle = open(file_path, "a", encoding="utf-8") if file_path else None
         self.aggregator = None
 
     def bind(self, **kwargs: Any) -> "JsonLogger":
-        child = JsonLogger(run_id=self.run_id, stream=self.stream)
+        child = JsonLogger(run_id=self.run_id, stream=self.stream, log_file_path=None)
         child.default_context = {**self.default_context, **kwargs}
         child.file_handle = self.file_handle
         child.aggregator = self.aggregator

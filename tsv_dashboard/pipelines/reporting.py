@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -12,10 +11,11 @@ from dashboard_downloader.db_tables import documents
 from common.date_utils import normalize_store_codes
 from simplify_downloader.common.dashboard_store import store_dashboard_summary, store_master
 from simplify_downloader.common.db import session_scope
+from simplify_downloader.config import config
 
 from .base import PipelinePhaseTracker, persist_summary_record
 
-REPORTS_ROOT = Path(os.getenv("REPORTS_ROOT", "reports")).resolve()
+REPORTS_ROOT = Path(config.reports_root).resolve()
 TEMPLATE_NAME = "aggregate_report.html"
 
 
@@ -26,7 +26,7 @@ def parse_store_list(raw: str | None) -> list[str]:
 
 
 def get_report_store_codes() -> list[str]:
-    stores = parse_store_list(os.getenv("REPORT_STORES_LIST"))
+    stores = config.report_stores_list
     if not stores:
         raise RuntimeError(
             "REPORT_STORES_LIST must be configured with comma-separated store codes for reporting pipelines"

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, Mapping
 
 from dashboard_downloader.db_tables import pipeline_run_summaries
 from simplify_downloader.common.db import session_scope
+from simplify_downloader.config import config
 
 
 Status = str
@@ -132,7 +132,7 @@ async def update_summary_record(
 def resolve_run_env(explicit: str | None = None) -> str:
     if explicit:
         return explicit
-    return os.getenv("RUN_ENV") or os.getenv("ENVIRONMENT") or "dev"
+    return config.run_env or config.environment
 
 
 def ensure_asyncio_run(coro: Iterable[Any] | Any) -> Any:
