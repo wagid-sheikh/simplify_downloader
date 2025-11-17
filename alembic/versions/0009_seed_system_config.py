@@ -17,26 +17,26 @@ depends_on = None
 
 
 PLAINTEXT_VALUES = [
-    ("TD_GLOBAL_USERNAME", "reports@example.com", "Global dashboard username"),
+    ("TD_GLOBAL_USERNAME", "A668", "Global SimpliFy dashboard username"),
     ("TD_STORAGE_STATE_FILENAME", "storage_state.json", "Default Playwright storage state"),
     ("TD_BASE_URL", "https://simplifytumbledry.in", "Base URL for Simplify dashboard"),
     ("TD_HOME_URL", "https://simplifytumbledry.in/home", "Dashboard home URL"),
     ("TD_LOGIN_URL", "https://simplifytumbledry.in/home/login", "Dashboard login URL"),
-    ("TMS_BASE", "https://simplifytumbledry.in", "Base URL for TMS portal"),
+    ("TMS_BASE", "https://tms.simplifytumbledry.in", "Base URL for TMS portal"),
     (
         "TD_STORE_DASHBOARD_PATH",
         "/mis/partner_dashboard?store_code={store_code}",
         "Dashboard path template for stores",
     ),
-    ("STORES_LIST", "A668,A817", "Default scraping store codes"),
+    ("STORES_LIST", "A668,A817,A526", "Default scraping store codes"),
     ("REPORT_STORES_LIST", "A668,A817", "Store codes for reporting pipelines"),
     ("INGEST_BATCH_SIZE", "3000", "Batch size for CSV ingestion"),
-    ("REPORT_EMAIL_FROM", "reports@example.com", "Default From address for report emails"),
-    ("REPORT_EMAIL_SMTP_HOST", "smtp.example.com", "SMTP host for report notifications"),
+    ("REPORT_EMAIL_FROM", "shaw@theshawventures.com", "Default From address for report emails"),
+    ("REPORT_EMAIL_SMTP_HOST", "smtp.gmail.com", "SMTP host for report notifications"),
     ("REPORT_EMAIL_SMTP_PORT", "587", "SMTP port for report notifications"),
     (
         "REPORT_EMAIL_SMTP_USERNAME",
-        "reports@example.com",
+        "wagid.sheikh@gmail.com",
         "SMTP username for report notifications",
     ),
     ("REPORT_EMAIL_USE_TLS", "true", "Whether to enable TLS for SMTP"),
@@ -45,10 +45,10 @@ PLAINTEXT_VALUES = [
 ]
 
 ENCRYPTED_VALUES = [
-    ("TD_GLOBAL_PASSWORD", "change-me-global-password", "Global dashboard password"),
+    ("TD_GLOBAL_PASSWORD", "some-random-password", "Global dashboard password"),
     (
         "REPORT_EMAIL_SMTP_PASSWORD",
-        "change-me-smtp-password",
+        "some-random-smtp-password",
         "SMTP password for report notifications",
     ),
 ]

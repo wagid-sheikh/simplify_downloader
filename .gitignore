@@ -217,3 +217,5 @@ logs
 reports
 reports/*
 tests/config.db
+
+update_system_secrets_local.py
