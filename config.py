@@ -44,8 +44,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from simplify_downloader.crypto import decrypt_secret
 
 
-# Determine project root correctly (directory containing the top-level package)
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+# Determine project root correctly (directory containing this file)
+# NOTE: config.py lives at the repository root, so we do not want to walk up
+# another directory (which would point outside the repo and miss .env).
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 # Load variables from .env if it exists; OS env overrides these automatically
 load_dotenv(PROJECT_ROOT / ".env")
