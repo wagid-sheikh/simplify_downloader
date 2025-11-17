@@ -14,7 +14,10 @@ git tag -a v1.14 -m "Single Session Working with re-use of logged in session and
 
 git push origin v1.14
 
-
 git tag -a v1.15 -m "Single Session full automated with CSV downloads, dashboard scraping and emailing"
 
 git push origin v1.15
+
+git tag -a v1.16 -m "Stable after round 1 refactor"
+
+git push origin v1.16
