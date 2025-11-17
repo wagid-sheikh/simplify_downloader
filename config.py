@@ -29,15 +29,28 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Mapping
 
 import binascii
+
+from dotenv import load_dotenv
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from simplify_downloader.crypto import decrypt_secret
+
+
+# Determine project root correctly (directory containing the top-level package)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# Load variables from .env if it exists; OS env overrides these automatically
+load_dotenv(PROJECT_ROOT / ".env")
+
+if os.getenv("DEBUG_CONFIG") == "1":
+    print("[CONFIG] Loaded .env from:", PROJECT_ROOT / ".env")
 
 
 logger = logging.getLogger(__name__)
