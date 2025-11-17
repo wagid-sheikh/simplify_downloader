@@ -13,7 +13,8 @@ required vs optional settings.
 | Timezone | `PIPELINE_TIMEZONE` | All helpers in `common/date_utils.py` use this timezone to compute daily/weekly/monthly periods. Default is `Asia/Kolkata`. |
 | Scraping credentials | `TD_GLOBAL_USERNAME`, `TD_GLOBAL_PASSWORD` | Single CRM login for every store. `TD_GLOBAL_USERNAME` also doubles as the primary store code. |
 | Store selection | `--stores_list` CLI flag or `STORES_LIST` env **(daily)**, `REPORT_STORES_LIST` **(reporting/PDF/notifications)** | Provide at least one comma-separated store code via CLI or env before a run. |
-| Base endpoints | `TD_BASE_URL`, `TD_LOGIN_URL`, `TD_STORE_DASHBOARD_PATH` | Required for routing the shared session through CRM login and the TMS dashboards. |
+| Base endpoints (CRM) | `TD_BASE_URL`, `TD_LOGIN_URL`, `TD_HOME_URL` | Required for routing the shared session through CRM login. |
+| MIS endpoints | `TMS_BASE`, `TD_STORE_DASHBOARD_PATH` | Required for navigating to the TMS dashboards and CSV downloads. |
 | Notifications | `REPORT_EMAIL_FROM`, `REPORT_EMAIL_SMTP_HOST`, `REPORT_EMAIL_SMTP_PORT`, `REPORT_EMAIL_SMTP_USERNAME`, `REPORT_EMAIL_SMTP_PASSWORD`, `REPORT_EMAIL_USE_TLS` | SMTP transport only. Recipients/templates live in the database. |
 
 ## 2. Optional but recommended
@@ -22,7 +23,7 @@ required vs optional settings.
 | --- | --- | --- |
 | Reports & artifacts | `REPORTS_ROOT`, `JSON_LOG_FILE` | Point both at persistent volumes so Docker/Compose deployments keep history. |
 | PDF rendering | `PDF_RENDER_BACKEND`, `PDF_RENDER_HEADLESS`, `PDF_RENDER_CHROME_EXECUTABLE` | Tune based on whether Chrome is system-installed or bundled. |
-| Dashboard endpoints | `TD_BASE_URL`, `TD_LOGIN_URL`, `TD_STORE_DASHBOARD_PATH`, `TD_HOME_URL` | Override only in staging where URLs differ. |
+| Dashboard endpoints | `TD_BASE_URL`, `TD_LOGIN_URL`, `TD_HOME_URL`, `TMS_BASE`, `TD_STORE_DASHBOARD_PATH` | Override only in staging where URLs differ. |
 | Batch tuning | `INGEST_BATCH_SIZE` | Adjust ingestion chunking for constrained CPUs. |
 
 ## 3. Runtime validation guarantees
