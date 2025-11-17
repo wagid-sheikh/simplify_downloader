@@ -5,7 +5,7 @@ import csv
 import json
 from pathlib import Path
 import re
-from typing import Any, Dict, Iterable, List
+from typing import Any, Awaitable, Dict, Iterable, List
 from datetime import datetime
 from urllib.parse import urlparse
 import contextlib
@@ -1182,9 +1182,23 @@ async def _navigate_via_home_to_dashboard(
     context = page.context
     existing_page_ids = {id(p) for p in context.pages}
     popup_task = asyncio.create_task(context.wait_for_event("page"))
-    nav_task = asyncio.create_task(
-        page.wait_for_navigation(wait_until="domcontentloaded", timeout=60_000)
-    )
+
+    dashboard_url = store_cfg.get("dashboard_url")
+    if not dashboard_url:
+        store_code_for_dashboard = store_cfg.get("store_code")
+        if store_code_for_dashboard:
+            dashboard_url = tms_dashboard_url(store_code_for_dashboard)
+            store_cfg.setdefault("dashboard_url", dashboard_url)
+
+    nav_coro: Awaitable[Any]
+    if dashboard_url:
+        nav_coro = page.wait_for_url(
+            str(dashboard_url), wait_until="domcontentloaded", timeout=60_000
+        )
+    else:
+        nav_coro = page.wait_for_load_state("domcontentloaded", timeout=60_000)
+
+    nav_task = asyncio.create_task(nav_coro)
 
     try:
         await click_target.click()
