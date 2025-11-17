@@ -25,20 +25,21 @@ Do not access os.getenv or system_config directly from any other module.
 
 from __future__ import annotations
 
+import asyncio
+import binascii
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Mapping
-
-import binascii
+from typing import Any, Awaitable, Callable, Dict, Mapping, TypeVar
 
 from dotenv import load_dotenv
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from simplify_downloader.crypto import decrypt_secret
 
@@ -165,12 +166,33 @@ def _clean_text(value: str, *, key: str) -> str:
     return stripped
 
 
-def _load_system_config(database_url: str) -> Dict[str, str]:
-    engine: Engine | None = None
+T = TypeVar("T")
+
+
+def _run_async_blocking(task_factory: Callable[[], Awaitable[T]]) -> T:
+    result: dict[str, Any] = {}
+
+    def _runner() -> None:
+        try:
+            result["value"] = asyncio.run(task_factory())
+        except BaseException as exc:  # pragma: no cover - re-raised in caller
+            result["error"] = exc
+
+    thread = threading.Thread(target=_runner, name="config-db-loader", daemon=True)
+    thread.start()
+    thread.join()
+
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
+
+
+async def _fetch_system_config_async(database_url: str) -> Dict[str, str]:
+    engine: AsyncEngine | None = None
     try:
-        engine = create_engine(database_url, future=True)
-        with engine.connect() as connection:
-            rows = connection.execute(
+        engine = create_async_engine(database_url, future=True)
+        async with engine.connect() as connection:
+            rows = await connection.execute(
                 text("SELECT key, value FROM system_config WHERE is_active = TRUE")
             )
             return {row.key: row.value for row in rows}
@@ -180,7 +202,16 @@ def _load_system_config(database_url: str) -> Dict[str, str]:
         raise ConfigError(message) from exc
     finally:
         if engine is not None:
-            engine.dispose()
+            await engine.dispose()
+
+
+def _load_system_config(database_url: str) -> Dict[str, str]:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_fetch_system_config_async(database_url))
+    else:
+        return _run_async_blocking(lambda: _fetch_system_config_async(database_url))
 
 
 def _decrypt_db_values(secret_key: str, db_values: Mapping[str, str]) -> Dict[str, str]:
