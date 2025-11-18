@@ -96,9 +96,7 @@ class RunAggregator:
 
         if phase == "report":
             store_code = payload.get("store_code")
-            if payload.get("message") == "report pdf generated" and store_code:
-                self.report_success[store_code] = payload.get("extras", {}).get("output_path", "")
-            elif store_code and status in {"warning", "error"}:
+            if store_code and status in {"warning", "error"}:
                 reason = payload.get("message", "report issue")
                 self.report_failures[store_code] = reason
 
@@ -135,12 +133,17 @@ class RunAggregator:
             if value is not None:
                 existing[key] = int(value)
 
-    def register_pdf_success(self, store_code: str, output_path: str) -> None:
+    def register_pdf_success(self, store_code: str, output_path: str, *, record_file: bool = True) -> None:
         self.report_success[store_code] = output_path
+        if record_file:
+            self.pdf_records.append({"store_code": store_code, "file_path": output_path})
+
+    def record_pdf_file(self, store_code: str, output_path: str) -> None:
         self.pdf_records.append({"store_code": store_code, "file_path": output_path})
 
     def register_pdf_failure(self, store_code: str, message: str) -> None:
         self.report_failures[store_code] = message
+        self.report_success.pop(store_code, None)
 
     def plan_email(self, *, recipients: Sequence[str], attachment_count: int, message: str) -> None:
         self.email_metrics.update(
@@ -175,7 +178,7 @@ class RunAggregator:
             },
             "buckets": self.bucket_metrics,
             "pdf": {
-                "generated": len(self.report_success),
+                "generated": len(self.pdf_records),
                 "failed": len(self.report_failures),
                 "records": list(self.pdf_records),
             },
@@ -196,7 +199,7 @@ class RunAggregator:
             buckets = len(self.bucket_metrics)
             return f"- {phase}: {status} ({buckets} buckets)"
         if phase == "report":
-            return f"- {phase}: {status} ({len(self.report_success)} PDFs)"
+            return f"- {phase}: {status} ({len(self.pdf_records)} PDFs)"
         if phase == "report_email":
             email_status = self.email_metrics.get("status", "pending")
             return f"- {phase}: {status} ({email_status})"
