@@ -15,7 +15,6 @@ from dashboard_downloader.db_tables import documents
 from dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from dashboard_downloader.report_generator import (
     StoreReportDataNotFound,
-    build_action_list_pdf,
     build_store_context,
     render_store_report_pdf,
 )
@@ -242,60 +241,6 @@ async def _generate_reports(
         )
         if aggregator:
             aggregator.register_pdf_success(code, str(output_path))
-
-        action_list_path = output_path.with_name(f"{output_path.stem}_action_list.pdf")
-        try:
-            build_action_list_pdf(action_list_path, context)
-            log_event(
-                logger=logger,
-                phase="report",
-                status="ok",
-                message="action list pdf generated",
-                store_code=code,
-                extras={"output_path": str(action_list_path)},
-            )
-        except Exception as exc:  # pragma: no cover - action list failures
-            log_event(
-                logger=logger,
-                phase="report",
-                status="error",
-                message="failed to render action list pdf",
-                store_code=code,
-                extras={"error": str(exc), "output_path": str(action_list_path)},
-            )
-            await _persist_document_record(
-                database_url=database_url,
-                report_date=report_date,
-                store_code=code,
-                run_id=run_id,
-                file_name=action_list_path.name,
-                file_path=None,
-                status="error",
-                error_message=str(exc),
-                logger=logger,
-            )
-        else:
-            try:
-                await _persist_document_record(
-                    database_url=database_url,
-                    report_date=report_date,
-                    store_code=code,
-                    run_id=run_id,
-                    file_name=action_list_path.name,
-                    file_path=action_list_path,
-                    status="ok",
-                    error_message=None,
-                    logger=logger,
-                )
-            except Exception as exc:  # pragma: no cover - defensive
-                log_event(
-                    logger=logger,
-                    phase="report",
-                    status="warning",
-                    message="unexpected error while recording action list document",
-                    store_code=code,
-                    extras={"error": str(exc), "file_name": action_list_path.name},
-                )
 
         try:
             await _persist_document_record(
