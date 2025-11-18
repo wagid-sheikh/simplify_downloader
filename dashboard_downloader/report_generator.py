@@ -32,6 +32,7 @@ __all__ = [
     "StoreReportDataNotFound",
     "build_store_context",
     "render_store_report_pdf",
+    "build_action_list_pdf",
 ]
 
 
@@ -674,6 +675,14 @@ class StoreReportPdfBuilder:
         self._draw_footer()
         self.canvas.save()
 
+    def build_action_list(self) -> None:
+        """Render only the interactive action list tables."""
+
+        self._draw_header()
+        self._draw_action_lists()
+        self._draw_footer()
+        self.canvas.save()
+
     def _new_page(self) -> None:
         self.canvas.showPage()
         self.form = self.canvas.acroForm
@@ -1143,3 +1152,10 @@ class StoreReportPdfBuilder:
         if hasattr(value, "isoformat"):
             return value.isoformat()
         return value or ""
+
+
+def build_action_list_pdf(store_context: Dict[str, Any], output_path: str | Path) -> None:
+    """Build the interactive Store Action List PDF using ReportLab."""
+
+    builder = StoreReportPdfBuilder(store_context=store_context, output_path=Path(output_path))
+    builder.build_action_list()
