@@ -77,9 +77,9 @@
     .action-table th,
     .action-table td {
       border: 1px solid #e1e1e1;
-      padding: 10px;
+      padding: 8px;
       text-align: left;
-      font-size: 13px;
+      font-size: 12px;
     }
 
     .kpi-table th,
@@ -167,11 +167,36 @@
     .action-table .cell-input {
       color: #9b9b9b;
       font-style: italic;
+      min-width: 40px;
+      height: 18px;
+      border: 1px dashed #ccc;
+    }
+
+    .action-table .text-right {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
     }
 
     .action-table tfoot td {
       font-weight: 600;
     }
+
+    .action-table-undelivered col.col-order-id { width: 12%; }
+    .action-table-undelivered col.col-order-date { width: 13%; }
+    .action-table-undelivered col.col-del-date { width: 14%; }
+    .action-table-undelivered col.col-age { width: 8%; }
+    .action-table-undelivered col.col-amount { width: 12%; }
+    .action-table-undelivered col.col-delivered { width: 11%; }
+    .action-table-undelivered col.col-comments { width: 30%; }
+
+    .action-table-missed-leads col.col-phone { width: 13%; }
+    .action-table-missed-leads col.col-name { width: 17%; }
+    .action-table-missed-leads col.col-created { width: 18%; }
+    .action-table-missed-leads col.col-pickup { width: 12%; }
+    .action-table-missed-leads col.col-source { width: 10%; }
+    .action-table-missed-leads col.col-type { width: 11%; }
+    .action-table-missed-leads col.col-converted { width: 9%; }
+    .action-table-missed-leads col.col-comments { width: 10%; }
   </style>
 </head>
 
@@ -340,13 +365,22 @@
 
   <h2>Undelivered Orders (Action List)</h2>
   <table class="action-table action-table-undelivered">
+    <colgroup>
+      <col class="col-order-id" />
+      <col class="col-order-date" />
+      <col class="col-del-date" />
+      <col class="col-age" />
+      <col class="col-amount" />
+      <col class="col-delivered" />
+      <col class="col-comments" />
+    </colgroup>
     <thead>
       <tr>
         <th>Order ID</th>
         <th>Order Date</th>
-        <th>Committed Delivery Date</th>
-        <th>Age (days)</th>
-        <th>Net Amount</th>
+        <th>Del. Date</th>
+        <th>Age</th>
+        <th class="text-right">Net Amount</th>
         <th>Delivered (Y/N)</th>
         <th>Comments</th>
       </tr>
@@ -359,9 +393,9 @@
         <td>{{ row.order_date }}</td>
         <td>{{ row.committed_date }}</td>
         <td>{{ row.age_days }}</td>
-        <td>
+        <td class="text-right">
           {% if row.net_amount is not none %}
-          ₹ {{ '%.2f'|format(row.net_amount) }}
+          {{ '%.2f'|format(row.net_amount) }}
           {% else %}
           —
           {% endif %}
@@ -380,7 +414,7 @@
     <tfoot>
       <tr>
         <td colspan="4"></td>
-        <td>₹ {{ '%.2f'|format(undelivered_orders_total_amount or 0) }}</td>
+        <td class="text-right">{{ '%.2f'|format(undelivered_orders_total_amount or 0) }}</td>
         <td colspan="2"></td>
       </tr>
     </tfoot>
@@ -389,6 +423,16 @@
 
   <h2>Missed Leads – Not Converted (Action List)</h2>
   <table class="action-table action-table-missed-leads">
+    <colgroup>
+      <col class="col-phone" />
+      <col class="col-name" />
+      <col class="col-created" />
+      <col class="col-pickup" />
+      <col class="col-source" />
+      <col class="col-type" />
+      <col class="col-converted" />
+      <col class="col-comments" />
+    </colgroup>
     <thead>
       <tr>
         <th>Phone</th>

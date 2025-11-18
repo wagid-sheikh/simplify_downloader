@@ -9,6 +9,13 @@ from math import inf
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfgen import canvas
+from reportlab.platypus import Paragraph, Table, TableStyle
+
 from playwright.async_api import async_playwright
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +29,6 @@ from simplify_downloader.common.ingest.models import MissedLead, RepeatCustomer,
 
 __all__ = [
     "StoreReportDataNotFound",
-    "build_action_list_pdf",
     "build_store_context",
     "render_store_report_pdf",
 ]
@@ -557,20 +563,11 @@ async def build_store_context(
 
 
 async def render_store_report_pdf(store_context: Dict, template_path: str | Path, output_path: str | Path) -> None:
-    from jinja2 import Environment, FileSystemLoader, select_autoescape
+output_path = Path(output_path)
+output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    template_dir = Path(template_path)
-    template_dir.mkdir(parents=True, exist_ok=True)
-    env = Environment(
-        loader=FileSystemLoader(str(template_dir)),
-        autoescape=select_autoescape(["html", "xml"]),
-    )
-    template = env.get_template("store_report.html")
-    html = template.render(**store_context)
-
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    await render_pdf_with_configured_browser(html, output_path)
+builder = StoreReportPdfBuilder(store_context=store_context, output_path=output_path)
+builder.build()
 
 
 async def render_pdf_with_configured_browser(html_content: str, output_path: str | Path) -> None:
@@ -599,234 +596,530 @@ async def render_pdf_with_configured_browser(html_content: str, output_path: str
         await browser.close()
 
 
-def _ensure_page_space(
-    canvas_obj,
-    *,
-    y: float,
-    min_y: float,
-    height: float,
-    title: str,
-    header_drawer,
-) -> tuple[float, bool]:
-    redrew = False
-    if y <= min_y:
-        canvas_obj.showPage()
-        y = height - 60
-        canvas_obj.setFont("Helvetica-Bold", 12)
-        canvas_obj.drawString(40, y, f"{title} (cont.)")
-        y -= 18
-        header_drawer(y)
-        y -= 12
-        redrew = True
-    return y, redrew
-
-
-def build_action_list_pdf(output_path: str | Path, store_context: Dict[str, Any]) -> None:
-    try:
-        from reportlab.lib import colors
-        from reportlab.lib.pagesizes import A4
-        from reportlab.pdfgen import canvas
-    except ImportError as exc:  # pragma: no cover - import guard
-        raise RuntimeError(
-            "reportlab is required to generate the action list PDF. Install the optional dependency to continue."
-        ) from exc
-
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    c = canvas.Canvas(str(output_path), pagesize=A4)
-    width, height = A4
-    form = c.acroForm
-
-    store_name = store_context.get("store_name", "Store")
-    report_date = store_context.get("report_date", "")
-    run_id = store_context.get("run_id", "")
-
-    y = height - 40
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(40, y, f"Store Action List — {store_name}")
-    y -= 16
-    c.setFont("Helvetica", 10)
-    c.drawString(40, y, f"Report date: {report_date}")
-    y -= 14
-    c.drawString(40, y, f"Run ID: {run_id}")
-    y -= 30
-
-    def draw_undelivered_headers(header_y: float) -> None:
-        c.setFont("Helvetica-Bold", 9)
-        headers = [
-            (40, "Order ID"),
-            (110, "Order Date"),
-            (190, "Committed Delivery Date"),
-            (320, "Age (days)"),
-            (360, "Net Amount"),
-            (430, "Delivered (Y/N)"),
-            (480, "Comments"),
-        ]
-        for x, label in headers:
-            c.drawString(x, header_y, label)
-
-    missed_positions = {
-        "phone": 30,
-        "customer_name": 100,
-        "pickup_created": 190,
-        "pickup_time": 290,
-        "source": 360,
-        "customer_type": 420,
-        "lead_converted": 490,
-        "comments": 520,
+class StoreReportPdfBuilder:
+    STATUS_COLOR_MAP = {
+        "kpi-status-excellent": colors.HexColor("#20bf6b"),
+        "kpi-status-good": colors.HexColor("#2d98da"),
+        "kpi-status-poor": colors.HexColor("#f39c12"),
+        "kpi-status-critical": colors.HexColor("#e74c3c"),
+        "kpi-status-missing": colors.HexColor("#7f8c8d"),
+    }
+    OVERALL_COLOR_MAP = {
+        "status-excellent": colors.HexColor("#20bf6b"),
+        "status-good": colors.HexColor("#2d98da"),
+        "status-warning": colors.HexColor("#f39c12"),
+        "status-critical": colors.HexColor("#e74c3c"),
+    }
+    SNAPSHOT_COLOR_MAP = {
+        "snapshot-positive": colors.HexColor("#20bf6b"),
+        "snapshot-negative": colors.HexColor("#e74c3c"),
+        "snapshot-neutral": colors.HexColor("#1c1c1c"),
     }
 
-    def draw_missed_headers(header_y: float) -> None:
-        c.setFont("Helvetica-Bold", 9)
-        headers = [
-            (missed_positions["phone"], "Phone"),
-            (missed_positions["customer_name"], "Customer Name"),
-            (missed_positions["pickup_created"], "Pickup Created Date / Time"),
-            (missed_positions["pickup_time"], "Pickup Time"),
-            (missed_positions["source"], "Source"),
-            (missed_positions["customer_type"], "Customer Type"),
-            (missed_positions["lead_converted"], "Lead Converted"),
-            (missed_positions["comments"], "Comments"),
+    def __init__(self, *, store_context: Dict[str, Any], output_path: Path) -> None:
+        self.context = store_context
+        self.output_path = Path(output_path)
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self.canvas = canvas.Canvas(str(self.output_path), pagesize=A4)
+        self.width, self.height = A4
+        self.margin = 36
+        self.body_width = self.width - 2 * self.margin
+        self.y = self.height - self.margin
+        self.form = self.canvas.acroForm
+        self.styles = {
+            "normal": ParagraphStyle(
+                name="Normal",
+                fontName="Helvetica",
+                fontSize=10,
+                leading=14,
+                textColor=colors.HexColor("#1c1c1c"),
+            ),
+            "list": ParagraphStyle(
+                name="List",
+                fontName="Helvetica",
+                fontSize=10,
+                leading=14,
+                textColor=colors.HexColor("#1c1c1c"),
+            ),
+        }
+
+    def build(self) -> None:
+        self._draw_header()
+        self._draw_overall_health()
+        self._draw_primary_kpis()
+        self._draw_secondary_indicators()
+        self._draw_snapshot()
+        self._draw_recommendations()
+        self._draw_action_lists()
+        self._draw_footer()
+        self.canvas.save()
+
+    def _new_page(self) -> None:
+        self.canvas.showPage()
+        self.form = self.canvas.acroForm
+        self.y = self.height - self.margin
+
+    def _ensure_space(self, required_height: float) -> None:
+        if self.y - required_height < self.margin:
+            self._new_page()
+
+    def _draw_header(self) -> None:
+        self._ensure_space(70)
+        c = self.canvas
+        store_name = self.context.get("store_name", "Store")
+        c.setFont("Helvetica-Bold", 20)
+        c.setFillColor(colors.HexColor("#1c1c1c"))
+        c.drawString(self.margin, self.y, store_name)
+
+        logo_src = self.context.get("logo_src")
+        if logo_src:
+            try:
+                logo = ImageReader(logo_src)
+                max_width, max_height = 90, 40
+                c.drawImage(
+                    logo,
+                    self.width - self.margin - max_width,
+                    self.y - max_height + 5,
+                    width=max_width,
+                    height=max_height,
+                    preserveAspectRatio=True,
+                    mask="auto",
+                )
+            except Exception:
+                pass
+
+        self.y -= 26
+        meta_lines = [
+            f"Report date: {self.context.get('report_date', '')}",
+            f"Generated at: {self.context.get('generated_at', '')}",
+            f"Run ID: {self.context.get('run_id', '')}",
         ]
-        for x, label in headers:
-            c.drawString(x, header_y, label)
+        c.setFont("Helvetica", 10)
+        for line in meta_lines:
+            c.drawString(self.margin, self.y, line)
+            self.y -= 14
+        self.y -= 10
 
-    undelivered_rows = store_context.get("undelivered_orders_rows", []) or []
-    undelivered_total = store_context.get("undelivered_orders_total_amount") or 0.0
+    def _draw_overall_health(self) -> None:
+        block_height = 90
+        self._ensure_space(block_height + 20)
+        c = self.canvas
+        status_class = self.context.get("overall_health_status_class", "status-good")
+        accent = self.OVERALL_COLOR_MAP.get(status_class, colors.HexColor("#2d98da"))
+        c.setFillColor(colors.HexColor("#f3f7ff"))
+        c.roundRect(self.margin, self.y - block_height, self.body_width, block_height, 10, fill=1, stroke=0)
+        c.setFillColor(accent)
+        c.rect(self.margin, self.y - block_height, 6, block_height, fill=1, stroke=0)
 
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(40, y, "Undelivered Orders (Action List)")
-    y -= 18
-    draw_undelivered_headers(y)
-    y -= 12
-    c.setLineWidth(0.5)
-    c.line(40, y, width - 40, y)
-    y -= 10
+        score = self.context.get("overall_health_score", 0)
+        label = self.context.get("overall_health_label", "No Data")
+        summary = self.context.get("overall_health_summary", "")
 
-    if not undelivered_rows:
-        c.setFont("Helvetica-Oblique", 9)
-        c.drawString(40, y, "No undelivered orders pending as of this report.")
-        y -= 18
-    else:
-        c.setFont("Helvetica", 8)
-        for idx, row in enumerate(undelivered_rows, start=1):
-            y, redrew = _ensure_page_space(
-                c,
-                y=y,
-                min_y=70,
-                height=height,
-                title="Undelivered Orders (Action List)",
-                header_drawer=draw_undelivered_headers,
+        c.setFont("Helvetica-Bold", 46)
+        c.setFillColor(colors.HexColor("#1f3a93"))
+        c.drawString(self.margin + 20, self.y - 50, str(score))
+        c.setFillColor(colors.HexColor("#1c1c1c"))
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(self.margin + 120, self.y - 24, label)
+
+        summary_para = Paragraph(summary, self.styles["normal"])
+        summary_width = self.body_width - 140
+        wrapped_width, wrapped_height = summary_para.wrap(summary_width, block_height - 36)
+        summary_para.drawOn(c, self.margin + 120, self.y - 36 - wrapped_height)
+
+        self.y -= block_height + 20
+
+    def _draw_primary_kpis(self) -> None:
+        self._draw_section_title("Primary KPIs")
+        rows = [
+            (
+                "Pickup conversion (total)",
+                self._format_percent(self.context.get("pickup_conversion_total_pct")),
+                self.context.get("pickup_conversion_total_status_label", ""),
+                self.context.get("pickup_conversion_total_status_class"),
+            ),
+            (
+                "Pickup conversion (new)",
+                self._format_percent(self.context.get("pickup_conversion_new_pct")),
+                self.context.get("pickup_conversion_new_status_label", ""),
+                self.context.get("pickup_conversion_new_status_class"),
+            ),
+            (
+                "Pickup conversion (existing)",
+                self._format_percent(self.context.get("pickup_conversion_existing_pct")),
+                self.context.get("pickup_conversion_existing_status_label", ""),
+                self.context.get("pickup_conversion_existing_status_class"),
+            ),
+            (
+                "Delivery within TAT",
+                self._format_percent(self.context.get("delivery_tat_pct")),
+                self.context.get("delivery_tat_status_label", ""),
+                self.context.get("delivery_tat_status_class"),
+            ),
+            (
+                "Undelivered >10 days",
+                self._value_or_na(self.context.get("undelivered_10_plus_count")),
+                self.context.get("undelivered_10_plus_status_label", ""),
+                self.context.get("undelivered_10_plus_status_class"),
+            ),
+            (
+                "Total undelivered orders",
+                self._value_or_na(self.context.get("undelivered_total_count")),
+                self.context.get("undelivered_total_status_label", ""),
+                self.context.get("undelivered_total_status_class"),
+            ),
+            (
+                "Repeat customer contribution",
+                self._format_percent(self.context.get("repeat_customer_pct")),
+                self.context.get("repeat_customer_status_label", ""),
+                self.context.get("repeat_customer_status_class"),
+            ),
+        ]
+        data = [["KPI", "Value", "Status"]]
+        data.extend([[name, value, status] for name, value, status, _ in rows])
+        table = Table(data, colWidths=[self.body_width * 0.45, self.body_width * 0.2, self.body_width * 0.35])
+        style = TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#fafafa")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#1c1c1c")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 10),
+                ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+                ("ALIGN", (2, 1), (2, -1), "LEFT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e1e1e1")),
+            ]
+        )
+        for idx, (_, _, _, status_class) in enumerate(rows, start=1):
+            color = self.STATUS_COLOR_MAP.get(status_class, colors.HexColor("#1c1c1c"))
+            style.add("TEXTCOLOR", (2, idx), (2, idx), color)
+            style.add("FONTNAME", (2, idx), (2, idx), "Helvetica-Bold")
+        table.setStyle(style)
+        self._draw_table(table)
+
+    def _draw_secondary_indicators(self) -> None:
+        self._draw_section_title("Secondary Indicators")
+        data = [
+            ["Metric", "Value"],
+            ["FTD revenue", self._currency(self.context.get("ftd_revenue"))],
+            [
+                "High value orders (>₹800)",
+                self._value_or_na(self.context.get("high_value_orders_count")),
+            ],
+            [
+                "Undelivered snapshot today",
+                self._value_or_na(self.context.get("undelivered_snapshot_count")),
+            ],
+        ]
+        table = Table(data, colWidths=[self.body_width * 0.6, self.body_width * 0.4])
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#fafafa")),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("FONTSIZE", (0, 0), (-1, -1), 10),
+                    ("ALIGN", (1, 1), (1, -1), "RIGHT"),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e1e1e1")),
+                ]
             )
-            if redrew:
-                c.setLineWidth(0.5)
-                c.line(40, y, width - 40, y)
-                y -= 10
-                c.setFont("Helvetica", 8)
-            order_id = row.get("order_id") or ""
-            order_date = row.get("order_date")
-            committed = row.get("committed_date")
-            age_days = row.get("age_days")
-            net_amount = row.get("net_amount")
+        )
+        self._draw_table(table)
 
-            c.drawString(40, y, str(order_id))
-            c.drawString(110, y, order_date.isoformat() if order_date else "")
-            c.drawString(190, y, committed.isoformat() if committed else "")
-            c.drawString(320, y, str(age_days) if age_days is not None else "")
-            if net_amount is not None:
-                c.drawRightString(410, y, f"{net_amount:.2f}")
+    def _draw_snapshot(self) -> None:
+        self._draw_section_title("Today's Operating Snapshot")
+        rows = [
+            (
+                "Leads captured",
+                self._value_or_na(self.context.get("leads_total")),
+                self.context.get("leads_note", ""),
+                self.context.get("leads_change_class", "snapshot-neutral"),
+            ),
+            (
+                "Pickups",
+                self._value_or_na(self.context.get("pickups_total")),
+                self.context.get("pickups_note", ""),
+                self.context.get("pickups_change_class", "snapshot-neutral"),
+            ),
+            (
+                "Deliveries",
+                self._value_or_na(self.context.get("deliveries_total")),
+                self.context.get("deliveries_note", ""),
+                self.context.get("deliveries_change_class", "snapshot-neutral"),
+            ),
+            (
+                "New customers",
+                self._value_or_na(self.context.get("new_customers_count")),
+                self.context.get("new_customers_note", ""),
+                self.context.get("new_customers_change_class", "snapshot-neutral"),
+            ),
+            (
+                "Repeat customers",
+                self._value_or_na(self.context.get("repeat_customers_count")),
+                self.context.get("repeat_customers_note", ""),
+                self.context.get("repeat_customers_change_class", "snapshot-neutral"),
+            ),
+        ]
+        data = [["Metric", "Total", "Note"]]
+        data.extend([[metric, total, note] for metric, total, note, _ in rows])
+        table = Table(data, colWidths=[self.body_width * 0.35, self.body_width * 0.2, self.body_width * 0.45])
+        style = TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#fafafa")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 10),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e1e1e1")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+        )
+        for idx, (_, _, _, cls) in enumerate(rows, start=1):
+            color = self.SNAPSHOT_COLOR_MAP.get(cls, colors.HexColor("#1c1c1c"))
+            style.add("TEXTCOLOR", (1, idx), (1, idx), color)
+            style.add("TEXTCOLOR", (2, idx), (2, idx), color)
+        table.setStyle(style)
+        self._draw_table(table)
 
-            form.checkbox(
-                name=f"undelivered_delivered_{idx}",
-                tooltip="Delivered?",
-                x=430,
-                y=y - 2,
-                size=10,
-                borderColor=colors.black,
-                fillColor=colors.white,
-                buttonStyle="check",
-                borderWidth=1,
+    def _draw_recommendations(self) -> None:
+        self._draw_section_title("Recommendations")
+        highlights = self.context.get("highlights", []) or ["No standout wins logged – maintain steady execution tomorrow."]
+        focus = self.context.get("focus_areas", []) or ["Operations were stable with no major risk signals."]
+        actions = self.context.get("actions_today", []) or [
+            "Continue standard playbook reviews with the on-duty manager."
+        ]
+        columns = [
+            self._list_block("Highlights", highlights),
+            self._list_block("Focus Areas", focus),
+            self._list_block("Actions for Today", actions),
+        ]
+        table = Table([columns], colWidths=[self.body_width / 3] * 3)
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f9f9f9")),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#ffffff")),
+                    ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#f0f0f0")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ]
             )
-            form.textfield(
-                name=f"undelivered_comment_{idx}",
-                tooltip="Comments",
-                x=480,
-                y=y - 3,
-                width=120,
-                height=12,
-                borderWidth=1,
-                borderColor=colors.black,
-                textColor=colors.black,
-            )
-            y -= 18
+        )
+        self._draw_table(table)
 
-    c.setFont("Helvetica-Bold", 9)
-    c.drawRightString(410, y, "Total")
-    c.drawRightString(410, y - 12, f"{undelivered_total:.2f}")
-    y -= 30
+    def _draw_action_lists(self) -> None:
+        self._draw_undelivered_orders()
+        self._draw_missed_leads()
 
-    missed_rows = store_context.get("missed_leads_rows", []) or []
-    c.setFont("Helvetica-Bold", 12)
-    if y < 150:
-        c.showPage()
-        y = height - 40
-    c.drawString(40, y, "Missed Leads – Not Converted")
-    y -= 18
-    draw_missed_headers(y)
-    y -= 12
-    c.line(40, y, width - 40, y)
-    y -= 10
+    def _draw_footer(self) -> None:
+        footer_text = f"TSV Store Performance Report • Automated dashboard insights • {self.context.get('report_date', '')}"
+        self._ensure_space(30)
+        self.canvas.setFont("Helvetica", 9)
+        self.canvas.setFillColor(colors.HexColor("#7f8c8d"))
+        self.canvas.drawCentredString(self.width / 2, self.margin / 2, footer_text)
 
-    if not missed_rows:
-        c.setFont("Helvetica-Oblique", 9)
-        c.drawString(40, y, "No pending missed leads requiring follow-up.")
-        y -= 18
-    else:
-        c.setFont("Helvetica", 8)
-        for idx, row in enumerate(missed_rows, start=1):
-            y, redrew = _ensure_page_space(
-                c,
-                y=y,
-                min_y=70,
-                height=height,
-                title="Missed Leads – Not Converted",
-                header_drawer=draw_missed_headers,
-            )
-            if redrew:
-                c.setLineWidth(0.5)
-                c.line(40, y, width - 40, y)
-                y -= 10
-                c.setFont("Helvetica", 8)
-            c.drawString(missed_positions["phone"], y, row.get("phone") or "")
-            c.drawString(missed_positions["customer_name"], y, row.get("customer_name") or "")
-            c.drawString(missed_positions["pickup_created"], y, row.get("pickup_created") or "")
-            c.drawString(missed_positions["pickup_time"], y, row.get("pickup_time") or "")
-            c.drawString(missed_positions["source"], y, row.get("source") or "")
-            c.drawString(missed_positions["customer_type"], y, row.get("customer_type") or "")
+    def _draw_section_title(self, title: str) -> None:
+        self._ensure_space(24)
+        self.canvas.setFont("Helvetica-Bold", 16)
+        self.canvas.setFillColor(colors.HexColor("#1c1c1c"))
+        self.canvas.drawString(self.margin, self.y, title)
+        self.y -= 20
 
-            form.checkbox(
-                name=f"missed_lead_converted_{idx}",
-                tooltip="Lead converted?",
-                x=missed_positions["lead_converted"],
-                y=y - 2,
-                size=10,
-                borderColor=colors.black,
-                fillColor=colors.white,
-                buttonStyle="check",
-                borderWidth=1,
-            )
-            form.textfield(
-                name=f"missed_lead_comment_{idx}",
-                tooltip="Comments",
-                x=missed_positions["comments"],
-                y=y - 3,
-                width=70,
-                height=12,
-                borderWidth=1,
-                borderColor=colors.black,
-                textColor=colors.black,
-            )
-            y -= 18
+    def _draw_table(self, table: Table) -> None:
+        table_width, table_height = table.wrap(self.body_width, self.y)
+        self._ensure_space(table_height + 10)
+        table.drawOn(self.canvas, self.margin, self.y - table_height)
+        self.y -= table_height + 18
 
-    c.save()
+    def _list_block(self, title: str, items: List[str]) -> Paragraph:
+        bullet_lines = "<br/>".join(f"• {item}" for item in items)
+        html = f"<b>{title}</b><br/>{bullet_lines}"
+        return Paragraph(html, self.styles["list"])
+
+    def _format_percent(self, value: float | int | None) -> str:
+        if value is None:
+            return "N/A"
+        return f"{value:.0f}%"
+
+    def _value_or_na(self, value: Any) -> str:
+        if value is None:
+            return "N/A"
+        return str(value)
+
+    def _currency(self, value: float | int | None) -> str:
+        if value is None:
+            return "₹ 0.00"
+        return f"₹ {float(value):.2f}"
+
+    def _value_from_row(self, row: Any, key: str) -> Any:
+        if isinstance(row, Mapping):
+            return row.get(key)
+        return getattr(row, key, None)
+
+    def _draw_undelivered_orders(self) -> None:
+        self._draw_section_title("Undelivered Orders (Action List)")
+        positions = {
+            "order_id": self.margin,
+            "order_date": self.margin + 70,
+            "del_date": self.margin + 150,
+            "age": self.margin + 230,
+            "amount": self.margin + 270,
+            "delivered": self.margin + 350,
+            "comments": self.margin + 410,
+        }
+        comments_width = self.width - self.margin - positions["comments"]
+        row_height = 20
+
+        def draw_headers(y: float) -> None:
+            c = self.canvas
+            c.setFont("Helvetica-Bold", 9)
+            c.drawString(positions["order_id"], y, "Order ID")
+            c.drawString(positions["order_date"], y, "Order Date")
+            c.drawString(positions["del_date"], y, "Del. Date")
+            c.drawString(positions["age"], y, "Age")
+            c.drawString(positions["amount"], y, "Net Amount")
+            c.drawString(positions["delivered"], y, "Delivered (Y/N)")
+            c.drawString(positions["comments"], y, "Comments")
+
+        self._ensure_space(40)
+        header_y = self.y
+        draw_headers(header_y)
+        self.canvas.setLineWidth(0.5)
+        self.canvas.setStrokeColor(colors.HexColor("#e1e1e1"))
+        self.canvas.line(self.margin, header_y - 4, self.width - self.margin, header_y - 4)
+        self.y = header_y - 10
+
+        rows = self.context.get("undelivered_orders_rows", []) or []
+        if not rows:
+            self.canvas.setFont("Helvetica-Oblique", 9)
+            self.canvas.setFillColor(colors.HexColor("#7f8c8d"))
+            self.canvas.drawString(self.margin, self.y - 4, "No undelivered orders pending as of this report.")
+            self.y -= 20
+        else:
+            self.canvas.setFillColor(colors.HexColor("#1c1c1c"))
+            for idx, row in enumerate(rows, start=1):
+                self._ensure_space(row_height + 10)
+                if self.y < self.margin + 60:
+                    self._new_page()
+                    self._draw_section_title("Undelivered Orders (Action List)")
+                    draw_headers(self.y)
+                    self.canvas.line(self.margin, self.y - 4, self.width - self.margin, self.y - 4)
+                    self.y -= 10
+                order_id = self._value_from_row(row, "order_id") or ""
+                order_date = self._value_from_row(row, "order_date")
+                committed = self._value_from_row(row, "committed_date")
+                age_days = self._value_from_row(row, "age_days")
+                net_amount = self._value_from_row(row, "net_amount")
+                self.canvas.setFont("Helvetica", 9)
+                self.canvas.drawString(positions["order_id"], self.y, str(order_id))
+                self.canvas.drawString(positions["order_date"], self.y, self._format_date(order_date))
+                self.canvas.drawString(positions["del_date"], self.y, self._format_date(committed))
+                self.canvas.drawString(positions["age"], self.y, self._value_or_na(age_days))
+                if net_amount is not None:
+                    self.canvas.drawRightString(positions["delivered"] - 8, self.y, f"{float(net_amount):.2f}")
+                self.form.checkbox(
+                    name=f"undelivered_delivered_{idx}",
+                    tooltip="Delivered?",
+                    x=positions["delivered"],
+                    y=self.y - 4,
+                    size=12,
+                    borderColor=colors.HexColor("#1c1c1c"),
+                    fillColor=colors.white,
+                )
+                self.form.textfield(
+                    name=f"undelivered_comment_{idx}",
+                    tooltip="Comments",
+                    x=positions["comments"],
+                    y=self.y - 5,
+                    width=comments_width - 5,
+                    height=14,
+                    borderWidth=1,
+                    borderColor=colors.HexColor("#b0b0b0"),
+                )
+                self.y -= row_height
+
+        total = self.context.get("undelivered_orders_total_amount") or 0
+        self.canvas.setFont("Helvetica-Bold", 10)
+        self.canvas.drawRightString(positions["delivered"] - 8, self.y - 4, "Total")
+        self.canvas.drawRightString(positions["delivered"] - 8, self.y - 18, f"{float(total):.2f}")
+        self.y -= 36
+
+    def _draw_missed_leads(self) -> None:
+        self._draw_section_title("Missed Leads – Not Converted")
+        positions = {
+            "phone": self.margin,
+            "name": self.margin + 70,
+            "created": self.margin + 150,
+            "pickup_time": self.margin + 250,
+            "source": self.margin + 320,
+            "customer_type": self.margin + 380,
+            "converted": self.margin + 470,
+            "comments": self.margin + 530,
+        }
+        comments_width = self.width - self.margin - positions["comments"]
+
+        def draw_headers(y: float) -> None:
+            c = self.canvas
+            c.setFont("Helvetica-Bold", 9)
+            c.drawString(positions["phone"], y, "Phone")
+            c.drawString(positions["name"], y, "Customer Name")
+            c.drawString(positions["created"], y, "Pickup Created Date / Time")
+            c.drawString(positions["pickup_time"], y, "Pickup Time")
+            c.drawString(positions["source"], y, "Source")
+            c.drawString(positions["customer_type"], y, "Customer Type")
+            c.drawString(positions["converted"], y, "Lead Converted")
+            c.drawString(positions["comments"], y, "Comments")
+
+        self._ensure_space(40)
+        header_y = self.y
+        draw_headers(header_y)
+        self.canvas.line(self.margin, header_y - 4, self.width - self.margin, header_y - 4)
+        self.y = header_y - 10
+
+        rows = self.context.get("missed_leads_rows", []) or []
+        if not rows:
+            self.canvas.setFont("Helvetica-Oblique", 9)
+            self.canvas.setFillColor(colors.HexColor("#7f8c8d"))
+            self.canvas.drawString(self.margin, self.y - 4, "No pending missed leads requiring follow-up.")
+            self.y -= 20
+        else:
+            self.canvas.setFillColor(colors.HexColor("#1c1c1c"))
+            for idx, row in enumerate(rows, start=1):
+                self._ensure_space(24)
+                if self.y < self.margin + 60:
+                    self._new_page()
+                    self._draw_section_title("Missed Leads – Not Converted")
+                    draw_headers(self.y)
+                    self.canvas.line(self.margin, self.y - 4, self.width - self.margin, self.y - 4)
+                    self.y -= 10
+                self.canvas.setFont("Helvetica", 9)
+                self.canvas.drawString(positions["phone"], self.y, self._value_from_row(row, "phone") or "")
+                self.canvas.drawString(positions["name"], self.y, self._value_from_row(row, "customer_name") or "")
+                self.canvas.drawString(positions["created"], self.y, self._value_from_row(row, "pickup_created") or "")
+                self.canvas.drawString(positions["pickup_time"], self.y, self._value_from_row(row, "pickup_time") or "")
+                self.canvas.drawString(positions["source"], self.y, self._value_from_row(row, "source") or "")
+                self.canvas.drawString(positions["customer_type"], self.y, self._value_from_row(row, "customer_type") or "")
+                self.form.checkbox(
+                    name=f"missed_lead_converted_{idx}",
+                    tooltip="Lead converted?",
+                    x=positions["converted"],
+                    y=self.y - 4,
+                    size=12,
+                    borderColor=colors.HexColor("#1c1c1c"),
+                    fillColor=colors.white,
+                )
+                self.form.textfield(
+                    name=f"missed_lead_comment_{idx}",
+                    tooltip="Comments",
+                    x=positions["comments"],
+                    y=self.y - 5,
+                    width=comments_width - 5,
+                    height=14,
+                    borderWidth=1,
+                    borderColor=colors.HexColor("#b0b0b0"),
+                )
+                self.y -= 22
+
+        self.y -= 10
+
+    def _format_date(self, value: Any) -> str:
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return value or ""
