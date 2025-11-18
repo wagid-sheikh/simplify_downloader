@@ -169,26 +169,14 @@ def build_store_context(store_code: str, report_date: date, run_id: str) -> Dict
     ...
 
 
-async def render_store_report_pdf(store_context: Dict, template_path: str, output_path: str) -> None:
+async def render_store_report_pdf(store_context: Dict, output_path: str, template_path: str | None = None) -> None:
     """
     Render a single store report to PDF.
 
     Responsibilities:
-    - Load the Jinja2 environment, point it to the templates directory, and
-      load "store_report.html" from template_path (or from the template
-      environment that includes that path).
-
-    - Render HTML using:
-        html = template.render(**store_context)
-
-    - Use Playwright to:
-        - Launch a headless browser
-        - Create a new page
-        - Set page content to the rendered HTML
-        - Call page.pdf(...) with:
-            format="A4"
-            print_background=True
-        - Save the PDF to output_path.
+    - Use the `StoreReportPdfBuilder` (ReportLab + AcroForm) to render the
+      entire report, including the interactive Undelivered Orders and Missed
+      Leads sections.
 
     - Ensure the parent directory of output_path exists, e.g.:
         reports/YYYY-MM-DD/STORE_CODE.pdf

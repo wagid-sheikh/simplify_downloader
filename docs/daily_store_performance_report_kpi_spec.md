@@ -623,26 +623,15 @@ should remain unchanged, other than the naming.
 
 ---
 
-## 12. New Interactive Store Action List PDF (ReportLab + AcroForm)
+## 12. Interactive Store Action List (ReportLab + AcroForm)
 
-In addition to the existing summary PDF, Codex must implement a new companion
-PDF that contains **only** the two action tables, with **interactive PDF form
-fields** using **ReportLab + AcroForm**.
+The Undelivered Orders and Missed Leads tables must be rendered with
+**ReportLab + AcroForm** inside the **primary store PDF**. No additional PDF
+files should be generated.
 
-### 12.1 Output File
+### 12.1 Data Source
 
-* Suggested filename pattern (can be wired in orchestrator):
-
-  ```text
-  {store_code}_{report_date}_action_list.pdf
-  ```
-
-* The orchestrator should generate this file alongside the summary PDF and
-  attach/ship both wherever the current pipeline sends reports.
-
-### 12.2 Data Source
-
-The Action List PDF must be built **entirely** from the existing
+The interactive sections must be built **entirely** from the existing
 `build_store_context(...)` output:
 
 * `context["undelivered_orders_rows"]`
@@ -651,9 +640,9 @@ The Action List PDF must be built **entirely** from the existing
 
 No additional queries beyond those defined earlier are required.
 
-### 12.3 Layout Requirements
+### 12.2 Layout Requirements
 
-On the Action List PDF:
+Inside the store PDF:
 
 1. A simple header (store name, report date, run id).
 2. A section:
@@ -670,11 +659,12 @@ On the Action List PDF:
 Exact fonts and colours can be basic (e.g. Helvetica, simple lines). Focus is on
 **correct data mapping** and **working form fields**.
 
-### 12.4 ReportLab + AcroForm Implementation
+### 12.3 ReportLab + AcroForm Implementation
 
-Codex must use **ReportLab**’s low-level canvas with AcroForm. A typical pattern
-for rendering one table with interactive cells is as follows (illustrative only;
-Codex must adapt to actual coordinates and field sizes):
+Codex must use **ReportLab**’s low-level canvas with AcroForm (via
+`StoreReportPdfBuilder`). A typical pattern for rendering one table with
+interactive cells is as follows (illustrative only; Codex must adapt to actual
+coordinates and field sizes):
 
 ```python
 from reportlab.lib.pagesizes import A4
@@ -682,8 +672,7 @@ from reportlab.lib import colors
 from reportlab.pdfgen import canvas
 
 
-def build_action_list_pdf(output_path: str, store_context: dict) -> None:
-    c = canvas.Canvas(output_path, pagesize=A4)
+def draw_action_list_section(c: canvas.Canvas, store_context: dict) -> None:
     width, height = A4
 
     form = c.acroForm
@@ -811,21 +800,18 @@ def build_action_list_pdf(output_path: str, store_context: dict) -> None:
 
 Codex must:
 
-1. Add a function similar to `build_action_list_pdf(output_path: str, store_context: dict)`
-   in an appropriate module (e.g. alongside the existing report generator).
-2. Ensure it is called from the same orchestration path that currently builds
-   the summary PDF, using the existing `store_context`.
-3. Ensure the new PDF is generated **in addition to** the summary PDF and is
-   included wherever PDFs are currently stored/emailed.
-
-There is **no requirement** to switch the main summary PDF from Playwright to
-ReportLab at this time.
+1. Implement/extend `StoreReportPdfBuilder` so the interactive tables are part
+   of the main PDF.
+2. Ensure the orchestrator uses this builder when rendering store PDFs so only
+   a **single** PDF is emitted per store.
+3. Remove any redundant logic that attempted to ship a second action-list PDF.
 
 ---
 
-## 13. Final Implementation Checklist (Action List PDF)
+## 13. Final Implementation Checklist (Interactive Action Sections)
 
-* [ ] Implement a new Action List PDF using **ReportLab + AcroForm**.
+* [ ] Render the interactive tables using **ReportLab + AcroForm** inside the
+  store PDF.
 * [ ] Use `undelivered_orders_rows` and `missed_leads_rows` from
   `build_store_context(...)`.
 * [ ] Render two sections: Undelivered Orders (Action List) and Missed Leads –
@@ -836,8 +822,7 @@ ReportLab at this time.
   * [ ] Add a checkbox field for the boolean column (Delivered / Lead Converted).
   * [ ] Add a textfield for Comments.
 * [ ] Ensure field names are unique and follow a consistent naming scheme.
-* [ ] Generate the PDF alongside the existing summary PDF and keep the
-  orchestrator behaviour otherwise unchanged.
+* [ ] Do **not** generate a separate action-list PDF.
 
 ---
 
@@ -846,4 +831,4 @@ ReportLab at this time.
 This is the final, authoritative, version-controlled specification for
 **TSV Store Performance Report v2.4** (including KPI bands, action tables,
 snapshot colours, corrected action terminology, and the new interactive
-Store Action List PDF using ReportLab + AcroForm).
+Store Action List sections using ReportLab + AcroForm).

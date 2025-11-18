@@ -15,7 +15,6 @@ from dashboard_downloader.db_tables import documents
 from dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from dashboard_downloader.report_generator import (
     StoreReportDataNotFound,
-    build_action_list_pdf,
     build_store_context,
     render_store_report_pdf,
 )
@@ -210,14 +209,11 @@ async def _generate_reports(
             continue
 
         summary_output_path = reports_root / f"{report_date.year}" / f"{code}_{report_date:%m-%d}.pdf"
-        action_output_path = (
-            reports_root / f"{report_date.year}" / f"{code}_{report_date:%m-%d}_action_list.pdf"
-        )
         try:
             await render_store_report_pdf(
                 store_context=context,
-                template_path=template_file,
                 output_path=summary_output_path,
+                template_path=template_file,
             )
         except Exception as exc:  # pragma: no cover - pdf failures
             log_event(
@@ -284,74 +280,9 @@ async def _generate_reports(
                 extras={"error": str(exc), "file_name": summary_output_path.name},
             )
 
-        try:
-            build_action_list_pdf(store_context=context, output_path=action_output_path)
-        except Exception as exc:  # pragma: no cover - pdf failures
-            log_event(
-                logger=logger,
-                phase="report",
-                status="error",
-                message="failed to render action list pdf",
-                store_code=code,
-                extras={
-                    "report_date": report_date.isoformat(),
-                    "error": str(exc),
-                    "output_path": str(action_output_path),
-                },
-            )
-            await _persist_document_record(
-                database_url=database_url,
-                report_date=report_date,
-                store_code=code,
-                run_id=run_id,
-                file_name=action_output_path.name,
-                file_path=None,
-                status="error",
-                error_message=str(exc),
-                logger=logger,
-            )
-            if aggregator:
-                aggregator.register_pdf_failure(code, "action list render failure")
-            continue
-
-        generated.append((code, action_output_path))
-        log_event(
-            logger=logger,
-            phase="report",
-            status="ok",
-            message="action list pdf generated",
-            store_code=code,
-            extras={
-                "report_date": report_date.isoformat(),
-                "output_path": str(action_output_path),
-            },
-        )
         if aggregator:
-            aggregator.record_pdf_file(code, str(action_output_path))
             aggregator.register_pdf_success(
                 code, str(summary_output_path), record_file=False
-            )
-
-        try:
-            await _persist_document_record(
-                database_url=database_url,
-                report_date=report_date,
-                store_code=code,
-                run_id=run_id,
-                file_name=action_output_path.name,
-                file_path=action_output_path,
-                status="ok",
-                error_message=None,
-                logger=logger,
-            )
-        except Exception as exc:  # pragma: no cover - defensive
-            log_event(
-                logger=logger,
-                phase="report",
-                status="warning",
-                message="unexpected error while recording document",
-                store_code=code,
-                extras={"error": str(exc), "file_name": action_output_path.name},
             )
     return generated
 
