@@ -965,13 +965,11 @@ class StoreReportPdfBuilder:
     def _draw_undelivered_orders(self) -> None:
         self._draw_section_title("Undelivered Orders (Action List)")
         positions = {
-            "order_id": self.margin,
-            "order_date": self.margin + 70,
-            "del_date": self.margin + 150,
-            "age": self.margin + 230,
-            "amount": self.margin + 270,
+            "order_info": self.margin,
+            "age": self.margin + 240,
+            "amount": self.margin + 280,
             "delivered": self.margin + 350,
-            "comments": self.margin + 410,
+            "comments": self.margin + 380,
         }
         comments_width = self.width - self.margin - positions["comments"]
         row_height = 20
@@ -979,9 +977,7 @@ class StoreReportPdfBuilder:
         def draw_headers(y: float) -> None:
             c = self.canvas
             c.setFont("Helvetica-Bold", 9)
-            c.drawString(positions["order_id"], y, "Order ID")
-            c.drawString(positions["order_date"], y, "Order Date")
-            c.drawString(positions["del_date"], y, "Del. Date")
+            c.drawString(positions["order_info"], y, "Order Info")
             c.drawString(positions["age"], y, "Age")
             c.drawString(positions["amount"], y, "Net Amount")
             c.drawString(positions["delivered"], y, "Delivered (Y/N)")
@@ -1016,10 +1012,16 @@ class StoreReportPdfBuilder:
                 committed = self._value_from_row(row, "committed_date")
                 age_days = self._value_from_row(row, "age_days")
                 net_amount = self._value_from_row(row, "net_amount")
+                order_info_parts = []
+                if order_id:
+                    order_info_parts.append(str(order_id))
+                if order_date:
+                    order_info_parts.append(self._format_date(order_date))
+                if committed:
+                    order_info_parts.append(f"Del. {self._format_date(committed)}")
+                order_info_text = ", ".join(order_info_parts)
                 self.canvas.setFont("Helvetica", 9)
-                self.canvas.drawString(positions["order_id"], self.y, str(order_id))
-                self.canvas.drawString(positions["order_date"], self.y, self._format_date(order_date))
-                self.canvas.drawString(positions["del_date"], self.y, self._format_date(committed))
+                self.canvas.drawString(positions["order_info"], self.y, order_info_text)
                 self.canvas.drawString(positions["age"], self.y, self._value_or_na(age_days))
                 if net_amount is not None:
                     self.canvas.drawRightString(positions["delivered"] - 8, self.y, f"{float(net_amount):.2f}")
@@ -1053,27 +1055,19 @@ class StoreReportPdfBuilder:
     def _draw_missed_leads(self) -> None:
         self._draw_section_title("Missed Leads – Not Converted")
         positions = {
-            "phone": self.margin,
-            "name": self.margin + 70,
-            "created": self.margin + 150,
-            "pickup_time": self.margin + 250,
-            "source": self.margin + 320,
-            "customer_type": self.margin + 380,
-            "converted": self.margin + 470,
-            "comments": self.margin + 530,
+            "customer_details": self.margin,
+            "customer_type": self.margin + 320,
+            "converted": self.margin + 420,
+            "comments": self.margin + 460,
         }
         comments_width = self.width - self.margin - positions["comments"]
 
         def draw_headers(y: float) -> None:
             c = self.canvas
             c.setFont("Helvetica-Bold", 9)
-            c.drawString(positions["phone"], y, "Phone")
-            c.drawString(positions["name"], y, "Customer Name")
-            c.drawString(positions["created"], y, "Pickup Created Date / Time")
-            c.drawString(positions["pickup_time"], y, "Pickup Time")
-            c.drawString(positions["source"], y, "Source")
+            c.drawString(positions["customer_details"], y, "Customer Details")
             c.drawString(positions["customer_type"], y, "Customer Type")
-            c.drawString(positions["converted"], y, "Lead Converted")
+            c.drawString(positions["converted"], y, "Converted?")
             c.drawString(positions["comments"], y, "Comments")
 
         self._ensure_space(40)
@@ -1098,12 +1092,22 @@ class StoreReportPdfBuilder:
                     draw_headers(self.y)
                     self.canvas.line(self.margin, self.y - 4, self.width - self.margin, self.y - 4)
                     self.y -= 10
+                details_parts = []
+                phone = self._value_from_row(row, "phone")
+                customer_name = self._value_from_row(row, "customer_name")
+                pickup_created = self._value_from_row(row, "pickup_created")
+                source = self._value_from_row(row, "source")
+                if phone:
+                    details_parts.append(str(phone))
+                if customer_name:
+                    details_parts.append(str(customer_name))
+                if pickup_created:
+                    details_parts.append(str(pickup_created))
+                if source:
+                    details_parts.append(str(source))
+                details_text = ", ".join(details_parts)
                 self.canvas.setFont("Helvetica", 9)
-                self.canvas.drawString(positions["phone"], self.y, self._value_from_row(row, "phone") or "")
-                self.canvas.drawString(positions["name"], self.y, self._value_from_row(row, "customer_name") or "")
-                self.canvas.drawString(positions["created"], self.y, self._value_from_row(row, "pickup_created") or "")
-                self.canvas.drawString(positions["pickup_time"], self.y, self._value_from_row(row, "pickup_time") or "")
-                self.canvas.drawString(positions["source"], self.y, self._value_from_row(row, "source") or "")
+                self.canvas.drawString(positions["customer_details"], self.y, details_text)
                 self.canvas.drawString(positions["customer_type"], self.y, self._value_from_row(row, "customer_type") or "")
                 self.form.checkbox(
                     name=f"missed_lead_converted_{idx}",
