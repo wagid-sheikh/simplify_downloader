@@ -9,7 +9,6 @@ from math import inf
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
-from jinja2 import Environment, FileSystemLoader, TemplateNotFound, select_autoescape
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
@@ -32,7 +31,6 @@ __all__ = [
     "StoreReportDataNotFound",
     "build_store_context",
     "render_store_report_pdf",
-    "build_action_list_pdf",
 ]
 
 
@@ -565,30 +563,12 @@ async def build_store_context(
 
 
 async def render_store_report_pdf(
-    store_context: Dict[str, Any], template_path: str | Path, output_path: str | Path
+    store_context: Dict[str, Any], output_path: str | Path, template_path: str | Path | None = None
 ) -> None:
-    """Render a store report using the HTML template and configured PDF backend."""
+    """Render a store report PDF using the ReportLab builder."""
 
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    template_file = Path(template_path)
-    if not template_file.exists():
-        raise FileNotFoundError(f"template not found: {template_file}")
-
-    env = Environment(
-        loader=FileSystemLoader(str(template_file.parent)),
-        autoescape=select_autoescape(enabled_extensions=("html", "xml"), default=True),
-        enable_async=False,
-    )
-
-    try:
-        template = env.get_template(template_file.name)
-    except TemplateNotFound as exc:  # pragma: no cover - defensive guard
-        raise FileNotFoundError(f"template not found: {template_file}") from exc
-
-    html_content = template.render(**store_context)
-    await render_pdf_with_configured_browser(html_content, output_path)
+    builder = StoreReportPdfBuilder(store_context=store_context, output_path=Path(output_path))
+    builder.build()
 
 
 async def render_pdf_with_configured_browser(html_content: str, output_path: str | Path) -> None:
@@ -1152,10 +1132,3 @@ class StoreReportPdfBuilder:
         if hasattr(value, "isoformat"):
             return value.isoformat()
         return value or ""
-
-
-def build_action_list_pdf(store_context: Dict[str, Any], output_path: str | Path) -> None:
-    """Build the interactive Store Action List PDF using ReportLab."""
-
-    builder = StoreReportPdfBuilder(store_context=store_context, output_path=Path(output_path))
-    builder.build_action_list()
