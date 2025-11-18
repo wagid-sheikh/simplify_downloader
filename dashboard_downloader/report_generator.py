@@ -9,6 +9,7 @@ from math import inf
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
+from jinja2 import Environment, FileSystemLoader, TemplateNotFound, select_autoescape
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
@@ -562,12 +563,31 @@ async def build_store_context(
     return context
 
 
-async def render_store_report_pdf(store_context: Dict, template_path: str | Path, output_path: str | Path) -> None:
-output_path = Path(output_path)
-output_path.parent.mkdir(parents=True, exist_ok=True)
+async def render_store_report_pdf(
+    store_context: Dict[str, Any], template_path: str | Path, output_path: str | Path
+) -> None:
+    """Render a store report using the HTML template and configured PDF backend."""
 
-builder = StoreReportPdfBuilder(store_context=store_context, output_path=output_path)
-builder.build()
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    template_file = Path(template_path)
+    if not template_file.exists():
+        raise FileNotFoundError(f"template not found: {template_file}")
+
+    env = Environment(
+        loader=FileSystemLoader(str(template_file.parent)),
+        autoescape=select_autoescape(enabled_extensions=("html", "xml"), default=True),
+        enable_async=False,
+    )
+
+    try:
+        template = env.get_template(template_file.name)
+    except TemplateNotFound as exc:  # pragma: no cover - defensive guard
+        raise FileNotFoundError(f"template not found: {template_file}") from exc
+
+    html_content = template.render(**store_context)
+    await render_pdf_with_configured_browser(html_content, output_path)
 
 
 async def render_pdf_with_configured_browser(html_content: str, output_path: str | Path) -> None:
