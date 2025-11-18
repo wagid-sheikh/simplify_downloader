@@ -21,3 +21,9 @@ git push origin v1.15
 git tag -a v1.16 -m "Stable after round 1 refactor"
 
 git push origin v1.16
+
+
+
+git tag -a v1.17 -m "Stable after round 1 refactor & Editable Daily Store Performance Report PDF"
+
+git push origin v1.17
