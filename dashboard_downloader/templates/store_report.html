@@ -181,22 +181,65 @@
       font-weight: 600;
     }
 
-    .action-table-undelivered col.col-order-id { width: 12%; }
-    .action-table-undelivered col.col-order-date { width: 13%; }
-    .action-table-undelivered col.col-del-date { width: 14%; }
-    .action-table-undelivered col.col-age { width: 8%; }
-    .action-table-undelivered col.col-amount { width: 12%; }
-    .action-table-undelivered col.col-delivered { width: 11%; }
-    .action-table-undelivered col.col-comments { width: 30%; }
+    .action-table-undelivered col.col-order-id {
+      width: 12%;
+    }
 
-    .action-table-missed-leads col.col-phone { width: 13%; }
-    .action-table-missed-leads col.col-name { width: 17%; }
-    .action-table-missed-leads col.col-created { width: 18%; }
-    .action-table-missed-leads col.col-pickup { width: 12%; }
-    .action-table-missed-leads col.col-source { width: 10%; }
-    .action-table-missed-leads col.col-type { width: 11%; }
-    .action-table-missed-leads col.col-converted { width: 9%; }
-    .action-table-missed-leads col.col-comments { width: 10%; }
+    .action-table-undelivered col.col-order-date {
+      width: 13%;
+    }
+
+    .action-table-undelivered col.col-del-date {
+      width: 14%;
+    }
+
+    .action-table-undelivered col.col-age {
+      width: 8%;
+    }
+
+    .action-table-undelivered col.col-amount {
+      width: 12%;
+    }
+
+    .action-table-undelivered col.col-delivered {
+      width: 11%;
+    }
+
+    .action-table-undelivered col.col-comments {
+      width: 30%;
+    }
+
+    .action-table-missed-leads col.col-phone {
+      width: 13%;
+    }
+
+    .action-table-missed-leads col.col-name {
+      width: 17%;
+    }
+
+    .action-table-missed-leads col.col-created {
+      width: 18%;
+    }
+
+    .action-table-missed-leads col.col-pickup {
+      width: 12%;
+    }
+
+    .action-table-missed-leads col.col-source {
+      width: 10%;
+    }
+
+    .action-table-missed-leads col.col-type {
+      width: 11%;
+    }
+
+    .action-table-missed-leads col.col-converted {
+      width: 9%;
+    }
+
+    .action-table-missed-leads col.col-comments {
+      width: 10%;
+    }
   </style>
 </head>
 
@@ -256,7 +299,7 @@
         <td class="{{ delivery_tat_status_class }}">{{ delivery_tat_status_label }}</td>
       </tr>
       <tr>
-        <td>Undelivered &gt;10 days</td>
+        <td>Undelivered &gt; 10 days</td>
         <td>{{ undelivered_10_plus_count or 'N/A' }}</td>
         <td class="{{ undelivered_10_plus_status_class }}">{{ undelivered_10_plus_status_label }}</td>
       </tr>
@@ -284,10 +327,10 @@
     <tbody>
       <tr>
         <td>FTD revenue</td>
-        <td>₹ {{ ftd_revenue or '0.0' }}</td>
+        <td> {{ ftd_revenue or '0.0' }}</td>
       </tr>
       <tr>
-        <td>High value orders (&gt;₹800)</td>
+        <td>High value orders (&gt; 800)</td>
         <td>{{ high_value_orders_count or 0 }}</td>
       </tr>
       <tr>
@@ -400,7 +443,7 @@
           —
           {% endif %}
         </td>
-        <td class="cell-input">[   ]</td>
+        <td class="cell-input">[ ]</td>
         <td class="cell-input"></td>
       </tr>
       {% endfor %}
@@ -455,7 +498,7 @@
         <td>{{ row.pickup_time }}</td>
         <td>{{ row.source }}</td>
         <td>{{ row.customer_type }}</td>
-        <td class="cell-input">[   ]</td>
+        <td class="cell-input">[ ]</td>
         <td class="cell-input"></td>
       </tr>
       {% endfor %}
