@@ -102,7 +102,7 @@ def build_store_context(store_code: str, report_date: date, run_id: str) -> Dict
     - Build rule-based recommendation lists (simple if/else logic, no ML):
         - highlights: List[str]          # good things that happened today
         - focus_areas: List[str]         # risk/problem flags
-        - actions_tomorrow: List[str]    # concrete next-day actions
+        - actions_today: List[str]    # concrete same-day actions
 
       Use the KPI values + thresholds to decide which sentences to include.
 
@@ -156,7 +156,7 @@ def build_store_context(store_code: str, report_date: date, run_id: str) -> Dict
         Recommendations:
           highlights
           focus_areas
-          actions_tomorrow
+          actions_today
 
     - For logo_src:
         - Either set None (so the template renders a placeholder),

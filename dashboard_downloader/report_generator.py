@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
+from math import inf
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping
 
@@ -21,6 +22,7 @@ from simplify_downloader.common.ingest.models import MissedLead, RepeatCustomer,
 
 __all__ = [
     "StoreReportDataNotFound",
+    "build_action_list_pdf",
     "build_store_context",
     "render_store_report_pdf",
 ]
@@ -48,27 +50,33 @@ KPI_RULES: Dict[str, Dict[str, Any]] = {
     },
     "pickup_conversion_new_pct": {
         "direction": "higher",
-        "excellent": 75,
+        "excellent": 80,
         "good": 60,
         "poor": 45,
     },
+    "pickup_conversion_existing_pct": {
+        "direction": "higher",
+        "excellent": 95,
+        "good": 80,
+        "poor": 70,
+    },
     "delivery_tat_pct": {
         "direction": "higher",
-        "excellent": 92,
+        "excellent": 95,
         "good": 85,
         "poor": 70,
     },
     "undelivered_10_plus_count": {
         "direction": "lower",
-        "excellent": 10,
-        "good": 20,
-        "poor": 35,
+        "excellent": 0,
+        "good": 0,
+        "poor": 2,
     },
     "undelivered_total_count": {
         "direction": "lower",
-        "excellent": 25,
-        "good": 45,
-        "poor": 65,
+        "excellent": 2,
+        "good": 5,
+        "poor": inf,
     },
     "repeat_customer_pct": {
         "direction": "higher",
@@ -242,6 +250,24 @@ def _change_note(current: float | int | None, previous: float | int | None) -> s
     return f"{direction.capitalize()} by {abs(delta):.1f} compared to the previous report."
 
 
+def _snapshot_delta_class(
+    current: float | int | None,
+    previous: float | int | None,
+    *,
+    direction: str,
+) -> str:
+    if current is None or previous is None:
+        return "snapshot-neutral"
+    delta = float(current) - float(previous)
+    if math.isclose(delta, 0, abs_tol=0.01):
+        return "snapshot-neutral"
+    if direction == "lower":
+        improved = delta < 0
+    else:
+        improved = delta > 0
+    return "snapshot-positive" if improved else "snapshot-negative"
+
+
 def _build_recommendations(statuses: Dict[str, MetricStatus]) -> Dict[str, List[str]]:
     highlights: List[str] = []
     focus_areas: List[str] = []
@@ -277,8 +303,90 @@ def _build_recommendations(statuses: Dict[str, MetricStatus]) -> Dict[str, List[
     return {
         "highlights": highlights,
         "focus_areas": focus_areas,
-        "actions_tomorrow": actions,
+        "actions_today": actions,
     }
+
+
+def _combine_date_time(date_value: date | None, time_value: str | None) -> str:
+    if date_value and time_value:
+        return f"{date_value.isoformat()} {time_value}"
+    if date_value:
+        return date_value.isoformat()
+    return time_value or ""
+
+
+async def _fetch_undelivered_order_rows(
+    session: AsyncSession,
+    store_code: str,
+    report_date: date,
+) -> tuple[List[Dict[str, Any]], float]:
+    stmt = (
+        sa.select(
+            UndeliveredOrder.order_id,
+            UndeliveredOrder.order_date,
+            UndeliveredOrder.expected_deliver_on,
+            UndeliveredOrder.net_amount,
+            UndeliveredOrder.actual_deliver_on,
+        )
+        .where(sa.func.upper(UndeliveredOrder.store_code) == store_code)
+        .where(UndeliveredOrder.actual_deliver_on.is_(None))
+    )
+    result = await session.execute(stmt)
+    rows = []
+    total_amount = 0.0
+    for row in result:
+        committed = row.expected_deliver_on
+        if committed is None and row.order_date:
+            committed = row.order_date + timedelta(days=3)
+        age_days = None
+        if committed:
+            age_days = (report_date - committed).days
+        net_amount = _as_float(row.net_amount)
+        if net_amount is not None:
+            total_amount += net_amount
+        rows.append(
+            {
+                "order_id": row.order_id,
+                "order_date": row.order_date,
+                "committed_date": committed,
+                "age_days": age_days,
+                "net_amount": net_amount,
+            }
+        )
+    rows.sort(key=lambda r: r["age_days"] if r["age_days"] is not None else -1, reverse=True)
+    return rows, total_amount
+
+
+async def _fetch_missed_leads_rows(session: AsyncSession, store_code: str) -> List[Dict[str, Any]]:
+    stmt = (
+        sa.select(
+            MissedLead.mobile_number,
+            MissedLead.customer_name,
+            MissedLead.pickup_created_date,
+            MissedLead.pickup_created_time,
+            MissedLead.pickup_date,
+            MissedLead.pickup_time,
+            MissedLead.source,
+            MissedLead.customer_type,
+        )
+        .where(sa.func.upper(MissedLead.store_code) == store_code)
+        .where(MissedLead.is_order_placed.is_(False))
+        .order_by(MissedLead.customer_type.asc(), MissedLead.pickup_created_date.asc(), MissedLead.pickup_created_time.asc())
+    )
+    result = await session.execute(stmt)
+    rows = []
+    for row in result:
+        rows.append(
+            {
+                "phone": row.mobile_number,
+                "customer_name": row.customer_name,
+                "pickup_created": _combine_date_time(row.pickup_created_date, row.pickup_created_time),
+                "pickup_time": _combine_date_time(row.pickup_date, row.pickup_time),
+                "source": row.source,
+                "customer_type": row.customer_type,
+            }
+        )
+    return rows
 
 
 async def build_store_context(
@@ -327,8 +435,16 @@ async def build_store_context(
         )
         repeat_base_count = (await session.execute(repeat_stmt)).scalar_one()
 
+        undelivered_rows, undelivered_total_amount = await _fetch_undelivered_order_rows(
+            session,
+            normalized_code,
+            report_date,
+        )
+        missed_leads_rows = await _fetch_missed_leads_rows(session, normalized_code)
+
     pickup_total_pct = _as_float(summary_row.get("pickup_total_conv_pct"))
     pickup_new_pct = _as_float(summary_row.get("pickup_new_conv_pct"))
+    pickup_existing_pct = _as_float(summary_row.get("pickup_existing_conv_pct"))
     delivery_tat_pct = _as_float(summary_row.get("delivery_tat_pct"))
     undelivered_10_plus = _as_int(summary_row.get("delivery_undel_over_10_days"))
     undelivered_total = _as_int(summary_row.get("delivery_total_undelivered"))
@@ -339,6 +455,7 @@ async def build_store_context(
     statuses: Dict[str, MetricStatus] = {
         "pickup_conversion_total_pct": _evaluate_metric("pickup_conversion_total_pct", pickup_total_pct),
         "pickup_conversion_new_pct": _evaluate_metric("pickup_conversion_new_pct", pickup_new_pct),
+        "pickup_conversion_existing_pct": _evaluate_metric("pickup_conversion_existing_pct", pickup_existing_pct),
         "delivery_tat_pct": _evaluate_metric("delivery_tat_pct", delivery_tat_pct),
         "undelivered_10_plus_count": _evaluate_metric("undelivered_10_plus_count", undelivered_10_plus),
         "undelivered_total_count": _evaluate_metric("undelivered_total_count", undelivered_total),
@@ -373,6 +490,30 @@ async def build_store_context(
         ),
     }
 
+    snapshot_classes = {
+        "leads_change_class": _snapshot_delta_class(missed_count, previous_missed_count, direction="higher"),
+        "pickups_change_class": _snapshot_delta_class(
+            summary_row.get("pickup_total_count"),
+            comparison_row.get("pickup_total_count") if comparison_row else None,
+            direction="higher",
+        ),
+        "deliveries_change_class": _snapshot_delta_class(
+            summary_row.get("delivery_total_delivered"),
+            comparison_row.get("delivery_total_delivered") if comparison_row else None,
+            direction="higher",
+        ),
+        "new_customers_change_class": _snapshot_delta_class(
+            summary_row.get("pickup_new_count"),
+            comparison_row.get("pickup_new_count") if comparison_row else None,
+            direction="higher",
+        ),
+        "repeat_customers_change_class": _snapshot_delta_class(
+            summary_row.get("repeat_orders"),
+            comparison_row.get("repeat_orders") if comparison_row else None,
+            direction="higher",
+        ),
+    }
+
     context: Dict[str, Any] = {
         "store_name": summary_row.get("store_name") or normalized_code,
         "report_date": report_date.isoformat(),
@@ -386,6 +527,9 @@ async def build_store_context(
         "pickup_conversion_new_pct": pickup_new_pct,
         "pickup_conversion_new_status_label": statuses["pickup_conversion_new_pct"].label,
         "pickup_conversion_new_status_class": statuses["pickup_conversion_new_pct"].css_class,
+        "pickup_conversion_existing_pct": pickup_existing_pct,
+        "pickup_conversion_existing_status_label": statuses["pickup_conversion_existing_pct"].label,
+        "pickup_conversion_existing_status_class": statuses["pickup_conversion_existing_pct"].css_class,
         "delivery_tat_pct": delivery_tat_pct,
         "delivery_tat_status_label": statuses["delivery_tat_pct"].label,
         "delivery_tat_status_class": statuses["delivery_tat_pct"].css_class,
@@ -403,6 +547,10 @@ async def build_store_context(
         **snapshot,
         **recos,
         "undelivered_snapshot_count": undelivered_count_for_snapshot,
+        **snapshot_classes,
+        "undelivered_orders_rows": undelivered_rows,
+        "undelivered_orders_total_amount": undelivered_total_amount,
+        "missed_leads_rows": missed_leads_rows,
     }
 
     return context
@@ -449,3 +597,236 @@ async def render_pdf_with_configured_browser(html_content: str, output_path: str
         await page.set_content(html_content, wait_until="networkidle")
         await page.pdf(path=str(output_path), print_background=True, format="A4")
         await browser.close()
+
+
+def _ensure_page_space(
+    canvas_obj,
+    *,
+    y: float,
+    min_y: float,
+    height: float,
+    title: str,
+    header_drawer,
+) -> tuple[float, bool]:
+    redrew = False
+    if y <= min_y:
+        canvas_obj.showPage()
+        y = height - 60
+        canvas_obj.setFont("Helvetica-Bold", 12)
+        canvas_obj.drawString(40, y, f"{title} (cont.)")
+        y -= 18
+        header_drawer(y)
+        y -= 12
+        redrew = True
+    return y, redrew
+
+
+def build_action_list_pdf(output_path: str | Path, store_context: Dict[str, Any]) -> None:
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.pdfgen import canvas
+    except ImportError as exc:  # pragma: no cover - import guard
+        raise RuntimeError(
+            "reportlab is required to generate the action list PDF. Install the optional dependency to continue."
+        ) from exc
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    c = canvas.Canvas(str(output_path), pagesize=A4)
+    width, height = A4
+    form = c.acroForm
+
+    store_name = store_context.get("store_name", "Store")
+    report_date = store_context.get("report_date", "")
+    run_id = store_context.get("run_id", "")
+
+    y = height - 40
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(40, y, f"Store Action List — {store_name}")
+    y -= 16
+    c.setFont("Helvetica", 10)
+    c.drawString(40, y, f"Report date: {report_date}")
+    y -= 14
+    c.drawString(40, y, f"Run ID: {run_id}")
+    y -= 30
+
+    def draw_undelivered_headers(header_y: float) -> None:
+        c.setFont("Helvetica-Bold", 9)
+        headers = [
+            (40, "Order ID"),
+            (110, "Order Date"),
+            (190, "Committed Delivery Date"),
+            (320, "Age (days)"),
+            (360, "Net Amount"),
+            (430, "Delivered (Y/N)"),
+            (480, "Comments"),
+        ]
+        for x, label in headers:
+            c.drawString(x, header_y, label)
+
+    missed_positions = {
+        "phone": 30,
+        "customer_name": 100,
+        "pickup_created": 190,
+        "pickup_time": 290,
+        "source": 360,
+        "customer_type": 420,
+        "lead_converted": 490,
+        "comments": 520,
+    }
+
+    def draw_missed_headers(header_y: float) -> None:
+        c.setFont("Helvetica-Bold", 9)
+        headers = [
+            (missed_positions["phone"], "Phone"),
+            (missed_positions["customer_name"], "Customer Name"),
+            (missed_positions["pickup_created"], "Pickup Created Date / Time"),
+            (missed_positions["pickup_time"], "Pickup Time"),
+            (missed_positions["source"], "Source"),
+            (missed_positions["customer_type"], "Customer Type"),
+            (missed_positions["lead_converted"], "Lead Converted"),
+            (missed_positions["comments"], "Comments"),
+        ]
+        for x, label in headers:
+            c.drawString(x, header_y, label)
+
+    undelivered_rows = store_context.get("undelivered_orders_rows", []) or []
+    undelivered_total = store_context.get("undelivered_orders_total_amount") or 0.0
+
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(40, y, "Undelivered Orders (Action List)")
+    y -= 18
+    draw_undelivered_headers(y)
+    y -= 12
+    c.setLineWidth(0.5)
+    c.line(40, y, width - 40, y)
+    y -= 10
+
+    if not undelivered_rows:
+        c.setFont("Helvetica-Oblique", 9)
+        c.drawString(40, y, "No undelivered orders pending as of this report.")
+        y -= 18
+    else:
+        c.setFont("Helvetica", 8)
+        for idx, row in enumerate(undelivered_rows, start=1):
+            y, redrew = _ensure_page_space(
+                c,
+                y=y,
+                min_y=70,
+                height=height,
+                title="Undelivered Orders (Action List)",
+                header_drawer=draw_undelivered_headers,
+            )
+            if redrew:
+                c.setLineWidth(0.5)
+                c.line(40, y, width - 40, y)
+                y -= 10
+                c.setFont("Helvetica", 8)
+            order_id = row.get("order_id") or ""
+            order_date = row.get("order_date")
+            committed = row.get("committed_date")
+            age_days = row.get("age_days")
+            net_amount = row.get("net_amount")
+
+            c.drawString(40, y, str(order_id))
+            c.drawString(110, y, order_date.isoformat() if order_date else "")
+            c.drawString(190, y, committed.isoformat() if committed else "")
+            c.drawString(320, y, str(age_days) if age_days is not None else "")
+            if net_amount is not None:
+                c.drawRightString(410, y, f"{net_amount:.2f}")
+
+            form.checkbox(
+                name=f"undelivered_delivered_{idx}",
+                tooltip="Delivered?",
+                x=430,
+                y=y - 2,
+                size=10,
+                borderColor=colors.black,
+                fillColor=colors.white,
+                buttonStyle="check",
+                borderWidth=1,
+            )
+            form.textfield(
+                name=f"undelivered_comment_{idx}",
+                tooltip="Comments",
+                x=480,
+                y=y - 3,
+                width=120,
+                height=12,
+                borderWidth=1,
+                borderColor=colors.black,
+                textColor=colors.black,
+            )
+            y -= 18
+
+    c.setFont("Helvetica-Bold", 9)
+    c.drawRightString(410, y, "Total")
+    c.drawRightString(410, y - 12, f"{undelivered_total:.2f}")
+    y -= 30
+
+    missed_rows = store_context.get("missed_leads_rows", []) or []
+    c.setFont("Helvetica-Bold", 12)
+    if y < 150:
+        c.showPage()
+        y = height - 40
+    c.drawString(40, y, "Missed Leads – Not Converted")
+    y -= 18
+    draw_missed_headers(y)
+    y -= 12
+    c.line(40, y, width - 40, y)
+    y -= 10
+
+    if not missed_rows:
+        c.setFont("Helvetica-Oblique", 9)
+        c.drawString(40, y, "No pending missed leads requiring follow-up.")
+        y -= 18
+    else:
+        c.setFont("Helvetica", 8)
+        for idx, row in enumerate(missed_rows, start=1):
+            y, redrew = _ensure_page_space(
+                c,
+                y=y,
+                min_y=70,
+                height=height,
+                title="Missed Leads – Not Converted",
+                header_drawer=draw_missed_headers,
+            )
+            if redrew:
+                c.setLineWidth(0.5)
+                c.line(40, y, width - 40, y)
+                y -= 10
+                c.setFont("Helvetica", 8)
+            c.drawString(missed_positions["phone"], y, row.get("phone") or "")
+            c.drawString(missed_positions["customer_name"], y, row.get("customer_name") or "")
+            c.drawString(missed_positions["pickup_created"], y, row.get("pickup_created") or "")
+            c.drawString(missed_positions["pickup_time"], y, row.get("pickup_time") or "")
+            c.drawString(missed_positions["source"], y, row.get("source") or "")
+            c.drawString(missed_positions["customer_type"], y, row.get("customer_type") or "")
+
+            form.checkbox(
+                name=f"missed_lead_converted_{idx}",
+                tooltip="Lead converted?",
+                x=missed_positions["lead_converted"],
+                y=y - 2,
+                size=10,
+                borderColor=colors.black,
+                fillColor=colors.white,
+                buttonStyle="check",
+                borderWidth=1,
+            )
+            form.textfield(
+                name=f"missed_lead_comment_{idx}",
+                tooltip="Comments",
+                x=missed_positions["comments"],
+                y=y - 3,
+                width=70,
+                height=12,
+                borderWidth=1,
+                borderColor=colors.black,
+                textColor=colors.black,
+            )
+            y -= 18
+
+    c.save()

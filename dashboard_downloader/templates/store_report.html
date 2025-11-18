@@ -63,7 +63,8 @@
     }
 
     .kpi-table,
-    .snapshot-table {
+    .snapshot-table,
+    .action-table {
       width: 100%;
       border-collapse: collapse;
       margin-bottom: 24px;
@@ -72,7 +73,9 @@
     .kpi-table th,
     .kpi-table td,
     .snapshot-table th,
-    .snapshot-table td {
+    .snapshot-table td,
+    .action-table th,
+    .action-table td {
       border: 1px solid #e1e1e1;
       padding: 10px;
       text-align: left;
@@ -80,7 +83,8 @@
     }
 
     .kpi-table th,
-    .snapshot-table th {
+    .snapshot-table th,
+    .action-table th {
       background: #fafafa;
       font-weight: 600;
     }
@@ -108,6 +112,21 @@
     .kpi-status-missing {
       color: #9b9b9b;
       font-weight: 600;
+    }
+
+    .snapshot-positive {
+      color: #20bf6b;
+      font-weight: 600;
+    }
+
+    .snapshot-negative {
+      color: #e74c3c;
+      font-weight: 600;
+    }
+
+    .snapshot-neutral {
+      color: #1c1c1c;
+      font-weight: 500;
     }
 
     .recommendations {
@@ -143,6 +162,15 @@
       font-size: 11px;
       color: #7f8c8d;
       text-align: center;
+    }
+
+    .action-table .cell-input {
+      color: #9b9b9b;
+      font-style: italic;
+    }
+
+    .action-table tfoot td {
+      font-weight: 600;
     }
   </style>
 </head>
@@ -191,6 +219,11 @@
         <td>Pickup conversion (new)</td>
         <td>{{ pickup_conversion_new_pct or 'N/A' }}%</td>
         <td class="{{ pickup_conversion_new_status_class }}">{{ pickup_conversion_new_status_label }}</td>
+      </tr>
+      <tr>
+        <td>Pickup conversion (existing)</td>
+        <td>{{ pickup_conversion_existing_pct or 'N/A' }}%</td>
+        <td class="{{ pickup_conversion_existing_status_class }}">{{ pickup_conversion_existing_status_label }}</td>
       </tr>
       <tr>
         <td>Delivery within TAT</td>
@@ -251,28 +284,28 @@
     <tbody>
       <tr>
         <td>Leads captured</td>
-        <td>{{ leads_total }}</td>
-        <td>{{ leads_note }}</td>
+        <td class="{{ leads_change_class }}">{{ leads_total }}</td>
+        <td class="{{ leads_change_class }}">{{ leads_note }}</td>
       </tr>
       <tr>
         <td>Pickups</td>
-        <td>{{ pickups_total }}</td>
-        <td>{{ pickups_note }}</td>
+        <td class="{{ pickups_change_class }}">{{ pickups_total }}</td>
+        <td class="{{ pickups_change_class }}">{{ pickups_note }}</td>
       </tr>
       <tr>
         <td>Deliveries</td>
-        <td>{{ deliveries_total }}</td>
-        <td>{{ deliveries_note }}</td>
+        <td class="{{ deliveries_change_class }}">{{ deliveries_total }}</td>
+        <td class="{{ deliveries_change_class }}">{{ deliveries_note }}</td>
       </tr>
       <tr>
         <td>New customers</td>
-        <td>{{ new_customers_count }}</td>
-        <td>{{ new_customers_note }}</td>
+        <td class="{{ new_customers_change_class }}">{{ new_customers_count }}</td>
+        <td class="{{ new_customers_change_class }}">{{ new_customers_note }}</td>
       </tr>
       <tr>
         <td>Repeat customers</td>
-        <td>{{ repeat_customers_count }}</td>
-        <td>{{ repeat_customers_note }}</td>
+        <td class="{{ repeat_customers_change_class }}">{{ repeat_customers_count }}</td>
+        <td class="{{ repeat_customers_change_class }}">{{ repeat_customers_note }}</td>
       </tr>
     </tbody>
   </table>
@@ -296,14 +329,99 @@
       </ul>
     </section>
     <section>
-      <h3>Actions for Tomorrow</h3>
+      <h3>Actions for Today</h3>
       <ul>
-        {% for item in actions_tomorrow %}
+        {% for item in actions_today %}
         <li>{{ item }}</li>
         {% endfor %}
       </ul>
     </section>
   </div>
+
+  <h2>Undelivered Orders (Action List)</h2>
+  <table class="action-table action-table-undelivered">
+    <thead>
+      <tr>
+        <th>Order ID</th>
+        <th>Order Date</th>
+        <th>Committed Delivery Date</th>
+        <th>Age (days)</th>
+        <th>Net Amount</th>
+        <th>Delivered (Y/N)</th>
+        <th>Comments</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% if undelivered_orders_rows %}
+      {% for row in undelivered_orders_rows %}
+      <tr>
+        <td>{{ row.order_id }}</td>
+        <td>{{ row.order_date }}</td>
+        <td>{{ row.committed_date }}</td>
+        <td>{{ row.age_days }}</td>
+        <td>
+          {% if row.net_amount is not none %}
+          ₹ {{ '%.2f'|format(row.net_amount) }}
+          {% else %}
+          —
+          {% endif %}
+        </td>
+        <td class="cell-input">[   ]</td>
+        <td class="cell-input"></td>
+      </tr>
+      {% endfor %}
+      {% else %}
+      <tr>
+        <td colspan="7">No undelivered orders pending as of this report.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+    {% if undelivered_orders_rows %}
+    <tfoot>
+      <tr>
+        <td colspan="4"></td>
+        <td>₹ {{ '%.2f'|format(undelivered_orders_total_amount or 0) }}</td>
+        <td colspan="2"></td>
+      </tr>
+    </tfoot>
+    {% endif %}
+  </table>
+
+  <h2>Missed Leads – Not Converted (Action List)</h2>
+  <table class="action-table action-table-missed-leads">
+    <thead>
+      <tr>
+        <th>Phone</th>
+        <th>Customer Name</th>
+        <th>Pickup Created Date / Time</th>
+        <th>Pickup Time</th>
+        <th>Source</th>
+        <th>Customer Type</th>
+        <th>Lead Converted</th>
+        <th>Comments</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% if missed_leads_rows %}
+      {% for row in missed_leads_rows %}
+      <tr>
+        <td>{{ row.phone }}</td>
+        <td>{{ row.customer_name }}</td>
+        <td>{{ row.pickup_created }}</td>
+        <td>{{ row.pickup_time }}</td>
+        <td>{{ row.source }}</td>
+        <td>{{ row.customer_type }}</td>
+        <td class="cell-input">[   ]</td>
+        <td class="cell-input"></td>
+      </tr>
+      {% endfor %}
+      {% else %}
+      <tr>
+        <td colspan="8">No pending missed leads requiring follow-up.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
 
   <footer>
     TSV Store Performance Report • Automated dashboard insights • {{ report_date }}
