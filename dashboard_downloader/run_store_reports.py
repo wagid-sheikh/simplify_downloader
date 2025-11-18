@@ -22,6 +22,8 @@ from dashboard_downloader.run_summary import PIPELINE_NAME, RunAggregator
 from simplify_downloader.config import config
 
 DEFAULT_TEMPLATE_DIR = Path(__file__).with_name("templates")
+STORE_TEMPLATE_FILE_NAME = "store_report.html"
+DEFAULT_TEMPLATE_FILE = DEFAULT_TEMPLATE_DIR / STORE_TEMPLATE_FILE_NAME
 DEFAULT_REPORTS_ROOT = Path(config.reports_root).resolve()
 
 __all__ = [
@@ -63,8 +65,8 @@ def _parse_args(argv: Iterable[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--template-path",
         dest="template_path",
-        default=str(DEFAULT_TEMPLATE_DIR),
-        help="Directory containing store_report.html",
+        default=str(DEFAULT_TEMPLATE_FILE),
+        help="Path to store_report.html (or a directory containing it)",
     )
     parser.add_argument(
         "--reports-dir",
@@ -144,6 +146,17 @@ async def _persist_document_record(
     )
 
 
+def _resolve_template_file(template_path: Path) -> Path:
+    template_path = Path(template_path)
+    if template_path.is_dir():
+        template_path = template_path / STORE_TEMPLATE_FILE_NAME
+    if not template_path.exists():
+        raise FileNotFoundError(f"template not found: {template_path}")
+    if not template_path.is_file():
+        raise FileNotFoundError(f"template is not a file: {template_path}")
+    return template_path
+
+
 async def _generate_reports(
     store_codes: Sequence[str],
     report_date: date,
@@ -151,7 +164,7 @@ async def _generate_reports(
     logger: JsonLogger,
     run_id: str,
     database_url: str,
-    template_path: Path,
+    template_file: Path,
     reports_root: Path,
     aggregator: RunAggregator | None = None,
 ) -> List[Tuple[str, Path]]:
@@ -199,7 +212,7 @@ async def _generate_reports(
         try:
             await render_store_report_pdf(
                 store_context=context,
-                template_path=template_path,
+                template_path=template_file,
                 output_path=output_path,
             )
         except Exception as exc:  # pragma: no cover - pdf failures
@@ -273,7 +286,7 @@ async def run_store_reports_for_date(
     run_id: str,
     database_url: str | None,
     store_codes: Sequence[str] | None = None,
-    template_path: str | Path = DEFAULT_TEMPLATE_DIR,
+    template_path: str | Path = DEFAULT_TEMPLATE_FILE,
     reports_root: str | Path = DEFAULT_REPORTS_ROOT,
 ) -> List[Tuple[str, Path]]:
     codes = [code.upper() for code in store_codes] if store_codes else get_configured_store_codes()
@@ -291,7 +304,7 @@ async def run_store_reports_for_date(
         )
         return []
 
-    template_dir = Path(template_path)
+    template_file = _resolve_template_file(Path(template_path))
     reports_dir = Path(reports_root)
 
     aggregator: RunAggregator | None = getattr(logger, "aggregator", None)
@@ -302,7 +315,7 @@ async def run_store_reports_for_date(
         logger=logger,
         run_id=run_id,
         database_url=resolved_db_url,
-        template_path=template_dir,
+        template_file=template_file,
         reports_root=reports_dir,
         aggregator=aggregator,
     )
