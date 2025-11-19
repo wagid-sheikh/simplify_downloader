@@ -22,7 +22,7 @@ from playwright.async_api import (
 )
 from playwright._impl._errors import TimeoutError as PlaywrightTimeoutError
 
-from common.ingest.service import _looks_like_html
+from app.common.ingest.service import _looks_like_html
 
 from . import page_selectors
 from .config import (

@@ -1,4 +1,5 @@
 import importlib
+import importlib
 import sys
 import types
 
@@ -18,12 +19,12 @@ def run_store_reports_module(tmp_path):
     original_config = sys.modules.get("app.config")
     sys.modules["app.config"] = fake_config_module
 
-    module = importlib.import_module("dashboard_downloader.run_store_reports")
+    module = importlib.import_module("app.dashboard_downloader.run_store_reports")
     importlib.reload(module)
 
     yield module
 
-    sys.modules.pop("dashboard_downloader.run_store_reports", None)
+    sys.modules.pop("app.dashboard_downloader.run_store_reports", None)
     if original_config is not None:
         sys.modules["app.config"] = original_config
     else:
