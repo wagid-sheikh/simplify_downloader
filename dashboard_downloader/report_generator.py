@@ -812,7 +812,7 @@ class StoreReportPdfBuilder:
             ["Metric", "Value"],
             ["FTD revenue", self._currency(self.context.get("ftd_revenue"))],
             [
-                "High value orders (>₹800)",
+                "High value orders (>800)",
                 self._value_or_na(self.context.get("high_value_orders_count")),
             ],
             [
@@ -954,8 +954,8 @@ class StoreReportPdfBuilder:
 
     def _currency(self, value: float | int | None) -> str:
         if value is None:
-            return "₹ 0.00"
-        return f"₹ {float(value):.2f}"
+            return " 0.00"
+        return f" {float(value):.2f}"
 
     def _value_from_row(self, row: Any, key: str) -> Any:
         if isinstance(row, Mapping):
@@ -984,8 +984,8 @@ class StoreReportPdfBuilder:
             c.drawString(positions["order_info"], y, "Order Info")
             c.drawString(positions["age"], y, "Age")
             c.drawString(positions["amount"], y, "Net Amount")
-            c.drawString(positions["delivered"], y, "Delivered (Y/N)")
-            c.drawString(positions["comments"], y, "Comments")
+            c.drawString(positions["delivered"], y, "")
+            c.drawString(positions["comments"], y, "")
 
         self._ensure_space(40)
         header_y = self.y
@@ -1086,8 +1086,8 @@ class StoreReportPdfBuilder:
             c.drawString(positions["sno"], y, "S. No.")
             c.drawString(positions["customer_details"], y, "Customer Details")
             c.drawString(positions["customer_type"], y, "Customer Type")
-            c.drawString(positions["converted"], y, "Converted?")
-            c.drawString(positions["comments"], y, "Comments")
+            c.drawString(positions["converted"], y, "")
+            c.drawString(positions["comments"], y, "")
 
         self._ensure_space(40)
         header_y = self.y
