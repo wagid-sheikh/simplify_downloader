@@ -9,25 +9,25 @@ import pytest
 def run_store_reports_module(tmp_path):
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
-    fake_config_module = types.ModuleType("simplify_downloader.config")
+    fake_config_module = types.ModuleType("app.config")
     fake_config_module.config = types.SimpleNamespace(
         reports_root=str(reports_dir),
         report_stores_list=["A668"],
         database_url="sqlite://",
     )
-    original_config = sys.modules.get("simplify_downloader.config")
-    sys.modules["simplify_downloader.config"] = fake_config_module
+    original_config = sys.modules.get("app.config")
+    sys.modules["app.config"] = fake_config_module
 
-    module = importlib.import_module("dashboard_downloader.run_store_reports")
+    module = importlib.import_module("app.dashboard_downloader.run_store_reports")
     importlib.reload(module)
 
     yield module
 
-    sys.modules.pop("dashboard_downloader.run_store_reports", None)
+    sys.modules.pop("app.dashboard_downloader.run_store_reports", None)
     if original_config is not None:
-        sys.modules["simplify_downloader.config"] = original_config
+        sys.modules["app.config"] = original_config
     else:
-        sys.modules.pop("simplify_downloader.config", None)
+        sys.modules.pop("app.config", None)
 
 
 def test_resolve_template_file_accepts_directory(tmp_path, run_store_reports_module):

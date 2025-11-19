@@ -226,7 +226,7 @@ Freeze key names so Codex doesn’t reintroduce churn.
 
 - Python package name: `app`
 - Project/package name (pyproject): `<your choice here>`
-- CLI: `python -m app ...` (replacing `python -m simplify_downloader ...`)
+- CLI: `python -m app ...` (legacy entry point removed)
 ```
 
 2. Commit:
@@ -480,11 +480,9 @@ YOU MUST UPDATE:
        command: ["python", "-m", "simplify_downloader", ...]
        → ["python", "-m", "app", ...]
    - scripts/run_dashboard_pipeline_single_context.sh (and similar scripts):
-       python -m simplify_downloader ...
-       → python -m app ...
+       python -m app ...
    - .github/workflows/deploy-prod.yml:
-       python -m simplify_downloader db upgrade
-       → python -m app db upgrade
+       python -m app db upgrade
 
 2. Runtime Python imports / fake modules
    - Replace ALL imports from `simplify_downloader.*` with `app.*` in:
@@ -521,11 +519,9 @@ YOU MUST UPDATE:
 5. Runtime documentation (not just history)
    Update any run instructions or descriptions that describe how to operate the system:
    - README.md:
-       poetry run python -m simplify_downloader ...
-       → poetry run python -m app ...
+       poetry run python -m app ...
    - docs/CODEX_KICKOFF_SIMPLIFY_DOWNLOADER.md:
-       "run `python -m simplify_downloader` inside container"
-       → use `python -m app`
+       use `python -m app` inside container
    - docs/reporting.md:
        "You are working in the `simplify_downloader` project."
        → reflect the new project name (TSV CRM backend / tsv-crm-backend).

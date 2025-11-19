@@ -7,9 +7,9 @@ from typing import Any, Dict, Iterable, List
 from app.config import config
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-PKG_ROOT = Path(__file__).resolve().parent            # .../simplify_downloader/dashboard_downloader
-PROFILES_DIR = PKG_ROOT / "profiles"                  # .../dashboard_downloader/profiles
-DATA_DIR = PKG_ROOT / "data"                          # .../dashboard_downloader/data
+PKG_ROOT = Path(__file__).resolve().parent            # .../app/dashboard_downloader
+PROFILES_DIR = PKG_ROOT / "profiles"                  # .../app/dashboard_downloader/profiles
+DATA_DIR = PKG_ROOT / "data"                          # .../app/dashboard_downloader/data
 PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
