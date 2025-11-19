@@ -700,7 +700,7 @@ class StoreReportPdfBuilder:
         self.y -= 26
         meta_lines = [
             f"Report date: {self.context.get('report_date', '')}",
-            f"Generated at: {self.context.get('generated_at', '')}",
+            f"Generated at: {self._format_generated_at(self.context.get('generated_at'))}",
             f"Run ID: {self.context.get('run_id', '')}",
         ]
         c.setFont("Helvetica", 10)
@@ -965,18 +965,22 @@ class StoreReportPdfBuilder:
     def _draw_undelivered_orders(self) -> None:
         self._draw_section_title("Undelivered Orders (Action List)")
         positions = {
-            "order_info": self.margin,
-            "age": self.margin + 240,
-            "amount": self.margin + 280,
-            "delivered": self.margin + 350,
-            "comments": self.margin + 380,
+            "sno": self.margin,
+            "order_info": self.margin + 30,
+            "age": self.margin + 270,
+            "amount": self.margin + 310,
+            "delivered": self.margin + 380,
+            "comments": self.margin + 410,
         }
         comments_width = self.width - self.margin - positions["comments"]
-        row_height = 20
+        data_row_height = 14
+        action_row_height = 18
+        block_spacing = 6
 
         def draw_headers(y: float) -> None:
             c = self.canvas
             c.setFont("Helvetica-Bold", 9)
+            c.drawString(positions["sno"], y, "S. No.")
             c.drawString(positions["order_info"], y, "Order Info")
             c.drawString(positions["age"], y, "Age")
             c.drawString(positions["amount"], y, "Net Amount")
@@ -992,6 +996,7 @@ class StoreReportPdfBuilder:
         self.y = header_y - 10
 
         rows = self.context.get("undelivered_orders_rows", []) or []
+        row_count = len(rows)
         if not rows:
             self.canvas.setFont("Helvetica-Oblique", 9)
             self.canvas.setFillColor(colors.HexColor("#7f8c8d"))
@@ -1000,13 +1005,14 @@ class StoreReportPdfBuilder:
         else:
             self.canvas.setFillColor(colors.HexColor("#1c1c1c"))
             for idx, row in enumerate(rows, start=1):
-                self._ensure_space(row_height + 10)
-                if self.y < self.margin + 60:
+                required_height = data_row_height + action_row_height + block_spacing
+                if self.y - required_height < self.margin + 20:
                     self._new_page()
                     self._draw_section_title("Undelivered Orders (Action List)")
-                    draw_headers(self.y)
-                    self.canvas.line(self.margin, self.y - 4, self.width - self.margin, self.y - 4)
-                    self.y -= 10
+                    header_y = self.y
+                    draw_headers(header_y)
+                    self.canvas.line(self.margin, header_y - 4, self.width - self.margin, header_y - 4)
+                    self.y = header_y - 10
                 order_id = self._value_from_row(row, "order_id") or ""
                 order_date = self._value_from_row(row, "order_date")
                 committed = self._value_from_row(row, "committed_date")
@@ -1020,16 +1026,20 @@ class StoreReportPdfBuilder:
                 if committed:
                     order_info_parts.append(f"Del. {self._format_date(committed)}")
                 order_info_text = ", ".join(order_info_parts)
+                data_y = self.y
                 self.canvas.setFont("Helvetica", 9)
-                self.canvas.drawString(positions["order_info"], self.y, order_info_text)
-                self.canvas.drawString(positions["age"], self.y, self._value_or_na(age_days))
+                self.canvas.drawString(positions["sno"], data_y, str(idx))
+                self.canvas.drawString(positions["order_info"], data_y, order_info_text)
+                self.canvas.drawString(positions["age"], data_y, self._value_or_na(age_days))
                 if net_amount is not None:
-                    self.canvas.drawRightString(positions["delivered"] - 8, self.y, f"{float(net_amount):.2f}")
+                    self.canvas.drawRightString(positions["delivered"] - 8, data_y, f"{float(net_amount):.2f}")
+                self.y -= data_row_height
+                action_y = self.y
                 self.form.checkbox(
                     name=f"undelivered_delivered_{idx}",
                     tooltip="Delivered?",
                     x=positions["delivered"],
-                    y=self.y - 4,
+                    y=action_y - 6,
                     size=12,
                     borderColor=colors.HexColor("#1c1c1c"),
                     fillColor=colors.white,
@@ -1038,33 +1048,42 @@ class StoreReportPdfBuilder:
                     name=f"undelivered_comment_{idx}",
                     tooltip="Comments",
                     x=positions["comments"],
-                    y=self.y - 5,
+                    y=action_y - 7,
                     width=comments_width - 5,
-                    height=14,
+                    height=16,
                     borderWidth=1,
-                    borderColor=colors.HexColor("#b0b0b0"),
                 )
-                self.y -= row_height
+                self.y -= action_row_height
+                self.y -= block_spacing
 
-        total = self.context.get("undelivered_orders_total_amount") or 0
+        self.canvas.setFillColor(colors.HexColor("#1c1c1c"))
+        total_amount = self.context.get("undelivered_orders_total_amount") or 0
+        self.y -= 4
+        summary_text = (
+            f"Total undelivered orders: {row_count}    |    Total net amount: {float(total_amount):.2f}"
+        )
         self.canvas.setFont("Helvetica-Bold", 10)
-        self.canvas.drawRightString(positions["delivered"] - 8, self.y - 4, "Total")
-        self.canvas.drawRightString(positions["delivered"] - 8, self.y - 18, f"{float(total):.2f}")
-        self.y -= 36
+        self.canvas.drawString(self.margin, self.y, summary_text)
+        self.y -= 24
 
     def _draw_missed_leads(self) -> None:
         self._draw_section_title("Missed Leads – Not Converted")
         positions = {
-            "customer_details": self.margin,
-            "customer_type": self.margin + 320,
-            "converted": self.margin + 420,
-            "comments": self.margin + 460,
+            "sno": self.margin,
+            "customer_details": self.margin + 30,
+            "customer_type": self.margin + 350,
+            "converted": self.margin + 450,
+            "comments": self.margin + 490,
         }
         comments_width = self.width - self.margin - positions["comments"]
+        data_row_height = 14
+        action_row_height = 18
+        block_spacing = 6
 
         def draw_headers(y: float) -> None:
             c = self.canvas
             c.setFont("Helvetica-Bold", 9)
+            c.drawString(positions["sno"], y, "S. No.")
             c.drawString(positions["customer_details"], y, "Customer Details")
             c.drawString(positions["customer_type"], y, "Customer Type")
             c.drawString(positions["converted"], y, "Converted?")
@@ -1077,6 +1096,7 @@ class StoreReportPdfBuilder:
         self.y = header_y - 10
 
         rows = self.context.get("missed_leads_rows", []) or []
+        row_count = len(rows)
         if not rows:
             self.canvas.setFont("Helvetica-Oblique", 9)
             self.canvas.setFillColor(colors.HexColor("#7f8c8d"))
@@ -1085,13 +1105,14 @@ class StoreReportPdfBuilder:
         else:
             self.canvas.setFillColor(colors.HexColor("#1c1c1c"))
             for idx, row in enumerate(rows, start=1):
-                self._ensure_space(24)
-                if self.y < self.margin + 60:
+                required_height = data_row_height + action_row_height + block_spacing
+                if self.y - required_height < self.margin + 20:
                     self._new_page()
                     self._draw_section_title("Missed Leads – Not Converted")
-                    draw_headers(self.y)
-                    self.canvas.line(self.margin, self.y - 4, self.width - self.margin, self.y - 4)
-                    self.y -= 10
+                    header_y = self.y
+                    draw_headers(header_y)
+                    self.canvas.line(self.margin, header_y - 4, self.width - self.margin, header_y - 4)
+                    self.y = header_y - 10
                 details_parts = []
                 phone = self._value_from_row(row, "phone")
                 customer_name = self._value_from_row(row, "customer_name")
@@ -1107,13 +1128,18 @@ class StoreReportPdfBuilder:
                     details_parts.append(str(source))
                 details_text = ", ".join(details_parts)
                 self.canvas.setFont("Helvetica", 9)
+                self.canvas.drawString(positions["sno"], self.y, str(idx))
                 self.canvas.drawString(positions["customer_details"], self.y, details_text)
-                self.canvas.drawString(positions["customer_type"], self.y, self._value_from_row(row, "customer_type") or "")
+                self.canvas.drawString(
+                    positions["customer_type"], self.y, self._value_from_row(row, "customer_type") or ""
+                )
+                self.y -= data_row_height
+                action_y = self.y
                 self.form.checkbox(
                     name=f"missed_lead_converted_{idx}",
                     tooltip="Lead converted?",
                     x=positions["converted"],
-                    y=self.y - 4,
+                    y=action_y - 6,
                     size=12,
                     borderColor=colors.HexColor("#1c1c1c"),
                     fillColor=colors.white,
@@ -1122,17 +1148,35 @@ class StoreReportPdfBuilder:
                     name=f"missed_lead_comment_{idx}",
                     tooltip="Comments",
                     x=positions["comments"],
-                    y=self.y - 5,
+                    y=action_y - 7,
                     width=comments_width - 5,
-                    height=14,
+                    height=16,
                     borderWidth=1,
-                    borderColor=colors.HexColor("#b0b0b0"),
                 )
-                self.y -= 22
+                self.y -= action_row_height
+                self.y -= block_spacing
 
-        self.y -= 10
+        self.canvas.setFillColor(colors.HexColor("#1c1c1c"))
+        self.y -= 4
+        self.canvas.setFont("Helvetica-Bold", 10)
+        self.canvas.drawString(self.margin, self.y, f"Total missed leads: {row_count}")
+        self.y -= 24
 
     def _format_date(self, value: Any) -> str:
         if hasattr(value, "isoformat"):
             return value.isoformat()
         return value or ""
+
+    def _format_generated_at(self, value: Any) -> str:
+        if not value:
+            return ""
+        if isinstance(value, datetime):
+            dt_value = value
+        else:
+            try:
+                dt_value = datetime.fromisoformat(str(value))
+            except ValueError:
+                return str(value)
+        if dt_value.tzinfo is not None:
+            dt_value = dt_value.astimezone()
+        return dt_value.strftime("%d %b %Y, %I:%M %p")
