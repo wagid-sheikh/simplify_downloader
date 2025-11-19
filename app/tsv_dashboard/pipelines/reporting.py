@@ -7,8 +7,8 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 import sqlalchemy as sa
 
-from dashboard_downloader.db_tables import documents
-from common.date_utils import normalize_store_codes
+from app.dashboard_downloader.db_tables import documents
+from app.common.date_utils import normalize_store_codes
 from app.common.dashboard_store import store_dashboard_summary, store_master
 from app.common.db import session_scope
 from app.config import config
@@ -137,7 +137,7 @@ async def render_pdf(
     output_path: Path,
 ) -> None:
     from jinja2 import Environment, FileSystemLoader, select_autoescape
-    from dashboard_downloader.report_generator import render_pdf_with_configured_browser
+    from app.dashboard_downloader.report_generator import render_pdf_with_configured_browser
 
     template_dir.mkdir(parents=True, exist_ok=True)
     env = Environment(loader=FileSystemLoader(str(template_dir)), autoescape=select_autoescape(["html", "xml"]))

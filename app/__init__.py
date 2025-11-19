@@ -1,31 +1,15 @@
-"""Application package root."""
-
 from __future__ import annotations
 
-import importlib
 import sys
-from types import ModuleType
-from typing import Iterable
+from pathlib import Path
 
-__all__ = ["register_legacy_aliases"]
+_PACKAGE_ROOT = Path(__file__).resolve().parent
+if str(_PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PACKAGE_ROOT))
 
-_LEGACY_NAMESPACE_PACKAGES: tuple[str, ...] = (
-    "common",
+__all__ = [
     "dashboard_downloader",
+    "common",
     "crm_downloader",
     "tsv_dashboard",
-)
-
-
-def register_legacy_aliases(packages: Iterable[str] | None = None) -> None:
-    """Expose legacy top-level packages for backward compatibility."""
-
-    names = tuple(packages) if packages is not None else _LEGACY_NAMESPACE_PACKAGES
-    for name in names:
-        full_name = f"{__name__}.{name}"
-        module = importlib.import_module(full_name)
-        if isinstance(module, ModuleType):
-            sys.modules.setdefault(name, module)
-
-
-register_legacy_aliases()
+]
