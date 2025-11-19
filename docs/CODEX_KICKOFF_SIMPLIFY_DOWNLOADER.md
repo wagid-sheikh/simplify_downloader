@@ -224,11 +224,11 @@ For each bucket & run date:
 * Provide `docker-compose.yml` with services:
 
   * **db**: `postgres:16`, named volume, healthcheck. **No port published**.
-  * **app**: build from repo; run `python -m simplify_downloader ...` inside container.
+  * **app**: build from repo; run `python -m app ...` inside container.
 * Execution example (from server):
 
   ```bash
-  docker compose run --rm app python -m simplify_downloader run \
+  docker compose run --rm app python -m app run \
     --stores_list "A668,A817,A564,A789"
   ```
 * **Mac access (PGAdmin4)**: create SSH tunnel to server and connect to `localhost:5432`.
@@ -244,7 +244,7 @@ For each bucket & run date:
 ## GitHub CI/CD
 
 * **CI (`.github/workflows/ci.yml`)**: checkout → setup Python → install deps → lint/type‑check/tests.
-* **Deploy (`.github/workflows/deploy-prod.yml`)**: on push to `main` or manual → SSH to server → `git pull` → `docker compose pull` → `docker compose build app` → `docker compose up -d db` (wait healthy) → `docker compose run --rm app python -m simplify_downloader db upgrade`.
+* **Deploy (`.github/workflows/deploy-prod.yml`)**: on push to `main` or manual → SSH to server → `git pull` → `docker compose pull` → `docker compose build app` → `docker compose up -d db` (wait healthy) → `docker compose run --rm app python -m app db upgrade`.
 
 ---
 

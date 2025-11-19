@@ -34,7 +34,7 @@ _ALIAS_MODULES = {
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Entrypoint mirroring ``python -m simplify_downloader`` semantics."""
+    """Entrypoint mirroring ``python -m app`` semantics."""
 
     from dashboard_downloader.cli import main as cli_main
 
