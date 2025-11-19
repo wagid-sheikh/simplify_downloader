@@ -480,10 +480,10 @@ YOU MUST UPDATE:
        command: ["python", "-m", "simplify_downloader", ...]
        → ["python", "-m", "app", ...]
    - scripts/run_dashboard_pipeline_single_context.sh (and similar scripts):
-       python -m simplify_downloader ...
+      python -m app ...
        → python -m app ...
    - .github/workflows/deploy-prod.yml:
-       python -m simplify_downloader db upgrade
+      python -m app db upgrade
        → python -m app db upgrade
 
 2. Runtime Python imports / fake modules
@@ -521,10 +521,10 @@ YOU MUST UPDATE:
 5. Runtime documentation (not just history)
    Update any run instructions or descriptions that describe how to operate the system:
    - README.md:
-       poetry run python -m simplify_downloader ...
+      poetry run python -m app ...
        → poetry run python -m app ...
    - docs/CODEX_KICKOFF_SIMPLIFY_DOWNLOADER.md:
-       "run `python -m simplify_downloader` inside container"
+      "run `python -m app` inside container"
        → use `python -m app`
    - docs/reporting.md:
        "You are working in the `simplify_downloader` project."

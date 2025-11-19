@@ -227,6 +227,8 @@ def test_os_getenv_usage_restricted():
     allowed = {
         repo_root / "config.py",
         repo_root / "crypto.py",
+        repo_root / "app" / "config.py",
+        repo_root / "app" / "crypto.py",
         repo_root / "alembic" / "env.py",
         repo_root
         / "alembic"

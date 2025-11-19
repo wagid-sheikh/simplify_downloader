@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict
 
-from dashboard_downloader.json_logger import JsonLogger, log_event
+from app.dashboard_downloader.json_logger import JsonLogger, log_event
 
 
 def cleanup_bucket(

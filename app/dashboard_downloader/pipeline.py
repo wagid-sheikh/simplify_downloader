@@ -2,18 +2,18 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-from dashboard_downloader.json_logger import JsonLogger, log_event
-from dashboard_downloader.run_downloads import run_all_stores_single_session
-from dashboard_downloader.run_store_reports import (
+from app.dashboard_downloader.json_logger import JsonLogger, log_event
+from app.dashboard_downloader.run_downloads import run_all_stores_single_session
+from app.dashboard_downloader.run_store_reports import (
     resolve_report_date,
     run_store_reports_for_date,
 )
-from dashboard_downloader.run_summary import (
+from app.dashboard_downloader.run_summary import (
     RunAggregator,
     insert_run_summary,
     update_run_summary,
 )
-from dashboard_downloader.notifications import send_notifications_for_run
+from app.dashboard_downloader.notifications import send_notifications_for_run
 
 from app.common.audit import audit_bucket
 from app.common.cleanup import cleanup_bucket

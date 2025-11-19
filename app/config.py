@@ -30,6 +30,7 @@ import binascii
 import logging
 import os
 import re
+import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -207,7 +208,32 @@ async def _fetch_system_config_async(database_url: str) -> Dict[str, str]:
             await engine.dispose()
 
 
+def _load_sqlite_system_config(database_url: str) -> Dict[str, str]:
+    prefix = "sqlite:///"
+    if not database_url.startswith(prefix):
+        raise ConfigError("Unsupported sqlite database URL")
+    db_path = database_url[len(prefix) :]
+    if not db_path:
+        raise ConfigError("sqlite database URL must include a file path")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        cursor = conn.execute(
+            "SELECT key, value FROM system_config WHERE is_active = 1"
+        )
+        rows = cursor.fetchall()
+    except sqlite3.Error as exc:
+        message = "Unable to load configuration from system_config"
+        logger.exception(message)
+        raise ConfigError(message) from exc
+    finally:
+        conn.close()
+    return {key: value for key, value in rows}
+
+
 def _load_system_config(database_url: str) -> Dict[str, str]:
+    if database_url.startswith("sqlite:///"):
+        return _load_sqlite_system_config(database_url)
     try:
         asyncio.get_running_loop()
     except RuntimeError:
