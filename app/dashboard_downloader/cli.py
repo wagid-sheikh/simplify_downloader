@@ -149,7 +149,7 @@ async def _run_async(args: argparse.Namespace) -> int:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(prog="simplify_downloader")
+    parser = argparse.ArgumentParser(prog="app.dashboard_downloader")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="Execute full pipeline")

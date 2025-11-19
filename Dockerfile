@@ -20,4 +20,4 @@ RUN pip install "poetry>=1.7" && \
 
 COPY . .
 
-ENTRYPOINT ["python", "-m", "simplify_downloader"]
+ENTRYPOINT ["python", "-m", "app.dashboard_downloader.cli"]
