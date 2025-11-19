@@ -137,6 +137,8 @@ git clone https://github.com/wagid-sheikh/simplify_downloader.git simplify_downl
 cd simplify_downloader_v1_18_stable
 git checkout v1.18
 git checkout -b v1.18-stable
+mkdir -p reports
+mkdir -p logs
 poetry install
 poetry run pytest
 ./scripts/run_dashboard_pipeline_single_context.sh
@@ -149,11 +151,11 @@ poetry run pytest
 
 #### Verification
 
-- [ ] Folder `simplify_downloader_v1_18_stable/` exists.
-- [ ] `git status` is clean; branch is `v1.18-stable`.
-- [ ] `git rev-parse HEAD` equals `git rev-parse v1.18`.
-- [ ] `poetry run pytest` passes.
-- [ ] `./scripts/run_dashboard_pipeline_single_context.sh` runs successfully.
+- [X] Folder `simplify_downloader_v1_18_stable/` exists.
+- [X] `git status` is clean; branch is `v1.18-stable`.
+- [X] `git rev-parse HEAD` equals `git rev-parse v1.18`.
+- [X] `poetry run pytest` passes.
+- [X] `./scripts/run_dashboard_pipeline_single_context.sh` runs successfully.
 
 ---
 
@@ -193,9 +195,9 @@ git commit -m "Add REFACTOR_PLAN with target architecture and constraints"
 
 #### Verification
 
-- [ ] `docs/REFACTOR_PLAN.md` exists.
-- [ ] It contains target structure + constraints + “kill simplify_downloader” rule.
-- [ ] `git status` clean.
+- [X] `docs/REFACTOR_PLAN.md` exists.
+- [X] It contains target structure + constraints + “kill simplify_downloader” rule.
+- [X] `git status` clean.
 
 ---
 
@@ -211,10 +213,9 @@ Freeze key names so Codex doesn’t reintroduce churn.
 
 - **Python package name:** `app`
 - **pyproject project name:** pick one, e.g.:
-  - `tsv-crm-backend` **or**
-  - `crm-backend`
+  - `tsv-crm-backend`
 - **CLI style (for now):**
-  - `python -m app ...`.
+  - `poetry run python -m  ...`
 
 #### Steps
 
@@ -237,8 +238,8 @@ git commit -m "Document naming decisions for app package and CLI"
 
 #### Verification
 
-- [ ] Naming decisions clearly documented.
-- [ ] `git status` clean.
+- [X] Naming decisions clearly documented.
+- [X] `git status` clean.
 
 ---
 
