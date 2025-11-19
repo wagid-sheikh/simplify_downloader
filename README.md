@@ -9,7 +9,7 @@ poetry install
 poetry run pytest
 
 # Prepare the database (creates tables / applies migrations)
-poetry run python -m simplify_downloader db upgrade
+poetry run python -m app.dashboard_downloader.cli db upgrade
 
 # Execute the full download → ingest → audit pipeline
 ./scripts/run_dashboard_pipeline.sh --stores_list "A668,A817"
@@ -42,7 +42,7 @@ This starts Postgres (no public port) and runs the pipeline container.
 ## Database migrations
 
 ```bash
-poetry run python -m simplify_downloader db upgrade
+poetry run python -m app.dashboard_downloader.cli db upgrade
 ```
 
 ## Tests

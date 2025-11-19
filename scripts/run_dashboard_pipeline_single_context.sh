@@ -24,4 +24,4 @@ echo "[dashboard] Ensuring database migrations are up to date..."
 poetry run alembic upgrade head
 
 # This uses the new CLI subcommand
-exec poetry run python -m simplify_downloader run-single-session "$@"
+exec poetry run python -m app.dashboard_downloader.cli run-single-session "$@"

@@ -5,7 +5,7 @@ from typing import List
 
 import sqlalchemy as sa
 
-from dashboard_downloader.db_tables import (
+from app.dashboard_downloader.db_tables import (
     documents,
     email_templates,
     notification_profiles,

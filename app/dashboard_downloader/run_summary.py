@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
 import sqlalchemy as sa
 
-from common.db import session_scope
+from app.common.db import session_scope
 
 from .db_tables import documents, pipeline_run_summaries
 

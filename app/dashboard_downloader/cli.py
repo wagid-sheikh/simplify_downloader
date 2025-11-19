@@ -5,12 +5,12 @@ import argparse
 import asyncio
 from typing import List, Optional, TYPE_CHECKING
 
-from dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
+from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from app.common.db import run_alembic_upgrade
 
 if TYPE_CHECKING:  # pragma: no cover - import cycles avoided at runtime
-    from dashboard_downloader.run_summary import RunAggregator
-    from dashboard_downloader.settings import PipelineSettings
+    from app.dashboard_downloader.run_summary import RunAggregator
+    from app.dashboard_downloader.settings import PipelineSettings
     from app.config import Config
 
 
@@ -55,9 +55,9 @@ def _validate_prerequisites(
 
 async def _run_async(args: argparse.Namespace) -> int:
     from app.config import config as runtime_config
-    from dashboard_downloader.run_downloads import LoginBootstrapError
-    from dashboard_downloader.run_summary import RunAggregator
-    from dashboard_downloader.settings import GLOBAL_CREDENTIAL_ERROR, load_settings
+    from app.dashboard_downloader.run_downloads import LoginBootstrapError
+    from app.dashboard_downloader.run_summary import RunAggregator
+    from app.dashboard_downloader.settings import GLOBAL_CREDENTIAL_ERROR, load_settings
 
     run_id = args.run_id or new_run_id()
     logger = get_logger(run_id=run_id)
@@ -102,7 +102,7 @@ async def _run_async(args: argparse.Namespace) -> int:
             alembic_config_path=runtime_config.alembic_config,
         )
 
-    from dashboard_downloader.pipeline import run_pipeline
+    from app.dashboard_downloader.pipeline import run_pipeline
 
     try:
         await run_pipeline(settings=settings, logger=logger, aggregator=aggregator)
@@ -149,7 +149,7 @@ async def _run_async(args: argparse.Namespace) -> int:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(prog="simplify_downloader")
+    parser = argparse.ArgumentParser(prog="app.dashboard_downloader.cli")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="Execute full pipeline")
@@ -226,7 +226,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.command == "db" and args.db_command == "check":
         from app.config import config as runtime_config
-        from dashboard_downloader.db_health import check_database_health
+        from app.dashboard_downloader.db_health import check_database_health
 
         errors = asyncio.run(check_database_health(runtime_config.database_url))
         if errors:
@@ -237,7 +237,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     if args.command == "notifications" and args.notifications_command == "test":
-        from dashboard_downloader.notifications import diagnose_notification_run
+        from app.dashboard_downloader.notifications import diagnose_notification_run
 
         findings = asyncio.run(diagnose_notification_run(args.pipeline, args.run_id))
         if findings:

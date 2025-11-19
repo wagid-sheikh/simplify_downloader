@@ -7,34 +7,42 @@ from typing import Any, Dict, Iterable, Optional
 from pydantic import BaseModel, ConfigDict, ValidationError, create_model
 
 try:
-    from dashboard_downloader.config import MERGE_BUCKET_DB_SPECS
+    from app.dashboard_downloader.config import MERGE_BUCKET_DB_SPECS
 except ModuleNotFoundError:
     import importlib.util
     import sys
     from pathlib import Path
 
     project_root = Path(__file__).resolve().parents[2]
-    package_dir = project_root / "dashboard_downloader"
+    app_dir = project_root / "app"
+    package_dir = app_dir / "dashboard_downloader"
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
+    app_spec = importlib.util.spec_from_file_location("app", app_dir / "__init__.py")
+    if app_spec and app_spec.loader:
+        app_package = importlib.util.module_from_spec(app_spec)
+        app_spec.loader.exec_module(app_package)
+        app_package.__path__ = [str(app_dir)]
+        sys.modules["app"] = app_package
+
     package_spec = importlib.util.spec_from_file_location(
-        "dashboard_downloader", package_dir / "__init__.py"
+        "app.dashboard_downloader", package_dir / "__init__.py"
     )
     if package_spec and package_spec.loader:
         package = importlib.util.module_from_spec(package_spec)
         package_spec.loader.exec_module(package)
         package.__path__ = [str(package_dir)]
-        sys.modules["dashboard_downloader"] = package
+        sys.modules["app.dashboard_downloader"] = package
 
     config_spec = importlib.util.spec_from_file_location(
-        "dashboard_downloader.config", package_dir / "config.py"
+        "app.dashboard_downloader.config", package_dir / "config.py"
     )
     if not config_spec or not config_spec.loader:
         raise
     config_module = importlib.util.module_from_spec(config_spec)
     config_spec.loader.exec_module(config_module)
-    sys.modules["dashboard_downloader.config"] = config_module
+    sys.modules["app.dashboard_downloader.config"] = config_module
     MERGE_BUCKET_DB_SPECS = config_module.MERGE_BUCKET_DB_SPECS
 
 

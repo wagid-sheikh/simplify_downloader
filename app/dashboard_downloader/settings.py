@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
-from dashboard_downloader.config import (
+from app.dashboard_downloader.config import (
     DATA_DIR,
     MERGE_BUCKET_DB_SPECS,
     MERGED_NAMES,
