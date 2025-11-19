@@ -37,7 +37,7 @@ from typing import Any, Awaitable, Callable, Dict, Mapping, TypeVar
 
 from dotenv import load_dotenv
 
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -189,7 +189,28 @@ def _run_async_blocking(task_factory: Callable[[], Awaitable[T]]) -> T:
     return result["value"]
 
 
+def _fetch_system_config_sync(database_url: str) -> Dict[str, str]:
+    engine = None
+    try:
+        engine = create_engine(database_url, future=True)
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text("SELECT key, value FROM system_config WHERE is_active = TRUE")
+            ).mappings()
+            return {row["key"]: row["value"] for row in rows}
+    except SQLAlchemyError as exc:
+        message = "Unable to load configuration from system_config"
+        logger.exception(message)
+        raise ConfigError(message) from exc
+    finally:
+        if engine is not None:
+            engine.dispose()
+
+
 async def _fetch_system_config_async(database_url: str) -> Dict[str, str]:
+    if database_url.lower().startswith("sqlite://"):
+        return _fetch_system_config_sync(database_url)
+
     engine: AsyncEngine | None = None
     try:
         engine = create_async_engine(database_url, future=True)
