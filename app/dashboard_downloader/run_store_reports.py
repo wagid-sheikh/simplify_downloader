@@ -20,7 +20,7 @@ from dashboard_downloader.report_generator import (
     render_store_report_pdf,
 )
 from dashboard_downloader.run_summary import PIPELINE_NAME, RunAggregator
-from simplify_downloader.config import config
+from app.config import config
 
 DEFAULT_TEMPLATE_DIR = Path(__file__).with_name("templates")
 STORE_TEMPLATE_FILE_NAME = "store_report.html"

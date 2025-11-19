@@ -346,7 +346,7 @@ async def extract_dashboard_summary(
     *,
     logger: JsonLogger,
 ) -> Dict[str, Any]:
-    from simplify_downloader.common.dashboard_store import DASHBOARD_SUMMARY_COLUMNS
+    from app.common.dashboard_store import DASHBOARD_SUMMARY_COLUMNS
 
     store_code = store_cfg.get("store_code")
 

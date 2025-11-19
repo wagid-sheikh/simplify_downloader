@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, Iterable, List
 
-from simplify_downloader.config import config
+from app.config import config
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 PKG_ROOT = Path(__file__).resolve().parent            # .../simplify_downloader/dashboard_downloader

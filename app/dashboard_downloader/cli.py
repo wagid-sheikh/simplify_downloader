@@ -6,12 +6,12 @@ import asyncio
 from typing import List, Optional, TYPE_CHECKING
 
 from dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
-from simplify_downloader.common.db import run_alembic_upgrade
+from app.common.db import run_alembic_upgrade
 
 if TYPE_CHECKING:  # pragma: no cover - import cycles avoided at runtime
     from dashboard_downloader.run_summary import RunAggregator
     from dashboard_downloader.settings import PipelineSettings
-    from simplify_downloader.config import Config
+    from app.config import Config
 
 
 def configure_logging(logger: JsonLogger) -> None:
@@ -54,7 +54,7 @@ def _validate_prerequisites(
 
 
 async def _run_async(args: argparse.Namespace) -> int:
-    from simplify_downloader.config import config as runtime_config
+    from app.config import config as runtime_config
     from dashboard_downloader.run_downloads import LoginBootstrapError
     from dashboard_downloader.run_summary import RunAggregator
     from dashboard_downloader.settings import GLOBAL_CREDENTIAL_ERROR, load_settings
@@ -201,21 +201,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         return asyncio.run(_run_async(args))
 
     if args.command == "run-weekly":
-        from simplify_downloader.config import config as runtime_config
+        from app.config import config as runtime_config
         from tsv_dashboard.pipelines import dashboard_weekly
 
         dashboard_weekly.run_pipeline(env=args.run_env or runtime_config.run_env)
         return 0
 
     if args.command == "run-monthly":
-        from simplify_downloader.config import config as runtime_config
+        from app.config import config as runtime_config
         from tsv_dashboard.pipelines import dashboard_monthly
 
         dashboard_monthly.run_pipeline(env=args.run_env or runtime_config.run_env)
         return 0
 
     if args.command == "db" and args.db_command == "upgrade":
-        from simplify_downloader.config import config as runtime_config
+        from app.config import config as runtime_config
 
         run_alembic_upgrade(
             revision=args.revision,
@@ -225,7 +225,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     if args.command == "db" and args.db_command == "check":
-        from simplify_downloader.config import config as runtime_config
+        from app.config import config as runtime_config
         from dashboard_downloader.db_health import check_database_health
 
         errors = asyncio.run(check_database_health(runtime_config.database_url))

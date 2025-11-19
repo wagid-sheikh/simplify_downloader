@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from simplify_downloader.config import Config, ConfigError
-from simplify_downloader.crypto import encrypt_secret
+from app.config import Config, ConfigError
+from app.crypto import encrypt_secret
 
 
 REQUIRED_ENV_KEYS = [

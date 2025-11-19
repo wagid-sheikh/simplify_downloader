@@ -12,7 +12,7 @@ from dashboard_downloader.config import (
     global_credentials,
     stores_from_list,
 )
-from simplify_downloader.config import config
+from app.config import config
 
 
 GLOBAL_CREDENTIAL_ERROR = "Global CRM credentials (username/password) are missing/invalid."

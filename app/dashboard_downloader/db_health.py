@@ -13,7 +13,7 @@ from dashboard_downloader.db_tables import (
     pipeline_run_summaries,
     pipelines,
 )
-from simplify_downloader.common.db import session_scope
+from app.common.db import session_scope
 
 REQUIRED_TABLES = [
     pipeline_run_summaries,

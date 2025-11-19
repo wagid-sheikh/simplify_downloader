@@ -60,7 +60,7 @@ def first_login_headed(username: str, password: str) -> None:
         print(f"Saved storage state → {storage_state_path()}")
 
 if __name__ == "__main__":
-    from simplify_downloader.config import config
+    from app.config import config
 
     user = config.td_global_username
     pwd = config.td_global_password

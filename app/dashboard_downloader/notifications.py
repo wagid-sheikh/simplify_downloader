@@ -19,7 +19,7 @@ from dashboard_downloader.db_tables import (
     pipeline_run_summaries,
     pipelines,
 )
-from simplify_downloader.config import config
+from app.config import config
 
 logger = logging.getLogger(__name__)
 

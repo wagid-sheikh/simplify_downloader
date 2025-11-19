@@ -11,7 +11,7 @@ for path in (ROOT, PROJECT_PARENT):
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
 
-from simplify_downloader.crypto import encrypt_secret
+from app.crypto import encrypt_secret
 
 
 def _default_system_config_rows(secret_key: str) -> dict[str, str]:

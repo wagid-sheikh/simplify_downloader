@@ -1017,7 +1017,7 @@ async def _switch_to_store_dashboard_and_download(
         try:
             dashboard_data = await extract_dashboard_summary(page, store_cfg, logger=logger)
             if dashboard_data:
-                from simplify_downloader.common.dashboard_store import persist_dashboard_summary
+                from app.common.dashboard_store import persist_dashboard_summary
 
                 await persist_dashboard_summary(
                     dashboard_data,
