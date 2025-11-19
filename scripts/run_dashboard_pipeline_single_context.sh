@@ -23,5 +23,5 @@ fi
 echo "[dashboard] Ensuring database migrations are up to date..."
 poetry run alembic upgrade head
 
-# This uses the new CLI subcommand
-exec poetry run python -m app run-single-session "$@"
+CLI_ENTRYPOINT=(poetry run python -m app)
+exec "${CLI_ENTRYPOINT[@]}" run-single-session "$@"

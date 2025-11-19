@@ -20,4 +20,6 @@ RUN pip install "poetry>=1.7" && \
 
 COPY . .
 
+# Canonical CLI entrypoint (`python -m app <command>`)
 ENTRYPOINT ["python", "-m", "app"]
+CMD ["run"]
