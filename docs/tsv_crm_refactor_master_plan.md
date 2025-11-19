@@ -1,13 +1,14 @@
-# TSV CRM Backend – Master Refactor Plan (v1.17 → app-based architecture)
+# TSV CRM Backend – Master Refactor Plan (v1.18 → app-based architecture)
+
 # FULLY AUDITED • CTO-LEVEL VERSION
 
 This document is the **single source of truth** for restructuring the legacy `simplify_downloader` repo into a clean, modern, FastAPI-ready **TSV CRM Backend**.
 
 Every TODO includes:
 
-- **Actor:** Human (Wagid) or Codex  
-- **Strict Codex Prompt:** Zero-hallucination instructions Codex must follow  
-- **Verification:** Checklist + concrete commands  
+- **Actor:** Human (Wagid) or Codex
+- **Strict Codex Prompt:** Zero-hallucination instructions Codex must follow
+- **Verification:** Checklist + concrete commands
 
 Use this file over multiple days. Always complete one TODO fully (including verification) before moving to the next.
 
@@ -107,24 +108,24 @@ Execute these in order. Never skip ahead.
 You already did:
 
 ```bash
-git tag -a v1.17 -m "Stable after round 1 refactor & Editable Daily Store Performance Report PDF"
-git push origin v1.17
+git tag -a v1.18 -m "Stable after round 1 refactor & Editable Daily Store Performance Report PDF"
+git push origin v1.18
 ```
 
 **Verification (for record only):**
 
-- [x] `git tag` shows `v1.17`
-- [x] `git show v1.17` shows expected commit
+- [X] `git tag` shows `v1.18`
+- [X] `git show v1.1`8 shows expected commit
 
 ---
 
-### 🥇 TODO 1 – Create Stable Parallel Instance of `v1.17` (RUN-ONLY COPY)
+### 🥇 TODO 1 – Create Stable Parallel Instance of `v1.18` (RUN-ONLY COPY)
 
 **Actor:** Human (Wagid)
 
 #### Goal
 
-Have a **frozen copy** of `v1.17` used **only to run pipelines**, while the original repo becomes the refactor playground.
+Have a **frozen copy** of `v1.18` used **only to run pipelines**, while the original repo becomes the refactor playground.
 
 #### Steps (Human)
 
@@ -132,24 +133,25 @@ From your main projects directory:
 
 ```bash
 cd /path/where/you/keep/projects
-git clone https://github.com/wagid-sheikh/simplify_downloader.git simplify_downloader_v1_17_stable
-cd simplify_downloader_v1_17_stable
-git checkout v1.17
-git checkout -b v1.17-stable
+git clone https://github.com/wagid-sheikh/simplify_downloader.git simplify_downloader_v1_18_stable
+cd simplify_downloader_v1_18_stable
+git checkout v1.18
+git checkout -b v1.18-stable
 poetry install
 poetry run pytest
 ./scripts/run_dashboard_pipeline_single_context.sh
 ```
 
-**Rule:**  
-- `simplify_downloader_v1_17_stable/` is **RUN-ONLY**:  
+**Rule:**
+
+- `simplify_downloader_v1_18_stable/` is **RUN-ONLY**:
   - No edits, no Codex, no refactors.
 
 #### Verification
 
-- [ ] Folder `simplify_downloader_v1_17_stable/` exists.
-- [ ] `git status` is clean; branch is `v1.17-stable`.
-- [ ] `git rev-parse HEAD` equals `git rev-parse v1.17`.
+- [ ] Folder `simplify_downloader_v1_18_stable/` exists.
+- [ ] `git status` is clean; branch is `v1.18-stable`.
+- [ ] `git rev-parse HEAD` equals `git rev-parse v1.18`.
 - [ ] `poetry run pytest` passes.
 - [ ] `./scripts/run_dashboard_pipeline_single_context.sh` runs successfully.
 
@@ -178,8 +180,9 @@ Open `docs/REFACTOR_PLAN.md` and paste:
 - The context summary (Section A of this file, shortened if you like).
 - Final target architecture.
 - Non-negotiable constraints (no logic changes, etc.).
-- Statement:  
+- Statement:
   > We will kill all `simplify_downloader` references in imports, entrypoints, Docker, Compose, tests, and configs. Only archival docs may retain the old name explicitly.
+  >
 
 Commit:
 
@@ -241,7 +244,7 @@ git commit -m "Document naming decisions for app package and CLI"
 
 ### 🧩 TODO 4 – Create `app/` Package & Move All Python Code (STRUCTURE ONLY)
 
-**Actor:** Codex  
+**Actor:** Codex
 **Human:** Prepare branch + verify after
 
 ---
@@ -357,7 +360,7 @@ If something fails, fix/import issues before moving to TODO 5.
 
 ### 🧱 TODO 5 – Merge `tsv_dashboard/pipelines` into `app/dashboard_downloader/pipelines`
 
-**Actor:** Codex  
+**Actor:** Codex
 **Human:** Verify and run pipeline
 
 ---
@@ -440,7 +443,7 @@ Checklist:
 
 ### 🧹 TODO 6 – Remove `simplify_downloader` Identity from Active Use (Code, Tooling, Docs, CI)
 
-**Actor:** Codex  
+**Actor:** Codex
 **Human:** Carefully review
 
 #### Goal
@@ -599,43 +602,44 @@ poetry run alembic upgrade head
 
 Use this to tick off **every category** from the original `laundry_list.txt` sweep.
 
-- [ ] **Code imports**  
+- [ ] **Code imports**
+
   - No `from simplify_downloader...` or `import simplify_downloader` in any `.py` file.
+- [ ] **Alembic**
 
-- [ ] **Alembic**  
   - `alembic/env.py` and all `alembic/versions/*.py` updated to `app.*` imports only.
+- [ ] **Tests**
 
-- [ ] **Tests**  
-  - No `simplify_downloader.config` in `tests/`.  
+  - No `simplify_downloader.config` in `tests/`.
   - All fake-module injections and log paths updated.
+- [ ] **Docker & Compose**
 
-- [ ] **Docker & Compose**  
-  - Dockerfile `ENTRYPOINT` uses `python -m app`.  
+  - Dockerfile `ENTRYPOINT` uses `python -m app`.
   - `docker-compose.yml` uses `python -m app`.
+- [ ] **Scripts**
 
-- [ ] **Scripts**  
   - `scripts/run_dashboard_pipeline_single_context.sh` (and siblings) call `python -m app`.
+- [ ] **CI (GitHub workflows)**
 
-- [ ] **CI (GitHub workflows)**  
   - `.github/workflows/deploy-prod.yml` runs `python -m app db upgrade`.
+- [ ] **Config & Logs**
 
-- [ ] **Config & Logs**  
-  - `.env` / `.env.example` JSON_LOG_FILE path no longer references `simplify_downloader`.  
+  - `.env` / `.env.example` JSON_LOG_FILE path no longer references `simplify_downloader`.
   - Tests now use a neutral path, e.g. `tests/logs/app.jsonl`.
+- [ ] **Docs & Reports**
 
-- [ ] **Docs & Reports**  
-  - README, `docs/*.md`, `reports/2025/*.md` do **not** instruct to run `simplify_downloader` anymore.  
+  - README, `docs/*.md`, `reports/2025/*.md` do **not** instruct to run `simplify_downloader` anymore.
   - If the old name is mentioned, it is clearly labelled as “former/previous name” only.
+- [ ] **Metadata & CLI**
 
-- [ ] **Metadata & CLI**  
-  - `pyproject.toml` no longer uses `simplify-downloader` as `name`.  
+  - `pyproject.toml` no longer uses `simplify-downloader` as `name`.
   - Any `prog="simplify_downloader"` updated to the new CLI name.
+- [ ] **Ephemeral / Internal (Conscious decision to ignore)**
 
-- [ ] **Ephemeral / Internal (Conscious decision to ignore)**  
   - You have decided to ignore:
-    - `__pycache__` entries  
-    - Browser profile LevelDB paths under `profiles/`  
-    - `.git/config` remote name  
+    - `__pycache__` entries
+    - Browser profile LevelDB paths under `profiles/`
+    - `.git/config` remote name
   - These do not affect production readiness.
 
 ---
@@ -646,11 +650,11 @@ Use this to tick off **every category** from the original `laundry_list.txt` swe
 
 #### Goal
 
-Confirm that the refactored repo behaves the same as v1.17 stable for at least one known period.
+Confirm that the refactored repo behaves the same as v1.18 stable for at least one known period.
 
 #### Steps
 
-1. Use the **v1.17 stable** repo to run the pipeline for a specific known date or period.  
+1. Use the **v1.18 stable** repo to run the pipeline for a specific known date or period.
 2. Use the **refactored repo** to run the pipeline for the same period.
 3. Compare:
    - Generated PDFs
@@ -661,7 +665,7 @@ You don’t need bitwise identity, but operationally they should represent the s
 
 #### Verification
 
-- [ ] v1.17 stable pipeline output looks correct.
+- [ ] v1.18 stable pipeline output looks correct.
 - [ ] Refactored pipeline output matches expectations and is consistent.
 - [ ] No new regressions observed.
 
