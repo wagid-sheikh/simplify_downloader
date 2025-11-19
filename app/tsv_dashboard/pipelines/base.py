@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, Mapping
 
-from dashboard_downloader.db_tables import pipeline_run_summaries
+from app.dashboard_downloader.db_tables import pipeline_run_summaries
 from app.common.db import session_scope
 from app.config import config
 

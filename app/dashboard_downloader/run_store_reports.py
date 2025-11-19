@@ -9,17 +9,17 @@ from typing import Iterable, List, Sequence, Tuple
 
 import sqlalchemy as sa
 
-from common.date_utils import get_daily_report_date
-from common.db import session_scope
+from app.common.date_utils import get_daily_report_date
+from app.common.db import session_scope
 
-from dashboard_downloader.db_tables import documents
-from dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
-from dashboard_downloader.report_generator import (
+from app.dashboard_downloader.db_tables import documents
+from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
+from app.dashboard_downloader.report_generator import (
     StoreReportDataNotFound,
     build_store_context,
     render_store_report_pdf,
 )
-from dashboard_downloader.run_summary import PIPELINE_NAME, RunAggregator
+from app.dashboard_downloader.run_summary import PIPELINE_NAME, RunAggregator
 from app.config import config
 
 DEFAULT_TEMPLATE_DIR = Path(__file__).with_name("templates")
