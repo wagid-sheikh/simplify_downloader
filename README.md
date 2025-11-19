@@ -1,6 +1,6 @@
-# simplify_downloader
+# TSV CRM Backend
 
-Automated pipeline for Simplify TumbleDry MIS downloads including merge, ingestion, audit, and cleanup.
+Automated pipeline for the TSV CRM dashboard downloader, including download, merge, ingestion, audit, and cleanup. Formerly known as `simplify_downloader`.
 
 ## Quick start
 
@@ -12,7 +12,7 @@ poetry run pytest
 poetry run python -m app db upgrade
 
 # Execute the full download → ingest → audit pipeline
-./scripts/run_dashboard_pipeline.sh --stores_list "A668,A817"
+poetry run python -m app run --stores_list "A668,A817"
 ```
 
 To trigger just the dashboard downloader workflow (without touching the
@@ -23,9 +23,10 @@ root:
 ./scripts/run_dashboard_downloader.sh
 ```
 
-Both scripts honour the optional `--stores_list` flag (or the `STORES_LIST`
-environment variable) and expect a `DATABASE_URL` environment variable pointing
-at the target Postgres instance when ingestion is desired.
+Both the CLI (`python -m app run ...`) and the helper scripts honour the optional
+`--stores_list` flag (or the `STORES_LIST` environment variable) and expect a
+`DATABASE_URL` environment variable pointing at the target Postgres instance
+when ingestion is desired.
 
 See [`docs/configuration.md`](docs/configuration.md) for the authoritative list
 of required environment variables, filesystem paths, and security guardrails

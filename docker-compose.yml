@@ -26,7 +26,8 @@ services:
         condition: service_healthy
     networks:
       - internal
-    command: ["python", "-m", "app", "run"]
+    # Delegate to the canonical CLI entrypoint defined in the Dockerfile
+    command: ["run"]
 
 volumes:
   db_data:

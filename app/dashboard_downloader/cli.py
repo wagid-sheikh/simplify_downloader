@@ -149,7 +149,10 @@ async def _run_async(args: argparse.Namespace) -> int:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m app")
+    parser = argparse.ArgumentParser(
+        prog="python -m app",
+        description="TSV CRM Backend CLI (invoke as `python -m app <command>`)",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="Execute full pipeline")

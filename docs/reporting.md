@@ -1,6 +1,6 @@
 ## 🧾 Codex Task – Implement Daily PDF Store Reports + Email (V1)
 
-You are working in the `simplify_downloader` project.
+You are working in the `TSV CRM Backend` project (formerly `simplify_downloader`).
 
 The **scraping + ingest pipeline is already implemented elsewhere** (single-session login, dashboard scraper, CSV download/merge/ingest into Postgres).
 

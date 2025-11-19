@@ -1,6 +1,6 @@
 # Codex Development Control Process (Master Wrapper)
 
-This markdown file defines a strict, auditable workflow for Codex when developing or modifying the **simplify_downloader** project (or any future project). Store it in the repo (e.g., `/docs/CODEX_DEV_PROCESS.md`) and reference it in each development prompt.
+This markdown file defines a strict, auditable workflow for Codex when developing or modifying the **TSV CRM Backend** project (or any future project). Store it in the repo (e.g., `/docs/CODEX_DEV_PROCESS.md`) and reference it in each development prompt.
 
 ---
 
