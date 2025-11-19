@@ -15,9 +15,9 @@ from dashboard_downloader.run_summary import (
 )
 from dashboard_downloader.notifications import send_notifications_for_run
 
-from simplify_downloader.common.audit import audit_bucket
-from simplify_downloader.common.cleanup import cleanup_bucket
-from simplify_downloader.common.ingest.service import ingest_bucket
+from app.common.audit import audit_bucket
+from app.common.cleanup import cleanup_bucket
+from app.common.ingest.service import ingest_bucket
 
 from .settings import PipelineSettings
 

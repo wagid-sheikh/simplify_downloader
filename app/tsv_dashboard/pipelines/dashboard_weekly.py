@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List
 
 from dashboard_downloader.notifications import send_notifications_for_run
-from simplify_downloader.config import config
+from app.config import config
 
 from .base import (
     PipelinePhaseTracker,
@@ -24,7 +24,7 @@ from .reporting import (
     record_documents,
 )
 
-PIPELINE_NAME = "simplify_dashboard_monthly"
+PIPELINE_NAME = "simplify_dashboard_weekly"
 
 
 async def _dispatch_notifications(run_id: str, tracker: PipelinePhaseTracker) -> None:
@@ -40,14 +40,14 @@ async def _dispatch_notifications(run_id: str, tracker: PipelinePhaseTracker) ->
 
 
 def _compute_period(today: date) -> tuple[date, date]:
-    first_of_month = today.replace(day=1)
-    period_end = first_of_month - timedelta(days=1)
-    period_start = period_end.replace(day=1)
+    delta = today.weekday() + 1
+    period_end = today - timedelta(days=delta)
+    period_start = period_end - timedelta(days=6)
     return period_start, period_end
 
 
-def _build_period_label(start: date) -> str:
-    return f"{start:%Y-%m}"
+def _build_period_label(start: date, end: date) -> str:
+    return f"{start:%Y-%m-%d}_to_{end:%Y-%m-%d}"
 
 
 async def _run(env: str | None = None) -> None:
@@ -60,12 +60,12 @@ async def _run(env: str | None = None) -> None:
     today = date.today()
     period_start, period_end = _compute_period(today)
     tracker.set_report_date(period_end)
-    period_label = _build_period_label(period_start)
+    period_label = _build_period_label(period_start, period_end)
 
     existing = await check_existing_run(database_url, PIPELINE_NAME, period_end)
     if existing and existing.get("overall_status") in {"ok", "warning"}:
         print(
-            f"Monthly report for {period_label} already generated with status {existing['overall_status']}; skipping."
+            f"Weekly report for {period_label} already generated with status {existing['overall_status']}; skipping."
         )
         return
 
@@ -76,14 +76,20 @@ async def _run(env: str | None = None) -> None:
         period_end=period_end,
     )
     tracker.mark_phase("load_data", "ok")
-    stats_by_store: Dict[str, Dict[str, float | None]] = {}
+    stats_by_store: Dict[str, Dict[str, float]] = {}
     for row in rows:
         stats_by_store[row["store_code"]] = {
             "row_count": int(row["row_count"] or 0),
             "pickup_total": float(row["pickup_total"] or 0),
-            "avg_delivery_tat": float(row["avg_delivery_tat"] or 0) if row["avg_delivery_tat"] is not None else None,
-            "avg_repeat_pct": float(row["avg_repeat_pct"] or 0) if row["avg_repeat_pct"] is not None else None,
-            "avg_conversion": float(row["avg_conversion"] or 0) if row["avg_conversion"] is not None else None,
+            "avg_delivery_tat": float(row["avg_delivery_tat"] or 0)
+            if row["avg_delivery_tat"] is not None
+            else None,
+            "avg_repeat_pct": float(row["avg_repeat_pct"] or 0)
+            if row["avg_repeat_pct"] is not None
+            else None,
+            "avg_conversion": float(row["avg_conversion"] or 0)
+            if row["avg_conversion"] is not None
+            else None,
         }
 
     stores_with_data = sorted(stats_by_store.keys())
@@ -91,11 +97,7 @@ async def _run(env: str | None = None) -> None:
     total_rows = sum(stats["row_count"] for stats in stats_by_store.values())
 
     tracker.metrics = {
-        "period": {
-            "label": period_label,
-            "start": period_start.isoformat(),
-            "end": period_end.isoformat(),
-        },
+        "period": {"start": period_start.isoformat(), "end": period_end.isoformat()},
         "stores_expected": stores,
         "stores_with_data": stores_with_data,
         "stores_without_data": stores_without_data,
@@ -104,7 +106,7 @@ async def _run(env: str | None = None) -> None:
 
     if total_rows == 0:
         tracker.add_summary(
-            f"No dashboard data was found for {period_label}. Please ensure the daily pipeline ran successfully."
+            f"No dashboard data was available for the week {period_label}. Daily ingestion is required before weekly reporting."
         )
         tracker.mark_phase("render_pdfs", "warning")
         tracker.mark_phase("persist_documents", "warning")
@@ -125,8 +127,8 @@ async def _run(env: str | None = None) -> None:
         period_label=period_label,
         store_stats=stats_by_store,
         stores_without_data=stores_without_data,
-        prefix="Monthly Store Performance",
-        reference_key="month",
+        prefix="Weekly Store Performance",
+        reference_key="week",
     )
     pdfs.extend(per_store)
 
@@ -145,8 +147,8 @@ async def _run(env: str | None = None) -> None:
         period_label=period_label,
         combined_stats=combined_totals,
         missing_stores=stores_without_data,
-        prefix="Monthly Store Performance",
-        reference_key="month",
+        prefix="Weekly Store Performance",
+        reference_key="week",
     )
     pdfs.append(combined_pdf)
     tracker.metrics["pdfs_generated"] = len(pdfs)
@@ -156,7 +158,7 @@ async def _run(env: str | None = None) -> None:
         tracker.overall = "warning"
 
     tracker.add_summary(
-        f"Monthly PDFs: {len(pdfs)} generated for {period_label}. Stores with data: {len(stores_with_data)}; missing: {len(stores_without_data)}."
+        f"Weekly PDFs: {len(pdfs)} generated for period {period_label}. Stores with data: {len(stores_with_data)}; missing: {len(stores_without_data)}."
     )
 
     await record_documents(
@@ -165,7 +167,7 @@ async def _run(env: str | None = None) -> None:
         run_id=run_id,
         report_date=period_end,
         artifacts=pdfs,
-        doc_type="store_monthly_pdf",
+        doc_type="store_weekly_pdf",
     )
     tracker.mark_phase("persist_documents", "ok")
 

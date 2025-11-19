@@ -30,7 +30,7 @@ from .config import (
     storage_state_path,
 )
 from .json_logger import JsonLogger, log_event
-from simplify_downloader.config import config as global_config
+from app.config import config as global_config
 
 
 DASHBOARD_DOWNLOAD_CONTROL_TIMEOUT_MS = 90_000

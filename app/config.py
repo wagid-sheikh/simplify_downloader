@@ -18,7 +18,7 @@ and must be decrypted here using SECRET_KEY from environment.
 All new settings MUST go into system_config unless explicitly marked env-only.
 To use a config value, import:
 
-    from simplify_downloader.config import config
+    from app.config import config
 
 Do not access os.getenv or system_config directly from any other module.
 """
@@ -41,7 +41,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from simplify_downloader.crypto import decrypt_secret
+from app.crypto import decrypt_secret
 
 
 # Determine project root correctly (directory containing this file)

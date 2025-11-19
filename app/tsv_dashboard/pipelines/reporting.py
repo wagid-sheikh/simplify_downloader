@@ -9,9 +9,9 @@ import sqlalchemy as sa
 
 from dashboard_downloader.db_tables import documents
 from common.date_utils import normalize_store_codes
-from simplify_downloader.common.dashboard_store import store_dashboard_summary, store_master
-from simplify_downloader.common.db import session_scope
-from simplify_downloader.config import config
+from app.common.dashboard_store import store_dashboard_summary, store_master
+from app.common.db import session_scope
+from app.config import config
 
 from .base import PipelinePhaseTracker, persist_summary_record
 

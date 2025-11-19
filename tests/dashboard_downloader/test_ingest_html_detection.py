@@ -5,7 +5,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from simplify_downloader.common.ingest.service import _load_csv_rows, _looks_like_html
+from app.common.ingest.service import _load_csv_rows, _looks_like_html
 
 
 def test_looks_like_html_detects_html(tmp_path):
