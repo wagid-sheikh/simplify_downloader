@@ -23,9 +23,9 @@ if __spec__ is not None:
     __spec__.submodule_search_locations = __path__
 
 _ALIAS_MODULES = {
-    "common": "common",
-    "dashboard_downloader": "dashboard_downloader",
-    "crm_downloader": "crm_downloader",
+    "common": "app.common",
+    "dashboard_downloader": "app.dashboard_downloader",
+    "crm_downloader": "app.crm_downloader",
     "alembic": "alembic",
     "scripts": "scripts",
     "docs": "docs",
