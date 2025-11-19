@@ -7,7 +7,7 @@ from typing import Any, Dict
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from ..dashboard_downloader.json_logger import JsonLogger, log_event
+from app.dashboard_downloader.json_logger import JsonLogger, log_event
 from .db import session_scope
 
 DASHBOARD_SUMMARY_COLUMNS = (
