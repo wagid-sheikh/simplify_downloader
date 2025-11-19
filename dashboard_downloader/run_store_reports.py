@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
@@ -208,7 +209,13 @@ async def _generate_reports(
                 aggregator.register_pdf_failure(code, "context failure")
             continue
 
-        summary_output_path = reports_root / f"{report_date.year}" / f"{code}_{report_date:%m-%d}.pdf"
+        store_name = context.get("store_name") or code
+        safe_store_name = re.sub(r"\s+", "", store_name)
+        if not safe_store_name:
+            safe_store_name = code
+        summary_output_path = (
+            reports_root / f"{report_date.year}" / f"{safe_store_name}_{report_date:%m-%d}.pdf"
+        )
         try:
             await render_store_report_pdf(
                 store_context=context,
