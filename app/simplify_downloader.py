@@ -42,7 +42,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def run_pipeline(*args: Any, **kwargs: Any) -> Any:
-    """Shorthand for :func:`dashboard_downloader.pipeline.run_pipeline`."""
+    """Shorthand for :func:`app.dashboard_downloader.pipeline.run_pipeline`."""
 
     from app.dashboard_downloader.pipeline import run_pipeline as _run_pipeline
 

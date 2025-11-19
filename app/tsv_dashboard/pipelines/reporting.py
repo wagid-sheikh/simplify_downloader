@@ -158,7 +158,7 @@ async def generate_period_pdfs(
     reference_key: str,
 ) -> list[PdfArtifact]:
     artifacts: list[PdfArtifact] = []
-    template_dir = Path("dashboard_downloader").joinpath("templates")
+    template_dir = Path(__file__).resolve().parents[2] / "dashboard_downloader" / "templates"
     generated_at = datetime.utcnow().isoformat()
 
     async def _render_for_store(store_code: str, stats: Mapping[str, Any] | None, missing: bool) -> None:
@@ -194,7 +194,7 @@ async def generate_combined_pdf(
     prefix: str,
     reference_key: str,
 ) -> PdfArtifact:
-    template_dir = Path("dashboard_downloader").joinpath("templates")
+    template_dir = Path(__file__).resolve().parents[2] / "dashboard_downloader" / "templates"
     generated_at = datetime.utcnow().isoformat()
     context = {
         "title": render_period_title(prefix, period_label),
