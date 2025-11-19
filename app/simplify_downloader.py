@@ -34,9 +34,9 @@ _ALIAS_MODULES = {
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Entrypoint mirroring ``python -m simplify_downloader`` semantics."""
+    """Entrypoint mirroring ``python -m app`` semantics."""
 
-    from dashboard_downloader.cli import main as cli_main
+    from app.dashboard_downloader.cli import main as cli_main
 
     return cli_main(list(argv) if argv is not None else None)
 
@@ -44,7 +44,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def run_pipeline(*args: Any, **kwargs: Any) -> Any:
     """Shorthand for :func:`dashboard_downloader.pipeline.run_pipeline`."""
 
-    from dashboard_downloader.pipeline import run_pipeline as _run_pipeline
+    from app.dashboard_downloader.pipeline import run_pipeline as _run_pipeline
 
     return _run_pipeline(*args, **kwargs)
 
