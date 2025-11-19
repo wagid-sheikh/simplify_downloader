@@ -1038,7 +1038,7 @@ class StoreReportPdfBuilder:
                 self.form.checkbox(
                     name=f"undelivered_delivered_{idx}",
                     tooltip="Delivered?",
-                    x=positions["delivered"],
+                    x=self.margin,
                     y=action_y - 6,
                     size=12,
                     borderColor=colors.HexColor("#1c1c1c"),
@@ -1047,9 +1047,9 @@ class StoreReportPdfBuilder:
                 self.form.textfield(
                     name=f"undelivered_comment_{idx}",
                     tooltip="Comments",
-                    x=positions["comments"],
+                    x=self.margin + 20,
                     y=action_y - 7,
-                    width=comments_width - 5,
+                    width=self.width - self.margin - (self.margin + 20),
                     height=16,
                     borderWidth=1,
                 )
@@ -1138,7 +1138,7 @@ class StoreReportPdfBuilder:
                 self.form.checkbox(
                     name=f"missed_lead_converted_{idx}",
                     tooltip="Lead converted?",
-                    x=positions["converted"],
+                    x=self.margin,
                     y=action_y - 6,
                     size=12,
                     borderColor=colors.HexColor("#1c1c1c"),
@@ -1147,9 +1147,9 @@ class StoreReportPdfBuilder:
                 self.form.textfield(
                     name=f"missed_lead_comment_{idx}",
                     tooltip="Comments",
-                    x=positions["comments"],
+                    x=self.margin + 20,
                     y=action_y - 7,
-                    width=comments_width - 5,
+                    width=self.width - self.margin - (self.margin + 20),
                     height=16,
                     borderWidth=1,
                 )
