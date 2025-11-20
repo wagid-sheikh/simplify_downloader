@@ -39,7 +39,7 @@ def _upsert_config(bind, system_config: sa.Table, *, key: str, value: str, descr
 
 def upgrade() -> None:
     bind = op.get_bind()
-    meta = sa.MetaData(bind=bind)
+    meta = sa.MetaData()
     system_config = sa.Table("system_config", meta, autoload_with=bind)
     store_master = sa.Table("store_master", meta, autoload_with=bind)
 
@@ -70,7 +70,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     bind = op.get_bind()
-    meta = sa.MetaData(bind=bind)
+    meta = sa.MetaData()
     system_config = sa.Table("system_config", meta, autoload_with=bind)
     store_master = sa.Table("store_master", meta, autoload_with=bind)
 
