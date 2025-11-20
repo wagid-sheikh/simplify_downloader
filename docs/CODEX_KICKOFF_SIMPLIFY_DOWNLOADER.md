@@ -1,6 +1,6 @@
-# Codex Kickoff — simplify_downloader (Finalize & Implement)
+# Codex Kickoff — app-based CRM backend (Finalize & Implement)
 
-**Follow `/docs/CODEX_DEV_PROCESS.md` for the gated workflow.** This file is the *actual work spec* Codex must implement.
+**Follow `/docs/CODEX_DEV_PROCESS.md` for the gated workflow.** This file is the *actual work spec* Codex must implement. The project now ships as the `app`-based CRM backend; any references to `simplify_downloader` are legacy labels kept for historical clarity.
 
 > Non‑negotiables: keep the existing downloader & merger intact; enhance and integrate the rest.
 
