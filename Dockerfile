@@ -21,3 +21,4 @@ RUN pip install "poetry>=1.7" && \
 COPY . .
 
 ENTRYPOINT ["python", "-m", "app"]
+CMD ["run"]
