@@ -19,6 +19,7 @@ from app.dashboard_downloader.db_tables import (
     pipeline_run_summaries,
     pipelines,
 )
+from app.common.dashboard_store import store_master
 from app.config import config
 
 logger = logging.getLogger(__name__)
@@ -200,6 +201,7 @@ def _build_store_plans(
     recipients: list[dict[str, Any]],
     docs: list[DocumentRecord],
     context: dict[str, Any],
+    store_names: dict[str, str],
 ) -> list[EmailPlan]:
     if not template:
         return []
@@ -241,6 +243,7 @@ def _build_store_plans(
             continue
         store_context = dict(context)
         store_context["store_code"] = store_code
+        store_context["store_name"] = store_names.get(store_code, store_code)
         subject = _render_template(template["subject_template"], store_context)
         body = _render_template(template["body_template"], store_context)
         plans.append(
@@ -311,6 +314,7 @@ def _build_email_plans(
     recipients: dict[int, list[dict[str, Any]]],
     docs: list[DocumentRecord],
     context: dict[str, Any],
+    store_names: dict[str, str],
 ) -> list[EmailPlan]:
     plans: list[EmailPlan] = []
     for profile in profiles:
@@ -332,6 +336,7 @@ def _build_email_plans(
                     profile_recipients,
                     docs,
                     context,
+                    store_names,
                 )
             )
         else:
@@ -401,6 +406,24 @@ async def _load_notification_resources(
             )
         ).mappings().all()
 
+        store_codes: set[str] = set()
+        for row in docs_rows:
+            code = _normalize_store_code(row.get("reference_id_3"))
+            if code and code != "ALL":
+                store_codes.add(code)
+
+        store_names: dict[str, str] = {}
+        if store_codes:
+            store_rows = (
+                await session.execute(
+                    sa.select(
+                        sa.func.upper(store_master.c.store_code).label("store_code"),
+                        store_master.c.store_name,
+                    ).where(sa.func.upper(store_master.c.store_code).in_(store_codes))
+                )
+            ).mappings().all()
+            store_names = {row["store_code"]: row["store_name"] for row in store_rows}
+
     recipients_by_profile: dict[int, list[dict[str, Any]]] = {}
     for row in recipients_rows:
         data = dict(row)
@@ -413,6 +436,7 @@ async def _load_notification_resources(
         "profiles": [dict(row) for row in profiles_rows],
         "templates": templates_by_profile,
         "recipients": recipients_by_profile,
+        "store_names": store_names,
     }
     return resources, []
 
@@ -430,6 +454,7 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
     profiles_data = resources["profiles"]
     templates_map = resources["templates"]
     recipients_by_profile = resources["recipients"]
+    store_names = resources["store_names"]
 
     context = {
         "pipeline_name": pipeline_name,
@@ -448,6 +473,7 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
         recipients=recipients_by_profile,
         docs=documents_list,
         context=context,
+        store_names=store_names,
     )
 
     if not plans:
@@ -488,6 +514,7 @@ async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str
     profiles_data = resources["profiles"]
     templates_map = resources["templates"]
     recipients_by_profile = resources["recipients"]
+    store_names = resources["store_names"]
 
     context = {
         "pipeline_name": pipeline_name,
@@ -506,6 +533,7 @@ async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str
         recipients=recipients_by_profile,
         docs=documents_list,
         context=context,
+        store_names=store_names,
     )
     if not plans:
         findings.append("No notification emails would be scheduled for this run. Check recipients/templates/docs.")
