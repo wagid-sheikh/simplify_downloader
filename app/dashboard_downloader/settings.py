@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, List, Optional
 
 from app.dashboard_downloader.config import (
     DATA_DIR,
     MERGE_BUCKET_DB_SPECS,
     MERGED_NAMES,
-    env_stores_list,
+    fetch_store_codes,
+    normalize_store_codes,
     global_credentials,
     stores_from_list,
 )
@@ -43,37 +44,8 @@ class PipelineSettings:
     global_password: str = field(default_factory=_default_global_password)
 
 
-def _split_codes(raw: str | None) -> List[str]:
-    if not raw:
-        return []
-    return [token.strip() for token in raw.split(",") if token.strip()]
-
-
-def _normalized(values: Iterable[str]) -> List[str]:
-    return sorted({token.strip().upper() for token in values if token and token.strip()})
-
-
-def _validate_store_selector_sources(*, cli: List[str], env_upper: str | None) -> None:
-    sources: List[tuple[str, List[str]]] = []
-    if cli:
-        sources.append(("CLI --stores_list", _normalized(cli)))
-    if env_upper:
-        sources.append(("STORES_LIST env", _normalized(_split_codes(env_upper))))
-
-    if not sources:
-        return
-
-    baseline_codes = sources[0][1]
-    for label, codes in sources[1:]:
-        if codes != baseline_codes:
-            raise ValueError(
-                "Conflicting store selections detected between %s and %s: %s vs %s"
-                % (sources[0][0], label, ",".join(baseline_codes), ",".join(codes))
-            )
-
-
-def _ensure_report_store_alignment(selected: Dict[str, dict]) -> None:
-    report_codes = _normalized(config.report_stores_list)
+async def _ensure_report_store_alignment(selected: Dict[str, dict]) -> None:
+    report_codes = await fetch_store_codes(database_url=config.database_url, report_flag=True)
     if not report_codes:
         return
 
@@ -81,24 +53,34 @@ def _ensure_report_store_alignment(selected: Dict[str, dict]) -> None:
     missing = sorted(code for code in report_codes if code not in selected_codes)
     if missing:
         raise ValueError(
-            "REPORT_STORES_LIST includes stores not present in the scraping run: %s"
-            % ",".join(missing)
+            "Report-eligible stores are missing from the scraping run: %s" % ",".join(missing)
         )
 
 
-def load_settings(*, stores_list: Optional[str], dry_run: bool, run_id: str) -> PipelineSettings:
-    raw_upper_env = ",".join(config.stores_list)
-    cli_values = _split_codes(stores_list)
-    _validate_store_selector_sources(cli=cli_values, env_upper=raw_upper_env)
+async def _resolve_store_codes(cli_codes: List[str]) -> List[str]:
+    if cli_codes:
+        normalized_cli = normalize_store_codes(cli_codes)
+        existing = await fetch_store_codes(
+            database_url=config.database_url, store_codes=normalized_cli
+        )
+        missing = [code for code in normalized_cli if code not in existing]
+        if missing:
+            raise ValueError(
+                "store_master is missing requested store codes: %s" % ",".join(sorted(missing))
+            )
+        return existing
 
-    env_list = env_stores_list()
+    stores = await fetch_store_codes(database_url=config.database_url, etl_flag=True)
+    if not stores:
+        raise ValueError("No stores are flagged for ETL in store_master")
+    return stores
+
+
+async def load_settings(*, stores_list: Optional[str], dry_run: bool, run_id: str) -> PipelineSettings:
     cli_list = [s.strip() for s in (stores_list.split(",") if stores_list else []) if s.strip()]
-    final_list: List[str] = cli_list or env_list
-    if not final_list:
-        raise ValueError("At least one store code must be provided via --stores_list or STORES_LIST")
+    store_codes = await _resolve_store_codes(cli_list)
+    selected = stores_from_list(store_codes)
 
-    raw_env = raw_upper_env or ""
-    selected = stores_from_list(final_list)
-
-    _ensure_report_store_alignment(selected)
-    return PipelineSettings(run_id=run_id, stores=selected, raw_store_env=raw_env, dry_run=dry_run)
+    await _ensure_report_store_alignment(selected)
+    raw_source = f"cli override: {','.join(cli_list)}" if cli_list else "store_master.etl_flag"
+    return PipelineSettings(run_id=run_id, stores=selected, raw_store_env=raw_source, dry_run=dry_run)

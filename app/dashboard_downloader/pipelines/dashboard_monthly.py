@@ -56,7 +56,7 @@ async def _run(env: str | None = None) -> None:
     tracker = PipelinePhaseTracker(pipeline_name=PIPELINE_NAME, env=run_env, run_id=run_id)
     database_url = config.database_url
 
-    stores = get_report_store_codes()
+    stores = await get_report_store_codes(database_url)
     today = date.today()
     period_start, period_end = _compute_period(today)
     tracker.set_report_date(period_end)

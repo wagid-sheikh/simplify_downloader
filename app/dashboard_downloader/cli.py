@@ -63,7 +63,7 @@ async def _run_async(args: argparse.Namespace) -> int:
     logger = get_logger(run_id=run_id)
     configure_logging(logger)
     try:
-        settings = load_settings(
+        settings = await load_settings(
             stores_list=args.stores_list,
             dry_run=args.dry_run,
             run_id=run_id,

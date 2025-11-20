@@ -20,6 +20,7 @@ from app.dashboard_downloader.report_generator import (
     render_store_report_pdf,
 )
 from app.dashboard_downloader.run_summary import PIPELINE_NAME, RunAggregator
+from app.dashboard_downloader.config import fetch_store_codes, normalize_store_codes
 from app.config import config
 
 DEFAULT_TEMPLATE_DIR = Path(__file__).with_name("templates")
@@ -46,17 +47,30 @@ def resolve_report_date(arg_value: str | None = None) -> date:
     return get_daily_report_date()
 
 
-def get_configured_store_codes() -> List[str]:
-    return [code.upper() for code in config.report_stores_list]
-
-
 def _log_skip(logger: JsonLogger) -> None:
     log_event(
         logger=logger,
         phase="report",
         status="info",
-        message="no REPORT_STORES_LIST configured, skipping report generation",
+        message="no report-eligible stores found in store_master, skipping report generation",
     )
+
+
+async def _resolve_store_codes(
+    *, database_url: str, store_codes: Sequence[str] | None, logger: JsonLogger
+) -> List[str]:
+    normalized = normalize_store_codes(store_codes or [])
+    resolved = await fetch_store_codes(
+        database_url=database_url, report_flag=True, store_codes=normalized or None
+    )
+    if normalized:
+        missing = [code for code in normalized if code not in resolved]
+        if missing:
+            raise ValueError(
+                "store_master entries with report_flag are required for: %s"
+                % ",".join(sorted(missing))
+            )
+    return resolved
 
 
 def _parse_args(argv: Iterable[str] | None) -> argparse.Namespace:
@@ -304,11 +318,7 @@ async def run_store_reports_for_date(
     template_path: str | Path = DEFAULT_TEMPLATE_FILE,
     reports_root: str | Path = DEFAULT_REPORTS_ROOT,
 ) -> List[Tuple[str, Path]]:
-    codes = [code.upper() for code in store_codes] if store_codes else get_configured_store_codes()
     resolved_db_url = database_url or config.database_url
-    if not codes:
-        _log_skip(logger)
-        return []
 
     if not resolved_db_url:
         log_event(
@@ -317,6 +327,23 @@ async def run_store_reports_for_date(
             status="error",
             message="DATABASE_URL is required for report generation",
         )
+        return []
+
+    try:
+        codes = await _resolve_store_codes(
+            database_url=resolved_db_url, store_codes=store_codes, logger=logger
+        )
+    except ValueError as exc:
+        log_event(
+            logger=logger,
+            phase="report",
+            status="error",
+            message=str(exc),
+        )
+        return []
+
+    if not codes:
+        _log_skip(logger)
         return []
 
     template_file = _resolve_template_file(Path(template_path))
@@ -361,7 +388,7 @@ async def main(argv: Iterable[str] | None = None) -> int:
         logger=logger,
         run_id=run_id,
         database_url=config.database_url,
-        store_codes=config.report_stores_list,
+        store_codes=None,
         template_path=Path(args.template_path),
         reports_root=Path(args.reports_dir),
     )
