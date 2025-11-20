@@ -24,7 +24,7 @@ from .reporting import (
     record_documents,
 )
 
-PIPELINE_NAME = "simplify_dashboard_weekly"
+PIPELINE_NAME = "dashboard_weekly"
 
 
 async def _dispatch_notifications(run_id: str, tracker: PipelinePhaseTracker) -> None:

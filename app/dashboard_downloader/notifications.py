@@ -24,9 +24,9 @@ from app.config import config
 logger = logging.getLogger(__name__)
 
 STORE_PROFILE_DOC_TYPES: dict[tuple[str, str], str] = {
-    ("simplify_dashboard_daily", "store_daily_reports"): "store_daily_pdf",
-    ("simplify_dashboard_weekly", "store_weekly_reports"): "store_weekly_pdf",
-    ("simplify_dashboard_monthly", "store_monthly_reports"): "store_monthly_pdf",
+    ("dashboard_daily", "store_daily_reports"): "store_daily_pdf",
+    ("dashboard_weekly", "store_weekly_reports"): "store_weekly_pdf",
+    ("dashboard_monthly", "store_monthly_reports"): "store_monthly_pdf",
 }
 
 
