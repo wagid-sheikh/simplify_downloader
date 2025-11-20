@@ -12,7 +12,7 @@ poetry run pytest
 poetry run python -m app db upgrade
 
 # Execute the full download → ingest → audit pipeline via the new CLI
-poetry run python -m app run --stores_list "A668,A817" --run-migrations
+poetry run python -m app run --run-migrations
 ```
 
 To trigger the downloader workflow using a single browser session for all
@@ -20,12 +20,12 @@ stores, use the helper script which ensures execution from the project root and
 runs migrations before starting the pipeline:
 
 ```bash
-./scripts/run_dashboard_pipeline_single_context.sh --stores_list "A668,A817"
+./scripts/run_dashboard_pipeline_single_context.sh
 ```
 
-The CLI and helper script honour the optional `--stores_list` flag and default
-to `store_master.etl_flag = TRUE` when no override is provided. A `DATABASE_URL`
-variable pointing at the target Postgres instance when ingestion is desired.
+Both entrypoints select stores based on `store_master.etl_flag = TRUE` so that
+the ingestion scope comes directly from the database. Ensure a `DATABASE_URL`
+variable points at the target Postgres instance when ingestion is desired.
 
 ## Legacy entrypoint migration
 
