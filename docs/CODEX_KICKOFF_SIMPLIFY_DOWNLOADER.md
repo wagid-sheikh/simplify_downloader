@@ -8,7 +8,7 @@
 
 ## Scope — Deliver in One Pass
 
-* **Store selection** — defaults to `store_master.etl_flag = TRUE`; optional CLI flag `--stores_list` can restrict the run.
+* **Store selection** — resolve ingestion scope from `store_master.etl_flag = TRUE` and reporting scope from `store_master.report_flag = TRUE`.
 * **Automatic pipeline**: **download → merge → async ingest (Postgres) → audit counts → conditional cleanup**.
 * **Boolean rule**: `is_order_placed` → `1=True`, `0=False`, **anything else=False**.
 * **DB via SQLAlchemy 2.0 async (asyncpg) + Pydantic validation** (advisable) + **Alembic** (standard: create tables, revisions, upgrades).
@@ -154,9 +154,8 @@ MERGE_BUCKET_DB_SPECS = {
 
 ## Store selection input
 
-* Accept `--stores_list "A668,A817,A564,A789"` (CLI) and normalize: split, trim, drop empties, de‑dupe preserving order.
-* Without `--stores_list`, use `store_master.etl_flag = TRUE`.
-* Empty after resolution → exit non‑zero with a clear message.
+* Resolve ingestion stores from `store_master.etl_flag = TRUE` and ensure at least one store is eligible; exit non‑zero with a clear message if none are flagged.
+* Reporting pipelines rely on `store_master.report_flag = TRUE` and validate that every reporting store is also present in the ingestion scope.
 
 ---
 
@@ -228,8 +227,7 @@ For each bucket & run date:
 * Execution example (from server):
 
   ```bash
-  docker compose run --rm app python -m app run \
-    --stores_list "A668,A817,A564,A789"
+  docker compose run --rm app python -m app run
   ```
 * **Mac access (PGAdmin4)**: create SSH tunnel to server and connect to `localhost:5432`.
 
@@ -252,7 +250,6 @@ For each bucket & run date:
 
 * CLI flags:
 
-  * `--stores_list "A668,A817,..."`
   * `--dry_run` (skip DB writes; log ingestion plan & sample rows)
 * Env:
 
@@ -265,7 +262,7 @@ For each bucket & run date:
 ## Acceptance Criteria
 
 * Pipeline runs end‑to‑end inside Docker: **download → merge → ingest → audit → cleanup**.
-* `STORES_LIST` honored; downloader/merger unchanged except for wiring and counters.
+* Store selection derived from `store_master.etl_flag` and `store_master.report_flag`; downloader/merger unchanged except for wiring and counters.
 * `is_order_placed` coercion enforced (`1=True`, `0/other=False`).
 * ORM models + Pydantic models match `MERGE_BUCKET_DB_SPECS`.
 * Alembic manages schema; initial revision matches models; later changes via normal revisions.
