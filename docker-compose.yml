@@ -26,7 +26,7 @@ services:
         condition: service_healthy
     networks:
       - internal
-    command: ["python", "-m", "simplify_downloader", "run"]
+    command: ["python", "-m", "app", "run"]
 
 volumes:
   db_data:

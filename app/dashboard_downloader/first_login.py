@@ -10,8 +10,8 @@ if __package__ in (None, ""):
     _HERE = Path(__file__).resolve().parent
     sys.path.insert(0, str(_HERE.parent))
 
-    from dashboard_downloader.config import HOME_URL, LOGIN_URL, storage_state_path  # type: ignore  # noqa: E402
-    from dashboard_downloader import page_selectors as sel  # type: ignore  # noqa: E402
+    from app.dashboard_downloader.config import HOME_URL, LOGIN_URL, storage_state_path  # type: ignore  # noqa: E402
+    from app.dashboard_downloader import page_selectors as sel  # type: ignore  # noqa: E402
 else:
     from .config import HOME_URL, LOGIN_URL, storage_state_path
     from . import page_selectors as sel
@@ -60,7 +60,7 @@ def first_login_headed(username: str, password: str) -> None:
         print(f"Saved storage state → {storage_state_path()}")
 
 if __name__ == "__main__":
-    from simplify_downloader.config import config
+    from app.config import config
 
     user = config.td_global_username
     pwd = config.td_global_password

@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from simplify_downloader.dashboard_downloader.json_logger import JsonLogger, log_event
+from app.dashboard_downloader.json_logger import JsonLogger, log_event
 
 from ..db import session_scope
 from .models import BUCKET_MODEL_MAP

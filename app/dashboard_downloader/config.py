@@ -4,10 +4,10 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, Iterable, List
 
-from simplify_downloader.config import config
+from app.config import config
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-PKG_ROOT = Path(__file__).resolve().parent            # .../simplify_downloader/dashboard_downloader
+PKG_ROOT = Path(__file__).resolve().parent            # .../app/dashboard_downloader
 PROFILES_DIR = PKG_ROOT / "profiles"                  # .../dashboard_downloader/profiles
 DATA_DIR = PKG_ROOT / "data"                          # .../dashboard_downloader/data
 PROFILES_DIR.mkdir(parents=True, exist_ok=True)

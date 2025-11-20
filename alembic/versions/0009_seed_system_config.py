@@ -7,7 +7,7 @@ import os
 from alembic import op
 import sqlalchemy as sa
 
-from simplify_downloader.crypto import encrypt_secret
+from app.crypto import encrypt_secret
 
 
 revision = "0009_seed_system_config"

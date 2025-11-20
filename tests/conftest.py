@@ -11,7 +11,7 @@ for path in (ROOT, PROJECT_PARENT):
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
 
-from simplify_downloader.crypto import encrypt_secret
+from app.crypto import encrypt_secret
 
 
 def _default_system_config_rows(secret_key: str) -> dict[str, str]:
@@ -74,7 +74,7 @@ _initialize_system_config(TEST_DB_PATH, TEST_SECRET)
 
 reports_root = ROOT / "tests" / "reports"
 reports_root.mkdir(parents=True, exist_ok=True)
-log_file_path = ROOT / "tests" / "logs" / "simplify_downloader.jsonl"
+log_file_path = ROOT / "tests" / "logs" / "app.jsonl"
 log_file_path.parent.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_ENV = {

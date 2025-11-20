@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from simplify_downloader.common.ingest.schemas import coerce_csv_row, normalize_headers
+from app.common.ingest.schemas import coerce_csv_row, normalize_headers
 
 
 def _headers_with_required(extra: list[str] | None = None) -> list[str]:

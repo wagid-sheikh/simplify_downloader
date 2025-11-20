@@ -16,7 +16,7 @@ def new_run_id() -> str:
 
 
 def _default_log_file_path() -> str | None:
-    from simplify_downloader.config import config
+    from app.config import config
 
     raw = config.json_log_file.strip()
     return raw or None

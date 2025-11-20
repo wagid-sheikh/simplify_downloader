@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 def get_timezone() -> ZoneInfo:
     """Return the configured pipeline timezone."""
 
-    from simplify_downloader.config import config
+    from app.config import config
 
     return ZoneInfo(config.pipeline_timezone)
 
