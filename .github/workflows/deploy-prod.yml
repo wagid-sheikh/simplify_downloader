@@ -24,4 +24,4 @@ jobs:
             docker compose build app
             docker compose up -d db
             sleep 10
-            docker compose run --rm app python -m simplify_downloader db upgrade
+            docker compose run --rm app python -m app db upgrade
