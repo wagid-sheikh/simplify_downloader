@@ -33,7 +33,7 @@ def _validate_prerequisites(
 ) -> None:
     errors: list[str] = []
     if not settings.stores:
-        errors.append("No stores are flagged for ETL in store_master")
+        errors.append("No stores are flagged for ETL")
 
     if not settings.global_username or not settings.global_password:
         errors.append(credential_error)

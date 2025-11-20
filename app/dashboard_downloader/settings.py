@@ -59,7 +59,7 @@ async def _ensure_report_store_alignment(selected: Dict[str, dict]) -> None:
 async def _resolve_store_codes() -> List[str]:
     stores = await fetch_store_codes(database_url=config.database_url, etl_flag=True)
     if not stores:
-        raise ValueError("No stores are flagged for ETL in store_master")
+        raise ValueError("No stores are flagged for ETL")
     return stores
 
 
