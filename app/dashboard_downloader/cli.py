@@ -33,7 +33,7 @@ def _validate_prerequisites(
 ) -> None:
     errors: list[str] = []
     if not settings.stores:
-        errors.append("At least one store code must be provided via --stores_list or STORES_LIST")
+        errors.append("No stores are flagged for ETL in store_master")
 
     if not settings.global_username or not settings.global_password:
         errors.append(credential_error)
@@ -63,11 +63,7 @@ async def _run_async(args: argparse.Namespace) -> int:
     logger = get_logger(run_id=run_id)
     configure_logging(logger)
     try:
-        settings = await load_settings(
-            stores_list=args.stores_list,
-            dry_run=args.dry_run,
-            run_id=run_id,
-        )
+        settings = await load_settings(dry_run=args.dry_run, run_id=run_id)
     except ValueError as exc:
         log_event(
             logger=logger,
@@ -153,7 +149,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="Execute full pipeline")
-    run_parser.add_argument("--stores_list", type=str, default=None, help="Comma separated store keys")
     run_parser.add_argument("--dry_run", action="store_true", help="Skip DB writes")
     run_parser.add_argument("--run_id", type=str, default=None, help="Override generated run id")
     run_parser.add_argument(
@@ -167,7 +162,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         "run-single-session",
         help="Execute full pipeline using a single browser session for all stores",
     )
-    run_single_parser.add_argument("--stores_list", type=str, default=None, help="Comma separated store keys")
     run_single_parser.add_argument("--dry_run", action="store_true", help="Skip DB writes")
     run_single_parser.add_argument("--run_id", type=str, default=None, help="Override generated run id")
     run_single_parser.add_argument(

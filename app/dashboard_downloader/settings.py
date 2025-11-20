@@ -9,7 +9,6 @@ from app.dashboard_downloader.config import (
     MERGE_BUCKET_DB_SPECS,
     MERGED_NAMES,
     fetch_store_codes,
-    normalize_store_codes,
     global_credentials,
     stores_from_list,
 )
@@ -57,30 +56,17 @@ async def _ensure_report_store_alignment(selected: Dict[str, dict]) -> None:
         )
 
 
-async def _resolve_store_codes(cli_codes: List[str]) -> List[str]:
-    if cli_codes:
-        normalized_cli = normalize_store_codes(cli_codes)
-        existing = await fetch_store_codes(
-            database_url=config.database_url, store_codes=normalized_cli
-        )
-        missing = [code for code in normalized_cli if code not in existing]
-        if missing:
-            raise ValueError(
-                "store_master is missing requested store codes: %s" % ",".join(sorted(missing))
-            )
-        return existing
-
+async def _resolve_store_codes() -> List[str]:
     stores = await fetch_store_codes(database_url=config.database_url, etl_flag=True)
     if not stores:
         raise ValueError("No stores are flagged for ETL in store_master")
     return stores
 
 
-async def load_settings(*, stores_list: Optional[str], dry_run: bool, run_id: str) -> PipelineSettings:
-    cli_list = [s.strip() for s in (stores_list.split(",") if stores_list else []) if s.strip()]
-    store_codes = await _resolve_store_codes(cli_list)
+async def load_settings(*, dry_run: bool, run_id: str) -> PipelineSettings:
+    store_codes = await _resolve_store_codes()
     selected = stores_from_list(store_codes)
 
     await _ensure_report_store_alignment(selected)
-    raw_source = f"cli override: {','.join(cli_list)}" if cli_list else "store_master.etl_flag"
+    raw_source = "store_master.etl_flag"
     return PipelineSettings(run_id=run_id, stores=selected, raw_store_env=raw_source, dry_run=dry_run)
