@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0010_update_dashboard_pipeline_codes"
+revision = "0010_upd_dashboard_pipelinecodes"
 down_revision = "0009_seed_system_config"
 branch_labels = None
 depends_on = None

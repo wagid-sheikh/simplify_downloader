@@ -6,8 +6,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0011_update_store_daily_report_templates"
-down_revision = "0010_update_dashboard_pipeline_codes"
+revision = "0011_upd_store_dailyreport_templ"
+down_revision = "0010_upd_dashboard_pipelinecodes"
 branch_labels = None
 depends_on = None
 

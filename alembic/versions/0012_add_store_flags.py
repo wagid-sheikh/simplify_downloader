@@ -9,7 +9,7 @@ import sqlalchemy as sa
 
 
 revision = "0012_add_store_flags"
-down_revision = "0011_update_store_daily_report_templates"
+down_revision = "0011_upd_store_dailyreport_templ"
 branch_labels = None
 depends_on = None
 
