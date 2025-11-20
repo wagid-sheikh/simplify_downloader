@@ -236,8 +236,8 @@ pipeline_rows = [
     )
     insert_template(
         daily_profile_id,
-        "[TSV Store Performance] {{ store_code }} | {{ report_date }}",
-        "Attached: daily performance report for store {{ store_code }} on {{ report_date }}.",
+        "{{ store_name }} Daily Performance Report {{ report_date }}",
+        "Attached: daily performance report for store {{ store_name }} on {{ report_date }}.",
     )
     for store_code, recipients in store_recipients.items():
         insert_recipients(daily_profile_id, recipients, store_code=store_code)
@@ -251,8 +251,8 @@ pipeline_rows = [
     )
     insert_template(
         weekly_profile_id,
-        "[TSV Store Performance - Weekly] {{ store_code }} | Week ending {{ report_date }}",
-        "Attached: weekly performance report for store {{ store_code }} (week ending {{ report_date }}).",
+        "[TSV Store Performance - Weekly] {{ store_name }} | Week ending {{ report_date }}",
+        "Attached: weekly performance report for store {{ store_name }} (week ending {{ report_date }}).",
     )
     for store_code, recipients in store_recipients.items():
         insert_recipients(weekly_profile_id, recipients, store_code=store_code)
@@ -266,8 +266,8 @@ pipeline_rows = [
     )
     insert_template(
         monthly_profile_id,
-        "[TSV Store Performance - Monthly] {{ store_code }} | {{ report_date }}",
-        "Attached: monthly performance report for store {{ store_code }} (month ending {{ report_date }}).",
+        "[TSV Store Performance - Monthly] {{ store_name }} | {{ report_date }}",
+        "Attached: monthly performance report for store {{ store_name }} (month ending {{ report_date }}).",
     )
     for store_code, recipients in store_recipients.items():
         insert_recipients(monthly_profile_id, recipients, store_code=store_code)
