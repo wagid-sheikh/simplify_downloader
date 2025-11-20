@@ -23,8 +23,6 @@ def _default_system_config_rows(secret_key: str) -> dict[str, str]:
         "TD_LOGIN_URL": "https://simplifytumbledry.in/home/login",
         "TMS_BASE": "https://simplifytumbledry.in",
         "TD_STORE_DASHBOARD_PATH": "/mis/partner_dashboard?store_code={store_code}",
-        "STORES_LIST": "A668,A817",
-        "REPORT_STORES_LIST": "A668,A817",
         "INGEST_BATCH_SIZE": "3000",
         "REPORT_EMAIL_FROM": "reports@example.com",
         "REPORT_EMAIL_SMTP_HOST": "smtp.example.com",

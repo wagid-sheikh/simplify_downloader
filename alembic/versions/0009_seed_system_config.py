@@ -28,8 +28,6 @@ PLAINTEXT_VALUES = [
         "/mis/partner_dashboard?store_code={store_code}",
         "Dashboard path template for stores",
     ),
-    ("STORES_LIST", "A668,A817,A526", "Default scraping store codes"),
-    ("REPORT_STORES_LIST", "A668,A817", "Store codes for reporting pipelines"),
     ("INGEST_BATCH_SIZE", "3000", "Batch size for CSV ingestion"),
     ("REPORT_EMAIL_FROM", "shaw@theshawventures.com", "Default From address for report emails"),
     ("REPORT_EMAIL_SMTP_HOST", "smtp.gmail.com", "SMTP host for report notifications"),
