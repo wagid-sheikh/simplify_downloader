@@ -12,7 +12,7 @@ from app.common.db import session_scope
 from .db_tables import documents, pipeline_run_summaries
 
 
-PIPELINE_NAME = "simplify_dashboard_daily"
+PIPELINE_NAME = "dashboard_daily"
 
 
 def _utc_now() -> datetime:

@@ -192,7 +192,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     notifications_parser = subparsers.add_parser("notifications", help="Notification diagnostics")
     notifications_sub = notifications_parser.add_subparsers(dest="notifications_command", required=True)
     notif_test_parser = notifications_sub.add_parser("test", help="Validate SMTP/profiles/docs for a run")
-    notif_test_parser.add_argument("--pipeline", required=True, help="Pipeline code (e.g. simplify_dashboard_daily)")
+    notif_test_parser.add_argument("--pipeline", required=True, help="Pipeline code (e.g. dashboard_daily)")
     notif_test_parser.add_argument("--run-id", required=True, help="Existing run_id to inspect")
 
     args = parser.parse_args(argv)

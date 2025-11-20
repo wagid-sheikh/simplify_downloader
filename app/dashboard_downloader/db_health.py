@@ -25,9 +25,9 @@ REQUIRED_TABLES = [
 ]
 
 REQUIRED_PIPELINE_PROFILES: dict[str, list[str]] = {
-    "simplify_dashboard_daily": ["run_summary", "store_daily_reports"],
-    "simplify_dashboard_weekly": ["run_summary", "store_weekly_reports"],
-    "simplify_dashboard_monthly": ["run_summary", "store_monthly_reports"],
+    "dashboard_daily": ["run_summary", "store_daily_reports"],
+    "dashboard_weekly": ["run_summary", "store_weekly_reports"],
+    "dashboard_monthly": ["run_summary", "store_monthly_reports"],
 }
 
 

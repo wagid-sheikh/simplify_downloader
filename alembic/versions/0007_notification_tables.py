@@ -123,9 +123,9 @@ def upgrade() -> None:
     connection = op.get_bind()
 
     pipeline_rows = [
-        {"code": "simplify_dashboard_daily", "description": "Daily single-session dashboard pipeline"},
-        {"code": "simplify_dashboard_weekly", "description": "Weekly dashboard reporting pipeline"},
-        {"code": "simplify_dashboard_monthly", "description": "Monthly dashboard reporting pipeline"},
+        {"code": "dashboard_daily", "description": "Daily single-session dashboard pipeline"},
+        {"code": "dashboard_weekly", "description": "Weekly dashboard reporting pipeline"},
+        {"code": "dashboard_monthly", "description": "Monthly dashboard reporting pipeline"},
         {"code": "crm_downloader_daily", "description": "Daily CRM downloader pipeline"},
     ]
 
@@ -227,7 +227,7 @@ def upgrade() -> None:
         insert_recipients(profile_id, run_summary_recipients)
 
     daily_profile_id = insert_profile(
-        pipeline_code="simplify_dashboard_daily",
+        pipeline_code="dashboard_daily",
         code="store_daily_reports",
         description="Daily store performance PDFs per store",
         scope="store",
@@ -242,7 +242,7 @@ def upgrade() -> None:
         insert_recipients(daily_profile_id, recipients, store_code=store_code)
 
     weekly_profile_id = insert_profile(
-        pipeline_code="simplify_dashboard_weekly",
+        pipeline_code="dashboard_weekly",
         code="store_weekly_reports",
         description="Weekly store performance PDFs per store",
         scope="store",
@@ -257,7 +257,7 @@ def upgrade() -> None:
         insert_recipients(weekly_profile_id, recipients, store_code=store_code)
 
     monthly_profile_id = insert_profile(
-        pipeline_code="simplify_dashboard_monthly",
+        pipeline_code="dashboard_monthly",
         code="store_monthly_reports",
         description="Monthly store performance PDFs per store",
         scope="store",

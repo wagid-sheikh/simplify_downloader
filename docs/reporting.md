@@ -281,7 +281,7 @@ Email distribution is no longer controlled by `.env` recipient lists. Instead th
 notification pipeline reads all metadata from Postgres after PDFs are recorded:
 
 * `notification_profiles` identifies which pipelines and scopes should receive
-  emails (e.g., `simplify_dashboard_daily` + `store_daily_reports`).
+  emails (e.g., `dashboard_daily` + `store_daily_reports`).
 * `email_templates` stores the subject/body Jinja templates per profile.
 * `notification_recipients` lists the To/Cc/Bcc rows per store and per
   environment.
