@@ -202,14 +202,14 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.command == "run-weekly":
         from app.config import config as runtime_config
-        from tsv_dashboard.pipelines import dashboard_weekly
+        from app.dashboard_downloader.pipelines import dashboard_weekly
 
         dashboard_weekly.run_pipeline(env=args.run_env or runtime_config.run_env)
         return 0
 
     if args.command == "run-monthly":
         from app.config import config as runtime_config
-        from tsv_dashboard.pipelines import dashboard_monthly
+        from app.dashboard_downloader.pipelines import dashboard_monthly
 
         dashboard_monthly.run_pipeline(env=args.run_env or runtime_config.run_env)
         return 0

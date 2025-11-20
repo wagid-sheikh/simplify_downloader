@@ -22,7 +22,7 @@ At the repo root (`simplify_downloader/`):
 - `dashboard_downloader/` → ETL Pipeline #1 (working)
 - `crm_downloader/` → ETL Pipeline #2 (planned/empty)
 - `common/` → shared DB + ingest + utility code
-- `tsv_dashboard/pipelines/` → dashboard orchestration layer
+- `app/dashboard_downloader/pipelines/` → dashboard orchestration layer (previously `tsv_dashboard/pipelines/`)
 - `config.py`, `crypto.py`, `__main__.py`, `simplify_downloader.py`
 - `alembic/` → migrations & env
 - `tests/`, `scripts/`, `Dockerfile`, `docker-compose.yml`, `docs/`
@@ -37,7 +37,7 @@ Root also has `__init__.py`, so the whole repo accidentally becomes a Python pac
 - Structure is **not backend-ready**:
   - No single app package (like `app/`).
   - Code is scattered across root-level folders.
-- `tsv_dashboard` feels like an extra mini-project rather than part of `dashboard_downloader`.
+- Legacy `tsv_dashboard` namespace now acts as a compatibility shim for the refactored dashboard pipelines.
 - Previous Codex refactors already created fragility; further changes must be controlled.
 
 ### 3. Final target architecture (non-negotiable)
@@ -355,78 +355,10 @@ If something fails, fix/import issues before moving to TODO 5.
 
 ---
 
-### 🧱 TODO 5 – Merge `tsv_dashboard/pipelines` into `app/dashboard_downloader/pipelines`
+### ✅ TODO 5 – Merge `tsv_dashboard/pipelines` into `app/dashboard_downloader/pipelines`
 
-**Actor:** Codex  
-**Human:** Verify and run pipeline
-
----
-
-#### CODEX PROMPT (STRICT MODE – TODO 5)
-
-```text
-### CODEX STRICT MODE — TODO 5: MERGE `tsv_dashboard/pipelines` INTO `app/dashboard_downloader/pipelines`
-
-You are continuing the MECHANICAL REFACTOR after TODO 4.
-
-CURRENT STRUCTURE (assumed):
-- `app/dashboard_downloader/` exists.
-- `app/tsv_dashboard/pipelines/` contains:
-  - base.py
-  - dashboard_monthly.py
-  - dashboard_weekly.py
-  - reporting.py
-
-YOUR TASK (ONLY THESE OPERATIONS):
-
-1. Ensure directory:
-   - `app/dashboard_downloader/pipelines/` exists.
-   - If missing, create it and add `app/dashboard_downloader/pipelines/__init__.py`.
-
-2. Move the following files:
-   - `app/tsv_dashboard/pipelines/base.py`
-     → `app/dashboard_downloader/pipelines/base.py`
-   - `app/tsv_dashboard/pipelines/dashboard_monthly.py`
-     → `app/dashboard_downloader/pipelines/dashboard_monthly.py`
-   - `app/tsv_dashboard/pipelines/dashboard_weekly.py`
-     → `app/dashboard_downloader/pipelines/dashboard_weekly.py`
-   - `app/tsv_dashboard/pipelines/reporting.py`
-     → `app/dashboard_downloader/pipelines/reporting.py`
-
-3. Update imports INSIDE these moved files:
-   - Replace any occurrences of `simplify_downloader.` with `app.` (if any remain).
-   - Replace imports from `tsv_dashboard` with imports from `app.dashboard_downloader.pipelines` or other appropriate `app.*` modules.
-
-4. Update all OTHER modules that import from:
-   - `app.tsv_dashboard.pipelines.*`
-   so they instead import from:
-   - `app.dashboard_downloader.pipelines.*`
-
-5. If, after this, `app/tsv_dashboard/` is empty or unused, remove that directory safely.
-
-CONSTRAINTS:
-- Do NOT modify function or class bodies beyond necessary import path changes.
-- Do NOT touch Dockerfile, docker-compose.yml, scripts/, or pyproject.toml here.
-- STOP after the above steps.
-
-When finished, output:
-- Files moved
-- Files updated (imports changed)
-- Whether `app/tsv_dashboard/` was removed
-
-### END STRICT MODE
-```
-
----
-
-#### Verification
-
-Commands:
-
-```bash
-poetry run pytest
-./scripts/run_dashboard_pipeline_single_context.sh
-```
+`tsv_dashboard/pipelines` has been relocated under `app/dashboard_downloader/pipelines/` with compatibility wrappers left in
+place under the legacy namespace. The app CLI now serves as the entrypoint for weekly/monthly reporting runs.
 
 Checklist:
 
