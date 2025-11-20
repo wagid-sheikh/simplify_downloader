@@ -32,11 +32,11 @@ required vs optional settings.
   `--stores_list` / `STORES_LIST` definitions and verifies that every
   `REPORT_STORES_LIST` entry exists in the scraping scope to avoid generating
   PDFs for stores with no data.
-* Reporting pipelines call `tsv_dashboard.pipelines.reporting.get_report_store_codes`
+* Reporting pipelines call `app.dashboard_downloader.pipelines.reporting.get_report_store_codes`
   which **requires** `REPORT_STORES_LIST`; this prevents weekly/monthly runs
   from silently defaulting to stale store lists.
 * `REPORTS_ROOT` is configurable everywhere (`dashboard_downloader/run_store_reports.py`
-  and `tsv_dashboard/pipelines/reporting.py`), so containers can mount a shared
+  and `app/dashboard_downloader/pipelines/reporting.py`), so containers can mount a shared
   volume without touching code.
 * `common/date_utils.py` centralises daily/weekly/monthly date math, ensuring all
   pipelines use the same timezone-aware T-1 / Mon–Sun / full-month windows.
