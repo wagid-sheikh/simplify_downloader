@@ -12,7 +12,7 @@ required vs optional settings.
 | Database | `DATABASE_URL`, `ALEMBIC_CONFIG` | Needed for ingestion, summaries, document persistence, and notifications. |
 | Timezone | `PIPELINE_TIMEZONE` | All helpers in `common/date_utils.py` use this timezone to compute daily/weekly/monthly periods. Default is `Asia/Kolkata`. |
 | Scraping credentials | `TD_GLOBAL_USERNAME`, `TD_GLOBAL_PASSWORD` | Single CRM login for every store. `TD_GLOBAL_USERNAME` also doubles as the primary store code. |
-| Store selection | `store_master.etl_flag` (daily ingestion) and `store_master.report_flag` (reports/notifications) | Flag stores in the database to control which codes run. |
+| Store selection | `store_master.etl_flag` (daily ingestion) and `store_master.report_flag` (reports/notifications) | Flag stores in the database to control which codes run; there is no CLI override such as `--stores_list`. |
 | Base endpoints (CRM) | `TD_BASE_URL`, `TD_LOGIN_URL`, `TD_HOME_URL` | Required for routing the shared session through CRM login. |
 | MIS endpoints | `TMS_BASE`, `TD_STORE_DASHBOARD_PATH` | Required for navigating to the TMS dashboards and CSV downloads. |
 | Notifications | `REPORT_EMAIL_FROM`, `REPORT_EMAIL_SMTP_HOST`, `REPORT_EMAIL_SMTP_PORT`, `REPORT_EMAIL_SMTP_USERNAME`, `REPORT_EMAIL_SMTP_PASSWORD`, `REPORT_EMAIL_USE_TLS` | SMTP transport only. Recipients/templates live in the database. |
@@ -36,6 +36,9 @@ Notification profiles and run summaries now standardise on the
 * `dashboard_downloader.settings.load_settings` resolves stores from
   `store_master.etl_flag` and verifies that all `report_flag` stores are included
   in the scraping scope to avoid generating PDFs for missing data.
+* Store selection is database-driven only. Legacy CLI selectors (for example,
+  `--stores_list`) are retired; keep flags updated in `store_master` instead of
+  passing ad-hoc lists.
 * Reporting pipelines call `app.dashboard_downloader.pipelines.reporting.get_report_store_codes`
   which pulls stores from `store_master.report_flag`; weekly/monthly runs no
   longer fall back to any system_config entry.

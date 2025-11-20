@@ -8,7 +8,7 @@
 
 ## Scope — Deliver in One Pass
 
-* **Store selection** — resolve ingestion scope from `store_master.etl_flag = TRUE` and reporting scope from `store_master.report_flag = TRUE`.
+* **Store selection** — resolve ingestion scope from `store_master.etl_flag = TRUE` and reporting scope from `store_master.report_flag = TRUE`; there is no CLI override (legacy `--stores_list` removed).
 * **Automatic pipeline**: **download → merge → async ingest (Postgres) → audit counts → conditional cleanup**.
 * **Boolean rule**: `is_order_placed` → `1=True`, `0=False`, **anything else=False**.
 * **DB via SQLAlchemy 2.0 async (asyncpg) + Pydantic validation** (advisable) + **Alembic** (standard: create tables, revisions, upgrades).
@@ -156,6 +156,7 @@ MERGE_BUCKET_DB_SPECS = {
 
 * Resolve ingestion stores from `store_master.etl_flag = TRUE` and ensure at least one store is eligible; exit non‑zero with a clear message if none are flagged.
 * Reporting pipelines rely on `store_master.report_flag = TRUE` and validate that every reporting store is also present in the ingestion scope.
+* Do **not** accept ad-hoc CLI store lists. Store selection flows only through the database flags to keep ingestion and reporting scopes aligned.
 
 ---
 
