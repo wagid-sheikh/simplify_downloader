@@ -24,7 +24,7 @@ At the repo root (`simplify_downloader/`):
 - `dashboard_downloader/` → ETL Pipeline #1 (working)
 - `crm_downloader/` → ETL Pipeline #2 (planned/empty)
 - `common/` → shared DB + ingest + utility code
-- `app/dashboard_downloader/pipelines/` → dashboard orchestration layer (previously `tsv_dashboard/pipelines/`)
+- `app/dashboard_downloader/pipelines/` → dashboard orchestration layer
 - `config.py`, `crypto.py`, `__main__.py`, `simplify_downloader.py`
 - `alembic/` → migrations & env
 - `tests/`, `scripts/`, `Dockerfile`, `docker-compose.yml`, `docs/`
@@ -39,7 +39,7 @@ Root also has `__init__.py`, so the whole repo accidentally becomes a Python pac
 - Structure is **not backend-ready**:
   - No single app package (like `app/`).
   - Code is scattered across root-level folders.
-- Legacy `tsv_dashboard` namespace now acts as a compatibility shim for the refactored dashboard pipelines.
+- Dashboard pipelines now live only under the `app.dashboard_downloader` namespace.
 - Previous Codex refactors already created fragility; further changes must be controlled.
 
 ### 3. Final target architecture (non-negotiable)
@@ -81,8 +81,7 @@ crm-backend/
 - All ETL code:
   - `dashboard_downloader` → `app/dashboard_downloader/`
   - `crm_downloader` → `app/crm_downloader/`
-- All dashboard orchestration:
-  - `tsv_dashboard/pipelines` → `app/dashboard_downloader/pipelines/`.
+- All dashboard orchestration lives under `app/dashboard_downloader/pipelines/`.
 - No imports from `simplify_downloader.*` remain in active code.
 - All CLI entrypoints use: `python -m app ...`.
 
@@ -287,7 +286,6 @@ DO ONLY THE FOLLOWING:
    - `common/` → `app/common/`
    - `dashboard_downloader/` → `app/dashboard_downloader/`
    - `crm_downloader/` → `app/crm_downloader/`
-   - `tsv_dashboard/` → `app/tsv_dashboard/`
 
 3. Move these FILES into `app/`:
    - `__main__.py` → `app/__main__.py`
@@ -309,7 +307,6 @@ DO ONLY THE FOLLOWING:
    - `app/common/**`
    - `app/dashboard_downloader/**`
    - `app/crm_downloader/**`
-   - `app/tsv_dashboard/**`
    - `alembic/env.py`
    - `alembic/versions/*.py` (only if they import from simplify_downloader)
    - `tests/**`
@@ -346,7 +343,7 @@ poetry run alembic upgrade head
 Checklist:
 
 - [ ] `app/` exists and has `__init__.py`.
-- [ ] `common/`, `dashboard_downloader/`, `crm_downloader/`, `tsv_dashboard/` now live under `app/` only.
+- [ ] `common/`, `dashboard_downloader/`, and `crm_downloader/` now live under `app/` only.
 - [ ] No `__init__.py` at repo root.
 - [ ] `grep -R "from simplify_downloader" .` and `grep -R "import simplify_downloader" .` return **no active imports**.
 - [ ] Tests pass.
@@ -357,16 +354,15 @@ If something fails, fix/import issues before moving to TODO 5.
 
 ---
 
-### ✅ TODO 5 – Merge `tsv_dashboard/pipelines` into `app/dashboard_downloader/pipelines`
+### ✅ TODO 5 – Finalize dashboard pipeline namespace
 
-`tsv_dashboard/pipelines` has been relocated under `app/dashboard_downloader/pipelines/` with compatibility wrappers left in
-place under the legacy namespace. The app CLI now serves as the entrypoint for weekly/monthly reporting runs.
+Dashboard pipelines now run solely from `app.dashboard_downloader.pipelines.*`, and the legacy compatibility wrappers have
+been removed. The app CLI now serves as the entrypoint for weekly/monthly reporting runs.
 
 Checklist:
 
 - [ ] `app/dashboard_downloader/pipelines/` contains `base.py`, `dashboard_monthly.py`, `dashboard_weekly.py`, `reporting.py`.
-- [ ] No imports reference `tsv_dashboard` in code.
-- [ ] `app/tsv_dashboard/` was removed or confirmed unused.
+- [ ] No imports reference the legacy dashboard namespace in code.
 - [ ] Tests pass.
 - [ ] Pipeline outputs are as expected.
 
@@ -418,9 +414,8 @@ YOU MUST UPDATE:
 
 2. Runtime Python imports / fake modules
    - Replace ALL imports from `simplify_downloader.*` with `app.*` in:
-       - app/dashboard_downloader/**
-       - app/common/**
-       - app/tsv_dashboard/** (if still present)
+      - app/dashboard_downloader/**
+      - app/common/**
        - app/config.py, app/crypto.py
        - alembic/env.py
        - alembic/versions/*.py where they import from simplify_downloader
