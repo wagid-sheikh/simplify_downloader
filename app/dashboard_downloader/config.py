@@ -1,9 +1,14 @@
 # File: dashboard_downloader/config.py
-from pathlib import Path
-from pathlib import Path
-from datetime import datetime
-from typing import Any, Dict, Iterable, List
+from __future__ import annotations
 
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Sequence
+
+import sqlalchemy as sa
+
+from app.common.dashboard_store import store_master
+from app.common.db import session_scope
 from app.config import config
 
 # ── Paths ────────────────────────────────────────────────────────────────────
@@ -72,6 +77,34 @@ def global_credentials() -> tuple[str, str]:
     return config.td_global_username.strip(), config.td_global_password.strip()
 
 
+def normalize_store_codes(values: Iterable[str]) -> List[str]:
+    return sorted({token.strip().upper() for token in values if token and token.strip()})
+
+
+async def fetch_store_codes(
+    *,
+    database_url: str,
+    etl_flag: bool | None = None,
+    report_flag: bool | None = None,
+    store_codes: Sequence[str] | None = None,
+) -> List[str]:
+    filters = []
+    if etl_flag is not None:
+        filters.append(store_master.c.etl_flag.is_(etl_flag))
+    if report_flag is not None:
+        filters.append(store_master.c.report_flag.is_(report_flag))
+
+    normalized_codes = normalize_store_codes(store_codes or [])
+    async with session_scope(database_url) as session:
+        stmt = sa.select(sa.func.upper(store_master.c.store_code)).where(store_master.c.is_active.is_(True))
+        if filters:
+            stmt = stmt.where(sa.and_(*filters))
+        if normalized_codes:
+            stmt = stmt.where(sa.func.upper(store_master.c.store_code).in_(normalized_codes))
+        result = await session.execute(stmt)
+        return sorted({row[0] for row in result})
+
+
 def stores_from_list(store_ids: Iterable[str]) -> Dict[str, dict]:
     """Resolve store configurations for the provided identifiers or codes."""
 
@@ -88,10 +121,6 @@ def stores_from_list(store_ids: Iterable[str]) -> Dict[str, dict]:
         resolved[cfg["store_code"]] = cfg
 
     return resolved
-
-
-def env_stores_list() -> List[str]:
-    return list(config.stores_list)
 
 
 # Compatibility constant (no default stores in the new single-session model)

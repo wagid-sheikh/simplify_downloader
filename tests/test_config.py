@@ -30,8 +30,6 @@ def _base_rows(secret_key: str) -> dict[str, str]:
         "TD_LOGIN_URL": "https://simplifytumbledry.in/home/login",
         "TMS_BASE": "https://simplifytumbledry.in",
         "TD_STORE_DASHBOARD_PATH": "/mis/partner_dashboard?store_code={store_code}",
-        "STORES_LIST": "A668,A817",
-        "REPORT_STORES_LIST": "A668,A817",
         "INGEST_BATCH_SIZE": "3000",
         "REPORT_EMAIL_FROM": "reports@example.com",
         "REPORT_EMAIL_SMTP_HOST": "smtp.example.com",
@@ -110,7 +108,6 @@ def test_config_loads_expected_values(monkeypatch, tmp_path):
 
     assert cfg.td_global_username == "reports@example.com"
     assert cfg.td_global_password == "change-me-global-password"
-    assert cfg.stores_list == ["A668", "A817"]
     assert cfg.report_email_smtp_port == 587
     assert cfg.report_email_use_tls is True
     assert cfg.pdf_render_headless is True
@@ -232,6 +229,7 @@ def test_os_getenv_usage_restricted():
         / "alembic"
         / "versions"
         / "0009_seed_system_config.py",
+        repo_root / "app" / "config.py",
     }
     offenders: list[Path] = []
     for path in repo_root.rglob("*.py"):

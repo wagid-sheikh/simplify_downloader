@@ -29,7 +29,6 @@ import asyncio
 import binascii
 import logging
 import os
-import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,7 +36,7 @@ from typing import Any, Awaitable, Callable, Dict, Mapping, TypeVar
 
 from dotenv import load_dotenv
 
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -77,8 +76,6 @@ PLAINTEXT_DB_KEYS = [
     "TD_LOGIN_URL",
     "TMS_BASE",
     "TD_STORE_DASHBOARD_PATH",
-    "STORES_LIST",
-    "REPORT_STORES_LIST",
     "INGEST_BATCH_SIZE",
     "REPORT_EMAIL_FROM",
     "REPORT_EMAIL_SMTP_HOST",
@@ -142,13 +139,6 @@ def _parse_int(value: str, *, key: str) -> int:
         raise ConfigError(message)
 
 
-def _parse_list(value: str) -> list[str]:
-    if not value:
-        return []
-    tokens = re.split(r"[,\n]", value)
-    return [token.strip() for token in tokens if token and token.strip()]
-
-
 def _clean_url(value: str, *, key: str) -> str:
     stripped = value.strip().rstrip("/")
     if not stripped:
@@ -206,7 +196,26 @@ async def _fetch_system_config_async(database_url: str) -> Dict[str, str]:
             await engine.dispose()
 
 
+def _fetch_system_config_sync(database_url: str) -> Dict[str, str]:
+    engine = create_engine(database_url, future=True)
+    try:
+        with engine.connect() as connection:
+            rows = connection.execute(
+                text("SELECT key, value FROM system_config WHERE is_active = TRUE")
+            )
+            return {row.key: row.value for row in rows}
+    except SQLAlchemyError as exc:
+        message = "Unable to load configuration from system_config"
+        logger.exception(message)
+        raise ConfigError(message) from exc
+    finally:
+        engine.dispose()
+
+
 def _load_system_config(database_url: str) -> Dict[str, str]:
+    if database_url.startswith("sqlite"):
+        return _fetch_system_config_sync(database_url)
+
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -251,8 +260,6 @@ class Config:
     td_store_dashboard_path: str
     td_global_username: str
     td_global_password: str
-    stores_list: list[str]
-    report_stores_list: list[str]
     ingest_batch_size: int
     report_email_from: str
     report_email_smtp_host: str
@@ -282,9 +289,6 @@ class Config:
         tms_base = _clean_url(db_values["TMS_BASE"], key="TMS_BASE")
         td_login_url = _clean_url(db_values["TD_LOGIN_URL"], key="TD_LOGIN_URL")
         td_home_url = _clean_url(db_values["TD_HOME_URL"], key="TD_HOME_URL")
-
-        stores_list = _parse_list(db_values["STORES_LIST"])
-        report_stores_list = _parse_list(db_values["REPORT_STORES_LIST"])
 
         ingest_batch_size = _parse_int(db_values["INGEST_BATCH_SIZE"], key="INGEST_BATCH_SIZE")
         report_email_smtp_port = _parse_int(
@@ -348,8 +352,6 @@ class Config:
             td_store_dashboard_path=td_store_dashboard_path,
             td_global_username=td_global_username,
             td_global_password=td_global_password,
-            stores_list=stores_list,
-            report_stores_list=report_stores_list,
             ingest_batch_size=ingest_batch_size,
             report_email_from=report_email_from,
             report_email_smtp_host=report_email_smtp_host,

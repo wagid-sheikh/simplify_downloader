@@ -8,7 +8,7 @@
 
 ## Scope — Deliver in One Pass
 
-* **`STORES_LIST` parsing (comma‑separated)** — CLI flag `--stores_list` overrides env `STORES_LIST`.
+* **Store selection** — defaults to `store_master.etl_flag = TRUE`; optional CLI flag `--stores_list` can restrict the run.
 * **Automatic pipeline**: **download → merge → async ingest (Postgres) → audit counts → conditional cleanup**.
 * **Boolean rule**: `is_order_placed` → `1=True`, `0=False`, **anything else=False**.
 * **DB via SQLAlchemy 2.0 async (asyncpg) + Pydantic validation** (advisable) + **Alembic** (standard: create tables, revisions, upgrades).
@@ -152,11 +152,11 @@ MERGE_BUCKET_DB_SPECS = {
 
 ---
 
-## `STORES_LIST` Input
+## Store selection input
 
-* Accept `--stores_list "A668,A817,A564,A789"` (CLI) > env `STORES_LIST`.
-* Normalize: split, trim, drop empties, de‑dupe preserving order.
-* Empty → exit non‑zero with a clear message.
+* Accept `--stores_list "A668,A817,A564,A789"` (CLI) and normalize: split, trim, drop empties, de‑dupe preserving order.
+* Without `--stores_list`, use `store_master.etl_flag = TRUE`.
+* Empty after resolution → exit non‑zero with a clear message.
 
 ---
 

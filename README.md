@@ -23,8 +23,8 @@ runs migrations before starting the pipeline:
 ./scripts/run_dashboard_pipeline_single_context.sh --stores_list "A668,A817"
 ```
 
-The CLI and helper script honour the optional `--stores_list` flag (or the
-`STORES_LIST` environment variable) and expect a `DATABASE_URL` environment
+The CLI and helper script honour the optional `--stores_list` flag and default
+to `store_master.etl_flag = TRUE` when no override is provided. A `DATABASE_URL`
 variable pointing at the target Postgres instance when ingestion is desired.
 
 ## Legacy entrypoint migration

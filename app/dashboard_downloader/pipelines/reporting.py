@@ -7,8 +7,8 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 import sqlalchemy as sa
 
+from app.dashboard_downloader.config import fetch_store_codes
 from app.dashboard_downloader.db_tables import documents
-from app.common.date_utils import normalize_store_codes
 from app.common.dashboard_store import store_dashboard_summary, store_master
 from app.common.db import session_scope
 from app.config import config
@@ -26,13 +26,13 @@ def parse_store_list(raw: str | None) -> list[str]:
     return [token.strip().upper() for token in raw.split(",") if token.strip()]
 
 
-def get_report_store_codes() -> list[str]:
-    stores = config.report_stores_list
+async def get_report_store_codes(database_url: str) -> list[str]:
+    stores = await fetch_store_codes(database_url=database_url, report_flag=True)
     if not stores:
         raise RuntimeError(
-            "REPORT_STORES_LIST must be configured with comma-separated store codes for reporting pipelines"
+            "At least one store must be flagged for reporting in store_master before running reporting pipelines"
         )
-    return normalize_store_codes(stores)
+    return stores
 
 
 async def fetch_store_period_rows(

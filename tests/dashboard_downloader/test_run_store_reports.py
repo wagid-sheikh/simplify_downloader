@@ -12,8 +12,15 @@ def run_store_reports_module(tmp_path):
     fake_config_module = types.ModuleType("app.config")
     fake_config_module.config = types.SimpleNamespace(
         reports_root=str(reports_dir),
-        report_stores_list=["A668"],
         database_url="sqlite://",
+        td_base_url="https://example.com",
+        td_login_url="https://example.com/login",
+        td_home_url="https://example.com/home",
+        tms_base="https://example.com",
+        td_store_dashboard_path="/dash/{store_code}",
+        td_storage_state_filename="storage_state.json",
+        td_global_username="user",
+        td_global_password="pass",
     )
     original_config = sys.modules.get("app.config")
     sys.modules["app.config"] = fake_config_module

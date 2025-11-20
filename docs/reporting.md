@@ -16,24 +16,13 @@ Do **not** change the scraping / login / ingest flow.
 
 ## 1. Store Selection Rules (VERY IMPORTANT)
 
-Use the env var:
+Use the database flags on `store_master`:
 
-```env
-REPORT_STORES_LIST="A668,A526"   # comma-separated store codes
-```
+* ✅ Generate PDFs **only** for stores where `report_flag` is `TRUE`.
+* ❌ If no stores are flagged, **do NOT generate any PDFs or send email**—log the skip.
 
-**Rules (no fallbacks):**
-
-* If `REPORT_STORES_LIST` is **set and non-empty**:
-
-  * ✅ Generate PDFs **only** for those store codes.
-* Else:
-
-  * ❌ **Do NOT generate any PDFs.**
-  * ❌ **Do NOT send any email.**
-  * Just log that report generation is skipped because no report stores are configured.
-
-`STORES_LIST` is used elsewhere for scraping and **must NOT** be used as a fallback for reports.
+`report_flag` is seeded from historical `REPORT_STORES_LIST` values during migration and is the
+sole source of truth going forward.
 
 ---
 
@@ -223,20 +212,15 @@ Behavior:
    * Else:
 
      * Default to a reasonable value (e.g. “yesterday” or latest date in dashboard table) – pick one consistent strategy and stick with it.
-2. **Resolve store_codes from env:**
+2. **Resolve store_codes from the database:**
 
-   ```env
-   REPORT_STORES_LIST="A668,A526"
-   ```
-
-   * Read `REPORT_STORES_LIST` from env.
-   * Parse it into a list of non-empty trimmed codes.
+   * Query `store_master` for rows with `report_flag = TRUE`.
    * If the resulting list is empty:
 
      * Log (JSON):
 
        ```json
-       {"phase":"report","status":"info","message":"no REPORT_STORES_LIST configured, skipping report generation"}
+       {"phase":"report","status":"info","message":"no report-eligible stores found in store_master, skipping report generation"}
        ```
      * Do **not** generate PDFs.
      * Do **not** send email.
