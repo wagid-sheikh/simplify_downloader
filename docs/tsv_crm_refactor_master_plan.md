@@ -3,6 +3,8 @@
 
 This document is the **single source of truth** for restructuring the legacy `simplify_downloader` repo into a clean, modern, FastAPI-ready **TSV CRM Backend**.
 
+The current project identity is the `app`-based CRM backend; any references to `simplify_downloader` below are intentionally preserved as legacy context.
+
 Every TODO includes:
 
 - **Actor:** Human (Wagid) or Codex  
