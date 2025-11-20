@@ -17,6 +17,11 @@ required vs optional settings.
 | MIS endpoints | `TMS_BASE`, `TD_STORE_DASHBOARD_PATH` | Required for navigating to the TMS dashboards and CSV downloads. |
 | Notifications | `REPORT_EMAIL_FROM`, `REPORT_EMAIL_SMTP_HOST`, `REPORT_EMAIL_SMTP_PORT`, `REPORT_EMAIL_SMTP_USERNAME`, `REPORT_EMAIL_SMTP_PASSWORD`, `REPORT_EMAIL_USE_TLS` | SMTP transport only. Recipients/templates live in the database. |
 
+Notification profiles and run summaries now standardise on the
+`dashboard_daily`, `dashboard_weekly`, and `dashboard_monthly` pipeline codes
+(previously `simplify_dashboard_*`). Use those identifiers when seeding
+`notification_profiles` and validating `pipeline_run_summaries` entries.
+
 ## 2. Optional but recommended
 
 | Category | Variable(s) | Notes |
