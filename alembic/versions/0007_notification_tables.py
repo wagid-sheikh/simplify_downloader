@@ -122,13 +122,13 @@ def upgrade() -> None:
 
     connection = op.get_bind()
 
-pipeline_rows = [
-    # All dashboard pipelines now use the dashboard_* codes (formerly simplify_dashboard_*).
-    {"code": "dashboard_daily", "description": "Daily single-session dashboard pipeline"},
-    {"code": "dashboard_weekly", "description": "Weekly dashboard reporting pipeline"},
-    {"code": "dashboard_monthly", "description": "Monthly dashboard reporting pipeline"},
-    {"code": "crm_downloader_daily", "description": "Daily CRM downloader pipeline"},
-]
+    pipeline_rows = [
+        # All dashboard pipelines now use the dashboard_* codes (formerly simplify_dashboard_*).
+        {"code": "dashboard_daily", "description": "Daily single-session dashboard pipeline"},
+        {"code": "dashboard_weekly", "description": "Weekly dashboard reporting pipeline"},
+        {"code": "dashboard_monthly", "description": "Monthly dashboard reporting pipeline"},
+        {"code": "crm_downloader_daily", "description": "Daily CRM downloader pipeline"},
+    ]
 
     pipeline_ids: dict[str, int] = {}
     for row in pipeline_rows:
