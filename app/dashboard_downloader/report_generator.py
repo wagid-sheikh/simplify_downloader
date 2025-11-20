@@ -20,12 +20,12 @@ from playwright.async_api import async_playwright
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from simplify_downloader.common.db import session_scope
-from simplify_downloader.common.dashboard_store import (
+from app.common.db import session_scope
+from app.common.dashboard_store import (
     store_dashboard_summary,
     store_master,
 )
-from simplify_downloader.common.ingest.models import MissedLead, RepeatCustomer, UndeliveredOrder
+from app.common.ingest.models import MissedLead, RepeatCustomer, UndeliveredOrder
 
 __all__ = [
     "StoreReportDataNotFound",
@@ -572,7 +572,7 @@ async def render_store_report_pdf(
 
 
 async def render_pdf_with_configured_browser(html_content: str, output_path: str | Path) -> None:
-    from simplify_downloader.config import config
+    from app.config import config
 
     backend = config.pdf_render_backend.lower()
     headless = config.pdf_render_headless

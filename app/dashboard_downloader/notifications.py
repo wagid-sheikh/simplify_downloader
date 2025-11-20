@@ -10,8 +10,8 @@ from typing import Any, Iterable
 import sqlalchemy as sa
 from jinja2 import Template
 
-from common.db import session_scope
-from dashboard_downloader.db_tables import (
+from app.common.db import session_scope
+from app.dashboard_downloader.db_tables import (
     documents,
     email_templates,
     notification_profiles,
@@ -19,7 +19,7 @@ from dashboard_downloader.db_tables import (
     pipeline_run_summaries,
     pipelines,
 )
-from simplify_downloader.config import config
+from app.config import config
 
 logger = logging.getLogger(__name__)
 

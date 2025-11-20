@@ -5,8 +5,8 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List
 
-from dashboard_downloader.notifications import send_notifications_for_run
-from simplify_downloader.config import config
+from app.dashboard_downloader.notifications import send_notifications_for_run
+from app.config import config
 
 from .base import (
     PipelinePhaseTracker,

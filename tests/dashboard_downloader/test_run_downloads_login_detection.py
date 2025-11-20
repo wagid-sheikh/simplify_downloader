@@ -1,8 +1,8 @@
 import asyncio
 
-from dashboard_downloader import page_selectors
-from dashboard_downloader.config import LOGIN_URL
-from dashboard_downloader.run_downloads import (
+from app.dashboard_downloader import page_selectors
+from app.dashboard_downloader.config import LOGIN_URL
+from app.dashboard_downloader.run_downloads import (
     _is_login_page,
     _looks_like_login_html_bytes,
 )

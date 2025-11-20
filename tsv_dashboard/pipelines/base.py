@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, Mapping
 
-from dashboard_downloader.db_tables import pipeline_run_summaries
-from simplify_downloader.common.db import session_scope
-from simplify_downloader.config import config
+from app.dashboard_downloader.db_tables import pipeline_run_summaries
+from app.common.db import session_scope
+from app.config import config
 
 
 Status = str

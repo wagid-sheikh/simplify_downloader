@@ -3,7 +3,7 @@ requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [project]
-name = "simplify-downloader"
+name = "crm-backend"
 version = "0.1.0"
 description = "Headless Playwright downloader for TumbleDry MIS"
 readme = "README.md"
@@ -23,3 +23,6 @@ dependencies = [
 # Turn off packaging (we’re using Poetry for env + deps + scripts)
 [tool.poetry]
 package-mode = false
+packages = [
+    {include = "app"},
+]

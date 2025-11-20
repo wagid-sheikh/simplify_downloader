@@ -1,4 +1,4 @@
-from dashboard_downloader.cli import main
+from app.dashboard_downloader.cli import main
 
 if __name__ == "__main__":
     raise SystemExit(main())
