@@ -179,9 +179,9 @@ FILE_SPECS = [
         "key": "nonpackage_all",
         "url_template": f"{TMS_BASE}/mis/download_nonpackageorder_csv?type=all&store_code={{sc}}",
         "out_name_template": "{sc}-non-package-all.csv",
-        "delete_source_after_ingest": False,
-        "download": False,
-        "merge_bucket": None,
+        "delete_source_after_ingest": True,
+        "download": True,
+        "merge_bucket": "nonpackage_all",
     },
     {
         "key": "nonpackage_u",
@@ -198,6 +198,7 @@ MERGED_NAMES = {
     "missed_leads": f"merged_missed_leads_{YMD_TODAY}.csv",
     "undelivered_all": f"merged_undelivered_all_{YMD_TODAY}.csv",
     "repeat_customers": f"merged_repeat_customers_{YMD_TODAY}.csv",
+    "nonpackage_all": f"merged_nonpackage_all_{YMD_TODAY}.csv",
 }
 
 # Each key == a merge_bucket value.
@@ -293,6 +294,31 @@ MERGE_BUCKET_DB_SPECS = {
             "store_code": "str",
             "mobile_no": "str",   # CSV parsed as int, but store as TEXT to avoid issues
             "status": "str",
+        },
+    },
+
+    "nonpackage_all": {
+        "table_name": "nonpackage_orders",
+        # Deduplicate by store and mobile number for customer-level updates.
+        "dedupe_keys": ["store_code", "mobile_no"],
+        "required_columns": ["store_code", "mobile_no", "order_date"],
+        "column_map": {
+            "Store Code": "store_code",
+            "Store Name": "store_name",
+            ("Mobile No", "Mobile No.", "Mobile"): "mobile_no",
+            "Taxable Amount": "taxable_amount",
+            "Order Date": "order_date",
+            "Expected Delivery Date": "expected_delivery_date",
+            "Actual Delivery Date": "actual_delivery_date",
+        },
+        "coerce": {
+            "store_code": "str",
+            "store_name": "str",
+            "mobile_no": "str",
+            "taxable_amount": "float",
+            "order_date": "date",
+            "expected_delivery_date": "date",
+            "actual_delivery_date": "date",
         },
     },
 }
