@@ -1,4 +1,5 @@
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -27,11 +28,15 @@ def _row_with_required(**extra):
     return row
 
 
+def _extra_fields():
+    return {"run_id": "test-run", "run_date": "2024-01-02"}
+
+
 def test_bool_coercion_true():
     headers = _headers_with_required(["is_order_placed"])
     header_map = normalize_headers(headers)
     row = _row_with_required(**{"is_order_placed": "1"})
-    result = coerce_csv_row("missed_leads", row, header_map)
+    result = coerce_csv_row("missed_leads", row, header_map, extra_fields=_extra_fields())
     assert result["is_order_placed"] is True
 
 
@@ -39,7 +44,7 @@ def test_bool_coercion_false_for_zero():
     headers = _headers_with_required(["is_order_placed"])
     header_map = normalize_headers(headers)
     row = _row_with_required(**{"is_order_placed": "0"})
-    result = coerce_csv_row("missed_leads", row, header_map)
+    result = coerce_csv_row("missed_leads", row, header_map, extra_fields=_extra_fields())
     assert result["is_order_placed"] is False
 
 
@@ -47,7 +52,7 @@ def test_bool_coercion_false_for_other():
     headers = _headers_with_required(["is_order_placed"])
     header_map = normalize_headers(headers)
     row = _row_with_required(**{"is_order_placed": "yes"})
-    result = coerce_csv_row("missed_leads", row, header_map)
+    result = coerce_csv_row("missed_leads", row, header_map, extra_fields=_extra_fields())
     assert result["is_order_placed"] is False
 
 
@@ -55,7 +60,7 @@ def test_coercion_with_spaced_headers():
     headers = _headers_with_required(["Customer Name"])
     header_map = normalize_headers(headers)
     row = _row_with_required(**{"Customer Name": "Alice"})
-    result = coerce_csv_row("missed_leads", row, header_map)
+    result = coerce_csv_row("missed_leads", row, header_map, extra_fields=_extra_fields())
     assert result["pickup_row_id"] == 12345
     assert result["mobile_number"] == "9876543210"
     assert result["customer_name"] == "Alice"
@@ -69,7 +74,7 @@ def test_missing_required_raises_value_error():
         "Mobile Number": "9876543210",
     }
     try:
-        coerce_csv_row("missed_leads", row, header_map)
+        coerce_csv_row("missed_leads", row, header_map, extra_fields=_extra_fields())
     except ValueError as exc:
         assert "pickup_row_id" in str(exc)
     else:
@@ -89,7 +94,9 @@ def test_undelivered_uses_order_no_for_order_id():
         "store_code": "SC001",
     }
 
-    result = coerce_csv_row("undelivered_all", row, header_map)
+    result = coerce_csv_row(
+        "undelivered_all", row, header_map, extra_fields=_extra_fields()
+    )
 
     assert result["order_id"] == "ORD-123"
 
@@ -106,6 +113,36 @@ def test_undelivered_missing_order_id_and_order_no_raises():
     }
 
     with pytest.raises(ValueError) as excinfo:
-        coerce_csv_row("undelivered_all", row, header_map)
+        coerce_csv_row("undelivered_all", row, header_map, extra_fields=_extra_fields())
 
     assert "order_id" in str(excinfo.value)
+
+
+def test_nonpackage_all_accepts_timestamped_order_date():
+    headers = [
+        "Store Code",
+        "Store Name",
+        "Mobile No.",
+        "Taxable Amount",
+        "Order Date",
+        "Expected Delivery Date",
+        "Actual Delivery Date",
+        "run_id",
+        "run_date",
+    ]
+    header_map = normalize_headers(headers)
+    row = {
+        "Store Code": "SC001",
+        "Store Name": "Test Store",
+        "Mobile No.": "1234567890",
+        "Taxable Amount": "100.50",
+        "Order Date": "2024-05-01 10:30:00",
+        "Expected Delivery Date": "2024-05-03",
+        "Actual Delivery Date": "2024-05-02",
+        "run_id": "run-1",
+        "run_date": "2024-05-04",
+    }
+
+    result = coerce_csv_row("nonpackage_all", row, header_map, extra_fields=_extra_fields())
+
+    assert result["order_date"] == date(2024, 5, 1)
