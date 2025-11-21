@@ -26,8 +26,11 @@ git tag -a v1.17 -m "Stable after round 1 refactor & Editable Daily Store Perfor
 
 git push origin v1.17
 
-
-
 git tag -a v1.18 -m "Stable after final cosmetic changes to daily store performance report generation"
 
 git push origin v1.18
+
+
+git tag -a v1.19 -m "Stable after Major Refactoring"
+
+git push origin v1.19
