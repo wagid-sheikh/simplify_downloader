@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -63,6 +64,8 @@ def _load_csv_rows(
     bucket: str,
     csv_path: Path,
     logger: JsonLogger | None = None,
+    *,
+    row_context: Dict[str, Any] | None = None,
 ) -> Iterable[Dict[str, Any]]:
     total_rows = 0
     coerced_rows = 0
@@ -146,7 +149,9 @@ def _load_csv_rows(
                 for row_index, raw_row in enumerate(reader, start=1):
                     total_rows += 1
                     try:
-                        coerced_row = coerce_csv_row(bucket, raw_row, header_map)
+                        coerced_row = coerce_csv_row(
+                            bucket, raw_row, header_map, extra_fields=row_context
+                        )
                     except ValueError as exc:
                         failed_rows += 1
                         if logger:
@@ -257,11 +262,17 @@ async def ingest_bucket(
     batch_size: int,
     database_url: str,
     logger: JsonLogger,
+    run_id: str,
+    run_date: date,
 ) -> Dict[str, Any]:
     totals = {"rows": 0}
+    row_context = {"run_id": run_id, "run_date": run_date}
     async with session_scope(database_url) as session:
         async with session.begin():
-            for batch in _batched(_load_csv_rows(bucket, csv_path, logger), batch_size):
+            for batch in _batched(
+                _load_csv_rows(bucket, csv_path, logger, row_context=row_context),
+                batch_size,
+            ):
                 affected = await _upsert_batch(session, bucket, batch)
                 totals["rows"] += affected
 

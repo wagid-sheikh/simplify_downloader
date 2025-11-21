@@ -132,7 +132,13 @@ def _header_lookup(header_map: Dict[str, str], key: str) -> str | None:
     return None
 
 
-def coerce_csv_row(bucket: str, row: Dict[str, Any], header_map: Dict[str, str]) -> Dict[str, Any]:
+def coerce_csv_row(
+    bucket: str,
+    row: Dict[str, Any],
+    header_map: Dict[str, str],
+    *,
+    extra_fields: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
     spec = MERGE_BUCKET_DB_SPECS[bucket]
     column_map = spec["column_map"]
     coerced: Dict[str, Any] = {}
@@ -155,6 +161,8 @@ def coerce_csv_row(bucket: str, row: Dict[str, Any], header_map: Dict[str, str])
     except ValidationError as err:
         raise ValueError(str(err)) from err
     data = validated.model_dump()
+    if extra_fields:
+        data.update(extra_fields)
 
     required_columns = set(spec.get("required_columns", []))
     required_columns.update(spec.get("dedupe_keys", []))
