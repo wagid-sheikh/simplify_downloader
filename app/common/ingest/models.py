@@ -73,6 +73,8 @@ class RepeatCustomer(Base):
     store_code: Mapped[str] = mapped_column(String, nullable=False)
     mobile_no: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str | None] = mapped_column(String)
+    run_id: Mapped[str | None] = mapped_column(String(64))
+    run_date: Mapped[Date | None] = mapped_column(Date)
 
 
 class NonPackageOrder(Base):

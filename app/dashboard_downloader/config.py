@@ -294,7 +294,7 @@ MERGE_BUCKET_DB_SPECS = {
         "table_name": "repeat_customers",
         # Only three columns; dedupe on store+mobile. Status is 'Yes' now but may change.
         "dedupe_keys": ["store_code", "mobile_no"],
-        "required_columns": ["store_code", "mobile_no"],
+        "required_columns": ["store_code", "mobile_no", "run_id", "run_date"],
         "column_map": {
             "Store Code": "store_code",
             "Mobile No.": "mobile_no",
@@ -304,6 +304,8 @@ MERGE_BUCKET_DB_SPECS = {
             "store_code": "str",
             "mobile_no": "str",   # CSV parsed as int, but store as TEXT to avoid issues
             "status": "str",
+            "run_id": "str",
+            "run_date": "date",
         },
     },
 
