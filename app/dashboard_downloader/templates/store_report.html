@@ -129,6 +129,22 @@
       font-weight: 500;
     }
 
+    .snapshot-table td:nth-child(2),
+    .snapshot-table td:nth-child(3),
+    .snapshot-table td:nth-child(4) {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      width: 12%;
+    }
+
+    .snapshot-table td:first-child {
+      width: 32%;
+    }
+
+    .snapshot-table td:last-child {
+      width: 32%;
+    }
+
     .recommendations {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -345,34 +361,46 @@
     <thead>
       <tr>
         <th>Metric</th>
-        <th>Total</th>
+        <th>T</th>
+        <th>T-1</th>
+        <th>Δ</th>
         <th>Note</th>
       </tr>
     </thead>
     <tbody>
       <tr>
         <td>Leads captured</td>
-        <td class="{{ leads_change_class }}">{{ leads_total }}</td>
+        <td>{{ leads_today }}</td>
+        <td>{{ leads_yday if leads_yday is not none else '—' }}</td>
+        <td class="{{ leads_change_class }}">{{ '+' if leads_delta is not none and leads_delta > 0 else '' }}{{ leads_delta if leads_delta is not none else '—' }}</td>
         <td class="{{ leads_change_class }}">{{ leads_note }}</td>
       </tr>
       <tr>
         <td>Pickups</td>
-        <td class="{{ pickups_change_class }}">{{ pickups_total }}</td>
+        <td>{{ pickups_today }}</td>
+        <td>{{ pickups_yday if pickups_yday is not none else '—' }}</td>
+        <td class="{{ pickups_change_class }}">{{ '+' if pickups_delta is not none and pickups_delta > 0 else '' }}{{ pickups_delta if pickups_delta is not none else '—' }}</td>
         <td class="{{ pickups_change_class }}">{{ pickups_note }}</td>
       </tr>
       <tr>
         <td>Deliveries</td>
-        <td class="{{ deliveries_change_class }}">{{ deliveries_total }}</td>
+        <td>{{ deliveries_today }}</td>
+        <td>{{ deliveries_yday if deliveries_yday is not none else '—' }}</td>
+        <td class="{{ deliveries_change_class }}">{{ '+' if deliveries_delta is not none and deliveries_delta > 0 else '' }}{{ deliveries_delta if deliveries_delta is not none else '—' }}</td>
         <td class="{{ deliveries_change_class }}">{{ deliveries_note }}</td>
       </tr>
       <tr>
         <td>New customers</td>
-        <td class="{{ new_customers_change_class }}">{{ new_customers_count }}</td>
+        <td>{{ new_customers_today }}</td>
+        <td>{{ new_customers_yday if new_customers_yday is not none else '—' }}</td>
+        <td class="{{ new_customers_change_class }}">{{ '+' if new_customers_delta is not none and new_customers_delta > 0 else '' }}{{ new_customers_delta if new_customers_delta is not none else '—' }}</td>
         <td class="{{ new_customers_change_class }}">{{ new_customers_note }}</td>
       </tr>
       <tr>
         <td>Repeat customers</td>
-        <td class="{{ repeat_customers_change_class }}">{{ repeat_customers_count }}</td>
+        <td>{{ repeat_customers_today }}</td>
+        <td>{{ repeat_customers_yday if repeat_customers_yday is not none else '—' }}</td>
+        <td class="{{ repeat_customers_change_class }}">{{ '+' if repeat_customers_delta is not none and repeat_customers_delta > 0 else '' }}{{ repeat_customers_delta if repeat_customers_delta is not none else '—' }}</td>
         <td class="{{ repeat_customers_change_class }}">{{ repeat_customers_note }}</td>
       </tr>
     </tbody>
