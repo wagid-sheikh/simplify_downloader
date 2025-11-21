@@ -76,9 +76,23 @@ def _coerce_value(kind: str, value: Any) -> Any:
             return False
         return False
     if kind == "date":
-        for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y"):
+        for parser in (
+            lambda value: datetime.fromisoformat(value).date(),
+            lambda value: datetime.strptime(value, "%Y-%m-%d").date(),
+            lambda value: datetime.strptime(value, "%d-%m-%Y").date(),
+            lambda value: datetime.strptime(value, "%d/%m/%Y").date(),
+            lambda value: datetime.strptime(value, "%m/%d/%Y").date(),
+            lambda value: datetime.strptime(value, "%Y-%m-%d %H:%M:%S").date(),
+            lambda value: datetime.strptime(value, "%Y-%m-%d %H:%M").date(),
+            lambda value: datetime.strptime(value, "%d-%m-%Y %H:%M:%S").date(),
+            lambda value: datetime.strptime(value, "%d-%m-%Y %H:%M").date(),
+            lambda value: datetime.strptime(value, "%d/%m/%Y %H:%M:%S").date(),
+            lambda value: datetime.strptime(value, "%d/%m/%Y %H:%M").date(),
+            lambda value: datetime.strptime(value, "%m/%d/%Y %H:%M:%S").date(),
+            lambda value: datetime.strptime(value, "%m/%d/%Y %H:%M").date(),
+        ):
             try:
-                return datetime.strptime(raw, fmt).date()
+                return parser(raw)
             except ValueError:
                 continue
         return None
