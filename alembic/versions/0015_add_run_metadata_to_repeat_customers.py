@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0015_add_run_metadata_to_repeat_customers"
+revision = "0015_run_metadata_repeat_cust"
 down_revision = "0014_add_run_metadata_columns"
 branch_labels = None
 depends_on = None
