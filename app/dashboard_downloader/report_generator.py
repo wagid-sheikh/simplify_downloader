@@ -876,47 +876,47 @@ class StoreReportPdfBuilder:
         rows = [
             (
                 "Leads captured",
-                self._value_or_na(self.context.get("leads_today")),
                 self._value_or_na(self.context.get("leads_yday")),
+                self._value_or_na(self.context.get("leads_today")),
                 self._format_delta(self.context.get("leads_delta")),
                 self.context.get("leads_note", ""),
                 self.context.get("leads_change_class", "snapshot-neutral"),
             ),
             (
                 "Pickups",
-                self._value_or_na(self.context.get("pickups_today")),
                 self._value_or_na(self.context.get("pickups_yday")),
+                self._value_or_na(self.context.get("pickups_today")),
                 self._format_delta(self.context.get("pickups_delta")),
                 self.context.get("pickups_note", ""),
                 self.context.get("pickups_change_class", "snapshot-neutral"),
             ),
             (
                 "Deliveries",
-                self._value_or_na(self.context.get("deliveries_today")),
                 self._value_or_na(self.context.get("deliveries_yday")),
+                self._value_or_na(self.context.get("deliveries_today")),
                 self._format_delta(self.context.get("deliveries_delta")),
                 self.context.get("deliveries_note", ""),
                 self.context.get("deliveries_change_class", "snapshot-neutral"),
             ),
             (
                 "New customers",
-                self._value_or_na(self.context.get("new_customers_today")),
                 self._value_or_na(self.context.get("new_customers_yday")),
+                self._value_or_na(self.context.get("new_customers_today")),
                 self._format_delta(self.context.get("new_customers_delta")),
                 self.context.get("new_customers_note", ""),
                 self.context.get("new_customers_change_class", "snapshot-neutral"),
             ),
             (
                 "Repeat customers",
-                self._value_or_na(self.context.get("repeat_customers_today")),
                 self._value_or_na(self.context.get("repeat_customers_yday")),
+                self._value_or_na(self.context.get("repeat_customers_today")),
                 self._format_delta(self.context.get("repeat_customers_delta")),
                 self.context.get("repeat_customers_note", ""),
                 self.context.get("repeat_customers_change_class", "snapshot-neutral"),
             ),
         ]
-        data = [["Metric", "T", "T-1", "Δ", "Note"]]
-        data.extend([[metric, today, yday, delta, note] for metric, today, yday, delta, note, _ in rows])
+        data = [["Metric", "T-1", "T", "Δ", "Note"]]
+        data.extend([[metric, yday, today, delta, note] for metric, yday, today, delta, note, _ in rows])
         table = Table(
             data,
             colWidths=[
@@ -934,7 +934,7 @@ class StoreReportPdfBuilder:
                 ("FONTSIZE", (0, 0), (-1, -1), 10),
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e1e1e1")),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("ALIGN", (1, 1), (3, -1), "RIGHT"),
+                ("ALIGN", (1, 0), (3, -1), "RIGHT"),
             ]
         )
         for idx, (_, _, _, _, _, cls) in enumerate(rows, start=1):
