@@ -84,6 +84,7 @@ PLAINTEXT_DB_KEYS = [
     "REPORT_EMAIL_USE_TLS",
     "PDF_RENDER_BACKEND",
     "PDF_RENDER_HEADLESS",
+    "ETL_HEADLESS",
 ]
 
 ENCRYPTED_DB_KEYS = [
@@ -269,6 +270,7 @@ class Config:
     report_email_use_tls: bool
     pdf_render_backend: str
     pdf_render_headless: bool
+    etl_headless: bool
 
     @classmethod
     def load_from_env_and_db(cls) -> Config:
@@ -301,6 +303,7 @@ class Config:
         pdf_render_headless = _parse_bool(
             db_values["PDF_RENDER_HEADLESS"], key="PDF_RENDER_HEADLESS"
         )
+        etl_headless = _parse_bool(db_values["ETL_HEADLESS"], key="ETL_HEADLESS")
 
         td_store_dashboard_path = _clean_text(
             db_values["TD_STORE_DASHBOARD_PATH"], key="TD_STORE_DASHBOARD_PATH"
@@ -361,6 +364,7 @@ class Config:
             report_email_use_tls=report_email_use_tls,
             pdf_render_backend=pdf_render_backend,
             pdf_render_headless=pdf_render_headless,
+            etl_headless=etl_headless,
         )
 
 
