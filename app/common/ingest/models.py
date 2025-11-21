@@ -71,8 +71,25 @@ class RepeatCustomer(Base):
     status: Mapped[str | None] = mapped_column(String)
 
 
+class NonPackageOrder(Base):
+    __tablename__ = "nonpackage_orders"
+    __table_args__ = (
+        UniqueConstraint("store_code", "mobile_no", name="uq_nonpackage_store_mobile"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    store_code: Mapped[str] = mapped_column(String, nullable=False)
+    store_name: Mapped[str | None] = mapped_column(String)
+    mobile_no: Mapped[str] = mapped_column(String, nullable=False)
+    taxable_amount: Mapped[float | None] = mapped_column(Float)
+    order_date: Mapped[Date] = mapped_column(Date, nullable=False)
+    expected_delivery_date: Mapped[Date | None] = mapped_column(Date)
+    actual_delivery_date: Mapped[Date | None] = mapped_column(Date)
+
+
 BUCKET_MODEL_MAP = {
     "missed_leads": MissedLead,
     "undelivered_all": UndeliveredOrder,
     "repeat_customers": RepeatCustomer,
+    "nonpackage_all": NonPackageOrder,
 }
