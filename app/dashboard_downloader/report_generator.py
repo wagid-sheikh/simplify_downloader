@@ -416,7 +416,9 @@ async def build_store_context(
             raise StoreReportDataNotFound(
                 f"no dashboard summary for store {normalized_code} on {report_date.isoformat()}"
             )
-        comparison_row = await _fetch_dashboard_summary(session, normalized_code, report_date, comparison=True)
+        comparison_row = await _fetch_dashboard_summary(
+            session, normalized_code, report_date, comparison=True
+        )
 
         missed_stmt = sa.select(sa.func.count()).select_from(MissedLead).where(
             sa.func.upper(MissedLead.store_code) == normalized_code,
@@ -471,29 +473,63 @@ async def build_store_context(
     overall = _overall_health(statuses.values())
     recos = _build_recommendations(statuses)
 
+    def snapshot_values(today: float | int | None, yesterday: float | int | None) -> tuple[
+        float | int | None, float | int | None, float | None
+    ]:
+        if today is None:
+            return today, yesterday, None
+        if yesterday is None:
+            return today, yesterday, None
+        return today, yesterday, float(today) - float(yesterday)
+
+    leads_today, leads_yday, leads_delta = snapshot_values(missed_count, previous_missed_count)
+
+    pickups_today, pickups_yday, pickups_delta = snapshot_values(
+        _as_int(summary_row.get("pickup_total_count")),
+        _as_int(comparison_row.get("pickup_total_count")) if comparison_row else None,
+    )
+
+    deliveries_today, deliveries_yday, deliveries_delta = snapshot_values(
+        _as_int(summary_row.get("delivery_total_delivered")),
+        _as_int(comparison_row.get("delivery_total_delivered")) if comparison_row else None,
+    )
+
+    new_customers_today, new_customers_yday, new_customers_delta = snapshot_values(
+        _as_int(summary_row.get("pickup_new_count")),
+        _as_int(comparison_row.get("pickup_new_count")) if comparison_row else None,
+    )
+
+    repeat_customers_today, repeat_customers_yday, repeat_customers_delta = snapshot_values(
+        _as_int(summary_row.get("repeat_orders")) or repeat_base_count,
+        _as_int(comparison_row.get("repeat_orders")) if comparison_row else None,
+    )
+
     snapshot = {
-        "leads_total": missed_count,
-        "leads_note": _change_note(missed_count, previous_missed_count),
-        "pickups_total": _as_int(summary_row.get("pickup_total_count")) or 0,
-        "pickups_note": _change_note(
-            summary_row.get("pickup_total_count"),
-            comparison_row.get("pickup_total_count") if comparison_row else None,
-        ),
-        "deliveries_total": _as_int(summary_row.get("delivery_total_delivered")) or 0,
-        "deliveries_note": _change_note(
-            summary_row.get("delivery_total_delivered"),
-            comparison_row.get("delivery_total_delivered") if comparison_row else None,
-        ),
-        "new_customers_count": _as_int(summary_row.get("pickup_new_count")) or 0,
-        "new_customers_note": _change_note(
-            summary_row.get("pickup_new_count"),
-            comparison_row.get("pickup_new_count") if comparison_row else None,
-        ),
-        "repeat_customers_count": _as_int(summary_row.get("repeat_orders")) or repeat_base_count,
-        "repeat_customers_note": _change_note(
-            summary_row.get("repeat_orders"),
-            comparison_row.get("repeat_orders") if comparison_row else None,
-        ),
+        "leads_today": leads_today,
+        "leads_yday": leads_yday,
+        "leads_delta": leads_delta,
+        "leads_total": leads_today,
+        "leads_note": _change_note(leads_today, leads_yday),
+        "pickups_today": pickups_today,
+        "pickups_yday": pickups_yday,
+        "pickups_delta": pickups_delta,
+        "pickups_total": pickups_today,
+        "pickups_note": _change_note(pickups_today, pickups_yday),
+        "deliveries_today": deliveries_today,
+        "deliveries_yday": deliveries_yday,
+        "deliveries_delta": deliveries_delta,
+        "deliveries_total": deliveries_today,
+        "deliveries_note": _change_note(deliveries_today, deliveries_yday),
+        "new_customers_today": new_customers_today,
+        "new_customers_yday": new_customers_yday,
+        "new_customers_delta": new_customers_delta,
+        "new_customers_count": new_customers_today,
+        "new_customers_note": _change_note(new_customers_today, new_customers_yday),
+        "repeat_customers_today": repeat_customers_today,
+        "repeat_customers_yday": repeat_customers_yday,
+        "repeat_customers_delta": repeat_customers_delta,
+        "repeat_customers_count": repeat_customers_today,
+        "repeat_customers_note": _change_note(repeat_customers_today, repeat_customers_yday),
     }
 
     snapshot_classes = {
@@ -840,38 +876,57 @@ class StoreReportPdfBuilder:
         rows = [
             (
                 "Leads captured",
-                self._value_or_na(self.context.get("leads_total")),
+                self._value_or_na(self.context.get("leads_today")),
+                self._value_or_na(self.context.get("leads_yday")),
+                self._format_delta(self.context.get("leads_delta")),
                 self.context.get("leads_note", ""),
                 self.context.get("leads_change_class", "snapshot-neutral"),
             ),
             (
                 "Pickups",
-                self._value_or_na(self.context.get("pickups_total")),
+                self._value_or_na(self.context.get("pickups_today")),
+                self._value_or_na(self.context.get("pickups_yday")),
+                self._format_delta(self.context.get("pickups_delta")),
                 self.context.get("pickups_note", ""),
                 self.context.get("pickups_change_class", "snapshot-neutral"),
             ),
             (
                 "Deliveries",
-                self._value_or_na(self.context.get("deliveries_total")),
+                self._value_or_na(self.context.get("deliveries_today")),
+                self._value_or_na(self.context.get("deliveries_yday")),
+                self._format_delta(self.context.get("deliveries_delta")),
                 self.context.get("deliveries_note", ""),
                 self.context.get("deliveries_change_class", "snapshot-neutral"),
             ),
             (
                 "New customers",
-                self._value_or_na(self.context.get("new_customers_count")),
+                self._value_or_na(self.context.get("new_customers_today")),
+                self._value_or_na(self.context.get("new_customers_yday")),
+                self._format_delta(self.context.get("new_customers_delta")),
                 self.context.get("new_customers_note", ""),
                 self.context.get("new_customers_change_class", "snapshot-neutral"),
             ),
             (
                 "Repeat customers",
-                self._value_or_na(self.context.get("repeat_customers_count")),
+                self._value_or_na(self.context.get("repeat_customers_today")),
+                self._value_or_na(self.context.get("repeat_customers_yday")),
+                self._format_delta(self.context.get("repeat_customers_delta")),
                 self.context.get("repeat_customers_note", ""),
                 self.context.get("repeat_customers_change_class", "snapshot-neutral"),
             ),
         ]
-        data = [["Metric", "Total", "Note"]]
-        data.extend([[metric, total, note] for metric, total, note, _ in rows])
-        table = Table(data, colWidths=[self.body_width * 0.35, self.body_width * 0.2, self.body_width * 0.45])
+        data = [["Metric", "T", "T-1", "Δ", "Note"]]
+        data.extend([[metric, today, yday, delta, note] for metric, today, yday, delta, note, _ in rows])
+        table = Table(
+            data,
+            colWidths=[
+                self.body_width * 0.3,
+                self.body_width * 0.12,
+                self.body_width * 0.12,
+                self.body_width * 0.12,
+                self.body_width * 0.34,
+            ],
+        )
         style = TableStyle(
             [
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#fafafa")),
@@ -879,12 +934,13 @@ class StoreReportPdfBuilder:
                 ("FONTSIZE", (0, 0), (-1, -1), 10),
                 ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e1e1e1")),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (1, 1), (3, -1), "RIGHT"),
             ]
         )
-        for idx, (_, _, _, cls) in enumerate(rows, start=1):
+        for idx, (_, _, _, _, _, cls) in enumerate(rows, start=1):
             color = self.SNAPSHOT_COLOR_MAP.get(cls, colors.HexColor("#1c1c1c"))
-            style.add("TEXTCOLOR", (1, idx), (1, idx), color)
-            style.add("TEXTCOLOR", (2, idx), (2, idx), color)
+            style.add("TEXTCOLOR", (3, idx), (3, idx), color)
+            style.add("TEXTCOLOR", (4, idx), (4, idx), color)
         table.setStyle(style)
         self._draw_table(table)
 
@@ -946,6 +1002,16 @@ class StoreReportPdfBuilder:
         if value is None:
             return "N/A"
         return f"{value:.0f}%"
+
+    def _format_delta(self, delta: float | int | None) -> str:
+        if delta is None:
+            return "—"
+        if math.isclose(float(delta), 0, abs_tol=0.01):
+            return "0"
+        sign = "+" if float(delta) > 0 else ""
+        if isinstance(delta, int) or float(delta).is_integer():
+            return f"{sign}{int(delta)}"
+        return f"{sign}{float(delta):.1f}"
 
     def _value_or_na(self, value: Any) -> str:
         if value is None:
