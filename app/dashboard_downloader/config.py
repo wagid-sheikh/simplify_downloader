@@ -208,7 +208,13 @@ MERGE_BUCKET_DB_SPECS = {
         # dedupe by store_code + mobile_number per upsert requirements.
         "dedupe_keys": ["store_code", "mobile_number"],
         # Columns that must contain values for the row to be ingested.
-        "required_columns": ["pickup_row_id", "store_code", "mobile_number"],
+        "required_columns": [
+            "pickup_row_id",
+            "store_code",
+            "mobile_number",
+            "run_id",
+            "run_date",
+        ],
         "column_map": {
             ("id", "pickup_row_id", "pickup row id"): "pickup_row_id",  # numeric id in CSV
             "mobile_number": "mobile_number",
@@ -241,7 +247,9 @@ MERGE_BUCKET_DB_SPECS = {
             "source": "str",
             "final_source": "str",
             "customer_type": "str",
-            "is_order_placed": "bool", 
+            "is_order_placed": "bool",
+            "run_id": "str",
+            "run_date": "date",
         },
     },
 
@@ -249,7 +257,7 @@ MERGE_BUCKET_DB_SPECS = {
         "table_name": "undelivered_orders",
         # order_id uniquely identifies the record across stores.
         "dedupe_keys": ["store_code", "order_id"],
-        "required_columns": ["order_id"],
+        "required_columns": ["order_id", "run_id", "run_date"],
         "column_map": {
             ("order_id", "order_no"): "order_id",
             "order_date": "order_date",
@@ -277,6 +285,8 @@ MERGE_BUCKET_DB_SPECS = {
             "customer_id": "str",
             "expected_deliver_on": "date",
             "actual_deliver_on": "date",
+            "run_id": "str",
+            "run_date": "date",
         },
     },
 
@@ -301,7 +311,7 @@ MERGE_BUCKET_DB_SPECS = {
         "table_name": "nonpackage_orders",
         # Deduplicate by store and mobile number for customer-level updates.
         "dedupe_keys": ["store_code", "mobile_no"],
-        "required_columns": ["store_code", "mobile_no", "order_date"],
+        "required_columns": ["store_code", "mobile_no", "order_date", "run_id", "run_date"],
         "column_map": {
             "Store Code": "store_code",
             "Store Name": "store_name",
@@ -319,6 +329,8 @@ MERGE_BUCKET_DB_SPECS = {
             "order_date": "date",
             "expected_delivery_date": "date",
             "actual_delivery_date": "date",
+            "run_id": "str",
+            "run_date": "date",
         },
     },
 }

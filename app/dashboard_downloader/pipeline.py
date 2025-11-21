@@ -27,6 +27,19 @@ async def run_pipeline(
 ) -> None:
     log_event(logger=logger, phase="orchestrator", message="pipeline start")
 
+    run_date: date | None = None
+    try:
+        run_date = resolve_report_date()
+    except Exception as exc:  # pragma: no cover - defensive
+        log_event(
+            logger=logger,
+            phase="orchestrator",
+            status="warning",
+            message="unable to resolve report date; defaulting to today",
+            extras={"error": str(exc)},
+        )
+        run_date = date.today()
+
     download_summary = await run_all_stores_single_session(
         settings=settings,
         logger=logger,
@@ -64,6 +77,8 @@ async def run_pipeline(
                 batch_size=settings.ingest_batch_size,
                 database_url=settings.database_url,
                 logger=logger,
+                run_id=settings.run_id,
+                run_date=run_date,
             )
             counts["ingested_rows"] = ingest_totals["rows"]
 
@@ -80,7 +95,7 @@ async def run_pipeline(
     log_event(logger=logger, phase="orchestrator", message="pipeline complete")
 
     report_date = await _run_reporting_tail_step(
-        settings=settings, logger=logger, aggregator=aggregator
+        settings=settings, logger=logger, aggregator=aggregator, report_date=run_date
     )
 
     await _finalize_summary_and_email(
@@ -92,19 +107,24 @@ async def run_pipeline(
 
 
 async def _run_reporting_tail_step(
-    *, settings: PipelineSettings, logger: JsonLogger, aggregator: RunAggregator
+    *,
+    settings: PipelineSettings,
+    logger: JsonLogger,
+    aggregator: RunAggregator,
+    report_date: date | None,
 ) -> date | None:
-    try:
-        report_date = resolve_report_date()
-    except Exception as exc:  # pragma: no cover - defensive
-        log_event(
-            logger=logger,
-            phase="orchestrator",
-            status="warning",
-            message="reporting tail step skipped due to invalid report date",
-            extras={"error": str(exc)},
-        )
-        return None
+    if report_date is None:
+        try:
+            report_date = resolve_report_date()
+        except Exception as exc:  # pragma: no cover - defensive
+            log_event(
+                logger=logger,
+                phase="orchestrator",
+                status="warning",
+                message="reporting tail step skipped due to invalid report date",
+                extras={"error": str(exc)},
+            )
+            return None
 
     try:
         aggregator.set_report_date(report_date)

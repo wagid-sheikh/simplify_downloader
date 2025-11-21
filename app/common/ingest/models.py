@@ -37,6 +37,8 @@ class MissedLead(Base):
     final_source: Mapped[str | None] = mapped_column(String)
     customer_type: Mapped[str | None] = mapped_column(String)
     is_order_placed: Mapped[bool | None] = mapped_column(Boolean)
+    run_id: Mapped[str | None] = mapped_column(String(64))
+    run_date: Mapped[Date | None] = mapped_column(Date)
 
 
 class UndeliveredOrder(Base):
@@ -57,6 +59,8 @@ class UndeliveredOrder(Base):
     customer_id: Mapped[str | None] = mapped_column(String)
     expected_deliver_on: Mapped[Date | None] = mapped_column(Date)
     actual_deliver_on: Mapped[Date | None] = mapped_column(Date)
+    run_id: Mapped[str | None] = mapped_column(String(64))
+    run_date: Mapped[Date | None] = mapped_column(Date)
 
 
 class RepeatCustomer(Base):
@@ -85,6 +89,8 @@ class NonPackageOrder(Base):
     order_date: Mapped[Date] = mapped_column(Date, nullable=False)
     expected_delivery_date: Mapped[Date | None] = mapped_column(Date)
     actual_delivery_date: Mapped[Date | None] = mapped_column(Date)
+    run_id: Mapped[str | None] = mapped_column(String(64))
+    run_date: Mapped[Date | None] = mapped_column(Date)
 
 
 BUCKET_MODEL_MAP = {
