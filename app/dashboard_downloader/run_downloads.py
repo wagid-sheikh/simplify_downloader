@@ -23,6 +23,7 @@ from playwright.async_api import (
 from playwright._impl._errors import TimeoutError as PlaywrightTimeoutError
 
 from app.common.ingest.service import _looks_like_html
+from app.config import config
 
 from . import page_selectors
 from .config import (
@@ -1785,7 +1786,7 @@ async def run_all_stores_single_session(
 
     context_kwargs = dict(
         user_data_dir=str(user_dir),
-        headless=False,
+        headless=config.etl_headless,
         accept_downloads=True,
         channel="chrome",
         args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
