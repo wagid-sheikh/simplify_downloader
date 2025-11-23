@@ -1,22 +1,48 @@
 name: CI
 
 on:
-  pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
+
+# Least-privilege permissions (good security hygiene)
+permissions:
+  contents: read
+
+# Prevents multiple overlapping runs on the same ref (e.g. force-pushes)
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
+  test:
+    name: Test (Python 3.12)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          # Use pip cache so Poetry installs are faster (Poetry uses pip under the hood)
+          cache: 'pip'
+          cache-dependency-path: |
+            **/poetry.lock
+
+      - name: Install Poetry
+        run: |
+          pip install --upgrade pip
+          pip install poetry
+
       - name: Install dependencies
         run: |
-          pip install poetry
           poetry config virtualenvs.create false
           poetry install --no-interaction --no-ansi
+
       - name: Run tests
-        run: pytest
+        run: |
+          pytest

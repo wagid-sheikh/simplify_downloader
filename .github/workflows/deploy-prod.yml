@@ -1,27 +1,56 @@
 name: Deploy Production
 
 on:
+  # Manual trigger
   workflow_dispatch:
-  push:
-    branches: [main]
+
+  # Auto-deploy only AFTER CI passes on main
+  workflow_run:
+    workflows: ["CI"]          # must match `name:` in ci.yml
+    types:
+      - completed
 
 jobs:
   deploy:
+    if: >
+      ${{ github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.head_branch == 'main' }}
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout (for reference only)
         uses: actions/checkout@v4
+
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
+          script_stop: true
           script: |
-            cd ${{ secrets.DEPLOY_PATH }}
-            git pull
+            set -euo pipefail
+
+            echo "==> Switching to deploy path"
+            cd "${DEPLOY_PATH:-${{ secrets.DEPLOY_PATH }}}"
+
+            echo "==> Fetching latest code from origin/main"
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "==> Pulling latest images"
             docker compose pull
+
+            echo "==> Building images (if needed)"
             docker compose build app
-            docker compose up -d db
+
+            echo "==> Starting/refreshing services (db + app)"
+            docker compose up -d db app
+
+            echo "==> Waiting for DB to be ready"
             sleep 10
+
+            echo "==> Running DB migrations"
             docker compose run --rm app python -m app db upgrade
+
+            echo "==> Deployment completed successfully"
