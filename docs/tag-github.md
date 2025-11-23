@@ -30,7 +30,10 @@ git tag -a v1.18 -m "Stable after final cosmetic changes to daily store performa
 
 git push origin v1.18
 
-
 git tag -a v1.19 -m "Stable after Major Refactoring"
 
 git push origin v1.19
+
+git tag -a v2.00 -m "Stable after Major Refactoring and merged to main"
+
+git push origin v2.00
