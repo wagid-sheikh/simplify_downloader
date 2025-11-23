@@ -1,0 +1,17 @@
+name: Cleanup Old Workflow Runs
+
+on:
+  workflow_dispatch:  # run manually from the Actions tab
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          retain_days: 0           # keep nothing based on age
+          keep_minimum_runs: 0     # don't keep any runs
+
