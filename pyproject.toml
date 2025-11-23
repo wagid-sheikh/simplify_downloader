@@ -18,6 +18,7 @@ dependencies = [
     "python-magic>=0.4.27",
     "jinja2>=3.1.4",
     "reportlab>=4.0.0",
+    "pdfplumber (>=0.11.8,<0.12.0)",
 ]
 
 # Turn off packaging (we’re using Poetry for env + deps + scripts)
