@@ -38,6 +38,7 @@ def _base_rows(secret_key: str) -> dict[str, str]:
         "REPORT_EMAIL_USE_TLS": "true",
         "PDF_RENDER_BACKEND": "bundled_chromium",
         "PDF_RENDER_HEADLESS": "true",
+        "ETL_HEADLESS": "true",
     }
     rows["TD_GLOBAL_PASSWORD"] = encrypt_secret(secret_key, "change-me-global-password")
     rows["REPORT_EMAIL_SMTP_PASSWORD"] = encrypt_secret(secret_key, "change-me-smtp-password")
