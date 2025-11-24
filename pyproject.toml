@@ -5,7 +5,7 @@ build-backend = "poetry.core.masonry.api"
 [project]
 name = "crm-backend"
 version = "0.1.0"
-description = "Headless Playwright downloader for TumbleDry MIS"
+description = "Headless Playwright downloader for Dashboard MIS"
 readme = "README.md"
 requires-python = ">=3.12,<4.0"
 dependencies = [

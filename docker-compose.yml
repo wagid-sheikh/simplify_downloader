@@ -1,34 +1,56 @@
 services:
   db:
     image: postgres:16
+    container_name: tsv-crm-db
+    restart: unless-stopped
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: simplify
+      POSTGRES_USER:     ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB:       ${POSTGRES_DB:?POSTGRES_DB is required}
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - tsv-crm_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "postgres"]
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
-      - internal
+      - tsv-crm_net
 
   app:
     build: .
-    environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/simplify
+    image: tsv-crm-backend-app:prod
+    container_name: tsv-crm-backend-app
+    restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
-    networks:
-      - internal
+    environment:
+      # Required DB connection parts (NO DEFAULTS)
+      POSTGRES_HOST:     ${POSTGRES_HOST:?POSTGRES_HOST is required}
+      POSTGRES_PORT:     ${POSTGRES_PORT:?POSTGRES_PORT is required}
+      POSTGRES_DB:       ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER:     ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+
+      # App config
+      SECRET_KEY:                   ${SECRET_KEY:?SECRET_KEY is required}
+      ALEMBIC_CONFIG:               ${ALEMBIC_CONFIG:?ALEMBIC_CONFIG is required}
+      ENVIRONMENT:                  ${ENVIRONMENT:?ENVIRONMENT is required}
+      RUN_ENV:                      ${RUN_ENV:?RUN_ENV is required}
+      PIPELINE_TIMEZONE:            ${PIPELINE_TIMEZONE:?PIPELINE_TIMEZONE is required}
+      JSON_LOG_FILE:                ${JSON_LOG_FILE:?JSON_LOG_FILE is required}
+      REPORTS_ROOT:                 ${REPORTS_ROOT:?REPORTS_ROOT is required}
+      PDF_RENDER_CHROME_EXECUTABLE: ${PDF_RENDER_CHROME_EXECUTABLE:?PDF_RENDER_CHROME_EXECUTABLE is required}
     command: ["run"]
+    networks:
+      - tsv-crm_net
 
 volumes:
-  db_data:
+  tsv-crm_pgdata:
+    name: tsv-crm_pgdata
 
 networks:
-  internal:
+  tsv-crm_net:
+    name: tsv-crm_net
     driver: bridge

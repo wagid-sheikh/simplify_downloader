@@ -23,11 +23,32 @@ jobs:
 
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          # --- DB connection pieces (for both db + app services) ---
+          POSTGRES_HOST:     ${{ secrets.POSTGRES_HOST }}      # should be "db" in prod
+          POSTGRES_PORT:     ${{ secrets.POSTGRES_PORT }}      # "5432"
+          POSTGRES_DB:       ${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER:     ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+
+          # --- App-level config ---
+          SECRET_KEY:                   ${{ secrets.SECRET_KEY }}
+          ALEMBIC_CONFIG:               ${{ secrets.ALEMBIC_CONFIG }}
+          ENVIRONMENT:                  ${{ secrets.ENVIRONMENT }}
+          RUN_ENV:                      ${{ secrets.RUN_ENV }}
+          PIPELINE_TIMEZONE:            ${{ secrets.PIPELINE_TIMEZONE }}
+          JSON_LOG_FILE:                ${{ secrets.JSON_LOG_FILE }}
+          REPORTS_ROOT:                 ${{ secrets.REPORTS_ROOT }}
+          PDF_RENDER_CHROME_EXECUTABLE: ${{ secrets.PDF_RENDER_CHROME_EXECUTABLE }}
         with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_KEY }}
+          host:        ${{ secrets.DEPLOY_HOST }}
+          username:    ${{ secrets.DEPLOY_USER }}
+          key:         ${{ secrets.DEPLOY_KEY }}
           script_stop: true
+
+          # Forward these env vars into the remote shell on the server
+          envs: POSTGRES_HOST,POSTGRES_PORT,POSTGRES_DB,POSTGRES_USER,POSTGRES_PASSWORD,SECRET_KEY,ALEMBIC_CONFIG,ENVIRONMENT,RUN_ENV,PIPELINE_TIMEZONE,JSON_LOG_FILE,REPORTS_ROOT,PDF_RENDER_CHROME_EXECUTABLE
+
           script: |
             set -euo pipefail
 
