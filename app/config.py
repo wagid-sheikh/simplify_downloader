@@ -61,11 +61,23 @@ ENV_ONLY_KEYS = [
     "RUN_ENV",
     "ENVIRONMENT",
     "PIPELINE_TIMEZONE",
-    "DATABASE_URL",
     "ALEMBIC_CONFIG",
     "REPORTS_ROOT",
     "JSON_LOG_FILE",
     "PDF_RENDER_CHROME_EXECUTABLE",
+    "POSTGRES_HOST",
+    "POSTGRES_PORT",
+    "POSTGRES_DB",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+]
+
+POSTGRES_ENV_KEYS = [
+    "POSTGRES_HOST",
+    "POSTGRES_PORT",
+    "POSTGRES_DB",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
 ]
 
 PLAINTEXT_DB_KEYS = [
@@ -118,6 +130,26 @@ def _require_env(key: str) -> str:
 
 def _load_env_values() -> Dict[str, str]:
     return {key: _require_env(key) for key in ENV_ONLY_KEYS}
+
+
+def _build_database_url(env_values: Mapping[str, str]) -> str:
+    missing = [key for key in POSTGRES_ENV_KEYS if key not in env_values]
+    if missing:
+        message = f"Missing required environment variables: {', '.join(sorted(missing))}"
+        logger.error(message)
+        raise ConfigError(message)
+
+    host = _clean_text(env_values["POSTGRES_HOST"], key="POSTGRES_HOST")
+    database = _clean_text(env_values["POSTGRES_DB"], key="POSTGRES_DB")
+
+    if host.lower() == "sqlite":
+        return f"sqlite:///{database}"
+
+    port = _parse_int(env_values["POSTGRES_PORT"], key="POSTGRES_PORT")
+    user = _clean_text(env_values["POSTGRES_USER"], key="POSTGRES_USER")
+    password = _clean_text(env_values["POSTGRES_PASSWORD"], key="POSTGRES_PASSWORD")
+
+    return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{database}"
 
 
 def _parse_bool(value: str, *, key: str) -> bool:
@@ -276,7 +308,7 @@ class Config:
     def load_from_env_and_db(cls) -> Config:
         env_values = _load_env_values()
         secret_key = env_values["SECRET_KEY"]
-        database_url = env_values["DATABASE_URL"]
+        database_url = _build_database_url(env_values)
         db_values = _load_system_config(database_url)
 
         missing = [key for key in REQUIRED_DB_KEYS if key not in db_values]

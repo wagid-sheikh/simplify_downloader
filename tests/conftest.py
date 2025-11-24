@@ -81,11 +81,15 @@ DEFAULT_ENV = {
     "RUN_ENV": "test",
     "ENVIRONMENT": "test",
     "PIPELINE_TIMEZONE": "Asia/Kolkata",
-    "DATABASE_URL": f"sqlite:///{TEST_DB_PATH}",
     "ALEMBIC_CONFIG": "alembic.ini",
     "REPORTS_ROOT": str(reports_root),
     "JSON_LOG_FILE": str(log_file_path),
     "PDF_RENDER_CHROME_EXECUTABLE": "/usr/bin/google-chrome",
+    "POSTGRES_HOST": "sqlite",
+    "POSTGRES_PORT": "0",
+    "POSTGRES_DB": str(TEST_DB_PATH),
+    "POSTGRES_USER": "unused",
+    "POSTGRES_PASSWORD": "unused",
 }
 
 for key, value in DEFAULT_ENV.items():
