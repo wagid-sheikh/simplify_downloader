@@ -53,25 +53,28 @@ jobs:
             set -euo pipefail
 
             echo "==> Switching to deploy path"
-            cd "${DEPLOY_PATH:-${{ secrets.DEPLOY_PATH }}}"
+            cd "${DEPLOY_PATH:-***}"
 
             echo "==> Fetching latest code from origin/main"
             git fetch origin main
             git reset --hard origin/main
 
-            echo "==> Pulling latest images"
-            docker compose pull
+            echo "==> Pulling latest images for external services (db)"
+            docker compose pull db
 
-            echo "==> Building images (if needed)"
+            echo "==> Building app image from source"
             docker compose build app
 
             echo "==> Starting/refreshing services (db + app)"
             docker compose up -d db app
 
             echo "==> Waiting for DB to be ready"
+            # db has a healthcheck and app depends_on db:service_healthy,
+            # but for migrations we still give it a few extra seconds
             sleep 10
 
             echo "==> Running DB migrations"
-            docker compose run --rm app db upgrade
+            docker compose run --rm app alembic upgrade head
 
             echo "==> Deployment completed successfully"
+
