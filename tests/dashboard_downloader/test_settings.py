@@ -3,12 +3,7 @@ import pytest
 from app.dashboard_downloader import settings
 
 
-@pytest.fixture
-def anyio_backend():
-    return "asyncio"
-
-
-@pytest.mark.anyio("asyncio")
+@pytest.mark.asyncio
 async def test_load_settings_uses_etl_flag(monkeypatch):
     async def fake_fetch_store_codes(*, database_url, etl_flag=None, report_flag=None, store_codes=None):
         if etl_flag:
@@ -25,7 +20,7 @@ async def test_load_settings_uses_etl_flag(monkeypatch):
     assert loaded.raw_store_env == "store_master.etl_flag"
 
 
-@pytest.mark.anyio("asyncio")
+@pytest.mark.asyncio
 async def test_load_settings_requires_report_alignment(monkeypatch):
     async def fake_fetch_store_codes(*, database_url, etl_flag=None, report_flag=None, store_codes=None):
         if etl_flag:
@@ -40,7 +35,7 @@ async def test_load_settings_requires_report_alignment(monkeypatch):
         await settings.load_settings(dry_run=False, run_id="run-1")
 
 
-@pytest.mark.anyio("asyncio")
+@pytest.mark.asyncio
 async def test_load_settings_requires_etl_flagged_stores(monkeypatch):
     async def fake_fetch_store_codes(*, database_url, etl_flag=None, report_flag=None, store_codes=None):
         if etl_flag:
