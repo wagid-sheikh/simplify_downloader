@@ -5,6 +5,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from datetime import date
+
 from app.common.ingest.service import _load_csv_rows, _looks_like_html
 
 
@@ -23,7 +25,13 @@ def test_load_csv_rows_parses_valid_csv(tmp_path):
         encoding="utf-8",
     )
 
-    rows = list(_load_csv_rows("missed_leads", csv_path))
+    rows = list(
+        _load_csv_rows(
+            "missed_leads",
+            csv_path,
+            row_context={"run_id": "test-run", "run_date": date(2025, 1, 1)},
+        )
+    )
     assert rows == [
         {
             "pickup_row_id": 1001,
@@ -41,5 +49,7 @@ def test_load_csv_rows_parses_valid_csv(tmp_path):
             "final_source": None,
             "customer_type": None,
             "is_order_placed": None,
+            "run_id": "test-run",
+            "run_date": date(2025, 1, 1),
         }
     ]
