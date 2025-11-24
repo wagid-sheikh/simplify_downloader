@@ -8,7 +8,7 @@ cd "${REPO_ROOT}"
 # Export variables from .env (if present) so that tools outside Python (like
 # Alembic) use the same configuration as the application itself. Without this
 # step Alembic falls back to alembic.ini defaults (host "db"), which breaks in
-# local development where developers typically point DATABASE_URL at localhost.
+# local development where developers typically point POSTGRES_* settings at localhost.
 ENV_FILE="${REPO_ROOT}/.env"
 if [[ -f "${ENV_FILE}" ]]; then
   set -a

@@ -19,12 +19,40 @@ from app.common.ingest.models import Base
 
 config = context.config
 
+
+def _require_env(key: str) -> str:
+    value = os.getenv(key)
+    if value is None:
+        raise RuntimeError(f"Missing required environment variable: {key}")
+
+    stripped = value.strip()
+    if not stripped:
+        raise RuntimeError(f"Environment variable {key} cannot be blank")
+
+    return stripped
+
+
+def _build_database_url() -> str:
+    host = _require_env("POSTGRES_HOST")
+    database = _require_env("POSTGRES_DB")
+
+    if host.lower() == "sqlite":
+        return f"sqlite:///{database}"
+
+    port = _require_env("POSTGRES_PORT")
+    try:
+        int(port)
+    except ValueError as exc:
+        raise RuntimeError("POSTGRES_PORT must be an integer") from exc
+    user = _require_env("POSTGRES_USER")
+    password = _require_env("POSTGRES_PASSWORD")
+
+    return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{database}"
+
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-db_url = os.getenv("DATABASE_URL")
-if db_url:
-    config.set_main_option("sqlalchemy.url", db_url)
+config.set_main_option("sqlalchemy.url", _build_database_url())
 
 
 def run_migrations_offline() -> None:

@@ -13,11 +13,15 @@ REQUIRED_ENV_KEYS = [
     "RUN_ENV",
     "ENVIRONMENT",
     "PIPELINE_TIMEZONE",
-    "DATABASE_URL",
     "ALEMBIC_CONFIG",
     "REPORTS_ROOT",
     "JSON_LOG_FILE",
     "PDF_RENDER_CHROME_EXECUTABLE",
+    "POSTGRES_HOST",
+    "POSTGRES_PORT",
+    "POSTGRES_DB",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
 ]
 
 
@@ -78,6 +82,11 @@ def _set_env(monkeypatch: pytest.MonkeyPatch, overrides: dict[str, str]) -> None
         "ENVIRONMENT": "test",
         "PIPELINE_TIMEZONE": "Asia/Kolkata",
         "ALEMBIC_CONFIG": "alembic.ini",
+        "POSTGRES_HOST": "sqlite",
+        "POSTGRES_PORT": "0",
+        "POSTGRES_DB": "",
+        "POSTGRES_USER": "unused",
+        "POSTGRES_PASSWORD": "unused",
     }
     defaults.update(overrides)
     missing = [key for key in REQUIRED_ENV_KEYS if key not in defaults]
@@ -98,7 +107,7 @@ def test_config_loads_expected_values(monkeypatch, tmp_path):
     _set_env(
         monkeypatch,
         {
-            "DATABASE_URL": f"sqlite:///{db_path}",
+            "POSTGRES_DB": str(db_path),
             "REPORTS_ROOT": str(reports_root),
             "JSON_LOG_FILE": str(log_file),
             "PDF_RENDER_CHROME_EXECUTABLE": "/usr/bin/google-chrome",
@@ -124,7 +133,7 @@ def test_missing_env_variable_raises(monkeypatch, tmp_path):
     _set_env(
         monkeypatch,
         {
-            "DATABASE_URL": f"sqlite:///{db_path}",
+            "POSTGRES_DB": str(db_path),
             "REPORTS_ROOT": str(reports_root),
             "JSON_LOG_FILE": str(log_file),
             "PDF_RENDER_CHROME_EXECUTABLE": "/usr/bin/google-chrome",
@@ -146,7 +155,7 @@ def test_missing_system_config_key(monkeypatch, tmp_path):
     _set_env(
         monkeypatch,
         {
-            "DATABASE_URL": f"sqlite:///{db_path}",
+            "POSTGRES_DB": str(db_path),
             "REPORTS_ROOT": str(reports_root),
             "JSON_LOG_FILE": str(tmp_path / "logs.jsonl"),
             "PDF_RENDER_CHROME_EXECUTABLE": "/usr/bin/google-chrome",
@@ -167,7 +176,7 @@ def test_invalid_integer_value(monkeypatch, tmp_path):
     _set_env(
         monkeypatch,
         {
-            "DATABASE_URL": f"sqlite:///{db_path}",
+            "POSTGRES_DB": str(db_path),
             "REPORTS_ROOT": str(reports_root),
             "JSON_LOG_FILE": str(tmp_path / "logs.jsonl"),
             "PDF_RENDER_CHROME_EXECUTABLE": "/usr/bin/google-chrome",
@@ -188,7 +197,7 @@ def test_invalid_boolean_value(monkeypatch, tmp_path):
     _set_env(
         monkeypatch,
         {
-            "DATABASE_URL": f"sqlite:///{db_path}",
+            "POSTGRES_DB": str(db_path),
             "REPORTS_ROOT": str(reports_root),
             "JSON_LOG_FILE": str(tmp_path / "logs.jsonl"),
             "PDF_RENDER_CHROME_EXECUTABLE": "/usr/bin/google-chrome",
@@ -209,7 +218,7 @@ def test_encrypted_value_must_be_valid(monkeypatch, tmp_path):
     _set_env(
         monkeypatch,
         {
-            "DATABASE_URL": f"sqlite:///{db_path}",
+            "POSTGRES_DB": str(db_path),
             "REPORTS_ROOT": str(reports_root),
             "JSON_LOG_FILE": str(tmp_path / "logs.jsonl"),
             "PDF_RENDER_CHROME_EXECUTABLE": "/usr/bin/google-chrome",

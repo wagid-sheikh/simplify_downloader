@@ -325,7 +325,7 @@ async def run_store_reports_for_date(
             logger=logger,
             phase="report",
             status="error",
-            message="DATABASE_URL is required for report generation",
+            message="Database configuration is required for report generation",
         )
         return []
 
