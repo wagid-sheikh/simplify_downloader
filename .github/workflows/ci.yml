@@ -40,9 +40,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          poetry config virtualenvs.create false
+          # If you want an isolated venv (recommended in CI), REMOVE this line:
+          # poetry config virtualenvs.create false
           poetry install --no-interaction --no-ansi
 
       - name: Run tests
         run: |
-          pytest
+          poetry run pytest
