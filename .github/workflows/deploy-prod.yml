@@ -25,6 +25,7 @@ jobs:
         uses: appleboy/ssh-action@v1.0.3
         env:
           DEPLOY_PATH:        ${{ secrets.DEPLOY_PATH }}
+
           # --- DB connection pieces (for both db + app services) ---
           POSTGRES_HOST:     ${{ secrets.POSTGRES_HOST }}      # should be "db" in prod
           POSTGRES_PORT:     ${{ secrets.POSTGRES_PORT }}      # "5432"
@@ -47,14 +48,15 @@ jobs:
           key:         ${{ secrets.DEPLOY_KEY }}
           script_stop: true
 
-          # Forward these env vars into the remote shell on the server
-          envs: POSTGRES_HOST,POSTGRES_PORT,POSTGRES_DB,POSTGRES_USER,POSTGRES_PASSWORD,SECRET_KEY,ALEMBIC_CONFIG,ENVIRONMENT,RUN_ENV,PIPELINE_TIMEZONE,JSON_LOG_FILE,REPORTS_ROOT,PDF_RENDER_CHROME_EXECUTABLE
+          # ✅ Forward DEPLOY_PATH as well
+          envs: DEPLOY_PATH,POSTGRES_HOST,POSTGRES_PORT,POSTGRES_DB,POSTGRES_USER,POSTGRES_PASSWORD,SECRET_KEY,ALEMBIC_CONFIG,ENVIRONMENT,RUN_ENV,PIPELINE_TIMEZONE,JSON_LOG_FILE,REPORTS_ROOT,PDF_RENDER_CHROME_EXECUTABLE
 
           script: |
             set -euo pipefail
 
             echo "==> Switching to deploy path"
-            cd "${DEPLOY_PATH:-***}"
+            # ✅ Hard fail if DEPLOY_PATH is missing
+            cd "${DEPLOY_PATH:?DEPLOY_PATH is required}"
 
             echo "==> Fetching latest code from origin/main"
             git fetch origin main
@@ -78,4 +80,3 @@ jobs:
             docker compose run --rm app alembic upgrade head
 
             echo "==> Deployment completed successfully"
-
