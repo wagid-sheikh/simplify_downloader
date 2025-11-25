@@ -1788,9 +1788,14 @@ async def run_all_stores_single_session(
         user_data_dir=str(user_dir),
         headless=config.etl_headless,
         accept_downloads=True,
-        channel="chrome",
         args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
     )
+
+    backend = config.pdf_render_backend.lower()
+    if backend == "local_chrome":
+        context_kwargs["channel"] = "chrome"
+        if config.pdf_render_chrome_executable:
+            context_kwargs["executable_path"] = config.pdf_render_chrome_executable
 
     async with async_playwright() as p:
         ctx = await p.chromium.launch_persistent_context(**context_kwargs)

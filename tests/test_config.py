@@ -16,7 +16,6 @@ REQUIRED_ENV_KEYS = [
     "ALEMBIC_CONFIG",
     "REPORTS_ROOT",
     "JSON_LOG_FILE",
-    "PDF_RENDER_CHROME_EXECUTABLE",
     "POSTGRES_HOST",
     "POSTGRES_PORT",
     "POSTGRES_DB",
@@ -89,6 +88,7 @@ def _set_env(monkeypatch: pytest.MonkeyPatch, overrides: dict[str, str]) -> None
         "POSTGRES_PASSWORD": "unused",
     }
     defaults.update(overrides)
+    monkeypatch.delenv("PDF_RENDER_CHROME_EXECUTABLE", raising=False)
     missing = [key for key in REQUIRED_ENV_KEYS if key not in defaults]
     if missing:
         raise AssertionError(f"Missing env defaults for: {missing}")
@@ -110,7 +110,6 @@ def test_config_loads_expected_values(monkeypatch, tmp_path):
             "POSTGRES_DB": str(db_path),
             "REPORTS_ROOT": str(reports_root),
             "JSON_LOG_FILE": str(log_file),
-            "PDF_RENDER_CHROME_EXECUTABLE": "/usr/bin/google-chrome",
         },
     )
 
@@ -122,6 +121,7 @@ def test_config_loads_expected_values(monkeypatch, tmp_path):
     assert cfg.report_email_use_tls is True
     assert cfg.pdf_render_headless is True
     assert cfg.report_email_smtp_password == "change-me-smtp-password"
+    assert cfg.pdf_render_chrome_executable is None
 
 
 def test_missing_env_variable_raises(monkeypatch, tmp_path):
@@ -136,7 +136,6 @@ def test_missing_env_variable_raises(monkeypatch, tmp_path):
             "POSTGRES_DB": str(db_path),
             "REPORTS_ROOT": str(reports_root),
             "JSON_LOG_FILE": str(log_file),
-            "PDF_RENDER_CHROME_EXECUTABLE": "/usr/bin/google-chrome",
         },
     )
     monkeypatch.delenv("SECRET_KEY")
@@ -158,7 +157,6 @@ def test_missing_system_config_key(monkeypatch, tmp_path):
             "POSTGRES_DB": str(db_path),
             "REPORTS_ROOT": str(reports_root),
             "JSON_LOG_FILE": str(tmp_path / "logs.jsonl"),
-            "PDF_RENDER_CHROME_EXECUTABLE": "/usr/bin/google-chrome",
         },
     )
 
@@ -179,7 +177,6 @@ def test_invalid_integer_value(monkeypatch, tmp_path):
             "POSTGRES_DB": str(db_path),
             "REPORTS_ROOT": str(reports_root),
             "JSON_LOG_FILE": str(tmp_path / "logs.jsonl"),
-            "PDF_RENDER_CHROME_EXECUTABLE": "/usr/bin/google-chrome",
         },
     )
 
@@ -200,12 +197,53 @@ def test_invalid_boolean_value(monkeypatch, tmp_path):
             "POSTGRES_DB": str(db_path),
             "REPORTS_ROOT": str(reports_root),
             "JSON_LOG_FILE": str(tmp_path / "logs.jsonl"),
-            "PDF_RENDER_CHROME_EXECUTABLE": "/usr/bin/google-chrome",
         },
     )
 
     with pytest.raises(ConfigError):
         Config.load_from_env_and_db()
+
+
+def test_local_chrome_requires_executable(monkeypatch, tmp_path):
+    db_path = tmp_path / "config.sqlite"
+    rows = _base_rows("unit-test-secret")
+    rows["PDF_RENDER_BACKEND"] = "local_chrome"
+    _write_system_config(db_path, rows)
+    reports_root = tmp_path / "reports"
+    reports_root.mkdir()
+    _set_env(
+        monkeypatch,
+        {
+            "POSTGRES_DB": str(db_path),
+            "REPORTS_ROOT": str(reports_root),
+            "JSON_LOG_FILE": str(tmp_path / "logs.jsonl"),
+        },
+    )
+
+    with pytest.raises(ConfigError):
+        Config.load_from_env_and_db()
+
+
+def test_local_chrome_accepts_executable(monkeypatch, tmp_path):
+    db_path = tmp_path / "config.sqlite"
+    rows = _base_rows("unit-test-secret")
+    rows["PDF_RENDER_BACKEND"] = "local_chrome"
+    _write_system_config(db_path, rows)
+    reports_root = tmp_path / "reports"
+    reports_root.mkdir()
+    _set_env(
+        monkeypatch,
+        {
+            "POSTGRES_DB": str(db_path),
+            "REPORTS_ROOT": str(reports_root),
+            "JSON_LOG_FILE": str(tmp_path / "logs.jsonl"),
+            "PDF_RENDER_CHROME_EXECUTABLE": "/usr/bin/google-chrome",
+        },
+    )
+
+    cfg = Config.load_from_env_and_db()
+
+    assert cfg.pdf_render_chrome_executable == "/usr/bin/google-chrome"
 
 
 def test_encrypted_value_must_be_valid(monkeypatch, tmp_path):
@@ -221,7 +259,6 @@ def test_encrypted_value_must_be_valid(monkeypatch, tmp_path):
             "POSTGRES_DB": str(db_path),
             "REPORTS_ROOT": str(reports_root),
             "JSON_LOG_FILE": str(tmp_path / "logs.jsonl"),
-            "PDF_RENDER_CHROME_EXECUTABLE": "/usr/bin/google-chrome",
         },
     )
 
