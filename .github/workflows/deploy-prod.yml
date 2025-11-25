@@ -77,6 +77,6 @@ jobs:
             sleep 10
 
             echo "==> Running DB migrations"
-            docker compose run --rm app alembic upgrade head
+            docker compose run --rm --entrypoint alembic app upgrade head
 
             echo "==> Deployment completed successfully"
