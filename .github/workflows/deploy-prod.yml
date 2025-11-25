@@ -1,20 +1,14 @@
 name: Deploy Production - CRM-Backend
 
 on:
-  # Manual trigger
   workflow_dispatch:
-
-  # Auto-deploy only AFTER CI passes on main
   workflow_run:
-    workflows: ["CI"]          # must match `name:` in ci.yml
+    workflows: ["CI"]
     types:
       - completed
 
 jobs:
   deploy:
-    # Allow:
-    # - manual runs (workflow_dispatch)
-    # - automatic runs when CI on main succeeds
     if: >
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' &&
@@ -32,14 +26,12 @@ jobs:
         env:
           DEPLOY_PATH:        ${{ secrets.DEPLOY_PATH }}
 
-          # --- DB connection pieces (for both db + app services) ---
-          POSTGRES_HOST:      ${{ secrets.POSTGRES_HOST }}      # should be "db" in prod
-          POSTGRES_PORT:      ${{ secrets.POSTGRES_PORT }}      # "5432"
+          POSTGRES_HOST:      ${{ secrets.POSTGRES_HOST }}
+          POSTGRES_PORT:      ${{ secrets.POSTGRES_PORT }}
           POSTGRES_DB:        ${{ secrets.POSTGRES_DB }}
           POSTGRES_USER:      ${{ secrets.POSTGRES_USER }}
           POSTGRES_PASSWORD:  ${{ secrets.POSTGRES_PASSWORD }}
 
-          # --- App-level config ---
           SECRET_KEY:                   ${{ secrets.SECRET_KEY }}
           ALEMBIC_CONFIG:               ${{ secrets.ALEMBIC_CONFIG }}
           ENVIRONMENT:                  ${{ secrets.ENVIRONMENT }}
@@ -54,7 +46,6 @@ jobs:
           key:         ${{ secrets.DEPLOY_KEY }}
           script_stop: true
 
-          # ✅ Forward DEPLOY_PATH as well
           envs: >
             DEPLOY_PATH,
             POSTGRES_HOST,POSTGRES_PORT,POSTGRES_DB,POSTGRES_USER,POSTGRES_PASSWORD,
@@ -72,22 +63,23 @@ jobs:
             git reset --hard origin/main
 
             echo "==> Writing .env from GitHub Secrets"
-            cat > .env <<EOF
-            POSTGRES_HOST=${POSTGRES_HOST}
-            POSTGRES_PORT=${POSTGRES_PORT}
-            POSTGRES_DB=${POSTGRES_DB}
-            POSTGRES_USER=${POSTGRES_USER}
-            POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-
-            SECRET_KEY=${SECRET_KEY}
-            ALEMBIC_CONFIG=${ALEMBIC_CONFIG}
-            ENVIRONMENT=${ENVIRONMENT}
-            RUN_ENV=${RUN_ENV}
-            PIPELINE_TIMEZONE=${PIPELINE_TIMEZONE}
-            JSON_LOG_FILE=${JSON_LOG_FILE}
-            REPORTS_ROOT=${REPORTS_ROOT}
-            PDF_RENDER_CHROME_EXECUTABLE=${PDF_RENDER_CHROME_EXECUTABLE}
-            EOF
+            # Write the file in ONE command so ssh-action's wrapper can't inject lines into it
+            printf '%s\n' \
+              "POSTGRES_HOST=${POSTGRES_HOST}" \
+              "POSTGRES_PORT=${POSTGRES_PORT}" \
+              "POSTGRES_DB=${POSTGRES_DB}" \
+              "POSTGRES_USER=${POSTGRES_USER}" \
+              "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}" \
+              "" \
+              "SECRET_KEY=${SECRET_KEY}" \
+              "ALEMBIC_CONFIG=${ALEMBIC_CONFIG}" \
+              "ENVIRONMENT=${ENVIRONMENT}" \
+              "RUN_ENV=${RUN_ENV}" \
+              "PIPELINE_TIMEZONE=${PIPELINE_TIMEZONE}" \
+              "JSON_LOG_FILE=${JSON_LOG_FILE}" \
+              "REPORTS_ROOT=${REPORTS_ROOT}" \
+              "PDF_RENDER_CHROME_EXECUTABLE=${PDF_RENDER_CHROME_EXECUTABLE}" \
+              > .env
 
             chmod 600 .env
             echo "==> .env written & secured"
