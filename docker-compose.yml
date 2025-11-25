@@ -43,7 +43,8 @@ services:
       PIPELINE_TIMEZONE:            ${PIPELINE_TIMEZONE:?PIPELINE_TIMEZONE is required}
       JSON_LOG_FILE:                ${JSON_LOG_FILE:?JSON_LOG_FILE is required}
       REPORTS_ROOT:                 ${REPORTS_ROOT:?REPORTS_ROOT is required}
-      PDF_RENDER_CHROME_EXECUTABLE: ${PDF_RENDER_CHROME_EXECUTABLE:?PDF_RENDER_CHROME_EXECUTABLE is required}
+      # Optional: set only when using PDF_RENDER_BACKEND=local_chrome
+      PDF_RENDER_CHROME_EXECUTABLE: ${PDF_RENDER_CHROME_EXECUTABLE:-}
     command: ["run"]
     networks:
       - tsv-crm_net
