@@ -52,31 +52,50 @@ jobs:
           envs: DEPLOY_PATH,POSTGRES_HOST,POSTGRES_PORT,POSTGRES_DB,POSTGRES_USER,POSTGRES_PASSWORD,SECRET_KEY,ALEMBIC_CONFIG,ENVIRONMENT,RUN_ENV,PIPELINE_TIMEZONE,JSON_LOG_FILE,REPORTS_ROOT,PDF_RENDER_CHROME_EXECUTABLE
 
           script: |
-            set -euo pipefail
+              set -euo pipefail
 
-            echo "==> Switching to deploy path"
-            # ✅ Hard fail if DEPLOY_PATH is missing
-            cd "${DEPLOY_PATH:?DEPLOY_PATH is required}"
+              echo "==> Switching to deploy path"
+              cd "${DEPLOY_PATH:?DEPLOY_PATH is required}"
 
-            echo "==> Fetching latest code from origin/main"
-            git fetch origin main
-            git reset --hard origin/main
+              echo "==> Fetching latest code from origin/main"
+              git fetch origin main
+              git reset --hard origin/main
 
-            echo "==> Pulling latest images for external services (db)"
-            docker compose pull db
+              echo "==> Writing .env from GitHub Secrets"
+              cat > .env <<EOF
+            POSTGRES_HOST=${POSTGRES_HOST}
+            POSTGRES_PORT=${POSTGRES_PORT}
+            POSTGRES_DB=${POSTGRES_DB}
+            POSTGRES_USER=${POSTGRES_USER}
+            POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 
-            echo "==> Building app image from source"
-            docker compose build app
+            SECRET_KEY=${SECRET_KEY}
+            ALEMBIC_CONFIG=${ALEMBIC_CONFIG}
+            ENVIRONMENT=${ENVIRONMENT}
+            RUN_ENV=${RUN_ENV}
+            PIPELINE_TIMEZONE=${PIPELINE_TIMEZONE}
+            JSON_LOG_FILE=${JSON_LOG_FILE}
+            REPORTS_ROOT=${REPORTS_ROOT}
+            PDF_RENDER_CHROME_EXECUTABLE=${PDF_RENDER_CHROME_EXECUTABLE}
+            EOF
 
-            echo "==> Starting/refreshing services (db + app)"
-            docker compose up -d db app
+              chmod 600 .env
+              echo "==> .env written & secured"
 
-            echo "==> Waiting for DB to be ready"
-            # db has a healthcheck and app depends_on db:service_healthy,
-            # but for migrations we still give it a few extra seconds
-            sleep 10
+              echo "==> Pulling latest images for external services (db)"
+              docker compose pull db || true
 
-            echo "==> Running DB migrations"
-            docker compose run --rm --entrypoint alembic app upgrade head
+              echo "==> Building app image from source"
+              docker compose build app
 
-            echo "==> Deployment completed successfully"
+              echo "==> Starting/refreshing services (db + app)"
+              docker compose up -d db app
+
+              echo "==> Waiting for DB to be ready"
+              sleep 10
+
+              echo "==> Running DB migrations"
+              docker compose run --rm --entrypoint alembic app upgrade head
+
+              echo "==> Deployment completed successfully"
+
