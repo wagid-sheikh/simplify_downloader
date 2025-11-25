@@ -16,6 +16,7 @@ COPY pyproject.toml poetry.lock* ./
 RUN pip install "poetry>=1.7" && \
     poetry config virtualenvs.create false && \
     poetry install --no-interaction --no-ansi && \
+    playwright install-deps && \
     playwright install chromium
 
 COPY . .
