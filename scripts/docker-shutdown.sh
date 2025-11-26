@@ -2,7 +2,6 @@
 set -euo pipefail
 
 PROJECT_CONTAINERS=("tsv-crm-backend-app" "tsv-crm-db")
-LOG_ROOT="/var/lib/docker/containers"
 
 echo "==> Stopping project containers..."
 for name in "${PROJECT_CONTAINERS[@]}"; do
@@ -19,21 +18,19 @@ done
 echo
 echo "==> Truncating logs for project containers..."
 for name in "${PROJECT_CONTAINERS[@]}"; do
-  # Look for the container ID even if it's stopped
-  cid="$(docker ps -a --format '{{.ID}} {{.Names}}' | awk '$2=="'"$name"'" {print $1}')"
+  # Ask Docker for the actual log file path
+  log_path="$(docker inspect --format '{{.LogPath}}' "$name" 2>/dev/null || true)"
 
-  if [ -z "${cid:-}" ]; then
-    echo "    No container found for $name (skipping log truncation)."
+  if [ -z "$log_path" ]; then
+    echo "    No LogPath found for $name (maybe container never created?). Skipping."
     continue
   fi
 
-  log_file="$LOG_ROOT/$cid/${cid}-json.log"
-
-  if [ -f "$log_file" ]; then
-    echo "    Truncating log for $name: $log_file"
-    sudo truncate -s 0 "$log_file"
+  if [ -f "$log_path" ]; then
+    echo "    Truncating log for $name: $log_path"
+    sudo truncate -s 0 "$log_path"
   else
-    echo "    Log file not found for $name at $log_file (nothing to truncate)."
+    echo "    Log file $log_path does not exist (nothing to truncate)."
   fi
 done
 
@@ -42,6 +39,7 @@ echo "==> Done."
 echo "You can now manually start containers, for example:"
 echo "  docker start tsv-crm-db tsv-crm-backend-app"
 echo "  # or: docker compose up -d"
+
 
 
 # docker logs --tail 20 tsv-crm-backend-app
