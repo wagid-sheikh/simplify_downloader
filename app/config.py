@@ -64,7 +64,6 @@ ENV_ONLY_KEYS = [
     "ALEMBIC_CONFIG",
     "REPORTS_ROOT",
     "JSON_LOG_FILE",
-    "PDF_RENDER_CHROME_EXECUTABLE",
     "POSTGRES_HOST",
     "POSTGRES_PORT",
     "POSTGRES_DB",
@@ -283,7 +282,7 @@ class Config:
     alembic_config: str
     reports_root: str
     json_log_file: str
-    pdf_render_chrome_executable: str
+    pdf_render_chrome_executable: str | None
 
     td_storage_state_filename: str
     td_base_url: str
@@ -348,6 +347,16 @@ class Config:
             db_values["PDF_RENDER_BACKEND"], key="PDF_RENDER_BACKEND"
         )
 
+        chrome_exec_raw = os.getenv("PDF_RENDER_CHROME_EXECUTABLE", "")
+        chrome_exec = chrome_exec_raw.strip() or None
+
+        if pdf_render_backend.lower() == "local_chrome" and not chrome_exec:
+            message = (
+                "PDF_RENDER_CHROME_EXECUTABLE must be set when PDF_RENDER_BACKEND=local_chrome"
+            )
+            logger.error(message)
+            raise ConfigError(message)
+
         report_email_from = _clean_text(db_values["REPORT_EMAIL_FROM"], key="REPORT_EMAIL_FROM")
         report_email_smtp_host = _clean_text(
             db_values["REPORT_EMAIL_SMTP_HOST"], key="REPORT_EMAIL_SMTP_HOST"
@@ -368,7 +377,6 @@ class Config:
 
         reports_root = env_values["REPORTS_ROOT"]
         json_log_file = env_values["JSON_LOG_FILE"]
-        chrome_exec = env_values["PDF_RENDER_CHROME_EXECUTABLE"]
 
         return cls(
             run_env=env_values["RUN_ENV"],
