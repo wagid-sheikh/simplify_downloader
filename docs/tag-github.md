@@ -37,3 +37,8 @@ git push origin v1.19
 git tag -a v2.00 -m "Stable after Major Refactoring and merged to main"
 
 git push origin v2.00
+
+
+git tag -a v2.01 -m "Before batching of bulk inserts"
+
+git push origin v2.01
