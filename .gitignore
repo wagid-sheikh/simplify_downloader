@@ -220,3 +220,6 @@ reports/*
 tests/config.db
 
 update_system_secrets_local.py
+
+.sql.gz
+*.sql.gz
