@@ -47,6 +47,7 @@ def _looks_like_html(csv_path: Path) -> bool:
 
 MAX_FAILURE_LOGS = 5
 MAX_VALUE_LENGTH = 128
+BULK_INSERT_BATCH_SIZE = 500
 
 
 def _compact_row(raw_row: Dict[str, Any]) -> Dict[str, Any]:
@@ -225,6 +226,21 @@ async def _upsert_batch(
     rows: List[Dict[str, Any]],
 ) -> int:
     """Upsert a batch of rows and return the number of affected rows."""
+    if not rows:
+        return 0
+
+    affected_rows = 0
+    for chunk in _batched(rows, BULK_INSERT_BATCH_SIZE):
+        affected_rows += await _upsert_rows(session, bucket, chunk)
+
+    return affected_rows
+
+
+async def _upsert_rows(
+    session: AsyncSession,
+    bucket: str,
+    rows: List[Dict[str, Any]],
+) -> int:
     if not rows:
         return 0
 
