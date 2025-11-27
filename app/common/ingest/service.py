@@ -247,12 +247,33 @@ async def _upsert_rows(
     model = BUCKET_MODEL_MAP[bucket]
     spec = MERGE_BUCKET_DB_SPECS[bucket]
 
-    stmt = insert(model).values(rows)
+    deduped_rows = rows
+    if bucket == "missed_leads":
+        from collections import defaultdict
+
+        def key(r):
+            return (r["store_code"], r["mobile_number"])
+
+        def sort_key(r):
+            return (r["pickup_created_date"], r["pickup_created_time"])
+
+        by_key = {}
+        for row in rows:
+            k = key(row)
+            if k not in by_key:
+                by_key[k] = row
+            else:
+                if sort_key(row) > sort_key(by_key[k]):
+                    by_key[k] = row
+
+        deduped_rows = list(by_key.values())
+
+    stmt = insert(model).values(deduped_rows)
 
     dedupe_keys = spec["dedupe_keys"]
     update_cols = {
         col: stmt.excluded[col]
-        for col in rows[0].keys()
+        for col in deduped_rows[0].keys()
         if col not in dedupe_keys
     }
 
@@ -267,7 +288,7 @@ async def _upsert_rows(
     if not rowcount:
         # SQLAlchemy may report ``rowcount`` as ``None`` (or ``0`` on some drivers)
         # for PostgreSQL upserts, so fall back to the number of attempted rows.
-        return len(rows)
+        return len(deduped_rows)
     return rowcount
 
 
