@@ -147,3 +147,79 @@ async def test_upsert_rows_dedupes_nonpackage_orders(monkeypatch):
             "run_date": recent_run,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_upsert_rows_dedupes_undelivered_orders(monkeypatch):
+    captured_values = []
+
+    def fake_insert(model):
+        stub = _FakeInsert(model)
+        original_values = stub.values
+
+        def capture(values):
+            captured_values.append(values)
+            return original_values(values)
+
+        stub.values = capture  # type: ignore[assignment]
+        return stub
+
+    monkeypatch.setattr(service, "insert", fake_insert)
+
+    newer_run = date(2024, 4, 2)
+    rows = [
+        {
+            "store_code": "C003",
+            "store_name": "Store C",
+            "order_id": "ORD-1",
+            "taxable_amount": 50.0,
+            "net_amount": 75.0,
+            "service_code": "svc",
+            "mobile_no": "88888",
+            "status": "pending",
+            "customer_id": "cust1",
+            "order_date": date(2024, 4, 1),
+            "expected_deliver_on": date(2024, 4, 2),
+            "actual_deliver_on": None,
+            "run_id": "early",
+            "run_date": date(2024, 4, 1),
+        },
+        {
+            "store_code": "C003",
+            "store_name": "Store C",
+            "order_id": "ORD-1",
+            "taxable_amount": 60.0,
+            "net_amount": 80.0,
+            "service_code": "svc",
+            "mobile_no": "88888",
+            "status": "delivered",
+            "customer_id": "cust1",
+            "order_date": date(2024, 4, 2),
+            "expected_deliver_on": date(2024, 4, 3),
+            "actual_deliver_on": date(2024, 4, 2),
+            "run_id": "later",
+            "run_date": newer_run,
+        },
+    ]
+
+    result = await service._upsert_rows(_FakeSession(), "undelivered_all", rows)
+
+    assert result == 1
+    assert captured_values[-1] == [
+        {
+            "store_code": "C003",
+            "store_name": "Store C",
+            "order_id": "ORD-1",
+            "taxable_amount": 60.0,
+            "net_amount": 80.0,
+            "service_code": "svc",
+            "mobile_no": "88888",
+            "status": "delivered",
+            "customer_id": "cust1",
+            "order_date": date(2024, 4, 2),
+            "expected_deliver_on": date(2024, 4, 3),
+            "actual_deliver_on": date(2024, 4, 2),
+            "run_id": "later",
+            "run_date": newer_run,
+        }
+    ]
