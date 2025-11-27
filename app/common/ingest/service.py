@@ -232,16 +232,18 @@ async def _upsert_batch(
     session: AsyncSession,
     bucket: str,
     rows: List[Dict[str, Any]],
-) -> int:
-    """Upsert a batch of rows and return the number of affected rows."""
+) -> Dict[str, int]:
+    """Upsert a batch of rows and return affected and deduped counts."""
+    totals = {"affected_rows": 0, "deduped_rows": 0}
     if not rows:
-        return 0
+        return totals
 
-    affected_rows = 0
     for chunk in _batched(rows, BULK_INSERT_BATCH_SIZE):
-        affected_rows += await _upsert_rows(session, bucket, chunk)
+        result = await _upsert_rows(session, bucket, chunk)
+        totals["affected_rows"] += result["affected_rows"]
+        totals["deduped_rows"] += result["deduped_rows"]
 
-    return affected_rows
+    return totals
 
 
 def _dedupe_rows(bucket: str, spec: dict, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -287,9 +289,9 @@ async def _upsert_rows(
     session: AsyncSession,
     bucket: str,
     rows: List[Dict[str, Any]],
-) -> int:
+) -> Dict[str, int]:
     if not rows:
-        return 0
+        return {"affected_rows": 0, "deduped_rows": 0}
 
     model = BUCKET_MODEL_MAP[bucket]
     spec = MERGE_BUCKET_DB_SPECS[bucket]
@@ -316,8 +318,9 @@ async def _upsert_rows(
     if not rowcount:
         # SQLAlchemy may report ``rowcount`` as ``None`` (or ``0`` on some drivers)
         # for PostgreSQL upserts, so fall back to the number of attempted rows.
-        return len(deduped_rows)
-    return rowcount
+        rowcount = len(deduped_rows)
+
+    return {"affected_rows": rowcount, "deduped_rows": len(deduped_rows)}
 
 
 async def ingest_bucket(
@@ -330,7 +333,7 @@ async def ingest_bucket(
     run_id: str,
     run_date: date,
 ) -> Dict[str, Any]:
-    totals = {"rows": 0}
+    totals = {"rows": 0, "deduped_rows": 0}
     row_context = {"run_id": run_id, "run_date": run_date}
     async with session_scope(database_url) as session:
         async with session.begin():
@@ -338,8 +341,9 @@ async def ingest_bucket(
                 _load_csv_rows(bucket, csv_path, logger, row_context=row_context),
                 batch_size,
             ):
-                affected = await _upsert_batch(session, bucket, batch)
-                totals["rows"] += affected
+                batch_totals = await _upsert_batch(session, bucket, batch)
+                totals["rows"] += batch_totals["affected_rows"]
+                totals["deduped_rows"] += batch_totals["deduped_rows"]
 
     file_size = 0
     if csv_path.exists():
@@ -362,7 +366,7 @@ async def ingest_bucket(
         phase="ingest",
         bucket=bucket,
         merged_file=str(csv_path),
-        counts={"ingested_rows": totals["rows"]},
+        counts={"ingested_rows": totals["rows"], "deduped_rows": totals["deduped_rows"]},
         message="ingestion complete",
     )
     return totals

@@ -43,11 +43,11 @@ async def test_upsert_batch_uses_multiple_chunks(monkeypatch):
 
     async def fake_upsert_rows(session, bucket, chunk):
         call_sizes.append(len(chunk))
-        return len(chunk)
+        return {"affected_rows": len(chunk), "deduped_rows": len(chunk)}
 
     monkeypatch.setattr(service, "_upsert_rows", fake_upsert_rows)
 
-    affected = await service._upsert_batch(None, "missed_leads", rows)
+    totals = await service._upsert_batch(None, "missed_leads", rows)
 
-    assert affected == total_rows
+    assert totals == {"affected_rows": total_rows, "deduped_rows": total_rows}
     assert call_sizes == [batch_size, batch_size, total_rows - batch_size * 2]

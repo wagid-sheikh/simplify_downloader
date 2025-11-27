@@ -76,7 +76,7 @@ async def test_upsert_rows_dedupes_repeat_customers(monkeypatch):
 
     result = await service._upsert_rows(_FakeSession(), "repeat_customers", rows)
 
-    assert result == 1
+    assert result == {"affected_rows": 1, "deduped_rows": 1}
     assert captured_values[-1] == [
         {
             "store_code": "A001",
@@ -133,7 +133,7 @@ async def test_upsert_rows_dedupes_nonpackage_orders(monkeypatch):
 
     result = await service._upsert_rows(_FakeSession(), "nonpackage_all", rows)
 
-    assert result == 1
+    assert result == {"affected_rows": 1, "deduped_rows": 1}
     assert captured_values[-1] == [
         {
             "store_code": "B002",
@@ -204,7 +204,7 @@ async def test_upsert_rows_dedupes_undelivered_orders(monkeypatch):
 
     result = await service._upsert_rows(_FakeSession(), "undelivered_all", rows)
 
-    assert result == 1
+    assert result == {"affected_rows": 1, "deduped_rows": 1}
     assert captured_values[-1] == [
         {
             "store_code": "C003",
