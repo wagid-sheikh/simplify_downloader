@@ -23,9 +23,15 @@ def first_login_headed(username: str, password: str) -> None:
     """
     with sync_playwright() as p:
         # Use system Chrome on mac for maximum OTP success (optional)
+        # use this for local
+        #ctx = p.chromium.launch_persistent_context(
+        #    user_data_dir=str(storage_state_path().parent / "tmp_mac_profile"),
+        #    channel="chrome",
+        #    headless=False,
+        #    args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        #)
         ctx = p.chromium.launch_persistent_context(
             user_data_dir=str(storage_state_path().parent / "tmp_mac_profile"),
-            channel="chrome",
             headless=False,
             args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
         )
