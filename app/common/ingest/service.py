@@ -249,8 +249,6 @@ async def _upsert_rows(
 
     deduped_rows = rows
     if bucket == "missed_leads":
-        from collections import defaultdict
-
         def key(r):
             return (r["store_code"], r["mobile_number"])
 
@@ -267,6 +265,30 @@ async def _upsert_rows(
                     by_key[k] = row
 
         deduped_rows = list(by_key.values())
+
+    if bucket in {"repeat_customers", "nonpackage_all"}:
+        def dedupe(rows: List[Dict[str, Any]], key_fields: tuple[str, str], recency_fields: list[str]):
+            def key(row: Dict[str, Any]):
+                return tuple(row[field] for field in key_fields)
+
+            def recency_key(row: Dict[str, Any]):
+                return tuple(row.get(field) or date.min for field in recency_fields)
+
+            by_key: Dict[tuple[str, ...], Dict[str, Any]] = {}
+            for row in rows:
+                k = key(row)
+                if k not in by_key or recency_key(row) >= recency_key(by_key[k]):
+                    by_key[k] = row
+            return list(by_key.values())
+
+        if bucket == "repeat_customers":
+            deduped_rows = dedupe(rows, ("store_code", "mobile_no"), ["run_date"])
+        else:
+            deduped_rows = dedupe(
+                rows,
+                ("store_code", "mobile_no"),
+                ["run_date", "order_date", "expected_delivery_date", "actual_delivery_date"],
+            )
 
     stmt = insert(model).values(deduped_rows)
 
