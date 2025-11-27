@@ -82,6 +82,11 @@ async def run_pipeline(
             )
             counts["ingested_rows"] = ingest_totals["rows"]
 
+            deduped_rows = ingest_totals.get("deduped_rows", merged_rows)
+            if deduped_rows != merged_rows:
+                counts["raw_merged_rows"] = merged_rows
+                counts["merged_rows"] = deduped_rows
+
         audit_result = audit_bucket(bucket=bucket, counts=counts, logger=logger)
         aggregator.record_bucket_counts(bucket, counts)
         cleanup_bucket(
