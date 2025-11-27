@@ -26,6 +26,14 @@ def _batched(iterable: Iterable[Dict[str, Any]], size: int) -> Iterable[List[Dic
         yield batch
 
 
+def _recency_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
+
+
 def _read_text_sample(csv_path: Path, *, limit: int = 2048) -> str:
     try:
         with csv_path.open("r", encoding="utf-8", errors="ignore") as handle:
@@ -236,6 +244,45 @@ async def _upsert_batch(
     return affected_rows
 
 
+def _dedupe_rows(bucket: str, spec: dict, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    dedupe_keys: list[str] = spec.get("dedupe_keys", [])
+    if not dedupe_keys:
+        return rows
+
+    recency_fields_by_bucket = {
+        "missed_leads": ["pickup_created_date", "pickup_created_time"],
+        "repeat_customers": ["run_date"],
+        "nonpackage_all": [
+            "run_date",
+            "order_date",
+            "expected_delivery_date",
+            "actual_delivery_date",
+        ],
+        "undelivered_all": [
+            "run_date",
+            "order_date",
+            "expected_deliver_on",
+            "actual_deliver_on",
+        ],
+    }
+
+    recency_fields = recency_fields_by_bucket.get(bucket) or ["run_date"]
+
+    def key(row: Dict[str, Any]) -> tuple[Any, ...]:
+        return tuple(row[field] for field in dedupe_keys)
+
+    def recency_key(row: Dict[str, Any]) -> tuple[str, ...]:
+        return tuple(_recency_value(row.get(field)) for field in recency_fields)
+
+    by_key: Dict[tuple[Any, ...], Dict[str, Any]] = {}
+    for row in rows:
+        k = key(row)
+        if k not in by_key or recency_key(row) >= recency_key(by_key[k]):
+            by_key[k] = row
+
+    return list(by_key.values())
+
+
 async def _upsert_rows(
     session: AsyncSession,
     bucket: str,
@@ -247,48 +294,7 @@ async def _upsert_rows(
     model = BUCKET_MODEL_MAP[bucket]
     spec = MERGE_BUCKET_DB_SPECS[bucket]
 
-    deduped_rows = rows
-    if bucket == "missed_leads":
-        def key(r):
-            return (r["store_code"], r["mobile_number"])
-
-        def sort_key(r):
-            return (r["pickup_created_date"], r["pickup_created_time"])
-
-        by_key = {}
-        for row in rows:
-            k = key(row)
-            if k not in by_key:
-                by_key[k] = row
-            else:
-                if sort_key(row) > sort_key(by_key[k]):
-                    by_key[k] = row
-
-        deduped_rows = list(by_key.values())
-
-    if bucket in {"repeat_customers", "nonpackage_all"}:
-        def dedupe(rows: List[Dict[str, Any]], key_fields: tuple[str, str], recency_fields: list[str]):
-            def key(row: Dict[str, Any]):
-                return tuple(row[field] for field in key_fields)
-
-            def recency_key(row: Dict[str, Any]):
-                return tuple(row.get(field) or date.min for field in recency_fields)
-
-            by_key: Dict[tuple[str, ...], Dict[str, Any]] = {}
-            for row in rows:
-                k = key(row)
-                if k not in by_key or recency_key(row) >= recency_key(by_key[k]):
-                    by_key[k] = row
-            return list(by_key.values())
-
-        if bucket == "repeat_customers":
-            deduped_rows = dedupe(rows, ("store_code", "mobile_no"), ["run_date"])
-        else:
-            deduped_rows = dedupe(
-                rows,
-                ("store_code", "mobile_no"),
-                ["run_date", "order_date", "expected_delivery_date", "actual_delivery_date"],
-            )
+    deduped_rows = _dedupe_rows(bucket, spec, rows)
 
     stmt = insert(model).values(deduped_rows)
 
