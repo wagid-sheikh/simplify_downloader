@@ -87,7 +87,7 @@ async def run_leads_assignment(
                     extras={"batch_id": batch_id},
                 )
             else:
-                await _insert_assignments(db_session, assignments)
+                inserted_count = await _insert_assignments(db_session, assignments)
                 await _mark_leads_assigned(
                     db_session, [item["lead_id"] for item in assignments]
                 )
@@ -96,10 +96,12 @@ async def run_leads_assignment(
                     logger=logger,
                     phase="lead_assignment",
                     status="ok",
-                    message="assigned leads",
+                    message="processed lead assignments",
                     extras={
                         "batch_id": batch_id,
-                        "assigned_count": len(assignments),
+                        "attempted_count": len(assignments),
+                        "inserted_count": inserted_count,
+                        "skipped_count": len(assignments) - inserted_count,
                     },
                 )
 
@@ -290,8 +292,13 @@ def _build_assignments(
     return assignments
 
 
-async def _insert_assignments(db_session: AsyncSession, assignments: list[dict[str, object]]) -> None:
-    await db_session.execute(
+async def _insert_assignments(
+    db_session: AsyncSession, assignments: list[dict[str, object]]
+) -> int:
+    if not assignments:
+        return 0
+
+    result = await db_session.execute(
         text(
             """
             INSERT INTO lead_assignments (
@@ -325,10 +332,14 @@ async def _insert_assignments(db_session: AsyncSession, assignments: list[dict[s
                 :address,
                 :lead_source
             )
+            ON CONFLICT DO NOTHING
             """
         ),
         assignments,
     )
+
+    rowcount = result.rowcount if result.rowcount is not None else 0
+    return max(rowcount, 0)
 
 
 async def _mark_leads_assigned(db_session: AsyncSession, lead_ids: list[int]) -> None:

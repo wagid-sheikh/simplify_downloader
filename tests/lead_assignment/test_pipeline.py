@@ -7,13 +7,14 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import urlparse
 
-import pdfplumber
 import pytest
+pdfplumber = pytest.importorskip("pdfplumber")
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from app.common.db import session_scope
 from app.config import config
+from app.lead_assignment.assigner import _insert_assignments
 from app.lead_assignment.pipeline import run_leads_assignment_pipeline
 
 
@@ -415,3 +416,36 @@ async def test_lead_assignment_pipeline_end_to_end(monkeypatch, prepared_db):
     assert total_assignments == assignment_count
     assert new_documents == 1
     assert sent_emails == []
+
+
+@pytest.mark.asyncio()
+async def test_insert_assignments_is_idempotent(monkeypatch, prepared_db):
+    assignments = [
+        {
+            "assignment_batch_id": 1,
+            "lead_id": 10,
+            "agent_id": 1,
+            "page_group_code": "PAG",
+            "rowid": 1,
+            "lead_assignment_code": "PAG-0001",
+            "store_code": "S001",
+            "store_name": "Test Store",
+            "lead_date": date.today(),
+            "lead_type": "E",
+            "mobile_number": "9000000000",
+            "cx_name": "Test Customer",
+            "address": "",
+            "lead_source": "source",
+        }
+    ]
+
+    async with session_scope(config.database_url) as session:
+        first_insert = await _insert_assignments(session, assignments)
+        duplicate_insert = await _insert_assignments(session, assignments)
+        total_count = int(
+            (await session.execute(text("SELECT COUNT(*) FROM lead_assignments"))).scalar_one()
+        )
+
+    assert first_insert == 1
+    assert duplicate_insert == 0
+    assert total_count == 1
