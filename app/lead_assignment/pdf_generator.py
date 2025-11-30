@@ -7,15 +7,61 @@ from pathlib import Path
 from typing import Iterable, Mapping
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import (
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import config
 
 __all__ = ["generate_pdfs_for_batch"]
+
+
+class _FormTable(Table):
+    """Table that overlays AcroForm text fields on designated rows."""
+
+    def __init__(self, data, input_rows: set[int], **kwargs):
+        super().__init__(data, **kwargs)
+        self._input_rows = input_rows
+
+    def drawOn(self, canvas, x, y, _sW=0):  # type: ignore[override]
+        super().drawOn(canvas, x, y, _sW)
+
+        col_positions = getattr(self, "_colpositions", None)
+        row_positions = getattr(self, "_rowpositions", None)
+        if not col_positions or not row_positions:
+            return
+
+        form = canvas.acroForm
+        for row_idx in self._input_rows:
+            if row_idx >= len(self._cellvalues):
+                continue
+            for col_idx, _ in enumerate(self._cellvalues[row_idx]):
+                left = x + col_positions[col_idx]
+                right = x + col_positions[col_idx + 1]
+                bottom = y + row_positions[row_idx + 1]
+                top = y + row_positions[row_idx]
+                width = max(4, right - left - 4)
+                height = max(8, top - bottom - 4)
+
+                form.textfield(
+                    fieldName=f"input_{row_idx}_{col_idx}",
+                    x=left + 2,
+                    y=bottom + 2,
+                    width=width,
+                    height=height,
+                    borderWidth=0.5,
+                    borderColor=colors.black,
+                    fillColor=None,
+                    textColor=colors.black,
+                )
 
 
 @dataclass
@@ -138,7 +184,9 @@ def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
     )
     file_path = target_dir / file_name
 
-    doc = SimpleDocTemplate(str(file_path), pagesize=A4, topMargin=36, bottomMargin=36)
+    doc = SimpleDocTemplate(
+        str(file_path), pagesize=landscape(A4), topMargin=36, bottomMargin=36
+    )
     styles = getSampleStyleSheet()
     header_style = ParagraphStyle(
         "Header",
@@ -155,8 +203,15 @@ def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
 
     elements = [
         Paragraph(f"Page Group Code: {first.page_group_code}", header_style),
-        Paragraph(f"Agent: {first.agent_code} - {first.agent_name}", meta_style),
-        Paragraph(f"Batch Date: {first.batch_date.isoformat()}", meta_style),
+        Paragraph(f"Leads for {first.agent_name}", meta_style),
+        Paragraph(
+            f"Leads Assigned Date: {first.batch_date.strftime('%d-%m-%Y')}", meta_style
+        ),
+        Paragraph(
+            f"Store: {first.store_code}{' - ' + first.store_name if first.store_name else ''}",
+            meta_style,
+        ),
+        Paragraph(f"Agent Code: {first.agent_code}", meta_style),
         Spacer(1, 10),
     ]
 
@@ -178,7 +233,9 @@ def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
     ]
     col_widths = [doc.width * factor for factor in column_factors]
 
-    table = Table(table_data, repeatRows=1, colWidths=col_widths)
+    input_rows = {idx for idx in range(len(table_data)) if idx > 0 and idx % 2 == 0}
+
+    table = _FormTable(table_data, input_rows=input_rows, repeatRows=1, colWidths=col_widths)
     table.setStyle(
         TableStyle(
             [
