@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0021_add_ts_ingest_missed_leads"
+revision = "0021_add_timestamp_ingest_tables"
 down_revision = "0020_dashboard_nav_timeout"
 branch_labels = None
 depends_on = None

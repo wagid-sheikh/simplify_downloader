@@ -7,7 +7,7 @@ import sqlalchemy as sa
 
 
 revision = "0022_add_ts_to_missed_leads"
-down_revision = "0021_add_ts_ingest_missed_leads"
+down_revision = "0021_add_timestamp_ingest_tables"
 branch_labels = None
 depends_on = None
 
