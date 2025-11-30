@@ -38,7 +38,11 @@ git tag -a v2.00 -m "Stable after Major Refactoring and merged to main"
 
 git push origin v2.00
 
-
 git tag -a v2.01 -m "Before batching of bulk inserts"
 
 git push origin v2.01
+
+
+git tag -a v2.02 -m "Before Starting Development of leads_assignment pipeline"
+
+git push origin v2.02
