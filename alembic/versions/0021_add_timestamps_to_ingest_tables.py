@@ -6,8 +6,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0021_add_timestamps_to_ingest_tables"
-down_revision = "0020_add_dashboard_nav_timeout_config"
+revision = "0021_add_timestamp_ingest_tables"
+down_revision = "0020_dashboard_nav_timeout"
 branch_labels = None
 depends_on = None
 
