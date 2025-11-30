@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0019_leads_assignment_summary_template"
+revision = "0019_leads_assignment_sum_templ"
 down_revision = "0018_leads_notification_profile"
 branch_labels = None
 depends_on = None
