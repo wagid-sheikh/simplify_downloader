@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+import re
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -117,12 +118,24 @@ def _group_assignments(rows: Iterable[_AssignmentRow]) -> Mapping[tuple[str, int
     return grouped
 
 
+def _normalize_agent_name(agent_name: str) -> str:
+    """Normalize agent names for safe filenames."""
+
+    normalized = re.sub(r"[^A-Za-z0-9]+", "_", agent_name.strip())
+    normalized = normalized.strip("_")
+    return normalized or "agent"
+
+
 def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
     first = rows[0]
     target_dir = base_dir / "leads_assignment" / first.batch_date.strftime("%Y-%m")
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    file_name = f"leads_assignment_{first.batch_date.isoformat()}_{first.store_code}_{first.agent_code}.pdf"
+    assignment_date = first.batch_date.strftime("%Y-%m-%d")
+    agent_slug = _normalize_agent_name(first.agent_name)
+    file_name = (
+        f"leads_assignment_{assignment_date}_{first.store_code}_{first.agent_code}_{agent_slug}.pdf"
+    )
     file_path = target_dir / file_name
 
     doc = SimpleDocTemplate(str(file_path), pagesize=A4, topMargin=36, bottomMargin=36)
