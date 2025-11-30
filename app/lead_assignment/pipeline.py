@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 from typing import Iterable
 
@@ -314,3 +315,20 @@ def run_pipeline(env: str | None = None, run_id: str | None = None) -> None:
     import asyncio
 
     asyncio.run(run_leads_assignment_pipeline(env=env, run_id=run_id))
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the leads assignment pipeline")
+    parser.add_argument("--env", dest="env", default=None, help="Override RUN_ENV for the pipeline")
+    parser.add_argument("--run-id", dest="run_id", default=None, help="Override generated run id")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    run_pipeline(env=args.env, run_id=args.run_id)
+
+
+if __name__ == "__main__":
+    main()
