@@ -1,4 +1,4 @@
-"""Add timestamps to missed_leads"""
+"""Add timestamps to missed_leads (compatibility placeholder)"""
 
 from __future__ import annotations
 
@@ -7,32 +7,46 @@ import sqlalchemy as sa
 
 
 revision = "0022_add_timestamps_to_missed_leads"
-down_revision = "0021_add_timestamp_ingest_tables"
+down_revision = "0021_add_timestamp_ingest_tables_with_missed_leads"
 branch_labels = None
 depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "missed_leads",
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("CURRENT_TIMESTAMP"),
-            nullable=False,
-        ),
-    )
-    op.add_column(
-        "missed_leads",
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("CURRENT_TIMESTAMP"),
-            nullable=False,
-        ),
-    )
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = {col["name"] for col in inspector.get_columns("missed_leads")}
+
+    if "created_at" not in columns:
+        op.add_column(
+            "missed_leads",
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.text("CURRENT_TIMESTAMP"),
+                nullable=False,
+            ),
+        )
+
+    if "updated_at" not in columns:
+        op.add_column(
+            "missed_leads",
+            sa.Column(
+                "updated_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.text("CURRENT_TIMESTAMP"),
+                nullable=False,
+            ),
+        )
 
 
 def downgrade() -> None:
-    op.drop_column("missed_leads", "updated_at")
-    op.drop_column("missed_leads", "created_at")
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = {col["name"] for col in inspector.get_columns("missed_leads")}
+
+    if "updated_at" in columns:
+        op.drop_column("missed_leads", "updated_at")
+
+    if "created_at" in columns:
+        op.drop_column("missed_leads", "created_at")
