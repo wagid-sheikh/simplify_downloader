@@ -43,6 +43,12 @@ class MissedLead(Base):
     is_order_placed: Mapped[bool | None] = mapped_column(Boolean)
     run_id: Mapped[str | None] = mapped_column(String(64))
     run_date: Mapped[Date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class UndeliveredOrder(Base):
