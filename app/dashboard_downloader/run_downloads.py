@@ -1751,16 +1751,16 @@ async def _ensure_dashboard(
                 )
                 performed_login_flow = True
                 try:
-                await _navigate_via_home_to_dashboard(
-                    page,
-                    store_cfg,
-                    logger,
-                    username=username,
-                    password=password,
-                    nav_timeout_ms=nav_timeout_ms,
-                )
-            except Exception as nav_exc:
-                _log(
+                    await _navigate_via_home_to_dashboard(
+                        page,
+                        store_cfg,
+                        logger,
+                        username=username,
+                        password=password,
+                        nav_timeout_ms=nav_timeout_ms,
+                    )
+                except Exception as nav_exc:
+                    _log(
                         "error",
                         "home navigation failed after login",
                         extras={"error": str(nav_exc)},
