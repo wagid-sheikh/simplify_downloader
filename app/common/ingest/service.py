@@ -298,19 +298,38 @@ async def _upsert_rows(
 
     deduped_rows = _dedupe_rows(bucket, spec, rows)
 
-    stmt = insert(model).values(deduped_rows)
-
+    insert_stmt = insert(model).values(deduped_rows)
     dedupe_keys = spec["dedupe_keys"]
-    update_cols = {
-        col: stmt.excluded[col]
-        for col in deduped_rows[0].keys()
-        if col not in dedupe_keys
-    }
 
-    stmt = stmt.on_conflict_do_update(
-        index_elements=dedupe_keys,
-        set_=update_cols,
-    )
+    insert_only_buckets = {"repeat_customers", "nonpackage_all"}
+    if bucket in insert_only_buckets:
+        stmt = insert_stmt.on_conflict_do_nothing(index_elements=dedupe_keys)
+    elif bucket == "missed_leads":
+        stmt = insert_stmt.on_conflict_do_update(
+            index_elements=dedupe_keys,
+            set_={"is_order_placed": insert_stmt.excluded["is_order_placed"]},
+            where=model.is_order_placed.is_distinct_from(
+                insert_stmt.excluded["is_order_placed"]
+            ),
+        )
+    elif bucket == "undelivered_all":
+        stmt = insert_stmt.on_conflict_do_update(
+            index_elements=dedupe_keys,
+            set_={"actual_deliver_on": insert_stmt.excluded["actual_deliver_on"]},
+            where=model.actual_deliver_on.is_distinct_from(
+                insert_stmt.excluded["actual_deliver_on"]
+            ),
+        )
+    else:
+        update_cols = {
+            col: insert_stmt.excluded[col]
+            for col in deduped_rows[0].keys()
+            if col not in dedupe_keys
+        }
+        stmt = insert_stmt.on_conflict_do_update(
+            index_elements=dedupe_keys,
+            set_=update_cols,
+        )
 
     result = await session.execute(stmt)
 
