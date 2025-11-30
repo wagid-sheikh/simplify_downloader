@@ -57,13 +57,35 @@ class LoginBootstrapError(RuntimeError):
     pass
 
 
+class NavigationTooManyRequestsError(RuntimeError):
+    """Raised when navigation encounters an HTTP 429 response."""
+
+    pass
+
+
 async def navigate_with_retry(
     page: Page, url: str, timeout_ms: int, max_attempts: int = 3
 ) -> Any:
     last_error: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         try:
-            return await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+            response = await page.goto(
+                url, wait_until="domcontentloaded", timeout=timeout_ms
+            )
+            status = None
+            try:
+                status = response.status if response is not None else None
+            except Exception:
+                status = None
+
+            if status == 429:
+                raise NavigationTooManyRequestsError(
+                    f"Navigation to {url} returned HTTP 429 on attempt {attempt}"
+                )
+
+            return response
+        except NavigationTooManyRequestsError:
+            raise
         except Exception as exc:
             last_error = exc
             if attempt >= max_attempts:
@@ -108,6 +130,13 @@ def _normalize_url_path(path: str | None) -> str:
         normalized = f"/{normalized}"
     normalized = normalized.rstrip("/")
     return normalized or "/"
+
+
+def _extract_response_status(response: Any) -> int | None:
+    try:
+        return response.status if response is not None else None
+    except Exception:  # pragma: no cover - defensive
+        return None
 
 
 _LOGIN_URL_PARTS = urlparse(LOGIN_URL)
@@ -1060,11 +1089,20 @@ async def _switch_to_store_dashboard_and_download(
     _log(
         "info",
         "navigating to store dashboard in single session",
-        extras={"target_url": target_url},
+        extras={"target_url": target_url, "timeout_ms": nav_timeout_ms},
     )
 
-    await navigate_with_retry(page, target_url, nav_timeout_ms)
-    _log("info", "store dashboard reached", extras={"dashboard_url": target_url})
+    response = await navigate_with_retry(page, target_url, nav_timeout_ms)
+    response_status = _extract_response_status(response)
+    _log(
+        "info",
+        "store dashboard reached",
+        extras={
+            "dashboard_url": target_url,
+            "response_status": response_status,
+            "timeout_ms": nav_timeout_ms,
+        },
+    )
 
     if settings.database_url:
         try:
@@ -1567,18 +1605,22 @@ async def _ensure_dashboard(
             extras=extras,
         )
 
-    _log("info", "opening dashboard", extras={"target_url": dashboard_url})
+    _log(
+        "info",
+        "opening dashboard",
+        extras={"target_url": dashboard_url, "timeout_ms": nav_timeout_ms},
+    )
     response = await navigate_with_retry(page, dashboard_url, nav_timeout_ms)
-    response_status = None
-    if response is not None:
-        try:
-            response_status = response.status
-        except Exception:  # pragma: no cover - defensive
-            response_status = None
+    response_status = _extract_response_status(response)
     _log(
         "info",
         "dashboard navigation completed",
-        extras={"current_url": page.url, "response_status": response_status},
+        extras={
+            "current_url": page.url,
+            "response_status": response_status,
+            "target_url": dashboard_url,
+            "timeout_ms": nav_timeout_ms,
+        },
     )
 
     performed_login_flow = False
