@@ -6,8 +6,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0022_add_timestamps_to_missed_leads"
-down_revision = "0021_add_timestamp_ingest_tables_with_missed_leads"
+revision = "0022_add_ts_to_missed_leads"
+down_revision = "0021_add_ts_ingest_missed_leads"
 branch_labels = None
 depends_on = None
 
