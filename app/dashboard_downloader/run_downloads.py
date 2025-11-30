@@ -380,16 +380,17 @@ async def _run_session_probe(
     context: BrowserContext,
     *,
     probe_url: str,
+    nav_timeout_ms: int,
     logger: JsonLogger,
     store_code: str | None,
 ) -> tuple[bool, Dict[str, Any]]:
     probe_page: Page | None = None
-    extras: Dict[str, Any] = {"probe_url": probe_url}
+    extras: Dict[str, Any] = {"probe_url": probe_url, "timeout_ms": nav_timeout_ms}
     session_active = False
 
     try:
         probe_page = await context.new_page()
-        await probe_page.goto(probe_url, wait_until="domcontentloaded")
+        await navigate_with_retry(probe_page, probe_url, nav_timeout_ms)
         extras["current_url"] = probe_page.url
 
         if await _is_login_page(probe_page, logger):
@@ -833,6 +834,7 @@ async def _bootstrap_session_via_home_and_tracker(
     settings: PipelineSettings | None = None,
     storage_state_file: Path | None = None,
     storage_state_source: str | None = None,
+    nav_timeout_ms: int,
 ) -> Page:
     if page is None:
         raise RuntimeError("TMS session page is not available")
@@ -862,13 +864,19 @@ async def _bootstrap_session_via_home_and_tracker(
     _log(
         "info",
         "starting single-session bootstrap",
-        extras={"login_url": login_url, "home_url": home_url, "probe_url": probe_url},
+        extras={
+            "login_url": login_url,
+            "home_url": home_url,
+            "probe_url": probe_url,
+            "timeout_ms": nav_timeout_ms,
+        },
     )
 
     context = page.context
     session_active, probe_extras = await _run_session_probe(
         context,
         probe_url=probe_url,
+        nav_timeout_ms=nav_timeout_ms,
         logger=logger,
         store_code=store_code,
     )
@@ -934,14 +942,19 @@ async def _bootstrap_session_via_home_and_tracker(
 
         login_attempted = True
         _log("info", "filling login form for bootstrap")
-
-        await page.goto(login_url, wait_until="domcontentloaded")
+        _log(
+            "info",
+            "navigating to login for bootstrap",
+            extras={"target_url": login_url, "timeout_ms": nav_timeout_ms},
+        )
+        await navigate_with_retry(page, login_url, nav_timeout_ms)
         login_result = await _perform_login_flow(
             page,
             store_cfg,
             logger,
             username=username,
             password=password,
+            nav_timeout_ms=nav_timeout_ms,
         )
 
         post_login_url = login_result.get("post_login_url")
@@ -1006,12 +1019,22 @@ async def _bootstrap_session_via_home_and_tracker(
     # Navigate to the home page to confirm access before proceeding to dashboards.
     while True:
         try:
-            await page.goto(home_url, wait_until="domcontentloaded")
+            _log(
+                "info",
+                "navigating to home after bootstrap",
+                extras={"target_url": home_url, "timeout_ms": nav_timeout_ms},
+            )
+            await navigate_with_retry(page, home_url, nav_timeout_ms)
         except PlaywrightTimeoutError as exc:
             _log(
                 "error",
                 "home navigation after bootstrap timed out",
-                extras={"error": str(exc), "current_url": page.url},
+                extras={
+                    "error": str(exc),
+                    "current_url": page.url,
+                    "target_url": home_url,
+                    "timeout_ms": nav_timeout_ms,
+                },
             )
             raise
 
@@ -1049,6 +1072,7 @@ async def _bootstrap_session_via_home_and_tracker(
         logger,
         username=username,
         password=password,
+        nav_timeout_ms=nav_timeout_ms,
     )
 
     return tms_page
@@ -1205,6 +1229,7 @@ async def _navigate_via_home_to_dashboard(
     *,
     username: str,
     password: str,
+    nav_timeout_ms: int,
 ) -> Page:
     """Navigate from the home page to the TMS dashboard via the tracker card."""
 
@@ -1230,20 +1255,24 @@ async def _navigate_via_home_to_dashboard(
             parts = home_url.rstrip("/").rsplit("/", 1)
             home_url = parts[0] if len(parts) == 2 else home_url
 
-    _log("info", "navigating via home to dashboard", extras={"home_url": home_url})
+    _log(
+        "info",
+        "navigating via home to dashboard",
+        extras={"home_url": home_url, "timeout_ms": nav_timeout_ms},
+    )
 
-    response = await page.goto(home_url, wait_until="domcontentloaded")
-    response_status = None
-    if response is not None:
-        try:
-            response_status = response.status
-        except Exception:  # pragma: no cover - defensive
-            response_status = None
+    response = await navigate_with_retry(page, home_url, nav_timeout_ms)
+    response_status = _extract_response_status(response)
 
     _log(
         "info",
         "home page loaded",
-        extras={"home_url": home_url, "current_url": page.url, "response_status": response_status},
+        extras={
+            "home_url": home_url,
+            "current_url": page.url,
+            "response_status": response_status,
+            "timeout_ms": nav_timeout_ms,
+        },
     )
 
     if await _is_login_page(page, logger):
@@ -1254,6 +1283,7 @@ async def _navigate_via_home_to_dashboard(
             logger,
             username=username,
             password=password,
+            nav_timeout_ms=nav_timeout_ms,
         )
         if await _is_login_page(page, logger):
             _log(
@@ -1403,6 +1433,7 @@ async def _perform_login_flow(
     *,
     username: str,
     password: str,
+    nav_timeout_ms: int,
 ) -> Dict[str, Any]:
     """Explicitly visit the login form and authenticate like a human user."""
 
@@ -1417,11 +1448,16 @@ async def _perform_login_flow(
             bucket=None,
             message=message,
             extras=extras,
-        )
+    )
 
     current_url = page.url or ""
     if not current_url or "login" not in current_url.lower():
-        await page.goto(LOGIN_URL, wait_until="domcontentloaded")
+        _log(
+            "info",
+            "navigating to login for automated flow",
+            extras={"target_url": LOGIN_URL, "timeout_ms": nav_timeout_ms},
+        )
+        await navigate_with_retry(page, LOGIN_URL, nav_timeout_ms)
         current_url = page.url or ""
 
     if not await _is_login_page(page, logger):
@@ -1647,6 +1683,7 @@ async def _ensure_dashboard(
             logger,
             username=username,
             password=password,
+            nav_timeout_ms=nav_timeout_ms,
         )
         performed_login_flow = True
         try:
@@ -1656,6 +1693,7 @@ async def _ensure_dashboard(
                 logger,
                 username=username,
                 password=password,
+                nav_timeout_ms=nav_timeout_ms,
             )
         except Exception as exc:
             _log("error", "home navigation failed after login", extras={"error": str(exc)})
@@ -1704,18 +1742,20 @@ async def _ensure_dashboard(
                     logger,
                     username=username,
                     password=password,
+                    nav_timeout_ms=nav_timeout_ms,
                 )
                 performed_login_flow = True
                 try:
-                    await _navigate_via_home_to_dashboard(
-                        page,
-                        store_cfg,
-                        logger,
-                        username=username,
-                        password=password,
-                    )
-                except Exception as nav_exc:
-                    _log(
+                await _navigate_via_home_to_dashboard(
+                    page,
+                    store_cfg,
+                    logger,
+                    username=username,
+                    password=password,
+                    nav_timeout_ms=nav_timeout_ms,
+                )
+            except Exception as nav_exc:
+                _log(
                         "error",
                         "home navigation failed after login",
                         extras={"error": str(nav_exc)},
@@ -1942,6 +1982,7 @@ async def run_all_stores_single_session(
                 settings=settings,
                 storage_state_file=storage_state_file,
                 storage_state_source=storage_state_source,
+                nav_timeout_ms=nav_timeout_ms,
             )
 
             for _, cfg in store_items:
