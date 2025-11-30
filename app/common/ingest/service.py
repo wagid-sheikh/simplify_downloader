@@ -301,7 +301,9 @@ async def _upsert_rows(
 
     insert_stmt = insert(model).values(deduped_rows)
     dedupe_keys = spec["dedupe_keys"]
-    timestamp_update = {"updated_at": func.now()}
+    timestamp_update = {}
+    if "updated_at" in model.__table__.c:
+        timestamp_update["updated_at"] = func.now()
 
     if spec.get("insert_only"):
         stmt = insert_stmt.on_conflict_do_nothing(index_elements=dedupe_keys)
