@@ -119,7 +119,7 @@ def _group_assignments(rows: Iterable[_AssignmentRow]) -> Mapping[tuple[str, int
 
 def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
     first = rows[0]
-    target_dir = base_dir / "leads_assignment" / first.batch_date.isoformat()
+    target_dir = base_dir / "leads_assignment" / first.batch_date.strftime("%Y-%m")
     target_dir.mkdir(parents=True, exist_ok=True)
 
     file_name = f"leads_assignment_{first.batch_date.isoformat()}_{first.store_code}_{first.agent_code}.pdf"
