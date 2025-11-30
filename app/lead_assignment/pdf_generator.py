@@ -127,22 +127,26 @@ def _normalize_agent_name(agent_name: str) -> str:
 
 def _compute_field_layout(page_width: float, left_margin: float, right_margin: float):
     weights = [
-        0.06,  # Conv
-        0.12,  # Order No
-        0.12,  # Order Date
-        0.10,  # Value
-        0.15,  # Payment Mode
-        0.12,  # Payment Amt
-        0.33,  # Remarks
+        0.16,  # Order No
+        0.16,  # Order Date
+        0.12,  # Value
+        0.18,  # Payment Mode
+        0.16,  # Payment Amt
+        0.22,  # Remarks
     ]
 
     usable_width = page_width - left_margin - right_margin
+    gap_px = 4
+    num_fields = len(weights)
+    total_gap_width = gap_px * (num_fields - 1)
+    fields_total_width = usable_width - total_gap_width
+
     field_widths: list[int] = []
-    remaining_width = usable_width
+    remaining_width = fields_total_width
 
     for idx, weight in enumerate(weights):
         if idx < len(weights) - 1:
-            width_i = int(usable_width * weight)
+            width_i = int(fields_total_width * weight)
             field_widths.append(width_i)
             remaining_width -= width_i
         else:
@@ -152,7 +156,7 @@ def _compute_field_layout(page_width: float, left_margin: float, right_margin: f
     x = left_margin
     for width in field_widths:
         x_positions.append(x)
-        x += width
+        x += width + gap_px
 
     return x_positions, field_widths
 
@@ -173,8 +177,10 @@ def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
     top_margin = 36
     bottom_margin = 36
     line_height = 14
+    gap_row1_row2 = 5
+    gap_row2_row3 = 3
+    gap_between_leads = 8
     field_height = 16
-    spacing_between_leads = 10
     checkbox_size = 12
 
     x_positions, field_widths = _compute_field_layout(page_width, left_margin, right_margin)
@@ -188,9 +194,7 @@ def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
 
         canvas.setFont("Helvetica", 11)
         header_y -= 16
-        canvas.drawString(
-            left_margin, header_y, f"Agent: {first.agent_code} - {first.agent_name}"
-        )
+        canvas.drawString(left_margin, header_y, f"{first.agent_code} - {first.agent_name}")
 
         header_y -= 16
         canvas.drawString(left_margin, header_y, f"Batch Date: {assignment_date_display}")
@@ -201,7 +205,14 @@ def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
     current_y = draw_header()
 
     for row in rows:
-        required_height = line_height + field_height + spacing_between_leads
+        required_height = (
+            line_height
+            + gap_row1_row2
+            + line_height
+            + gap_row2_row3
+            + field_height
+            + gap_between_leads
+        )
         if current_y < bottom_margin + required_height:
             canvas.showPage()
             current_y = draw_header()
@@ -214,25 +225,48 @@ def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
 
         canvas.setFont("Helvetica", 10)
         canvas.drawString(left_margin, current_y, lead_line)
-        current_y -= line_height
+        current_y -= line_height + gap_row1_row2
+
+        canvas.setFont("Helvetica", 9)
+        canvas.drawString(x_positions[0], current_y, "Order No")
+        canvas.drawString(x_positions[1], current_y, "Order Date")
+        canvas.drawString(x_positions[2], current_y, "Value")
+        canvas.drawString(x_positions[3], current_y, "Payment Mode")
+        canvas.drawString(x_positions[4], current_y, "Payment Amt")
+        canvas.drawString(x_positions[5], current_y, "Remarks")
+        current_y -= line_height + gap_row2_row3
 
         field_y = current_y
         form = canvas.acroForm
 
+        conv_checkbox_x = max(left_margin - (checkbox_size + 36), 2)
         form.checkbox(
             name=f"conv_{row.rowid}",
             tooltip="Conv (Y/N)",
-            x=x_positions[0],
+            x=conv_checkbox_x,
             y=field_y,
             size=checkbox_size,
             borderColor=colors.black,
             fillColor=None,
             textColor=colors.black,
         )
+        canvas.drawString(conv_checkbox_x + checkbox_size + 2, field_y, "Conv (Y/N)")
 
         form.textfield(
             name=f"order_no_{row.rowid}",
             tooltip="Order No",
+            x=x_positions[0],
+            y=field_y,
+            width=field_widths[0],
+            height=field_height,
+            borderStyle="underlined",
+            borderColor=colors.black,
+            textColor=colors.black,
+        )
+
+        form.textfield(
+            name=f"order_date_{row.rowid}",
+            tooltip="Order Date",
             x=x_positions[1],
             y=field_y,
             width=field_widths[1],
@@ -243,8 +277,8 @@ def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
         )
 
         form.textfield(
-            name=f"order_date_{row.rowid}",
-            tooltip="Order Date",
+            name=f"value_{row.rowid}",
+            tooltip="Value",
             x=x_positions[2],
             y=field_y,
             width=field_widths[2],
@@ -255,8 +289,8 @@ def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
         )
 
         form.textfield(
-            name=f"value_{row.rowid}",
-            tooltip="Value",
+            name=f"payment_mode_{row.rowid}",
+            tooltip="Payment Mode",
             x=x_positions[3],
             y=field_y,
             width=field_widths[3],
@@ -267,8 +301,8 @@ def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
         )
 
         form.textfield(
-            name=f"payment_mode_{row.rowid}",
-            tooltip="Payment Mode",
+            name=f"payment_amt_{row.rowid}",
+            tooltip="Payment Amt",
             x=x_positions[4],
             y=field_y,
             width=field_widths[4],
@@ -279,8 +313,8 @@ def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
         )
 
         form.textfield(
-            name=f"payment_amt_{row.rowid}",
-            tooltip="Payment Amt",
+            name=f"remarks_{row.rowid}",
+            tooltip="Remarks",
             x=x_positions[5],
             y=field_y,
             width=field_widths[5],
@@ -290,19 +324,7 @@ def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
             textColor=colors.black,
         )
 
-        form.textfield(
-            name=f"remarks_{row.rowid}",
-            tooltip="Remarks",
-            x=x_positions[6],
-            y=field_y,
-            width=field_widths[6],
-            height=field_height,
-            borderStyle="underlined",
-            borderColor=colors.black,
-            textColor=colors.black,
-        )
-
-        current_y -= field_height + spacing_between_leads
+        current_y -= field_height + gap_between_leads
 
     canvas.save()
 
