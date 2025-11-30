@@ -196,9 +196,15 @@ CREATE TABLE IF NOT EXISTS public.missed_leads
     is_order_placed      boolean,
     run_id               varchar(64),
     run_date             date,
+    created_at           timestamptz NOT NULL DEFAULT now(),
+    updated_at           timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT uq_missed_leads_store_mobile UNIQUE (store_code, mobile_number)
 );
 ```
+
+Revision `0021_add_timestamp_ingest_tables_with_missed_leads` also backfills the
+`created_at`/`updated_at` columns across ingest tables (including
+`missed_leads`) so ORM defaults and ingest pipelines stay aligned.
 
 Add:
 
