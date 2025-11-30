@@ -21,8 +21,10 @@ from playwright.async_api import (
     Page,
 )
 from playwright._impl._errors import TimeoutError as PlaywrightTimeoutError
+from sqlalchemy import text
 
 from app.common.ingest.service import _looks_like_html
+from app.common.db import session_scope
 from app.config import config
 
 from . import page_selectors
@@ -46,12 +48,56 @@ from .json_logger import JsonLogger, log_event
 DASHBOARD_DOWNLOAD_CONTROL_TIMEOUT_MS = 90_000
 DEFAULT_SESSION_PROBE_URL = HOME_URL
 BOOTSTRAP_ARTIFACTS_DIR = DATA_DIR / "bootstrap_artifacts"
+DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS = 90_000
 
 
 class LoginBootstrapError(RuntimeError):
     """Raised when the single-session login/bootstrap fails in a non-recoverable way."""
 
     pass
+
+
+async def navigate_with_retry(
+    page: Page, url: str, timeout_ms: int, max_attempts: int = 3
+) -> Any:
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        except Exception as exc:
+            last_error = exc
+            if attempt >= max_attempts:
+                break
+
+    raise TimeoutError(
+        f"Navigation to {url} failed after {max_attempts} attempts"
+    ) from last_error
+
+
+async def _fetch_dashboard_nav_timeout_ms(database_url: str | None) -> int:
+    if not database_url:
+        return DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS
+
+    try:
+        async with session_scope(database_url) as session:
+            result = await session.execute(
+                text(
+                    "SELECT value FROM system_config WHERE key = :key AND is_active = TRUE LIMIT 1"
+                ),
+                {"key": "DASHBOARD_DOWNLOAD_NAV_TIMEOUT"},
+            )
+            row = result.first()
+    except Exception:
+        return DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS
+
+    if not row:
+        return DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS
+
+    raw_value = row[0]
+    try:
+        return int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        return DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS
 
 
 def _normalize_url_path(path: str | None) -> str:
@@ -538,6 +584,7 @@ async def _download_one_spec(
     spec: Dict,
     *,
     logger: JsonLogger,
+    nav_timeout_ms: int,
     settings: PipelineSettings,
 ) -> tuple[Path | None, Page]:
     sc = store_cfg["store_code"]
@@ -628,7 +675,9 @@ async def _download_one_spec(
         attempted_refresh = True
 
         try:
-            page = await _ensure_dashboard(page, store_cfg, logger, settings=settings)
+            page = await _ensure_dashboard(
+                page, store_cfg, logger, settings=settings, nav_timeout_ms=nav_timeout_ms
+            )
         except Exception as exc:
             _log("error", f"session refresh failed for {spec['key']}", extras={"error": str(exc)})
             return None, page
@@ -639,6 +688,7 @@ async def _download_specs_for_store(
     store_cfg: Dict,
     *,
     logger: JsonLogger,
+    nav_timeout_ms: int,
     merged_buckets: Dict[str, List[Path]],
     download_counts: Dict[str, Dict[str, Dict[str, object]]],
     settings: PipelineSettings,
@@ -654,6 +704,7 @@ async def _download_specs_for_store(
             store_cfg,
             spec,
             logger=logger,
+            nav_timeout_ms=nav_timeout_ms,
             settings=settings,
         )
         if saved and spec.get("merge_bucket"):
@@ -979,6 +1030,7 @@ async def _switch_to_store_dashboard_and_download(
     store_cfg: Dict[str, Any],
     *,
     logger: JsonLogger,
+    nav_timeout_ms: int,
     settings: PipelineSettings,
     merged_buckets: Dict[str, List[Path]],
     download_counts: Dict[str, Dict[str, Dict[str, object]]],
@@ -1011,7 +1063,7 @@ async def _switch_to_store_dashboard_and_download(
         extras={"target_url": target_url},
     )
 
-    await page.goto(target_url, wait_until="domcontentloaded")
+    await navigate_with_retry(page, target_url, nav_timeout_ms)
     _log("info", "store dashboard reached", extras={"dashboard_url": target_url})
 
     if settings.database_url:
@@ -1041,6 +1093,7 @@ async def _switch_to_store_dashboard_and_download(
             store_cfg,
             spec,
             logger=logger,
+            nav_timeout_ms=nav_timeout_ms,
             settings=settings,
         )
         if not saved:
@@ -1496,6 +1549,7 @@ async def _ensure_dashboard(
     logger: JsonLogger,
     *,
     settings: PipelineSettings,
+    nav_timeout_ms: int,
 ) -> Page:
     """Navigate to the dashboard, refreshing the login session when required."""
 
@@ -1514,7 +1568,7 @@ async def _ensure_dashboard(
         )
 
     _log("info", "opening dashboard", extras={"target_url": dashboard_url})
-    response = await page.goto(dashboard_url, wait_until="domcontentloaded")
+    response = await navigate_with_retry(page, dashboard_url, nav_timeout_ms)
     response_status = None
     if response is not None:
         try:
@@ -1745,6 +1799,8 @@ async def run_all_stores_single_session(
     merged_buckets: Dict[str, List[Path]] = {}
     download_counts: Dict[str, Dict[str, Dict[str, object]]] = {}
 
+    nav_timeout_ms = await _fetch_dashboard_nav_timeout_ms(settings.database_url)
+
     resolved_stores = settings.stores or {}
 
     env_value = getattr(settings, "raw_store_env", "")
@@ -1853,10 +1909,22 @@ async def run_all_stores_single_session(
                         session_page,
                         cfg,
                         logger=logger,
+                        nav_timeout_ms=nav_timeout_ms,
                         settings=settings,
                         merged_buckets=merged_buckets,
                         download_counts=download_counts,
                     )
+                except TimeoutError as exc:
+                    log_event(
+                        logger=logger,
+                        phase="download",
+                        status="error",
+                        store_code=sc,
+                        bucket=None,
+                        message="dashboard navigation timed out; skipping store",
+                        extras={"error": str(exc)},
+                    )
+                    continue
                 except SkipStoreDashboardError as exc:
                     log_event(
                         logger=logger,
