@@ -152,6 +152,17 @@ def _compute_field_layout(page_width: float, left_margin: float, right_margin: f
         else:
             field_widths.append(int(remaining_width))
 
+    original_widths = field_widths.copy()
+    recovered_width = 0
+
+    for i in range(min(5, len(field_widths))):
+        halved_width = int(original_widths[i] * 0.5)
+        recovered_width += original_widths[i] - halved_width
+        field_widths[i] = halved_width
+
+    if field_widths:
+        field_widths[-1] += recovered_width
+
     x_positions: list[float] = []
     x = left_margin
     for width in field_widths:
