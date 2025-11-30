@@ -1325,12 +1325,14 @@ async def _navigate_via_home_to_dashboard(
     nav_coro: Awaitable[Any]
     if dashboard_url:
         nav_coro = page.wait_for_url(
-            str(dashboard_url), wait_until="domcontentloaded", timeout=60_000
+            str(dashboard_url), wait_until="domcontentloaded", timeout=nav_timeout_ms
         )
     else:
-        nav_coro = page.wait_for_load_state("domcontentloaded", timeout=60_000)
+        nav_coro = page.wait_for_load_state("domcontentloaded", timeout=nav_timeout_ms)
 
     nav_task = asyncio.create_task(nav_coro)
+
+    nav_wait_timeout_s = nav_timeout_ms / 1000
 
     try:
         await click_target.click()
@@ -1349,7 +1351,9 @@ async def _navigate_via_home_to_dashboard(
     popup_page: Page | None = None
     navigation_response = None
     done, pending = await asyncio.wait(
-        {popup_task, nav_task}, return_when=asyncio.FIRST_COMPLETED, timeout=60
+        {popup_task, nav_task},
+        return_when=asyncio.FIRST_COMPLETED,
+        timeout=nav_wait_timeout_s,
     )
 
     for task in pending:
@@ -1362,7 +1366,7 @@ async def _navigate_via_home_to_dashboard(
         _log(
             "error",
             "no navigation or popup detected after clicking tracker",
-            extras={"home_url": home_url},
+            extras={"home_url": home_url, "timeout_ms": nav_timeout_ms},
         )
         raise RuntimeError("Daily operations tracker navigation timed out")
 
@@ -1420,6 +1424,7 @@ async def _navigate_via_home_to_dashboard(
             "response_status": response_status,
             "dashboard_url": store_cfg.get("dashboard_url"),
             "new_page": popup_page is not None,
+            "timeout_ms": nav_timeout_ms,
         },
     )
 
