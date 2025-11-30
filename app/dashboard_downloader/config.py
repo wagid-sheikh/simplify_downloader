@@ -295,6 +295,7 @@ MERGE_BUCKET_DB_SPECS = {
         # Only three columns; dedupe on store+mobile. Status is 'Yes' now but may change.
         "dedupe_keys": ["store_code", "mobile_no"],
         "required_columns": ["store_code", "mobile_no", "run_id", "run_date"],
+        "insert_only": True,
         "column_map": {
             "Store Code": "store_code",
             "Mobile No.": "mobile_no",
@@ -314,6 +315,7 @@ MERGE_BUCKET_DB_SPECS = {
         # Deduplicate by store and mobile number for customer-level updates.
         "dedupe_keys": ["store_code", "mobile_no"],
         "required_columns": ["store_code", "mobile_no", "order_date", "run_id", "run_date"],
+        "insert_only": True,
         "column_map": {
             "Store Code": "store_code",
             "Store Name": "store_name",
