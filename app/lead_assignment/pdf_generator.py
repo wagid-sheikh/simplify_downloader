@@ -2,116 +2,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-import re
 from pathlib import Path
+import re
 from typing import Iterable, Mapping
 
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.platypus import (
-    Paragraph,
-    SimpleDocTemplate,
-    Spacer,
-    Table,
-    TableStyle,
-)
+from reportlab.pdfgen import canvas as pdfcanvas
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import config
 
 __all__ = ["generate_pdfs_for_batch"]
-
-
-class _FormTable(Table):
-    """Table that overlays AcroForm text fields on designated rows."""
-
-    def __init__(self, data, input_rows: set[int] | None = None, **kwargs):
-        super().__init__(data, **kwargs)
-        self._input_rows = self._coerce_input_rows(input_rows, data)
-
-    def drawOn(self, canvas, x, y, _sW=0):  # type: ignore[override]
-        super().drawOn(canvas, x, y, _sW)
-
-        col_positions = getattr(self, "_colpositions", None)
-        row_positions = getattr(self, "_rowpositions", None)
-        if not col_positions or not row_positions:
-            return
-
-        form = canvas.acroForm
-        for row_idx in self._input_rows:
-            if row_idx >= len(self._cellvalues):
-                continue
-            for col_idx, _ in enumerate(self._cellvalues[row_idx]):
-                left = x + col_positions[col_idx]
-                right = x + col_positions[col_idx + 1]
-                bottom = y + row_positions[row_idx + 1]
-                top = y + row_positions[row_idx]
-                width = max(4, right - left - 4)
-                height = max(8, top - bottom - 4)
-
-                form.textfield(
-                    name=f"input_{row_idx}_{col_idx}",
-                    x=left + 2,
-                    y=bottom + 2,
-                    width=width,
-                    height=height,
-                    borderWidth=0.5,
-                    borderColor=colors.black,
-                    fillColor=None,
-                    textColor=colors.black,
-                )
-
-    def split(self, availWidth, availHeight):  # type: ignore[override]
-        slices = getattr(self, "_splitRows", None)
-        row_slices = slices(availHeight) if callable(slices) else None
-
-        tables = super().split(availWidth, availHeight)
-
-        if not row_slices:
-            return tables
-
-        for table, row_slice in zip(tables, row_slices):
-            if not isinstance(table, _FormTable):
-                continue
-
-            bounds = self._normalize_row_slice(row_slice)
-            if bounds is None:
-                continue
-
-            start, end = bounds
-            table._input_rows = {
-                idx - start for idx in self._input_rows if start <= idx < end
-            }
-
-        return tables
-
-    @staticmethod
-    def _coerce_input_rows(input_rows: set[int] | None, data: list[list[str]]):
-        if input_rows is not None:
-            return set(input_rows)
-
-        return {idx for idx in range(len(data)) if idx > 0 and idx % 2 == 0}
-
-    @staticmethod
-    def _normalize_row_slice(row_slice) -> tuple[int, int] | None:
-        if isinstance(row_slice, slice):
-            start = 0 if row_slice.start is None else row_slice.start
-            end = row_slice.stop
-        elif isinstance(row_slice, (list, tuple)) and len(row_slice) == 2:
-            start, end = row_slice
-        else:
-            start = getattr(row_slice, "start", None)
-            end = getattr(row_slice, "stop", None)
-
-        if start is None:
-            start = 0
-
-        if end is None:
-            return None
-
-        return start, end
 
 
 @dataclass
@@ -215,11 +118,43 @@ def _group_assignments(rows: Iterable[_AssignmentRow]) -> Mapping[tuple[str, int
 
 
 def _normalize_agent_name(agent_name: str) -> str:
-    """Normalize agent names for safe filenames."""
+    """Normalize agent names for safe filenames by replacing spaces with underscores."""
 
-    normalized = re.sub(r"[^A-Za-z0-9]+", "_", agent_name.strip())
-    normalized = normalized.strip("_")
+    normalized = re.sub(r"\s+", "_", agent_name.strip())
+    normalized = normalized.replace("/", "_").replace("\\", "_")
     return normalized or "agent"
+
+
+def _compute_field_layout(page_width: float, left_margin: float, right_margin: float):
+    weights = [
+        0.06,  # Conv
+        0.12,  # Order No
+        0.12,  # Order Date
+        0.10,  # Value
+        0.15,  # Payment Mode
+        0.12,  # Payment Amt
+        0.33,  # Remarks
+    ]
+
+    usable_width = page_width - left_margin - right_margin
+    field_widths: list[int] = []
+    remaining_width = usable_width
+
+    for idx, weight in enumerate(weights):
+        if idx < len(weights) - 1:
+            width_i = int(usable_width * weight)
+            field_widths.append(width_i)
+            remaining_width -= width_i
+        else:
+            field_widths.append(int(remaining_width))
+
+    x_positions: list[float] = []
+    x = left_margin
+    for width in field_widths:
+        x_positions.append(x)
+        x += width
+
+    return x_positions, field_widths
 
 
 def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
@@ -227,124 +162,151 @@ def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
     target_dir = base_dir / "leads_assignment" / first.batch_date.strftime("%Y-%m")
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    assignment_date = first.batch_date.strftime("%Y-%m-%d")
+    assignment_date_display = first.batch_date.strftime("%d-%m-%Y")
     agent_slug = _normalize_agent_name(first.agent_name)
-    file_name = (
-        f"leads_assignment_{assignment_date}_{first.store_code}_{first.agent_code}_{agent_slug}.pdf"
-    )
+    file_name = f"lead_{agent_slug}_{assignment_date_display}.pdf"
     file_path = target_dir / file_name
 
-    doc = SimpleDocTemplate(
-        str(file_path), pagesize=landscape(A4), topMargin=36, bottomMargin=36
-    )
-    styles = getSampleStyleSheet()
-    header_style = ParagraphStyle(
-        "Header",
-        parent=styles["Heading2"],
-        fontSize=14,
-        spaceAfter=4,
-    )
-    meta_style = ParagraphStyle(
-        "Meta",
-        parent=styles["Normal"],
-        fontSize=10,
-        spaceAfter=2,
-    )
+    page_width, page_height = landscape(A4)
+    left_margin = 36
+    right_margin = 36
+    top_margin = 36
+    bottom_margin = 36
+    line_height = 14
+    field_height = 16
+    spacing_between_leads = 10
+    checkbox_size = 12
 
-    elements = [
-        Paragraph(f"Page Group Code: {first.page_group_code}", header_style),
-        Paragraph(f"Leads for {first.agent_name}", meta_style),
-        Paragraph(
-            f"Leads Assigned Date: {first.batch_date.strftime('%d-%m-%Y')}", meta_style
-        ),
-        Paragraph(
-            f"Store: {first.store_code}{' - ' + first.store_name if first.store_name else ''}",
-            meta_style,
-        ),
-        Paragraph(f"Agent Code: {first.agent_code}", meta_style),
-        Spacer(1, 10),
-    ]
+    x_positions, field_widths = _compute_field_layout(page_width, left_margin, right_margin)
 
-    table_data = _table_data(rows)
-    column_factors = [
-        0.06,
-        0.1,
-        0.05,
-        0.12,
-        0.12,
-        0.12,
-        0.06,
-        0.07,
-        0.07,
-        0.06,
-        0.07,
-        0.06,
-        0.04,
-    ]
-    col_widths = [doc.width * factor for factor in column_factors]
+    canvas = pdfcanvas.Canvas(str(file_path), pagesize=landscape(A4))
 
-    input_rows = {idx for idx in range(len(table_data)) if idx > 0 and idx % 2 == 0}
+    def draw_header() -> float:
+        canvas.setFont("Helvetica-Bold", 14)
+        header_y = page_height - top_margin
+        canvas.drawString(left_margin, header_y, f"Page Group Code: {first.page_group_code}")
 
-    table = _FormTable(table_data, input_rows=input_rows, repeatRows=1, colWidths=col_widths)
-    table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("ALIGN", (0, 0), (0, -1), "CENTER"),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                ("FONTSIZE", (0, 0), (-1, 0), 9),
-                ("FONTSIZE", (0, 1), (-1, -1), 8),
-            ]
+        canvas.setFont("Helvetica", 11)
+        header_y -= 16
+        canvas.drawString(
+            left_margin, header_y, f"Agent: {first.agent_code} - {first.agent_name}"
         )
-    )
 
-    elements.append(table)
-    doc.build(elements)
+        header_y -= 16
+        canvas.drawString(left_margin, header_y, f"Batch Date: {assignment_date_display}")
+
+        header_y -= 16
+        return header_y
+
+    current_y = draw_header()
+
+    for row in rows:
+        required_height = line_height + field_height + spacing_between_leads
+        if current_y < bottom_margin + required_height:
+            canvas.showPage()
+            current_y = draw_header()
+
+        lead_date_str = row.lead_date.strftime("%Y-%m-%d") if row.lead_date else ""
+        lead_line = (
+            f"ID: {row.rowid} - {lead_date_str} - {row.lead_type or ''} - "
+            f"{row.mobile_number} - {row.cx_name or ''}"
+        )
+
+        canvas.setFont("Helvetica", 10)
+        canvas.drawString(left_margin, current_y, lead_line)
+        current_y -= line_height
+
+        field_y = current_y
+        form = canvas.acroForm
+
+        form.checkbox(
+            name=f"conv_{row.rowid}",
+            tooltip="Conv (Y/N)",
+            x=x_positions[0],
+            y=field_y,
+            size=checkbox_size,
+            borderColor=colors.black,
+            fillColor=None,
+            textColor=colors.black,
+        )
+
+        form.textfield(
+            name=f"order_no_{row.rowid}",
+            tooltip="Order No",
+            x=x_positions[1],
+            y=field_y,
+            width=field_widths[1],
+            height=field_height,
+            borderStyle="underlined",
+            borderColor=colors.black,
+            textColor=colors.black,
+        )
+
+        form.textfield(
+            name=f"order_date_{row.rowid}",
+            tooltip="Order Date",
+            x=x_positions[2],
+            y=field_y,
+            width=field_widths[2],
+            height=field_height,
+            borderStyle="underlined",
+            borderColor=colors.black,
+            textColor=colors.black,
+        )
+
+        form.textfield(
+            name=f"value_{row.rowid}",
+            tooltip="Value",
+            x=x_positions[3],
+            y=field_y,
+            width=field_widths[3],
+            height=field_height,
+            borderStyle="underlined",
+            borderColor=colors.black,
+            textColor=colors.black,
+        )
+
+        form.textfield(
+            name=f"payment_mode_{row.rowid}",
+            tooltip="Payment Mode",
+            x=x_positions[4],
+            y=field_y,
+            width=field_widths[4],
+            height=field_height,
+            borderStyle="underlined",
+            borderColor=colors.black,
+            textColor=colors.black,
+        )
+
+        form.textfield(
+            name=f"payment_amt_{row.rowid}",
+            tooltip="Payment Amt",
+            x=x_positions[5],
+            y=field_y,
+            width=field_widths[5],
+            height=field_height,
+            borderStyle="underlined",
+            borderColor=colors.black,
+            textColor=colors.black,
+        )
+
+        form.textfield(
+            name=f"remarks_{row.rowid}",
+            tooltip="Remarks",
+            x=x_positions[6],
+            y=field_y,
+            width=field_widths[6],
+            height=field_height,
+            borderStyle="underlined",
+            borderColor=colors.black,
+            textColor=colors.black,
+        )
+
+        current_y -= field_height + spacing_between_leads
+
+    canvas.save()
 
     return file_path
-
-
-def _table_data(rows: Iterable[_AssignmentRow]) -> list[list[str]]:
-    header = [
-        "RowID",
-        "Lead Date",
-        "Type",
-        "Mobile No",
-        "Customer Name",
-        "Address",
-        "Conv (Y/N)",
-        "Order No",
-        "Order Date",
-        "Value",
-        "Payment Mode",
-        "Payment Amt",
-        "Remarks",
-    ]
-
-    table_rows: list[list[str]] = [header]
-    for row in rows:
-        snapshot = [
-            str(row.rowid),
-            row.lead_date.isoformat() if row.lead_date else "",
-            row.lead_type or "",
-            row.mobile_number,
-            row.cx_name or "",
-            row.address or "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-        ]
-        inputs = ["" for _ in header]
-        table_rows.append(snapshot)
-        table_rows.append(inputs)
-
-    return table_rows
 
 
 async def _insert_document_record(
