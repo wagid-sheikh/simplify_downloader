@@ -303,8 +303,7 @@ async def _upsert_rows(
     dedupe_keys = spec["dedupe_keys"]
     timestamp_update = {"updated_at": func.now()}
 
-    insert_only_buckets = {"repeat_customers", "nonpackage_all"}
-    if bucket in insert_only_buckets:
+    if spec.get("insert_only"):
         stmt = insert_stmt.on_conflict_do_nothing(index_elements=dedupe_keys)
     elif bucket == "missed_leads":
         stmt = insert_stmt.on_conflict_do_update(
