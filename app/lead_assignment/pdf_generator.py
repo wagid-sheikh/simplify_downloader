@@ -261,7 +261,7 @@ def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
             fillColor=None,
             textColor=colors.black,
         )
-        canvas.drawString(conv_checkbox_x + checkbox_size + 2, field_y, "Conv (Y/N)")
+        # canvas.drawString(conv_checkbox_x + checkbox_size + 2, field_y, "Conv (Y/N)")
 
         form.textfield(
             name=f"order_no_{row.rowid}",
