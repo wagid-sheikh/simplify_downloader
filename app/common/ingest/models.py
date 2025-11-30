@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import (
     Boolean,
     Date,
+    DateTime,
     Float,
     Integer,
     PrimaryKeyConstraint,
     String,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -61,6 +65,12 @@ class UndeliveredOrder(Base):
     actual_deliver_on: Mapped[Date | None] = mapped_column(Date)
     run_id: Mapped[str | None] = mapped_column(String(64))
     run_date: Mapped[Date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class RepeatCustomer(Base):
@@ -75,6 +85,12 @@ class RepeatCustomer(Base):
     status: Mapped[str | None] = mapped_column(String)
     run_id: Mapped[str | None] = mapped_column(String(64))
     run_date: Mapped[Date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class NonPackageOrder(Base):
@@ -93,6 +109,12 @@ class NonPackageOrder(Base):
     actual_delivery_date: Mapped[Date | None] = mapped_column(Date)
     run_id: Mapped[str | None] = mapped_column(String(64))
     run_date: Mapped[Date | None] = mapped_column(Date)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 BUCKET_MODEL_MAP = {
