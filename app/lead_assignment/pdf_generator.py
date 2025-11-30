@@ -27,9 +27,9 @@ __all__ = ["generate_pdfs_for_batch"]
 class _FormTable(Table):
     """Table that overlays AcroForm text fields on designated rows."""
 
-    def __init__(self, data, input_rows: set[int], **kwargs):
+    def __init__(self, data, input_rows: set[int] | None = None, **kwargs):
         super().__init__(data, **kwargs)
-        self._input_rows = input_rows
+        self._input_rows = self._coerce_input_rows(input_rows, data)
 
     def drawOn(self, canvas, x, y, _sW=0):  # type: ignore[override]
         super().drawOn(canvas, x, y, _sW)
@@ -62,6 +62,30 @@ class _FormTable(Table):
                     fillColor=None,
                     textColor=colors.black,
                 )
+
+    def split(self, availWidth, availHeight):  # type: ignore[override]
+        slices = getattr(self, "_splitRows", None)
+        row_slices = slices(availHeight) if callable(slices) else None
+
+        tables = super().split(availWidth, availHeight)
+
+        if not row_slices:
+            return tables
+
+        for table, (start, end) in zip(tables, row_slices):
+            if isinstance(table, _FormTable):
+                table._input_rows = {
+                    idx - start for idx in self._input_rows if start <= idx < end
+                }
+
+        return tables
+
+    @staticmethod
+    def _coerce_input_rows(input_rows: set[int] | None, data: list[list[str]]):
+        if input_rows is not None:
+            return set(input_rows)
+
+        return {idx for idx in range(len(data)) if idx > 0 and idx % 2 == 0}
 
 
 @dataclass
