@@ -52,7 +52,7 @@ class _FormTable(Table):
                 height = max(8, top - bottom - 4)
 
                 form.textfield(
-                    fieldName=f"input_{row_idx}_{col_idx}",
+                    name=f"input_{row_idx}_{col_idx}",
                     x=left + 2,
                     y=bottom + 2,
                     width=width,
