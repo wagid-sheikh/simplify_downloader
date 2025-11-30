@@ -72,11 +72,18 @@ class _FormTable(Table):
         if not row_slices:
             return tables
 
-        for table, (start, end) in zip(tables, row_slices):
-            if isinstance(table, _FormTable):
-                table._input_rows = {
-                    idx - start for idx in self._input_rows if start <= idx < end
-                }
+        for table, row_slice in zip(tables, row_slices):
+            if not isinstance(table, _FormTable):
+                continue
+
+            bounds = self._normalize_row_slice(row_slice)
+            if bounds is None:
+                continue
+
+            start, end = bounds
+            table._input_rows = {
+                idx - start for idx in self._input_rows if start <= idx < end
+            }
 
         return tables
 
@@ -86,6 +93,25 @@ class _FormTable(Table):
             return set(input_rows)
 
         return {idx for idx in range(len(data)) if idx > 0 and idx % 2 == 0}
+
+    @staticmethod
+    def _normalize_row_slice(row_slice) -> tuple[int, int] | None:
+        if isinstance(row_slice, slice):
+            start = 0 if row_slice.start is None else row_slice.start
+            end = row_slice.stop
+        elif isinstance(row_slice, (list, tuple)) and len(row_slice) == 2:
+            start, end = row_slice
+        else:
+            start = getattr(row_slice, "start", None)
+            end = getattr(row_slice, "stop", None)
+
+        if start is None:
+            start = 0
+
+        if end is None:
+            return None
+
+        return start, end
 
 
 @dataclass
