@@ -177,33 +177,31 @@ async def persist_dashboard_summary(
                 extras={"store_code": store_code, "gstin": dashboard_data.get("gstin")},
             )
 
-            store_insert = pg_insert(store_master).values(
-                store_code=store_code,
-                store_name=dashboard_data.get("store_name"),
-                launch_date=dashboard_data.get("launch_date"),
-                gstin=dashboard_data.get("gstin"),
-                is_active=True,
+            store_lookup = sa.select(store_master.c.id).where(
+                store_master.c.store_code == store_code
             )
-            update_values = {
-                "store_name": sa.func.coalesce(
-                    store_insert.excluded.store_name, store_master.c.store_name
-                ),
-                "launch_date": sa.func.coalesce(
-                    store_insert.excluded.launch_date, store_master.c.launch_date
-                ),
-                "gstin": sa.func.coalesce(
-                    store_insert.excluded.gstin, store_master.c.gstin
-                ),
-                "is_active": sa.true(),
-                "updated_at": sa.func.now(),
-            }
-            store_insert = (
-                store_insert.on_conflict_do_update(
-                    index_elements=[store_master.c.store_code],
-                    set_=update_values,
-                ).returning(store_master.c.id)
-            )
-            store_id = (await session.execute(store_insert)).scalar_one()
+            store_id = (await session.execute(store_lookup)).scalar_one_or_none()
+
+            if store_id is None:
+                store_insert = (
+                    pg_insert(store_master)
+                    .values(
+                        store_code=store_code,
+                        store_name=dashboard_data.get("store_name"),
+                        launch_date=dashboard_data.get("launch_date"),
+                        gstin=dashboard_data.get("gstin"),
+                        is_active=True,
+                    )
+                    .on_conflict_do_nothing(index_elements=[store_master.c.store_code])
+                    .returning(store_master.c.id)
+                )
+
+                store_id = (await session.execute(store_insert)).scalar_one_or_none()
+
+            if store_id is None:
+                store_id = (
+                    await session.execute(store_lookup.with_only_columns(store_master.c.id))
+                ).scalar_one()
 
             run_time = datetime.now(timezone.utc)
             insert_values = {
