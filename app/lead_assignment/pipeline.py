@@ -325,6 +325,7 @@ async def run_leads_assignment_pipeline(env: str | None = None, run_id: str | No
             db_session=session, triggered_by="pipeline", run_id=logger.run_id
         )
         assignment_count = await _count_assignments(session, batch_id)
+        await session.commit()
         log_event(
             logger=logger,
             phase="lead_assignment",
@@ -345,18 +346,21 @@ async def run_leads_assignment_pipeline(env: str | None = None, run_id: str | No
 
         async with session.begin():
             document_ids = await generate_pdfs_for_batch(session, batch_id)
-        log_event(
-            logger=logger,
-            phase="documents",
-            message="generated assignment documents",
-            extras={"batch_id": batch_id, "document_count": len(document_ids)},
-        )
+            log_event(
+                logger=logger,
+                phase="documents",
+                message="generated assignment documents",
+                extras={"batch_id": batch_id, "document_count": len(document_ids)},
+            )
 
-        store_documents = await _load_documents(session, document_ids)
-        store_names = await _load_store_names(session, store_documents.keys())
-        profile, template, summary_template, recipients = await _load_notification_resources(
-            session, run_env
-        )
+            store_documents = await _load_documents(session, document_ids)
+            store_names = await _load_store_names(session, store_documents.keys())
+            (
+                profile,
+                template,
+                summary_template,
+                recipients,
+            ) = await _load_notification_resources(session, run_env)
 
     if not document_ids or not store_documents:
         log_event(
