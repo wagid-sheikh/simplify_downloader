@@ -94,7 +94,7 @@ async def _load_notification_resources(db_session, run_env: str):
         )
     ).mappings().first()
     if not profile_row:
-        return None, None, []
+        return None, None, None, []
 
     template_row = (
         await db_session.execute(
@@ -105,6 +105,22 @@ async def _load_notification_resources(db_session, run_env: str):
                 WHERE profile_id = :profile_id
                   AND is_active = true
                   AND name = 'default'
+                LIMIT 1
+                """
+            ),
+            {"profile_id": profile_row["id"]},
+        )
+    ).mappings().first()
+
+    summary_template_row = (
+        await db_session.execute(
+            text(
+                """
+                SELECT subject_template, body_template
+                FROM email_templates
+                WHERE profile_id = :profile_id
+                  AND is_active = true
+                  AND name = 'summary'
                 LIMIT 1
                 """
             ),
@@ -127,7 +143,7 @@ async def _load_notification_resources(db_session, run_env: str):
         )
     ).mappings().all()
 
-    return profile_row, template_row, [dict(row) for row in recipients_rows]
+    return profile_row, template_row, summary_template_row, [dict(row) for row in recipients_rows]
 
 
 def _send_store_notifications(
@@ -213,6 +229,85 @@ def _send_store_notifications(
     return planned, sent
 
 
+def _build_summary_context(
+    *,
+    run_id: str,
+    run_env: str,
+    batch_id: int,
+    assignments: int,
+    document_count: int,
+    emails_planned: int,
+    emails_sent: int,
+) -> dict[str, object]:
+    return {
+        "run_id": run_id,
+        "run_env": run_env,
+        "batch_id": batch_id,
+        "assignments": assignments,
+        "documents_generated": document_count,
+        "emails_planned": emails_planned,
+        "emails_sent": emails_sent,
+    }
+
+
+def _send_run_summary(
+    *,
+    profile: dict[str, object],
+    summary_template: dict[str, str] | None,
+    recipients: list[dict[str, object]],
+    context: dict[str, object],
+    logger,
+) -> tuple[int, int]:
+    if not summary_template:
+        log_event(
+            logger=logger,
+            phase="notify",
+            status="warn",
+            message="run summary template missing; skipping summary dispatch",
+            extras=context,
+        )
+        return 0, 0
+
+    to, cc, bcc = _collect_recipient_lists(recipients, store_code=None)
+    if not to and cc:
+        to, cc = cc, []
+    if not to and not cc:
+        log_event(
+            logger=logger,
+            phase="notify",
+            status="warn",
+            message="no recipients available for run summary",
+            extras=context,
+        )
+        return 0, 0
+
+    subject = _render_template(summary_template["subject_template"], context)
+    body = _render_template(summary_template["body_template"], context)
+    plan = EmailPlan(
+        profile_code=profile["code"],
+        scope="run",
+        store_code=None,
+        subject=subject,
+        body=body,
+        to=to,
+        cc=cc,
+        bcc=bcc,
+        attachments=[],
+    )
+
+    smtp_config = _load_smtp_config()
+    planned = 1
+    sent = 1 if _send_email(smtp_config, plan) else 0
+    log_event(
+        logger=logger,
+        phase="notify",
+        status="ok" if sent else "warn",
+        message="run summary notification dispatched",
+        extras={**context, "emails_sent": sent, "emails_planned": planned},
+    )
+    return planned, sent
+
+
 async def run_leads_assignment_pipeline(env: str | None = None, run_id: str | None = None) -> None:
     logger = get_logger(run_id=run_id or new_run_id())
     run_env = resolve_run_env(env)
@@ -259,7 +354,7 @@ async def run_leads_assignment_pipeline(env: str | None = None, run_id: str | No
 
         store_documents = await _load_documents(session, document_ids)
         store_names = await _load_store_names(session, store_documents.keys())
-        profile, template, recipients = await _load_notification_resources(
+        profile, template, summary_template, recipients = await _load_notification_resources(
             session, run_env
         )
 
@@ -274,39 +369,76 @@ async def run_leads_assignment_pipeline(env: str | None = None, run_id: str | No
         logger.close()
         return
 
-    if not profile or not template:
+    emails_planned = 0
+    emails_sent = 0
+
+    if not profile:
         log_event(
             logger=logger,
             phase="notify",
             status="warn",
-            message="notification profile or template missing",
+            message="notification profile missing",
             extras={"batch_id": batch_id, "run_env": run_env},
         )
-        logger.close()
-        return
+    elif not template:
+        log_event(
+            logger=logger,
+            phase="notify",
+            status="warn",
+            message="notification template missing; skipping store notifications",
+            extras={"batch_id": batch_id, "run_env": run_env},
+        )
+    else:
+        planned, sent = _send_store_notifications(
+            profile=profile,
+            template=template,
+            recipients=recipients,
+            store_documents=store_documents,
+            store_names=store_names,
+            run_env=run_env,
+            batch_id=batch_id,
+            logger=logger,
+        )
+        emails_planned += planned
+        emails_sent += sent
+        log_event(
+            logger=logger,
+            phase="notify",
+            message="notification dispatch complete",
+            extras={"batch_id": batch_id, "emails_planned": planned, "emails_sent": sent},
+        )
 
-    planned, sent = _send_store_notifications(
-        profile=profile,
-        template=template,
-        recipients=recipients,
-        store_documents=store_documents,
-        store_names=store_names,
-        run_env=run_env,
-        batch_id=batch_id,
-        logger=logger,
-    )
-    log_event(
-        logger=logger,
-        phase="notify",
-        message="notification dispatch complete",
-        extras={"batch_id": batch_id, "emails_planned": planned, "emails_sent": sent},
-    )
+    if profile:
+        summary_context = _build_summary_context(
+            run_id=logger.run_id,
+            run_env=run_env,
+            batch_id=batch_id,
+            assignments=assignment_count,
+            document_count=len(document_ids),
+            emails_planned=emails_planned,
+            emails_sent=emails_sent,
+        )
+        planned_summary, sent_summary = _send_run_summary(
+            profile=profile,
+            summary_template=summary_template,
+            recipients=recipients,
+            context=summary_context,
+            logger=logger,
+        )
+        emails_planned += planned_summary
+        emails_sent += sent_summary
 
     log_event(
         logger=logger,
         phase="orchestrator",
         message="leads assignment pipeline complete",
-        extras={"batch_id": batch_id},
+        extras={
+            "batch_id": batch_id,
+            "assignments": assignment_count,
+            "documents_generated": len(document_ids),
+            "emails_planned": emails_planned,
+            "emails_sent": emails_sent,
+        },
     )
     logger.close()
 
