@@ -14,7 +14,7 @@ def cleanup_bucket(
     audit_status: str,
     logger: JsonLogger,
 ) -> None:
-    if audit_status != "ok":
+    if audit_status not in {"ok", "info"}:
         log_event(
             logger=logger,
             phase="cleanup",
