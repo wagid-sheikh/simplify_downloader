@@ -5,6 +5,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -300,6 +301,7 @@ async def _upsert_rows(
 
     insert_stmt = insert(model).values(deduped_rows)
     dedupe_keys = spec["dedupe_keys"]
+    timestamp_update = {"updated_at": func.now()}
 
     insert_only_buckets = {"repeat_customers", "nonpackage_all"}
     if bucket in insert_only_buckets:
@@ -307,7 +309,10 @@ async def _upsert_rows(
     elif bucket == "missed_leads":
         stmt = insert_stmt.on_conflict_do_update(
             index_elements=dedupe_keys,
-            set_={"is_order_placed": insert_stmt.excluded["is_order_placed"]},
+            set_={
+                "is_order_placed": insert_stmt.excluded["is_order_placed"],
+                **timestamp_update,
+            },
             where=model.is_order_placed.is_distinct_from(
                 insert_stmt.excluded["is_order_placed"]
             ),
@@ -315,7 +320,10 @@ async def _upsert_rows(
     elif bucket == "undelivered_all":
         stmt = insert_stmt.on_conflict_do_update(
             index_elements=dedupe_keys,
-            set_={"actual_deliver_on": insert_stmt.excluded["actual_deliver_on"]},
+            set_={
+                "actual_deliver_on": insert_stmt.excluded["actual_deliver_on"],
+                **timestamp_update,
+            },
             where=model.actual_deliver_on.is_distinct_from(
                 insert_stmt.excluded["actual_deliver_on"]
             ),
@@ -326,6 +334,7 @@ async def _upsert_rows(
             for col in deduped_rows[0].keys()
             if col not in dedupe_keys
         }
+        update_cols.update(timestamp_update)
         stmt = insert_stmt.on_conflict_do_update(
             index_elements=dedupe_keys,
             set_=update_cols,
