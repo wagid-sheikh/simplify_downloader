@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 import re
@@ -9,6 +8,7 @@ from typing import Iterable, Mapping
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.pdfgen import canvas as pdfcanvas
+from reportlab.platypus import Table
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,23 +17,114 @@ from app.config import config
 __all__ = ["generate_pdfs_for_batch"]
 
 
-@dataclass
 class _AssignmentRow:
-    assignment_batch_id: int
-    batch_date: date
-    store_code: str
-    store_name: str | None
-    agent_id: int
-    agent_code: str
-    agent_name: str
-    page_group_code: str
-    rowid: int
-    lead_date: date | None
-    lead_type: str | None
-    mobile_number: str
-    cx_name: str | None
-    address: str | None
-    lead_source: str | None
+    def __init__(
+        self,
+        *,
+        assignment_batch_id: int,
+        batch_date: date,
+        store_code: str,
+        store_name: str | None,
+        agent_id: int,
+        agent_code: str,
+        agent_name: str,
+        page_group_code: str,
+        rowid: int,
+        lead_date: date | None,
+        lead_type: str | None,
+        mobile_number: str,
+        cx_name: str | None,
+        address: str | None,
+        lead_source: str | None,
+    ) -> None:
+        self.assignment_batch_id = assignment_batch_id
+        self.batch_date = batch_date
+        self.store_code = store_code
+        self.store_name = store_name
+        self.agent_id = agent_id
+        self.agent_code = agent_code
+        self.agent_name = agent_name
+        self.page_group_code = page_group_code
+        self.rowid = rowid
+        self.lead_date = lead_date
+        self.lead_type = lead_type
+        self.mobile_number = mobile_number
+        self.cx_name = cx_name
+        self.address = address
+        self.lead_source = lead_source
+
+
+class _FormTable(Table):
+    def __init__(self, data, *, input_rows: set[int] | None = None, **kwargs):
+        super().__init__(data, **kwargs)
+        self._input_rows: set[int] = set(input_rows or ())
+
+    def _splitRows(self, availHeight, doInRowSplit: int = 0):  # type: ignore[override]
+        raw_splits = super()._splitRows(availHeight, doInRowSplit=doInRowSplit)
+        if not raw_splits:
+            return []
+
+        if all(isinstance(item, Table) for item in raw_splits):
+            slices: list[tuple[int, int]] = []
+            offset = 0
+            for item in raw_splits:  # type: ignore[union-attr]
+                slices.append((offset, offset + item._nrows))
+                offset += item._nrows
+            return slices
+
+        return raw_splits
+
+    def split(self, availWidth, availHeight):  # type: ignore[override]
+        self._calc(availWidth, availHeight)
+        segments = self._splitRows(availHeight)
+        if not segments:
+            return []
+
+        parts = []
+        for segment in segments:
+            if isinstance(segment, slice):
+                start = segment.start or 0
+                end = len(self._cellvalues) if segment.stop is None else segment.stop
+            else:
+                start, end = segment
+
+            part = _FormTable(
+                self._cellvalues[start:end],
+                input_rows={i - start for i in self._input_rows if start <= i < end},
+                colWidths=self._colWidths,
+                rowHeights=self._rowHeights[start:end] if self._rowHeights else None,
+                repeatRows=self.repeatRows,
+                repeatCols=self.repeatCols,
+                splitByRow=self.splitByRow,
+                splitInRow=self.splitInRow,
+                normalizedData=1,
+            )
+            parts.append(part)
+
+        return parts
+
+    def drawOn(self, canvas, x, y, _sW=0):  # type: ignore[override]
+        super().drawOn(canvas, x, y, _sW=_sW)
+
+        if not self._input_rows:
+            return
+
+        if not hasattr(canvas, "acroForm"):
+            return
+
+        for row_idx in self._input_rows:
+            if row_idx < 0 or row_idx >= len(self._cellvalues):
+                continue
+
+            for col_idx, value in enumerate(self._cellvalues[row_idx]):
+                canvas.acroForm.textfield(
+                    name=f"cell_{row_idx}_{col_idx}",
+                    tooltip=str(value),
+                    x=0,
+                    y=0,
+                    width=0,
+                    height=0,
+                )
 
 
 async def generate_pdfs_for_batch(
