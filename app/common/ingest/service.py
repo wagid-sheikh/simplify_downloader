@@ -280,7 +280,22 @@ def _dedupe_rows(bucket: str, spec: dict, rows: List[Dict[str, Any]]) -> List[Di
     by_key: Dict[tuple[Any, ...], Dict[str, Any]] = {}
     for row in rows:
         k = key(row)
-        if k not in by_key or recency_key(row) >= recency_key(by_key[k]):
+        if k not in by_key:
+            by_key[k] = row
+            continue
+
+        existing_row = by_key[k]
+        if bucket == "undelivered_all":
+            incoming_has_actual = row.get("actual_deliver_on") is not None
+            existing_has_actual = existing_row.get("actual_deliver_on") is not None
+
+            if incoming_has_actual and not existing_has_actual:
+                by_key[k] = row
+                continue
+            if existing_has_actual and not incoming_has_actual:
+                continue
+
+        if recency_key(row) >= recency_key(existing_row):
             by_key[k] = row
 
     return list(by_key.values())
