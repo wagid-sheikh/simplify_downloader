@@ -368,7 +368,9 @@ async def _fetch_undelivered_order_rows(
     return rows, total_amount
 
 
-async def _fetch_missed_leads_rows(session: AsyncSession, store_code: str) -> List[Dict[str, Any]]:
+async def _fetch_missed_leads_rows(
+    session: AsyncSession, store_code: str, report_date: date
+) -> List[Dict[str, Any]]:
     stmt = (
         sa.select(
             MissedLead.mobile_number,
@@ -382,6 +384,8 @@ async def _fetch_missed_leads_rows(session: AsyncSession, store_code: str) -> Li
         )
         .where(sa.func.upper(MissedLead.store_code) == store_code)
         .where(MissedLead.is_order_placed.is_(False))
+        .where(sa.extract("year", MissedLead.pickup_created_date) == report_date.year)
+        .where(sa.extract("month", MissedLead.pickup_created_date) == report_date.month)
         .order_by(MissedLead.customer_type.asc(), MissedLead.pickup_created_date.asc(), MissedLead.pickup_created_time.asc())
     )
     result = await session.execute(stmt)
@@ -453,7 +457,9 @@ async def build_store_context(
             normalized_code,
             report_date,
         )
-        missed_leads_rows = await _fetch_missed_leads_rows(session, normalized_code)
+        missed_leads_rows = await _fetch_missed_leads_rows(
+            session, normalized_code, report_date
+        )
 
     pickup_total_pct = _as_float(summary_row.get("pickup_total_conv_pct"))
     pickup_new_pct = _as_float(summary_row.get("pickup_new_conv_pct"))
