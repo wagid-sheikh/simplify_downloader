@@ -111,3 +111,61 @@ def test_audit_warns_on_zero_ingest_in_single_session():
     )
 
     assert result["status"] == "warn"
+
+
+def test_dedupe_prefers_actual_delivery_information():
+    from app.common.ingest import service
+
+    spec = service.MERGE_BUCKET_DB_SPECS["undelivered_all"]
+
+    rows = [
+        {
+            "store_code": "S001",
+            "order_id": "O1",
+            "order_date": date(2024, 1, 2),
+            "expected_deliver_on": date(2024, 1, 3),
+            "actual_deliver_on": None,
+            "run_date": date(2024, 1, 2),
+        },
+        {
+            "store_code": "S001",
+            "order_id": "O1",
+            "order_date": date(2024, 1, 1),
+            "expected_deliver_on": date(2024, 1, 2),
+            "actual_deliver_on": date(2024, 1, 4),
+            "run_date": date(2024, 1, 1),
+        },
+    ]
+
+    deduped_rows = service._dedupe_rows("undelivered_all", spec, rows)
+
+    assert deduped_rows == [rows[1]]
+
+
+def test_dedupe_rejects_newer_rows_without_actual_delivery_date():
+    from app.common.ingest import service
+
+    spec = service.MERGE_BUCKET_DB_SPECS["undelivered_all"]
+
+    rows = [
+        {
+            "store_code": "S001",
+            "order_id": "O1",
+            "order_date": date(2024, 1, 1),
+            "expected_deliver_on": date(2024, 1, 2),
+            "actual_deliver_on": date(2024, 1, 3),
+            "run_date": date(2024, 1, 1),
+        },
+        {
+            "store_code": "S001",
+            "order_id": "O1",
+            "order_date": date(2024, 1, 5),
+            "expected_deliver_on": date(2024, 1, 6),
+            "actual_deliver_on": None,
+            "run_date": date(2024, 1, 5),
+        },
+    ]
+
+    deduped_rows = service._dedupe_rows("undelivered_all", spec, rows)
+
+    assert deduped_rows == [rows[0]]
