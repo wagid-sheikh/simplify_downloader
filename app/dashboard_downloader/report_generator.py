@@ -326,6 +326,9 @@ async def _fetch_undelivered_order_rows(
     store_code: str,
     report_date: date,
 ) -> tuple[List[Dict[str, Any]], float]:
+    delivery_reference_date = sa.func.coalesce(
+        UndeliveredOrder.expected_deliver_on, UndeliveredOrder.order_date
+    )
     stmt = (
         sa.select(
             UndeliveredOrder.order_id,
@@ -336,6 +339,8 @@ async def _fetch_undelivered_order_rows(
         )
         .where(sa.func.upper(UndeliveredOrder.store_code) == store_code)
         .where(UndeliveredOrder.actual_deliver_on.is_(None))
+        .where(sa.extract("year", delivery_reference_date) == report_date.year)
+        .where(sa.extract("month", delivery_reference_date) == report_date.month)
     )
     result = await session.execute(stmt)
     rows = []
