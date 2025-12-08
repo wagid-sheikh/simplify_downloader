@@ -301,6 +301,9 @@ def prepared_db(monkeypatch) -> dict[str, object]:
         async def execute(self, statement, params=None):
             return self._session.execute(statement, params or {})
 
+        async def commit(self):
+            return self._session.commit()
+
         def begin(self):
             if self._session.in_transaction():
                 self._session.commit()
