@@ -28,14 +28,22 @@ class _FakeInsert:
         self.model = model
         self._values = []
         self.excluded = self._Excluded()
+        self.conflict_action = None
 
     def values(self, values):
         self._values = values
         return self
 
-    def on_conflict_do_update(self, *, index_elements, set_):
+    def on_conflict_do_nothing(self, *, index_elements):
+        self.conflict_action = "do_nothing"
+        self.index_elements = index_elements
+        return self
+
+    def on_conflict_do_update(self, *, index_elements, set_, where=None):
+        self.conflict_action = "do_update"
         self.index_elements = index_elements
         self.set_ = set_
+        self.where = where
         return self
 
 
