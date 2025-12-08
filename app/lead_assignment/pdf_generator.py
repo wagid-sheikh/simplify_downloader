@@ -321,7 +321,7 @@ def _render_pdf(rows: list[_AssignmentRow], base_dir: Path) -> Path:
 
         lead_date_str = row.lead_date.strftime("%Y-%m-%d") if row.lead_date else ""
         lead_line = (
-            f"ID: {row.rowid} - {lead_date_str} - {row.lead_type or ''} - "
+            f"RowID: {row.rowid} - {lead_date_str} - {row.lead_type or ''} - "
             f"{row.mobile_number} - {row.cx_name or ''}"
         )
 
