@@ -295,6 +295,16 @@ def _dedupe_rows(bucket: str, spec: dict, rows: List[Dict[str, Any]]) -> List[Di
             if existing_has_actual and not incoming_has_actual:
                 continue
 
+        if bucket == "missed_leads":
+            incoming_order_placed = bool(row.get("is_order_placed"))
+            existing_order_placed = bool(existing_row.get("is_order_placed"))
+
+            if incoming_order_placed and not existing_order_placed:
+                by_key[k] = row
+                continue
+            if existing_order_placed and not incoming_order_placed:
+                continue
+
         if recency_key(row) >= recency_key(existing_row):
             by_key[k] = row
 

@@ -231,3 +231,60 @@ async def test_upsert_rows_dedupes_undelivered_orders(monkeypatch):
             "run_date": newer_run,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_upsert_rows_prefers_order_placed_for_missed_leads(monkeypatch):
+    captured_values = []
+
+    def fake_insert(model):
+        stub = _FakeInsert(model)
+        original_values = stub.values
+
+        def capture(values):
+            captured_values.append(values)
+            return original_values(values)
+
+        stub.values = capture  # type: ignore[assignment]
+        return stub
+
+    monkeypatch.setattr(service, "insert", fake_insert)
+
+    rows = [
+        {
+            "store_code": "D004",
+            "mobile_number": "77777",
+            "pickup_row_id": 1,
+            "pickup_created_date": date(2024, 5, 2),
+            "pickup_created_time": "12:00",
+            "run_id": "recent_no_order",
+            "run_date": date(2024, 5, 2),
+            "is_order_placed": False,
+        },
+        {
+            "store_code": "D004",
+            "mobile_number": "77777",
+            "pickup_row_id": 2,
+            "pickup_created_date": date(2024, 5, 1),
+            "pickup_created_time": "10:00",
+            "run_id": "earlier_order_placed",
+            "run_date": date(2024, 5, 1),
+            "is_order_placed": True,
+        },
+    ]
+
+    result = await service._upsert_rows(_FakeSession(), "missed_leads", rows)
+
+    assert result == {"affected_rows": 1, "deduped_rows": 1}
+    assert captured_values[-1] == [
+        {
+            "store_code": "D004",
+            "mobile_number": "77777",
+            "pickup_row_id": 2,
+            "pickup_created_date": date(2024, 5, 1),
+            "pickup_created_time": "10:00",
+            "run_id": "earlier_order_placed",
+            "run_date": date(2024, 5, 1),
+            "is_order_placed": True,
+        }
+    ]
