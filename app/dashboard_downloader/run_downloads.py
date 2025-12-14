@@ -154,6 +154,7 @@ async def navigate_with_retry(
                                 "error_type": error_type,
                                 "error_message": str(exc),
                                 "ignore_https_errors": True,
+                                "insecure_retry": True,
                             },
                         )
                     raise cert_error from exc
@@ -176,11 +177,33 @@ async def navigate_with_retry(
                             "error_type": error_type,
                             "error_message": str(exc),
                             "ignore_https_errors": True,
+                            "insecure_retry": insecure_retry,
                         },
                     )
 
                 try:
-                    current_page = await _retry_page_with_ignored_https(current_page)
+                    current_page, page_recreated = await _retry_page_with_ignored_https(
+                        current_page
+                    )
+                    if logger:
+                        log_event(
+                            logger=logger,
+                            phase="download",
+                            status="info",
+                            store_code=store_code,
+                            bucket=None,
+                            message="recreated page with HTTPS checks disabled",
+                            extras={
+                                "attempt": attempt,
+                                "max_attempts": max_attempts,
+                                "target_url": url,
+                                "timeout_ms": timeout_ms,
+                                "response_status": last_status,
+                                "ignore_https_errors": True,
+                                "insecure_retry": True,
+                                "page_recreated": page_recreated,
+                            },
+                        )
                 except Exception as recreate_exc:
                     last_error = recreate_exc
                     if logger:
@@ -200,33 +223,35 @@ async def navigate_with_retry(
                                 "error_type": type(recreate_exc).__name__,
                                 "error_message": str(recreate_exc),
                                 "ignore_https_errors": True,
+                                "insecure_retry": True,
                             },
                         )
                     raise cert_error from recreate_exc
 
-                continue
-
-            wait_time_s = base_retry_delay_s * (2 ** (attempt - 1))
-            if logger:
-                log_event(
-                    logger=logger,
-                    phase="download",
-                    status="warn" if attempt < max_attempts else "error",
-                    store_code=store_code,
-                    bucket=None,
-                    message="navigation attempt failed",
-                    extras={
-                        "attempt": attempt,
-                        "max_attempts": max_attempts,
-                        "target_url": url,
-                        "timeout_ms": timeout_ms,
-                        "response_status": last_status,
-                        "error_type": error_type,
-                        "error_message": str(exc),
-                        "wait_time_s": wait_time_s,
-                    },
-                )
-            attempt += 1
+                wait_time_s = 0.0
+                attempt += 1
+            else:
+                wait_time_s = base_retry_delay_s * (2 ** (attempt - 1))
+                if logger:
+                    log_event(
+                        logger=logger,
+                        phase="download",
+                        status="warn" if attempt < max_attempts else "error",
+                        store_code=store_code,
+                        bucket=None,
+                        message="navigation attempt failed",
+                        extras={
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                            "target_url": url,
+                            "timeout_ms": timeout_ms,
+                            "response_status": last_status,
+                            "error_type": error_type,
+                            "error_message": str(exc),
+                            "wait_time_s": wait_time_s,
+                        },
+                    )
+                attempt += 1
 
         if attempt <= max_attempts:
             if wait_time_s is None:
@@ -257,7 +282,7 @@ async def navigate_with_retry(
     raise TimeoutError(message) from last_error
 
 
-async def _retry_page_with_ignored_https(page: Page) -> Page:
+async def _retry_page_with_ignored_https(page: Page) -> tuple[Page, bool]:
     try:
         storage_state = await page.context.storage_state()
     except Exception:
@@ -276,7 +301,7 @@ async def _retry_page_with_ignored_https(page: Page) -> Page:
     except Exception:  # pragma: no cover - cleanup guard
         pass
 
-    return await new_context.new_page()
+    return await new_context.new_page(), True
 
 
 async def _fetch_dashboard_nav_timeout_ms(database_url: str | None) -> int:

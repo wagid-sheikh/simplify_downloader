@@ -87,11 +87,34 @@ def test_navigate_with_retry_switches_to_insecure_mode(monkeypatch):
     assert new_page.context.ignore_https_errors is True
 
     logged = [json.loads(line) for line in log_stream.getvalue().splitlines() if line.strip()]
-    assert any(
-        entry.get("status") == "warn"
-        and entry.get("extras", {}).get("ignore_https_errors")
+    warn_entries = [
+        entry for entry in logged if entry.get("status") == "warn"
+    ]
+    assert any(entry.get("extras", {}).get("ignore_https_errors") for entry in warn_entries)
+    assert any(entry.get("extras", {}).get("insecure_retry") for entry in warn_entries)
+
+    recreate_entries = [
+        entry
         for entry in logged
-    )
+        if entry.get("status") == "info"
+        and entry.get("message") == "recreated page with HTTPS checks disabled"
+    ]
+    assert recreate_entries
+    for entry in recreate_entries:
+        extras = entry.get("extras", {})
+        assert extras.get("attempt") == 1
+        assert extras.get("insecure_retry") is True
+        assert extras.get("page_recreated") is True
+        assert extras.get("ignore_https_errors") is True
+
+    wait_entries = [
+        entry
+        for entry in logged
+        if entry.get("message") == "waiting before retry"
+    ]
+    assert wait_entries
+    assert any(entry.get("extras", {}).get("attempt") == 1 for entry in wait_entries)
+    assert any(entry.get("extras", {}).get("wait_time_s") == 0 for entry in wait_entries)
 
 
 def test_navigate_with_retry_logs_fatal_after_insecure_failure(monkeypatch):
