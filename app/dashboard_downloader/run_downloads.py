@@ -68,6 +68,8 @@ async def navigate_with_retry(
     url: str,
     timeout_ms: int,
     max_attempts: int = 3,
+    base_retry_delay_s: float = 1.0,
+    too_many_requests_delay_s: float = 10.0,
     *,
     logger: JsonLogger | None = None,
     store_code: str | None = None,
@@ -76,6 +78,7 @@ async def navigate_with_retry(
     last_status: int | None = None
     for attempt in range(1, max_attempts + 1):
         response = None
+        wait_time_s: float | None = None
         try:
             response = await page.goto(
                 url, wait_until="domcontentloaded", timeout=timeout_ms
@@ -85,31 +88,14 @@ async def navigate_with_retry(
 
             if status == 429:
                 message = f"Navigation to {url} returned HTTP 429 on attempt {attempt}"
-                if logger:
-                    log_event(
-                        logger=logger,
-                        phase="download",
-                        status="error",
-                        store_code=store_code,
-                        bucket=None,
-                        message=message,
-                        extras={
-                            "attempt": attempt,
-                            "max_attempts": max_attempts,
-                            "target_url": url,
-                            "timeout_ms": timeout_ms,
-                            "response_status": status,
-                        },
-                    )
                 raise NavigationTooManyRequestsError(message)
 
             return response
-        except NavigationTooManyRequestsError:
-            raise
-        except Exception as exc:
+        except NavigationTooManyRequestsError as exc:
             last_error = exc
+            last_status = last_status or _extract_response_status(response) or 429
+            wait_time_s = max(too_many_requests_delay_s, base_retry_delay_s)
             error_type = type(exc).__name__
-            last_status = last_status or _extract_response_status(response)
             if logger:
                 log_event(
                     logger=logger,
@@ -126,10 +112,59 @@ async def navigate_with_retry(
                         "response_status": last_status,
                         "error_type": error_type,
                         "error_message": str(exc),
+                        "wait_time_s": wait_time_s,
                     },
                 )
             if attempt >= max_attempts:
                 break
+        except Exception as exc:
+            last_error = exc
+            error_type = type(exc).__name__
+            last_status = last_status or _extract_response_status(response)
+            wait_time_s = base_retry_delay_s * (2 ** (attempt - 1))
+            if logger:
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    status="warn" if attempt < max_attempts else "error",
+                    store_code=store_code,
+                    bucket=None,
+                    message="navigation attempt failed",
+                    extras={
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "target_url": url,
+                        "timeout_ms": timeout_ms,
+                        "response_status": last_status,
+                        "error_type": error_type,
+                        "error_message": str(exc),
+                        "wait_time_s": wait_time_s,
+                    },
+                )
+            if attempt >= max_attempts:
+                break
+
+        if attempt < max_attempts:
+            if wait_time_s is None:
+                wait_time_s = base_retry_delay_s * (2 ** (attempt - 1))
+            if logger:
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    status="info",
+                    store_code=store_code,
+                    bucket=None,
+                    message="waiting before retry",
+                    extras={
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "target_url": url,
+                        "timeout_ms": timeout_ms,
+                        "response_status": last_status,
+                        "wait_time_s": wait_time_s,
+                    },
+                )
+            await asyncio.sleep(wait_time_s)
 
     error_detail = f"{type(last_error).__name__ if last_error else 'UnknownError'}: {last_error}"
     message = f"Navigation to {url} failed after {max_attempts} attempts; last_error={error_detail}"
