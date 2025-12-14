@@ -63,6 +63,12 @@ class NavigationTooManyRequestsError(RuntimeError):
     pass
 
 
+class NavigationCertificateError(RuntimeError):
+    """Raised when navigation encounters a certificate-related error."""
+
+    pass
+
+
 async def navigate_with_retry(
     page: Page,
     url: str,
@@ -121,6 +127,31 @@ async def navigate_with_retry(
             last_error = exc
             error_type = type(exc).__name__
             last_status = last_status or _extract_response_status(response)
+
+            if "ERR_CERT_" in str(exc):
+                cert_error = NavigationCertificateError(
+                    f"Certificate error during navigation to {url}: {exc}"
+                )
+                if logger:
+                    log_event(
+                        logger=logger,
+                        phase="download",
+                        status="fatal",
+                        store_code=store_code,
+                        bucket=None,
+                        message="certificate error during navigation",
+                        extras={
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                            "target_url": url,
+                            "timeout_ms": timeout_ms,
+                            "response_status": last_status,
+                            "error_type": error_type,
+                            "error_message": str(exc),
+                        },
+                    )
+                raise cert_error from exc
+
             wait_time_s = base_retry_delay_s * (2 ** (attempt - 1))
             if logger:
                 log_event(
