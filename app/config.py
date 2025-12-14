@@ -86,6 +86,7 @@ PLAINTEXT_DB_KEYS = [
     "TD_HOME_URL",
     "TD_LOGIN_URL",
     "TMS_BASE",
+    "TMS_IGNORE_HTTPS_ERRORS",
     "TD_STORE_DASHBOARD_PATH",
     "INGEST_BATCH_SIZE",
     "REPORT_EMAIL_FROM",
@@ -289,6 +290,7 @@ class Config:
     td_home_url: str
     td_login_url: str
     tms_base: str
+    tms_ignore_https_errors: bool
     td_store_dashboard_path: str
     td_global_username: str
     td_global_password: str
@@ -322,6 +324,10 @@ class Config:
         tms_base = _clean_url(db_values["TMS_BASE"], key="TMS_BASE")
         td_login_url = _clean_url(db_values["TD_LOGIN_URL"], key="TD_LOGIN_URL")
         td_home_url = _clean_url(db_values["TD_HOME_URL"], key="TD_HOME_URL")
+
+        tms_ignore_https_errors = _parse_bool(
+            db_values["TMS_IGNORE_HTTPS_ERRORS"], key="TMS_IGNORE_HTTPS_ERRORS"
+        )
 
         ingest_batch_size = _parse_int(db_values["INGEST_BATCH_SIZE"], key="INGEST_BATCH_SIZE")
         report_email_smtp_port = _parse_int(
@@ -392,6 +398,7 @@ class Config:
             td_home_url=td_home_url,
             td_login_url=td_login_url,
             tms_base=tms_base,
+            tms_ignore_https_errors=tms_ignore_https_errors,
             td_store_dashboard_path=td_store_dashboard_path,
             td_global_username=td_global_username,
             td_global_password=td_global_password,

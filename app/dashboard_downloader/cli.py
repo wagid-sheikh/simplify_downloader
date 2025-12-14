@@ -63,7 +63,11 @@ async def _run_async(args: argparse.Namespace) -> int:
     logger = get_logger(run_id=run_id)
     configure_logging(logger)
     try:
-        settings = await load_settings(dry_run=args.dry_run, run_id=run_id)
+        settings = await load_settings(
+            dry_run=args.dry_run,
+            run_id=run_id,
+            tms_ignore_https_errors=args.tms_ignore_https_errors,
+        )
     except ValueError as exc:
         log_event(
             logger=logger,
@@ -181,6 +185,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         dest="run_migrations",
         help="Run Alembic migrations before executing the pipeline",
     )
+    run_parser.add_argument(
+        "--tms-ignore-https-errors",
+        action="store_true",
+        default=None,
+        dest="tms_ignore_https_errors",
+        help=(
+            "Disable HTTPS certificate verification for TMS requests. "
+            "Use ONLY for debugging on trusted networks; default is strict verification."
+        ),
+    )
 
     run_single_parser = subparsers.add_parser(
         "run-single-session",
@@ -193,6 +207,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         dest="run_migrations",
         help="Run Alembic migrations before executing the pipeline",
+    )
+    run_single_parser.add_argument(
+        "--tms-ignore-https-errors",
+        action="store_true",
+        default=None,
+        dest="tms_ignore_https_errors",
+        help=(
+            "Disable HTTPS certificate verification for TMS requests. "
+            "Use ONLY for debugging on trusted networks; default is strict verification."
+        ),
     )
 
     weekly_parser = subparsers.add_parser("run-weekly", help="Execute the weekly reporting pipeline")
