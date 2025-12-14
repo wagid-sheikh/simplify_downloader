@@ -14,8 +14,14 @@ from app.dashboard_downloader.settings import PipelineSettings
 def test_run_async_loads_settings_without_overrides(monkeypatch):
     observed: dict[str, object] = {}
 
-    async def fake_load_settings(*, dry_run: bool, run_id: str) -> PipelineSettings:
-        observed["params"] = {"dry_run": dry_run, "run_id": run_id}
+    async def fake_load_settings(
+        *, dry_run: bool, run_id: str, tms_ignore_https_errors: bool | None = None
+    ) -> PipelineSettings:
+        observed["params"] = {
+            "dry_run": dry_run,
+            "run_id": run_id,
+            "tms_ignore_https_errors": tms_ignore_https_errors,
+        }
         return PipelineSettings(
             run_id=run_id,
             stores={"A100": {}},
@@ -41,7 +47,11 @@ def test_run_async_loads_settings_without_overrides(monkeypatch):
     result = asyncio.run(cli._run_async(args))
 
     assert result == 0
-    assert observed["params"] == {"dry_run": False, "run_id": "run-test"}
+    assert observed["params"] == {
+        "dry_run": False,
+        "run_id": "run-test",
+        "tms_ignore_https_errors": None,
+    }
     assert observed["settings"].raw_store_env == "store_master.etl_flag"
     assert observed["aggregator"].store_codes == ["A100"]
 
