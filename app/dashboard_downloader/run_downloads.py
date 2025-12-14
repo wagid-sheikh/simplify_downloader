@@ -182,9 +182,7 @@ async def navigate_with_retry(
                     )
 
                 try:
-                    current_page, page_recreated = await _retry_page_with_ignored_https(
-                        current_page
-                    )
+                    current_page, _ = await _retry_page_with_ignored_https(current_page)
                     if logger:
                         log_event(
                             logger=logger,
@@ -201,7 +199,7 @@ async def navigate_with_retry(
                                 "response_status": last_status,
                                 "ignore_https_errors": True,
                                 "insecure_retry": True,
-                                "page_recreated": page_recreated,
+                                "page_recreated": True,
                             },
                         )
                 except Exception as recreate_exc:
@@ -282,7 +280,7 @@ async def navigate_with_retry(
     raise TimeoutError(message) from last_error
 
 
-async def _retry_page_with_ignored_https(page: Page) -> tuple[Page, bool]:
+async def _retry_page_with_ignored_https(page: Page) -> tuple[Page, BrowserContext]:
     try:
         storage_state = await page.context.storage_state()
     except Exception:
@@ -301,7 +299,7 @@ async def _retry_page_with_ignored_https(page: Page) -> tuple[Page, bool]:
     except Exception:  # pragma: no cover - cleanup guard
         pass
 
-    return await new_context.new_page(), True
+    return await new_context.new_page(), new_context
 
 
 async def _fetch_dashboard_nav_timeout_ms(database_url: str | None) -> int:
@@ -591,7 +589,7 @@ async def _run_session_probe(
     nav_timeout_ms: int,
     logger: JsonLogger,
     store_code: str | None,
-) -> tuple[bool, Dict[str, Any]]:
+) -> tuple[bool, Dict[str, Any], BrowserContext]:
     probe_page: Page | None = None
     extras: Dict[str, Any] = {"probe_url": probe_url, "timeout_ms": nav_timeout_ms}
     session_active = False
@@ -605,6 +603,7 @@ async def _run_session_probe(
             logger=logger,
             store_code=store_code,
         )
+        context = probe_page.context
         extras["current_url"] = probe_page.url
 
         if await _is_login_page(probe_page, logger):
@@ -632,7 +631,7 @@ async def _run_session_probe(
             except Exception:  # pragma: no cover - close guard
                 pass
 
-    return session_active, extras
+    return session_active, extras, context
 
 
 async def _prime_context_with_storage_state(
@@ -1087,13 +1086,18 @@ async def _bootstrap_session_via_home_and_tracker(
     )
 
     context = page.context
-    session_active, probe_extras = await _run_session_probe(
+    session_active, probe_extras, context = await _run_session_probe(
         context,
         probe_url=probe_url,
         nav_timeout_ms=nav_timeout_ms,
         logger=logger,
         store_code=store_code,
     )
+
+    if page.context != context:
+        with contextlib.suppress(Exception):
+            await page.close()
+        page = await context.new_page()
 
     if session_active:
         log_event(

@@ -18,14 +18,18 @@ class FakeResponse:
 
 
 class FakeContext:
-    def __init__(self):
+    def __init__(self, *, ignore_https_errors: bool = False):
         self.browser = self
+        self.ignore_https_errors = ignore_https_errors
 
     async def storage_state(self, *args, **kwargs):  # pragma: no cover - interface parity
         return {}
 
     async def new_context(self, **kwargs):  # pragma: no cover - interface parity
         return self
+
+    async def new_page(self):  # pragma: no cover - interface parity
+        return FakePage(context=self)
 
 
 class FakePage:
@@ -55,7 +59,7 @@ def test_bootstrap_bypasses_login_when_session_already_active(monkeypatch, tmp_p
     probe_payload = {"probe_url": HOME_URL, "current_url": HOME_URL}
 
     async def fake_run_session_probe(*_args, **_kwargs):
-        return False, dict(probe_payload)
+        return False, dict(probe_payload), fake_context
 
     async def fake_navigate_with_retry(page, url, timeout_ms, logger=None, store_code=None):
         page.url = TD_BASE_URL if "login" in url else url
@@ -96,3 +100,54 @@ def test_bootstrap_bypasses_login_when_session_already_active(monkeypatch, tmp_p
         and entry.get("extras", {}).get("already_authenticated") is True
         for entry in logs
     )
+
+
+def test_bootstrap_switches_to_insecure_context_after_probe(monkeypatch, tmp_path):
+    log_stream = io.StringIO()
+    logger = JsonLogger(run_id="test", stream=log_stream, log_file_path=None)
+
+    secure_context = FakeContext(ignore_https_errors=False)
+    insecure_context = FakeContext(ignore_https_errors=True)
+    page = FakePage(context=secure_context)
+
+    probe_payload = {"probe_url": HOME_URL, "current_url": HOME_URL}
+    navigation_contexts: list[bool] = []
+
+    async def fake_run_session_probe(*_args, **_kwargs):
+        return True, dict(probe_payload), insecure_context
+
+    async def fake_navigate_with_retry(page, url, timeout_ms, logger=None, store_code=None):
+        navigation_contexts.append(page.context.ignore_https_errors)
+        page.url = url
+        return page, FakeResponse(status=200)
+
+    async def fake_persist_storage_state(ctx, *, target_path, logger, store_code):
+        return tmp_path / "state.json"
+
+    async def fake_navigate_via_home(page, store_cfg, logger, **kwargs):
+        return page
+
+    monkeypatch.setattr(run_downloads, "_run_session_probe", fake_run_session_probe)
+    monkeypatch.setattr(run_downloads, "navigate_with_retry", fake_navigate_with_retry)
+    monkeypatch.setattr(run_downloads, "_persist_storage_state", fake_persist_storage_state)
+    monkeypatch.setattr(run_downloads, "_navigate_via_home_to_dashboard", fake_navigate_via_home)
+    monkeypatch.setattr(run_downloads, "_is_login_page", _async_false)
+    monkeypatch.setattr(run_downloads, "_resolve_global_credentials", lambda _settings: ("user", "pass"))
+
+    store_cfg = {"store_code": "001", "home_url": HOME_URL, "login_url": LOGIN_URL}
+
+    result_page = run(
+        _bootstrap_session_via_home_and_tracker(
+            page,
+            store_cfg,
+            logger,
+            settings=None,
+            storage_state_file=None,
+            storage_state_source=None,
+            nav_timeout_ms=5_000,
+        )
+    )
+
+    assert result_page.context.ignore_https_errors is True
+    assert navigation_contexts == [True]
+
