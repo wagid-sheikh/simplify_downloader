@@ -66,7 +66,7 @@ async def _run_async(args: argparse.Namespace) -> int:
         settings = await load_settings(
             dry_run=args.dry_run,
             run_id=run_id,
-            tms_ignore_https_errors=args.tms_ignore_https_errors,
+            tms_ignore_https_errors=getattr(args, "tms_ignore_https_errors", None),
         )
     except ValueError as exc:
         log_event(

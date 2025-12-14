@@ -86,7 +86,6 @@ PLAINTEXT_DB_KEYS = [
     "TD_HOME_URL",
     "TD_LOGIN_URL",
     "TMS_BASE",
-    "TMS_IGNORE_HTTPS_ERRORS",
     "TD_STORE_DASHBOARD_PATH",
     "INGEST_BATCH_SIZE",
     "REPORT_EMAIL_FROM",
@@ -98,6 +97,10 @@ PLAINTEXT_DB_KEYS = [
     "PDF_RENDER_HEADLESS",
     "ETL_HEADLESS",
 ]
+
+DEFAULT_DB_VALUES = {
+    "TMS_IGNORE_HTTPS_ERRORS": "false",
+}
 
 ENCRYPTED_DB_KEYS = [
     "TD_GLOBAL_PASSWORD",
@@ -310,7 +313,7 @@ class Config:
         env_values = _load_env_values()
         secret_key = env_values["SECRET_KEY"]
         database_url = _build_database_url(env_values)
-        db_values = _load_system_config(database_url)
+        db_values = {**DEFAULT_DB_VALUES, **_load_system_config(database_url)}
 
         missing = [key for key in REQUIRED_DB_KEYS if key not in db_values]
         if missing:
