@@ -2013,6 +2013,26 @@ async def run_all_stores_single_session(
                         merged_buckets=merged_buckets,
                         download_counts=download_counts,
                     )
+                except NavigationTooManyRequestsError as exc:
+                    backoff_seconds = 3
+                    rate_limit_meta = download_counts.setdefault("_meta", {})
+                    rate_limit_meta["rate_limited_skips"] = (
+                        int(rate_limit_meta.get("rate_limited_skips", 0)) + 1
+                    )
+                    log_event(
+                        logger=logger,
+                        phase="download",
+                        status="warn",
+                        store_code=sc,
+                        bucket=None,
+                        message="dashboard navigation rate limited; skipping store",
+                        extras={
+                            "error": str(exc),
+                            "backoff_seconds": backoff_seconds,
+                        },
+                    )
+                    await asyncio.sleep(backoff_seconds)
+                    continue
                 except TimeoutError as exc:
                     log_event(
                         logger=logger,
