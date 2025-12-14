@@ -64,36 +64,78 @@ class NavigationTooManyRequestsError(RuntimeError):
 
 
 async def navigate_with_retry(
-    page: Page, url: str, timeout_ms: int, max_attempts: int = 3
+    page: Page,
+    url: str,
+    timeout_ms: int,
+    max_attempts: int = 3,
+    *,
+    logger: JsonLogger | None = None,
+    store_code: str | None = None,
 ) -> Any:
     last_error: Exception | None = None
+    last_status: int | None = None
     for attempt in range(1, max_attempts + 1):
+        response = None
         try:
             response = await page.goto(
                 url, wait_until="domcontentloaded", timeout=timeout_ms
             )
-            status = None
-            try:
-                status = response.status if response is not None else None
-            except Exception:
-                status = None
+            status = _extract_response_status(response)
+            last_status = status
 
             if status == 429:
-                raise NavigationTooManyRequestsError(
-                    f"Navigation to {url} returned HTTP 429 on attempt {attempt}"
-                )
+                message = f"Navigation to {url} returned HTTP 429 on attempt {attempt}"
+                if logger:
+                    log_event(
+                        logger=logger,
+                        phase="download",
+                        status="error",
+                        store_code=store_code,
+                        bucket=None,
+                        message=message,
+                        extras={
+                            "attempt": attempt,
+                            "max_attempts": max_attempts,
+                            "target_url": url,
+                            "timeout_ms": timeout_ms,
+                            "response_status": status,
+                        },
+                    )
+                raise NavigationTooManyRequestsError(message)
 
             return response
         except NavigationTooManyRequestsError:
             raise
         except Exception as exc:
             last_error = exc
+            error_type = type(exc).__name__
+            last_status = last_status or _extract_response_status(response)
+            if logger:
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    status="warn" if attempt < max_attempts else "error",
+                    store_code=store_code,
+                    bucket=None,
+                    message="navigation attempt failed",
+                    extras={
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "target_url": url,
+                        "timeout_ms": timeout_ms,
+                        "response_status": last_status,
+                        "error_type": error_type,
+                        "error_message": str(exc),
+                    },
+                )
             if attempt >= max_attempts:
                 break
 
-    raise TimeoutError(
-        f"Navigation to {url} failed after {max_attempts} attempts"
-    ) from last_error
+    error_detail = f"{type(last_error).__name__ if last_error else 'UnknownError'}: {last_error}"
+    message = f"Navigation to {url} failed after {max_attempts} attempts; last_error={error_detail}"
+    if last_status is not None:
+        message = f"{message} (status={last_status})"
+    raise TimeoutError(message) from last_error
 
 
 async def _fetch_dashboard_nav_timeout_ms(database_url: str | None) -> int:
@@ -390,7 +432,13 @@ async def _run_session_probe(
 
     try:
         probe_page = await context.new_page()
-        await navigate_with_retry(probe_page, probe_url, nav_timeout_ms)
+        await navigate_with_retry(
+            probe_page,
+            probe_url,
+            nav_timeout_ms,
+            logger=logger,
+            store_code=store_code,
+        )
         extras["current_url"] = probe_page.url
 
         if await _is_login_page(probe_page, logger):
@@ -947,7 +995,13 @@ async def _bootstrap_session_via_home_and_tracker(
             "navigating to login for bootstrap",
             extras={"target_url": login_url, "timeout_ms": nav_timeout_ms},
         )
-        await navigate_with_retry(page, login_url, nav_timeout_ms)
+        await navigate_with_retry(
+            page,
+            login_url,
+            nav_timeout_ms,
+            logger=logger,
+            store_code=store_code,
+        )
         login_result = await _perform_login_flow(
             page,
             store_cfg,
@@ -1024,7 +1078,13 @@ async def _bootstrap_session_via_home_and_tracker(
                 "navigating to home after bootstrap",
                 extras={"target_url": home_url, "timeout_ms": nav_timeout_ms},
             )
-            await navigate_with_retry(page, home_url, nav_timeout_ms)
+            await navigate_with_retry(
+                page,
+                home_url,
+                nav_timeout_ms,
+                logger=logger,
+                store_code=store_code,
+            )
         except PlaywrightTimeoutError as exc:
             _log(
                 "error",
@@ -1116,7 +1176,13 @@ async def _switch_to_store_dashboard_and_download(
         extras={"target_url": target_url, "timeout_ms": nav_timeout_ms},
     )
 
-    response = await navigate_with_retry(page, target_url, nav_timeout_ms)
+    response = await navigate_with_retry(
+        page,
+        target_url,
+        nav_timeout_ms,
+        logger=logger,
+        store_code=store_code,
+    )
     response_status = _extract_response_status(response)
     _log(
         "info",
@@ -1261,7 +1327,13 @@ async def _navigate_via_home_to_dashboard(
         extras={"home_url": home_url, "timeout_ms": nav_timeout_ms},
     )
 
-    response = await navigate_with_retry(page, home_url, nav_timeout_ms)
+    response = await navigate_with_retry(
+        page,
+        home_url,
+        nav_timeout_ms,
+        logger=logger,
+        store_code=store_code,
+    )
     response_status = _extract_response_status(response)
 
     _log(
@@ -1462,7 +1534,13 @@ async def _perform_login_flow(
             "navigating to login for automated flow",
             extras={"target_url": LOGIN_URL, "timeout_ms": nav_timeout_ms},
         )
-        await navigate_with_retry(page, LOGIN_URL, nav_timeout_ms)
+        await navigate_with_retry(
+            page,
+            LOGIN_URL,
+            nav_timeout_ms,
+            logger=logger,
+            store_code=store_code,
+        )
         current_url = page.url or ""
 
     if not await _is_login_page(page, logger):
@@ -1651,7 +1729,13 @@ async def _ensure_dashboard(
         "opening dashboard",
         extras={"target_url": dashboard_url, "timeout_ms": nav_timeout_ms},
     )
-    response = await navigate_with_retry(page, dashboard_url, nav_timeout_ms)
+    response = await navigate_with_retry(
+        page,
+        dashboard_url,
+        nav_timeout_ms,
+        logger=logger,
+        store_code=store_code,
+    )
     response_status = _extract_response_status(response)
     _log(
         "info",
