@@ -191,8 +191,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=None,
         dest="tms_ignore_https_errors",
         help=(
-            "Disable HTTPS certificate verification for TMS requests. "
-            "Use ONLY for debugging on trusted networks; default is strict verification."
+            "Disable HTTPS certificate verification for TMS requests (default outside production). "
+            "Use ONLY for debugging on trusted networks."
+        ),
+    )
+    run_parser.add_argument(
+        "--tms-verify-https",
+        action="store_false",
+        default=None,
+        dest="tms_ignore_https_errors",
+        help=(
+            "Enforce HTTPS certificate verification for TMS requests (default in production). "
+            "Use in trusted environments where certificates are valid."
         ),
     )
 
@@ -214,8 +224,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=None,
         dest="tms_ignore_https_errors",
         help=(
-            "Disable HTTPS certificate verification for TMS requests. "
-            "Use ONLY for debugging on trusted networks; default is strict verification."
+            "Disable HTTPS certificate verification for TMS requests (default outside production). "
+            "Use ONLY for debugging on trusted networks."
+        ),
+    )
+    run_single_parser.add_argument(
+        "--tms-verify-https",
+        action="store_false",
+        default=None,
+        dest="tms_ignore_https_errors",
+        help=(
+            "Enforce HTTPS certificate verification for TMS requests (default in production). "
+            "Use in trusted environments where certificates are valid."
         ),
     )
 
