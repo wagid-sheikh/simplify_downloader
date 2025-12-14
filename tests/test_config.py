@@ -32,7 +32,6 @@ def _base_rows(secret_key: str) -> dict[str, str]:
         "TD_HOME_URL": "https://simplifytumbledry.in/home",
         "TD_LOGIN_URL": "https://simplifytumbledry.in/home/login",
         "TMS_BASE": "https://simplifytumbledry.in",
-        "TMS_IGNORE_HTTPS_ERRORS": "true",
         "TD_STORE_DASHBOARD_PATH": "/mis/partner_dashboard?store_code={store_code}",
         "INGEST_BATCH_SIZE": "3000",
         "REPORT_EMAIL_FROM": "reports@example.com",
@@ -123,7 +122,6 @@ def test_config_loads_expected_values(monkeypatch, tmp_path):
     assert cfg.pdf_render_headless is True
     assert cfg.report_email_smtp_password == "change-me-smtp-password"
     assert cfg.pdf_render_chrome_executable is None
-    assert cfg.tms_ignore_https_errors is True
 
 
 def test_missing_env_variable_raises(monkeypatch, tmp_path):
@@ -204,70 +202,6 @@ def test_invalid_boolean_value(monkeypatch, tmp_path):
 
     with pytest.raises(ConfigError):
         Config.load_from_env_and_db()
-
-
-def test_missing_optional_https_ignore(monkeypatch, tmp_path):
-    db_path = tmp_path / "config.sqlite"
-    rows = _base_rows("unit-test-secret")
-    rows.pop("TMS_IGNORE_HTTPS_ERRORS")
-    _write_system_config(db_path, rows)
-    reports_root = tmp_path / "reports"
-    reports_root.mkdir()
-    _set_env(
-        monkeypatch,
-        {
-            "POSTGRES_DB": str(db_path),
-            "REPORTS_ROOT": str(reports_root),
-            "JSON_LOG_FILE": str(tmp_path / "logs.jsonl"),
-        },
-    )
-
-    cfg = Config.load_from_env_and_db()
-
-    assert cfg.tms_ignore_https_errors is True
-
-
-def test_tms_ignore_https_errors_respects_false_override(monkeypatch, tmp_path):
-    db_path = tmp_path / "config.sqlite"
-    rows = _base_rows("unit-test-secret")
-    rows["TMS_IGNORE_HTTPS_ERRORS"] = "false"
-    _write_system_config(db_path, rows)
-    reports_root = tmp_path / "reports"
-    reports_root.mkdir()
-    _set_env(
-        monkeypatch,
-        {
-            "POSTGRES_DB": str(db_path),
-            "REPORTS_ROOT": str(reports_root),
-            "JSON_LOG_FILE": str(tmp_path / "logs.jsonl"),
-        },
-    )
-
-    cfg = Config.load_from_env_and_db()
-
-    assert cfg.tms_ignore_https_errors is False
-
-
-def test_production_defaults_to_https_verification(monkeypatch, tmp_path):
-    db_path = tmp_path / "config.sqlite"
-    rows = _base_rows("unit-test-secret")
-    rows.pop("TMS_IGNORE_HTTPS_ERRORS")
-    _write_system_config(db_path, rows)
-    reports_root = tmp_path / "reports"
-    reports_root.mkdir()
-    _set_env(
-        monkeypatch,
-        {
-            "POSTGRES_DB": str(db_path),
-            "REPORTS_ROOT": str(reports_root),
-            "JSON_LOG_FILE": str(tmp_path / "logs.jsonl"),
-            "ENVIRONMENT": "production",
-        },
-    )
-
-    cfg = Config.load_from_env_and_db()
-
-    assert cfg.tms_ignore_https_errors is False
 
 
 def test_local_chrome_requires_executable(monkeypatch, tmp_path):

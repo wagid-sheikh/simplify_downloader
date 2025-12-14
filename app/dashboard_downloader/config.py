@@ -36,7 +36,6 @@ TD_HOME_URL = config.td_home_url
 LOGIN_URL = TD_LOGIN_URL
 HOME_URL = TD_HOME_URL
 TMS_BASE = config.tms_base
-TMS_IGNORE_HTTPS_ERRORS = config.tms_ignore_https_errors
 TD_STORE_DASHBOARD_PATH = config.td_store_dashboard_path
 
 def tms_dashboard_url(store_code: str) -> str:

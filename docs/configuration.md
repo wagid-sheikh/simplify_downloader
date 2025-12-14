@@ -39,6 +39,10 @@ Notification profiles and run summaries now standardise on the
 * Store selection is database-driven only. Legacy CLI selectors (for example,
   `--stores_list`) are retired; keep flags updated in `store_master` instead of
   passing ad-hoc lists.
+* TLS verification for TMS traffic is enabled by default. If Playwright hits a
+  certificate failure at runtime, `navigate_with_retry` will recreate the
+  browser context with HTTPS checks disabled for that retry only—there is no
+  environment variable or CLI flag to permanently skip verification.
 * Reporting pipelines call `app.dashboard_downloader.pipelines.reporting.get_report_store_codes`
   which pulls stores from `store_master.report_flag`; weekly/monthly runs no
   longer fall back to any system_config entry.

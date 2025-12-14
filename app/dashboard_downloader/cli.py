@@ -66,7 +66,6 @@ async def _run_async(args: argparse.Namespace) -> int:
         settings = await load_settings(
             dry_run=args.dry_run,
             run_id=run_id,
-            tms_ignore_https_errors=getattr(args, "tms_ignore_https_errors", None),
         )
     except ValueError as exc:
         log_event(
@@ -185,27 +184,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         dest="run_migrations",
         help="Run Alembic migrations before executing the pipeline",
     )
-    run_parser.add_argument(
-        "--tms-ignore-https-errors",
-        action="store_true",
-        default=None,
-        dest="tms_ignore_https_errors",
-        help=(
-            "Disable HTTPS certificate verification for TMS requests (default outside production). "
-            "Use ONLY for debugging on trusted networks."
-        ),
-    )
-    run_parser.add_argument(
-        "--tms-verify-https",
-        action="store_false",
-        default=None,
-        dest="tms_ignore_https_errors",
-        help=(
-            "Enforce HTTPS certificate verification for TMS requests (default in production). "
-            "Use in trusted environments where certificates are valid."
-        ),
-    )
-
     run_single_parser = subparsers.add_parser(
         "run-single-session",
         help="Execute full pipeline using a single browser session for all stores",
@@ -218,27 +196,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         dest="run_migrations",
         help="Run Alembic migrations before executing the pipeline",
     )
-    run_single_parser.add_argument(
-        "--tms-ignore-https-errors",
-        action="store_true",
-        default=None,
-        dest="tms_ignore_https_errors",
-        help=(
-            "Disable HTTPS certificate verification for TMS requests (default outside production). "
-            "Use ONLY for debugging on trusted networks."
-        ),
-    )
-    run_single_parser.add_argument(
-        "--tms-verify-https",
-        action="store_false",
-        default=None,
-        dest="tms_ignore_https_errors",
-        help=(
-            "Enforce HTTPS certificate verification for TMS requests (default in production). "
-            "Use in trusted environments where certificates are valid."
-        ),
-    )
-
     weekly_parser = subparsers.add_parser("run-weekly", help="Execute the weekly reporting pipeline")
     weekly_parser.add_argument("--env", dest="run_env", default=None, help="Override RUN_ENV for summaries")
 
