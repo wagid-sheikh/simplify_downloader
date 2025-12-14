@@ -99,7 +99,7 @@ PLAINTEXT_DB_KEYS = [
 ]
 
 DEFAULT_DB_VALUES = {
-    "TMS_IGNORE_HTTPS_ERRORS": "false",
+    "TMS_IGNORE_HTTPS_ERRORS": "true",
 }
 
 ENCRYPTED_DB_KEYS = [
@@ -313,7 +313,11 @@ class Config:
         env_values = _load_env_values()
         secret_key = env_values["SECRET_KEY"]
         database_url = _build_database_url(env_values)
-        db_values = {**DEFAULT_DB_VALUES, **_load_system_config(database_url)}
+        db_defaults = dict(DEFAULT_DB_VALUES)
+        if env_values.get("ENVIRONMENT", "").lower() == "production":
+            db_defaults["TMS_IGNORE_HTTPS_ERRORS"] = "false"
+
+        db_values = {**db_defaults, **_load_system_config(database_url)}
 
         missing = [key for key in REQUIRED_DB_KEYS if key not in db_values]
         if missing:
