@@ -41,9 +41,6 @@ class PipelineSettings:
     database_url: Optional[str] = field(default_factory=lambda: config.database_url)
     global_username: str = field(default_factory=_default_global_username)
     global_password: str = field(default_factory=_default_global_password)
-    tms_ignore_https_errors: bool = field(
-        default_factory=lambda: config.tms_ignore_https_errors
-    )
 
 
 async def _ensure_report_store_alignment(selected: Dict[str, dict]) -> None:
@@ -66,9 +63,7 @@ async def _resolve_store_codes() -> List[str]:
     return stores
 
 
-async def load_settings(
-    *, dry_run: bool, run_id: str, tms_ignore_https_errors: bool | None = None
-) -> PipelineSettings:
+async def load_settings(*, dry_run: bool, run_id: str) -> PipelineSettings:
     store_codes = await _resolve_store_codes()
     selected = stores_from_list(store_codes)
 
@@ -79,9 +74,4 @@ async def load_settings(
         stores=selected,
         raw_store_env=raw_source,
         dry_run=dry_run,
-        tms_ignore_https_errors=(
-            config.tms_ignore_https_errors
-            if tms_ignore_https_errors is None
-            else tms_ignore_https_errors
-        ),
     )

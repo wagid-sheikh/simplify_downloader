@@ -2194,17 +2194,6 @@ async def run_all_stores_single_session(
         args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
     )
 
-    if settings.tms_ignore_https_errors:
-        log_event(
-            logger=logger,
-            phase="download",
-            status="warn",
-            store_code=None,
-            bucket=None,
-            message="HTTPS verification disabled for Playwright context; enable only in trusted environments",
-        )
-        context_kwargs["ignore_https_errors"] = True
-
     backend = config.pdf_render_backend.lower()
     if backend == "local_chrome":
         context_kwargs["channel"] = "chrome"
