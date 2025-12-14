@@ -1096,7 +1096,7 @@ async def _bootstrap_session_via_home_and_tracker(
     login_attempted = False
 
     async def _ensure_logged_in(reason: str) -> None:
-        nonlocal login_attempted, session_active, login_message_logged
+        nonlocal login_attempted, session_active, login_message_logged, page
         if login_attempted:
             return
 
@@ -1152,8 +1152,8 @@ async def _bootstrap_session_via_home_and_tracker(
             nav_timeout_ms=nav_timeout_ms,
         )
 
-        post_login_url = login_result.get("post_login_url")
-        still_login_page = login_result.get("still_login_page")
+        post_login_url = login_result.get("post_login_url") if login_result else None
+        still_login_page = login_result.get("still_login_page") if login_result else None
 
         if still_login_page or not _url_within_td_base(post_login_url):
             artifact_extras = await _capture_bootstrap_artifacts(
@@ -1686,8 +1686,18 @@ async def _perform_login_flow(
 
     if not await _is_login_page(page, logger):
         # Storage state/session cookies already landed us past login.
-        _log("info", "login page bypassed; session already active", extras={"current_url": page.url})
-        return
+        bypass_details = {
+            "current_url": page.url,
+            "post_login_url": page.url,
+            "already_authenticated": True,
+            "still_login_page": False,
+        }
+        _log(
+            "info",
+            "login page bypassed; session already active",
+            extras={"current_url": page.url, "already_authenticated": True},
+        )
+        return bypass_details
 
     if not username or not password:
         raise RuntimeError(GLOBAL_CREDENTIAL_ERROR)
