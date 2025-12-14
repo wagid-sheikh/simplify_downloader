@@ -4,62 +4,103 @@ import json
 
 import pytest
 
+from app.dashboard_downloader.json_logger import JsonLogger
 from app.dashboard_downloader.run_downloads import (
     NavigationCertificateError,
     navigate_with_retry,
 )
 
 
+class FakeContext:
+    def __init__(self, *, ignore_https_errors: bool = False, succeed_when_insecure: bool = True):
+        self.ignore_https_errors = ignore_https_errors
+        self.succeed_when_insecure = succeed_when_insecure
+        self.browser = self
+
+    async def storage_state(self):  # pragma: no cover - parity
+        return {}
+
+    async def new_context(self, **kwargs):
+        return FakeContext(
+            ignore_https_errors=kwargs.get("ignore_https_errors", False),
+            succeed_when_insecure=self.succeed_when_insecure,
+        )
+
+    async def new_page(self):
+        return FakePage(
+            context=self, succeed_when_insecure=self.succeed_when_insecure
+        )
+
+
 class FakePage:
-    def __init__(self, *, exception: Exception) -> None:
-        self.exception = exception
+    def __init__(
+        self, *, context: FakeContext, succeed_when_insecure: bool = True
+    ) -> None:
+        self.context = context
+        self.succeed_when_insecure = succeed_when_insecure
         self.goto_calls = 0
+        self.closed = False
 
     async def goto(self, *args, **kwargs):  # pragma: no cover - signature parity
         self.goto_calls += 1
-        raise self.exception
+        if not self.context.ignore_https_errors:
+            raise Exception("net::ERR_CERT_COMMON_NAME_INVALID")
+        if not self.succeed_when_insecure:
+            raise Exception("net::ERR_CERT_COMMON_NAME_INVALID")
+        return {"ok": True}
+
+    async def close(self):  # pragma: no cover - cleanup parity
+        self.closed = True
 
 
 def run(coro):
     return asyncio.run(coro)
 
 
-def test_navigate_with_retry_raises_on_certificate_errors(monkeypatch):
-    cert_exception = Exception("net::ERR_CERT_COMMON_NAME_INVALID")
-    page = FakePage(exception=cert_exception)
-
-    async def never_sleep(*_args, **_kwargs):
-        raise AssertionError("sleep should not be called for certificate errors")
-
-    monkeypatch.setattr(asyncio, "sleep", never_sleep)
-
-    with pytest.raises(NavigationCertificateError):
-        run(
-            navigate_with_retry(
-                page,
-                url="https://example.com",
-                timeout_ms=1000,
-                logger=None,
-                store_code="123",
-            )
-        )
-
-    assert page.goto_calls == 1
+async def _no_sleep(*_args, **_kwargs):  # pragma: no cover - async helper
+    return None
 
 
-def test_navigate_with_retry_logs_fatal_status_on_certificate_errors(monkeypatch):
-    cert_exception = Exception("net::ERR_CERT_DATE_INVALID")
-    page = FakePage(exception=cert_exception)
+def test_navigate_with_retry_switches_to_insecure_mode(monkeypatch):
     log_stream = io.StringIO()
-
-    async def never_sleep(*_args, **_kwargs):
-        raise AssertionError("sleep should not be called for certificate errors")
-
-    monkeypatch.setattr(asyncio, "sleep", never_sleep)
-
-    from app.dashboard_downloader.json_logger import JsonLogger
-
     logger = JsonLogger(run_id="test", stream=log_stream, log_file_path=None)
+
+    context = FakeContext()
+    page = FakePage(context=context)
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+
+    new_page, response = run(
+        navigate_with_retry(
+            page,
+            url="https://example.com",
+            timeout_ms=1000,
+            logger=logger,
+            store_code="123",
+        )
+    )
+
+    assert response == {"ok": True}
+    assert new_page is not page
+    assert page.closed is True
+    assert page.goto_calls == 1
+    assert new_page.goto_calls == 1
+    assert new_page.context.ignore_https_errors is True
+
+    logged = [json.loads(line) for line in log_stream.getvalue().splitlines() if line.strip()]
+    assert any(
+        entry.get("status") == "warn"
+        and entry.get("extras", {}).get("ignore_https_errors")
+        for entry in logged
+    )
+
+
+def test_navigate_with_retry_logs_fatal_after_insecure_failure(monkeypatch):
+    log_stream = io.StringIO()
+    logger = JsonLogger(run_id="test", stream=log_stream, log_file_path=None)
+
+    context = FakeContext(succeed_when_insecure=False)
+    page = FakePage(context=context, succeed_when_insecure=False)
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
 
     with pytest.raises(NavigationCertificateError):
         run(
@@ -73,5 +114,7 @@ def test_navigate_with_retry_logs_fatal_status_on_certificate_errors(monkeypatch
         )
 
     logged = [json.loads(line) for line in log_stream.getvalue().splitlines() if line.strip()]
-    assert any(entry.get("status") == "fatal" for entry in logged)
+    statuses = [entry.get("status") for entry in logged]
+    assert "warn" in statuses
+    assert "fatal" in statuses
 

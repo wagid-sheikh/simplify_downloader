@@ -79,14 +79,18 @@ async def navigate_with_retry(
     *,
     logger: JsonLogger | None = None,
     store_code: str | None = None,
-) -> Any:
+) -> tuple[Page, Any]:
     last_error: Exception | None = None
     last_status: int | None = None
-    for attempt in range(1, max_attempts + 1):
+    current_page = page
+    insecure_retry = False
+    attempt = 1
+
+    while attempt <= max_attempts:
         response = None
         wait_time_s: float | None = None
         try:
-            response = await page.goto(
+            response = await current_page.goto(
                 url, wait_until="domcontentloaded", timeout=timeout_ms
             )
             status = _extract_response_status(response)
@@ -96,7 +100,7 @@ async def navigate_with_retry(
                 message = f"Navigation to {url} returned HTTP 429 on attempt {attempt}"
                 raise NavigationTooManyRequestsError(message)
 
-            return response
+            return current_page, response
         except NavigationTooManyRequestsError as exc:
             last_error = exc
             last_status = last_status or _extract_response_status(response) or 429
@@ -121,8 +125,7 @@ async def navigate_with_retry(
                         "wait_time_s": wait_time_s,
                     },
                 )
-            if attempt >= max_attempts:
-                break
+            attempt += 1
         except Exception as exc:
             last_error = exc
             error_type = type(exc).__name__
@@ -132,14 +135,38 @@ async def navigate_with_retry(
                 cert_error = NavigationCertificateError(
                     f"Certificate error during navigation to {url}: {exc}"
                 )
+
+                if insecure_retry:
+                    if logger:
+                        log_event(
+                            logger=logger,
+                            phase="download",
+                            status="fatal",
+                            store_code=store_code,
+                            bucket=None,
+                            message="certificate error during navigation",
+                            extras={
+                                "attempt": attempt,
+                                "max_attempts": max_attempts,
+                                "target_url": url,
+                                "timeout_ms": timeout_ms,
+                                "response_status": last_status,
+                                "error_type": error_type,
+                                "error_message": str(exc),
+                                "ignore_https_errors": True,
+                            },
+                        )
+                    raise cert_error from exc
+
+                insecure_retry = True
                 if logger:
                     log_event(
                         logger=logger,
                         phase="download",
-                        status="fatal",
+                        status="warn",
                         store_code=store_code,
                         bucket=None,
-                        message="certificate error during navigation",
+                        message="certificate error detected; retrying with HTTPS checks disabled",
                         extras={
                             "attempt": attempt,
                             "max_attempts": max_attempts,
@@ -148,9 +175,36 @@ async def navigate_with_retry(
                             "response_status": last_status,
                             "error_type": error_type,
                             "error_message": str(exc),
+                            "ignore_https_errors": True,
                         },
                     )
-                raise cert_error from exc
+
+                try:
+                    current_page = await _retry_page_with_ignored_https(current_page)
+                except Exception as recreate_exc:
+                    last_error = recreate_exc
+                    if logger:
+                        log_event(
+                            logger=logger,
+                            phase="download",
+                            status="fatal",
+                            store_code=store_code,
+                            bucket=None,
+                            message="unable to bypass certificate error",
+                            extras={
+                                "attempt": attempt,
+                                "max_attempts": max_attempts,
+                                "target_url": url,
+                                "timeout_ms": timeout_ms,
+                                "response_status": last_status,
+                                "error_type": type(recreate_exc).__name__,
+                                "error_message": str(recreate_exc),
+                                "ignore_https_errors": True,
+                            },
+                        )
+                    raise cert_error from recreate_exc
+
+                continue
 
             wait_time_s = base_retry_delay_s * (2 ** (attempt - 1))
             if logger:
@@ -172,12 +226,11 @@ async def navigate_with_retry(
                         "wait_time_s": wait_time_s,
                     },
                 )
-            if attempt >= max_attempts:
-                break
+            attempt += 1
 
-        if attempt < max_attempts:
+        if attempt <= max_attempts:
             if wait_time_s is None:
-                wait_time_s = base_retry_delay_s * (2 ** (attempt - 1))
+                wait_time_s = base_retry_delay_s * (2 ** (attempt - 2 if attempt > 1 else 0))
             if logger:
                 log_event(
                     logger=logger,
@@ -187,7 +240,7 @@ async def navigate_with_retry(
                     bucket=None,
                     message="waiting before retry",
                     extras={
-                        "attempt": attempt,
+                        "attempt": attempt - 1,
                         "max_attempts": max_attempts,
                         "target_url": url,
                         "timeout_ms": timeout_ms,
@@ -202,6 +255,28 @@ async def navigate_with_retry(
     if last_status is not None:
         message = f"{message} (status={last_status})"
     raise TimeoutError(message) from last_error
+
+
+async def _retry_page_with_ignored_https(page: Page) -> Page:
+    try:
+        storage_state = await page.context.storage_state()
+    except Exception:
+        storage_state = None
+
+    browser = page.context.browser
+    if browser is None:
+        raise RuntimeError("browser not available for navigation retry")
+
+    new_context = await browser.new_context(
+        ignore_https_errors=True, storage_state=storage_state
+    )
+
+    try:
+        await page.close()
+    except Exception:  # pragma: no cover - cleanup guard
+        pass
+
+    return await new_context.new_page()
 
 
 async def _fetch_dashboard_nav_timeout_ms(database_url: str | None) -> int:
@@ -498,7 +573,7 @@ async def _run_session_probe(
 
     try:
         probe_page = await context.new_page()
-        await navigate_with_retry(
+        probe_page, _ = await navigate_with_retry(
             probe_page,
             probe_url,
             nav_timeout_ms,
@@ -1061,7 +1136,7 @@ async def _bootstrap_session_via_home_and_tracker(
             "navigating to login for bootstrap",
             extras={"target_url": login_url, "timeout_ms": nav_timeout_ms},
         )
-        await navigate_with_retry(
+        page, _ = await navigate_with_retry(
             page,
             login_url,
             nav_timeout_ms,
@@ -1144,7 +1219,7 @@ async def _bootstrap_session_via_home_and_tracker(
                 "navigating to home after bootstrap",
                 extras={"target_url": home_url, "timeout_ms": nav_timeout_ms},
             )
-            await navigate_with_retry(
+            page, _ = await navigate_with_retry(
                 page,
                 home_url,
                 nav_timeout_ms,
@@ -1242,7 +1317,7 @@ async def _switch_to_store_dashboard_and_download(
         extras={"target_url": target_url, "timeout_ms": nav_timeout_ms},
     )
 
-    response = await navigate_with_retry(
+    page, response = await navigate_with_retry(
         page,
         target_url,
         nav_timeout_ms,
@@ -1393,7 +1468,7 @@ async def _navigate_via_home_to_dashboard(
         extras={"home_url": home_url, "timeout_ms": nav_timeout_ms},
     )
 
-    response = await navigate_with_retry(
+    page, response = await navigate_with_retry(
         page,
         home_url,
         nav_timeout_ms,
@@ -1600,7 +1675,7 @@ async def _perform_login_flow(
             "navigating to login for automated flow",
             extras={"target_url": LOGIN_URL, "timeout_ms": nav_timeout_ms},
         )
-        await navigate_with_retry(
+        page, _ = await navigate_with_retry(
             page,
             LOGIN_URL,
             nav_timeout_ms,
@@ -1795,7 +1870,7 @@ async def _ensure_dashboard(
         "opening dashboard",
         extras={"target_url": dashboard_url, "timeout_ms": nav_timeout_ms},
     )
-    response = await navigate_with_retry(
+    page, response = await navigate_with_retry(
         page,
         dashboard_url,
         nav_timeout_ms,
