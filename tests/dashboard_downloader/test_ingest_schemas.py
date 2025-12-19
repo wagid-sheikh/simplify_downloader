@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.common.ingest.schemas import coerce_csv_row, normalize_headers
+from app.common.ingest.schemas import SkipRow, coerce_csv_row, normalize_headers
 
 
 def _headers_with_required(extra: list[str] | None = None) -> list[str]:
@@ -79,6 +79,23 @@ def test_missing_required_raises_value_error():
         assert "pickup_row_id" in str(exc)
     else:
         raise AssertionError("Expected ValueError for missing required column")
+
+
+def test_missing_mobile_skips_row():
+    headers = _headers_with_required()
+    header_map = normalize_headers(headers)
+    row = {
+        "Pickup Row Id": "12345",
+        "Store Code": "A001",
+        "Mobile Number": "",
+    }
+
+    with pytest.raises(SkipRow) as excinfo:
+        coerce_csv_row("missed_leads", row, header_map, extra_fields=_extra_fields())
+
+    assert "missing mobile_number" in str(excinfo.value)
+    assert excinfo.value.store_code == "A001"
+    assert excinfo.value.report_date == "2024-01-02"
 
 
 def test_undelivered_uses_order_no_for_order_id():
