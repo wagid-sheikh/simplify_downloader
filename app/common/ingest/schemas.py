@@ -146,6 +146,13 @@ def _header_lookup(header_map: Dict[str, str], key: str) -> str | None:
     return None
 
 
+class SkipRow(ValueError):
+    def __init__(self, message: str, *, store_code: str | None = None, report_date: Any = None):
+        super().__init__(message)
+        self.store_code = store_code
+        self.report_date = report_date
+
+
 def coerce_csv_row(
     bucket: str,
     row: Dict[str, Any],
@@ -180,6 +187,13 @@ def coerce_csv_row(
 
     required_columns = set(spec.get("required_columns", []))
     required_columns.update(spec.get("dedupe_keys", []))
+
+    if bucket == "missed_leads" and data.get("mobile_number") is None:
+        raise SkipRow(
+            "missing mobile_number for missed_leads row",
+            store_code=data.get("store_code"),
+            report_date=data.get("run_date"),
+        )
 
     missing = [column for column in required_columns if data.get(column) is None]
     if missing:
