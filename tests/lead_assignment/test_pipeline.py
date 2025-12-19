@@ -262,6 +262,15 @@ def _seed_data(db_path: Path) -> dict[str, object]:
         (profile_id,),
     )
 
+    cursor.execute(
+        """
+        INSERT INTO notification_recipients (
+            profile_id, store_code, email_address, display_name, send_as, env, is_active
+        ) VALUES (?, NULL, 'ops@example.com', 'Ops Team', 'to', 'any', 1)
+        """,
+        (profile_id,),
+    )
+
     base_date = date(2024, 1, 15)
     leads = [
         (1, "9000000001", None, base_date, "09:00", "S001", "Test Store", base_date, "09:00", "Existing CX", "Doorstep", "web", "web", "Existing", 0, None, base_date, 0),
@@ -393,8 +402,13 @@ async def test_lead_assignment_pipeline_end_to_end(monkeypatch, prepared_db):
     assert "9000000001" in text_content
     assert "9000000002" in text_content
 
-    assert len(sent_emails) == 1
-    assert sent_emails[0].attachments and sent_emails[0].attachments[0] == pdf_path
+    assert len(sent_emails) == 2
+    store_email, summary_email = sent_emails
+    assert store_email.attachments and store_email.attachments[0] == pdf_path
+    assert summary_email.scope == "run"
+    assert summary_email.subject.startswith("Leads for")
+    assert summary_email.attachments == []
+    assert summary_email.body
 
     conn = sqlite3.connect(_db_path())
     conn.execute("UPDATE missed_leads SET lead_assigned = 1")

@@ -254,19 +254,28 @@ def _send_run_summary(
     *,
     profile: dict[str, object],
     summary_template: dict[str, str] | None,
+    default_template: dict[str, str] | None,
     recipients: list[dict[str, object]],
     context: dict[str, object],
     logger,
 ) -> tuple[int, int]:
+    fallback_template = summary_template or default_template or {
+        "subject_template": "Lead assignment summary for batch {{ batch_id }}",
+        "body_template": (
+            "Run {{ run_id }} (env: {{ run_env }}) completed.\n"
+            "Assignments: {{ assignments }}. Documents: {{ documents_generated }}.\n"
+            "Emails planned: {{ emails_planned }}. Emails sent: {{ emails_sent }}."
+        ),
+    }
     if not summary_template:
         log_event(
             logger=logger,
             phase="notify",
             status="warn",
-            message="run summary template missing; skipping summary dispatch",
-            extras=context,
+            message="run summary template missing; using fallback template",
+            extras={**context, "template_source": "default" if default_template else "built_in"},
         )
-        return 0, 0
+    summary_template = fallback_template
 
     to, cc, bcc = _collect_recipient_lists(recipients, store_code=None)
     if not to and cc:
@@ -425,6 +434,7 @@ async def run_leads_assignment_pipeline(env: str | None = None, run_id: str | No
         planned_summary, sent_summary = _send_run_summary(
             profile=profile,
             summary_template=summary_template,
+            default_template=template,
             recipients=recipients,
             context=summary_context,
             logger=logger,
