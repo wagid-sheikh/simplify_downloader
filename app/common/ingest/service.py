@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 from datetime import date
 from pathlib import Path
+from collections import defaultdict
 from typing import Any, Dict, Iterable, List
 
 from sqlalchemy import func
@@ -13,7 +14,7 @@ from app.dashboard_downloader.json_logger import JsonLogger, log_event
 
 from ..db import session_scope
 from .models import BUCKET_MODEL_MAP
-from .schemas import MERGE_BUCKET_DB_SPECS, coerce_csv_row, normalize_headers
+from .schemas import MERGE_BUCKET_DB_SPECS, SkipRow, coerce_csv_row, normalize_headers
 
 
 def _batched(iterable: Iterable[Dict[str, Any]], size: int) -> Iterable[List[Dict[str, Any]]]:
@@ -76,29 +77,32 @@ def _load_csv_rows(
     logger: JsonLogger | None = None,
     *,
     row_context: Dict[str, Any] | None = None,
+    skip_counters: Dict[tuple[str, str], int] | None = None,
 ) -> Iterable[Dict[str, Any]]:
     total_rows = 0
     coerced_rows = 0
     failed_rows = 0
+    skipped_rows = 0
     suppressed_failures = 0
     failure_logs_emitted = 0
 
     def emit_summary(message: str = "csv ingest summary", *, status: str | None = None) -> None:
         if not logger:
             return
-        log_event(
-            logger=logger,
-            phase="ingest",
-            status=status or ("warn" if failed_rows else "info"),
-            bucket=bucket,
-            merged_file=str(csv_path),
-            counts={
-                "total_rows": total_rows,
-                "coerced_rows": coerced_rows,
-                "failed_rows": failed_rows,
-            },
-            message=message,
-        )
+            log_event(
+                logger=logger,
+                phase="ingest",
+                status=status or ("warn" if failed_rows else "info"),
+                bucket=bucket,
+                merged_file=str(csv_path),
+                counts={
+                    "total_rows": total_rows,
+                    "coerced_rows": coerced_rows,
+                    "failed_rows": failed_rows,
+                    "skipped_rows": skipped_rows,
+                },
+                message=message,
+            )
 
     if not csv_path.exists():
         emit_summary("csv file not found")
@@ -120,7 +124,7 @@ def _load_csv_rows(
         return []
 
     def iterator() -> Iterable[Dict[str, Any]]:
-        nonlocal total_rows, coerced_rows, failed_rows, suppressed_failures, failure_logs_emitted
+        nonlocal total_rows, coerced_rows, failed_rows, skipped_rows, suppressed_failures, failure_logs_emitted
         with csv_path.open("r", newline="", encoding="utf-8", errors="ignore") as handle:
             try:
                 reader = csv.DictReader(handle)
@@ -162,6 +166,16 @@ def _load_csv_rows(
                         coerced_row = coerce_csv_row(
                             bucket, raw_row, header_map, extra_fields=row_context
                         )
+                    except SkipRow as exc:
+                        skipped_rows += 1
+                        if skip_counters is not None:
+                            store_code = (exc.store_code or "").strip() or "unknown"
+                            report_date = exc.report_date
+                            if isinstance(report_date, date):
+                                report_date = report_date.isoformat()
+                            report_date_text = str(report_date or "")
+                            skip_counters[(store_code, report_date_text)] += 1
+                        continue
                     except ValueError as exc:
                         failed_rows += 1
                         if logger:
@@ -389,10 +403,17 @@ async def ingest_bucket(
 ) -> Dict[str, Any]:
     totals = {"rows": 0, "deduped_rows": 0}
     row_context = {"run_id": run_id, "run_date": run_date}
+    skipped_missing_mobile: Dict[tuple[str, str], int] = defaultdict(int)
     async with session_scope(database_url) as session:
         async with session.begin():
             for batch in _batched(
-                _load_csv_rows(bucket, csv_path, logger, row_context=row_context),
+                _load_csv_rows(
+                    bucket,
+                    csv_path,
+                    logger,
+                    row_context=row_context,
+                    skip_counters=skipped_missing_mobile,
+                ),
                 batch_size,
             ):
                 batch_totals = await _upsert_batch(session, bucket, batch)
@@ -423,4 +444,26 @@ async def ingest_bucket(
         counts={"ingested_rows": totals["rows"], "deduped_rows": totals["deduped_rows"]},
         message="ingestion complete",
     )
+
+    if bucket == "missed_leads" and skipped_missing_mobile:
+        entries = []
+        details = []
+        for (store_code, report_date), count in sorted(skipped_missing_mobile.items()):
+            entries.append(f"{store_code}-{report_date}-{count}")
+            details.append(
+                {"store_code": store_code, "report_date": report_date, "count": count}
+            )
+
+        log_event(
+            logger=logger,
+            phase="ingest",
+            bucket=bucket,
+            merged_file=str(csv_path),
+            status="info",
+            message=(
+                "missed_leads rows skipped due to missing mobile_number: "
+                + ", ".join(entries)
+            ),
+            skipped_missing_mobile=details,
+        )
     return totals
