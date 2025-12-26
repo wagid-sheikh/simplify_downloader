@@ -164,6 +164,7 @@ async def _fetch_eligible_leads(db_session: AsyncSession) -> list[_LeadRow]:
               ON slam.store_code = ml.store_code AND slam.is_enabled = true
             JOIN agents_master am ON am.id = slam.agent_id AND am.is_active = true
             WHERE sm.assign_leads = true
+              AND ml.customer_type = 'New'
               AND ml.lead_assigned = false
               AND (ml.is_order_placed = false OR ml.is_order_placed IS NULL)
             ORDER BY ml.pickup_created_date DESC

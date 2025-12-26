@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 import sqlite3
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -275,7 +275,7 @@ def _seed_data(db_path: Path) -> dict[str, object]:
     leads = [
         (1, "9000000001", None, base_date, "09:00", "S001", "Test Store", base_date, "09:00", "Existing CX", "Doorstep", "web", "web", "Existing", 0, None, base_date, 0),
         (2, "9000000002", None, base_date, "09:05", "S001", "Test Store", base_date, "09:05", "New CX", "Pickup", "app", "app", "New", 0, None, base_date, 0),
-        (3, "9000000003", None, base_date, "09:10", "S001", "Test Store", base_date, "09:10", "New CX 2", "Pickup", "app", "app", "New", 0, None, base_date, 0),
+        (3, "9000000003", None, base_date + timedelta(days=1), "09:10", "S001", "Test Store", base_date + timedelta(days=1), "09:10", "New CX 2", "Pickup", "app", "app", "New", 0, None, base_date + timedelta(days=1), 0),
     ]
     cursor.executemany(
         """
@@ -389,8 +389,8 @@ async def test_lead_assignment_pipeline_end_to_end(monkeypatch, prepared_db):
         documents_rows = (await session.execute(text("SELECT id, file_path FROM documents"))).all()
 
     assert batch_count == 1
-    assert assignment_count == 2  # third lead exceeds caps
-    assert assigned_flags == {1: 1, 2: 1, 3: 0}
+    assert assignment_count == 1  # second new lead exceeds caps
+    assert assigned_flags == {1: 0, 2: 0, 3: 1}
 
     assert len(documents_rows) == 1
     pdf_path = Path(documents_rows[0].file_path)
@@ -399,8 +399,7 @@ async def test_lead_assignment_pipeline_end_to_end(monkeypatch, prepared_db):
     with pdfplumber.open(pdf_path) as pdf:
         text_content = "\n".join(page.extract_text() or "" for page in pdf.pages)
     assert "RowID" in text_content
-    assert "9000000001" in text_content
-    assert "9000000002" in text_content
+    assert "9000000003" in text_content
 
     assert len(sent_emails) == 2
     store_email, summary_email = sent_emails
