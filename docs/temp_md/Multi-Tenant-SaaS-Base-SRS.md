@@ -9,6 +9,12 @@ The TSV Universal Multi-Tenant SaaS Baseline is the **single authoritative platf
 
 All products are instantiated from this Baseline **without architectural forks**; product differences are achieved **only through configuration and policy**.
 
+## 0.1 Revision History
+
+| Version | Date | Change Type | Description | Impacted Sections | Approved By |
+| ------- | ---- | ----------- | ----------- | ----------------- | ----------- |
+| v1.0 | 2025-02-18 | Baseline Freeze | Initial release of TSV Universal Multi-Tenant SaaS Baseline | All | CEO, The Shaw Ventures |
+
 ### What This Baseline Guarantees
 
 **Tenant Isolation by Design**
@@ -430,33 +436,855 @@ General:
 * No AI autonomous actions.
 * No cross-tenant analytics.
 
-### 14.5 Baseline Required Tables
+### 14.5 Baseline Data Model (Canonical Definitions)
 
-#### Platform
+#### Platform Tables
 
-* `platform_tenants`
-* `platform_regions`
-* `platform_feature_flags`
-* `platform_audit_events`
-* `platform_security_events`
+##### Table: `platform_tenants`
 
-#### Tenant (RLS-Protected)
+**Purpose**
+Represents all tenant records under platform governance, including lifecycle state and residency binding.
 
-* `tenant_users`
-* `tenant_identities`
-* `tenant_sessions`
-* `tenant_api_keys`
-* `tenant_roles`
-* `tenant_role_assignments`
-* `tenant_impersonation_sessions`
-* `tenant_templates`
-* `tenant_message_outbox`
-* `tenant_message_delivery_log`
-* `tenant_exports`
-* `tenant_export_download_log`
-* `tenant_documents`
-* `tenant_devices`
-* `tenant_sync_state`
-* `tenant_jobs`
-* `tenant_ai_embeddings`
-* `tenant_ai_requests_log`
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the tenant. |
+| tenant_code | TEXT | No | Human-readable, unique tenant code. |
+| name | TEXT | No | Display name for the tenant. |
+| status | ENUM (Pending, Active, Suspended, Deactivated) | No | Lifecycle state for provisioning and enforcement. |
+| region_id | UUID | No | References `platform_regions.id`; pins tenant to residency region. |
+| billing_tier | TEXT | Yes | Logical tier label for entitlement checks. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| suspended_at | TIMESTAMP WITH TIME ZONE | Yes | When tenant was suspended, if applicable. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `region_id` → `platform_regions.id`
+* Unique constraints: `tenant_code`
+* Check constraints: `status` in allowed lifecycle states
+
+**Tenancy & Security**
+
+* Tenant-scoped: No (platform registry)
+* RLS Required: No
+* Residency-bound: Yes (via `region_id`)
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, update, status transitions
+
+##### Table: `platform_regions`
+
+**Purpose**
+Defines platform-supported regions and residency policies for tenant pinning and data governance.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the region. |
+| code | TEXT | No | Region code (e.g., `US`, `EU`, `UK`). |
+| name | TEXT | No | Region display name. |
+| status | ENUM (Active, Deprecated) | No | Lifecycle for accepting new tenants. |
+| residency_policy | JSONB | Yes | Canonical residency constraints and allowed services. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Unique constraints: `code`
+* Check constraints: `status` in allowed lifecycle states
+
+**Tenancy & Security**
+
+* Tenant-scoped: No
+* RLS Required: No
+* Residency-bound: Yes (policy source)
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, update, status transitions
+
+##### Table: `platform_feature_flags`
+
+**Purpose**
+Stores platform-owned feature flags and rollout policies to control platform and tenant feature exposure.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the feature flag. |
+| key | TEXT | No | Unique feature flag key. |
+| description | TEXT | Yes | Canonical description of feature purpose. |
+| scope | ENUM (Platform, Tenant) | No | Scope indicating flag applicability. |
+| default_value | JSONB | No | Default flag payload or boolean state. |
+| rollout_policy | JSONB | Yes | Targeting rules (regions, tenants, cohorts). |
+| status | ENUM (Draft, Active, Deprecated, Archived) | No | Lifecycle state. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Unique constraints: `key`
+* Check constraints: `status` in allowed lifecycle states; `scope` in allowed values
+
+**Tenancy & Security**
+
+* Tenant-scoped: No (platform-controlled; applied per tenant via policy)
+* RLS Required: No
+* Residency-bound: No (policy enforcement must respect tenant region downstream)
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, update, status transitions
+
+##### Table: `platform_audit_events`
+
+**Purpose**
+Captures immutable platform-managed audit events for privileged actions, exports, messaging, AI usage, and impersonation.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the audit event. |
+| occurred_at | TIMESTAMP WITH TIME ZONE | No | Event timestamp. |
+| actor_type | ENUM (PlatformUser, TenantUser, ServiceAccount) | No | Actor classification. |
+| actor_id | UUID | No | Identifier of the actor (platform or tenant context). |
+| tenant_id | UUID | Yes | References `platform_tenants.id` when event is tenant-scoped. |
+| action | TEXT | No | Canonical action name. |
+| resource_type | TEXT | No | Resource category affected. |
+| resource_id | UUID | Yes | Resource identifier when applicable. |
+| metadata | JSONB | Yes | Structured event metadata. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Ingestion timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id` (nullable)
+* Check constraints: `actor_type` in allowed values
+
+**Tenancy & Security**
+
+* Tenant-scoped: Partially (optional `tenant_id` for tenant events)
+* RLS Required: No (platform-plane storage; tenant access mediated via views/policies)
+* Residency-bound: Yes (events stored in tenant region when `tenant_id` present)
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: append-only create
+
+##### Table: `platform_security_events`
+
+**Purpose**
+Records security and anomaly events (rate-limit breaches, OTP abuse, auth anomalies) for centralized monitoring and incident response.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the security event. |
+| occurred_at | TIMESTAMP WITH TIME ZONE | No | Event timestamp. |
+| tenant_id | UUID | Yes | References `platform_tenants.id` when tenant-affecting. |
+| actor_type | ENUM (PlatformUser, TenantUser, ServiceAccount, Anonymous) | No | Actor classification. |
+| actor_id | UUID | Yes | Actor identifier when available. |
+| event_type | TEXT | No | Canonical security event type. |
+| severity | ENUM (Info, Low, Medium, High, Critical) | No | Severity classification. |
+| source | TEXT | No | Source system or service emitting the event. |
+| metadata | JSONB | Yes | Structured context (IP, device, request identifiers). |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Ingestion timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id` (nullable)
+* Check constraints: `actor_type` and `severity` in allowed values
+
+**Tenancy & Security**
+
+* Tenant-scoped: Partially (optional `tenant_id` for tenant events)
+* RLS Required: No (platform-plane storage; exposure to tenants via governed views)
+* Residency-bound: Yes (events stored in tenant region when `tenant_id` present)
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: append-only create
+
+#### Tenant Tables (RLS-Protected)
+
+##### Table: `tenant_users`
+
+**Purpose**
+Stores tenant user profiles under tenant control with lifecycle and residency enforcement.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the tenant user. |
+| tenant_id | UUID | No | References `platform_tenants.id`; RLS anchor. |
+| email | TEXT | No | Unique per tenant email for login/notification. |
+| display_name | TEXT | Yes | Preferred display name. |
+| status | ENUM (Pending, Active, Suspended, Disabled) | No | User lifecycle state. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| deleted_at | TIMESTAMP WITH TIME ZONE | Yes | Soft-delete marker when applicable. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`
+* Unique constraints: (`tenant_id`, `email`)
+* Check constraints: `status` in allowed lifecycle states
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes (enforce tenant_id equality)
+* Residency-bound: Yes (via tenant region)
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, update, delete (soft), status transitions
+
+##### Table: `tenant_identities`
+
+**Purpose**
+Holds authentication identities and credentials linked to tenant users for password and federated auth flows.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the identity record. |
+| tenant_id | UUID | No | References `platform_tenants.id`; RLS anchor. |
+| user_id | UUID | No | References `tenant_users.id`. |
+| provider | ENUM (Password, OIDC, SAML, MFA) | No | Identity provider type. |
+| provider_subject | TEXT | No | Provider-specific subject/identifier. |
+| credential_hash | TEXT | Yes | Argon2id/bcrypt hash for password identities. |
+| status | ENUM (Active, Revoked) | No | Identity lifecycle. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`; `user_id` → `tenant_users.id`
+* Unique constraints: (`tenant_id`, `provider`, `provider_subject`)
+* Check constraints: `provider` and `status` in allowed values
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes
+* Residency-bound: Yes
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, update, revoke
+
+##### Table: `tenant_roles`
+
+**Purpose**
+Defines tenant-level role compositions from platform-owned permission catalog.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the tenant role. |
+| tenant_id | UUID | No | References `platform_tenants.id`. |
+| name | TEXT | No | Role name unique per tenant. |
+| description | TEXT | Yes | Role description. |
+| permissions | JSONB | No | Canonical list of permission identifiers. |
+| status | ENUM (Draft, Active, Deprecated, Archived) | No | Role lifecycle. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`
+* Unique constraints: (`tenant_id`, `name`)
+* Check constraints: `status` in allowed lifecycle states
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes
+* Residency-bound: Yes
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, update, status transitions
+
+##### Table: `tenant_role_assignments`
+
+**Purpose**
+Maps tenant users to roles, enabling scoped permissions and delegated administration.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the assignment. |
+| tenant_id | UUID | No | References `platform_tenants.id`. |
+| user_id | UUID | No | References `tenant_users.id`. |
+| role_id | UUID | No | References `tenant_roles.id`. |
+| scope | JSONB | Yes | Optional scoped restrictions (e.g., store, project). |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`; `user_id` → `tenant_users.id`; `role_id` → `tenant_roles.id`
+* Unique constraints: (`tenant_id`, `user_id`, `role_id`, `scope`)
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes
+* Residency-bound: Yes
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, update, delete
+
+##### Table: `tenant_sessions`
+
+**Purpose**
+Tracks tenant user sessions for authentication, timeout enforcement, and device/risk assessments.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the session. |
+| tenant_id | UUID | No | References `platform_tenants.id`. |
+| user_id | UUID | No | References `tenant_users.id`. |
+| device_id | UUID | Yes | References `tenant_devices.id` when device is registered. |
+| status | ENUM (Active, Revoked, Expired) | No | Session lifecycle. |
+| expires_at | TIMESTAMP WITH TIME ZONE | No | Absolute expiry. |
+| last_seen_at | TIMESTAMP WITH TIME ZONE | Yes | Last activity timestamp. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`; `user_id` → `tenant_users.id`; `device_id` → `tenant_devices.id`
+* Check constraints: `status` in allowed lifecycle states
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes
+* Residency-bound: Yes
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, update, revoke/expire
+
+##### Table: `tenant_api_keys`
+
+**Purpose**
+Stores tenant-scoped API keys with rotation, revocation, and auditing metadata.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the API key. |
+| tenant_id | UUID | No | References `platform_tenants.id`. |
+| label | TEXT | No | Human-readable label. |
+| hashed_key | TEXT | No | Hashed API key material. |
+| status | ENUM (Active, Revoked) | No | Lifecycle state. |
+| expires_at | TIMESTAMP WITH TIME ZONE | Yes | Optional expiry. |
+| created_by | UUID | Yes | References `tenant_users.id` (creator). |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| revoked_at | TIMESTAMP WITH TIME ZONE | Yes | Revocation timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`; `created_by` → `tenant_users.id`
+* Check constraints: `status` in allowed lifecycle states
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes
+* Residency-bound: Yes
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, update, revoke
+
+##### Table: `tenant_impersonation_sessions`
+
+**Purpose**
+Records time-bound, fully audited impersonation sessions initiated by authorized platform or tenant administrators.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the impersonation session. |
+| tenant_id | UUID | No | References `platform_tenants.id`. |
+| impersonator_id | UUID | No | Identifier of actor initiating impersonation (platform or tenant user). |
+| target_user_id | UUID | No | References `tenant_users.id` being impersonated. |
+| reason | TEXT | No | Approved justification for impersonation. |
+| expires_at | TIMESTAMP WITH TIME ZONE | No | Non-renewable expiry. |
+| status | ENUM (Active, Expired, Revoked) | No | Session lifecycle. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| revoked_at | TIMESTAMP WITH TIME ZONE | Yes | When revoked early. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`; `target_user_id` → `tenant_users.id`
+* Check constraints: `status` in allowed lifecycle states
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes (restricted to tenant and authorized viewers)
+* Residency-bound: Yes
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, update, revoke/expire
+
+##### Table: `tenant_templates`
+
+**Purpose**
+Manages tenant-specific or inherited messaging/templates with approval workflows and localization.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the template. |
+| tenant_id | UUID | No | References `platform_tenants.id`. |
+| key | TEXT | No | Template key unique per tenant. |
+| name | TEXT | No | Template display name. |
+| content | JSONB | No | Structured content and localization payloads. |
+| status | ENUM (Draft, Approved, Deprecated, Archived) | No | Template lifecycle. |
+| version | INTEGER | No | Incrementing template version per tenant. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| approved_at | TIMESTAMP WITH TIME ZONE | Yes | Approval timestamp when status becomes Approved. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`
+* Unique constraints: (`tenant_id`, `key`, `version`)
+* Check constraints: `status` in allowed lifecycle states
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes
+* Residency-bound: Yes
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, update, approve/deprecate/archive
+
+##### Table: `tenant_message_outbox`
+
+**Purpose**
+Stores outbound messages queued for asynchronous delivery with retry and DLQ handling.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the message. |
+| tenant_id | UUID | No | References `platform_tenants.id`. |
+| template_id | UUID | Yes | References `tenant_templates.id` when applicable. |
+| channel | ENUM (WhatsApp, Email, SMS, Push) | No | Delivery channel. |
+| payload | JSONB | No | Rendered content and parameters. |
+| status | ENUM (Queued, Sending, Sent, Failed, Dead) | No | Delivery lifecycle. |
+| retry_count | INTEGER | No | Number of retries attempted. |
+| next_attempt_at | TIMESTAMP WITH TIME ZONE | Yes | Scheduled next attempt. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`; `template_id` → `tenant_templates.id`
+* Check constraints: `status` and `channel` in allowed values; `retry_count` ≥ 0
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes
+* Residency-bound: Yes
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, status transitions, DLQ placement
+
+##### Table: `tenant_message_delivery_log`
+
+**Purpose**
+Captures delivery attempts and outcomes for tenant messages to support compliance, retries, and analytics.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the delivery log entry. |
+| tenant_id | UUID | No | References `platform_tenants.id`. |
+| message_id | UUID | No | References `tenant_message_outbox.id`. |
+| attempt_number | INTEGER | No | Attempt sequence number. |
+| status | ENUM (Pending, Delivered, Failed, Retried, Dead) | No | Attempt outcome. |
+| provider_response | JSONB | Yes | Provider response payload. |
+| occurred_at | TIMESTAMP WITH TIME ZONE | No | Timestamp of the attempt. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`; `message_id` → `tenant_message_outbox.id`
+* Unique constraints: (`message_id`, `attempt_number`)
+* Check constraints: `status` in allowed values; `attempt_number` ≥ 1
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes
+* Residency-bound: Yes
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: append-only create
+
+##### Table: `tenant_exports`
+
+**Purpose**
+Represents tenant export jobs with lifecycle, retention, and sensitivity tracking.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the export. |
+| tenant_id | UUID | No | References `platform_tenants.id`. |
+| requested_by | UUID | Yes | References `tenant_users.id`. |
+| export_type | TEXT | No | Logical export type identifier. |
+| status | ENUM (Queued, Running, Succeeded, Failed, Expired) | No | Export lifecycle. |
+| sensitivity | ENUM (Standard, Sensitive) | No | Sensitivity classification. |
+| retention_ttl | INTERVAL | No | Retention duration before purge. |
+| storage_url | TEXT | Yes | Signed URL or storage locator. |
+| expires_at | TIMESTAMP WITH TIME ZONE | Yes | Export availability expiry. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`; `requested_by` → `tenant_users.id`
+* Check constraints: `status` and `sensitivity` in allowed values
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes
+* Residency-bound: Yes (storage pinned to tenant region)
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, status transitions, expiry/purge
+
+##### Table: `tenant_export_download_log`
+
+**Purpose**
+Tracks access to tenant exports for compliance, watermarks, and download rate enforcement.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the download log entry. |
+| tenant_id | UUID | No | References `platform_tenants.id`. |
+| export_id | UUID | No | References `tenant_exports.id`. |
+| user_id | UUID | Yes | References `tenant_users.id` when user-authenticated. |
+| ip_address | TEXT | Yes | IP address of downloader. |
+| user_agent | TEXT | Yes | User agent string. |
+| occurred_at | TIMESTAMP WITH TIME ZONE | No | Download timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`; `export_id` → `tenant_exports.id`; `user_id` → `tenant_users.id`
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes
+* Residency-bound: Yes
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: append-only create
+
+##### Table: `tenant_documents`
+
+**Purpose**
+Stores tenant-managed documents and metadata with retention and classification controls.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the document. |
+| tenant_id | UUID | No | References `platform_tenants.id`. |
+| title | TEXT | No | Document title. |
+| classification | ENUM (Public, Internal, Confidential, Restricted) | No | Data classification. |
+| storage_url | TEXT | No | Storage locator or signed URL. |
+| status | ENUM (Active, Archived, Deleted) | No | Lifecycle state. |
+| created_by | UUID | Yes | References `tenant_users.id`. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| deleted_at | TIMESTAMP WITH TIME ZONE | Yes | Soft-delete marker when applicable. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`; `created_by` → `tenant_users.id`
+* Check constraints: `classification` and `status` in allowed values
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes
+* Residency-bound: Yes
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, update, delete (soft), status transitions
+
+##### Table: `tenant_devices`
+
+**Purpose**
+Registers tenant devices for session binding, risk-based access, and remote wipe enforcement.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the device. |
+| tenant_id | UUID | No | References `platform_tenants.id`. |
+| user_id | UUID | No | References `tenant_users.id`. |
+| device_identifier | TEXT | No | Device fingerprint or platform-specific identifier. |
+| platform | ENUM (iOS, Android, Web, Desktop) | No | Device platform. |
+| status | ENUM (Active, Suspended, Revoked) | No | Device lifecycle. |
+| last_seen_at | TIMESTAMP WITH TIME ZONE | Yes | Last observed activity. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Registration timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| revoked_at | TIMESTAMP WITH TIME ZONE | Yes | Revocation timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`; `user_id` → `tenant_users.id`
+* Unique constraints: (`tenant_id`, `device_identifier`)
+* Check constraints: `platform` and `status` in allowed values
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes
+* Residency-bound: Yes
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, update, revoke
+
+##### Table: `tenant_sync_state`
+
+**Purpose**
+Maintains sync cursors and checkpoints for offline-first mobile clients to ensure safe replay and conflict handling.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the sync state record. |
+| tenant_id | UUID | No | References `platform_tenants.id`. |
+| user_id | UUID | No | References `tenant_users.id`. |
+| device_id | UUID | Yes | References `tenant_devices.id`. |
+| cursor | TEXT | Yes | Logical checkpoint/token for incremental sync. |
+| last_synced_at | TIMESTAMP WITH TIME ZONE | Yes | Timestamp of last successful sync. |
+| status | ENUM (Active, Blocked) | No | Sync enablement state. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`; `user_id` → `tenant_users.id`; `device_id` → `tenant_devices.id`
+* Unique constraints: (`tenant_id`, `user_id`, `device_id`)
+* Check constraints: `status` in allowed values
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes
+* Residency-bound: Yes
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, update, block
+
+##### Table: `tenant_jobs`
+
+**Purpose**
+Represents tenant-scoped background jobs with explicit tenant context and lifecycle for observability and retries.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the job. |
+| tenant_id | UUID | No | References `platform_tenants.id`. |
+| job_type | TEXT | No | Logical job type identifier. |
+| status | ENUM (Queued, Running, Succeeded, Failed, Dead) | No | Job lifecycle. |
+| payload | JSONB | Yes | Job parameters. |
+| scheduled_at | TIMESTAMP WITH TIME ZONE | Yes | When job is scheduled to start. |
+| started_at | TIMESTAMP WITH TIME ZONE | Yes | Actual start time. |
+| completed_at | TIMESTAMP WITH TIME ZONE | Yes | Completion time on success or terminal failure. |
+| retry_count | INTEGER | No | Number of retries attempted. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`
+* Check constraints: `status` in allowed values; `retry_count` ≥ 0
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes
+* Residency-bound: Yes
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, status transitions, DLQ placement
+
+##### Table: `tenant_ai_embeddings`
+
+**Purpose**
+Stores tenant vector embeddings for AI search and enrichment with residency and RLS enforcement.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the embedding record. |
+| tenant_id | UUID | No | References `platform_tenants.id`. |
+| source_type | TEXT | No | Source entity type (e.g., document, message). |
+| source_id | UUID | No | Identifier of the source entity within the tenant. |
+| embedding | VECTOR | No | Vector representation (logical type). |
+| status | ENUM (Active, Deprecated) | No | Embedding lifecycle. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`
+* Unique constraints: (`tenant_id`, `source_type`, `source_id`)
+* Check constraints: `status` in allowed values
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes
+* Residency-bound: Yes (embedding storage pinned to tenant region)
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, update, deprecate
+
+##### Table: `tenant_ai_requests_log`
+
+**Purpose**
+Logs AI requests and responses for attribution, auditing, and SLA enforcement per tenant.
+
+**Columns**
+
+| Column Name | Data Type | Nullable | Description |
+| ----------- | --------- | -------- | ----------- |
+| id | UUID | No | Primary identifier for the AI request record. |
+| tenant_id | UUID | No | References `platform_tenants.id`. |
+| user_id | UUID | Yes | References `tenant_users.id` when user-initiated. |
+| request_type | TEXT | No | Logical AI capability invoked. |
+| input_reference | JSONB | Yes | References to input artifacts or prompts. |
+| output_reference | JSONB | Yes | References to outputs or summaries. |
+| status | ENUM (Pending, Succeeded, Failed) | No | Request lifecycle. |
+| latency_ms | INTEGER | Yes | Observed latency in milliseconds. |
+| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+
+**Constraints**
+
+* Primary Key: `id`
+* Foreign Keys: `tenant_id` → `platform_tenants.id`; `user_id` → `tenant_users.id`
+* Check constraints: `status` in allowed values; `latency_ms` ≥ 0 when present
+
+**Tenancy & Security**
+
+* Tenant-scoped: Yes
+* RLS Required: Yes
+* Residency-bound: Yes (processing and storage pinned to tenant region)
+
+**Audit Requirements**
+
+* Audited: Yes
+* Audit Events Triggered: create, update, failure logging
+
+**Additional Domain Tables**
+
+Additional product-layer tables MAY be defined per product repository and MUST be explicitly labeled as **product-layer** outside this Baseline appendix.
+
+---
+
+“This iteration is strictly additive and clarifying. Add a Revision History section after the Executive Summary, and expand the Baseline Required Tables into canonical table definitions using the prescribed format. Do not reinterpret architecture, add new features, or change governance rules.”
