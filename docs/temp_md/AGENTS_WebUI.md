@@ -38,6 +38,12 @@ This frontend web repository is authored by AI agents under strict governance. T
 - RTM updated with requirement coverage.
 - Contracts updated if applicable; generated types regenerated/consumed.
 
+## Configuration & Secrets Handling Rules
+- Direct access to environment variables is prohibited outside bootstrap modules. Environment variables are limited to bootstrapping PostgreSQL/Redis connectivity, secrets/signing keys, service identity/version, and observability exporters; `.env` files SHALL be near-empty.
+- Direct access to `platform_config` or `tenant_config` tables is prohibited outside the configuration subsystem. Frontend-generated assets MUST rely on backend-provided configuration surfaced via Redis-backed snapshots and MUST NOT introduce divergent configuration paths.
+- Consumers MUST treat the backend configuration service/module as authoritative; all feature flags or toggles exposed to the UI MUST flow from the merged platform/tenant snapshot served via Redis (`cfg:platform:{platform_config_version}` and `cfg:tenant:{tenant_id}:{tenant_config_version}` immutable JSON keys).
+- CI MUST fail on unauthorized `os.getenv()` usage, direct configuration table access, or attempts to introduce new `.env` variables outside the bootstrap allowlist. Staging and production MUST emit runtime warnings or structured security events on unauthorized environment access.
+
 ## Stop Conditions
 AI agent MUST stop and request human input if:
 - Tenant boundary is unclear in UI flows.

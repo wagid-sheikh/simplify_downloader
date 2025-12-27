@@ -39,6 +39,12 @@ This mobile repository is authored by AI agents under strict governance. The TSV
 - RTM updated with requirement coverage.
 - Contracts updated if applicable; generated types regenerated/consumed.
 
+## Configuration & Secrets Handling Rules
+- Direct access to environment variables is prohibited outside bootstrap modules. Environment variables are limited to bootstrapping PostgreSQL/Redis connectivity, secrets/signing keys, service identity/version, and observability exporters; `.env` files SHALL be near-empty.
+- Direct access to `platform_config` or `tenant_config` tables is prohibited outside the configuration subsystem. Mobile clients MUST consume configuration surfaced via backend APIs that themselves rely on Redis-hosted configuration snapshots and MUST NOT introduce local configuration forks.
+- Backend configuration service/module is authoritative; any mobile feature flags or toggles MUST derive from merged platform/tenant snapshots stored in Redis (`cfg:platform:{platform_config_version}` and `cfg:tenant:{tenant_id}:{tenant_config_version}` immutable JSON keys).
+- CI MUST fail on unauthorized `os.getenv()` usage, direct configuration table access, or attempts to introduce new `.env` variables outside the bootstrap allowlist. Staging and production MUST emit runtime warnings or structured security events on unauthorized environment access.
+
 ## Stop Conditions
 AI agent MUST stop and request human input if:
 - Tenant boundary is unclear in offline/online transitions.

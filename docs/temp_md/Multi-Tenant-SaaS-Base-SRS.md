@@ -321,6 +321,17 @@ All canonical data models, migrations, RLS policies, and audit guarantees are de
 * NFR-DO-03 (Must): Environment promotion DEV→STAGING→PROD; no approval gates required per input.
 * NFR-DO-04 (Must): Backup/restore platform-level service with tenant-safe boundaries.
 
+#### 7.8.1 Redis-Backed Configuration & Secrets Governance
+
+* Canonical hierarchy (mandatory): PostgreSQL is the sole source of truth for configuration via `platform_config` (platform defaults/overrides) and `tenant_config` (tenant overrides). Redis is the **mandatory runtime configuration plane** that serves materialized, versioned snapshots; it is **not** a source of truth. Environment variables exist **only** to bootstrap connections to PostgreSQL and Redis (allowlist: `APP_ENV`, `DATABASE_DSN`, `REDIS_DSN`, `SECRET_KEY`/signing keys, `SERVICE_NAME`, `SERVICE_VERSION`, observability exporters). All secrets are injected through GitHub Secrets; `.env` usage is near-zero and never contains feature flags or business logic.
+* Keyspace conventions: Platform configuration snapshots are stored as immutable JSON at `cfg:platform:{platform_config_version}`. Tenant snapshots are stored at `cfg:tenant:{tenant_id}:{tenant_config_version}`. Keys MUST be explicitly scoped and versioned.
+* Configuration load flow (standardized for every API request, worker job, or agent execution): (1) resolve exactly one tenant context; (2) fetch tenant snapshot from Redis with PostgreSQL fallback and repopulate on miss; (3) fetch platform snapshot from Redis with PostgreSQL fallback and repopulate on miss; (4) merge platform defaults, platform overrides, and tenant overrides; (5) expose a single immutable config snapshot for the lifetime of the request/job. No other access paths are permitted.
+* Update & invalidation: On configuration change, PostgreSQL commits the update, increments the config version, publishes `cfg:invalidate` on Redis, and services refresh lazily on next access. No restarts are required; stale configuration is prohibited.
+* Prohibited patterns: Direct `os.getenv()` usage or new environment variables outside bootstrap modules; direct reads from `platform_config` or `tenant_config` outside the configuration subsystem; hardcoded defaults for configurable behavior; per-service or per-worker divergence in configuration handling. Any violation is a governance breach.
+* Mandatory access module: A single configuration service/module (e.g., `ConfigService`) is the only component permitted to read from Redis, fall back to configuration tables, merge/validate, and return snapshots via methods such as `get_platform_config()`, `get_tenant_config(tenant_id)`, and `get_config_snapshot(tenant_id)`.
+* Enforcement: CI MUST fail on unauthorized `os.getenv()` usage, direct configuration table access, or attempts to introduce new `.env` variables. Staging and production MUST emit runtime warnings or structured security events on unauthorized environment access.
+* Outcomes guaranteed: Secrets are injected once and never duplicated; Redis is the single runtime interface; PostgreSQL remains the sole source of truth; configuration drift is eliminated across API, workers, and agents.
+
 ### 7.9 Data Residency & Regioning
 
 * NFR-DR-01 (Must): Supported regions v1: US, EU, UK; tenant pinned to region at creation.
