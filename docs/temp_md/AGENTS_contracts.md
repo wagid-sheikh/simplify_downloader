@@ -11,6 +11,7 @@ This contracts repository is authored by AI agents under strict governance. The 
 - Backward compatibility window: Backend SHALL support N-1 contract minor version for ≥ 90 days or until mobile release adoption threshold is met.
 - Breaking-change detection MUST run in CI; breaking changes without required versioning MUST fail.
 - No bypassing security, audit, tenant context, or residency controls in contract definitions.
+- All list endpoints must specify: `cursor`, `limit`, `sort` (if supported), and define cursor semantics per sort mode.
 
 ## Repository Scope
 - Owns OpenAPI specs, shared schemas, and generated types artifacts.

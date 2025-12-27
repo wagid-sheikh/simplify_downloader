@@ -12,6 +12,10 @@ This backend repository is authored by AI agents under strict governance. The TS
 - No breaking API changes without contract updates and versioning.
 - No bypassing security, audit, or residency controls.
 - Backend CI MUST run breaking-change detection against OpenAPI and fail on breaking changes unless an API version bump is included.
+- Contract changes:
+  - Any API change MUST have a corresponding contracts update (linked PR) before merge.
+- Pagination:
+  - List endpoints MUST implement cursor pagination. Default is `sort=-id`. If `sort` is provided, enforce allowlist and stable ordering with `id` as tie-breaker.
 
 ## Repository Scope
 - Owns FastAPI application, background workers, PostgreSQL schema/migrations, tenant isolation, RLS, audit, AI, and messaging logic.

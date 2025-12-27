@@ -11,6 +11,8 @@ This mobile repository is authored by AI agents under strict governance. The TSV
 - All privileged actions MUST be audited.
 - No breaking API changes without contract updates and versioning.
 - No bypassing security, audit, or residency controls.
+- Client must treat `sort` as a user choice; default to backend default unless user selects.
+- Client must send cursor tokens exactly as returned; no client-generated cursors.
 
 ## Repository Scope
 - Owns React Native mobile applications (iOS/Android), offline-first implementation, device registry, sync logic, and conflict resolution UX.

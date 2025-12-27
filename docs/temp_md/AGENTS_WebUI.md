@@ -11,6 +11,8 @@ This frontend web repository is authored by AI agents under strict governance. T
 - All privileged actions MUST be audited.
 - No breaking API changes without contract updates and versioning.
 - No bypassing security, audit, or residency controls.
+- Client must treat `sort` as a user choice; default to backend default unless user selects.
+- Client must send cursor tokens exactly as returned; no client-generated cursors.
 
 ## Repository Scope
 - Owns React (mobile-first) web UX, RBAC enforcement in UI, and API consumption.
