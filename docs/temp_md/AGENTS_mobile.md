@@ -26,6 +26,9 @@ This mobile repository is authored by AI agents under strict governance. The TSV
 - Tests (unit/integration/E2E) MUST be added/updated for behavior changes.
 - Telemetry MUST propagate tenant context where applicable; offline mutations MUST retain tenant identity.
 - Sync logic MUST honor conflict policies and audit-significant actions.
+- Mobile SHALL remain compatible with N-1 backend API version for at least 90 days (or defined deprecation window) due to app-store rollout latency.
+- Mobile MUST maintain an explicit offline allowlist; any new offline-persisted field requires security classification review.
+- Any change impacting sync protocol or offline storage schema MUST include a migration path and downgrade strategy.
 
 ## Definition of Done
 - Tests added or updated.

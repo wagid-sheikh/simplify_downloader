@@ -26,6 +26,8 @@ This frontend web repository is authored by AI agents under strict governance. T
 - Tests (unit/integration/UI) MUST be added/updated for behavior changes.
 - Logs/telemetry MUST propagate tenant context in API calls where applicable.
 - UI MUST surface audit-relevant actions and respect RBAC/feature flags.
+- The web UI SHALL NOT attempt to create audit records directly; audits are emitted by backend only.
+- Web repo MUST pin a contracts version (tag) and update only via explicit PR.
 
 ## Definition of Done
 - Tests added or updated.

@@ -96,15 +96,18 @@ The following repositories are mandatory:
    * Background workers
    * PostgreSQL schema & migrations
    * Tenant isolation, RLS, audit, AI, and messaging logic
+
 2. Frontend Web Repository
 
    * React (mobile-first)
    * Web-specific UX, RBAC enforcement, and API consumption
+
 3. Mobile Applications Repository
 
    * Mobile applications for iOS and Android
    * Offline-first implementation
    * Device registry, sync logic, conflict resolution
+
 4. Contracts Repository (Authoritative)
 
    * OpenAPI specifications (single source of truth)
@@ -131,12 +134,13 @@ Cross-repository coupling SHALL occur only via the Contracts repository.
   * new API version (e.g., `/api/v2`)
   * backward compatibility window for previous version
   * documented migration notes
+  * Backend SHALL support N-1 contract minor version for ≥ 90 days or until mobile release adoption threshold is met.
 * Backend CI MUST fail if contracts are violated.
 * Frontend/Mobile CI MUST fail if generated types are out of sync.
 
 ### 4.7 AI Agent Development Governance
 
-Implementation work across all repositories SHALL be performed primarily by AI agents (ChatGPT Codex). Each repository MUST include an AGENTS.md file that governs how AI agents operate within that repository. AGENTS.md is mandatory and enforced.
+Implementation work across all repositories SHALL be performed primarily by AI agents (ChatGPT Codex). Each repository MUST include an AGENTS.md file that governs how AI agents operate within that repository. AGENTS.md is mandatory and enforced. Each repository SHALL maintain requirement coverage mapping to RTM (or a repo-local RTM view) and CI SHALL enforce it.
 
 ### 4.8 Clarifications (Locked Assumptions)
 
