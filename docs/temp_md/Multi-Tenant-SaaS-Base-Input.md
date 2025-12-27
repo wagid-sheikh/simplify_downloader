@@ -253,10 +253,7 @@ No architectural forks.
 
 ---
 
-
-
 ## Inputs/Questions asked by Codex Earlier and their answers
-
 
 ### Scope & Stakeholders
 
@@ -348,3 +345,279 @@ No architectural forks.
 
 42. Any mandated SRS template sections (e.g., IEEE 830/29148)? [as per industry standards]
 43. Level of detail and priority labeling desired (e.g., Must/Should/Could, release phases)? [yes]
+
+## Additional Inputs
+
+
+# 1. Non-Functional Targets (SLAs / SLOs)
+
+### Availability (Monthly, excluding scheduled maintenance)
+
+| Plane                       | Availability SLA | Notes                                          |
+| --------------------------- | ---------------- | ---------------------------------------------- |
+| Public API                  | **99.9%**        | Core tenant-facing APIs                        |
+| Background Workers / Queues | **99.9%**        | Retries + DLQ mitigate transient failures      |
+| Mobile Sync                 | **99.5%**        | Offline-first reduces strict uptime dependency |
+| Messaging Dispatch          | **99.0%**        | External provider dependency acknowledged      |
+| Reporting / Exports         | **99.0%**        | Async, non-blocking                            |
+
+---
+
+### Latency Targets
+
+| Plane                     | p95          | p99          |
+| ------------------------- | ------------ | ------------ |
+| API (internal logic only) | ≤**500 ms**  | ≤**1500 ms** |
+| API (with external calls) | ≤**1200 ms** | ≤**3000 ms** |
+| Worker job execution      | ≤**2 sec**   | ≤**10 sec**  |
+| Mobile sync (per batch)   | ≤**3 sec**   | ≤**8 sec**   |
+| Messaging enqueue         | ≤**500 ms**  | ≤**1 sec**   |
+| Export generation (async) | ≤**2 min**   | ≤**10 min**  |
+
+---
+
+# 2. Capacity Targets (Initial Release + Growth)
+
+### Initial Baseline (Day-1)
+
+* Sustained API throughput: **50 req/sec**
+* Burst capacity: **200 req/sec for 60 seconds**
+* Concurrent authenticated sessions: **5,000**
+* Concurrent tenants: **≤ 500**
+* Daily messages sent: **≤ 100,000**
+* Daily exports: **≤ 2,000**
+
+### Growth Assumption (Design For)
+
+* 10× traffic growth without schema redesign
+* Horizontal scaling only (no single-node coupling)
+* Tenant isolation must not degrade under load (noisy-neighbor protection mandatory)
+
+---
+
+# 3. Password & Session Policy
+
+### Password Policy
+
+* Minimum length: **12 characters**
+* Complexity: **At least 3 of 4** (upper, lower, digit, symbol)
+* Password reuse: **Last 5 passwords disallowed**
+* Rotation: **No forced rotation** (except after compromise)
+* Storage: **Argon2id** (or bcrypt if unavailable)
+
+### Account Lockout
+
+* Failed attempts: **5 consecutive**
+* Lockout duration: **15 minutes**
+* Progressive delay on subsequent failures
+
+---
+
+### Session Policy
+
+| Parameter                 | Value                          |
+| ------------------------- | ------------------------------ |
+| Idle timeout              | **30 minutes**                 |
+| Absolute session lifetime | **12 hours**                   |
+| Refresh token TTL         | **7 days**                     |
+| Admin session TTL         | **4 hours**                    |
+| Impersonation session TTL | **30 minutes (non-renewable)** |
+
+---
+
+# 4. Rate Limits (Default Baselines)
+
+### Authentication & OTP
+
+| Scope          | Limit           |
+| -------------- | --------------- |
+| Login attempts | 10 / min / IP   |
+| OTP send       | 3 / hour / user |
+| OTP verify     | 5 / hour / user |
+| Password reset | 3 / hour / user |
+
+### API Calls
+
+| Scope      | Limit         |
+| ---------- | ------------- |
+| Per user   | 60 / min      |
+| Per tenant | 300 / min     |
+| Burst      | 2× for 60 sec |
+
+### Messaging
+
+| Scope            | Limit                   |
+| ---------------- | ----------------------- |
+| Per tenant       | 1,000 / day             |
+| Per recipient    | 5 / day                 |
+| Provider backoff | Exponential (30s → 10m) |
+
+All rate-limit violations return **429 with Retry-After**.
+
+---
+
+# 5. Audit, Security & Observability Retention
+
+| Data Type                     | Retention                            |
+| ----------------------------- | ------------------------------------ |
+| Audit logs (business actions) | **7 years**                          |
+| Security events               | **7 years**                          |
+| Access logs                   | **90 days**                          |
+| Application logs              | **30 days**                          |
+| Metrics / traces              | **14–30 days**                       |
+| Legal hold                    | **Indefinite (manual release only)** |
+
+Audit logs MUST be:
+
+* Append-only
+* Immutable
+* Tenant-scoped
+* Exportable only by authorized roles
+
+---
+
+# 6. Data Residency & Regioning
+
+### Supported Regions (v1)
+
+* **US**
+* **EU**
+* **UK**
+
+### Rules
+
+* Tenant is **pinned to a region at creation**
+* Data MUST NOT cross regions (except encrypted backups)
+* Read replicas must stay within region
+* Platform admin access must respect residency
+
+Optional (future):
+
+* Multi-region active-active (not required for v1)
+
+---
+
+# 7. Export / Reporting Constraints
+
+### Formats Supported
+
+* CSV (default)
+* JSON
+* PDF
+* Parquet (large datasets only)
+
+### Limits
+
+* Max rows per export: **1,000,000**
+* Max file size: **500 MB**
+* Exports are **async only**
+
+### Mandatory Export Metadata
+
+* Purpose declaration (free text, required)
+* Requested by (user ID)
+* Timestamp
+* Tenant ID
+
+### Watermark (PDF)
+
+* Text:
+  `CONFIDENTIAL – Tenant: {{tenant_name}} – Generated {{timestamp}}`
+* Footer, every page
+
+---
+
+# 8. Offline Data Scope
+
+### Allowed Offline
+
+* Orders
+* Customers (non-sensitive fields)
+* Operational metadata
+* Cached reference data
+
+### Explicitly Disallowed Offline
+
+* Passwords / secrets
+* API keys / tokens
+* Payment instruments
+* Government IDs
+* Biometric data
+* Full audit logs
+
+Offline storage MUST be:
+
+* Encrypted
+* Expirable
+* Wipeable via remote invalidation
+
+---
+
+# 9. AI Data Handling
+
+### Hosting & Residency
+
+* Embeddings and AI processing MUST reside in same tenant region
+* No cross-tenant or cross-region embeddings
+
+### Update SLAs
+
+| Type                   | SLA                       |
+| ---------------------- | ------------------------- |
+| User-triggered updates | ≤**5 seconds**            |
+| Background enrichment  | ≤**15 minutes**           |
+| Full reindex           | Async, tracked, resumable |
+
+AI outputs MUST be:
+
+* Permission-checked
+* Audited
+* Attributable to input sources
+
+---
+
+# 10. Template Governance
+
+### Template States
+
+1. Draft
+2. Approved
+3. Deprecated
+4. Archived
+
+### Rules
+
+* Only **Approved** templates can be used
+* Tenant overrides require approval
+* Deprecated templates are read-only
+* Localization required for:
+
+  * UI-facing messages
+  * Customer-facing notifications
+
+---
+
+# 11. Backup & Restore Targets
+
+### Targets
+
+| Metric         | Value                           |
+| -------------- | ------------------------------- |
+| RPO            | **15 minutes**                  |
+| RTO            | **4 hours**                     |
+| Backup cadence | Continuous WAL + daily snapshot |
+| Restore test   | Quarterly (minimum)             |
+
+### Restore Rules
+
+* Tenant-scoped restores preferred
+* Max acceptable cross-tenant impact window: **≤ 15 minutes**
+* All restores must be audited and approved
+
+---
+
+## Final Instruction to Technical Writer
+
+> Replace all vague phrases with **SHALL statements** using the values above.
+> No reinterpretation, no “best practice” language, no unstated defaults.
+>
