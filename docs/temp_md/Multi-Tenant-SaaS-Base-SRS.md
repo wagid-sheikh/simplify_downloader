@@ -169,7 +169,7 @@ Implementation work across all repositories SHALL be performed primarily by AI a
 The TSV Universal Multi-Tenant SaaS platform SHALL use **PostgreSQL** as the primary relational database.
 All canonical data models, migrations, RLS policies, and audit guarantees are defined with PostgreSQL as the target datastore.
 
-### 5.1 Tenant Context Invariants
+### 5.7 Tenant Context Invariants
 
 * Every request, job, export, message, and AI call SHALL resolve exactly one `tenant_id`.
 * Absence of tenant context SHALL result in immediate rejection (403).
@@ -390,6 +390,47 @@ General:
 9.5 Integrations: Ticketing (v1), Analytics (v1), Payment Gateway (v2).
 9.6 Exports: Signed URLs with TTL; watermarking for PDFs.
 9.7 API versioning and naming: Base path `/api/v1/...`; breaking changes REQUIRE new version (e.g., `/api/v2`); tenant context inferred from auth for tenant-plane APIs; `tenant_id` in path only for platform-plane operations; responses MUST include correlation IDs for tracing.
+
+### 9.8 API Plane Naming Convention
+
+**Rule A — Mandatory plane prefix**
+
+* All APIs SHALL include a plane prefix immediately after `/api/v{N}`:
+  * Platform plane: `/api/v{N}/platform/...`
+  * Tenant plane: `/api/v{N}/tenant/...`
+* Examples:
+  * Platform:
+    * `GET /api/v1/platform/tenants`
+    * `PATCH /api/v1/platform/tenants/{tenant_id}`
+    * `POST /api/v1/platform/tenants/{tenant_id}/impersonation-sessions`
+  * Tenant:
+    * `GET /api/v1/tenant/users`
+    * `POST /api/v1/tenant/documents`
+    * `GET /api/v1/tenant/exports/{export_id}`
+
+**Rule B — Tenant context handling (critical)**
+
+* Tenant plane endpoints MUST NOT require `tenant_id` in the path; tenant is resolved strictly from auth context.
+* Platform plane endpoints MAY accept `tenant_id` explicitly because the platform operates across tenants.
+
+**Rule C — Resource naming rules**
+
+* Paths use plural nouns with hyphenless, lowercase segments.
+* Actions are represented via subresources when possible (e.g., `/exports`, `/message-outbox`); `/actions/{action}` only when a true resource is not appropriate.
+* Examples:
+  * `POST /api/v1/tenant/exports` (create export job)
+  * `POST /api/v1/tenant/exports/{export_id}/actions/cancel` (only if cancel is not modeled as a subresource)
+
+**Rule D — Admin operations within tenant plane**
+
+* Tenant admin privileged operations remain in the tenant plane (e.g., `POST /api/v1/tenant/users/{user_id}/actions/disable`).
+* Do NOT move admin actions to `/platform/` unless a platform admin is acting.
+
+**Rule E — Contract enforcement**
+
+* Contracts repository SHALL publish separate OpenAPI tags or grouped sections for `platform_*` and `tenant_*`.
+* CI MUST fail any PR that adds endpoints outside this plane naming rule.
+* Net effect: the URL alone reveals the plane; tenant isolation rules remain consistent and enforceable.
 
 ## 10. Constraints and Design Drivers
 
