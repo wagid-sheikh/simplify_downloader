@@ -454,6 +454,15 @@ General:
 * CI MUST fail any PR that adds endpoints outside this plane naming rule.
 * Net effect: the URL alone reveals the plane; tenant isolation rules remain consistent and enforceable.
 
+### 9.10 UI & Frontend Design System Governance (Web & Mobile)
+
+* Web and Mobile frontends SHALL implement a shared, tokenized design system for colors, spacing, typography, and elevation.
+* Web UI SHALL be structured around a single App Shell (master layout) with approved child layouts (e.g., platform layout, tenant layout, auth layout); all routes/pages MUST render within these layouts.
+* Mobile UI SHALL be structured around standardized screen templates (e.g., list, detail, form, wizard, sync-aware screens) that are centrally defined.
+* Pages and screens MUST compose shared components, layouts/templates, and theme tokens; ad-hoc, page-local styling systems, inline styles, or bespoke layout logic are prohibited.
+* All feature pages/screens MUST derive layout and styling exclusively from shared components, templates, and tokens, including loading/empty/error/offline states where applicable.
+* Any visual change that requires new styling MUST extend the shared design system (tokens, components, or templates) rather than introducing page-specific CSS or overrides.
+
 ## 10. Constraints and Design Drivers
 
 10.1 No architectural forks in product instantiation.

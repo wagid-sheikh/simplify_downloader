@@ -31,6 +31,16 @@ This frontend web repository is authored by AI agents under strict governance. T
 - The web UI SHALL NOT attempt to create audit records directly; audits are emitted by backend only.
 - Web repo MUST pin a contracts version (tag) and update only via explicit PR.
 
+## UI System & Design Governance (Mandatory)
+- The Web frontend MUST use a single AppShell (master layout) that owns global structure, navigation, tenant context display, notifications, and error boundaries.
+- All routes/pages MUST render within approved layouts (e.g., platform layout, tenant layout, auth layout); standalone or page-specific scaffolding is prohibited.
+- Page-level CSS, inline styling, or bespoke layout logic is NOT permitted unless the shared design system is explicitly extended.
+- All visual elements MUST be implemented using shared UI primitives and page templates sourced from the common design system.
+- If a required component does not exist, it MUST be added to the shared component library before being referenced by a page.
+- Feature flags and UI toggles MUST originate from backend-served configuration (Redis-backed snapshots) and MUST NOT be hardcoded or locally defined.
+- UI changes MUST include visual regression coverage (e.g., snapshots) for affected shared components or templates.
+- Violations of these governance rules MUST fail CI and SHALL be treated as release blockers.
+
 ## Definition of Done
 - Tests added or updated.
 - RBAC checks enforced in UI flows.
