@@ -165,6 +165,10 @@ Implementation work across all repositories SHALL be performed primarily by AI a
 5.5 AI capabilities SHALL respect dataset classification and auditing.
 5.6 Tenant data SHALL NOT cross regions except encrypted backups; tenants pinned to region at creation (US, EU, UK).
 
+**Database Standard:**
+The TSV Universal Multi-Tenant SaaS platform SHALL use **PostgreSQL** as the primary relational database.
+All canonical data models, migrations, RLS policies, and audit guarantees are defined with PostgreSQL as the target datastore.
+
 ### 5.1 Tenant Context Invariants
 
 * Every request, job, export, message, and AI call SHALL resolve exactly one `tenant_id`.
@@ -449,15 +453,15 @@ Represents all tenant records under platform governance, including lifecycle sta
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the tenant. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the tenant. |
 | tenant_code | TEXT | No | Human-readable, unique tenant code. |
 | name | TEXT | No | Display name for the tenant. |
 | status | ENUM (Pending, Active, Suspended, Deactivated) | No | Lifecycle state for provisioning and enforcement. |
-| region_id | UUID | No | References `platform_regions.id`; pins tenant to residency region. |
+| region_id | IDENTIFIER (ULID) | No | References `platform_regions.id`; pins tenant to residency region. |
 | billing_tier | TEXT | Yes | Logical tier label for entitlement checks. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
-| suspended_at | TIMESTAMP WITH TIME ZONE | Yes | When tenant was suspended, if applicable. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
+| suspended_at | TIMESTAMP (UTC) | Yes | When tenant was suspended, if applicable. |
 
 **Constraints**
 
@@ -486,13 +490,13 @@ Defines platform-supported regions and residency policies for tenant pinning and
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the region. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the region. |
 | code | TEXT | No | Region code (e.g., `US`, `EU`, `UK`). |
 | name | TEXT | No | Region display name. |
 | status | ENUM (Active, Deprecated) | No | Lifecycle for accepting new tenants. |
 | residency_policy | JSONB | Yes | Canonical residency constraints and allowed services. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
 
 **Constraints**
 
@@ -520,15 +524,15 @@ Stores platform-owned feature flags and rollout policies to control platform and
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the feature flag. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the feature flag. |
 | key | TEXT | No | Unique feature flag key. |
 | description | TEXT | Yes | Canonical description of feature purpose. |
 | scope | ENUM (Platform, Tenant) | No | Scope indicating flag applicability. |
 | default_value | JSONB | No | Default flag payload or boolean state. |
 | rollout_policy | JSONB | Yes | Targeting rules (regions, tenants, cohorts). |
 | status | ENUM (Draft, Active, Deprecated, Archived) | No | Lifecycle state. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
 
 **Constraints**
 
@@ -556,16 +560,16 @@ Captures immutable platform-managed audit events for privileged actions, exports
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the audit event. |
-| occurred_at | TIMESTAMP WITH TIME ZONE | No | Event timestamp. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the audit event. |
+| occurred_at | TIMESTAMP (UTC) | No | Event timestamp. |
 | actor_type | ENUM (PlatformUser, TenantUser, ServiceAccount) | No | Actor classification. |
-| actor_id | UUID | No | Identifier of the actor (platform or tenant context). |
-| tenant_id | UUID | Yes | References `platform_tenants.id` when event is tenant-scoped. |
+| actor_id | IDENTIFIER (ULID) | No | Identifier of the actor (platform or tenant context). |
+| tenant_id | IDENTIFIER (ULID) | Yes | References `platform_tenants.id` when event is tenant-scoped. |
 | action | TEXT | No | Canonical action name. |
 | resource_type | TEXT | No | Resource category affected. |
-| resource_id | UUID | Yes | Resource identifier when applicable. |
+| resource_id | IDENTIFIER (ULID) | Yes | Resource identifier when applicable. |
 | metadata | JSONB | Yes | Structured event metadata. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Ingestion timestamp. |
+| created_at | TIMESTAMP (UTC) | No | Ingestion timestamp. |
 
 **Constraints**
 
@@ -593,16 +597,16 @@ Records security and anomaly events (rate-limit breaches, OTP abuse, auth anomal
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the security event. |
-| occurred_at | TIMESTAMP WITH TIME ZONE | No | Event timestamp. |
-| tenant_id | UUID | Yes | References `platform_tenants.id` when tenant-affecting. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the security event. |
+| occurred_at | TIMESTAMP (UTC) | No | Event timestamp. |
+| tenant_id | IDENTIFIER (ULID) | Yes | References `platform_tenants.id` when tenant-affecting. |
 | actor_type | ENUM (PlatformUser, TenantUser, ServiceAccount, Anonymous) | No | Actor classification. |
-| actor_id | UUID | Yes | Actor identifier when available. |
+| actor_id | IDENTIFIER (ULID) | Yes | Actor identifier when available. |
 | event_type | TEXT | No | Canonical security event type. |
 | severity | ENUM (Info, Low, Medium, High, Critical) | No | Severity classification. |
 | source | TEXT | No | Source system or service emitting the event. |
 | metadata | JSONB | Yes | Structured context (IP, device, request identifiers). |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Ingestion timestamp. |
+| created_at | TIMESTAMP (UTC) | No | Ingestion timestamp. |
 
 **Constraints**
 
@@ -632,14 +636,14 @@ Stores tenant user profiles under tenant control with lifecycle and residency en
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the tenant user. |
-| tenant_id | UUID | No | References `platform_tenants.id`; RLS anchor. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the tenant user. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`; RLS anchor. |
 | email | TEXT | No | Unique per tenant email for login/notification. |
 | display_name | TEXT | Yes | Preferred display name. |
 | status | ENUM (Pending, Active, Suspended, Disabled) | No | User lifecycle state. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
-| deleted_at | TIMESTAMP WITH TIME ZONE | Yes | Soft-delete marker when applicable. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
+| deleted_at | TIMESTAMP (UTC) | Yes | Soft-delete marker when applicable. |
 
 **Constraints**
 
@@ -668,15 +672,15 @@ Holds authentication identities and credentials linked to tenant users for passw
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the identity record. |
-| tenant_id | UUID | No | References `platform_tenants.id`; RLS anchor. |
-| user_id | UUID | No | References `tenant_users.id`. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the identity record. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`; RLS anchor. |
+| user_id | IDENTIFIER (ULID) | No | References `tenant_users.id`. |
 | provider | ENUM (Password, OIDC, SAML, MFA) | No | Identity provider type. |
 | provider_subject | TEXT | No | Provider-specific subject/identifier. |
 | credential_hash | TEXT | Yes | Argon2id/bcrypt hash for password identities. |
 | status | ENUM (Active, Revoked) | No | Identity lifecycle. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
 
 **Constraints**
 
@@ -705,14 +709,14 @@ Defines tenant-level role compositions from platform-owned permission catalog.
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the tenant role. |
-| tenant_id | UUID | No | References `platform_tenants.id`. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the tenant role. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`. |
 | name | TEXT | No | Role name unique per tenant. |
 | description | TEXT | Yes | Role description. |
 | permissions | JSONB | No | Canonical list of permission identifiers. |
 | status | ENUM (Draft, Active, Deprecated, Archived) | No | Role lifecycle. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
 
 **Constraints**
 
@@ -741,13 +745,13 @@ Maps tenant users to roles, enabling scoped permissions and delegated administra
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the assignment. |
-| tenant_id | UUID | No | References `platform_tenants.id`. |
-| user_id | UUID | No | References `tenant_users.id`. |
-| role_id | UUID | No | References `tenant_roles.id`. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the assignment. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`. |
+| user_id | IDENTIFIER (ULID) | No | References `tenant_users.id`. |
+| role_id | IDENTIFIER (ULID) | No | References `tenant_roles.id`. |
 | scope | JSONB | Yes | Optional scoped restrictions (e.g., store, project). |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
 
 **Constraints**
 
@@ -775,15 +779,15 @@ Tracks tenant user sessions for authentication, timeout enforcement, and device/
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the session. |
-| tenant_id | UUID | No | References `platform_tenants.id`. |
-| user_id | UUID | No | References `tenant_users.id`. |
-| device_id | UUID | Yes | References `tenant_devices.id` when device is registered. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the session. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`. |
+| user_id | IDENTIFIER (ULID) | No | References `tenant_users.id`. |
+| device_id | IDENTIFIER (ULID) | Yes | References `tenant_devices.id` when device is registered. |
 | status | ENUM (Active, Revoked, Expired) | No | Session lifecycle. |
-| expires_at | TIMESTAMP WITH TIME ZONE | No | Absolute expiry. |
-| last_seen_at | TIMESTAMP WITH TIME ZONE | Yes | Last activity timestamp. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| expires_at | TIMESTAMP (UTC) | No | Absolute expiry. |
+| last_seen_at | TIMESTAMP (UTC) | Yes | Last activity timestamp. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
 
 **Constraints**
 
@@ -811,16 +815,16 @@ Stores tenant-scoped API keys with rotation, revocation, and auditing metadata.
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the API key. |
-| tenant_id | UUID | No | References `platform_tenants.id`. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the API key. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`. |
 | label | TEXT | No | Human-readable label. |
 | hashed_key | TEXT | No | Hashed API key material. |
 | status | ENUM (Active, Revoked) | No | Lifecycle state. |
-| expires_at | TIMESTAMP WITH TIME ZONE | Yes | Optional expiry. |
-| created_by | UUID | Yes | References `tenant_users.id` (creator). |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
-| revoked_at | TIMESTAMP WITH TIME ZONE | Yes | Revocation timestamp. |
+| expires_at | TIMESTAMP (UTC) | Yes | Optional expiry. |
+| created_by | IDENTIFIER (ULID) | Yes | References `tenant_users.id` (creator). |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
+| revoked_at | TIMESTAMP (UTC) | Yes | Revocation timestamp. |
 
 **Constraints**
 
@@ -848,16 +852,16 @@ Records time-bound, fully audited impersonation sessions initiated by authorized
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the impersonation session. |
-| tenant_id | UUID | No | References `platform_tenants.id`. |
-| impersonator_id | UUID | No | Identifier of actor initiating impersonation (platform or tenant user). |
-| target_user_id | UUID | No | References `tenant_users.id` being impersonated. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the impersonation session. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`. |
+| impersonator_id | IDENTIFIER (ULID) | No | Identifier of actor initiating impersonation (platform or tenant user). |
+| target_user_id | IDENTIFIER (ULID) | No | References `tenant_users.id` being impersonated. |
 | reason | TEXT | No | Approved justification for impersonation. |
-| expires_at | TIMESTAMP WITH TIME ZONE | No | Non-renewable expiry. |
+| expires_at | TIMESTAMP (UTC) | No | Non-renewable expiry. |
 | status | ENUM (Active, Expired, Revoked) | No | Session lifecycle. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
-| revoked_at | TIMESTAMP WITH TIME ZONE | Yes | When revoked early. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
+| revoked_at | TIMESTAMP (UTC) | Yes | When revoked early. |
 
 **Constraints**
 
@@ -885,16 +889,16 @@ Manages tenant-specific or inherited messaging/templates with approval workflows
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the template. |
-| tenant_id | UUID | No | References `platform_tenants.id`. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the template. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`. |
 | key | TEXT | No | Template key unique per tenant. |
 | name | TEXT | No | Template display name. |
 | content | JSONB | No | Structured content and localization payloads. |
 | status | ENUM (Draft, Approved, Deprecated, Archived) | No | Template lifecycle. |
 | version | INTEGER | No | Incrementing template version per tenant. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
-| approved_at | TIMESTAMP WITH TIME ZONE | Yes | Approval timestamp when status becomes Approved. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
+| approved_at | TIMESTAMP (UTC) | Yes | Approval timestamp when status becomes Approved. |
 
 **Constraints**
 
@@ -923,16 +927,16 @@ Stores outbound messages queued for asynchronous delivery with retry and DLQ han
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the message. |
-| tenant_id | UUID | No | References `platform_tenants.id`. |
-| template_id | UUID | Yes | References `tenant_templates.id` when applicable. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the message. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`. |
+| template_id | IDENTIFIER (ULID) | Yes | References `tenant_templates.id` when applicable. |
 | channel | ENUM (WhatsApp, Email, SMS, Push) | No | Delivery channel. |
 | payload | JSONB | No | Rendered content and parameters. |
 | status | ENUM (Queued, Sending, Sent, Failed, Dead) | No | Delivery lifecycle. |
 | retry_count | INTEGER | No | Number of retries attempted. |
-| next_attempt_at | TIMESTAMP WITH TIME ZONE | Yes | Scheduled next attempt. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| next_attempt_at | TIMESTAMP (UTC) | Yes | Scheduled next attempt. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
 
 **Constraints**
 
@@ -960,14 +964,14 @@ Captures delivery attempts and outcomes for tenant messages to support complianc
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the delivery log entry. |
-| tenant_id | UUID | No | References `platform_tenants.id`. |
-| message_id | UUID | No | References `tenant_message_outbox.id`. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the delivery log entry. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`. |
+| message_id | IDENTIFIER (ULID) | No | References `tenant_message_outbox.id`. |
 | attempt_number | INTEGER | No | Attempt sequence number. |
 | status | ENUM (Pending, Delivered, Failed, Retried, Dead) | No | Attempt outcome. |
 | provider_response | JSONB | Yes | Provider response payload. |
-| occurred_at | TIMESTAMP WITH TIME ZONE | No | Timestamp of the attempt. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
+| occurred_at | TIMESTAMP (UTC) | No | Timestamp of the attempt. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
 
 **Constraints**
 
@@ -996,17 +1000,17 @@ Represents tenant export jobs with lifecycle, retention, and sensitivity trackin
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the export. |
-| tenant_id | UUID | No | References `platform_tenants.id`. |
-| requested_by | UUID | Yes | References `tenant_users.id`. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the export. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`. |
+| requested_by | IDENTIFIER (ULID) | Yes | References `tenant_users.id`. |
 | export_type | TEXT | No | Logical export type identifier. |
 | status | ENUM (Queued, Running, Succeeded, Failed, Expired) | No | Export lifecycle. |
 | sensitivity | ENUM (Standard, Sensitive) | No | Sensitivity classification. |
 | retention_ttl | INTERVAL | No | Retention duration before purge. |
 | storage_url | TEXT | Yes | Signed URL or storage locator. |
-| expires_at | TIMESTAMP WITH TIME ZONE | Yes | Export availability expiry. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| expires_at | TIMESTAMP (UTC) | Yes | Export availability expiry. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
 
 **Constraints**
 
@@ -1034,13 +1038,13 @@ Tracks access to tenant exports for compliance, watermarks, and download rate en
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the download log entry. |
-| tenant_id | UUID | No | References `platform_tenants.id`. |
-| export_id | UUID | No | References `tenant_exports.id`. |
-| user_id | UUID | Yes | References `tenant_users.id` when user-authenticated. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the download log entry. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`. |
+| export_id | IDENTIFIER (ULID) | No | References `tenant_exports.id`. |
+| user_id | IDENTIFIER (ULID) | Yes | References `tenant_users.id` when user-authenticated. |
 | ip_address | TEXT | Yes | IP address of downloader. |
 | user_agent | TEXT | Yes | User agent string. |
-| occurred_at | TIMESTAMP WITH TIME ZONE | No | Download timestamp. |
+| occurred_at | TIMESTAMP (UTC) | No | Download timestamp. |
 
 **Constraints**
 
@@ -1067,16 +1071,16 @@ Stores tenant-managed documents and metadata with retention and classification c
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the document. |
-| tenant_id | UUID | No | References `platform_tenants.id`. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the document. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`. |
 | title | TEXT | No | Document title. |
 | classification | ENUM (Public, Internal, Confidential, Restricted) | No | Data classification. |
 | storage_url | TEXT | No | Storage locator or signed URL. |
 | status | ENUM (Active, Archived, Deleted) | No | Lifecycle state. |
-| created_by | UUID | Yes | References `tenant_users.id`. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
-| deleted_at | TIMESTAMP WITH TIME ZONE | Yes | Soft-delete marker when applicable. |
+| created_by | IDENTIFIER (ULID) | Yes | References `tenant_users.id`. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
+| deleted_at | TIMESTAMP (UTC) | Yes | Soft-delete marker when applicable. |
 
 **Constraints**
 
@@ -1104,16 +1108,16 @@ Registers tenant devices for session binding, risk-based access, and remote wipe
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the device. |
-| tenant_id | UUID | No | References `platform_tenants.id`. |
-| user_id | UUID | No | References `tenant_users.id`. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the device. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`. |
+| user_id | IDENTIFIER (ULID) | No | References `tenant_users.id`. |
 | device_identifier | TEXT | No | Device fingerprint or platform-specific identifier. |
 | platform | ENUM (iOS, Android, Web, Desktop) | No | Device platform. |
 | status | ENUM (Active, Suspended, Revoked) | No | Device lifecycle. |
-| last_seen_at | TIMESTAMP WITH TIME ZONE | Yes | Last observed activity. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Registration timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
-| revoked_at | TIMESTAMP WITH TIME ZONE | Yes | Revocation timestamp. |
+| last_seen_at | TIMESTAMP (UTC) | Yes | Last observed activity. |
+| created_at | TIMESTAMP (UTC) | No | Registration timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
+| revoked_at | TIMESTAMP (UTC) | Yes | Revocation timestamp. |
 
 **Constraints**
 
@@ -1142,15 +1146,15 @@ Maintains sync cursors and checkpoints for offline-first mobile clients to ensur
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the sync state record. |
-| tenant_id | UUID | No | References `platform_tenants.id`. |
-| user_id | UUID | No | References `tenant_users.id`. |
-| device_id | UUID | Yes | References `tenant_devices.id`. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the sync state record. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`. |
+| user_id | IDENTIFIER (ULID) | No | References `tenant_users.id`. |
+| device_id | IDENTIFIER (ULID) | Yes | References `tenant_devices.id`. |
 | cursor | TEXT | Yes | Logical checkpoint/token for incremental sync. |
-| last_synced_at | TIMESTAMP WITH TIME ZONE | Yes | Timestamp of last successful sync. |
+| last_synced_at | TIMESTAMP (UTC) | Yes | Timestamp of last successful sync. |
 | status | ENUM (Active, Blocked) | No | Sync enablement state. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
 
 **Constraints**
 
@@ -1179,17 +1183,17 @@ Represents tenant-scoped background jobs with explicit tenant context and lifecy
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the job. |
-| tenant_id | UUID | No | References `platform_tenants.id`. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the job. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`. |
 | job_type | TEXT | No | Logical job type identifier. |
 | status | ENUM (Queued, Running, Succeeded, Failed, Dead) | No | Job lifecycle. |
 | payload | JSONB | Yes | Job parameters. |
-| scheduled_at | TIMESTAMP WITH TIME ZONE | Yes | When job is scheduled to start. |
-| started_at | TIMESTAMP WITH TIME ZONE | Yes | Actual start time. |
-| completed_at | TIMESTAMP WITH TIME ZONE | Yes | Completion time on success or terminal failure. |
+| scheduled_at | TIMESTAMP (UTC) | Yes | When job is scheduled to start. |
+| started_at | TIMESTAMP (UTC) | Yes | Actual start time. |
+| completed_at | TIMESTAMP (UTC) | Yes | Completion time on success or terminal failure. |
 | retry_count | INTEGER | No | Number of retries attempted. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
 
 **Constraints**
 
@@ -1217,14 +1221,14 @@ Stores tenant vector embeddings for AI search and enrichment with residency and 
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the embedding record. |
-| tenant_id | UUID | No | References `platform_tenants.id`. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the embedding record. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`. |
 | source_type | TEXT | No | Source entity type (e.g., document, message). |
-| source_id | UUID | No | Identifier of the source entity within the tenant. |
-| embedding | VECTOR | No | Vector representation (logical type). |
+| source_id | IDENTIFIER (ULID) | No | Identifier of the source entity within the tenant. |
+| embedding | VECTOR (pgvector logical) | No | Vector representation (logical type). |
 | status | ENUM (Active, Deprecated) | No | Embedding lifecycle. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
 
 **Constraints**
 
@@ -1253,16 +1257,16 @@ Logs AI requests and responses for attribution, auditing, and SLA enforcement pe
 
 | Column Name | Data Type | Nullable | Description |
 | ----------- | --------- | -------- | ----------- |
-| id | UUID | No | Primary identifier for the AI request record. |
-| tenant_id | UUID | No | References `platform_tenants.id`. |
-| user_id | UUID | Yes | References `tenant_users.id` when user-initiated. |
+| id | IDENTIFIER (ULID) | No | Primary identifier for the AI request record. |
+| tenant_id | IDENTIFIER (ULID) | No | References `platform_tenants.id`. |
+| user_id | IDENTIFIER (ULID) | Yes | References `tenant_users.id` when user-initiated. |
 | request_type | TEXT | No | Logical AI capability invoked. |
 | input_reference | JSONB | Yes | References to input artifacts or prompts. |
 | output_reference | JSONB | Yes | References to outputs or summaries. |
 | status | ENUM (Pending, Succeeded, Failed) | No | Request lifecycle. |
 | latency_ms | INTEGER | Yes | Observed latency in milliseconds. |
-| created_at | TIMESTAMP WITH TIME ZONE | No | Creation timestamp. |
-| updated_at | TIMESTAMP WITH TIME ZONE | No | Last updated timestamp. |
+| created_at | TIMESTAMP (UTC) | No | Creation timestamp. |
+| updated_at | TIMESTAMP (UTC) | No | Last updated timestamp. |
 
 **Constraints**
 
