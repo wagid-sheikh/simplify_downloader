@@ -53,6 +53,12 @@ This frontend web repository is authored by AI agents under strict governance. T
 - Direct access to `platform_config` or `tenant_config` tables is prohibited outside the configuration subsystem. Frontend-generated assets MUST rely on backend-provided configuration surfaced via Redis-backed snapshots and MUST NOT introduce divergent configuration paths.
 - Consumers MUST treat the backend configuration service/module as authoritative; all feature flags or toggles exposed to the UI MUST flow from the merged platform/tenant snapshot served via Redis (`cfg:platform:{platform_config_version}` and `cfg:tenant:{tenant_id}:{tenant_config_version}` immutable JSON keys).
 - CI MUST fail on unauthorized `os.getenv()` usage, direct configuration table access, or attempts to introduce new `.env` variables outside the bootstrap allowlist. Staging and production MUST emit runtime warnings or structured security events on unauthorized environment access.
+- If a value is configurable, it MUST come from the merged Redis snapshot via the configuration subsystem. If a value is not in the snapshot, it is NOT configurable and MUST NOT be introduced via environment variables, ad-hoc Redis keys, or local constants.
+
+## Operational Compliance — Configuration & Flags
+- Web MUST NOT define feature flags in `.env`, build-time env, or local constants; all flags and toggles originate from backend endpoints that expose merged snapshots.
+- Frontend consumes configuration only via backend contract-driven endpoints; any new UI flag requires contract updates and backend exposure—UI-only flags are prohibited.
+- CI enforcement checklist: block unauthorized `os.getenv()`, block introduction of new `.env` variables, block attempts to define local flags/toggles, and fail if generated contract types are not consumed.
 
 ## Stop Conditions
 AI agent MUST stop and request human input if:
