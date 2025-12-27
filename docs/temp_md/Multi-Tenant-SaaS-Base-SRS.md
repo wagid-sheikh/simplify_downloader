@@ -391,7 +391,18 @@ General:
 9.6 Exports: Signed URLs with TTL; watermarking for PDFs.
 9.7 API versioning and naming: Base path `/api/v1/...`; breaking changes REQUIRE new version (e.g., `/api/v2`); tenant context inferred from auth for tenant-plane APIs; `tenant_id` in path only for platform-plane operations; responses MUST include correlation IDs for tracing.
 
-### 9.8 API Plane Naming Convention
+### 9.8 API Pagination and Sorting Standard
+
+* List endpoints SHALL support cursor-based pagination.
+* Default ordering SHALL be by `id` (ULID) descending: `sort=-id`.
+* Endpoints MAY support user-driven sorting via `sort` query parameter; only documented allowlisted sort keys are permitted.
+* When sorting by non-unique fields, pagination MUST be stable and deterministic using ULID as a tie-breaker:
+  * `ORDER BY <sort_field> <asc/desc>, id <asc/desc>`
+  * cursor MUST encode both `<sort_field>` and `id`.
+* If an endpoint does not support stable cursor pagination for a given sort key, it SHALL reject the request with `400` and a clear error message.
+* All supported sort keys SHALL be indexed or explicitly documented as “small dataset only.”
+
+### 9.9 API Plane Naming Convention
 
 **Rule A — Mandatory plane prefix**
 
