@@ -43,6 +43,12 @@ This backend repository is authored by AI agents under strict governance. The TS
 - RTM updated with requirement coverage.
 - Contracts updated if applicable; generated types consumed.
 
+## Configuration & Secrets Handling Rules
+- Direct access to environment variables is prohibited outside bootstrap modules. Environment variables are limited to bootstrapping PostgreSQL/Redis connectivity, secrets/signing keys, service identity/version, and observability exporters; `.env` files SHALL be near-empty.
+- Direct access to `platform_config` or `tenant_config` tables is prohibited outside the configuration subsystem. All runtime configuration MUST be read via Redis snapshots populated from these tables.
+- All services/workers/agents MUST obtain configuration through a single configuration module/service that reads Redis, falls back to configuration tables on cache miss, merges platform/tenant snapshots, and returns immutable per-request/job snapshots. Redis keyspace conventions are mandatory: `cfg:platform:{platform_config_version}` and `cfg:tenant:{tenant_id}:{tenant_config_version}` with immutable JSON snapshots.
+- CI MUST fail on unauthorized `os.getenv()` usage, direct configuration table access, or attempts to introduce new `.env` variables outside the bootstrap allowlist. Staging and production MUST emit runtime warnings or structured security events on unauthorized environment access.
+
 ## Stop Conditions
 AI agent MUST stop and request human input if:
 - Tenant boundary is unclear.
