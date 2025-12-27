@@ -42,6 +42,13 @@
 5.5 AI capabilities SHALL respect dataset classification and auditing.
 5.6 Tenant data SHALL NOT cross regions except encrypted backups; tenants pinned to region at creation (US, EU, UK).
 
+### 5.1 Tenant Context Invariants
+
+* Every request, job, export, message, and AI call SHALL resolve exactly one `tenant_id`.
+* Absence of tenant context SHALL result in immediate rejection (403).
+* Tenant context SHALL be injected at the API gateway, persisted through DB session variables, and propagated to workers, logs, metrics, and traces.
+* Cross-tenant access is forbidden except via audited impersonation.
+
 ## 6. Functional Requirements
 
 ### 6.1 Identity, Authentication, Verification
@@ -64,14 +71,15 @@
 * FR-AU-04 (Must): Enforce RLS per tenant (fail-closed); support additional sub-tenant scoping where required.
 * FR-AU-05 (Must): Background jobs SHALL set and validate tenant context explicitly.
 * FR-AU-06 (Must): Impersonation SHALL be permission-checked, audited, and follow approval safeguards.
+* FR-AU-07 (Must): Platform Admin access SHALL NOT bypass RLS; cross-tenant reads SHALL occur only via time-bound, audited impersonation.
 
 ### 6.3 Auditing, Security Events, Compliance
 
-* FR-AU-07 (Must): Immutable, append-only audit logs for auth, privileged actions, messaging, exports, AI usage, impersonation.
-* FR-AU-08 (Must): Audit-on-read capability at baseline.
-* FR-AU-09 (Must): Security events for rate limit breaches, OTP abuse, auth anomalies.
-* FR-AU-10 (Must): GDPR/UK-GDPR alignment via policy, access controls, auditability, retention; DSAR lifecycle with legal hold.
-* FR-AU-11 (Must): Tenant-scoped, exportable audit logs; access restricted to authorized roles.
+* FR-AU-08 (Must): Immutable, append-only audit logs for auth, privileged actions, messaging, exports, AI usage, impersonation.
+* FR-AU-09 (Must): Audit-on-read capability at baseline.
+* FR-AU-10 (Must): Security events for rate limit breaches, OTP abuse, auth anomalies.
+* FR-AU-11 (Must): GDPR/UK-GDPR alignment via policy, access controls, auditability, retention; DSAR lifecycle with legal hold.
+* FR-AU-12 (Must): Tenant-scoped, exportable audit logs; access restricted to authorized roles.
 
 ### 6.4 AI Layer
 
@@ -89,6 +97,7 @@
 * FR-MS-03 (Must): Rate limits per IP/user/tenant/channel; 429 with Retry-After on violations.
 * FR-MS-04 (Must): Global and tenant-level kill switches; provider backoff exponential 30s→10m.
 * FR-MS-05 (Must): Template states: Draft, Approved, Deprecated, Archived; only Approved usable; tenant overrides require approval; localization required for UI/customer-facing messages.
+* FR-MS-06 (Must): Automation-based WhatsApp Playwright/Selenium messaging is operationally fragile and SHALL be isolated behind provider abstractions to allow immediate shutdown or replacement without tenant impact.
 
 ### 6.6 Mobile & Offline
 
@@ -102,7 +111,7 @@
 * FR-RE-01 (Must): Declarative report definitions; async execution.
 * FR-RE-02 (Must): Exports async only; formats CSV, JSON, PDF, Parquet (large datasets).
 * FR-RE-03 (Must): Limits: ≤1,000,000 rows; ≤500 MB per export.
-* FR-RE-04 (Must): Sensitive exports require explicit permission, purpose declaration (free text), watermarking, short retention, signed URLs with TTL, download tracking.
+* FR-RE-04 (Must): Sensitive exports require explicit permission, purpose declaration (free text with optional future controlled enums), watermarking, short retention, signed URLs with TTL, download tracking.
 * FR-RE-05 (Must): Watermark text: “CONFIDENTIAL – Tenant: {{tenant_name}} – Generated {{timestamp}}” on every PDF page footer.
 
 ### 6.8 Requirements Traceability & Enforcement
@@ -248,3 +257,10 @@
 ### 14.3 Watermark Template
 
 * “CONFIDENTIAL – Tenant: {{tenant_name}} – Generated {{timestamp}}”
+
+### 14.4 Non-Goals
+
+* No per-tenant schema forks.
+* No customer-supplied code execution.
+* No AI autonomous actions.
+* No cross-tenant analytics.
