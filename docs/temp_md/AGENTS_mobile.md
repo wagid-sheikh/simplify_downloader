@@ -44,6 +44,12 @@ This mobile repository is authored by AI agents under strict governance. The TSV
 - Direct access to `platform_config` or `tenant_config` tables is prohibited outside the configuration subsystem. Mobile clients MUST consume configuration surfaced via backend APIs that themselves rely on Redis-hosted configuration snapshots and MUST NOT introduce local configuration forks.
 - Backend configuration service/module is authoritative; any mobile feature flags or toggles MUST derive from merged platform/tenant snapshots stored in Redis (`cfg:platform:{platform_config_version}` and `cfg:tenant:{tenant_id}:{tenant_config_version}` immutable JSON keys).
 - CI MUST fail on unauthorized `os.getenv()` usage, direct configuration table access, or attempts to introduce new `.env` variables outside the bootstrap allowlist. Staging and production MUST emit runtime warnings or structured security events on unauthorized environment access.
+- If a value is configurable, it MUST come from the merged Redis snapshot via the configuration subsystem. If a value is not in the snapshot, it is NOT configurable and MUST NOT be introduced via environment variables, ad-hoc Redis keys, or local constants.
+
+## Operational Compliance — Mobile Configuration
+- Mobile MUST treat configuration as server-authoritative; any caching MUST use only backend-provided, non-sensitive configuration payloads and respect explicit expirations.
+- UI and sync flows MUST NOT define local flags/toggles; any new mobile flag requires contracts updates and backend exposure. Offline caches MUST NOT store secrets/tokens and MUST honor the offline allowlist.
+- CI enforcement checklist: block unauthorized `os.getenv()`, block new `.env` variables, block local flag definitions, block divergence from generated contract types, and ensure configuration endpoints are the sole source for cached configuration.
 
 ## Mobile UI System & Screen Governance (Mandatory)
 - Mobile UI MUST be built using standardized screen templates (e.g., list, detail, form, wizard, offline-aware screens) that are centrally defined and versioned.

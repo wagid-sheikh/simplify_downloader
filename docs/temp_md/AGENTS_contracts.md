@@ -34,6 +34,12 @@ This contracts repository is authored by AI agents under strict governance. The 
 - Direct access to `platform_config` or `tenant_config` tables is prohibited outside the configuration subsystem. Runtime consumers MUST rely on Redis-served configuration snapshots populated from these tables.
 - Contracts MUST document that services obtain configuration only through a single configuration service/module that reads Redis, falls back to configuration tables on cache miss, merges platform/tenant snapshots, and returns immutable per-request/job snapshots. Redis keyspace conventions are mandatory: `cfg:platform:{platform_config_version}` and `cfg:tenant:{tenant_id}:{tenant_config_version}` with immutable JSON snapshots.
 - CI MUST fail on unauthorized `os.getenv()` usage, direct configuration table access, or attempts to introduce new `.env` variables outside the bootstrap allowlist. Staging and production MUST emit runtime warnings or structured security events on unauthorized environment access.
+- If a value is configurable, it MUST come from the merged Redis snapshot via the configuration subsystem. If a value is not in the snapshot, it is NOT configurable and MUST NOT be introduced via environment variables, ad-hoc Redis keys, or local constants.
+
+## Operational Compliance — Contracts
+- Contracts MUST include endpoints or schemas for delivering merged configuration snapshots to clients when applicable; exposed configuration fields MUST be typed in OpenAPI and consumed only via generated types.
+- Any new configuration surface requires simultaneous updates to contracts, generated artifacts, and downstream consumers; UI/mobile-local flags are prohibited.
+- CI enforcement checklist: breaking-change detection, verification that configuration endpoints remain typed, and regeneration of client/server types before merge.
 
 ## Definition of Done
 - Specs updated with correct versioning.

@@ -328,9 +328,48 @@ All canonical data models, migrations, RLS policies, and audit guarantees are de
 * Configuration load flow (standardized for every API request, worker job, or agent execution): (1) resolve exactly one tenant context; (2) fetch tenant snapshot from Redis with PostgreSQL fallback and repopulate on miss; (3) fetch platform snapshot from Redis with PostgreSQL fallback and repopulate on miss; (4) merge platform defaults, platform overrides, and tenant overrides; (5) expose a single immutable config snapshot for the lifetime of the request/job. No other access paths are permitted.
 * Update & invalidation: On configuration change, PostgreSQL commits the update, increments the config version, publishes `cfg:invalidate` on Redis, and services refresh lazily on next access. No restarts are required; stale configuration is prohibited.
 * Prohibited patterns: Direct `os.getenv()` usage or new environment variables outside bootstrap modules; direct reads from `platform_config` or `tenant_config` outside the configuration subsystem; hardcoded defaults for configurable behavior; per-service or per-worker divergence in configuration handling. Any violation is a governance breach.
-* Mandatory access module: A single configuration service/module (e.g., `ConfigService`) is the only component permitted to read from Redis, fall back to configuration tables, merge/validate, and return snapshots via methods such as `get_platform_config()`, `get_tenant_config(tenant_id)`, and `get_config_snapshot(tenant_id)`.
-* Enforcement: CI MUST fail on unauthorized `os.getenv()` usage, direct configuration table access, or attempts to introduce new `.env` variables. Staging and production MUST emit runtime warnings or structured security events on unauthorized environment access.
 * Outcomes guaranteed: Secrets are injected once and never duplicated; Redis is the single runtime interface; PostgreSQL remains the sole source of truth; configuration drift is eliminated across API, workers, and agents.
+
+##### 7.8.1.1 Configuration Subsystem Contract (Normative)
+
+* Mandatory access module: A single configuration service/module (e.g., `ConfigService`) is the only component permitted to read from Redis, fall back to configuration tables, merge/validate, and return snapshots via methods such as `get_platform_config()`, `get_tenant_config(tenant_id)`, and `get_config_snapshot(tenant_id)`.
+* Legal call sites:
+  * Bootstrap code MAY read the explicit environment allowlist to initialize PostgreSQL/Redis connectivity, secrets/signing keys, service identity/version, and observability exporters.
+  * All API handlers, workers, CLI jobs, and AI agents MUST obtain configuration exclusively via `ConfigService.get_config_snapshot(tenant_id)` (or equivalent single entrypoint) and treat the returned value as immutable for the lifetime of the request/job/agent execution.
+* Acceptance criterion: Any code path that needs configurability MUST demonstrate consumption of the immutable merged snapshot; alternative configuration access is non-compliant.
+* If a value is configurable, it MUST come from the merged Redis snapshot via the configuration subsystem. If a value is not in the snapshot, it is NOT configurable and MUST NOT be introduced via environment variables, ad-hoc Redis keys, or local constants.
+
+##### 7.8.1.2 Runtime Guardrails (Testable)
+
+* Unauthorized environment access outside bootstrap:
+  * STAGING/PROD: Emit a structured security event (with stack trace and violation classification) and optionally raise/abort based on severity; metricized for alerting.
+* Unauthorized direct DB reads from `platform_config` / `tenant_config` outside the configuration subsystem:
+  * STAGING/PROD: Emit the same structured security event pattern and optionally block execution in production to prevent drift.
+
+##### 7.8.1.3 Keyspace & Versioning Rules
+
+* Snapshot immutability: `cfg:platform:{platform_config_version}` and `cfg:tenant:{tenant_id}:{tenant_config_version}` keys are immutable; new versions create new keys instead of overwriting existing ones.
+* No partial or ad-hoc keys: Individual field keys (e.g., `cfg:tenant:{id}:feature_x=true`) are prohibited; only full JSON snapshots are permitted.
+* Invalidation channel contract: `cfg:invalidate` SHALL publish structured payloads containing `{scope: platform|tenant, tenant_id?: string, platform_config_version?: string, tenant_config_version?: string, reason: string, issued_at: timestamp}`. Consumers MUST respect scopes and reload snapshots atomically.
+
+##### 7.8.1.4 E2E Configuration Flow (Canonical)
+
+| Trigger | Step | Description | Output |
+| --- | --- | --- | --- |
+| API request / Worker job / Agent run | 1 | Resolve exactly one `tenant_id` (platform plane uses platform context) | Tenant context established |
+|  | 2 | Fetch tenant snapshot from Redis; on miss, load from PostgreSQL, repopulate Redis, and continue | Tenant snapshot JSON |
+|  | 3 | Fetch platform snapshot from Redis; on miss, load from PostgreSQL, repopulate Redis, and continue | Platform snapshot JSON |
+|  | 4 | Merge platform defaults/overrides with tenant overrides via configuration subsystem only | Merged immutable snapshot |
+|  | 5 | Freeze and inject snapshot into request/job/agent context for its lifetime | `ConfigSnapshot` available to downstream code |
+
+##### 7.8.1.5 CI & Enforcement Checklist
+
+* CI MUST fail on:
+  * Unauthorized `os.getenv()` usage outside bootstrap modules.
+  * Direct queries against `platform_config` / `tenant_config` outside the configuration subsystem.
+  * Introduction of new `.env` variables beyond the allowlist.
+  * Contract drift: backend/web/mobile not consuming generated types or adding UI/mobile flags not present in contracts.
+* Staging and production MUST emit runtime warnings or structured security events on unauthorized environment access or direct configuration table reads; blocking behavior in production is permitted and recommended.
 
 ### 7.9 Data Residency & Regioning
 
@@ -1360,6 +1399,14 @@ Logs AI requests and responses for attribution, auditing, and SLA enforcement pe
 **Additional Domain Tables**
 
 Additional product-layer tables MAY be defined per product repository and MUST be explicitly labeled as **product-layer** outside this Baseline appendix.
+
+---
+
+### 14.6 Documentation Definition of Done (Configuration Governance)
+
+* SRS DoD: Contains the canonical Redis-backed configuration section with keyspace + immutability + versioning, the standard load flow for API/worker/agent, the invalidation rule, explicit CI enforcement list, runtime guardrails, and the single configuration subsystem contract.
+* Backend/Web/Mobile AGENTS DoD: Each AGENTS file includes an operational compliance pattern (how handlers/workers/clients consume `ConfigSnapshot`), explicit prohibition lists (no env access, no direct config table reads, no local flags), and CI failure triggers for the prohibited patterns.
+* Contracts AGENTS DoD: Contracts document configuration delivery surfaces (endpoints/schemas), type every config field in OpenAPI, and require generated types as the sole interface for backend/web/mobile consumption.
 
 ---
 
