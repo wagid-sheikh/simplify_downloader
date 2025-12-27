@@ -43,6 +43,11 @@ This backend repository is authored by AI agents under strict governance. The TS
 - RTM updated with requirement coverage.
 - Contracts updated if applicable; generated types consumed.
 
+## Requirements Traceability & Evidence (Mandatory)
+- Each PR MUST identify requirement IDs and RTM update evidence.
+- If a change does not map to an existing requirement, the agent MUST stop and request clarification.
+- RTM artifacts SHALL NOT be duplicated or restructured per PR.
+
 ## Configuration & Secrets Handling Rules
 - Direct access to environment variables is prohibited outside bootstrap modules. Environment variables are limited to bootstrapping PostgreSQL/Redis connectivity, secrets/signing keys, service identity/version, and observability exporters; `.env` files SHALL be near-empty.
 - Direct access to `platform_config` or `tenant_config` tables is prohibited outside the configuration subsystem. All runtime configuration MUST be read via Redis snapshots populated from these tables.

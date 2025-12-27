@@ -41,12 +41,26 @@ This frontend web repository is authored by AI agents under strict governance. T
 - UI changes MUST include visual regression coverage (e.g., snapshots) for affected shared components or templates.
 - Violations of these governance rules MUST fail CI and SHALL be treated as release blockers.
 
+### Minimum Visual Regression Coverage (Mandatory)
+- Visual regression tests MUST, at minimum, cover:
+  - AppShell (master layout)
+  - All approved layouts (platform, tenant, auth)
+  - Core UI primitives (buttons, inputs, tables, modals)
+  - At least one canonical page template (list, detail, form)
+- Feature-specific pages MAY reuse existing snapshots if composed exclusively of covered templates/components.
+- Any change to shared components or layouts REQUIRES snapshot updates.
+
 ## Definition of Done
 - Tests added or updated.
 - RBAC checks enforced in UI flows.
 - Audit-significant actions instrumented or handed off to backend endpoints that audit.
 - RTM updated with requirement coverage.
 - Contracts updated if applicable; generated types regenerated/consumed.
+
+## Requirements Traceability & Evidence (Mandatory)
+- Each PR MUST identify requirement IDs and RTM update evidence.
+- If a change does not map to an existing requirement, the agent MUST stop and request clarification.
+- RTM artifacts SHALL NOT be duplicated or restructured per PR.
 
 ## Configuration & Secrets Handling Rules
 - Direct access to environment variables is prohibited outside bootstrap modules. Environment variables are limited to bootstrapping PostgreSQL/Redis connectivity, secrets/signing keys, service identity/version, and observability exporters; `.env` files SHALL be near-empty.
