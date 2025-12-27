@@ -29,6 +29,7 @@ This backend repository is authored by AI agents under strict governance. The TS
 - Observability instrumentation (metrics/traces) MUST include tenant context where applicable.
 - All DB changes MUST be via Alembic; no manual production changes.
 - Any schema migration MUST include a rollback plan (or explicit irreversible marker).
+- **Alembic Migration Naming Constraint:** Whenever an Alembic migration script is created, both the script filename and the revision identifier MUST NOT exceed 32 characters. This rule exists to prevent downstream tooling, filesystem, and CI/CD issues and SHALL be enforced by code review and CI validation.
 - RLS policies MUST be tested for any table added or modified.
 
 ## Definition of Done
