@@ -2,6 +2,57 @@
 
 ## TSV Universal Multi-Tenant SaaS Baseline
 
+
+## 0. Executive Summary
+
+The TSV Universal Multi-Tenant SaaS Baseline is the **single authoritative platform foundation** for all TSV products.
+
+All products are instantiated from this Baseline **without architectural forks**; product differences are achieved **only through configuration and policy**.
+
+### What This Baseline Guarantees
+
+**Tenant Isolation by Design**
+
+Every request, background job, export, message, and AI operation executes within **exactly one tenant context**.
+
+Row Level Security (RLS) is mandatory and fail-closed. Platform administrators **cannot bypass tenant isolation** except via time-bound, fully audited impersonation.
+
+**Security, Auditability, and Compliance Built-In**
+
+All privileged actions, exports, messaging, AI usage, and impersonation are captured in **immutable audit logs** with defined retention and legal-hold support.
+
+Secrets are never stored in code. GDPR / UK-GDPR alignment is enforced through access controls, auditability, and data-residency rules.
+
+**Explicit Operational Guarantees**
+
+The Baseline defines **numeric, testable SLAs and limits** across availability, latency, capacity, rate-limiting, authentication, and disaster recovery.
+
+There are no “industry standard” assumptions—every guarantee is enforceable via CI/CD and observability.
+
+**Offline-First and Governed AI**
+
+Mobile clients are **offline-first** with encrypted local storage and controlled data scope.
+
+AI capabilities are mandatory but governed: **no autonomous actions, no cross-tenant access, region-pinned processing, and full auditability**.
+
+**Controlled Messaging and Automation**
+
+Messaging is asynchronous, rate-limited, template-driven, and protected by kill switches.
+
+Automation-based messaging (Playwright/Selenium) is explicitly isolated to allow immediate shutdown or replacement without tenant impact.
+
+**Platform Governance**
+
+This Baseline is **upstream and authoritative**. Core security, isolation, audit, AI, and offline rules cannot be altered by product teams.
+
+All changes require formal approval and traceability enforcement.
+
+### Outcome
+
+This Baseline acts as a **platform constitution**: it prevents tenant data leaks, enforces compliance, enables safe product velocity, and supports long-term scale without architectural drift.
+
+---
+
 ## 1. Purpose and Scope
 
 1.1 The SRS defines all functional and non-functional requirements for the TSV Universal Multi-Tenant SaaS Baseline (“the Baseline”), which serves as the single, authoritative platform factory for all current and future TSV products.
