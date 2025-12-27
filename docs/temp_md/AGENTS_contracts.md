@@ -36,6 +36,12 @@ This contracts repository is authored by AI agents under strict governance. The 
 - CI MUST fail on unauthorized `os.getenv()` usage, direct configuration table access, or attempts to introduce new `.env` variables outside the bootstrap allowlist. Staging and production MUST emit runtime warnings or structured security events on unauthorized environment access.
 - If a value is configurable, it MUST come from the merged Redis snapshot via the configuration subsystem. If a value is not in the snapshot, it is NOT configurable and MUST NOT be introduced via environment variables, ad-hoc Redis keys, or local constants.
 
+### Client Configuration Delivery Contracts (Mandatory)
+
+- Any configuration exposed to clients MUST be represented in OpenAPI schemas.
+- Generated client types ARE the only permissible interface for configuration consumption.
+- Any new client-visible configuration REQUIRES a contracts update before frontend/mobile usage.
+
 ## Operational Compliance — Contracts
 - Contracts MUST include endpoints or schemas for delivering merged configuration snapshots to clients when applicable; exposed configuration fields MUST be typed in OpenAPI and consumed only via generated types.
 - Any new configuration surface requires simultaneous updates to contracts, generated artifacts, and downstream consumers; UI/mobile-local flags are prohibited.
@@ -47,6 +53,11 @@ This contracts repository is authored by AI agents under strict governance. The 
 - Generated artifacts produced and published for downstream consumption.
 - RTM updated with requirement coverage mapping.
 - Compatibility window adherence documented.
+
+## Requirements Traceability & Evidence (Mandatory)
+- Each PR MUST identify requirement IDs and RTM update evidence.
+- If a change does not map to an existing requirement, the agent MUST stop and request clarification.
+- RTM artifacts SHALL NOT be duplicated or restructured per PR.
 
 ## Stop Conditions
 AI agent MUST stop and request human input if:

@@ -245,6 +245,7 @@ All canonical data models, migrations, RLS policies, and audit guarantees are de
 
 * FR-TR-01 (Must): Every requirement SHALL map to API endpoints, DB tables, RBAC permissions, Web & Mobile UX.
 * FR-TR-02 (Must): CI/CD SHALL enforce RTM references; no implementation without traceability; drift treated as governance failure.
+* FR-TR-03 (Must): Each repository SHALL maintain a single, canonical RTM artifact; every PR MUST declare requirement IDs affected and link to RTM updates; CI MUST fail if RTM coverage is missing for functional changes.
 
 ### 6.9 Product Instantiation & Governance
 
@@ -370,6 +371,14 @@ All canonical data models, migrations, RLS policies, and audit guarantees are de
   * Introduction of new `.env` variables beyond the allowlist.
   * Contract drift: backend/web/mobile not consuming generated types or adding UI/mobile flags not present in contracts.
 * Staging and production MUST emit runtime warnings or structured security events on unauthorized environment access or direct configuration table reads; blocking behavior in production is permitted and recommended.
+
+##### 7.8.1.6 Client Configuration Delivery Contract
+
+* The backend SHALL expose a single, canonical configuration delivery interface for clients.
+* This interface SHALL return the merged, immutable configuration snapshot derived from Redis-backed platform and tenant configuration.
+* Web and Mobile clients MUST consume configuration exclusively through this interface.
+* Clients MUST NOT request partial configuration fragments or define feature flags locally.
+* The payload SHALL be versioned and typed via the contracts repository.
 
 ### 7.9 Data Residency & Regioning
 
@@ -513,6 +522,7 @@ General:
 
 11.1 RTM SHALL map each requirement to APIs, DB tables, RBAC permissions, Web/Mobile UX, and tests.
 11.2 CI/CD SHALL reject changes lacking RTM references.
+11.3 Each repository SHALL maintain a single, canonical RTM artifact; every PR MUST declare requirement IDs affected and link to RTM updates; CI MUST fail if RTM coverage is missing for functional changes.
 
 ## 12. Change Management & Governance
 
