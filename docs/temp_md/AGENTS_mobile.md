@@ -45,6 +45,16 @@ This mobile repository is authored by AI agents under strict governance. The TSV
 - Backend configuration service/module is authoritative; any mobile feature flags or toggles MUST derive from merged platform/tenant snapshots stored in Redis (`cfg:platform:{platform_config_version}` and `cfg:tenant:{tenant_id}:{tenant_config_version}` immutable JSON keys).
 - CI MUST fail on unauthorized `os.getenv()` usage, direct configuration table access, or attempts to introduce new `.env` variables outside the bootstrap allowlist. Staging and production MUST emit runtime warnings or structured security events on unauthorized environment access.
 
+## Mobile UI System & Screen Governance (Mandatory)
+- Mobile UI MUST be built using standardized screen templates (e.g., list, detail, form, wizard, offline-aware screens) that are centrally defined and versioned.
+- Screens MUST compose shared components and theme tokens; per-screen styling divergence is prohibited.
+- All screens MUST handle loading, empty, error, and offline states via shared components.
+- Offline indicators, sync banners, retry UX, and conflict states MUST use standardized components rather than screen-specific logic.
+- Mobile screens MUST NOT introduce local styling systems, inline styles, or visual overrides unless the shared component system is extended.
+- Any new UI element MUST be added to the shared component kit, documented, and reused before screen adoption.
+- Mobile UI behavior MUST remain compatible with N-1 backend API versions and MUST reflect backend-driven configuration only.
+- Forking visual behavior per screen or feature is prohibited; violations MUST fail CI and SHALL be treated as release blockers.
+
 ## Stop Conditions
 AI agent MUST stop and request human input if:
 - Tenant boundary is unclear in offline/online transitions.
