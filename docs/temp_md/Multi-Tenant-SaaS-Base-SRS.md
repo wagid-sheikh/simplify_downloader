@@ -33,6 +33,72 @@
 4.4 Deployment: Blue/green, zero-downtime support.
 4.5 Product Instantiation: Copy Baseline at tagged version; apply policy configuration only; configuration guide SHALL be provided; no architectural deviation.
 
+### 4.6 Repository Strategy & Independent Release Trains
+
+The TSV Universal Multi-Tenant SaaS Baseline SHALL be implemented using multiple independent repositories to reduce blast radius, enable independent deployment cadences, and enforce clear ownership boundaries.
+
+The following repositories are mandatory:
+
+1. Backend Repository
+
+   * FastAPI application
+   * Background workers
+   * PostgreSQL schema & migrations
+   * Tenant isolation, RLS, audit, AI, and messaging logic
+
+2. Frontend Web Repository
+
+   * React (mobile-first)
+   * Web-specific UX, RBAC enforcement, and API consumption
+
+3. Mobile Applications Repository
+
+   * Mobile applications for iOS and Android
+   * Offline-first implementation
+   * Device registry, sync logic, conflict resolution
+
+4. Contracts Repository (Authoritative)
+
+   * OpenAPI specifications (single source of truth)
+   * Shared schemas
+   * Generated types for frontend and mobile
+   * API versioning rules and compatibility guarantees
+
+Each repository SHALL:
+
+* have its own CI/CD pipeline
+* be versioned independently
+* be deployed independently
+* contain its own AGENTS.md file governing AI-agent behavior
+
+Cross-repository coupling SHALL occur only via the Contracts repository.
+
+#### Contracts Repository (Single Source of Truth)
+
+* OpenAPI specifications SHALL be authoritative.
+* Backend APIs MUST conform to the published contracts.
+* Frontend and Mobile applications MUST consume generated types from contracts.
+* Breaking changes REQUIRE:
+
+  * new API version (e.g., `/api/v2`)
+  * backward compatibility window for previous version
+  * documented migration notes
+  * Backend SHALL support N-1 contract minor version for ≥ 90 days or until mobile release adoption threshold is met.
+* Backend CI MUST fail if contracts are violated.
+* Frontend/Mobile CI MUST fail if generated types are out of sync.
+
+### 4.7 AI Agent Development Governance
+
+Implementation work across all repositories SHALL be performed primarily by AI agents (ChatGPT Codex). Each repository MUST include an AGENTS.md file that governs how AI agents operate within that repository. AGENTS.md is mandatory and enforced. Each repository SHALL maintain requirement coverage mapping to RTM (or a repo-local RTM view) and CI SHALL enforce it.
+
+### 4.8 Clarifications (Locked Assumptions)
+
+* Multi-repo architecture is intentional.
+* Independent deployments are mandatory.
+* Contracts repository is the single source of truth.
+* One AGENTS.md per repository is required.
+* AI agents are first-class contributors under governance.
+
 ## 5. Overall Constraints and Assumptions
 
 5.1 Shared schema with mandatory RLS (fail-closed).
@@ -41,6 +107,13 @@
 5.4 Offline-first for mobile is non-negotiable.
 5.5 AI capabilities SHALL respect dataset classification and auditing.
 5.6 Tenant data SHALL NOT cross regions except encrypted backups; tenants pinned to region at creation (US, EU, UK).
+
+### 5.1 Tenant Context Invariants
+
+* Every request, job, export, message, and AI call SHALL resolve exactly one `tenant_id`.
+* Absence of tenant context SHALL result in immediate rejection (403).
+* Tenant context SHALL be injected at the API gateway, persisted through DB session variables, and propagated to workers, logs, metrics, and traces.
+* Cross-tenant access is forbidden except via audited impersonation.
 
 ## 6. Functional Requirements
 
@@ -64,14 +137,15 @@
 * FR-AU-04 (Must): Enforce RLS per tenant (fail-closed); support additional sub-tenant scoping where required.
 * FR-AU-05 (Must): Background jobs SHALL set and validate tenant context explicitly.
 * FR-AU-06 (Must): Impersonation SHALL be permission-checked, audited, and follow approval safeguards.
+* FR-AU-07 (Must): Platform Admin access SHALL NOT bypass RLS; cross-tenant reads SHALL occur only via time-bound, audited impersonation.
 
 ### 6.3 Auditing, Security Events, Compliance
 
-* FR-AU-07 (Must): Immutable, append-only audit logs for auth, privileged actions, messaging, exports, AI usage, impersonation.
-* FR-AU-08 (Must): Audit-on-read capability at baseline.
-* FR-AU-09 (Must): Security events for rate limit breaches, OTP abuse, auth anomalies.
-* FR-AU-10 (Must): GDPR/UK-GDPR alignment via policy, access controls, auditability, retention; DSAR lifecycle with legal hold.
-* FR-AU-11 (Must): Tenant-scoped, exportable audit logs; access restricted to authorized roles.
+* FR-AU-08 (Must): Immutable, append-only audit logs for auth, privileged actions, messaging, exports, AI usage, impersonation.
+* FR-AU-09 (Must): Audit-on-read capability at baseline.
+* FR-AU-10 (Must): Security events for rate limit breaches, OTP abuse, auth anomalies.
+* FR-AU-11 (Must): GDPR/UK-GDPR alignment via policy, access controls, auditability, retention; DSAR lifecycle with legal hold.
+* FR-AU-12 (Must): Tenant-scoped, exportable audit logs; access restricted to authorized roles.
 
 ### 6.4 AI Layer
 
@@ -89,6 +163,7 @@
 * FR-MS-03 (Must): Rate limits per IP/user/tenant/channel; 429 with Retry-After on violations.
 * FR-MS-04 (Must): Global and tenant-level kill switches; provider backoff exponential 30s→10m.
 * FR-MS-05 (Must): Template states: Draft, Approved, Deprecated, Archived; only Approved usable; tenant overrides require approval; localization required for UI/customer-facing messages.
+* FR-MS-06 (Must): Automation-based WhatsApp Playwright/Selenium messaging is operationally fragile and SHALL be isolated behind provider abstractions to allow immediate shutdown or replacement without tenant impact.
 
 ### 6.6 Mobile & Offline
 
@@ -102,7 +177,7 @@
 * FR-RE-01 (Must): Declarative report definitions; async execution.
 * FR-RE-02 (Must): Exports async only; formats CSV, JSON, PDF, Parquet (large datasets).
 * FR-RE-03 (Must): Limits: ≤1,000,000 rows; ≤500 MB per export.
-* FR-RE-04 (Must): Sensitive exports require explicit permission, purpose declaration (free text), watermarking, short retention, signed URLs with TTL, download tracking.
+* FR-RE-04 (Must): Sensitive exports require explicit permission, purpose declaration (free text with optional future controlled enums), watermarking, short retention, signed URLs with TTL, download tracking.
 * FR-RE-05 (Must): Watermark text: “CONFIDENTIAL – Tenant: {{tenant_name}} – Generated {{timestamp}}” on every PDF page footer.
 
 ### 6.8 Requirements Traceability & Enforcement
@@ -198,6 +273,53 @@
 8.4 AI data: embeddings and processing in-tenant region; no cross-tenant/regional mixing; vector update SLAs per 6.4.
 8.5 Retention: Audit/security events 7 years; access logs 90d; app logs 30d; metrics/traces 14–30d; legal hold indefinite.
 
+### Table Naming Standards
+
+#### Platform Tables
+
+Prefix: `platform_`
+Examples:
+
+* `platform_tenants`
+* `platform_regions`
+* `platform_feature_flags`
+* `platform_audit_events`
+
+#### Tenant Tables
+
+Prefix: `tenant_`
+Examples:
+
+* `tenant_users`
+* `tenant_roles`
+* `tenant_orders`
+* `tenant_documents`
+
+Rules:
+
+* MUST include `tenant_id`
+* MUST be protected by RLS
+* MUST not contain cross-tenant data
+
+#### Reference Tables
+
+Prefix: `ref_`
+Examples:
+
+* `ref_countries`
+* `ref_currencies`
+
+Rules:
+
+* Read-only
+* No tenant-derived data
+
+General:
+
+* snake_case
+* plural nouns
+* junction tables: `tenant_user_roles`
+
 ## 9. Interfaces
 
 9.1 API: Versioned FastAPI; strict timeouts; rate-limited.
@@ -206,6 +328,7 @@
 9.4 Messaging: WhatsApp via Playwright/Selenium MVP; future Meta Cloud API drop-in.
 9.5 Integrations: Ticketing (v1), Analytics (v1), Payment Gateway (v2).
 9.6 Exports: Signed URLs with TTL; watermarking for PDFs.
+9.7 API versioning and naming: Base path `/api/v1/...`; breaking changes REQUIRE new version (e.g., `/api/v2`); tenant context inferred from auth for tenant-plane APIs; `tenant_id` in path only for platform-plane operations; responses MUST include correlation IDs for tracing.
 
 ## 10. Constraints and Design Drivers
 
@@ -248,3 +371,41 @@
 ### 14.3 Watermark Template
 
 * “CONFIDENTIAL – Tenant: {{tenant_name}} – Generated {{timestamp}}”
+
+### 14.4 Non-Goals
+
+* No per-tenant schema forks.
+* No customer-supplied code execution.
+* No AI autonomous actions.
+* No cross-tenant analytics.
+
+### 14.5 Baseline Required Tables
+
+#### Platform
+
+* `platform_tenants`
+* `platform_regions`
+* `platform_feature_flags`
+* `platform_audit_events`
+* `platform_security_events`
+
+#### Tenant (RLS-Protected)
+
+* `tenant_users`
+* `tenant_identities`
+* `tenant_sessions`
+* `tenant_api_keys`
+* `tenant_roles`
+* `tenant_role_assignments`
+* `tenant_impersonation_sessions`
+* `tenant_templates`
+* `tenant_message_outbox`
+* `tenant_message_delivery_log`
+* `tenant_exports`
+* `tenant_export_download_log`
+* `tenant_documents`
+* `tenant_devices`
+* `tenant_sync_state`
+* `tenant_jobs`
+* `tenant_ai_embeddings`
+* `tenant_ai_requests_log`
