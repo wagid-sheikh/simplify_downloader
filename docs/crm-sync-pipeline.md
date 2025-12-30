@@ -193,12 +193,20 @@
   * using notification_recipients: For all the pipelines and enviroment notification should be sent/set to "wagid.sheikh@gmail.com"
   * Default email/notification templates for this phase (td_orders_sync, uc_orders_sync, bank_sync):
     * Codes and subjects:
-      - `td_orders_sync`: subject `TD Orders Sync – {{status}}`, body placeholders include `{{run_id}}`, `{{overall_status}}`, per-store summaries.
-      - `uc_orders_sync`: subject `UC Orders Sync – {{status}}`, body placeholders include `{{run_id}}`, `{{overall_status}}`, per-store summaries.
-      - `bank_sync`: subject `Bank Sync – {{status}}`, body placeholders include `{{run_id}}`, `{{overall_status}}`, file/process summaries.
-    * Status mapping: map pipeline_run_summaries.status values `ok`, `warning`, `error` directly to notification status; include per-store status blocks plus overall rollup.
-    * Recipients: default to `wagid.sheikh@gmail.com` via notification_recipients; allow environment-level overrides through existing tables but keep this as the seeded default.
-    * Aggregation for multi-store runs: include a section per store (status, message, counts) and an overall summary; warn-level aggregation when some stores fail and others succeed.
+      - `td_orders_sync`: subject `TD Orders Sync – {{status}}`
+      - `uc_orders_sync`: subject `UC Orders Sync – {{status}}`
+      - `bank_sync`: subject `Bank Sync – {{status}}`
+    * Bodies (one template per pipeline; render status-specific blocks):
+      - Header: include `Run ID: {{run_id}}`, `Overall Status: {{overall_status}}`, and run timestamps.
+      - Per-store sections (td_orders_sync, uc_orders_sync): loop through stores with `store_code`, `status`, counts, and any `error_message`; include the deterministic filenames when available.
+      - Bank section: list each processed file with `status`, row counts, and any error reason.
+      - Status variants:
+        - **ok:** emphasize success and counts per store/file, list output filenames.
+        - **warning:** highlight mixed outcomes (some stores/files failed), include failed store codes/files with reasons, still list successes.
+        - **error:** all failed; include concise error summaries and retry hints.
+    * Status mapping: map `pipeline_run_summaries.status` values `ok`, `warning`, `error` directly to notification status; reuse the same template body with conditional sections per status.
+    * Recipients: default to `wagid.sheikh@gmail.com` via `notification_recipients`; pipelines map to this recipient unless the environment overrides the mapping.
+    * Aggregation for multi-store runs: always render per-store status blocks plus an overall rollup line; warning aggregation applies when at least one store succeeds and one fails.
 
 ### Usage of "store_master" for pipeline development
 
@@ -985,9 +993,15 @@ The table structure of `stg_bank` and `bank` are almost identical. If stg_bank.r
   1. Launch Playwright context with `storageState` pointing to the store file if it exists.
   2. Navigate to `store_master.sync_config.urls.home` to verify session validity.
   3. Session-expiry detection signals: redirect to login URL, appearance of login form selectors, or absence of logged-in controls (e.g., Reports/Order links). Any of these must trigger a re-login.
-- On expiry: perform full login with credentials + store code, regenerate a fresh context, and overwrite the same `{store_code}_storage_state.json`. Retry the navigation + download flow once after refresh; on persistent failure mark the store run as failed.
+- On expiry: perform full login with credentials + store code, regenerate a fresh context, and overwrite the same `{store_code}_storage_state.json`. Retry the navigation + download flow once after refresh; on persistent failure mark the store run as failed. Keep expiry handling store-isolated—do not let one store’s failure delete or reuse another store’s cookies.
 - Do not cross-store state: never reuse one store’s storage state for another store.
 - URLs after login auto-embed `{store_code}`; do **not** hardcode `a668` or any specific code—always derive from `store_master.store_code`.
+
+#### TD Playwright iframe entry and hydration readiness
+
+- Iframe entry: always target `frameLocator('#ifrmReport')` (preferred) or `contentFrame()` once attached. Wait for the iframe to be attached with a non-empty `src` (typically `reports.quickdrycleaning.com/...`).
+- Hydration waits: inside the iframe, wait for the spinner to disappear **or** for known controls to become visible (e.g., `Expand`, `Download Historical Report`, `Generate Report`, `Request Report`). Prefer `expect(locator).to_be_visible()` over network idle waits.
+- Locator preference: use role-based locators first (`getByRole("button", { name: "Generate Report" })`, `getByRole("link", { name: /Download historical report/i })`). If those fail due to custom components, fall back to text locators such as `locator("text=Download Historical Report")` or `locator("text=Expand")`.
 
 ### Navigating to Login & Home Page
 
@@ -1061,6 +1075,16 @@ After login, navigate to Reports → Sales and Delivery and verify the container
 - After requesting, wait for the spinner/loading animation to finish and for the “Report Requests” table to appear. Locate the row whose date range text exactly matches the requested UI-formatted range `DD Mon YYYY - DD Mon YYYY`; if multiple matches exist, pick the newest entry before clicking “Download” in that row only.
 - Use `page.waitForEvent('download')` (scoped to the click) and save using `{store_master.store_code}_td_sales_{YYYYMMDDD-from}_{YYYYMMDDD-to}.xlsx` (confirm whether the CRM emits `YYYYMMDDD` vs `YYYYMMDD` and adjust once validated).
 
+#### TD Orders/Sales filename and date-range matching rules
+
+- Deterministic filenames after saving downloads:
+  - Orders: `{store_code}_td_orders_{YYYYMMDDD-from}_{YYYYMMDDD-to}.xlsx`
+  - Sales: `{store_code}_td_sales_{YYYYMMDDD-from}_{YYYYMMDDD-to}.xlsx`
+- Confirm whether the CRM date tokens are 7 or 8 digits; if the UI emits `YYYYMMDD`, switch to that format consistently after validation.
+- Report Requests table validation:
+  - Do not click Download until a row with date text exactly matching `DD Mon YYYY - DD Mon YYYY` for the requested window is visible.
+  - When multiple matching rows exist, pick the newest/top-most entry (latest timestamp/status) before triggering the download.
+
 ---
 
 ## Pipeline uc_orders_sync development guidelines
@@ -1082,6 +1106,12 @@ After login, navigate to Reports → Sales and Delivery and verify the container
 
 ### Excel File 1: Orders Data
 
+- UC Playwright selector and readiness guidance:
+  - Navigation: click the primary navigation link labeled **“GST Report”** (prefer role-based locator) to open the GST view.
+  - Overlay: headings **“Start Date”** and **“End Date”** with buttons **“Apply”** and **“Cancel”**; export button labeled **“Export Report”**.
+  - Date display: the selected range renders as `Dec 05, 2025 - Dec 30, 2025` (format `MMM DD, YYYY - MMM DD, YYYY`).
+  - Readiness cues: overlay is closed, the table is re-rendered, and any spinner/loader is gone before clicking **Export Report**.
+  - Session reuse/expiry: reuse `{store_code}_storage_state.json` per store; treat redirects to login, login form visibility, or missing logged-in controls (e.g., GST Report link absent) as expiry and re-login once before failing.
 - Navigation locator: use the application’s primary navigation link labeled “GST Report” (role-based locator preferred) under the Reports menu to enter the GST view.
 - Confirm the application routes to https://store.ucleanlaundry.com/gst-report and the GST Report view is rendered (Angular SPA content is client-side within the app shell).
 - Overlay controls: the date overlay shows headings “Start Date” and “End Date” with buttons “Apply” and “Cancel”; the export action is the “Export Report” button.
