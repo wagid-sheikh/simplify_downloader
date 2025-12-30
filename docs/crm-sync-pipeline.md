@@ -134,14 +134,16 @@
 
 ### reports
 
-- Reports live under `app/reports/{report_name}` with orchestrators per sub-pipeline. Expected sub-pipelines (matching existing pipeline codes and notification seeds): `daily_sales_report`, `month_to_date_sales`, `daily_order_processing`, `pending_deliveries`, `pending_leads_conversion`, `package_sale_conversion`, and `pending_payment_reconciliation`.
-- Each sub-pipeline follows the same orchestration contract as other pipelines: generate `run_id`/`run_date`, write to `pipelines`/`pipeline_run_summaries`, and emit notifications via `notification_profiles` + `email_templates`.
-- Scripts:
+> **Phase 2 only (deferred):** All reports work (folders, sub-pipelines, scripts, and runners) is deferred to Phase 2. No reports code, migrations, or notification wiring will be delivered in the current phase; this section is retained only for planning continuity.
+
+- Folder structure: `app/reports/{report_name}` with one orchestrator per sub-pipeline. Expected sub-pipelines (matching existing pipeline codes and notification seeds): `daily_sales_report`, `month_to_date_sales`, `daily_order_processing`, `pending_deliveries`, `pending_leads_conversion`, `package_sale_conversion`, and `pending_payment_reconciliation`.
+- Idempotency: each sub-pipeline must be re-runnable; repeated runs for the same window must not duplicate output artifacts or DB writes. Use the same run_id / logging semantics as other pipelines and append-only outputs guarded by business keys when applicable.
+- Orchestration contract: generate `run_id`/`run_date`, write to `pipelines`/`pipeline_run_summaries`, and emit notifications via `notification_profiles` + `email_templates` following the existing dashboard_downloader pattern.
+- Scripts per report:
   - Local runners: `scripts/run_local_reports_daily_sales.sh`, `scripts/run_local_reports_month_to_date_sales.sh`, `scripts/run_local_reports_daily_order_processing.sh`, `scripts/run_local_reports_pending_deliveries.sh`, `scripts/run_local_reports_pending_leads_conversion.sh`, `scripts/run_local_reports_package_sale_conversion.sh`, `scripts/run_local_reports_pending_payment_reconciliation.sh`.
-  - Prod runners: same names with `run_prod_*.sh`, mirroring dashboard_downloader script patterns (env validation, run_id propagation, error handling).
-  - Sequential runner: a meta-script `scripts/run_reports_sequential.sh` should execute the sub-pipelines in the order listed above, stopping on failure by default but allowing a `--continue-on-error` flag to log warnings and proceed. It should aggregate overall status following the standard ok/warning/error rules.
+  - Prod runners: `scripts/run_prod_reports_daily_sales.sh`, `scripts/run_prod_reports_month_to_date_sales.sh`, `scripts/run_prod_reports_daily_order_processing.sh`, `scripts/run_prod_reports_pending_deliveries.sh`, `scripts/run_prod_reports_pending_leads_conversion.sh`, `scripts/run_prod_reports_package_sale_conversion.sh`, `scripts/run_prod_reports_pending_payment_reconciliation.sh` (mirror dashboard_downloader script conventions: env validation, run_id propagation, error handling, log forwarding).
+- All-reports runner: `scripts/run_reports_sequential.sh` executes the sub-pipelines in the order above. Default behavior stops on the first failure; a `--continue-on-error` flag logs warnings and proceeds. Overall status should follow ok/warning/error rollup rules consistent with other pipelines.
 - Data sources: reuse ingested/staged tables from TD/UC/bank pipelines; no new source scraping is expected for reports, only querying + PDF/CSV output as defined by each sub-pipeline spec.
-- **Phase 2 only (deferred):** All report sub-pipelines, scripts, and runner behaviors are restored here for planning continuity but explicitly deferred. No code, migrations, or notification wiring for reports will be delivered in the current phase.
 
 ---
 
@@ -220,6 +222,18 @@
 - TD Sales staging (`stg_td_sales`): upsert/merge on `{store_code, order_number, payment_date}` with the same key alignment in `td_sales`.
 - UC Orders staging (`stg_uc_orders`): upsert/merge on `{store_code, order_number, invoice_date}`; ensure the production table enforces the same uniqueness to avoid drift.
 - Bank staging (`stg_bank`): upsert/merge on `{row_id}` and preserve that uniqueness in `bank` so repeated ingests update rather than duplicate rows.
+
+### DB alignment prerequisites (before Playwright)
+
+- Enforce the following unique constraints and use them as upsert keys in staging and production tables (already referenced above):
+  - `stg_td_orders`: unique on `(store_code, order_number, order_date)`; production `td_orders` must enforce the same business key for idempotent re-runs.
+  - `stg_td_sales`: unique on `(store_code, order_number, payment_date)`; production `td_sales` must match.
+  - `stg_uc_orders`: unique on `(store_code, order_number, invoice_date)`; production `uc_orders` must match.
+  - `stg_bank`: unique on `(row_id)`; production `bank` must match.
+- Alembic migration expectations (to be completed before Playwright automation starts):
+  - Apply required table creates/alters to reflect the schemas specified in this document, including indexes/constraints for the business keys above.
+  - Seed data for pipelines, notification_profiles, notification_recipients, and email_templates per the earlier seeding guidance (pipeline codes for TD/UC/bank and reports).
+  - Ensure migrations are idempotent: safe re-runs without duplicate seeds and with conditional constraint/index creation where applicable.
 
 ### Usage of "store_master" for pipeline development
 
@@ -995,6 +1009,16 @@ The table structure of `stg_bank` and `bank` are almost identical. If stg_bank.r
 
 ## Playwright Orchestration
 
+### Phase 1 Playwright scope (after DB alignment)
+
+- First executable slice: **TD Orders** only — perform login with session probe, enter iframe, and wait for hydration. No date selection or download in this increment.
+  - Steps: launch per-store context with storage_state probe → navigate to home with store_code in URL → open Reports → Orders container → enter iframe `#ifrmReport` → wait for iframe `src` to be non-empty → wait for hydration cues (spinner gone or primary controls visible).
+  - Outputs to capture during runs:
+    - Observed selectors/roles inside the iframe (buttons/links like Expand, Download Historical Report, Generate Report).
+    - Spinner/loader cues and how they disappear (classes, aria labels, or text).
+    - Iframe DOM details: final `src`, presence of nested frames if any, and any accessibility roles that worked for locators.
+- TD Sales and UC flows are **on hold** until this slice is validated; keep their selectors unchanged for now.
+
 ## Pipeline td_orders_sync development guidelines
 
 *Introduction* this pipeline is supposed to download orders and sales data for TD group stores (store_master.sync_group = 'TD'). Two Excel files will be downloaded & ingested as per mapping already given above. Pull records from store_master where sync_group = 'TD' and sync_orders_flag = true (there will be multiple rows), For each store_master row, open a fresh browser context, perform login, navigate to home, then download Orders and Sales & Delivery data before closing the context.
@@ -1069,7 +1093,7 @@ Workflow inside iframe (in order):
 7) Download:
    - Do not click Download until the row text exactly matches `DD Mon YYYY - DD Mon YYYY` for the requested window; when multiple matches exist, pick the newest/top-most entry before proceeding.
    - Wrap the exact click that triggers download in `page.expect_download()` / `page.waitForEvent('download')` to avoid race conditions, then save to disk with a deterministic filename:
-     `{store_master.store_code}_td_orders_{YYYYMMDDD-from}_{YYYYMMDDD-to}.xlsx`. Confirm whether the intended date token is `YYYYMMDDD` or standard `YYYYMMDD`; align the saved filename format once confirmed.
+    `{store_master.store_code}_td_orders_{YYYYMMDD-from}_{YYYYMMDD-to}.xlsx`. Confirm whether the intended date token is `YYYYMMDD`; align the saved filename format once confirmed.
 8) Locator rules:
 
 - Prefer getByRole within the iframe:
@@ -1088,13 +1112,13 @@ After login, navigate to Reports → Sales and Delivery and verify the container
 - Prefer role-based locators (`getByRole("button", { name: "Generate Report" })`, `"Request Report"`, `"Download"`) with text fallbacks.
 - Inside the iframe: click the link/button labeled “Download historical report”; wait until the “Generate Report” button becomes visible and click it; a date-range overlay opens—set From and To dates using the date picker (or fill the inputs if they exist) and click “Update” to close the overlay; then click “Request Report”.
 - After requesting, wait for the spinner/loading animation to finish and for the “Report Requests” table to appear. Locate the row whose date range text exactly matches the requested UI-formatted range `DD Mon YYYY - DD Mon YYYY`; if multiple matches exist, pick the newest entry before clicking “Download” in that row only.
-- Use `page.waitForEvent('download')` (scoped to the click) and save using `{store_master.store_code}_td_sales_{YYYYMMDDD-from}_{YYYYMMDDD-to}.xlsx`. Confirm whether the intended date token is `YYYYMMDDD` or standard `YYYYMMDD` and apply the chosen format consistently after validation.
+- Use `page.waitForEvent('download')` (scoped to the click) and save using `{store_master.store_code}_td_sales_{YYYYMMDD-from}_{YYYYMMDD-to}.xlsx`. Confirm whether the intended date token is `YYYYMMDD` and apply the chosen format consistently after validation.
 
 #### TD Orders/Sales filename and date-range matching rules
 
 - Deterministic filenames after saving downloads:
-  - Orders: `{store_code}_td_orders_{YYYYMMDDD-from}_{YYYYMMDDD-to}.xlsx`
-  - Sales: `{store_code}_td_sales_{YYYYMMDDD-from}_{YYYYMMDDD-to}.xlsx`
+  - Orders: `{store_code}_td_orders_{YYYYMMDD-from}_{YYYYMMDD-to}.xlsx`
+  - Sales: `{store_code}_td_sales_{YYYYMMDD-from}_{YYYYMMDD-to}.xlsx`
 - Confirm whether the CRM date tokens are 7 or 8 digits; if the UI emits `YYYYMMDD`, switch to that format consistently after validation.
 - Report Requests table validation:
   - Do not click Download until a row with date text exactly matching `DD Mon YYYY - DD Mon YYYY` for the requested window is visible.
