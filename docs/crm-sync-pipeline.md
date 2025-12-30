@@ -356,7 +356,7 @@ create table stg_td_orders (
     run_date            timestamptz,
     cost_center         varchar(8),
     store_code          varchar(8),
-    order_datetime	    timestamptz,
+    order_date	    timestamptz,
     order_number        varchar(12),
     customer_code	    varchar(12),
     customer_name	    varchar(128),
@@ -509,7 +509,7 @@ create table orders (
     source_system       varchar(12) not null,
     order_number        varchar(12) not null,
     invoice_number      varchar(12),
-    order_datetime      timestamptz not null,
+    order_date      timestamptz not null,
     customer_code       varchar(12),
     customer_name       varchar(128) not null,
     mobile_number       varchar(16) not null,
@@ -667,50 +667,50 @@ Following are expected columns to be present in excel file `order-report.xlsx` d
 
 #### TD `order-report.xlsx` → `stg_td_orders` mapping
 
-| #   | TD Excel Column       | Target column                         | Notes / Transform                                                                |
-| --- | --------------------- | ------------------------------------- | -------------------------------------------------------------------------------- |
-| 1   | Order Date / Time     | `stg_td_orders.order_datetime`        | `'Order Date / Time' → stg_td_orders.order_datetime`                             |
-| 2   | Order No.             | `stg_td_orders.order_number`          | `'Order No.' → stg_td_orders.order_number`                                       |
-| 3   | Customer Code         | `stg_td_orders.customer_code`         | `'Customer Code' → stg_td_orders.customer_code`                                  |
-| 4   | Name                  | `stg_td_orders.customer_name`         | `'Name' → stg_td_orders.customer_name`                                           |
-| 5   | Address               | `stg_td_orders.customer_address`      | `'Address' → stg_td_orders.customer_address`                                     |
-| 6   | Phone                 | `stg_td_orders.mobile_number`         | `'Phone' → stg_td_orders.mobile_number`                                          |
-| 7   | Preference            | `stg_td_orders.preference`            | `'Preference' → stg_td_orders.preference`                                        |
-| 8   | Due Date              | `stg_td_orders.due_date`              | `'Due Date' → stg_td_orders.due_date`; **if null** use `order_datetime + 3 days` |
-| 9   | Last Activity         | `stg_td_orders.last_activity`         | `'Last Activity' → stg_td_orders.last_activity`                                  |
-| 10  | Pcs.                  | `stg_td_orders.pieces`                | `'Pcs.' → stg_td_orders.pieces`                                                  |
-| 11  | Weight                | `stg_td_orders.weight`                | `'Weight' → stg_td_orders.weight`                                                |
-| 12  | Gross Amount          | `stg_td_orders.gross_amount`          | `'Gross Amount' → stg_td_orders.gross_amount`                                    |
-| 13  | Discount              | `stg_td_orders.discount`              | `'Discount' → stg_td_orders.discount`                                            |
-| 14  | Tax                   | `stg_td_orders.tax_amount`            | `'Tax' → stg_td_orders.tax_amount`                                               |
-| 15  | Net Amount            | `stg_td_orders.net_amount`            | `'Net Amount' → stg_td_orders.net_amount`                                        |
-| 16  | Advance               | `stg_td_orders.advance`               | `'Advance' → stg_td_orders.advance`                                              |
-| 17  | Paid                  | `stg_td_orders.paid`                  | `'Paid' → stg_td_orders.paid`                                                    |
-| 18  | Adjustment            | `stg_td_orders.adjustment`            | `'Adjustment' → stg_td_orders.adjustment`                                        |
-| 19  | Balance               | `stg_td_orders.balance`               | `'Balance' → stg_td_orders.balance`                                              |
-| 20  | Advance Received      | `stg_td_orders.advance_received`      | `'Advance Received' → stg_td_orders.advance_received`                            |
-| 21  | Advance Used          | `stg_td_orders.advance_used`          | `'Advance Used' → stg_td_orders.advance_used`                                    |
-| 22  | Booked By             | `stg_td_orders.booked_by`             | `'Booked By' → stg_td_orders.booked_by`                                          |
-| 23  | Workshop Note         | `stg_td_orders.workshop_note`         | `'Workshop Note' → stg_td_orders.workshop_note`                                  |
-| 24  | Order Note            | `stg_td_orders.order_note`            | `'Order Note' → stg_td_orders.order_note`                                        |
-| 25  | Home Delivery         | `stg_td_orders.home_delivery`         | `'Home Delivery' → stg_td_orders.home_delivery`                                  |
-| 26  | Area Location         | `stg_td_orders.area_location`         | `'Area Location' → stg_td_orders.area_location`                                  |
-| 27  | Garments Inspected By | `stg_td_orders.garments_inspected_by` | `'Garments Inspected By' → stg_td_orders.garments_inspected_by`                  |
-| 28  | Customer GSTIN        | `stg_td_orders.customer_gstin`        | `'Customer GSTIN' → stg_td_orders.customer_gstin`                                |
-| 29  | Registration Source   | `stg_td_orders.registration_source`   | `'Registration Source' → stg_td_orders.registration_source`                      |
-| 30  | Order From POS        | `stg_td_orders.order_from_pos`        | `'Order From POS' → stg_td_orders.order_from_pos`                                |
-| 31  | Package               | `stg_td_orders.package`               | `'Package' → stg_td_orders.package`                                              |
-| 32  | Package Type          | `stg_td_orders.package_type`          | `'Package Type' → stg_td_orders.package_type`                                    |
-| 33  | Package Name          | `stg_td_orders.package_name`          | `'Package Name' → stg_td_orders.package_name`                                    |
-| 34  | Feedback              | `stg_td_orders.feedback`              | `'Feedback' → stg_td_orders.feedback`                                            |
-| 35  | Tags                  | `stg_td_orders.tags`                  | `'Tags' → stg_td_orders.tags`                                                    |
-| 36  | Comment               | `stg_td_orders.comment`               | `'Comment' → stg_td_orders.comment`                                              |
-| 37  | Primary Services      | `stg_td_orders.primary_service`       | `'Primary Services' → stg_td_orders.primary_service`                             |
-| 38  | Top Up/Extra Service  | `stg_td_orders.topup_service`         | `'Top Up/Extra Service' → stg_td_orders.topup_service`                           |
-| 39  | Order Status          | `stg_td_orders.order_status`          | `'Order Status' → stg_td_orders.order_status`                                    |
-| 40  | Last Payment Activity | `stg_td_orders.last_payment_activity` | `'Last Payment Activity' → stg_td_orders.last_payment_activity`                  |
-| 41  | Package Payment Info  | `stg_td_orders.package_payment_info`  | `'Package Payment Info' → stg_td_orders.package_payment_info`                    |
-| 42  | Coupon Code           | `stg_td_orders.coupon_code`           | `'Coupon Code' → stg_td_orders.coupon_code`                                      |
+| #   | TD Excel Column       | Target column                         | Notes / Transform                                                            |
+| --- | --------------------- | ------------------------------------- | ---------------------------------------------------------------------------- |
+| 1   | Order Date / Time     | `stg_td_orders.order_date`            | `'Order Date / Time' → stg_td_orders.order_date`                             |
+| 2   | Order No.             | `stg_td_orders.order_number`          | `'Order No.' → stg_td_orders.order_number`                                   |
+| 3   | Customer Code         | `stg_td_orders.customer_code`         | `'Customer Code' → stg_td_orders.customer_code`                              |
+| 4   | Name                  | `stg_td_orders.customer_name`         | `'Name' → stg_td_orders.customer_name`                                       |
+| 5   | Address               | `stg_td_orders.customer_address`      | `'Address' → stg_td_orders.customer_address`                                 |
+| 6   | Phone                 | `stg_td_orders.mobile_number`         | `'Phone' → stg_td_orders.mobile_number`                                      |
+| 7   | Preference            | `stg_td_orders.preference`            | `'Preference' → stg_td_orders.preference`                                    |
+| 8   | Due Date              | `stg_td_orders.due_date`              | `'Due Date' → stg_td_orders.due_date`; **if null** use `order_date + 3 days` |
+| 9   | Last Activity         | `stg_td_orders.last_activity`         | `'Last Activity' → stg_td_orders.last_activity`                              |
+| 10  | Pcs.                  | `stg_td_orders.pieces`                | `'Pcs.' → stg_td_orders.pieces`                                              |
+| 11  | Weight                | `stg_td_orders.weight`                | `'Weight' → stg_td_orders.weight`                                            |
+| 12  | Gross Amount          | `stg_td_orders.gross_amount`          | `'Gross Amount' → stg_td_orders.gross_amount`                                |
+| 13  | Discount              | `stg_td_orders.discount`              | `'Discount' → stg_td_orders.discount`                                        |
+| 14  | Tax                   | `stg_td_orders.tax_amount`            | `'Tax' → stg_td_orders.tax_amount`                                           |
+| 15  | Net Amount            | `stg_td_orders.net_amount`            | `'Net Amount' → stg_td_orders.net_amount`                                    |
+| 16  | Advance               | `stg_td_orders.advance`               | `'Advance' → stg_td_orders.advance`                                          |
+| 17  | Paid                  | `stg_td_orders.paid`                  | `'Paid' → stg_td_orders.paid`                                                |
+| 18  | Adjustment            | `stg_td_orders.adjustment`            | `'Adjustment' → stg_td_orders.adjustment`                                    |
+| 19  | Balance               | `stg_td_orders.balance`               | `'Balance' → stg_td_orders.balance`                                          |
+| 20  | Advance Received      | `stg_td_orders.advance_received`      | `'Advance Received' → stg_td_orders.advance_received`                        |
+| 21  | Advance Used          | `stg_td_orders.advance_used`          | `'Advance Used' → stg_td_orders.advance_used`                                |
+| 22  | Booked By             | `stg_td_orders.booked_by`             | `'Booked By' → stg_td_orders.booked_by`                                      |
+| 23  | Workshop Note         | `stg_td_orders.workshop_note`         | `'Workshop Note' → stg_td_orders.workshop_note`                              |
+| 24  | Order Note            | `stg_td_orders.order_note`            | `'Order Note' → stg_td_orders.order_note`                                    |
+| 25  | Home Delivery         | `stg_td_orders.home_delivery`         | `'Home Delivery' → stg_td_orders.home_delivery`                              |
+| 26  | Area Location         | `stg_td_orders.area_location`         | `'Area Location' → stg_td_orders.area_location`                              |
+| 27  | Garments Inspected By | `stg_td_orders.garments_inspected_by` | `'Garments Inspected By' → stg_td_orders.garments_inspected_by`              |
+| 28  | Customer GSTIN        | `stg_td_orders.customer_gstin`        | `'Customer GSTIN' → stg_td_orders.customer_gstin`                            |
+| 29  | Registration Source   | `stg_td_orders.registration_source`   | `'Registration Source' → stg_td_orders.registration_source`                  |
+| 30  | Order From POS        | `stg_td_orders.order_from_pos`        | `'Order From POS' → stg_td_orders.order_from_pos`                            |
+| 31  | Package               | `stg_td_orders.package`               | `'Package' → stg_td_orders.package`                                          |
+| 32  | Package Type          | `stg_td_orders.package_type`          | `'Package Type' → stg_td_orders.package_type`                                |
+| 33  | Package Name          | `stg_td_orders.package_name`          | `'Package Name' → stg_td_orders.package_name`                                |
+| 34  | Feedback              | `stg_td_orders.feedback`              | `'Feedback' → stg_td_orders.feedback`                                        |
+| 35  | Tags                  | `stg_td_orders.tags`                  | `'Tags' → stg_td_orders.tags`                                                |
+| 36  | Comment               | `stg_td_orders.comment`               | `'Comment' → stg_td_orders.comment`                                          |
+| 37  | Primary Services      | `stg_td_orders.primary_service`       | `'Primary Services' → stg_td_orders.primary_service`                         |
+| 38  | Top Up/Extra Service  | `stg_td_orders.topup_service`         | `'Top Up/Extra Service' → stg_td_orders.topup_service`                       |
+| 39  | Order Status          | `stg_td_orders.order_status`          | `'Order Status' → stg_td_orders.order_status`                                |
+| 40  | Last Payment Activity | `stg_td_orders.last_payment_activity` | `'Last Payment Activity' → stg_td_orders.last_payment_activity`              |
+| 41  | Package Payment Info  | `stg_td_orders.package_payment_info`  | `'Package Payment Info' → stg_td_orders.package_payment_info`                |
+| 42  | Coupon Code           | `stg_td_orders.coupon_code`           | `'Coupon Code' → stg_td_orders.coupon_code`                                  |
 
 Additional columns populated **outside Excel**:
 
@@ -728,7 +728,7 @@ These rules apply during ingestion of `order-report.xlsx` into staging table `st
 
 | Rule # | Field / Concern                                          | Validation / Transformation Logic                                                                                    |
 | -----: | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-|     V1 | Missing `Due Date`                                       | If `Due Date` is blank → set to `order_datetime + interval '3 day'`                                                  |
+|     V1 | Missing `Due Date`                                       | If `Due Date` is blank → set to `order_date + interval '3 day'`                                                      |
 |     V2 | Date/Time columns                                        | Convert using timezone `Asia/Kolkata`; reject rows where parsing fails                                               |
 |     V3 | Numeric columns (`pieces`, `gross_amount`, `paid`, etc.) | Convert to numeric. Strip commas (,), allow .00 decimal suffix. If value not parseable → set to 0 and log a warning. |
 |     V4 | `Phone` column                                           | Strip spaces,`+91`, hyphens; keep only digits; accept **10-digit** numbers only                                      |
@@ -738,47 +738,47 @@ These rules apply during ingestion of `order-report.xlsx` into staging table `st
 
 #### from `stg_td_orders` to `orders`
 
-| #   | Target column                   | Source / Expression                               | Notes / Transform                                                            |
-| --- | ------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------- |
-| 1   | `orders.id`                     | *(none)*                                          | Primary key – generated by DB                                                |
-| 2   | `orders.cost_center`            | `stg_td_orders.cost_center`                       | `orders.cost_center ← stg_td_orders.cost_center`                             |
-| 3   | `orders.source_system`          | `'TumbleDry'`                                     | Constant – set to `'TumbleDry'` for all rows                                 |
-| 4   | `orders.store_code`             | `stg_td_orders.store_code`                        | `orders.store_code ← stg_td_orders.store_code`                               |
-| 5   | `orders.order_number`           | `stg_td_orders.order_number`                      | `orders.order_number ← stg_td_orders.order_number`                           |
-| 6   | `orders.invoice_number`         | `NULL`                                            | Does not come from staging – set to `NULL`                                   |
-| 7   | `orders.order_datetime`         | `stg_td_orders.order_datetime`                    | `orders.order_datetime ← stg_td_orders.order_datetime`                       |
-| 8   | `orders.customer_code`          | `stg_td_orders.customer_code`                     | `orders.customer_code ← stg_td_orders.customer_code`                         |
-| 9   | `orders.customer_name`          | `stg_td_orders.customer_name`                     | `orders.customer_name ← stg_td_orders.customer_name`                         |
-| 10  | `orders.mobile_number`          | `stg_td_orders.mobile_number`                     | `orders.mobile_number ← stg_td_orders.mobile_number`                         |
-| 11  | `orders.customer_gstin`         | `stg_td_orders.customer_gstin`                    | `orders.customer_gstin ← stg_td_orders.customer_gstin`                       |
-| 12  | `orders.customer_source`        | `stg_td_orders.registration_source`               | `orders.customer_source ← stg_td_orders.registration_source`                 |
-| 13  | `orders.package_flag`           | `stg_td_orders.package`                           | If `package = 'No'` → `FALSE`, else `TRUE`                                   |
-| 14  | `orders.service_type`           | `stg_td_orders.primary_service`                   | `orders.service_type ← stg_td_orders.primary_service`                        |
-| 15  | `orders.customer_address`       | `stg_td_orders.customer_address`                  | `orders.customer_address ← stg_td_orders.customer_address`                   |
-| 16  | `orders.pieces`                 | `stg_td_orders.pieces`                            | `orders.pieces ← stg_td_orders.pieces`                                       |
-| 17  | `orders.weight`                 | `stg_td_orders.weight`                            | `orders.weight ← stg_td_orders.weight`                                       |
-| 18  | `orders.due_date`               | `stg_td_orders.due_date`                          | `orders.due_date ← stg_td_orders.due_date`                                   |
-| 19  | `orders.default_due_date`       | `stg_td_orders.order_datetime + interval '3 day'` | Derived – default SLA due date                                               |
-| 20  | `orders.due_days_delta`         | `orders.due_date - orders.default_due_date`       | Does not come from staging, set as `due_date` - `default_due_date`           |
-| 21  | `orders.due_date_flag`          | based on `due_days_delta`                         | `0` → “Normal Delivery”; `> 0` → “Date Extended”; `< 0` → “Express Delivery” |
-| 22  | `orders.complete_processing_by` | `orders.default_due_date - interval '1 day'`      | Derived – internal processing SLA                                            |
-| 23  | `orders.gross_amount`           | `stg_td_orders.gross_amount`                      | `orders.gross_amount ← stg_td_orders.gross_amount`                           |
-| 24  | `orders.discount_amount`        | `stg_td_orders.discount`                          | `orders.discount_amount ← stg_td_orders.discount`                            |
-| 25  | `orders.tax_amount`             | `stg_td_orders.tax_amount`                        | `orders.tax_amount ← stg_td_orders.tax_amount`                               |
-| 26  | `orders.net_amount`             | `stg_td_orders.net_amount`                        | `orders.net_amount ← stg_td_orders.net_amount`                               |
-| 27  | `orders.payment_status`         | `'Pending'`                                       | Constant – initial value `"Pending"`                                         |
-| 28  | `orders.order_status`           | `'Pending'`                                       | Constant – initial value `"Pending"`                                         |
-| 29  | `orders.payment_mode`           | `NULL`                                            | Not set at this stage                                                        |
-| 30  | `orders.payment_date`           | `NULL`                                            | Not set at this stage                                                        |
-| 31  | `orders.payment_amount`         | `NULL`                                            | Not set at this stage                                                        |
-| 32  | `orders.order_edited_flag`      | `FALSE`                                           | Default edit flag                                                            |
-| 33  | `orders.system_order_status`    | `'Active'`                                        | System-level status                                                          |
-| 34  | `orders.created_by`             | `1`                                               | System user id used for ETL                                                  |
-| 35  | `orders.created_at`             | pipeline `run_date`                               | Set to ETL run date                                                          |
-| 36  | `orders.updated_by`             | `NULL`                                            | Not set at initial load                                                      |
-| 37  | `orders.updated_at`             | `NULL`                                            | Not set at initial load                                                      |
-| 38  | `orders.run_id`                 | pipeline `run_id`                                 | Traceability of ETL run                                                      |
-| 39  | `orders.run_date`               | pipeline `run_date`                               | Same as created_at / ETL execution timestamp                                 |
+| #   | Target column                   | Source / Expression                           | Notes / Transform                                                            |
+| --- | ------------------------------- | --------------------------------------------- | ---------------------------------------------------------------------------- |
+| 1   | `orders.id`                     | *(none)*                                      | Primary key – generated by DB                                                |
+| 2   | `orders.cost_center`            | `stg_td_orders.cost_center`                   | `orders.cost_center ← stg_td_orders.cost_center`                             |
+| 3   | `orders.source_system`          | `'TumbleDry'`                                 | Constant – set to `'TumbleDry'` for all rows                                 |
+| 4   | `orders.store_code`             | `stg_td_orders.store_code`                    | `orders.store_code ← stg_td_orders.store_code`                               |
+| 5   | `orders.order_number`           | `stg_td_orders.order_number`                  | `orders.order_number ← stg_td_orders.order_number`                           |
+| 6   | `orders.invoice_number`         | `NULL`                                        | Does not come from staging – set to `NULL`                                   |
+| 7   | `orders.order_date`             | `stg_td_orders.order_date`                    | `orders.order_date ← stg_td_orders.order_date`                               |
+| 8   | `orders.customer_code`          | `stg_td_orders.customer_code`                 | `orders.customer_code ← stg_td_orders.customer_code`                         |
+| 9   | `orders.customer_name`          | `stg_td_orders.customer_name`                 | `orders.customer_name ← stg_td_orders.customer_name`                         |
+| 10  | `orders.mobile_number`          | `stg_td_orders.mobile_number`                 | `orders.mobile_number ← stg_td_orders.mobile_number`                         |
+| 11  | `orders.customer_gstin`         | `stg_td_orders.customer_gstin`                | `orders.customer_gstin ← stg_td_orders.customer_gstin`                       |
+| 12  | `orders.customer_source`        | `stg_td_orders.registration_source`           | `orders.customer_source ← stg_td_orders.registration_source`                 |
+| 13  | `orders.package_flag`           | `stg_td_orders.package`                       | If `package = 'No'` → `FALSE`, else `TRUE`                                   |
+| 14  | `orders.service_type`           | `stg_td_orders.primary_service`               | `orders.service_type ← stg_td_orders.primary_service`                        |
+| 15  | `orders.customer_address`       | `stg_td_orders.customer_address`              | `orders.customer_address ← stg_td_orders.customer_address`                   |
+| 16  | `orders.pieces`                 | `stg_td_orders.pieces`                        | `orders.pieces ← stg_td_orders.pieces`                                       |
+| 17  | `orders.weight`                 | `stg_td_orders.weight`                        | `orders.weight ← stg_td_orders.weight`                                       |
+| 18  | `orders.due_date`               | `stg_td_orders.due_date`                      | `orders.due_date ← stg_td_orders.due_date`                                   |
+| 19  | `orders.default_due_date`       | `stg_td_orders.order_date + interval '3 day'` | Derived – default SLA due date                                               |
+| 20  | `orders.due_days_delta`         | `orders.due_date - orders.default_due_date`   | Does not come from staging, set as `due_date` - `default_due_date`           |
+| 21  | `orders.due_date_flag`          | based on `due_days_delta`                     | `0` → “Normal Delivery”; `> 0` → “Date Extended”; `< 0` → “Express Delivery” |
+| 22  | `orders.complete_processing_by` | `orders.default_due_date - interval '1 day'`  | Derived – internal processing SLA                                            |
+| 23  | `orders.gross_amount`           | `stg_td_orders.gross_amount`                  | `orders.gross_amount ← stg_td_orders.gross_amount`                           |
+| 24  | `orders.discount_amount`        | `stg_td_orders.discount`                      | `orders.discount_amount ← stg_td_orders.discount`                            |
+| 25  | `orders.tax_amount`             | `stg_td_orders.tax_amount`                    | `orders.tax_amount ← stg_td_orders.tax_amount`                               |
+| 26  | `orders.net_amount`             | `stg_td_orders.net_amount`                    | `orders.net_amount ← stg_td_orders.net_amount`                               |
+| 27  | `orders.payment_status`         | `'Pending'`                                   | Constant – initial value `"Pending"`                                         |
+| 28  | `orders.order_status`           | `'Pending'`                                   | Constant – initial value `"Pending"`                                         |
+| 29  | `orders.payment_mode`           | `NULL`                                        | Not set at this stage                                                        |
+| 30  | `orders.payment_date`           | `NULL`                                        | Not set at this stage                                                        |
+| 31  | `orders.payment_amount`         | `NULL`                                        | Not set at this stage                                                        |
+| 32  | `orders.order_edited_flag`      | `FALSE`                                       | Default edit flag                                                            |
+| 33  | `orders.system_order_status`    | `'Active'`                                    | System-level status                                                          |
+| 34  | `orders.created_by`             | `1`                                           | System user id used for ETL                                                  |
+| 35  | `orders.created_at`             | pipeline `run_date`                           | Set to ETL run date                                                          |
+| 36  | `orders.updated_by`             | `NULL`                                        | Not set at initial load                                                      |
+| 37  | `orders.updated_at`             | `NULL`                                        | Not set at initial load                                                      |
+| 38  | `orders.run_id`                 | pipeline `run_id`                             | Traceability of ETL run                                                      |
+| 39  | `orders.run_date`               | pipeline `run_date`                           | Same as created_at / ETL execution timestamp                                 |
 
 ### from UC `GST_Report_2025-12-01_to_2025-12-01.xlsx` to `stg_uc_orders` mapping
 
@@ -847,7 +847,7 @@ These rules apply during ingestion of `GST_Report_2025-12-01_to_2025-12-01.xlsx`
 | 4   | `orders.store_code`             | `stg_uc_orders.store_code`                      | `orders.store_code ← stg_uc_orders.store_code`                               |
 | 5   | `orders.order_number`           | `stg_uc_orders.order_number`                    | `orders.order_number ← stg_uc_orders.order_number`                           |
 | 6   | `orders.invoice_number`         | `stg_uc_orders.invoice_number`                  | `orders.invoice_number ← stg_uc_orders.invoice_number`                       |
-| 7   | `orders.order_datetime`         | `stg_uc_orders.invoice_date`                    | Parsed as timestamptz                                                        |
+| 7   | `orders.order_date`             | `stg_uc_orders.invoice_date`                    | Parsed as timestamptz                                                        |
 | 8   | `orders.customer_code`          | `NULL`                                          | No customer code in staging table                                            |
 | 9   | `orders.customer_name`          | `stg_uc_orders.customer_name`                   | `orders.customer_name ← stg_uc_orders.customer_name`                         |
 | 10  | `orders.mobile_number`          | `stg_uc_orders.mobile_number`                   | Normalize to 10-digit mobile                                                 |
