@@ -134,8 +134,14 @@
 
 ### reports
 
-- **Phase 2 only (deferred):** All report sub-pipelines and their scripts are explicitly out of scope for the current phase. No code, scripts, migrations, or notification wiring for reports will be delivered in this phase.
-- Use this section as a placeholder for Phase 2. When resumed, reports will live under `app/reports` with the same structural/orchestration conventions as other pipelines. Future work can re-use the previously listed report names and shell script patterns, but they should not be built or shipped now.
+- Reports live under `app/reports/{report_name}` with orchestrators per sub-pipeline. Expected sub-pipelines (matching existing pipeline codes and notification seeds): `daily_sales_report`, `month_to_date_sales`, `daily_order_processing`, `pending_deliveries`, `pending_leads_conversion`, `package_sale_conversion`, and `pending_payment_reconciliation`.
+- Each sub-pipeline follows the same orchestration contract as other pipelines: generate `run_id`/`run_date`, write to `pipelines`/`pipeline_run_summaries`, and emit notifications via `notification_profiles` + `email_templates`.
+- Scripts:
+  - Local runners: `scripts/run_local_reports_daily_sales.sh`, `scripts/run_local_reports_month_to_date_sales.sh`, `scripts/run_local_reports_daily_order_processing.sh`, `scripts/run_local_reports_pending_deliveries.sh`, `scripts/run_local_reports_pending_leads_conversion.sh`, `scripts/run_local_reports_package_sale_conversion.sh`, `scripts/run_local_reports_pending_payment_reconciliation.sh`.
+  - Prod runners: same names with `run_prod_*.sh`, mirroring dashboard_downloader script patterns (env validation, run_id propagation, error handling).
+  - Sequential runner: a meta-script `scripts/run_reports_sequential.sh` should execute the sub-pipelines in the order listed above, stopping on failure by default but allowing a `--continue-on-error` flag to log warnings and proceed. It should aggregate overall status following the standard ok/warning/error rules.
+- Data sources: reuse ingested/staged tables from TD/UC/bank pipelines; no new source scraping is expected for reports, only querying + PDF/CSV output as defined by each sub-pipeline spec.
+- **Phase 2 only (deferred):** All report sub-pipelines, scripts, and runner behaviors are restored here for planning continuity but explicitly deferred. No code, migrations, or notification wiring for reports will be delivered in the current phase.
 
 ---
 
@@ -207,6 +213,13 @@
     * Status mapping: map `pipeline_run_summaries.status` values `ok`, `warning`, `error` directly to notification status; reuse the same template body with conditional sections per status.
     * Recipients: default to `wagid.sheikh@gmail.com` via `notification_recipients`; pipelines map to this recipient unless the environment overrides the mapping.
     * Aggregation for multi-store runs: always render per-store status blocks plus an overall rollup line; warning aggregation applies when at least one store succeeds and one fails.
+
+### Staging uniqueness and upsert rules
+
+- TD Orders staging (`stg_td_orders`): upsert/merge on `{store_code, order_number, order_date}`. Production `td_orders` should mirror these uniqueness semantics to keep re-runs idempotent.
+- TD Sales staging (`stg_td_sales`): upsert/merge on `{store_code, order_number, payment_date}` with the same key alignment in `td_sales`.
+- UC Orders staging (`stg_uc_orders`): upsert/merge on `{store_code, order_number, invoice_date}`; ensure the production table enforces the same uniqueness to avoid drift.
+- Bank staging (`stg_bank`): upsert/merge on `{row_id}` and preserve that uniqueness in `bank` so repeated ingests update rather than duplicate rows.
 
 ### Usage of "store_master" for pipeline development
 
@@ -992,16 +1005,18 @@ The table structure of `stg_bank` and `bank` are almost identical. If stg_bank.r
 - Probe order (per store):
   1. Launch Playwright context with `storageState` pointing to the store file if it exists.
   2. Navigate to `store_master.sync_config.urls.home` to verify session validity.
-  3. Session-expiry detection signals: redirect to login URL, appearance of login form selectors, or absence of logged-in controls (e.g., Reports/Order links). Any of these must trigger a re-login.
-- On expiry: perform full login with credentials + store code, regenerate a fresh context, and overwrite the same `{store_code}_storage_state.json`. Retry the navigation + download flow once after refresh; on persistent failure mark the store run as failed. Keep expiry handling store-isolated—do not let one store’s failure delete or reuse another store’s cookies.
+  3. Session-expiry detection signals: redirect to login URL, appearance of login form selectors, or absence of logged-in controls (e.g., Reports/Order links). Any of these must trigger a re-login using the same store’s credentials.
+- On expiry: perform full login with credentials + store code, regenerate a fresh context, and overwrite the same `{store_code}_storage_state.json`. Retry the navigation + download flow once after refresh; on persistent failure mark the store run as failed. Keep expiry handling store-isolated—do not let one store’s failure delete or reuse another store’s cookies, and refresh storage_state only for the affected store.
 - Do not cross-store state: never reuse one store’s storage state for another store.
-- URLs after login auto-embed `{store_code}`; do **not** hardcode `a668` or any specific code—always derive from `store_master.store_code`.
+- URLs after login auto-embed `{store_code}`; do **not** hardcode `a668` or any specific code—always derive from `store_master.store_code` and verify post-login URLs contain that value.
 
 #### TD Playwright iframe entry and hydration readiness
 
 - Iframe entry: always target `frameLocator('#ifrmReport')` (preferred) or `contentFrame()` once attached. Wait for the iframe to be attached with a non-empty `src` (typically `reports.quickdrycleaning.com/...`).
-- Hydration waits: inside the iframe, wait for the spinner to disappear **or** for known controls to become visible (e.g., `Expand`, `Download Historical Report`, `Generate Report`, `Request Report`). Prefer `expect(locator).to_be_visible()` over network idle waits.
+- Hydration waits: inside the iframe, wait for the spinner to disappear **or** for known controls to become visible (e.g., `Expand`, `Download Historical Report`, `Generate Report`, `Request Report`). Prefer `expect(locator).to_be_visible()` over network idle waits, and do not interact until hydration completes.
 - Locator preference: use role-based locators first (`getByRole("button", { name: "Generate Report" })`, `getByRole("link", { name: /Download historical report/i })`). If those fail due to custom components, fall back to text locators such as `locator("text=Download Historical Report")` or `locator("text=Expand")`.
+- Post-login navigation rules: URLs embed `{store_code}` after login; validate the live URL includes the current store before proceeding and avoid any hardcoded store_code in locators or URLs.
+- Session expiry handling in-iframe: if iframe content renders a login redirect, missing logged-in controls, or other expiry signals, treat it the same as parent-level expiry—refresh per-store storage_state through re-login, then retry iframe navigation once. Only the affected store’s state file should be replaced during this recovery.
 
 ### Navigating to Login & Home Page
 
@@ -1052,9 +1067,9 @@ Workflow inside iframe (in order):
    - Wait for "Report Requests" section/table to show/update and contain a row whose date range text matches the UI display format `DD Mon YYYY - DD Mon YYYY` (e.g., `01 Oct 2025 - 06 Dec 2025`) for the requested dates.
    - If duplicate rows exist for the same range, pick the newest row (top-most timestamp / latest request status) that exactly matches the text before clicking download.
 7) Download:
-   - In the matching row, click the "Download" action/link/button.
+   - Do not click Download until the row text exactly matches `DD Mon YYYY - DD Mon YYYY` for the requested window; when multiple matches exist, pick the newest/top-most entry before proceeding.
    - Wrap the exact click that triggers download in `page.expect_download()` / `page.waitForEvent('download')` to avoid race conditions, then save to disk with a deterministic filename:
-     `{store_master.store_code}_td_orders_{YYYYMMDDD-from}_{YYYYMMDDD-to}.xlsx` (confirm whether the CRM emits 7 vs 8 digits for day; adjust to `YYYYMMDD` if needed after validation).
+     `{store_master.store_code}_td_orders_{YYYYMMDDD-from}_{YYYYMMDDD-to}.xlsx`. Confirm whether the intended date token is `YYYYMMDDD` or standard `YYYYMMDD`; align the saved filename format once confirmed.
 8) Locator rules:
 
 - Prefer getByRole within the iframe:
@@ -1073,7 +1088,7 @@ After login, navigate to Reports → Sales and Delivery and verify the container
 - Prefer role-based locators (`getByRole("button", { name: "Generate Report" })`, `"Request Report"`, `"Download"`) with text fallbacks.
 - Inside the iframe: click the link/button labeled “Download historical report”; wait until the “Generate Report” button becomes visible and click it; a date-range overlay opens—set From and To dates using the date picker (or fill the inputs if they exist) and click “Update” to close the overlay; then click “Request Report”.
 - After requesting, wait for the spinner/loading animation to finish and for the “Report Requests” table to appear. Locate the row whose date range text exactly matches the requested UI-formatted range `DD Mon YYYY - DD Mon YYYY`; if multiple matches exist, pick the newest entry before clicking “Download” in that row only.
-- Use `page.waitForEvent('download')` (scoped to the click) and save using `{store_master.store_code}_td_sales_{YYYYMMDDD-from}_{YYYYMMDDD-to}.xlsx` (confirm whether the CRM emits `YYYYMMDDD` vs `YYYYMMDD` and adjust once validated).
+- Use `page.waitForEvent('download')` (scoped to the click) and save using `{store_master.store_code}_td_sales_{YYYYMMDDD-from}_{YYYYMMDDD-to}.xlsx`. Confirm whether the intended date token is `YYYYMMDDD` or standard `YYYYMMDD` and apply the chosen format consistently after validation.
 
 #### TD Orders/Sales filename and date-range matching rules
 
@@ -1107,17 +1122,13 @@ After login, navigate to Reports → Sales and Delivery and verify the container
 ### Excel File 1: Orders Data
 
 - UC Playwright selector and readiness guidance:
-  - Navigation: click the primary navigation link labeled **“GST Report”** (prefer role-based locator) to open the GST view.
-  - Overlay: headings **“Start Date”** and **“End Date”** with buttons **“Apply”** and **“Cancel”**; export button labeled **“Export Report”**.
+  - Navigation: click the primary navigation link labeled **“GST Report”** (role-based locator preferred) under Reports to open the GST view; treat missing/hidden GST link as a session-expiry signal.
+  - Overlay controls: headings **“Start Date”** and **“End Date”** with buttons **“Apply”** and **“Cancel”**; export action button **“Export Report”**.
   - Date display: the selected range renders as `Dec 05, 2025 - Dec 30, 2025` (format `MMM DD, YYYY - MMM DD, YYYY`).
-  - Readiness cues: overlay is closed, the table is re-rendered, and any spinner/loader is gone before clicking **Export Report**.
-  - Session reuse/expiry: reuse `{store_code}_storage_state.json` per store; treat redirects to login, login form visibility, or missing logged-in controls (e.g., GST Report link absent) as expiry and re-login once before failing.
-- Navigation locator: use the application’s primary navigation link labeled “GST Report” (role-based locator preferred) under the Reports menu to enter the GST view.
+  - Readiness cues: ensure the overlay is closed, the table has re-rendered, and any spinner/loader is gone before clicking **Export Report**. The displayed date range should match the requested window.
+  - Session reuse/expiry: reuse `{store_code}_storage_state.json` per store; treat redirects to login, login form visibility, or missing logged-in controls (e.g., GST Report link absent) as expiry. Re-login, refresh the per-store storage_state, and retry once before failing.
 - Confirm the application routes to https://store.ucleanlaundry.com/gst-report and the GST Report view is rendered (Angular SPA content is client-side within the app shell).
-- Overlay controls: the date overlay shows headings “Start Date” and “End Date” with buttons “Apply” and “Cancel”; the export action is the “Export Report” button.
-- In the GST Report view, set the report filter range by selecting From Date and To Date using the on-page date picker controls, then click Apply (or Cancel to dismiss without changes). Wait for the overlay to close and for the table/spinner to settle.
-- Readiness cues: overlay is dismissed; table re-renders and any spinner disappears; the visible date-range text (e.g., `Dec 05, 2025 - Dec 30, 2025`) should normalize to the requested range.
-- Click Export Report to trigger an .xlsx download only after the table is refreshed for the selected range.
-  Save the downloaded file using the naming convention:
-  {store_master.store_code}_historical_sales_report_{from-date}_to_{to-date}.xlsx
-  (where {from-date} and {to-date} are the same values used in the filters, formatted consistently for filenames, and aligned with the displayed `DD Mon YYYY` text).
+- Set the report filter range by selecting From Date and To Date in the overlay, then click Apply (or Cancel to dismiss without changes). Wait for the overlay to close and for the table/spinner to settle before continuing.
+- Click Export Report to trigger an .xlsx download only after the table is refreshed for the selected range. Save the downloaded file using the naming convention:
+  `{store_master.store_code}_historical_sales_report_{from-date}_to_{to-date}.xlsx`
+  (where `{from-date}` and `{to-date}` are the same values used in the filters, formatted consistently for filenames, and aligned with the displayed `Dec 05, 2025 - Dec 30, 2025` text).
