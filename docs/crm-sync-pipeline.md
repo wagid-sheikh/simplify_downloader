@@ -50,6 +50,7 @@
     - sending notifications via notification_profiles + email_templates
     - Playwright browser/session management
 * For any new pipeline, use the structural pattern used in `app/dashboard_downloader`:
+
   - Use the same kind of `main()` / orchestrator entrypoint.
   - Reuse the existing helpers for:
     - run_id + run_date generation (same function used by `dashboard_downloader`).
@@ -184,6 +185,7 @@
 ---
 
 ## Pipeline General Development Guidelines
+
 * Create Alembic Migrations with needed seed data
 * Use existing logger in place
 * Must follow & use exisitng infra in-place
@@ -236,6 +238,7 @@
   * using notification_recipients: For all the pipelines and enviroment notification should be sent/set to "wagid.sheikh@gmail.com"
 
 ### Usage of "store_master" for pipeline development
+
 * **Introduction:** *store_master* will act as primary controller of almost all of the pipeline development defined in this document. Any references in this document as detailed below means (uncless explicitly defined in that section/sub-sections):
   * CRM Username/Username: means store_master.sync_config.username
   * CRM Password/Password: means store_master.sync_config.password
@@ -760,7 +763,7 @@ These rules apply during ingestion of `order-report.xlsx` into staging table `st
 | 21  | `orders.due_date_flag`          | based on `due_days_delta`                         | `0` → “Normal Delivery”; `> 0` → “Date Extended”; `< 0` → “Express Delivery” |
 | 22  | `orders.complete_processing_by` | `orders.default_due_date - interval '1 day'`      | Derived – internal processing SLA                                            |
 | 23  | `orders.gross_amount`           | `stg_td_orders.gross_amount`                      | `orders.gross_amount ← stg_td_orders.gross_amount`                           |
-| 24  | `orders.discount_amount`        | `stg_td_orders.discount_amount`                   | `orders.discount_amount ← stg_td_orders.discount_amount`                     |
+| 24  | `orders.discount_amount`        | `stg_td_orders.discount`                          | `orders.discount_amount ← stg_td_orders.discount`                            |
 | 25  | `orders.tax_amount`             | `stg_td_orders.tax_amount`                        | `orders.tax_amount ← stg_td_orders.tax_amount`                               |
 | 26  | `orders.net_amount`             | `stg_td_orders.net_amount`                        | `orders.net_amount ← stg_td_orders.net_amount`                               |
 | 27  | `orders.payment_status`         | `'Pending'`                                       | Constant – initial value `"Pending"`                                         |
@@ -995,34 +998,43 @@ The table structure of `stg_bank` and `bank` are almost identical. If stg_bank.r
 ## Playwright Orchestration
 
 ## Pipeline td_orders_sync development guidelines
+
 *Introduction* this pipeline is supposed to download orders and sales data for TD group stores (store_master.sync_group = 'TD'). Two Excel files will be downloaded & ingested as per mapping already given above. Pull records from store_master where sync_group = 'TD' and sync_orders_flag = true (there will be multiple rows), For each store_master row, open a fresh browser context, perform login, navigate to home, then download Orders and Sales & Delivery data before closing the context.
+
 ### Navigating to Login & Home Page
+
 1. Open the link given store_master.sync_config.urls.login (https://subs.quickdrycleaning.com/Login)
 2. Use provided store_master.sync_config.login_selectors and fill in store_master.sync_config.username store_master.sync_config.password and store_master.store_code
 3. Click Login and you will reach to home page store_master.sync_config.urls.home (https://subs.quickdrycleaning.com/a668/App/home?EventClick=True)
 4. Verify and Note that in the home page url {store_master.store_code} is also present
+
 ### Excel File 1: Orders Data
+
 1. On home page, the Reports tile selector (navigates to the Order Report container page) is:
-`<a id="achrOrderReport" href="Reports/OrderReport.aspx" class="padding6" onclick="return checkAccessRights('Orders')"><i class="fa fa-bar-chart-o fa-3x"></i><br /><span>&nbsp;Reports&nbsp;</span></a>`
+   `<a id="achrOrderReport" href="Reports/OrderReport.aspx" class="padding6" onclick="return checkAccessRights('Orders')"><i class="fa fa-bar-chart-o fa-3x"></i><br /><span>&nbsp;Reports&nbsp;</span></a>`
 2. Click on this 'Reports' menu option and verify navigation to a URL containing `/App/Reports/OrderReport` and `{store_master.store_code}`. After the container page loads, switch into iframe `#ifrmReport`, run the “Historical Report” workflow, and download the generated report.
+
 - Wait for iframe `#ifrmReport` to be attached.
 - Wait until iframe `#ifrmReport` has a non-empty `src` attribute (preferably containing `reports.quickdrycleaning.com`).
 - Then interact with the iframe using a frameLocator/contentFrame handle.
 
-
 Critical architecture facts (do not miss):
+
 1) The Orders Report UI is NOT in the parent page DOM. It is inside iframe "#ifrmReport".
 2) The iframe loads a Next.js app from "https://reports.quickdrycleaning.com/{locale}/order-report?...". The initial HTML shows only a spinner; the real UI (Expand / Download Historical Report / Generate Report / date picker / Request Report / Report Requests table) appears only AFTER JS hydration. Therefore: do NOT rely on view-source HTML. Use runtime locators with explicit waits.
 
 Iframe entry:
+
 - Use frameLocator("#ifrmReport") (recommended) or elementHandle.contentFrame().
 
 Hydration wait inside iframe:
+
 - Wait for spinner to disappear OR for a known UI control to appear.
   Example: wait for "text=Expand" or "text=Download Historical Report" (whichever appears first).
 - Do not use only networkidle; prefer "expect(locator).to_be_visible()".
 
 Workflow inside iframe (in order):
+
 1) Click the control labeled "Expand" (if not a native button, locate by visible text and click the nearest clickable ancestor).
 2) Click "Download historical Report" (this triggers partial refresh/state change).
 3) Wait until "Generate Report" becomes visible, then click it.
@@ -1041,6 +1053,7 @@ Workflow inside iframe (in order):
    - Wrap the exact click that triggers download in `page.expect_download()` / `page.waitForEvent('download')` to avoid race conditions, then save to disk with a deterministic filename:
      e.g., "{store_master.store_code}_historical_orders_{from_date}_to_{to_date}.xlsx" (or the actual extension observed).
 8) Locator rules:
+
 - Prefer getByRole within the iframe:
   - frame.getByRole("button", { name: "Generate Report" })
   - frame.getByRole("button", { name: "Request Report" })
@@ -1050,19 +1063,25 @@ Workflow inside iframe (in order):
 - Never search these UI elements on the parent page.
 
 ### Excel File 2: Sales And Delivery Data
+
 Sales & Delivery Historical Report (within iframe) – Automation Steps (Playwright, same iframe and hydration rules as Orders report, except there is no "Expand" step):
 After login, navigate to Reports → Sales and Delivery and verify the container page URL is /{store_master.store_code}/App/Reports/NEWSalesAndDeliveryReport…. This page renders the actual report UI inside the iframe iframe#ifrmReport (its src is set dynamically), so all subsequent clicks must be executed in the iframe context (use const reportFrame = page.frameLocator('iframe#ifrmReport')). Inside the iframe: click the link/button labeled “Download historical report”; wait until the “Generate Report” button becomes visible and click it; a date-range overlay opens—set From and To dates using the date picker (or fill the inputs if they exist) and click “Update” to close the overlay; then click “Request Report”. After requesting, wait for the spinner/loading animation to finish and for the “Report Requests” table to appear. In the table, locate the row whose date range text exactly matches the requested UI-formatted range (e.g., `01 Oct 2025 - 06 Dec 2025`) and click the “Download” link within that same row only (do not interact with any other row). The script must explicitly wait for the download event (Playwright page.waitForEvent('download')) and save the file using a deterministic filename "{store_master.store_code}_sales_report_{from_date}_to_{to_date}.xlsx".
 
 ---
 
 ## Pipeline uc_orders_sync development guidelines
+
 *Introduction* this pipeline is supposed to download orders and sales data for UC group stores (store_master.sync_group = 'UC'). One Excel files will be downloaded & ingested as per mapping already given above. Pull records from store_master where sync_group = 'UC' and sync_orders_flag = true (there will be multiple rows), For each store_master row, open a fresh browser context, perform login, navigate to home, then download Orders data before closing the context.
+
 ### Navigating to Login & Home Page
+
 1. Open the link given store_master.sync_config.urls.login (https://store.ucleanlaundry.com/login)
 2. Use provided store_master.sync_config.login_selectors and fill in store_master.sync_config.username store_master.sync_config.password
 3. Click Login and you will reach to home page store_master.sync_config.urls.home (https://store.ucleanlaundry.com/dashboard)
 4. Verify and wait for page to load
+
 ### Excel File 1: Orders Data
+
 - In the application’s primary navigation, open Reports and select GST Report.
 - Confirm the application routes to https://store.ucleanlaundry.com/gst-report and the GST Report view is rendered (Angular SPA content is client-side within the app shell).
 - In the GST Report view, set the report filter range by selecting From Date and To Date using the on-page date picker controls, then click Apply.
@@ -1071,4 +1090,3 @@ After login, navigate to Reports → Sales and Delivery and verify the container
   Save the downloaded file using the naming convention:
   {store_master.store_code}_historical_sales_report_{from-date}_to_{to-date}.xlsx
   (where {from-date} and {to-date} are the same values used in the filters, formatted consistently for filenames).
-
