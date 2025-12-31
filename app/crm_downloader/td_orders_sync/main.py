@@ -225,7 +225,23 @@ def _normalize_id_selector(selector: str) -> str:
 
 
 def _format_report_range_text(from_date: date, to_date: date) -> str:
-    return f"{from_date.strftime('%b %d, %Y')} - {to_date.strftime('%b %d, %Y')}"
+    return f"{from_date.strftime('%b')} {from_date.day}, {from_date.year} - {to_date.strftime('%b')} {to_date.day}, {to_date.year}"
+
+
+def _format_report_range_text_candidates(from_date: date, to_date: date) -> list[str]:
+    variants = [
+        f"{from_date.strftime('%b')} {from_date.day}, {from_date.year} - {to_date.strftime('%b')} {to_date.day}, {to_date.year}",
+        f"{from_date.strftime('%b')} {from_date.day:02d}, {from_date.year} - {to_date.strftime('%b')} {to_date.day:02d}, {to_date.year}",
+        f"{from_date.strftime('%b')} {from_date.day}, {from_date.year} - {to_date.strftime('%b')} {to_date.day:02d}, {to_date.year}",
+        f"{from_date.strftime('%b')} {from_date.day:02d}, {from_date.year} - {to_date.strftime('%b')} {to_date.day}, {to_date.year}",
+    ]
+    seen: set[str] = set()
+    unique_variants: list[str] = []
+    for variant in variants:
+        if variant not in seen:
+            seen.add(variant)
+            unique_variants.append(variant)
+    return unique_variants
 
 
 def _format_orders_filename(store_code: str, from_date: date, to_date: date) -> str:
@@ -1234,14 +1250,14 @@ async def _select_date_in_open_picker(container: Locator, *, target_date: date, 
 async def _wait_for_range_text_update(
     control: Locator,
     *,
-    expected_text: str,
+    expected_texts: Sequence[str],
     timeout_ms: int,
     logger: JsonLogger,
     store: TdStore,
 ) -> tuple[bool, str | None]:
     deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
     last_text: str | None = None
-    normalized_expected = " ".join(expected_text.split()).lower()
+    normalized_expected = {" ".join(text.split()).lower() for text in expected_texts}
 
     while asyncio.get_event_loop().time() < deadline:
         try:
@@ -1253,7 +1269,7 @@ async def _wait_for_range_text_update(
             continue
 
         normalized_current = " ".join((current_text or "").split()).lower()
-        if normalized_current == normalized_expected:
+        if normalized_current in normalized_expected:
             return True, current_text
 
         await asyncio.sleep(0.3)
@@ -1264,7 +1280,7 @@ async def _wait_for_range_text_update(
         status="warn",
         message="Date range text did not update to expected value",
         store_code=store.store_code,
-        expected_text=expected_text,
+        expected_texts=list(expected_texts),
         final_text=last_text,
     )
     return False, last_text
@@ -1611,7 +1627,8 @@ async def _set_date_range(
     store: TdStore,
     timeout_ms: int,
     attempt: int = 1,
-) -> bool:
+) -> tuple[bool, str | None]:
+    final_range_text: str | None = None
     range_control, control_attempts = await _locate_date_range_control(frame, timeout_ms=timeout_ms)
     if range_control is None:
         log_event(
@@ -1623,7 +1640,7 @@ async def _set_date_range(
             control_attempts=control_attempts,
             attempt=attempt,
         )
-        return False
+        return False, final_range_text
 
     try:
         await range_control.wait_for(state="visible", timeout=timeout_ms)
@@ -1639,7 +1656,7 @@ async def _set_date_range(
             control_attempts=control_attempts,
             attempt=attempt,
         )
-        return False
+        return False, final_range_text
 
     picker_popup = await _locate_date_picker_popup(frame, timeout_ms=min(timeout_ms, 8_000))
     picker_dom: str | None = None
@@ -1660,7 +1677,7 @@ async def _set_date_range(
             control_attempts=control_attempts,
             attempt=attempt,
         )
-        return False
+        return False, final_range_text
 
     try:
         numeric_inputs = picker_popup.locator("input[type='number'], input[inputmode='numeric'], input[type='tel']")
@@ -1730,10 +1747,10 @@ async def _set_date_range(
     else:
         update_click_result = {"found": False}
 
-    expected_range_text = _format_report_range_text(from_date, to_date)
+    expected_range_texts = _format_report_range_text_candidates(from_date, to_date)
     range_text_ok, final_range_text = await _wait_for_range_text_update(
         range_control,
-        expected_text=expected_range_text,
+        expected_texts=expected_range_texts,
         timeout_ms=min(timeout_ms, 10_000),
         logger=logger,
         store=store,
@@ -1761,7 +1778,7 @@ async def _set_date_range(
             update_click=update_click_result,
             attempt=attempt,
         )
-        return True
+        return True, final_range_text
 
     log_event(
         logger=logger,
@@ -1783,7 +1800,7 @@ async def _set_date_range(
         update_click=update_click_result,
         attempt=attempt,
     )
-    return False
+    return False, final_range_text
 
 
 async def _set_date_range_with_retry(
@@ -1795,9 +1812,10 @@ async def _set_date_range_with_retry(
     store: TdStore,
     timeout_ms: int,
     attempts: int = 2,
-) -> bool:
+) -> tuple[bool, str | None]:
+    final_text: str | None = None
     for attempt in range(1, max(1, attempts) + 1):
-        success = await _set_date_range(
+        success, range_text = await _set_date_range(
             frame,
             from_date=from_date,
             to_date=to_date,
@@ -1806,21 +1824,23 @@ async def _set_date_range_with_retry(
             timeout_ms=timeout_ms,
             attempt=attempt,
         )
+        final_text = range_text
         if success:
-            return True
+            return True, range_text
         await asyncio.sleep(0.5)
-    return False
+    return False, final_text
 
 
 async def _wait_for_report_request_row(
     frame: FrameLocator,
     *,
-    expected_range_text: str,
+    expected_range_texts: Sequence[str],
     logger: JsonLogger,
     store: TdStore,
     timeout_ms: int,
-) -> Locator | None:
+) -> tuple[Locator | None, str | None]:
     deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
+    normalized_expected = {" ".join(text.split()).lower() for text in expected_range_texts}
     while asyncio.get_event_loop().time() < deadline:
         try:
             table_candidates = [
@@ -1832,15 +1852,23 @@ async def _wait_for_report_request_row(
                 await asyncio.sleep(0.5)
                 continue
 
-            row_locator = table.locator(f"tr:has-text('{expected_range_text}')")
-            row_count = await row_locator.count()
-            for idx in range(min(row_count, 3)):
-                candidate = row_locator.nth(idx)
-                try:
-                    if await candidate.is_visible():
-                        return candidate
-                except Exception:
-                    continue
+            for expected_range_text in expected_range_texts:
+                row_locator = table.locator(f"tr:has-text('{expected_range_text}')")
+                row_count = await row_locator.count()
+                for idx in range(min(row_count, 3)):
+                    candidate = row_locator.nth(idx)
+                    try:
+                        if await candidate.is_visible():
+                            displayed_text = None
+                            with contextlib.suppress(Exception):
+                                displayed_text = await candidate.inner_text()
+                            if displayed_text:
+                                normalized_displayed = " ".join(displayed_text.split()).lower()
+                                if normalized_displayed in normalized_expected:
+                                    return candidate, displayed_text
+                            return candidate, displayed_text
+                    except Exception:
+                        continue
         except Exception:
             pass
 
@@ -1852,9 +1880,9 @@ async def _wait_for_report_request_row(
         status="warn",
         message="Report Requests row not found for range",
         store_code=store.store_code,
-        expected_range_text=expected_range_text,
+        expected_range_texts=list(expected_range_texts),
     )
-    return None
+    return None, None
 
 
 async def _run_orders_iframe_flow(
@@ -1932,7 +1960,7 @@ async def _run_orders_iframe_flow(
         frame, store=store, logger=logger, timeout_ms=nav_timeout_ms, phase="iframe_generate_report"
     )
 
-    date_range_set = await _set_date_range_with_retry(
+    date_range_set, observed_range_text = await _set_date_range_with_retry(
         frame,
         from_date=from_date,
         to_date=to_date,
@@ -1943,6 +1971,10 @@ async def _run_orders_iframe_flow(
     )
     if not date_range_set:
         return False, "Date range selection failed"
+
+    range_text_candidates = _format_report_range_text_candidates(from_date, to_date)
+    if observed_range_text:
+        range_text_candidates = [observed_range_text] + [text for text in range_text_candidates if text != observed_range_text]
 
     request_locator = await _first_visible_locator(
         [
@@ -1959,10 +1991,9 @@ async def _run_orders_iframe_flow(
         frame, store=store, logger=logger, timeout_ms=nav_timeout_ms, phase="iframe_request_report"
     )
 
-    expected_range_text = _format_report_range_text(from_date, to_date)
-    row = await _wait_for_report_request_row(
+    row, matched_range_text = await _wait_for_report_request_row(
         frame,
-        expected_range_text=expected_range_text,
+        expected_range_texts=range_text_candidates,
         logger=logger,
         store=store,
         timeout_ms=nav_timeout_ms,
@@ -1989,6 +2020,8 @@ async def _run_orders_iframe_flow(
     download = await download_info.value
     await download.save_as(str(target_path))
 
+    range_text_used = matched_range_text or (range_text_candidates[0] if range_text_candidates else None)
+
     log_event(
         logger=logger,
         phase="iframe",
@@ -1996,7 +2029,8 @@ async def _run_orders_iframe_flow(
         store_code=store.store_code,
         download_path=str(target_path),
         suggested_filename=download.suggested_filename,
-        expected_range_text=expected_range_text,
+        matched_range_text=range_text_used,
+        expected_range_texts=range_text_candidates,
     )
 
     return True, str(target_path)
