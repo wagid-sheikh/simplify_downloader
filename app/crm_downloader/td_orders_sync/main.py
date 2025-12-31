@@ -26,6 +26,8 @@ DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS = 90_000
 LOADING_LOCATOR_SELECTORS = ("text=/loading/i", ".k-loading-mask")
 OTP_VERIFICATION_DWELL_SECONDS = 600
 TEMP_ENABLED_STORES = {"A668", "A817"}
+REPORT_REQUEST_POLL_EXTENSION_MS = 120_000
+REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS = 20.0
 
 
 async def main(
@@ -1883,13 +1885,15 @@ async def _wait_for_report_request_download_link(
     store: TdStore,
     timeout_ms: int,
 ) -> tuple[Locator | None, str | None, str | None]:
-    deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
+    extended_timeout_ms = timeout_ms + REPORT_REQUEST_POLL_EXTENSION_MS
+    deadline = asyncio.get_event_loop().time() + (extended_timeout_ms / 1000)
     normalized_expected = {" ".join(text.split()).lower() for text in expected_range_texts}
     last_seen_texts: list[str] = []
     last_status: str | None = None
     backoff = 0.6
     max_backoff = 6.0
     matched_row_seen = False
+    last_logged_at = asyncio.get_event_loop().time() - REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS
 
     while asyncio.get_event_loop().time() < deadline:
         try:
@@ -1943,12 +1947,42 @@ async def _wait_for_report_request_download_link(
                 if status_text:
                     last_status = status_text
                 last_seen_texts = [displayed]
+                now = asyncio.get_event_loop().time()
+                if now - last_logged_at >= REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS:
+                    log_event(
+                        logger=logger,
+                        phase="iframe",
+                        message="Report Requests row pending download; continuing to poll",
+                        store_code=store.store_code,
+                        expected_range_texts=list(expected_range_texts),
+                        matched_range_text=displayed,
+                        last_status=last_status,
+                        backoff_seconds=backoff,
+                        timeout_ms=extended_timeout_ms,
+                        last_seen_rows=last_seen_texts or [displayed],
+                    )
+                    last_logged_at = now
             elif visible_rows:
                 last_seen_texts = visible_rows[-3:]
             elif unmatched_rows:
                 last_seen_texts = [text for text in unmatched_rows if text][-3:]
         except Exception as exc:
             last_status = last_status or str(exc)
+
+        now = asyncio.get_event_loop().time()
+        if now - last_logged_at >= REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS and last_seen_texts:
+            log_event(
+                logger=logger,
+                phase="iframe",
+                message="Polling Report Requests for matching row",
+                store_code=store.store_code,
+                expected_range_texts=list(expected_range_texts),
+                last_seen_rows=last_seen_texts,
+                last_status=last_status,
+                backoff_seconds=backoff,
+                timeout_ms=extended_timeout_ms,
+            )
+            last_logged_at = now
 
         await asyncio.sleep(backoff)
         backoff = min(max_backoff, backoff * 1.5)
@@ -1963,6 +1997,7 @@ async def _wait_for_report_request_download_link(
         last_seen_rows=last_seen_texts or None,
         last_status=last_status,
         row_seen=matched_row_seen,
+        timeout_ms=extended_timeout_ms,
     )
     return None, None, last_status
 
@@ -2072,6 +2107,26 @@ async def _run_orders_iframe_flow(
     await _wait_for_loading_indicators(
         frame, store=store, logger=logger, timeout_ms=nav_timeout_ms, phase="iframe_request_report"
     )
+
+    with contextlib.suppress(Exception):
+        refresh_locator = await _first_visible_locator(
+            [
+                frame.get_by_role("button", name=re.compile("refresh", re.I)),
+                frame.locator("button:has-text(\"Refresh\"), [role='button']:has-text(\"Refresh\")"),
+            ],
+            timeout_ms=4_000,
+        )
+        if refresh_locator:
+            await refresh_locator.click()
+            await _wait_for_loading_indicators(
+                frame, store=store, logger=logger, timeout_ms=nav_timeout_ms, phase="iframe_report_requests_refresh"
+            )
+            log_event(
+                logger=logger,
+                phase="iframe",
+                message="Triggered Report Requests refresh after requesting report",
+                store_code=store.store_code,
+            )
 
     download_locator, matched_range_text, last_status = await _wait_for_report_request_download_link(
         frame,
@@ -2225,6 +2280,7 @@ async def _run_store_discovery(
     outcome = StoreOutcome(status="error", message="Store run did not complete")
     stored_state_path: str | None = None
     probe_reason: str | None = None
+    probe_requires_login = False
     try:
         session_reused = False
         probe_result: SessionProbeResult | None = None
@@ -2237,6 +2293,7 @@ async def _run_store_discovery(
             )
             session_reused = probe_result.valid
             probe_reason = probe_result.reason
+            probe_requires_login = bool(probe_result.login_detected or probe_result.verification_seen)
             log_event(
                 logger=store_logger,
                 phase="session",
@@ -2252,6 +2309,7 @@ async def _run_store_discovery(
             )
         else:
             probe_reason = "no_storage_state"
+            probe_requires_login = True
         if session_reused:
             log_event(
                 logger=store_logger,
@@ -2273,23 +2331,29 @@ async def _run_store_discovery(
             verification_ok = True
             verification_seen = False
         else:
-            log_event(
-                logger=store_logger,
-                phase="session",
-                message="state invalid → relogin+OTP",
-                store_code=store.store_code,
-                storage_state=str(store.storage_state_path),
-                probe_reason=probe_reason,
-            )
-            should_login = (not storage_state_exists) or (
-                probe_result and (probe_result.login_detected or probe_result.verification_seen)
-            )
+            should_login = (not storage_state_exists) or probe_requires_login
             if should_login:
+                log_event(
+                    logger=store_logger,
+                    phase="session",
+                    message="state invalid → relogin+OTP",
+                    store_code=store.store_code,
+                    storage_state=str(store.storage_state_path),
+                    probe_reason=probe_reason,
+                )
                 session_reused = await _perform_login(
                     page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms
                 )
                 login_performed = True
             else:
+                log_event(
+                    logger=store_logger,
+                    phase="session",
+                    message="state invalid but reusing probed session without relogin",
+                    store_code=store.store_code,
+                    storage_state=str(store.storage_state_path),
+                    probe_reason=probe_reason,
+                )
                 if store.session_probe_url:
                     with contextlib.suppress(Exception):
                         await page.goto(store.session_probe_url, wait_until="domcontentloaded", timeout=nav_timeout_ms)
