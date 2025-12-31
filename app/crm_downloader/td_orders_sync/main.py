@@ -12,18 +12,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
 import sqlalchemy as sa
-from playwright.async_api import Browser, FrameLocator, Page, TimeoutError, async_playwright
+from playwright.async_api import Browser, FrameLocator, Locator, Page, TimeoutError, async_playwright
 
 from app.common.date_utils import get_daily_report_date
 from app.common.db import session_scope
 from app.config import config
-from app.crm_downloader.config import default_profiles_dir
+from app.crm_downloader.config import default_download_dir, default_profiles_dir
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from app.dashboard_downloader.notifications import send_notifications_for_run
 from app.dashboard_downloader.run_summary import fetch_summary_for_run, insert_run_summary, update_run_summary
 
 PIPELINE_NAME = "td_orders_sync"
 DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS = 90_000
+LOADING_LOCATOR_SELECTORS = ("text=/loading/i", ".k-loading-mask")
 OTP_VERIFICATION_DWELL_SECONDS = 600
 
 
@@ -34,7 +35,7 @@ async def main(
     from_date: date | None = None,
     to_date: date | None = None,
 ) -> None:
-    """Run the TD Orders discovery flow (login + iframe readiness only)."""
+    """Run the TD Orders sync flow (login + iframe historical orders download)."""
 
     resolved_run_id = run_id or new_run_id()
     resolved_env = run_env or config.run_env
@@ -161,6 +162,14 @@ def _normalize_id_selector(selector: str) -> str:
     if re.fullmatch(r"[A-Za-z0-9_-]+", selector):
         return f"#{selector}"
     return selector
+
+
+def _format_report_range_text(from_date: date, to_date: date) -> str:
+    return f"{from_date.strftime('%d %b %Y')} - {to_date.strftime('%d %b %Y')}"
+
+
+def _format_orders_filename(store_code: str, from_date: date, to_date: date) -> str:
+    return f"{store_code}_td_orders_{from_date.strftime('%Y%m%d')}_{to_date.strftime('%Y%m%d')}.xlsx"
 
 
 @dataclass
@@ -906,6 +915,379 @@ async def _observe_iframe_hydration(
     )
 
 
+async def _wait_for_loading_indicators(
+    frame: FrameLocator,
+    *,
+    store: TdStore,
+    logger: JsonLogger,
+    timeout_ms: int,
+    phase: str = "iframe",
+) -> None:
+    deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
+    seen_visible = False
+    last_error: str | None = None
+
+    while asyncio.get_event_loop().time() < deadline:
+        visible = False
+        for selector in LOADING_LOCATOR_SELECTORS:
+            try:
+                locator = frame.locator(selector).first
+                if await locator.is_visible():
+                    visible = True
+                    seen_visible = True
+                    break
+            except Exception as exc:  # pragma: no cover - diagnostics only
+                last_error = str(exc)
+                continue
+
+        if not visible:
+            if seen_visible:
+                log_event(
+                    logger=logger,
+                    phase=phase,
+                    message="Loading indicators cleared",
+                    store_code=store.store_code,
+                    selectors=list(LOADING_LOCATOR_SELECTORS),
+                )
+            return
+
+        await asyncio.sleep(0.5)
+
+    if seen_visible:
+        log_event(
+            logger=logger,
+            phase=phase,
+            status="warn",
+            message="Loading indicators still visible after timeout",
+            store_code=store.store_code,
+            selectors=list(LOADING_LOCATOR_SELECTORS),
+            error=last_error,
+        )
+
+
+async def _first_visible_locator(candidates: list[Locator], *, timeout_ms: int) -> Locator | None:
+    deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
+    while asyncio.get_event_loop().time() < deadline:
+        for candidate in candidates:
+            try:
+                count = await candidate.count()
+                if count and await candidate.first.is_visible():
+                    return candidate.first
+            except Exception:
+                continue
+        await asyncio.sleep(0.3)
+    return None
+
+
+async def _locate_date_inputs(frame: FrameLocator, *, timeout_ms: int) -> tuple[Locator | None, Locator | None]:
+    from_input: Locator | None = None
+    to_input: Locator | None = None
+    search_timeout = min(timeout_ms, 10_000)
+
+    try:
+        date_inputs = frame.locator("input[type='date']")
+        date_input_count = await date_inputs.count()
+    except Exception:
+        date_input_count = 0
+        date_inputs = frame.locator("input[type='date']")
+
+    if date_input_count >= 2:
+        return date_inputs.nth(0), date_inputs.nth(1)
+    if date_input_count == 1:
+        from_input = date_inputs.first
+
+    section_inputs = frame.locator("section:has-text(\"Select Date\") input")
+    try:
+        section_input_count = await section_inputs.count()
+    except Exception:
+        section_input_count = 0
+
+    if section_input_count and from_input is None:
+        from_input = section_inputs.nth(0)
+    if section_input_count >= 2 and to_input is None:
+        to_input = section_inputs.nth(1)
+
+    if from_input is None:
+        from_candidates = [
+            frame.get_by_label(re.compile("from", re.I)),
+            frame.get_by_placeholder(re.compile("from", re.I)),
+            frame.locator("input[aria-label*='from' i]"),
+            frame.locator("input[name*='from' i]"),
+        ]
+        from_input = await _first_visible_locator(from_candidates, timeout_ms=search_timeout)
+
+    if to_input is None:
+        to_candidates = [
+            frame.get_by_label(re.compile(r"to", re.I)),
+            frame.get_by_placeholder(re.compile(r"to", re.I)),
+            frame.locator("input[aria-label*='to' i]"),
+            frame.locator("input[name*='to' i]"),
+        ]
+        to_input = await _first_visible_locator(to_candidates, timeout_ms=search_timeout)
+
+    if to_input is None and date_input_count == 1:
+        to_input = date_inputs.first
+
+    return from_input, to_input
+
+
+async def _fill_date_input(locator: Locator, *, target_date: date) -> bool:
+    attr_type = ((await locator.get_attribute("type")) or "").lower()
+    value = target_date.strftime("%Y-%m-%d" if attr_type == "date" else "%d %b %Y")
+
+    try:
+        await locator.click()
+    except Exception:
+        pass
+
+    try:
+        if await locator.is_editable():
+            await locator.fill(value)
+        else:
+            await locator.fill(value)
+    except Exception:
+        try:
+            await locator.evaluate(
+                "(el, value) => { if (el.readOnly) el.readOnly = false; el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }",
+                value,
+            )
+        except Exception:
+            return False
+    return True
+
+
+async def _set_date_range(
+    frame: FrameLocator,
+    *,
+    from_date: date,
+    to_date: date,
+    logger: JsonLogger,
+    store: TdStore,
+    timeout_ms: int,
+) -> bool:
+    from_input, to_input = await _locate_date_inputs(frame, timeout_ms=timeout_ms)
+    if not from_input or not to_input:
+        log_event(
+            logger=logger,
+            phase="iframe",
+            status="warn",
+            message="Date inputs not located inside iframe",
+            store_code=store.store_code,
+        )
+        return False
+
+    from_ok = await _fill_date_input(from_input, target_date=from_date)
+    to_ok = await _fill_date_input(to_input, target_date=to_date)
+
+    await asyncio.sleep(0.2)
+
+    if from_ok and to_ok:
+        log_event(
+            logger=logger,
+            phase="iframe",
+            message="Date range populated via inputs",
+            store_code=store.store_code,
+            from_value=from_date.isoformat(),
+            to_value=to_date.isoformat(),
+        )
+        return True
+
+    log_event(
+        logger=logger,
+        phase="iframe",
+        status="warn",
+        message="Failed to populate date range inputs",
+        store_code=store.store_code,
+        from_ok=from_ok,
+        to_ok=to_ok,
+    )
+    return False
+
+
+async def _wait_for_report_request_row(
+    frame: FrameLocator,
+    *,
+    expected_range_text: str,
+    logger: JsonLogger,
+    store: TdStore,
+    timeout_ms: int,
+) -> Locator | None:
+    deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            table_candidates = [
+                frame.get_by_role("table", name=re.compile("report requests", re.I)),
+                frame.locator("table:has-text(\"Report Requests\")"),
+            ]
+            table = await _first_visible_locator(table_candidates, timeout_ms=1_000)
+            if table is None:
+                await asyncio.sleep(0.5)
+                continue
+
+            row_locator = table.locator(f"tr:has-text('{expected_range_text}')")
+            row_count = await row_locator.count()
+            for idx in range(min(row_count, 3)):
+                candidate = row_locator.nth(idx)
+                try:
+                    if await candidate.is_visible():
+                        return candidate
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        await asyncio.sleep(0.5)
+
+    log_event(
+        logger=logger,
+        phase="iframe",
+        status="warn",
+        message="Report Requests row not found for range",
+        store_code=store.store_code,
+        expected_range_text=expected_range_text,
+    )
+    return None
+
+
+async def _run_orders_iframe_flow(
+    page: Page,
+    frame: FrameLocator,
+    *,
+    store: TdStore,
+    logger: JsonLogger,
+    from_date: date,
+    to_date: date,
+    nav_timeout_ms: int,
+    download_dir: Path,
+) -> tuple[bool, str | None]:
+    await _wait_for_loading_indicators(
+        frame, store=store, logger=logger, timeout_ms=nav_timeout_ms, phase="iframe_preflight"
+    )
+
+    expand_locator = await _first_visible_locator(
+        [
+            frame.get_by_role("button", name=re.compile("expand", re.I)),
+            frame.locator("text=Expand"),
+        ],
+        timeout_ms=5_000,
+    )
+    if expand_locator:
+        try:
+            await expand_locator.click()
+            await _wait_for_loading_indicators(
+                frame, store=store, logger=logger, timeout_ms=nav_timeout_ms, phase="iframe_expand"
+            )
+            log_event(
+                logger=logger,
+                phase="iframe",
+                message="Clicked Expand button inside iframe",
+                store_code=store.store_code,
+            )
+        except Exception as exc:
+            log_event(
+                logger=logger,
+                phase="iframe",
+                status="warn",
+                message="Failed to click Expand button",
+                store_code=store.store_code,
+                error=str(exc),
+            )
+
+    historical_locator = await _first_visible_locator(
+        [
+            frame.get_by_role("button", name=re.compile("download historical report", re.I)),
+            frame.get_by_role("link", name=re.compile("download historical report", re.I)),
+            frame.locator("text=Download Historical Report"),
+        ],
+        timeout_ms=nav_timeout_ms,
+    )
+    if not historical_locator:
+        return False, "Download Historical Report control not visible inside iframe"
+
+    await historical_locator.click()
+    await _wait_for_loading_indicators(
+        frame, store=store, logger=logger, timeout_ms=nav_timeout_ms, phase="iframe_download_historical"
+    )
+
+    generate_locator = await _first_visible_locator(
+        [
+            frame.get_by_role("button", name=re.compile("generate report", re.I)),
+            frame.locator("text=Generate Report"),
+        ],
+        timeout_ms=nav_timeout_ms,
+    )
+    if not generate_locator:
+        return False, "Generate Report control not visible inside iframe"
+
+    await generate_locator.click()
+    await _wait_for_loading_indicators(
+        frame, store=store, logger=logger, timeout_ms=nav_timeout_ms, phase="iframe_generate_report"
+    )
+
+    date_range_set = await _set_date_range(
+        frame, from_date=from_date, to_date=to_date, logger=logger, store=store, timeout_ms=nav_timeout_ms
+    )
+    if not date_range_set:
+        return False, "Date range inputs not set"
+
+    request_locator = await _first_visible_locator(
+        [
+            frame.get_by_role("button", name=re.compile("request report", re.I)),
+            frame.locator("text=Request Report"),
+        ],
+        timeout_ms=nav_timeout_ms,
+    )
+    if not request_locator:
+        return False, "Request Report control not visible inside iframe"
+
+    await request_locator.click()
+    await _wait_for_loading_indicators(
+        frame, store=store, logger=logger, timeout_ms=nav_timeout_ms, phase="iframe_request_report"
+    )
+
+    expected_range_text = _format_report_range_text(from_date, to_date)
+    row = await _wait_for_report_request_row(
+        frame,
+        expected_range_text=expected_range_text,
+        logger=logger,
+        store=store,
+        timeout_ms=nav_timeout_ms,
+    )
+    if row is None:
+        return False, "Matching Report Requests row not found"
+
+    download_locator = await _first_visible_locator(
+        [
+            row.get_by_role("link", name=re.compile("download", re.I)),
+            row.get_by_role("button", name=re.compile("download", re.I)),
+            row.locator("text=Download"),
+        ],
+        timeout_ms=nav_timeout_ms,
+    )
+    if not download_locator:
+        return False, "Download control not visible in matching row"
+
+    filename = _format_orders_filename(store.store_code, from_date, to_date)
+    target_path = download_dir / filename
+
+    async with page.expect_download(timeout=nav_timeout_ms) as download_info:
+        await download_locator.click()
+    download = await download_info.value
+    await download.save_as(str(target_path))
+
+    log_event(
+        logger=logger,
+        phase="iframe",
+        message="Orders report download saved",
+        store_code=store.store_code,
+        download_path=str(target_path),
+        suggested_filename=download.suggested_filename,
+        expected_range_text=expected_range_text,
+    )
+
+    return True, str(target_path)
+
+
 async def _wait_for_otp_verification(
     page: Page,
     *,
@@ -1013,7 +1395,12 @@ async def _run_store_discovery(
     )
 
     storage_state_exists = store.storage_state_path.exists()
-    context = await browser.new_context(storage_state=str(store.storage_state_path) if storage_state_exists else None)
+    download_dir = default_download_dir() / store.store_code
+    download_dir.mkdir(parents=True, exist_ok=True)
+    context = await browser.new_context(
+        storage_state=str(store.storage_state_path) if storage_state_exists else None,
+        accept_downloads=True,
+    )
     page = await context.new_page()
     nav_selector = store.reports_nav_selector
     outcome = StoreOutcome(status="error", message="Store run did not complete")
@@ -1026,7 +1413,7 @@ async def _run_store_discovery(
         if not session_reused:
             if storage_state_exists:
                 await context.close()
-                context = await browser.new_context()
+                context = await browser.new_context(accept_downloads=True)
                 page = await context.new_page()
             log_event(
                 logger=store_logger,
@@ -1106,14 +1493,49 @@ async def _run_store_discovery(
         iframe_locator = await _wait_for_iframe(page, store=store, logger=store_logger)
         if iframe_locator is not None:
             await _observe_iframe_hydration(iframe_locator, store=store, logger=store_logger)
-            outcome = StoreOutcome(
-                status="ok",
-                message="Orders iframe attached and hydration observed",
-                final_url=page.url,
-                iframe_attached=True,
-                verification_seen=verification_seen,
-                storage_state=stored_state_path,
+            success, detail = await _run_orders_iframe_flow(
+                page,
+                iframe_locator,
+                store=store,
+                logger=store_logger,
+                from_date=run_start_date,
+                to_date=run_end_date,
+                nav_timeout_ms=nav_timeout_ms,
+                download_dir=download_dir,
             )
+            if success:
+                log_event(
+                    logger=store_logger,
+                    phase="iframe",
+                    message="Orders iframe flow completed",
+                    store_code=store.store_code,
+                    download_path=detail,
+                )
+                outcome = StoreOutcome(
+                    status="ok",
+                    message="Orders report downloaded",
+                    final_url=page.url,
+                    iframe_attached=True,
+                    verification_seen=verification_seen,
+                    storage_state=stored_state_path,
+                )
+            else:
+                log_event(
+                    logger=store_logger,
+                    phase="iframe",
+                    status="error",
+                    message="Orders iframe flow failed",
+                    store_code=store.store_code,
+                    error=detail,
+                )
+                outcome = StoreOutcome(
+                    status="error",
+                    message=detail or "Orders iframe flow failed",
+                    final_url=page.url,
+                    iframe_attached=True,
+                    verification_seen=verification_seen,
+                    storage_state=stored_state_path,
+                )
         else:
             outcome = StoreOutcome(
                 status="error",
