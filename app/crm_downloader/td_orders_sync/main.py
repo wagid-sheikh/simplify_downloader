@@ -6,7 +6,7 @@ import json
 import re
 import contextlib
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
@@ -22,6 +22,7 @@ from app.dashboard_downloader.notifications import send_notifications_for_run
 
 PIPELINE_NAME = "td_orders_sync"
 DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS = 90_000
+OTP_VERIFICATION_DWELL_SECONDS = 600
 
 
 async def main(
@@ -39,50 +40,53 @@ async def main(
     run_end_date = to_date or run_start_date
     logger = get_logger(run_id=resolved_run_id)
 
-    log_event(
-        logger=logger,
-        phase="init",
-        message="Starting TD orders sync discovery flow",
-        run_env=resolved_env,
-        from_date=run_start_date,
-        to_date=run_end_date,
-    )
-
-    nav_timeout_ms = await _fetch_dashboard_nav_timeout_ms(config.database_url)
-
-    stores = await _load_td_order_stores(logger=logger)
-    if not stores:
+    try:
         log_event(
             logger=logger,
             phase="init",
-            status="warn",
-            message="No TD stores with sync_orders_flag found; exiting",
+            message="Starting TD orders sync discovery flow",
+            run_env=resolved_env,
+            from_date=run_start_date,
+            to_date=run_end_date,
+        )
+
+        nav_timeout_ms = await _fetch_dashboard_nav_timeout_ms(config.database_url)
+
+        stores = await _load_td_order_stores(logger=logger)
+        if not stores:
+            log_event(
+                logger=logger,
+                phase="init",
+                status="warn",
+                message="No TD stores with sync_orders_flag found; exiting",
+            )
+            await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
+            return
+
+        async with async_playwright() as p:
+            browser = await _launch_browser(playwright=p, logger=logger)
+            for store in stores:
+                await _run_store_discovery(
+                    browser=browser,
+                    store=store,
+                    logger=logger,
+                    run_env=resolved_env,
+                    run_start_date=run_start_date,
+                    run_end_date=run_end_date,
+                    nav_timeout_ms=nav_timeout_ms,
+                )
+
+            await browser.close()
+
+        log_event(
+            logger=logger,
+            phase="notifications",
+            message="TD orders sync discovery flow complete; notifying",
+            run_env=resolved_env,
         )
         await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
-        return
-
-    async with async_playwright() as p:
-        browser = await _launch_browser(playwright=p, logger=logger)
-        for store in stores:
-            await _run_store_discovery(
-                browser=browser,
-                store=store,
-                logger=logger,
-                run_env=resolved_env,
-                run_start_date=run_start_date,
-                run_end_date=run_end_date,
-                nav_timeout_ms=nav_timeout_ms,
-            )
-
-        await browser.close()
-
-    log_event(
-        logger=logger,
-        phase="notifications",
-        message="TD orders sync discovery flow complete; notifying",
-        run_env=resolved_env,
-    )
-    await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
+    finally:
+        logger.close()
 
 
 # ── Data helpers ─────────────────────────────────────────────────────────────
@@ -569,6 +573,71 @@ async def _observe_iframe_hydration(
     )
 
 
+async def _wait_for_otp_verification(
+    page: Page, *, store: TdStore, logger: JsonLogger, dwell_seconds: int = OTP_VERIFICATION_DWELL_SECONDS
+) -> tuple[bool, bool]:
+    verification_fragment = "/App/frmVerification"
+    current_url = page.url or ""
+    verification_seen = verification_fragment.lower() in current_url.lower()
+    if not verification_seen:
+        return True, False
+
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=dwell_seconds)
+    log_event(
+        logger=logger,
+        phase="login",
+        status="warn",
+        message="Verification page detected; pausing for manual OTP entry",
+        store_code=store.store_code,
+        current_url=current_url,
+        otp_deadline=deadline.isoformat(),
+        dwell_seconds=dwell_seconds,
+    )
+
+    end_time = asyncio.get_event_loop().time() + dwell_seconds
+    while asyncio.get_event_loop().time() < end_time:
+        await asyncio.sleep(2)
+        current_url = page.url or ""
+        if verification_fragment.lower() not in current_url.lower():
+            break
+
+    final_url = page.url or ""
+    at_home = False
+    if store.home_url:
+        try:
+            at_home = final_url.lower().startswith(store.home_url.lower())
+        except Exception:
+            at_home = False
+    else:
+        at_home = verification_fragment.lower() not in final_url.lower()
+
+    if not at_home:
+        message = "OTP not completed; verification page still active"
+        if verification_fragment.lower() not in final_url.lower():
+            message = "OTP not completed; home page not reached after verification dwell"
+        log_event(
+            logger=logger,
+            phase="login",
+            status="error",
+            message=message,
+            store_code=store.store_code,
+            final_url=final_url,
+            otp_deadline=deadline.isoformat(),
+            dwell_seconds=dwell_seconds,
+        )
+        return False, True
+
+    log_event(
+        logger=logger,
+        phase="login",
+        message="OTP verification completed; proceeding",
+        store_code=store.store_code,
+        final_url=final_url,
+        otp_deadline=deadline.isoformat(),
+    )
+    return True, True
+
+
 async def _run_store_discovery(
     *,
     browser: Browser,
@@ -594,6 +663,7 @@ async def _run_store_discovery(
     page = await context.new_page()
     try:
         session_reused = False
+        login_performed = False
         if storage_state_exists:
             session_reused = await _probe_session(page, store=store, logger=store_logger)
 
@@ -610,16 +680,33 @@ async def _run_store_discovery(
                 storage_state=str(store.storage_state_path),
             )
             session_reused = await _perform_login(page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms)
-            if session_reused:
-                store.storage_state_path.parent.mkdir(parents=True, exist_ok=True)
-                await context.storage_state(path=str(store.storage_state_path))
-                log_event(
-                    logger=store_logger,
-                    phase="session",
-                    message="Stored refreshed session state",
-                    store_code=store.store_code,
-                    storage_state=str(store.storage_state_path),
-                )
+            login_performed = session_reused
+
+        verification_ok, verification_seen = await _wait_for_otp_verification(
+            page, store=store, logger=store_logger
+        )
+        if not verification_ok:
+            log_event(
+                logger=store_logger,
+                phase="store",
+                status="error",
+                message="Aborting TD orders discovery because OTP was not completed",
+                store_code=store.store_code,
+            )
+            return
+
+        should_store_state = login_performed or verification_seen
+        if should_store_state:
+            store.storage_state_path.parent.mkdir(parents=True, exist_ok=True)
+            await context.storage_state(path=str(store.storage_state_path))
+            log_event(
+                logger=store_logger,
+                phase="session",
+                message="Stored refreshed session state",
+                store_code=store.store_code,
+                storage_state=str(store.storage_state_path),
+                verification_seen=verification_seen,
+            )
 
         iframe_locator = await _wait_for_iframe(page, store=store, logger=store_logger)
         if iframe_locator is not None:

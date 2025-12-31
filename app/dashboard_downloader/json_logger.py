@@ -42,13 +42,15 @@ class JsonLogger:
             file_path = _default_log_file_path()
         else:
             file_path = log_file_path
-        self.file_handle = open(file_path, "a", encoding="utf-8") if file_path else None
+        self._file_path = file_path if isinstance(file_path, str) else None
+        self.file_handle = open(self._file_path, "a", encoding="utf-8") if self._file_path else None
         self.aggregator = None
 
     def bind(self, **kwargs: Any) -> "JsonLogger":
         child = JsonLogger(run_id=self.run_id, stream=self.stream, log_file_path=None)
         child.default_context = {**self.default_context, **kwargs}
         child.file_handle = self.file_handle
+        child._file_path = self._file_path
         child.aggregator = self.aggregator
         return child
 
@@ -62,8 +64,27 @@ class JsonLogger:
         self.stream.write(encoded + "\n")
         self.stream.flush()
         if self.file_handle:
-            self.file_handle.write(encoded + "\n")
-            self.file_handle.flush()
+            if self.file_handle.closed:
+                if self._file_path:
+                    try:
+                        self.file_handle = open(self._file_path, "a", encoding="utf-8")
+                    except Exception:
+                        return
+                else:
+                    return
+
+            try:
+                self.file_handle.write(encoded + "\n")
+                self.file_handle.flush()
+            except ValueError:
+                if not self._file_path:
+                    return
+                try:
+                    self.file_handle = open(self._file_path, "a", encoding="utf-8")
+                    self.file_handle.write(encoded + "\n")
+                    self.file_handle.flush()
+                except Exception:
+                    return
 
     def info(self, *, phase: str, status: str = "ok", message: str = "", **fields: Any) -> None:
         payload = {"phase": phase, "status": status, "message": message, **fields}
