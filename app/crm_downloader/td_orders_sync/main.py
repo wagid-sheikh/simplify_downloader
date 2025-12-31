@@ -1856,17 +1856,41 @@ async def _set_date_range_with_retry(
     return False, final_text
 
 
-async def _wait_for_report_request_row(
+async def _extract_row_status_text(row: Locator) -> str | None:
+    try:
+        cell_texts = await row.locator("td").all_inner_texts()
+        normalized_cells = [" ".join(text.split()) for text in cell_texts if text]
+        for text in normalized_cells:
+            lowered = text.lower()
+            if any(keyword in lowered for keyword in ("pending", "download", "ready", "processing")):
+                return text
+        if normalized_cells:
+            return normalized_cells[-1]
+    except Exception:
+        pass
+    with contextlib.suppress(Exception):
+        text = await row.inner_text()
+        if text:
+            return " ".join(text.split())
+    return None
+
+
+async def _wait_for_report_request_download_link(
     frame: FrameLocator,
     *,
     expected_range_texts: Sequence[str],
     logger: JsonLogger,
     store: TdStore,
     timeout_ms: int,
-) -> tuple[Locator | None, str | None]:
+) -> tuple[Locator | None, str | None, str | None]:
     deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
     normalized_expected = {" ".join(text.split()).lower() for text in expected_range_texts}
     last_seen_texts: list[str] = []
+    last_status: str | None = None
+    backoff = 0.6
+    max_backoff = 6.0
+    matched_row_seen = False
+
     while asyncio.get_event_loop().time() < deadline:
         try:
             table_candidates = [
@@ -1875,7 +1899,8 @@ async def _wait_for_report_request_row(
             ]
             table = await _first_visible_locator(table_candidates, timeout_ms=1_000)
             if table is None:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(backoff)
+                backoff = min(max_backoff, backoff * 1.5)
                 continue
 
             matched_rows: list[tuple[Locator, str | None]] = []
@@ -1902,26 +1927,44 @@ async def _wait_for_report_request_row(
                         continue
             if matched_rows:
                 locator, displayed = matched_rows[0]
-                return locator, displayed
-            if visible_rows:
+                matched_row_seen = True
+                download_locator = await _first_visible_locator(
+                    [
+                        locator.get_by_role("link", name=re.compile("download", re.I)),
+                        locator.get_by_role("button", name=re.compile("download", re.I)),
+                        locator.locator("text=Download"),
+                    ],
+                    timeout_ms=1_000,
+                )
+                if download_locator:
+                    return download_locator, displayed, last_status
+
+                status_text = await _extract_row_status_text(locator)
+                if status_text:
+                    last_status = status_text
+                last_seen_texts = [displayed]
+            elif visible_rows:
                 last_seen_texts = visible_rows[-3:]
             elif unmatched_rows:
                 last_seen_texts = [text for text in unmatched_rows if text][-3:]
-        except Exception:
-            pass
+        except Exception as exc:
+            last_status = last_status or str(exc)
 
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(backoff)
+        backoff = min(max_backoff, backoff * 1.5)
 
     log_event(
         logger=logger,
         phase="iframe",
         status="warn",
-        message="Report Requests row not found for range",
+        message="Report Requests download link not available before timeout",
         store_code=store.store_code,
         expected_range_texts=list(expected_range_texts),
         last_seen_rows=last_seen_texts or None,
+        last_status=last_status,
+        row_seen=matched_row_seen,
     )
-    return None, None
+    return None, None, last_status
 
 
 async def _run_orders_iframe_flow(
@@ -2030,26 +2073,15 @@ async def _run_orders_iframe_flow(
         frame, store=store, logger=logger, timeout_ms=nav_timeout_ms, phase="iframe_request_report"
     )
 
-    row, matched_range_text = await _wait_for_report_request_row(
+    download_locator, matched_range_text, last_status = await _wait_for_report_request_download_link(
         frame,
         expected_range_texts=range_text_candidates,
         logger=logger,
         store=store,
         timeout_ms=nav_timeout_ms,
     )
-    if row is None:
-        return False, "Matching Report Requests row not found"
-
-    download_locator = await _first_visible_locator(
-        [
-            row.get_by_role("link", name=re.compile("download", re.I)),
-            row.get_by_role("button", name=re.compile("download", re.I)),
-            row.locator("text=Download"),
-        ],
-        timeout_ms=nav_timeout_ms,
-    )
-    if not download_locator:
-        return False, "Download control not visible in matching row"
+    if download_locator is None:
+        return False, last_status or "Matching Report Requests row not ready for download"
 
     filename = _format_orders_filename(store.store_code, from_date, to_date)
     target_path = download_dir / filename
