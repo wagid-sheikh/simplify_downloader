@@ -638,18 +638,32 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger, time
         login_detected = await page.locator("#txtUserId, input[name='username']").first.is_visible()
     except Exception:
         login_detected = False
-    try:
-        nav_visible = await page.locator(store.reports_nav_selector).first.is_visible()
-    except Exception:
-        nav_visible = False
-    try:
-        home_card_visible = await page.locator("h5.card-title:has-text(\"Daily Operations Tracker\")").is_visible()
-    except Exception:
-        home_card_visible = False
+
+    async def _probe_visibility() -> tuple[bool, bool]:
+        nav_ok = False
+        home_ok = False
+        try:
+            nav_ok = await page.locator(store.reports_nav_selector).first.is_visible()
+        except Exception:
+            nav_ok = False
+        try:
+            home_ok = await page.locator("h5.card-title:has-text(\"Daily Operations Tracker\")").is_visible()
+        except Exception:
+            home_ok = False
+        return nav_ok, home_ok
+
+    nav_visible, home_card_visible = await _probe_visibility()
+    if not (nav_visible or home_card_visible):
+        visibility_deadline = asyncio.get_event_loop().time() + 5.0
+        while asyncio.get_event_loop().time() < visibility_deadline:
+            await asyncio.sleep(0.3)
+            nav_visible, home_card_visible = await _probe_visibility()
+            if nav_visible or home_card_visible:
+                break
 
     nav_ready = (contains_store_path or contains_store) and nav_visible
     home_ready = (contains_store_path or contains_store) and home_card_visible
-    state_valid = nav_ready and not verification_seen and not login_detected and probe_error is None
+    state_valid = (nav_ready or home_ready) and not verification_seen and not login_detected and probe_error is None
     if probe_error:
         reason = "probe_navigation_error"
     elif verification_seen:
@@ -1939,9 +1953,16 @@ async def _wait_for_report_requests_table(
 ) -> Locator | None:
     deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
     last_seen: list[str] = []
+    header_seen = False
+    header_locator = frame.locator("text=/Report Requests/i")
 
     while asyncio.get_event_loop().time() < deadline:
         try:
+            with contextlib.suppress(Exception):
+                header_handle = await _first_visible_locator([header_locator], timeout_ms=800)
+                if header_handle:
+                    await header_handle.scroll_into_view_if_needed()
+                    header_seen = True
             table = await _first_visible_locator(
                 [
                     frame.get_by_role("table", name=re.compile("report requests", re.I)),
@@ -1950,6 +1971,8 @@ async def _wait_for_report_requests_table(
                 timeout_ms=1_000,
             )
             if table:
+                with contextlib.suppress(Exception):
+                    await table.scroll_into_view_if_needed()
                 return table
         except Exception:
             pass
@@ -1975,6 +1998,7 @@ async def _wait_for_report_requests_table(
         store_code=store.store_code,
         timeout_ms=timeout_ms,
         last_seen_rows=last_seen or None,
+        header_seen=header_seen,
     )
     return None
 
@@ -2009,6 +2033,8 @@ async def _wait_for_report_request_download_link(
                 await asyncio.sleep(backoff)
                 backoff = min(max_backoff, backoff * 1.5)
                 continue
+            with contextlib.suppress(Exception):
+                await table.scroll_into_view_if_needed()
 
             matched_rows: list[tuple[Locator, str | None]] = []
             unmatched_rows: list[str | None] = []
@@ -2479,7 +2505,7 @@ async def _run_store_discovery(
             )
             session_reused = probe_result.valid
             probe_reason = probe_result.reason
-            probe_requires_login = bool(probe_result.login_detected)
+            probe_requires_login = bool(probe_result.login_detected or probe_result.verification_seen)
             log_event(
                 logger=store_logger,
                 phase="session",
@@ -2527,6 +2553,8 @@ async def _run_store_discovery(
                     store_code=store.store_code,
                     storage_state=str(store.storage_state_path),
                     probe_reason=probe_reason,
+                    login_prompt_seen=bool(probe_result and probe_result.login_detected),
+                    verification_seen=verification_seen,
                 )
                 session_reused = await _perform_login(
                     page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms
