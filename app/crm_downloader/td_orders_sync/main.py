@@ -648,7 +648,7 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger, time
 
     nav_ready = (contains_store_path or contains_store) and nav_visible
     home_ready = (contains_store_path or contains_store) and home_card_visible
-    state_valid = (nav_ready or home_ready) and not verification_seen and not login_detected and probe_error is None
+    state_valid = nav_ready and not verification_seen and not login_detected and probe_error is None
     if probe_error:
         reason = "probe_navigation_error"
     elif verification_seen:
@@ -1877,6 +1877,107 @@ async def _extract_row_status_text(row: Locator) -> str | None:
     return None
 
 
+async def _wait_for_modal_close(
+    frame: FrameLocator,
+    *,
+    logger: JsonLogger,
+    store: TdStore,
+    timeout_ms: int,
+) -> None:
+    modal_candidates = [
+        frame.locator(".k-window"),
+        frame.locator("[role='dialog']"),
+    ]
+    overlay_candidates = [
+        frame.locator(".k-overlay"),
+        frame.locator(".k-animation-container"),
+    ]
+    deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
+    saw_modal = False
+
+    while asyncio.get_event_loop().time() < deadline:
+        modal_visible = False
+        overlay_visible = False
+        for candidate in modal_candidates:
+            try:
+                if await candidate.count() and await candidate.first.is_visible():
+                    modal_visible = True
+                    break
+            except Exception:
+                continue
+        for candidate in overlay_candidates:
+            try:
+                if await candidate.count() and await candidate.first.is_visible():
+                    overlay_visible = True
+                    break
+            except Exception:
+                continue
+
+        if modal_visible or overlay_visible:
+            saw_modal = saw_modal or modal_visible or overlay_visible
+            await asyncio.sleep(0.3)
+            continue
+        break
+
+    if saw_modal:
+        log_event(
+            logger=logger,
+            phase="iframe",
+            message="Report modal closed after request",
+            store_code=store.store_code,
+            waited_ms=timeout_ms,
+        )
+
+
+async def _wait_for_report_requests_table(
+    frame: FrameLocator,
+    *,
+    logger: JsonLogger,
+    store: TdStore,
+    timeout_ms: int,
+) -> Locator | None:
+    deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
+    last_seen: list[str] = []
+
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            table = await _first_visible_locator(
+                [
+                    frame.get_by_role("table", name=re.compile("report requests", re.I)),
+                    frame.locator("table:has-text(\"Report Requests\")"),
+                ],
+                timeout_ms=1_000,
+            )
+            if table:
+                return table
+        except Exception:
+            pass
+
+        with contextlib.suppress(Exception):
+            rows = frame.locator("table tr")
+            count = await rows.count()
+            sample = []
+            for idx in range(min(count, 2)):
+                sample_text = await rows.nth(idx).inner_text()
+                if sample_text:
+                    sample.append(" ".join(sample_text.split()))
+            if sample:
+                last_seen = sample
+
+        await asyncio.sleep(0.4)
+
+    log_event(
+        logger=logger,
+        phase="iframe",
+        status="warn",
+        message="Report Requests table not visible after request",
+        store_code=store.store_code,
+        timeout_ms=timeout_ms,
+        last_seen_rows=last_seen or None,
+    )
+    return None
+
+
 async def _wait_for_report_request_download_link(
     frame: FrameLocator,
     *,
@@ -1894,6 +1995,7 @@ async def _wait_for_report_request_download_link(
     max_backoff = 6.0
     matched_row_seen = False
     last_logged_at = asyncio.get_event_loop().time() - REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS
+    last_refresh_at = 0.0
 
     while asyncio.get_event_loop().time() < deadline:
         try:
@@ -1946,6 +2048,50 @@ async def _wait_for_report_request_download_link(
                 status_text = await _extract_row_status_text(locator)
                 if status_text:
                     last_status = status_text
+                refresh_locator = await _first_visible_locator(
+                    [
+                        locator.get_by_role("link", name=re.compile("refresh", re.I)),
+                        frame.get_by_role("link", name=re.compile("refresh", re.I)),
+                        frame.locator("button:has-text(\"Refresh\"), [role='button']:has-text(\"Refresh\")"),
+                    ],
+                    timeout_ms=800,
+                )
+                now = asyncio.get_event_loop().time()
+                should_refresh = (
+                    refresh_locator is not None
+                    and last_status
+                    and "pending" in last_status.lower()
+                    and now - last_refresh_at >= 5.0
+                )
+                if should_refresh:
+                    try:
+                        await refresh_locator.click()
+                        await _wait_for_loading_indicators(
+                            frame,
+                            store=store,
+                            logger=logger,
+                            timeout_ms=timeout_ms,
+                            phase="iframe_report_requests_refresh_poll",
+                        )
+                        last_refresh_at = now
+                        log_event(
+                            logger=logger,
+                            phase="iframe",
+                            message="Triggered Report Requests refresh while polling pending row",
+                            store_code=store.store_code,
+                            matched_range_text=displayed,
+                            last_status=last_status,
+                        )
+                    except Exception as exc:
+                        log_event(
+                            logger=logger,
+                            phase="iframe",
+                            status="warn",
+                            message="Failed to refresh Report Requests while polling",
+                            store_code=store.store_code,
+                            matched_range_text=displayed,
+                            error=str(exc),
+                        )
                 last_seen_texts = [displayed]
                 now = asyncio.get_event_loop().time()
                 if now - last_logged_at >= REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS:
@@ -2107,6 +2253,13 @@ async def _run_orders_iframe_flow(
     await _wait_for_loading_indicators(
         frame, store=store, logger=logger, timeout_ms=nav_timeout_ms, phase="iframe_request_report"
     )
+
+    await _wait_for_modal_close(frame, logger=logger, store=store, timeout_ms=nav_timeout_ms)
+    table_locator = await _wait_for_report_requests_table(
+        frame, logger=logger, store=store, timeout_ms=nav_timeout_ms
+    )
+    if table_locator is None:
+        return False, "Report Requests table not visible after requesting report"
 
     with contextlib.suppress(Exception):
         refresh_locator = await _first_visible_locator(
@@ -2293,7 +2446,7 @@ async def _run_store_discovery(
             )
             session_reused = probe_result.valid
             probe_reason = probe_result.reason
-            probe_requires_login = bool(probe_result.login_detected or probe_result.verification_seen)
+            probe_requires_login = bool(probe_result.login_detected)
             log_event(
                 logger=store_logger,
                 phase="session",
@@ -2310,6 +2463,7 @@ async def _run_store_discovery(
         else:
             probe_reason = "no_storage_state"
             probe_requires_login = True
+        verification_seen = bool(probe_result.verification_seen) if probe_result else False
         if session_reused:
             log_event(
                 logger=store_logger,
@@ -2376,7 +2530,8 @@ async def _run_store_discovery(
             )
             return
 
-        if login_performed:
+        should_wait_for_otp = login_performed or verification_seen
+        if should_wait_for_otp:
             verification_ok, verification_seen = await _wait_for_otp_verification(
                 page, store=store, logger=store_logger, nav_selector=nav_selector
             )
@@ -2384,11 +2539,12 @@ async def _run_store_discovery(
                 log_event(
                     logger=store_logger,
                     phase="session",
-                    message="Storage state invalid; refreshed session via login/OTP",
+                    message="Session ready after OTP/verification wait",
                     store_code=store.store_code,
                     storage_state=str(store.storage_state_path),
                     final_url=page.url,
                     verification_seen=verification_seen,
+                    login_performed=login_performed,
                 )
 
         if not verification_ok:
