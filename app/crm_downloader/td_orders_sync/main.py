@@ -27,6 +27,7 @@ LOADING_LOCATOR_SELECTORS = ("text=/loading/i", ".k-loading-mask")
 OTP_VERIFICATION_DWELL_SECONDS = 600
 TEMP_ENABLED_STORES = {"A668", "A817"}
 REPORT_REQUEST_POLL_EXTENSION_MS = 120_000
+REPORT_REQUEST_MAX_TIMEOUT_MS = 90_000
 REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS = 20.0
 
 
@@ -1986,13 +1987,13 @@ async def _wait_for_report_request_download_link(
     store: TdStore,
     timeout_ms: int,
 ) -> tuple[Locator | None, str | None, str | None]:
-    extended_timeout_ms = timeout_ms + REPORT_REQUEST_POLL_EXTENSION_MS
+    extended_timeout_ms = min(REPORT_REQUEST_MAX_TIMEOUT_MS, timeout_ms + REPORT_REQUEST_POLL_EXTENSION_MS)
     deadline = asyncio.get_event_loop().time() + (extended_timeout_ms / 1000)
     normalized_expected = {" ".join(text.split()).lower() for text in expected_range_texts}
     last_seen_texts: list[str] = []
     last_status: str | None = None
-    backoff = 0.6
-    max_backoff = 6.0
+    backoff = 0.4
+    max_backoff = 2.0
     matched_row_seen = False
     last_logged_at = asyncio.get_event_loop().time() - REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS
     last_refresh_at = 0.0
@@ -2043,11 +2044,34 @@ async def _wait_for_report_request_download_link(
                     timeout_ms=1_000,
                 )
                 if download_locator:
-                    return download_locator, displayed, last_status
+                    status_text = await _extract_row_status_text(locator)
+                    if status_text:
+                        last_status = status_text
+                    log_event(
+                        logger=logger,
+                        phase="iframe",
+                        message="Report Requests row ready for download",
+                        store_code=store.store_code,
+                        matched_range_text=displayed,
+                        status_text=status_text,
+                        expected_range_texts=list(expected_range_texts),
+                    )
+                    return download_locator, displayed, status_text or last_status
 
                 status_text = await _extract_row_status_text(locator)
                 if status_text:
                     last_status = status_text
+                    log_event(
+                        logger=logger,
+                        phase="iframe",
+                        message="Report Requests row pending; polling for Download link",
+                        store_code=store.store_code,
+                        matched_range_text=displayed,
+                        status_text=status_text,
+                        expected_range_texts=list(expected_range_texts),
+                        backoff_seconds=backoff,
+                        timeout_ms=extended_timeout_ms,
+                    )
                 refresh_locator = await _first_visible_locator(
                     [
                         locator.get_by_role("link", name=re.compile("refresh", re.I)),
@@ -2290,6 +2314,15 @@ async def _run_orders_iframe_flow(
     )
     if download_locator is None:
         return False, last_status or "Matching Report Requests row not ready for download"
+
+    log_event(
+        logger=logger,
+        phase="iframe",
+        message="Clicking download link for matched Report Requests row",
+        store_code=store.store_code,
+        matched_range_text=matched_range_text,
+        last_status=last_status,
+    )
 
     filename = _format_orders_filename(store.store_code, from_date, to_date)
     target_path = download_dir / filename
