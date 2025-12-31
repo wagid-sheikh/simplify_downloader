@@ -310,6 +310,16 @@ class TdOrdersDiscoverySummary:
         }
 
 
+@dataclass
+class SessionProbeResult:
+    valid: bool
+    final_url: str | None
+    reason: str | None = None
+    contains_store_code: bool | None = None
+    verification_seen: bool | None = None
+    login_detected: bool | None = None
+
+
 async def _load_td_order_stores(*, logger: JsonLogger) -> List[TdStore]:
     query = sa.text(
         """
@@ -478,7 +488,7 @@ async def _launch_browser(*, playwright: Any, logger: JsonLogger) -> Browser:
 # ── Playwright helpers ───────────────────────────────────────────────────────
 
 
-async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger) -> bool:
+async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger) -> SessionProbeResult:
     target_url = store.home_url or store.orders_url or store.login_url
     if not target_url:
         log_event(
@@ -488,22 +498,50 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger) -> b
             message="No target URL available to probe session",
             store_code=store.store_code,
         )
-        return False
+        return SessionProbeResult(valid=False, final_url=None, reason="no_probe_target")
 
     response = await page.goto(target_url, wait_until="domcontentloaded")
     final_url = page.url
     contains_store = store.store_code.lower() in (final_url or "").lower()
+
+    verification_seen = "frmverification" in (final_url or "").lower()
+    login_detected = False
+    try:
+        login_detected = await page.locator("#txtUserId, input[name='username']").first.is_visible()
+    except Exception:
+        login_detected = False
+
+    state_valid = contains_store and not verification_seen and not login_detected
+    reason = None
+    if verification_seen:
+        reason = "verification_redirect"
+    elif login_detected:
+        reason = "login_form_visible"
+    elif not contains_store:
+        reason = "store_code_missing_from_url"
+
     log_event(
         logger=logger,
         phase="session",
-        status="ok" if contains_store else "warn",
+        status="ok" if state_valid else "warn",
         message="Probed session with existing storage state",
         store_code=store.store_code,
         response_status=getattr(response, "status", None),
         final_url=final_url,
         contains_store_code=contains_store,
+        verification_seen=verification_seen,
+        login_detected=login_detected,
+        state_valid=state_valid,
+        invalid_reason=reason,
     )
-    return contains_store
+    return SessionProbeResult(
+        valid=state_valid,
+        final_url=final_url,
+        reason=reason,
+        contains_store_code=contains_store,
+        verification_seen=verification_seen,
+        login_detected=login_detected,
+    )
 
 
 async def _perform_login(page: Page, *, store: TdStore, logger: JsonLogger, nav_timeout_ms: int) -> bool:
@@ -979,10 +1017,53 @@ async def _first_visible_locator(candidates: list[Locator], *, timeout_ms: int) 
     return None
 
 
-async def _locate_date_inputs(frame: FrameLocator, *, timeout_ms: int) -> tuple[Locator | None, Locator | None]:
+async def _wait_for_date_ui(
+    frame: FrameLocator, *, timeout_ms: int
+) -> list[dict[str, Any]]:
+    cues = [
+        {"label": "step_select_date", "locator": frame.locator("text=/Step\\s*1.*Select Date/i")},
+        {"label": "select_date_text", "locator": frame.locator("text=/Select Date/i")},
+        {"label": "from_text", "locator": frame.locator("text=/\\bfrom\\b/i")},
+        {"label": "to_text", "locator": frame.locator("text=/\\bto\\b/i")},
+    ]
+    observations: list[dict[str, Any]] = []
+    deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
+
+    while asyncio.get_event_loop().time() < deadline:
+        visible_any = False
+        observations.clear()
+        for cue in cues:
+            locator = cue["locator"]
+            try:
+                count = await locator.count()
+                visible = count > 0 and await locator.first.is_visible()
+            except Exception:
+                count = 0
+                visible = False
+            observations.append({"label": cue["label"], "count": count, "visible": visible})
+            visible_any = visible_any or visible
+        if visible_any:
+            break
+        await asyncio.sleep(0.5)
+    return observations
+
+
+async def _locate_date_inputs(
+    frame: FrameLocator, *, timeout_ms: int, logger: JsonLogger, store: TdStore
+) -> tuple[Locator | None, Locator | None, list[dict[str, Any]]]:
     from_input: Locator | None = None
     to_input: Locator | None = None
     search_timeout = min(timeout_ms, 10_000)
+    attempts: list[dict[str, Any]] = []
+
+    cue_observations = await _wait_for_date_ui(frame, timeout_ms=search_timeout)
+    log_event(
+        logger=logger,
+        phase="iframe",
+        message="Observed date UI cues",
+        store_code=store.store_code,
+        date_ui_cues=cue_observations,
+    )
 
     try:
         date_inputs = frame.locator("input[type='date']")
@@ -990,9 +1071,13 @@ async def _locate_date_inputs(frame: FrameLocator, *, timeout_ms: int) -> tuple[
     except Exception:
         date_input_count = 0
         date_inputs = frame.locator("input[type='date']")
+    attempts.append(
+        {"label": "input[type=date]", "selector": "input[type='date']", "count": date_input_count, "used": False}
+    )
 
     if date_input_count >= 2:
-        return date_inputs.nth(0), date_inputs.nth(1)
+        attempts[-1]["used"] = True
+        return date_inputs.nth(0), date_inputs.nth(1), attempts
     if date_input_count == 1:
         from_input = date_inputs.first
 
@@ -1002,11 +1087,74 @@ async def _locate_date_inputs(frame: FrameLocator, *, timeout_ms: int) -> tuple[
     except Exception:
         section_input_count = 0
 
+    attempts.append(
+        {
+            "label": "section_select_date_inputs",
+            "selector": "section:has-text(\"Select Date\") input",
+            "count": section_input_count,
+            "used": False,
+        }
+    )
+
     if section_input_count and from_input is None:
         from_input = section_inputs.nth(0)
     if section_input_count >= 2 and to_input is None:
         to_input = section_inputs.nth(1)
+    if section_input_count:
+        attempts[-1]["used"] = True
 
+    # Role/text based fallbacks
+    try:
+        from_textbox = frame.get_by_role("textbox", name=re.compile("from", re.I))
+        from_textbox_count = await from_textbox.count()
+    except Exception:
+        from_textbox = frame.get_by_role("textbox", name=re.compile("from", re.I))
+        from_textbox_count = 0
+
+    attempts.append(
+        {"label": "textbox_from_accessible_name", "selector": "role=textbox name=from", "count": from_textbox_count, "used": False}
+    )
+    if from_input is None and from_textbox_count:
+        from_input = await _first_visible_locator([from_textbox], timeout_ms=search_timeout)
+        attempts[-1]["used"] = from_input is not None
+
+    try:
+        to_textbox = frame.get_by_role("textbox", name=re.compile("to", re.I))
+        to_textbox_count = await to_textbox.count()
+    except Exception:
+        to_textbox = frame.get_by_role("textbox", name=re.compile("to", re.I))
+        to_textbox_count = 0
+
+    attempts.append(
+        {"label": "textbox_to_accessible_name", "selector": "role=textbox name=to", "count": to_textbox_count, "used": False}
+    )
+    if to_input is None and to_textbox_count:
+        to_input = await _first_visible_locator([to_textbox], timeout_ms=search_timeout)
+        attempts[-1]["used"] = to_input is not None
+
+    adjacent_select_date = frame.locator(
+        "label:has-text(\"Select Date\") ~ input, label:has-text(\"Select Date\") + input"
+    )
+    try:
+        adjacent_count = await adjacent_select_date.count()
+    except Exception:
+        adjacent_count = 0
+    attempts.append(
+        {
+            "label": "inputs_adjacent_select_date_label",
+            "selector": "label:has-text(\"Select Date\") ~ input",
+            "count": adjacent_count,
+            "used": False,
+        }
+    )
+    if adjacent_count:
+        if from_input is None:
+            from_input = adjacent_select_date.nth(0)
+        if adjacent_count >= 2 and to_input is None:
+            to_input = adjacent_select_date.nth(1)
+        attempts[-1]["used"] = True
+
+    # Legacy placeholder/aria/name fallbacks
     if from_input is None:
         from_candidates = [
             frame.get_by_label(re.compile("from", re.I)),
@@ -1015,6 +1163,7 @@ async def _locate_date_inputs(frame: FrameLocator, *, timeout_ms: int) -> tuple[
             frame.locator("input[name*='from' i]"),
         ]
         from_input = await _first_visible_locator(from_candidates, timeout_ms=search_timeout)
+        attempts.append({"label": "from_fallbacks", "selector": "label/placeholder/aria/name from", "used": from_input is not None})
 
     if to_input is None:
         to_candidates = [
@@ -1024,36 +1173,123 @@ async def _locate_date_inputs(frame: FrameLocator, *, timeout_ms: int) -> tuple[
             frame.locator("input[name*='to' i]"),
         ]
         to_input = await _first_visible_locator(to_candidates, timeout_ms=search_timeout)
+        attempts.append({"label": "to_fallbacks", "selector": "label/placeholder/aria/name to", "used": to_input is not None})
 
     if to_input is None and date_input_count == 1:
         to_input = date_inputs.first
 
-    return from_input, to_input
+    return from_input, to_input, attempts
 
 
-async def _fill_date_input(locator: Locator, *, target_date: date) -> bool:
+async def _fill_date_via_picker(
+    frame: FrameLocator, locator: Locator, *, target_date: date, label: str
+) -> tuple[bool, dict[str, Any]]:
+    details: dict[str, Any] = {"strategy": "picker", "opened": False, "selected_day": False}
+    try:
+        await locator.click()
+        details["opened"] = True
+    except Exception as exc:
+        details["error"] = f"click_failed:{exc}"
+        return False, details
+
+    calendar = await _first_visible_locator(
+        [
+            frame.locator(".k-animation-container .k-calendar"),
+            frame.locator(".k-calendar"),
+            frame.get_by_role("grid", name=re.compile("calendar", re.I)),
+        ],
+        timeout_ms=4_000,
+    )
+    if calendar is None:
+        details["error"] = "calendar_not_visible"
+        return False, details
+
+    day_label = str(target_date.day)
+    day_candidates = [
+        calendar.get_by_role("gridcell", name=re.compile(rf"^{day_label}$")),
+        calendar.get_by_role("button", name=re.compile(rf"^{day_label}$")),
+        calendar.locator(f"text={day_label}"),
+    ]
+    day_locator = await _first_visible_locator(day_candidates, timeout_ms=3_000)
+    if day_locator is None:
+        details["error"] = "day_not_found"
+        return False, details
+
+    try:
+        await day_locator.click()
+        details["selected_day"] = True
+    except Exception as exc:
+        details["error"] = f"day_click_failed:{exc}"
+        return False, details
+
+    return True, details
+
+
+async def _fill_date_input(
+    frame: FrameLocator,
+    locator: Locator,
+    *,
+    target_date: date,
+    label: str,
+    logger: JsonLogger,
+    store: TdStore,
+) -> tuple[bool, dict[str, Any]]:
     attr_type = ((await locator.get_attribute("type")) or "").lower()
     value = target_date.strftime("%Y-%m-%d" if attr_type == "date" else "%d %b %Y")
+    read_only_attr = await locator.get_attribute("readonly")
+    details: dict[str, Any] = {
+        "label": label,
+        "input_type": attr_type,
+        "value": value,
+        "readonly_attr": read_only_attr,
+        "strategies": [],
+    }
 
     try:
         await locator.click()
-    except Exception:
-        pass
+    except Exception as exc:
+        details["strategies"].append({"name": "click", "error": str(exc)})
+
+    direct_success = False
+    try:
+        await locator.fill(value)
+        direct_success = True
+        details["strategies"].append({"name": "direct_fill", "success": True})
+        return True, details
+    except Exception as exc:
+        details["strategies"].append({"name": "direct_fill", "error": str(exc)})
+
+    picker_result = None
+    if read_only_attr is not None or not direct_success:
+        picker_ok, picker_details = await _fill_date_via_picker(
+            frame, locator, target_date=target_date, label=label
+        )
+        picker_result = picker_details
+        picker_details["success"] = picker_ok
+        details["strategies"].append(picker_details)
+        if picker_ok:
+            return True, details
 
     try:
-        if await locator.is_editable():
-            await locator.fill(value)
-        else:
-            await locator.fill(value)
-    except Exception:
-        try:
-            await locator.evaluate(
-                "(el, value) => { if (el.readOnly) el.readOnly = false; el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }",
-                value,
-            )
-        except Exception:
-            return False
-    return True
+        await locator.evaluate(
+            "(el, value) => { if (el.readOnly) el.readOnly = false; el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }",
+            value,
+        )
+        details["strategies"].append({"name": "js_fill", "success": True})
+        return True, details
+    except Exception as exc:
+        details["strategies"].append({"name": "js_fill", "error": str(exc), "picker_result": picker_result})
+
+    log_event(
+        logger=logger,
+        phase="iframe",
+        status="warn",
+        message="Failed to fill date input",
+        store_code=store.store_code,
+        label=label,
+        details=details,
+    )
+    return False, details
 
 
 async def _set_date_range(
@@ -1065,7 +1301,9 @@ async def _set_date_range(
     store: TdStore,
     timeout_ms: int,
 ) -> bool:
-    from_input, to_input = await _locate_date_inputs(frame, timeout_ms=timeout_ms)
+    from_input, to_input, locate_attempts = await _locate_date_inputs(
+        frame, timeout_ms=timeout_ms, logger=logger, store=store
+    )
     if not from_input or not to_input:
         log_event(
             logger=logger,
@@ -1073,11 +1311,16 @@ async def _set_date_range(
             status="warn",
             message="Date inputs not located inside iframe",
             store_code=store.store_code,
+            locate_attempts=locate_attempts,
         )
         return False
 
-    from_ok = await _fill_date_input(from_input, target_date=from_date)
-    to_ok = await _fill_date_input(to_input, target_date=to_date)
+    from_ok, from_detail = await _fill_date_input(
+        frame, from_input, target_date=from_date, label="from", logger=logger, store=store
+    )
+    to_ok, to_detail = await _fill_date_input(
+        frame, to_input, target_date=to_date, label="to", logger=logger, store=store
+    )
 
     await asyncio.sleep(0.2)
 
@@ -1089,6 +1332,8 @@ async def _set_date_range(
             store_code=store.store_code,
             from_value=from_date.isoformat(),
             to_value=to_date.isoformat(),
+            locate_attempts=locate_attempts,
+            fill_details=[from_detail, to_detail],
         )
         return True
 
@@ -1100,6 +1345,8 @@ async def _set_date_range(
         store_code=store.store_code,
         from_ok=from_ok,
         to_ok=to_ok,
+        locate_attempts=locate_attempts,
+        fill_details=[from_detail, to_detail],
     )
     return False
 
@@ -1407,8 +1654,23 @@ async def _run_store_discovery(
     stored_state_path: str | None = None
     try:
         session_reused = False
+        probe_result: SessionProbeResult | None = None
+        login_performed = False
+        verification_seen = False
+        verification_ok = True
         if storage_state_exists:
-            session_reused = await _probe_session(page, store=store, logger=store_logger)
+            probe_result = await _probe_session(page, store=store, logger=store_logger)
+            session_reused = probe_result.valid
+            log_event(
+                logger=store_logger,
+                phase="session",
+                message="Existing storage state probe completed",
+                store_code=store.store_code,
+                session_reused=session_reused,
+                storage_state=str(store.storage_state_path),
+                probe_reason=probe_result.reason,
+                final_url=probe_result.final_url,
+            )
 
         if not session_reused:
             if storage_state_exists:
@@ -1418,15 +1680,46 @@ async def _run_store_discovery(
             log_event(
                 logger=store_logger,
                 phase="login",
-                message="Attempting full login with provided credentials",
+                message="Stored session invalid; performing full login with provided credentials",
                 store_code=store.store_code,
                 storage_state=str(store.storage_state_path),
             )
             session_reused = await _perform_login(page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms)
+            login_performed = True
 
-        verification_ok, verification_seen = await _wait_for_otp_verification(
-            page, store=store, logger=store_logger, nav_selector=nav_selector
-        )
+        if not session_reused:
+            outcome = StoreOutcome(
+                status="error",
+                message="Login failed with provided credentials",
+                final_url=page.url,
+            )
+            return
+
+        if login_performed:
+            verification_ok, verification_seen = await _wait_for_otp_verification(
+                page, store=store, logger=store_logger, nav_selector=nav_selector
+            )
+            if verification_ok:
+                log_event(
+                    logger=store_logger,
+                    phase="session",
+                    message="Storage state invalid; refreshed session via login/OTP",
+                    store_code=store.store_code,
+                    storage_state=str(store.storage_state_path),
+                    final_url=page.url,
+                    verification_seen=verification_seen,
+                )
+        else:
+            log_event(
+                logger=store_logger,
+                phase="login",
+                message="Storage state valid; reusing session without OTP dwell",
+                store_code=store.store_code,
+                final_url=page.url,
+            )
+            verification_ok = True
+            verification_seen = False
+
         if not verification_ok:
             log_event(
                 logger=store_logger,
