@@ -14,7 +14,6 @@ from typing import Any, Dict, List, Mapping, Sequence
 import sqlalchemy as sa
 from playwright.async_api import Browser, BrowserContext, FrameLocator, Locator, Page, TimeoutError, async_playwright
 
-from app.common.date_utils import get_daily_report_date
 from app.common.db import session_scope
 from app.config import config
 from app.crm_downloader.config import default_download_dir, default_profiles_dir
@@ -40,8 +39,9 @@ async def main(
 
     resolved_run_id = run_id or new_run_id()
     resolved_env = run_env or config.run_env
-    run_start_date = from_date or get_daily_report_date()
-    run_end_date = to_date or run_start_date
+    today = datetime.now(timezone.utc).date()
+    run_start_date = from_date or today - timedelta(days=30)
+    run_end_date = to_date or today
     logger = get_logger(run_id=resolved_run_id)
     summary = TdOrdersDiscoverySummary(
         run_id=resolved_run_id,
@@ -225,7 +225,7 @@ def _normalize_id_selector(selector: str) -> str:
 
 
 def _format_report_range_text(from_date: date, to_date: date) -> str:
-    return f"{from_date.strftime('%d %b %Y')} - {to_date.strftime('%d %b %Y')}"
+    return f"{from_date.strftime('%b %d, %Y')} - {to_date.strftime('%b %d, %Y')}"
 
 
 def _format_orders_filename(store_code: str, from_date: date, to_date: date) -> str:
@@ -254,7 +254,7 @@ class TdStore:
         code = (self.store_code or "").strip()
         if not code:
             return None
-        return f"https://subs.quickdrycleaning.com/{code.lower()}/App/home?EventClick=True"
+        return f"https://subs.quickdrycleaning.com/{code}/App/home?EventClick=True"
 
     @property
     def login_url(self) -> str | None:
@@ -2167,10 +2167,6 @@ async def _run_store_discovery(
             verification_ok = True
             verification_seen = False
         else:
-            if storage_state_exists:
-                await _close_context(context)
-                context = await browser.new_context(accept_downloads=True)
-                page = await context.new_page()
             log_event(
                 logger=store_logger,
                 phase="session",
