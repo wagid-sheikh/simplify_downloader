@@ -15,7 +15,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision = "0024_align_td_uc_bank_keys_and_seeds"
+revision = "0024_align_td_uc_bank_keys_seeds"
 down_revision = "0023_lead_assignment_templates"
 branch_labels = None
 depends_on = None
