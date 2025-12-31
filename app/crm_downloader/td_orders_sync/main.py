@@ -5,8 +5,9 @@ import asyncio
 import json
 import re
 import contextlib
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
@@ -19,6 +20,7 @@ from app.config import config
 from app.crm_downloader.config import default_profiles_dir
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from app.dashboard_downloader.notifications import send_notifications_for_run
+from app.dashboard_downloader.run_summary import fetch_summary_for_run, insert_run_summary, update_run_summary
 
 PIPELINE_NAME = "td_orders_sync"
 DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS = 90_000
@@ -39,6 +41,11 @@ async def main(
     run_start_date = from_date or get_daily_report_date()
     run_end_date = to_date or run_start_date
     logger = get_logger(run_id=resolved_run_id)
+    summary = TdOrdersDiscoverySummary(
+        run_id=resolved_run_id,
+        run_env=resolved_env,
+        report_date=run_start_date,
+    )
 
     try:
         log_event(
@@ -53,6 +60,7 @@ async def main(
         nav_timeout_ms = await _fetch_dashboard_nav_timeout_ms(config.database_url)
 
         stores = await _load_td_order_stores(logger=logger)
+        summary.store_codes = [store.store_code for store in stores]
         if not stores:
             log_event(
                 logger=logger,
@@ -60,7 +68,18 @@ async def main(
                 status="warn",
                 message="No TD stores with sync_orders_flag found; exiting",
             )
-            await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
+            summary.mark_phase("init", "warning")
+            summary.add_note("No TD stores with sync_orders_flag found; exiting")
+            if await _persist_summary(summary=summary, logger=logger):
+                await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
+            else:
+                log_event(
+                    logger=logger,
+                    phase="notifications",
+                    status="warn",
+                    message="Skipping notifications because run summary was not recorded",
+                    run_id=resolved_run_id,
+                )
             return
 
         async with async_playwright() as p:
@@ -74,6 +93,7 @@ async def main(
                     run_start_date=run_start_date,
                     run_end_date=run_end_date,
                     nav_timeout_ms=nav_timeout_ms,
+                    summary=summary,
                 )
 
             await browser.close()
@@ -84,7 +104,17 @@ async def main(
             message="TD orders sync discovery flow complete; notifying",
             run_env=resolved_env,
         )
-        await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
+        if await _persist_summary(summary=summary, logger=logger):
+            await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
+        else:
+            log_event(
+                logger=logger,
+                phase="notifications",
+                status="warn",
+                message="Skipping notifications because run summary was not recorded",
+                run_env=resolved_env,
+                run_id=resolved_run_id,
+            )
     finally:
         logger.close()
 
@@ -168,6 +198,108 @@ class TdStore:
         selectors = _coerce_dict(self.sync_config.get("login_selector"))
         return {key: value for key, value in selectors.items() if isinstance(value, str) and value.strip()}
 
+    @property
+    def reports_nav_selector(self) -> str:
+        raw = _get_nested_str(self.sync_config, ("selectors", "reports_nav")) or self.sync_config.get(
+            "reports_nav_selector"
+        )
+        return _normalize_id_selector(raw or "#achrOrderReport")
+
+
+@dataclass
+class StoreOutcome:
+    status: str
+    message: str
+    final_url: str | None = None
+    iframe_attached: bool | None = None
+    verification_seen: bool | None = None
+    storage_state: str | None = None
+
+
+@dataclass
+class TdOrdersDiscoverySummary:
+    run_id: str
+    run_env: str
+    report_date: date
+    started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    store_codes: list[str] = field(default_factory=list)
+    store_outcomes: Dict[str, StoreOutcome] = field(default_factory=dict)
+    phases: defaultdict[str, Dict[str, int]] = field(
+        default_factory=lambda: defaultdict(lambda: {"ok": 0, "warning": 0, "error": 0})
+    )
+    notes: list[str] = field(default_factory=list)
+
+    def mark_phase(self, phase: str, status: str) -> None:
+        counters = self.phases.setdefault(phase, {"ok": 0, "warning": 0, "error": 0})
+        normalized = status if status in counters else "ok"
+        counters[normalized] += 1
+
+    def record_store(self, store_code: str, outcome: StoreOutcome) -> None:
+        self.store_outcomes[store_code] = outcome
+        self.mark_phase("store", outcome.status)
+
+    def add_note(self, note: str) -> None:
+        if note not in self.notes:
+            self.notes.append(note)
+
+    def overall_status(self) -> str:
+        if any(outcome.status == "error" for outcome in self.store_outcomes.values()):
+            return "error"
+        if any(outcome.status == "warning" for outcome in self.store_outcomes.values()):
+            return "warning"
+        if self.phases.get("init", {}).get("warning"):
+            return "warning"
+        return "ok"
+
+    def _format_duration(self, finished_at: datetime) -> str:
+        seconds = max(0, int((finished_at - self.started_at).total_seconds()))
+        hh = seconds // 3600
+        mm = (seconds % 3600) // 60
+        ss = seconds % 60
+        return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+    def summary_text(self) -> str:
+        lines = [
+            f"Pipeline: {PIPELINE_NAME}",
+            f"Run ID: {self.run_id}",
+            f"Env: {self.run_env}",
+            f"Report Date: {self.report_date.isoformat()}",
+            f"Overall Status: {self.overall_status()}",
+            "",
+            "Stores:",
+        ]
+        if not self.store_outcomes:
+            lines.append("- none processed")
+        else:
+            for code in sorted(self.store_outcomes):
+                outcome = self.store_outcomes[code]
+                message = outcome.message or "completed"
+                lines.append(f"- {code}: {outcome.status.upper()} – {message}")
+        if self.notes:
+            lines.append("")
+            lines.append("Notes:")
+            lines.extend(f"- {note}" for note in self.notes)
+        return "\n".join(lines)
+
+    def build_record(self, *, finished_at: datetime) -> Dict[str, Any]:
+        metrics = {
+            "stores": {code: asdict(outcome) for code, outcome in self.store_outcomes.items()},
+            "store_order": self.store_codes,
+        }
+        return {
+            "pipeline_name": PIPELINE_NAME,
+            "run_id": self.run_id,
+            "run_env": self.run_env,
+            "started_at": self.started_at,
+            "finished_at": finished_at,
+            "total_time_taken": self._format_duration(finished_at),
+            "report_date": self.report_date,
+            "overall_status": self.overall_status(),
+            "summary_text": self.summary_text(),
+            "phases_json": {phase: dict(counts) for phase, counts in self.phases.items()},
+            "metrics_json": metrics,
+        }
+
 
 async def _load_td_order_stores(*, logger: JsonLogger) -> List[TdStore]:
     query = sa.text(
@@ -234,6 +366,47 @@ async def _fetch_dashboard_nav_timeout_ms(database_url: str | None) -> int:
         return int(str(raw_value).strip())
     except (TypeError, ValueError):
         return DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS
+
+
+async def _persist_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonLogger) -> bool:
+    finished_at = datetime.now(timezone.utc)
+    record = summary.build_record(finished_at=finished_at)
+    if not config.database_url:
+        log_event(
+            logger=logger,
+            phase="run_summary",
+            status="warn",
+            message="Skipping run summary persistence because database_url is missing",
+            run_id=summary.run_id,
+        )
+        return False
+
+    try:
+        existing = await fetch_summary_for_run(config.database_url, summary.run_id)
+        if existing:
+            await update_run_summary(config.database_url, summary.run_id, record)
+            action = "updated"
+        else:
+            await insert_run_summary(config.database_url, record)
+            action = "inserted"
+        log_event(
+            logger=logger,
+            phase="run_summary",
+            message=f"Run summary {action}",
+            run_id=summary.run_id,
+            overall_status=summary.overall_status(),
+        )
+        return True
+    except Exception as exc:  # pragma: no cover - defensive persistence
+        log_event(
+            logger=logger,
+            phase="run_summary",
+            status="error",
+            message="Failed to persist run summary",
+            run_id=summary.run_id,
+            error=str(exc),
+        )
+        return False
 
 
 # ── Browser helpers ───────────────────────────────────────────────────────────
@@ -449,18 +622,155 @@ async def _perform_login(page: Page, *, store: TdStore, logger: JsonLogger, nav_
     return contains_store
 
 
-async def _wait_for_iframe(page: Page, *, store: TdStore, logger: JsonLogger) -> FrameLocator | None:
-    if not store.orders_url:
+def _url_matches_home(current_url: str, store: TdStore) -> bool:
+    url_lower = (current_url or "").lower()
+    if store.home_url:
+        try:
+            if url_lower.startswith((store.home_url or "").lower()):
+                return True
+        except Exception:
+            pass
+    return store.store_code.lower() in url_lower
+
+
+async def _wait_for_home(
+    page: Page, *, store: TdStore, logger: JsonLogger, nav_selector: str, timeout_ms: int
+) -> bool:
+    deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
+    seen_visible = False
+    while asyncio.get_event_loop().time() < deadline:
+        current_url = page.url or ""
+        url_ok = _url_matches_home(current_url, store)
+        nav_visible = False
+        try:
+            nav_visible = await page.locator(nav_selector).first.is_visible()
+            seen_visible = seen_visible or nav_visible
+        except Exception:
+            nav_visible = False
+        if url_ok and nav_visible:
+            log_event(
+                logger=logger,
+                phase="login",
+                message="Home page ready after login/verification",
+                store_code=store.store_code,
+                final_url=current_url,
+                nav_selector=nav_selector,
+            )
+            return True
+        await asyncio.sleep(1)
+
+    log_event(
+        logger=logger,
+        phase="login",
+        status="error",
+        message="Home page not ready after timeout",
+        store_code=store.store_code,
+        final_url=page.url,
+        nav_selector=nav_selector,
+        nav_visible=seen_visible,
+    )
+    return False
+
+
+async def _log_home_nav_diagnostics(page: Page, *, logger: JsonLogger, store: TdStore) -> None:
+    try:
+        links = page.locator("a.padding6, a#achrOrderReport, a[href*='Reports']")
+        link_count = await links.count()
+        snapshot: list[dict[str, Any]] = []
+        for idx in range(min(link_count, 5)):
+            handle = links.nth(idx)
+            try:
+                text = (await handle.inner_text()).strip()
+                href = await handle.get_attribute("href")
+                visible = await handle.is_visible()
+            except Exception:
+                continue
+            snapshot.append({"index": idx, "text": text, "href": href, "visible": visible})
+        log_event(
+            logger=logger,
+            phase="home",
+            message="Navigation controls snapshot",
+            store_code=store.store_code,
+            links=snapshot,
+        )
+    except Exception as exc:  # pragma: no cover - diagnostics best effort
+        log_event(
+            logger=logger,
+            phase="home",
+            status="warn",
+            message="Failed to capture navigation diagnostics",
+            store_code=store.store_code,
+            error=str(exc),
+        )
+
+
+async def _navigate_to_orders_container(
+    page: Page, *, store: TdStore, logger: JsonLogger, nav_selector: str, nav_timeout_ms: int
+) -> bool:
+    target_pattern = re.compile(r"/app/Reports/OrderReport", re.IGNORECASE)
+    if target_pattern.search(page.url or ""):
         log_event(
             logger=logger,
             phase="orders",
-            status="warn",
-            message="Orders URL missing in sync_config; skipping iframe check",
+            message="Already on Orders container; waiting for iframe",
             store_code=store.store_code,
+            final_url=page.url,
         )
-        return None
+        return True
 
-    response = await page.goto(store.orders_url, wait_until="domcontentloaded")
+    try:
+        await page.wait_for_selector(nav_selector, timeout=nav_timeout_ms)
+    except TimeoutError:
+        log_event(
+            logger=logger,
+            phase="orders",
+            status="error",
+            message="Reports navigation selector not found on home page",
+            store_code=store.store_code,
+            nav_selector=nav_selector,
+            final_url=page.url,
+        )
+        return False
+
+    try:
+        await page.click(nav_selector)
+        await page.wait_for_url(target_pattern, wait_until="domcontentloaded", timeout=nav_timeout_ms)
+    except TimeoutError:
+        log_event(
+            logger=logger,
+            phase="orders",
+            status="error",
+            message="Orders container did not load via Reports navigation",
+            store_code=store.store_code,
+            final_url=page.url,
+            nav_selector=nav_selector,
+        )
+        return False
+
+    final_url = page.url or ""
+    if "simplifytumbledry.in/tms/orders" in final_url.lower():
+        log_event(
+            logger=logger,
+            phase="orders",
+            status="error",
+            message="Navigated to unsupported TMS Orders URL instead of Orders Report container",
+            store_code=store.store_code,
+            final_url=final_url,
+        )
+        return False
+
+    log_event(
+        logger=logger,
+        phase="orders",
+        message="Navigated to Orders container via Reports entry",
+        store_code=store.store_code,
+        final_url=final_url,
+        nav_selector=nav_selector,
+    )
+    return True
+
+
+async def _wait_for_iframe(page: Page, *, store: TdStore, logger: JsonLogger) -> FrameLocator | None:
     try:
         await page.wait_for_selector("#ifrmReport", state="attached", timeout=20_000)
     except TimeoutError:
@@ -471,9 +781,17 @@ async def _wait_for_iframe(page: Page, *, store: TdStore, logger: JsonLogger) ->
             message="iframe#ifrmReport not attached within timeout",
             store_code=store.store_code,
             final_url=page.url,
-            response_status=getattr(response, "status", None),
+            iframe_attached=False,
         )
         return None
+
+    iframe_src = None
+    try:
+        handle = await page.query_selector("#ifrmReport")
+        if handle:
+            iframe_src = await handle.get_attribute("src")
+    except Exception:
+        iframe_src = None
 
     log_event(
         logger=logger,
@@ -481,7 +799,8 @@ async def _wait_for_iframe(page: Page, *, store: TdStore, logger: JsonLogger) ->
         message="Orders container ready; iframe attached",
         store_code=store.store_code,
         final_url=page.url,
-        response_status=getattr(response, "status", None),
+        iframe_src=iframe_src,
+        iframe_attached=True,
     )
     return page.frame_locator("#ifrmReport")
 
@@ -574,7 +893,12 @@ async def _observe_iframe_hydration(
 
 
 async def _wait_for_otp_verification(
-    page: Page, *, store: TdStore, logger: JsonLogger, dwell_seconds: int = OTP_VERIFICATION_DWELL_SECONDS
+    page: Page,
+    *,
+    store: TdStore,
+    logger: JsonLogger,
+    nav_selector: str,
+    dwell_seconds: int = OTP_VERIFICATION_DWELL_SECONDS,
 ) -> tuple[bool, bool]:
     verification_fragment = "/App/frmVerification"
     current_url = page.url or ""
@@ -600,6 +924,11 @@ async def _wait_for_otp_verification(
         current_url = page.url or ""
         if verification_fragment.lower() not in current_url.lower():
             break
+        try:
+            if await page.locator(nav_selector).first.is_visible() and _url_matches_home(current_url, store):
+                break
+        except Exception:
+            continue
 
     final_url = page.url or ""
     at_home = False
@@ -618,7 +947,7 @@ async def _wait_for_otp_verification(
         log_event(
             logger=logger,
             phase="login",
-            status="error",
+            status="warn",
             message=message,
             store_code=store.store_code,
             final_url=final_url,
@@ -647,6 +976,7 @@ async def _run_store_discovery(
     run_start_date: date,
     run_end_date: date,
     nav_timeout_ms: int,
+    summary: TdOrdersDiscoverySummary,
 ) -> None:
     store_logger = logger.bind(store_code=store.store_code)
     log_event(
@@ -661,6 +991,8 @@ async def _run_store_discovery(
     storage_state_exists = store.storage_state_path.exists()
     context = await browser.new_context(storage_state=str(store.storage_state_path) if storage_state_exists else None)
     page = await context.new_page()
+    nav_selector = store.reports_nav_selector
+    outcome = StoreOutcome(status="error", message="Store run did not complete")
     try:
         session_reused = False
         login_performed = False
@@ -683,19 +1015,39 @@ async def _run_store_discovery(
             login_performed = session_reused
 
         verification_ok, verification_seen = await _wait_for_otp_verification(
-            page, store=store, logger=store_logger
+            page, store=store, logger=store_logger, nav_selector=nav_selector
         )
         if not verification_ok:
             log_event(
                 logger=store_logger,
                 phase="store",
-                status="error",
+                status="warn",
                 message="Aborting TD orders discovery because OTP was not completed",
                 store_code=store.store_code,
             )
+            outcome = StoreOutcome(
+                status="error",
+                message="OTP was not completed before dwell deadline",
+                final_url=page.url,
+                verification_seen=verification_seen,
+            )
             return
 
-        should_store_state = login_performed or verification_seen
+        home_ready = await _wait_for_home(
+            page, store=store, logger=store_logger, nav_selector=nav_selector, timeout_ms=nav_timeout_ms
+        )
+        if not home_ready:
+            outcome = StoreOutcome(
+                status="error",
+                message="Home page not ready after login/verification",
+                final_url=page.url,
+                verification_seen=verification_seen,
+            )
+            return
+
+        await _log_home_nav_diagnostics(page, logger=store_logger, store=store)
+
+        should_store_state = login_performed or verification_seen or session_reused
         if should_store_state:
             store.storage_state_path.parent.mkdir(parents=True, exist_ok=True)
             await context.storage_state(path=str(store.storage_state_path))
@@ -708,9 +1060,39 @@ async def _run_store_discovery(
                 verification_seen=verification_seen,
             )
 
+        container_ready = await _navigate_to_orders_container(
+            page, store=store, logger=store_logger, nav_selector=nav_selector, nav_timeout_ms=nav_timeout_ms
+        )
+        if not container_ready:
+            outcome = StoreOutcome(
+                status="error",
+                message="Orders container did not load from Reports navigation",
+                final_url=page.url,
+                verification_seen=verification_seen,
+                storage_state=str(store.storage_state_path) if should_store_state else None,
+            )
+            return
+
         iframe_locator = await _wait_for_iframe(page, store=store, logger=store_logger)
         if iframe_locator is not None:
             await _observe_iframe_hydration(iframe_locator, store=store, logger=store_logger)
+            outcome = StoreOutcome(
+                status="ok",
+                message="Orders iframe attached and hydration observed",
+                final_url=page.url,
+                iframe_attached=True,
+                verification_seen=verification_seen,
+                storage_state=str(store.storage_state_path) if should_store_state else None,
+            )
+        else:
+            outcome = StoreOutcome(
+                status="error",
+                message="Orders iframe did not attach",
+                final_url=page.url,
+                iframe_attached=False,
+                verification_seen=verification_seen,
+                storage_state=str(store.storage_state_path) if should_store_state else None,
+            )
 
         log_event(
             logger=store_logger,
@@ -720,6 +1102,11 @@ async def _run_store_discovery(
             session_reused=session_reused,
         )
     except Exception as exc:  # pragma: no cover - runtime safeguard
+        outcome = StoreOutcome(
+            status="error",
+            message=f"TD orders discovery failed: {exc}",
+            final_url=page.url,
+        )
         log_event(
             logger=store_logger,
             phase="store",
@@ -729,6 +1116,7 @@ async def _run_store_discovery(
             error=str(exc),
         )
     finally:
+        summary.record_store(store.store_code, outcome)
         await context.close()
 
 
