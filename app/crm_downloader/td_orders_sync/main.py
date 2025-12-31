@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import re
+import contextlib
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -20,6 +21,7 @@ from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_eve
 from app.dashboard_downloader.notifications import send_notifications_for_run
 
 PIPELINE_NAME = "td_orders_sync"
+DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS = 90_000
 
 
 async def main(
@@ -46,6 +48,8 @@ async def main(
         to_date=run_end_date,
     )
 
+    nav_timeout_ms = await _fetch_dashboard_nav_timeout_ms(config.database_url)
+
     stores = await _load_td_order_stores(logger=logger)
     if not stores:
         log_event(
@@ -67,6 +71,7 @@ async def main(
                 run_env=resolved_env,
                 run_start_date=run_start_date,
                 run_end_date=run_end_date,
+                nav_timeout_ms=nav_timeout_ms,
             )
 
         await browser.close()
@@ -112,6 +117,16 @@ def _get_nested_str(mapping: Mapping[str, Any], path: Sequence[str]) -> str | No
     if current is None:
         return None
     return str(current).strip() or None
+
+
+def _normalize_id_selector(selector: str) -> str:
+    selector = selector.strip()
+    prefixes = ("#", ".", "[", "text=", "css=", "xpath=", "role=", "id=")
+    if selector.startswith(prefixes):
+        return selector
+    if re.fullmatch(r"[A-Za-z0-9_-]+", selector):
+        return f"#{selector}"
+    return selector
 
 
 @dataclass
@@ -192,6 +207,29 @@ async def _load_td_order_stores(*, logger: JsonLogger) -> List[TdStore]:
         stores=[store.store_code for store in stores],
     )
     return stores
+
+
+async def _fetch_dashboard_nav_timeout_ms(database_url: str | None) -> int:
+    if not database_url:
+        return DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS
+
+    try:
+        async with session_scope(database_url) as session:
+            result = await session.execute(
+                sa.text(
+                    "SELECT value FROM system_config WHERE key = :key AND is_active = TRUE LIMIT 1"
+                ),
+                {"key": "DASHBOARD_DOWNLOAD_NAV_TIMEOUT"},
+            )
+            row = result.first()
+    except Exception:
+        return DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS
+
+    raw_value = row[0] if row else None
+    try:
+        return int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        return DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS
 
 
 # ── Browser helpers ───────────────────────────────────────────────────────────
@@ -282,18 +320,9 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger) -> b
     return contains_store
 
 
-async def _perform_login(page: Page, *, store: TdStore, logger: JsonLogger) -> bool:
+async def _perform_login(page: Page, *, store: TdStore, logger: JsonLogger, nav_timeout_ms: int) -> bool:
     missing_fields = [
-        label
-        for label, value in (
-            ("login_url", store.login_url),
-            ("username", store.username),
-            ("password", store.password),
-            ("username_selector", store.login_selectors.get("username")),
-            ("password_selector", store.login_selectors.get("password")),
-            ("submit_selector", store.login_selectors.get("submit")),
-        )
-        if not value
+        label for label, value in (("login_url", store.login_url), ("username", store.username), ("password", store.password)) if not value
     ]
     if missing_fields:
         log_event(
@@ -306,26 +335,97 @@ async def _perform_login(page: Page, *, store: TdStore, logger: JsonLogger) -> b
         )
         return False
 
+    selectors = {
+        "username": _normalize_id_selector(store.login_selectors.get("username", "#txtUserId")),
+        "password": _normalize_id_selector(store.login_selectors.get("password", "#txtPassword")),
+        "store_code": _normalize_id_selector(store.login_selectors.get("store_code", "#txtBranchPin")),
+        "submit": _normalize_id_selector(store.login_selectors.get("submit", "#btnLogin")),
+    }
+
     await page.goto(store.login_url, wait_until="domcontentloaded")
-    await page.fill(store.login_selectors["username"], store.username or "")
-    await page.fill(store.login_selectors["password"], store.password or "")
 
-    store_selector = store.login_selectors.get("store_code")
-    if store_selector:
-        await page.fill(store_selector, store.store_code)
-
-    await page.click(store.login_selectors["submit"])
     try:
-        await page.wait_for_load_state("networkidle", timeout=15_000)
+        await page.wait_for_selector("#txtUserId", timeout=nav_timeout_ms)
     except TimeoutError:
         log_event(
             logger=logger,
             phase="login",
-            status="warn",
-            message="Navigation after login did not reach network idle",
+            status="error",
+            message="Username selector not found within timeout",
             store_code=store.store_code,
-            final_url=page.url,
+            selector="#txtUserId",
+            timeout_ms=nav_timeout_ms,
         )
+        return False
+
+    await page.fill(selectors["username"], store.username or "")
+    await page.fill(selectors["password"], store.password or "")
+
+    if selectors.get("store_code"):
+        await page.fill(selectors["store_code"], store.store_code)
+
+    post_login_tasks: list[tuple[str, asyncio.Task[Any]]] = []
+    if store.store_code:
+        post_login_tasks.append(
+            (
+                "url_contains_store_code",
+                asyncio.create_task(
+                    page.wait_for_url(
+                        re.compile(re.escape(store.store_code), re.IGNORECASE),
+                        wait_until="domcontentloaded",
+                        timeout=nav_timeout_ms,
+                    )
+                ),
+            )
+        )
+
+    post_login_tasks.append(
+        (
+            "home_card_visible",
+            asyncio.create_task(
+                page.wait_for_selector(
+                    "h5.card-title:has-text(\"Daily Operations Tracker\")",
+                    timeout=nav_timeout_ms,
+                )
+            ),
+        )
+    )
+
+    submit_error: str | None = None
+    try:
+        await page.click(selectors["submit"])
+    except Exception as exc:
+        submit_error = str(exc)
+        try:
+            await page.get_by_role("button", name="Login").click()
+        except Exception as fallback_exc:
+            submit_error = f"{submit_error}; fallback_click_error={fallback_exc}"
+
+    completed_label: str | None = None
+    post_login_error: str | None = None
+    if post_login_tasks:
+        done, pending = await asyncio.wait(
+            [task for _, task in post_login_tasks],
+            return_when=asyncio.FIRST_COMPLETED,
+            timeout=nav_timeout_ms / 1000,
+        )
+
+        for task in pending:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        if done:
+            for label, task in post_login_tasks:
+                if task in done:
+                    completed_label = label
+                    try:
+                        task.result()
+                    except Exception as exc:  # pragma: no cover - defensive logging only
+                        post_login_error = str(exc)
+                    break
+        else:
+            post_login_error = f"post-login wait timed out after {nav_timeout_ms}ms"
 
     final_url = page.url
     contains_store = store.store_code.lower() in (final_url or "").lower()
@@ -337,6 +437,10 @@ async def _perform_login(page: Page, *, store: TdStore, logger: JsonLogger) -> b
         store_code=store.store_code,
         final_url=final_url,
         contains_store_code=contains_store,
+        post_login_wait_completed=completed_label,
+        post_login_wait_error=post_login_error,
+        submit_error=submit_error,
+        selectors=selectors,
     )
     return contains_store
 
@@ -473,6 +577,7 @@ async def _run_store_discovery(
     run_env: str,
     run_start_date: date,
     run_end_date: date,
+    nav_timeout_ms: int,
 ) -> None:
     store_logger = logger.bind(store_code=store.store_code)
     log_event(
@@ -504,7 +609,7 @@ async def _run_store_discovery(
                 store_code=store.store_code,
                 storage_state=str(store.storage_state_path),
             )
-            session_reused = await _perform_login(page, store=store, logger=store_logger)
+            session_reused = await _perform_login(page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms)
             if session_reused:
                 store.storage_state_path.parent.mkdir(parents=True, exist_ok=True)
                 await context.storage_state(path=str(store.storage_state_path))
