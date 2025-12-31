@@ -426,10 +426,10 @@ def _tokens_from_selector(selector: str) -> Iterable[str]:
             continue
 
         for attr, value in _ATTR_SELECTOR_PATTERN.findall(part):
-            tokens.add(f'{attr.lower()}="{value}"')
+            tokens.add(f'{attr.lower()}="{value.lower()}"')
 
         for match in _ID_SELECTOR_PATTERN.findall(part):
-            tokens.add(f'id="{match}"')
+            tokens.add(f'id="{match.lower()}"')
 
     return tokens
 
@@ -439,6 +439,7 @@ def _login_tokens() -> Iterable[str]:
     selector_tokens.update(_tokens_from_selector(page_selectors.LOGIN_USERNAME))
     selector_tokens.update(_tokens_from_selector(page_selectors.LOGIN_PASSWORD))
     selector_tokens.update(_tokens_from_selector(page_selectors.LOGIN_SUBMIT))
+    selector_tokens.update(_tokens_from_selector(getattr(page_selectors, "LOGIN_STORE_CODE", "")))
 
     return tuple(sorted(selector_tokens))
 
@@ -1733,6 +1734,7 @@ async def _perform_login_flow(
 
     username_locator = page.locator(page_selectors.LOGIN_USERNAME)
     password_locator = page.locator(page_selectors.LOGIN_PASSWORD)
+    store_code_locator = page.locator(page_selectors.LOGIN_STORE_CODE)
     submit_locator = page.locator(page_selectors.LOGIN_SUBMIT)
 
     _log(
@@ -1746,20 +1748,26 @@ async def _perform_login_flow(
             "password_len": len(password),
             "login_username_selector": page_selectors.LOGIN_USERNAME,
             "login_password_selector": page_selectors.LOGIN_PASSWORD,
+            "login_store_code_selector": page_selectors.LOGIN_STORE_CODE,
             "login_submit_selector": page_selectors.LOGIN_SUBMIT,
         },
     )
 
     await page.wait_for_selector(page_selectors.LOGIN_USERNAME, timeout=15_000)
+    await page.wait_for_selector(page_selectors.LOGIN_PASSWORD, timeout=15_000)
+    await page.wait_for_selector(page_selectors.LOGIN_STORE_CODE, timeout=15_000)
 
     username_locator_present: bool | None = None
     password_locator_present: bool | None = None
+    store_code_locator_present: bool | None = None
     submit_locator_present: bool | None = None
     username_locator_error: str | None = None
     password_locator_error: str | None = None
+    store_code_locator_error: str | None = None
     submit_locator_error: str | None = None
     username_fill_error: str | None = None
     password_fill_error: str | None = None
+    store_code_fill_error: str | None = None
     submit_click_error: str | None = None
 
     try:
@@ -1784,14 +1792,55 @@ async def _perform_login_flow(
     except Exception as exc:
         password_fill_error = str(exc)
 
-    navigation_error: Exception | None = None
     try:
-        async with page.expect_navigation(wait_until="domcontentloaded", timeout=60_000):
+        count = await store_code_locator.count()
+        store_code_locator_present = count > 0
+    except Exception as exc:  # pragma: no cover - defensive logging only
+        store_code_locator_error = str(exc)
+
+    try:
+        if store_code:
+            await page.fill(page_selectors.LOGIN_STORE_CODE, store_code)
+    except Exception as exc:
+        store_code_fill_error = str(exc)
+
+    navigation_error: Exception | None = None
+    post_login_wait_tasks: list[tuple[str, asyncio.Task[Any]]] = []
+    post_login_wait_completed: str | None = None
+    post_login_wait_error: str | None = None
+    try:
+        async with page.expect_navigation(wait_until="domcontentloaded", timeout=nav_timeout_ms):
             try:
                 count = await submit_locator.count()
                 submit_locator_present = count > 0
             except Exception as exc:  # pragma: no cover - defensive logging only
                 submit_locator_error = str(exc)
+
+            if store_code:
+                post_login_wait_tasks.append(
+                    (
+                        "url_contains_store_code",
+                        asyncio.create_task(
+                            page.wait_for_url(
+                                re.compile(re.escape(store_code), re.IGNORECASE),
+                                wait_until="domcontentloaded",
+                                timeout=nav_timeout_ms,
+                            )
+                        ),
+                    )
+                )
+
+            post_login_wait_tasks.append(
+                (
+                    "home_card_visible",
+                    asyncio.create_task(
+                        page.wait_for_selector(
+                            "h5.card-title:has-text(\"Daily Operations Tracker\")",
+                            timeout=nav_timeout_ms,
+                        )
+                    ),
+                )
+            )
 
             await page.click(page_selectors.LOGIN_SUBMIT)
     except PlaywrightTimeoutError as exc:  # pragma: no cover - depends on remote latency
@@ -1799,6 +1848,30 @@ async def _perform_login_flow(
     except Exception as exc:  # pragma: no cover - defensive against Playwright quirks
         navigation_error = exc
         submit_click_error = str(exc)
+    finally:
+        if post_login_wait_tasks:
+            done, pending = await asyncio.wait(
+                [task for _, task in post_login_wait_tasks],
+                return_when=asyncio.FIRST_COMPLETED,
+                timeout=nav_timeout_ms / 1000,
+            )
+
+            for task in pending:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+            if done:
+                for label, task in post_login_wait_tasks:
+                    if task in done:
+                        post_login_wait_completed = label
+                        try:
+                            task.result()
+                        except Exception as exc:  # pragma: no cover - defensive logging only
+                            post_login_wait_error = str(exc)
+                        break
+            elif post_login_wait_tasks:
+                post_login_wait_error = f"post-login wait timed out after {nav_timeout_ms}ms"
 
     if navigation_error is not None:
         _log(
@@ -1860,13 +1933,18 @@ async def _perform_login_flow(
         "still_login_page": still_login_page,
         "username_locator_present": username_locator_present,
         "password_locator_present": password_locator_present,
+        "store_code_locator_present": store_code_locator_present,
         "submit_locator_present": submit_locator_present,
         "username_locator_error": username_locator_error,
         "password_locator_error": password_locator_error,
+        "store_code_locator_error": store_code_locator_error,
         "submit_locator_error": submit_locator_error,
         "username_fill_error": username_fill_error,
         "password_fill_error": password_fill_error,
+        "store_code_fill_error": store_code_fill_error,
         "submit_click_error": submit_click_error,
+        "post_login_wait_completed": post_login_wait_completed,
+        "post_login_wait_error": post_login_wait_error,
     }
 
     if content_after_login:
@@ -2350,4 +2428,3 @@ async def run_all_stores_single_session(
     _finalize_merges(merged_buckets, download_counts, logger=logger)
 
     return download_counts
-

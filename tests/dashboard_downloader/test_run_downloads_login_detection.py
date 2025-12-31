@@ -60,8 +60,10 @@ def test_is_login_page_detects_login_html_fallback():
         <html>
             <body>
                 <form>
-                    <input type='text' name='user_name' />
-                    <input type='password' name='password' />
+                    <input type='text' id='txtUserId' />
+                    <input type='password' id='txtPassword' />
+                    <input type='text' id='txtBranchPin' />
+                    <button id='btnLogin'>Login</button>
                 </form>
             </body>
         </html>
@@ -75,8 +77,8 @@ def test_is_login_page_detects_login_html_from_selectors():
         <html>
             <body>
                 <form>
-                    <input type='text' name='user_name' />
-                    <{page_selectors.LOGIN_PASSWORD.split('[')[0]} type='password' name='password' />
+                    <input type='text' id='{page_selectors.LOGIN_USERNAME.lstrip('#')}' />
+                    <input type='password' id='{page_selectors.LOGIN_PASSWORD.lstrip('#')}' />
                 </form>
             </body>
         </html>
@@ -101,9 +103,10 @@ def test_looks_like_login_html_bytes_detects_login_markup():
     payload = b"""
         <html>
             <body>
-                <input type='text' name='user_name'>
-                <input type='password' name='password'>
-                <button type='submit'>Log In</button>
+                <input type='text' id='txtUserId'>
+                <input type='password' id='txtPassword'>
+                <input type='text' id='txtBranchPin'>
+                <button id='btnLogin' type='submit'>Log In</button>
             </body>
         </html>
     """
