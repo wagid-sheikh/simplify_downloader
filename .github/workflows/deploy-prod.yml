@@ -62,27 +62,15 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
-            # echo "==> Writing .env from GitHub Secrets"
-            # Write the file in ONE command so ssh-action's wrapper can't inject lines into it
-            # printf '%s\n' \
-            #  "POSTGRES_HOST=${POSTGRES_HOST}" \
-            #  "POSTGRES_PORT=${POSTGRES_PORT}" \
-            #  "POSTGRES_DB=${POSTGRES_DB}" \
-            #  "POSTGRES_USER=${POSTGRES_USER}" \
-            #  "POSTGRES_PASSWORD=${POSTGRES_PASSWORD}" \
-            #  "" \
-            #  "SECRET_KEY=${SECRET_KEY}" \
-            #  "ALEMBIC_CONFIG=${ALEMBIC_CONFIG}" \
-            #  "ENVIRONMENT=${ENVIRONMENT}" \
-            #  "RUN_ENV=${RUN_ENV}" \
-            #  "PIPELINE_TIMEZONE=${PIPELINE_TIMEZONE}" \
-            #  "JSON_LOG_FILE=${JSON_LOG_FILE}" \
-            #  "REPORTS_ROOT=${REPORTS_ROOT}" \
-            #  "PDF_RENDER_CHROME_EXECUTABLE=${PDF_RENDER_CHROME_EXECUTABLE}" \
-            #  > .env
+            echo "==> Preparing build workspace to avoid /tmp exhaustion"
+            BUILD_TMP="${DEPLOY_PATH}/.tmp/docker-build"
+            mkdir -p "${BUILD_TMP}"
+            find "${BUILD_TMP}" -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} +
+            export TMPDIR="${BUILD_TMP}"
 
-            # chmod 600 .env
-            # echo "==> .env written & secured"
+            echo "==> Reclaiming disk space for build metadata"
+            docker builder prune --force --filter "unused-for=72h" || true
+            docker image prune --force --filter "dangling=true" || true
 
             echo "==> Pulling latest images for external services (db)"
             docker compose pull db || true
