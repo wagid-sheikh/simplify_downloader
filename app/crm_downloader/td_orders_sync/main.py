@@ -140,6 +140,24 @@ async def main(
             persist_attempted = True
             await _persist_summary(summary=summary, logger=logger)
         return
+    except KeyboardInterrupt:
+        interrupted = True
+        summary.add_note("Run interrupted by keyboard interrupt")
+        summary.mark_phase("store", "warning")
+        log_event(
+            logger=logger,
+            phase="store",
+            status="warn",
+            message="TD orders sync discovery interrupted by KeyboardInterrupt; attempting graceful shutdown",
+            run_id=resolved_run_id,
+        )
+        with contextlib.suppress(Exception):
+            if browser:
+                await browser.close()
+        if not persist_attempted:
+            persist_attempted = True
+            await _persist_summary(summary=summary, logger=logger)
+        return
     except Exception as exc:  # pragma: no cover - defensive guard
         log_event(
             logger=logger,
@@ -206,7 +224,7 @@ def _normalize_id_selector(selector: str) -> str:
 
 
 def _format_report_range_text(from_date: date, to_date: date) -> str:
-    return f"{from_date.strftime('%b %d, %Y')} - {to_date.strftime('%b %d, %Y')}"
+    return f"{from_date.strftime('%d %b %Y')} - {to_date.strftime('%d %b %Y')}"
 
 
 def _format_orders_filename(store_code: str, from_date: date, to_date: date) -> str:
@@ -222,6 +240,13 @@ class TdStore:
     @property
     def storage_state_path(self) -> Path:
         return default_profiles_dir() / f"{self.store_code}_storage_state.json"
+
+    @property
+    def default_home_url(self) -> str | None:
+        code = (self.store_code or "").strip()
+        if not code:
+            return None
+        return f"https://subs.quickdrycleaning.com/{code}/App/home"
 
     @property
     def login_url(self) -> str | None:
@@ -529,8 +554,8 @@ async def _launch_browser(*, playwright: Any, logger: JsonLogger) -> Browser:
 # ── Playwright helpers ───────────────────────────────────────────────────────
 
 
-async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger) -> SessionProbeResult:
-    target_url = store.home_url or store.orders_url
+async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger, timeout_ms: int) -> SessionProbeResult:
+    target_url = store.home_url or store.default_home_url or store.orders_url
     if not target_url:
         log_event(
             logger=logger,
@@ -544,7 +569,7 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger) -> S
     response = None
     probe_error: str | None = None
     try:
-        response = await page.goto(target_url, wait_until="domcontentloaded")
+        response = await page.goto(target_url, wait_until="domcontentloaded", timeout=timeout_ms)
     except Exception as exc:
         probe_error = str(exc)
 
@@ -1132,6 +1157,7 @@ async def _locate_date_range_control(
 
 async def _locate_date_picker_popup(frame: FrameLocator, *, timeout_ms: int) -> Locator | None:
     popup_candidates = [
+        frame.locator("[role='dialog'][data-state='open']:has(.k-calendar)"),
         frame.locator(".k-animation-container:has(.k-calendar)"),
         frame.locator(".k-daterangepicker-popup"),
         frame.locator(".k-popup:has(.k-calendar)"),
@@ -1203,7 +1229,12 @@ async def _wait_for_range_text_update(
 
 
 async def _locate_date_inputs(
-    frame: FrameLocator, *, timeout_ms: int, logger: JsonLogger, store: TdStore
+    frame: FrameLocator,
+    *,
+    timeout_ms: int,
+    logger: JsonLogger,
+    store: TdStore,
+    popup: Locator | None = None,
 ) -> tuple[Locator | None, Locator | None, list[dict[str, Any]]]:
     from_input: Locator | None = None
     to_input: Locator | None = None
@@ -1219,12 +1250,35 @@ async def _locate_date_inputs(
         date_ui_cues=cue_observations,
     )
 
+    container = popup or frame
+
     try:
-        date_inputs = frame.locator("input[type='date']")
+        date_inputs = container.locator("input[type='number'], input[inputmode='numeric'], input[type='tel']")
+        numeric_count = await date_inputs.count()
+    except Exception:
+        date_inputs = container.locator("input[type='number'], input[inputmode='numeric'], input[type='tel']")
+        numeric_count = 0
+
+    attempts.append(
+        {
+            "label": "numeric_date_inputs",
+            "selector": "input[type=number|inputmode=numeric|type=tel]",
+            "count": numeric_count,
+            "used": False,
+        }
+    )
+    if numeric_count >= 2:
+        attempts[-1]["used"] = True
+        return date_inputs.nth(0), date_inputs.nth(1), attempts
+    if numeric_count == 1:
+        from_input = date_inputs.first
+
+    try:
+        date_inputs = container.locator("input[type='date']")
         date_input_count = await date_inputs.count()
     except Exception:
         date_input_count = 0
-        date_inputs = frame.locator("input[type='date']")
+        date_inputs = container.locator("input[type='date']")
     attempts.append(
         {"label": "input[type=date]", "selector": "input[type='date']", "count": date_input_count, "used": False}
     )
@@ -1235,7 +1289,7 @@ async def _locate_date_inputs(
     if date_input_count == 1:
         from_input = date_inputs.first
 
-    section_inputs = frame.locator("section:has-text(\"Select Date\") input")
+    section_inputs = container.locator("section:has-text(\"Select Date\") input")
     try:
         section_input_count = await section_inputs.count()
     except Exception:
@@ -1259,10 +1313,10 @@ async def _locate_date_inputs(
 
     # Role/text based fallbacks
     try:
-        from_textbox = frame.get_by_role("textbox", name=re.compile("from", re.I))
+        from_textbox = container.get_by_role("textbox", name=re.compile("from", re.I))
         from_textbox_count = await from_textbox.count()
     except Exception:
-        from_textbox = frame.get_by_role("textbox", name=re.compile("from", re.I))
+        from_textbox = container.get_by_role("textbox", name=re.compile("from", re.I))
         from_textbox_count = 0
 
     attempts.append(
@@ -1273,10 +1327,10 @@ async def _locate_date_inputs(
         attempts[-1]["used"] = from_input is not None
 
     try:
-        to_textbox = frame.get_by_role("textbox", name=re.compile("to", re.I))
+        to_textbox = container.get_by_role("textbox", name=re.compile("to", re.I))
         to_textbox_count = await to_textbox.count()
     except Exception:
-        to_textbox = frame.get_by_role("textbox", name=re.compile("to", re.I))
+        to_textbox = container.get_by_role("textbox", name=re.compile("to", re.I))
         to_textbox_count = 0
 
     attempts.append(
@@ -1286,7 +1340,7 @@ async def _locate_date_inputs(
         to_input = await _first_visible_locator([to_textbox], timeout_ms=search_timeout)
         attempts[-1]["used"] = to_input is not None
 
-    adjacent_select_date = frame.locator(
+    adjacent_select_date = container.locator(
         "label:has-text(\"Select Date\") ~ input, label:has-text(\"Select Date\") + input"
     )
     try:
@@ -1311,20 +1365,20 @@ async def _locate_date_inputs(
     # Legacy placeholder/aria/name fallbacks
     if from_input is None:
         from_candidates = [
-            frame.get_by_label(re.compile("from", re.I)),
-            frame.get_by_placeholder(re.compile("from", re.I)),
-            frame.locator("input[aria-label*='from' i]"),
-            frame.locator("input[name*='from' i]"),
+            container.get_by_label(re.compile("from", re.I)),
+            container.get_by_placeholder(re.compile("from", re.I)),
+            container.locator("input[aria-label*='from' i]"),
+            container.locator("input[name*='from' i]"),
         ]
         from_input = await _first_visible_locator(from_candidates, timeout_ms=search_timeout)
         attempts.append({"label": "from_fallbacks", "selector": "label/placeholder/aria/name from", "used": from_input is not None})
 
     if to_input is None:
         to_candidates = [
-            frame.get_by_label(re.compile(r"to", re.I)),
-            frame.get_by_placeholder(re.compile(r"to", re.I)),
-            frame.locator("input[aria-label*='to' i]"),
-            frame.locator("input[name*='to' i]"),
+            container.get_by_label(re.compile(r"to", re.I)),
+            container.get_by_placeholder(re.compile(r"to", re.I)),
+            container.locator("input[aria-label*='to' i]"),
+            container.locator("input[name*='to' i]"),
         ]
         to_input = await _first_visible_locator(to_candidates, timeout_ms=search_timeout)
         attempts.append({"label": "to_fallbacks", "selector": "label/placeholder/aria/name to", "used": to_input is not None})
@@ -1391,11 +1445,20 @@ async def _fill_date_input(
     store: TdStore,
 ) -> tuple[bool, dict[str, Any]]:
     attr_type = ((await locator.get_attribute("type")) or "").lower()
-    value = target_date.strftime("%Y-%m-%d" if attr_type == "date" else "%d %b %Y")
+    attr_inputmode = ((await locator.get_attribute("inputmode")) or "").lower()
+    value_formats: list[str] = []
+    if attr_type == "date":
+        value_formats.append("%Y-%m-%d")
+    elif attr_type == "number" or attr_inputmode == "numeric":
+        value_formats.extend(["%d/%m/%Y", "%d%m%Y", "%Y%m%d"])
+    else:
+        value_formats.extend(["%d %b %Y", "%d/%m/%Y"])
+    value = target_date.strftime(value_formats[0])
     read_only_attr = await locator.get_attribute("readonly")
     details: dict[str, Any] = {
         "label": label,
         "input_type": attr_type,
+        "inputmode": attr_inputmode,
         "value": value,
         "readonly_attr": read_only_attr,
         "strategies": [],
@@ -1407,13 +1470,15 @@ async def _fill_date_input(
         details["strategies"].append({"name": "click", "error": str(exc)})
 
     direct_success = False
-    try:
-        await locator.fill(value)
-        direct_success = True
-        details["strategies"].append({"name": "direct_fill", "success": True})
-        return True, details
-    except Exception as exc:
-        details["strategies"].append({"name": "direct_fill", "error": str(exc)})
+    for fmt in value_formats:
+        value_attempt = target_date.strftime(fmt)
+        try:
+            await locator.fill(value_attempt)
+            direct_success = True
+            details["strategies"].append({"name": "direct_fill", "success": True, "value": value_attempt})
+            return True, details
+        except Exception as exc:
+            details["strategies"].append({"name": "direct_fill", "error": str(exc), "value": value_attempt})
 
     picker_result = None
     if read_only_attr is not None or not direct_success:
@@ -1505,12 +1570,13 @@ async def _set_date_range(
         return False
 
     from_input, to_input, locate_attempts = await _locate_date_inputs(
-        frame, timeout_ms=timeout_ms, logger=logger, store=store
+        frame, timeout_ms=timeout_ms, logger=logger, store=store, popup=picker_popup
     )
 
     fill_details: list[dict[str, Any]] = []
     select_details: list[dict[str, Any]] = []
     from_ok = to_ok = False
+    update_click_result: dict[str, Any] | None = None
 
     if from_input and to_input:
         from_ok, from_detail = await _fill_date_input(
@@ -1529,6 +1595,26 @@ async def _set_date_range(
         )
         select_details.extend([from_detail, to_detail])
 
+    update_button = await _first_visible_locator(
+        [
+            picker_popup.get_by_role("button", name=re.compile("^update$", re.I)),
+            picker_popup.locator("button:has-text(\"UPDATE\"), [role='button']:has-text(\"UPDATE\")"),
+        ],
+        timeout_ms=min(timeout_ms, 4_000),
+    )
+    if update_button is not None:
+        update_click_result = {"found": True}
+        try:
+            await update_button.click()
+            update_click_result["clicked"] = True
+            await _wait_for_loading_indicators(
+                frame, store=store, logger=logger, timeout_ms=min(timeout_ms, 10_000), phase="iframe_range_update"
+            )
+        except Exception as exc:
+            update_click_result["error"] = str(exc)
+    else:
+        update_click_result = {"found": False}
+
     expected_range_text = _format_report_range_text(from_date, to_date)
     range_text_ok, final_range_text = await _wait_for_range_text_update(
         range_control,
@@ -1538,7 +1624,9 @@ async def _set_date_range(
         store=store,
     )
 
-    if from_ok and to_ok and range_text_ok:
+    update_ok = update_click_result is None or update_click_result.get("clicked") or not update_click_result.get("found")
+
+    if from_ok and to_ok and range_text_ok and update_ok:
         log_event(
             logger=logger,
             phase="iframe",
@@ -1552,6 +1640,7 @@ async def _set_date_range(
             selection_details=select_details or None,
             range_text=final_range_text,
             picker_dom_preview=picker_dom,
+            update_click=update_click_result,
         )
         return True
 
@@ -1569,6 +1658,7 @@ async def _set_date_range(
         selection_details=select_details or None,
         range_text=final_range_text,
         picker_dom_preview=picker_dom,
+        update_click=update_click_result,
     )
     return False
 
@@ -1882,7 +1972,9 @@ async def _run_store_discovery(
         verification_seen = False
         verification_ok = True
         if storage_state_exists:
-            probe_result = await _probe_session(page, store=store, logger=store_logger)
+            probe_result = await _probe_session(
+                page, store=store, logger=store_logger, timeout_ms=nav_timeout_ms
+            )
             session_reused = probe_result.valid
             probe_reason = probe_result.reason
             log_event(
@@ -2098,6 +2190,21 @@ async def _run_store_discovery(
             status="warn",
             message="TD orders store discovery cancelled; closing context",
             store_code=store.store_code,
+        )
+        raise exc
+    except KeyboardInterrupt as exc:
+        outcome = StoreOutcome(
+            status="warning",
+            message="TD orders discovery interrupted",
+            final_url=page.url,
+        )
+        log_event(
+            logger=store_logger,
+            phase="store",
+            status="warn",
+            message="TD orders store discovery interrupted; closing context",
+            store_code=store.store_code,
+            error=str(exc),
         )
         raise exc
     except Exception as exc:  # pragma: no cover - runtime safeguard
