@@ -25,7 +25,7 @@ PIPELINE_NAME = "td_orders_sync"
 DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS = 90_000
 LOADING_LOCATOR_SELECTORS = ("text=/loading/i", ".k-loading-mask")
 OTP_VERIFICATION_DWELL_SECONDS = 600
-TEMP_ENABLED_STORES = {"A668"}
+TEMP_ENABLED_STORES = {"A668", "A817"}
 
 
 async def main(
@@ -229,19 +229,27 @@ def _format_report_range_text(from_date: date, to_date: date) -> str:
 
 
 def _format_report_range_text_candidates(from_date: date, to_date: date) -> list[str]:
-    variants = [
-        f"{from_date.strftime('%b')} {from_date.day}, {from_date.year} - {to_date.strftime('%b')} {to_date.day}, {to_date.year}",
-        f"{from_date.strftime('%b')} {from_date.day:02d}, {from_date.year} - {to_date.strftime('%b')} {to_date.day:02d}, {to_date.year}",
-        f"{from_date.strftime('%b')} {from_date.day}, {from_date.year} - {to_date.strftime('%b')} {to_date.day:02d}, {to_date.year}",
-        f"{from_date.strftime('%b')} {from_date.day:02d}, {from_date.year} - {to_date.strftime('%b')} {to_date.day}, {to_date.year}",
-    ]
+    def _append_unique(candidate: str, seen: set[str], items: list[str]) -> None:
+        if candidate not in seen:
+            seen.add(candidate)
+            items.append(candidate)
+
+    month_from = from_date.strftime("%b")
+    month_to = to_date.strftime("%b")
+    from_day_variants = [f"{from_date.day:02d}", str(from_date.day)]
+    to_day_variants = [f"{to_date.day:02d}", str(to_date.day)]
+
     seen: set[str] = set()
-    unique_variants: list[str] = []
-    for variant in variants:
-        if variant not in seen:
-            seen.add(variant)
-            unique_variants.append(variant)
-    return unique_variants
+    variants: list[str] = []
+    for from_day in from_day_variants:
+        for to_day in to_day_variants:
+            table_style = f"{from_day} {month_from} {from_date.year} - {to_day} {month_to} {to_date.year}"
+            month_first = f"{month_from} {from_day}, {from_date.year} - {month_to} {to_day}, {to_date.year}"
+            month_first_no_comma = f"{month_from} {from_day} {from_date.year} - {month_to} {to_day} {to_date.year}"
+            _append_unique(table_style, seen, variants)
+            _append_unique(month_first, seen, variants)
+            _append_unique(month_first_no_comma, seen, variants)
+    return variants
 
 
 def _format_orders_filename(store_code: str, from_date: date, to_date: date) -> str:
@@ -260,14 +268,14 @@ class TdStore:
 
     @property
     def default_home_url(self) -> str | None:
-        code = (self.store_code or "").strip()
+        code = (self.store_code or "").strip().lower()
         if not code:
             return None
         return f"https://subs.quickdrycleaning.com/{code}/App/home"
 
     @property
     def session_probe_url(self) -> str | None:
-        code = (self.store_code or "").strip()
+        code = (self.store_code or "").strip().lower()
         if not code:
             return None
         return f"https://subs.quickdrycleaning.com/{code}/App/home?EventClick=True"
@@ -406,6 +414,7 @@ class SessionProbeResult:
     final_url: str | None
     reason: str | None = None
     contains_store_code: bool | None = None
+    contains_store_path: bool | None = None
     verification_seen: bool | None = None
     login_detected: bool | None = None
     nav_visible: bool | None = None
@@ -615,7 +624,9 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger, time
 
     final_url = page.url
     url_lower = (final_url or "").lower()
+    store_code_path = f"/{store.store_code.lower()}/"
     contains_store = store.store_code.lower() in url_lower
+    contains_store_path = store_code_path in url_lower
     verification_seen = "frmverification" in url_lower
     login_detected = False
     nav_visible = False
@@ -633,9 +644,9 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger, time
     except Exception:
         home_card_visible = False
 
-    state_valid = (
-        contains_store and (nav_visible or home_card_visible) and not verification_seen and not login_detected and probe_error is None
-    )
+    nav_ready = (contains_store_path or contains_store) and nav_visible
+    home_ready = (contains_store_path or contains_store) and home_card_visible
+    state_valid = (nav_ready or home_ready) and not verification_seen and not login_detected and probe_error is None
     if probe_error:
         reason = "probe_navigation_error"
     elif verification_seen:
@@ -666,12 +677,14 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger, time
         invalid_reason=reason,
         probe_error=probe_error,
         probe_target=target_url,
+        contains_store_path=contains_store_path,
     )
     return SessionProbeResult(
         valid=state_valid,
         final_url=final_url,
         reason=reason,
         contains_store_code=contains_store,
+        contains_store_path=contains_store_path,
         verification_seen=verification_seen,
         login_detected=login_detected,
         nav_visible=nav_visible,
@@ -809,6 +822,18 @@ def _url_matches_home(current_url: str, store: TdStore) -> bool:
     if store.home_url:
         try:
             if url_lower.startswith((store.home_url or "").lower()):
+                return True
+        except Exception:
+            pass
+    if store.default_home_url:
+        try:
+            if url_lower.startswith(store.default_home_url.lower()):
+                return True
+        except Exception:
+            pass
+    if store.session_probe_url:
+        try:
+            if url_lower.startswith(store.session_probe_url.lower().split("?")[0]):
                 return True
         except Exception:
             pass
@@ -1841,6 +1866,7 @@ async def _wait_for_report_request_row(
 ) -> tuple[Locator | None, str | None]:
     deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
     normalized_expected = {" ".join(text.split()).lower() for text in expected_range_texts}
+    last_seen_texts: list[str] = []
     while asyncio.get_event_loop().time() < deadline:
         try:
             table_candidates = [
@@ -1852,10 +1878,13 @@ async def _wait_for_report_request_row(
                 await asyncio.sleep(0.5)
                 continue
 
+            matched_rows: list[tuple[Locator, str | None]] = []
+            unmatched_rows: list[str | None] = []
+            visible_rows: list[str] = []
             for expected_range_text in expected_range_texts:
                 row_locator = table.locator(f"tr:has-text('{expected_range_text}')")
                 row_count = await row_locator.count()
-                for idx in range(min(row_count, 3)):
+                for idx in reversed(range(min(row_count, 5))):
                     candidate = row_locator.nth(idx)
                     try:
                         if await candidate.is_visible():
@@ -1864,11 +1893,20 @@ async def _wait_for_report_request_row(
                                 displayed_text = await candidate.inner_text()
                             if displayed_text:
                                 normalized_displayed = " ".join(displayed_text.split()).lower()
+                                visible_rows.append(displayed_text)
                                 if normalized_displayed in normalized_expected:
-                                    return candidate, displayed_text
-                            return candidate, displayed_text
+                                    matched_rows.append((candidate, displayed_text))
+                                    continue
+                            unmatched_rows.append(displayed_text)
                     except Exception:
                         continue
+            if matched_rows:
+                locator, displayed = matched_rows[0]
+                return locator, displayed
+            if visible_rows:
+                last_seen_texts = visible_rows[-3:]
+            elif unmatched_rows:
+                last_seen_texts = [text for text in unmatched_rows if text][-3:]
         except Exception:
             pass
 
@@ -1881,6 +1919,7 @@ async def _wait_for_report_request_row(
         message="Report Requests row not found for range",
         store_code=store.store_code,
         expected_range_texts=list(expected_range_texts),
+        last_seen_rows=last_seen_texts or None,
     )
     return None, None
 
@@ -2177,6 +2216,7 @@ async def _run_store_discovery(
                 final_url=probe_result.final_url,
                 nav_visible=probe_result.nav_visible,
                 home_card_visible=probe_result.home_card_visible,
+                contains_store_path=probe_result.contains_store_path,
             )
         else:
             probe_reason = "no_storage_state"
@@ -2209,10 +2249,28 @@ async def _run_store_discovery(
                 storage_state=str(store.storage_state_path),
                 probe_reason=probe_reason,
             )
-            session_reused = await _perform_login(
-                page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms
+            should_login = (not storage_state_exists) or (
+                probe_result and (probe_result.login_detected or probe_result.verification_seen)
             )
-            login_performed = True
+            if should_login:
+                session_reused = await _perform_login(
+                    page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms
+                )
+                login_performed = True
+            else:
+                if store.session_probe_url:
+                    with contextlib.suppress(Exception):
+                        await page.goto(store.session_probe_url, wait_until="domcontentloaded", timeout=nav_timeout_ms)
+                session_reused = True
+                log_event(
+                    logger=store_logger,
+                    phase="session",
+                    message="Probed session reused without relogin",
+                    store_code=store.store_code,
+                    final_url=page.url,
+                    storage_state=str(store.storage_state_path),
+                    probe_reason=probe_reason,
+                )
 
         if not session_reused:
             outcome = StoreOutcome(
