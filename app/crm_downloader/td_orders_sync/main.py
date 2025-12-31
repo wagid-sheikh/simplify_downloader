@@ -638,16 +638,27 @@ async def _wait_for_home(
 ) -> bool:
     deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
     seen_visible = False
-    while asyncio.get_event_loop().time() < deadline:
+    home_card_seen = False
+    home_card_selector = "h5.card-title:has-text(\"Daily Operations Tracker\")"
+
+    async def _home_ready() -> tuple[bool, str, bool, bool]:
         current_url = page.url or ""
         url_ok = _url_matches_home(current_url, store)
         nav_visible = False
+        home_visible = False
         try:
             nav_visible = await page.locator(nav_selector).first.is_visible()
-            seen_visible = seen_visible or nav_visible
+            seen_home = page.locator(home_card_selector)
+            home_visible = await seen_home.is_visible()
         except Exception:
             nav_visible = False
-        if url_ok and nav_visible:
+        return url_ok and (nav_visible or home_visible), current_url, nav_visible, home_visible
+
+    while asyncio.get_event_loop().time() < deadline:
+        ready, current_url, nav_visible, home_visible = await _home_ready()
+        seen_visible = seen_visible or nav_visible
+        home_card_seen = home_card_seen or home_visible
+        if ready:
             log_event(
                 logger=logger,
                 phase="login",
@@ -655,6 +666,8 @@ async def _wait_for_home(
                 store_code=store.store_code,
                 final_url=current_url,
                 nav_selector=nav_selector,
+                nav_visible=nav_visible,
+                home_card_visible=home_visible,
             )
             return True
         await asyncio.sleep(1)
@@ -668,6 +681,7 @@ async def _wait_for_home(
         final_url=page.url,
         nav_selector=nav_selector,
         nav_visible=seen_visible,
+        home_card_visible=home_card_seen,
     )
     return False
 
@@ -918,53 +932,63 @@ async def _wait_for_otp_verification(
         dwell_seconds=dwell_seconds,
     )
 
+    async def _home_ready() -> tuple[bool, str, bool, bool]:
+        url_now = page.url or ""
+        url_ok = _url_matches_home(url_now, store)
+        nav_visible = False
+        home_card_visible = False
+        try:
+            nav_visible = await page.locator(nav_selector).first.is_visible()
+            home_card_visible = await page.locator("h5.card-title:has-text(\"Daily Operations Tracker\")").is_visible()
+        except Exception:
+            nav_visible = False
+        return url_ok and (nav_visible or home_card_visible), url_now, nav_visible, home_card_visible
+
     end_time = asyncio.get_event_loop().time() + dwell_seconds
     while asyncio.get_event_loop().time() < end_time:
+        ready, url_now, nav_visible, home_card_visible = await _home_ready()
+        if ready:
+            log_event(
+                logger=logger,
+                phase="login",
+                message="OTP verification completed; home detected",
+                store_code=store.store_code,
+                final_url=url_now,
+                nav_visible=nav_visible,
+                home_card_visible=home_card_visible,
+                dwell_seconds=dwell_seconds,
+            )
+            return True, True
+
         await asyncio.sleep(2)
-        current_url = page.url or ""
-        if verification_fragment.lower() not in current_url.lower():
-            break
-        try:
-            if await page.locator(nav_selector).first.is_visible() and _url_matches_home(current_url, store):
-                break
-        except Exception:
-            continue
 
-    final_url = page.url or ""
-    at_home = False
-    if store.home_url:
-        try:
-            at_home = final_url.lower().startswith(store.home_url.lower())
-        except Exception:
-            at_home = False
-    else:
-        at_home = verification_fragment.lower() not in final_url.lower()
-
-    if not at_home:
-        message = "OTP not completed; verification page still active"
-        if verification_fragment.lower() not in final_url.lower():
-            message = "OTP not completed; home page not reached after verification dwell"
+    ready, final_url, nav_visible, home_card_visible = await _home_ready()
+    if ready:
         log_event(
             logger=logger,
             phase="login",
-            status="warn",
-            message=message,
+            message="OTP verification completed near dwell deadline; home detected",
             store_code=store.store_code,
             final_url=final_url,
-            otp_deadline=deadline.isoformat(),
+            nav_visible=nav_visible,
+            home_card_visible=home_card_visible,
             dwell_seconds=dwell_seconds,
         )
-        return False, True
+        return True, True
 
     log_event(
         logger=logger,
         phase="login",
-        message="OTP verification completed; proceeding",
+        status="warn",
+        message="OTP not completed; home page not reached before dwell deadline",
         store_code=store.store_code,
         final_url=final_url,
+        nav_visible=nav_visible,
+        home_card_visible=home_card_visible,
         otp_deadline=deadline.isoformat(),
+        dwell_seconds=dwell_seconds,
     )
-    return True, True
+    return False, True
 
 
 async def _run_store_discovery(
@@ -993,9 +1017,9 @@ async def _run_store_discovery(
     page = await context.new_page()
     nav_selector = store.reports_nav_selector
     outcome = StoreOutcome(status="error", message="Store run did not complete")
+    stored_state_path: str | None = None
     try:
         session_reused = False
-        login_performed = False
         if storage_state_exists:
             session_reused = await _probe_session(page, store=store, logger=store_logger)
 
@@ -1012,7 +1036,6 @@ async def _run_store_discovery(
                 storage_state=str(store.storage_state_path),
             )
             session_reused = await _perform_login(page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms)
-            login_performed = session_reused
 
         verification_ok, verification_seen = await _wait_for_otp_verification(
             page, store=store, logger=store_logger, nav_selector=nav_selector
@@ -1047,17 +1070,24 @@ async def _run_store_discovery(
 
         await _log_home_nav_diagnostics(page, logger=store_logger, store=store)
 
-        should_store_state = login_performed or verification_seen or session_reused
-        if should_store_state:
-            store.storage_state_path.parent.mkdir(parents=True, exist_ok=True)
-            await context.storage_state(path=str(store.storage_state_path))
+        store.storage_state_path.parent.mkdir(parents=True, exist_ok=True)
+        await context.storage_state(path=str(store.storage_state_path))
+        stored_state_path = str(store.storage_state_path)
+        log_event(
+            logger=store_logger,
+            phase="session",
+            message="Stored refreshed session state after home detection",
+            store_code=store.store_code,
+            storage_state=stored_state_path,
+            verification_seen=verification_seen,
+        )
+        if store.store_code.upper() == "A817":
             log_event(
                 logger=store_logger,
                 phase="session",
-                message="Stored refreshed session state",
+                message="Persisted storage state for A817 after home detection",
                 store_code=store.store_code,
-                storage_state=str(store.storage_state_path),
-                verification_seen=verification_seen,
+                storage_state=stored_state_path,
             )
 
         container_ready = await _navigate_to_orders_container(
@@ -1069,7 +1099,7 @@ async def _run_store_discovery(
                 message="Orders container did not load from Reports navigation",
                 final_url=page.url,
                 verification_seen=verification_seen,
-                storage_state=str(store.storage_state_path) if should_store_state else None,
+                storage_state=stored_state_path,
             )
             return
 
@@ -1082,7 +1112,7 @@ async def _run_store_discovery(
                 final_url=page.url,
                 iframe_attached=True,
                 verification_seen=verification_seen,
-                storage_state=str(store.storage_state_path) if should_store_state else None,
+                storage_state=stored_state_path,
             )
         else:
             outcome = StoreOutcome(
@@ -1091,7 +1121,7 @@ async def _run_store_discovery(
                 final_url=page.url,
                 iframe_attached=False,
                 verification_seen=verification_seen,
-                storage_state=str(store.storage_state_path) if should_store_state else None,
+                storage_state=stored_state_path,
             )
 
         log_event(
