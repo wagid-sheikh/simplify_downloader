@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
 import sqlalchemy as sa
-from playwright.async_api import Browser, FrameLocator, Locator, Page, TimeoutError, async_playwright
+from playwright.async_api import Browser, BrowserContext, FrameLocator, Locator, Page, TimeoutError, async_playwright
 
 from app.common.date_utils import get_daily_report_date
 from app.common.db import session_scope
@@ -48,6 +48,10 @@ async def main(
         report_date=run_start_date,
     )
 
+    interrupted = False
+    persist_attempted = False
+    browser: Browser | None = None
+
     try:
         log_event(
             logger=logger,
@@ -71,6 +75,7 @@ async def main(
             )
             summary.mark_phase("init", "warning")
             summary.add_note("No TD stores with sync_orders_flag found; exiting")
+            persist_attempted = True
             if await _persist_summary(summary=summary, logger=logger):
                 await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
             else:
@@ -105,6 +110,7 @@ async def main(
             message="TD orders sync discovery flow complete; notifying",
             run_env=resolved_env,
         )
+        persist_attempted = True
         if await _persist_summary(summary=summary, logger=logger):
             await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
         else:
@@ -116,7 +122,42 @@ async def main(
                 run_env=resolved_env,
                 run_id=resolved_run_id,
             )
+    except asyncio.CancelledError:
+        interrupted = True
+        summary.add_note("Run interrupted by cancellation")
+        summary.mark_phase("store", "warning")
+        log_event(
+            logger=logger,
+            phase="store",
+            status="warn",
+            message="TD orders sync discovery interrupted; attempting graceful shutdown",
+            run_id=resolved_run_id,
+        )
+        with contextlib.suppress(Exception):
+            if browser:
+                await browser.close()
+        if not persist_attempted:
+            persist_attempted = True
+            await _persist_summary(summary=summary, logger=logger)
+        return
+    except Exception as exc:  # pragma: no cover - defensive guard
+        log_event(
+            logger=logger,
+            phase="store",
+            status="error",
+            message="TD orders sync discovery failed unexpectedly",
+            run_id=resolved_run_id,
+            error=str(exc),
+        )
+        summary.add_note(f"Run failed unexpectedly: {exc}")
+        summary.mark_phase("store", "error")
+        if not persist_attempted:
+            persist_attempted = True
+            await _persist_summary(summary=summary, logger=logger)
+        raise
     finally:
+        if not persist_attempted and not interrupted:
+            await _persist_summary(summary=summary, logger=logger)
         logger.close()
 
 
@@ -165,7 +206,7 @@ def _normalize_id_selector(selector: str) -> str:
 
 
 def _format_report_range_text(from_date: date, to_date: date) -> str:
-    return f"{from_date.strftime('%d %b %Y')} - {to_date.strftime('%d %b %Y')}"
+    return f"{from_date.strftime('%b %d, %Y')} - {to_date.strftime('%b %d, %Y')}"
 
 
 def _format_orders_filename(store_code: str, from_date: date, to_date: date) -> str:
@@ -489,36 +530,45 @@ async def _launch_browser(*, playwright: Any, logger: JsonLogger) -> Browser:
 
 
 async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger) -> SessionProbeResult:
-    target_url = store.home_url or store.orders_url or store.login_url
+    target_url = store.home_url or store.orders_url
     if not target_url:
         log_event(
             logger=logger,
             phase="session",
             status="warn",
-            message="No target URL available to probe session",
+            message="No home URL available to probe session",
             store_code=store.store_code,
         )
         return SessionProbeResult(valid=False, final_url=None, reason="no_probe_target")
 
-    response = await page.goto(target_url, wait_until="domcontentloaded")
-    final_url = page.url
-    contains_store = store.store_code.lower() in (final_url or "").lower()
+    response = None
+    probe_error: str | None = None
+    try:
+        response = await page.goto(target_url, wait_until="domcontentloaded")
+    except Exception as exc:
+        probe_error = str(exc)
 
-    verification_seen = "frmverification" in (final_url or "").lower()
+    final_url = page.url
+    url_lower = (final_url or "").lower()
+    contains_store = store.store_code.lower() in url_lower
+    verification_seen = "frmverification" in url_lower
     login_detected = False
     try:
         login_detected = await page.locator("#txtUserId, input[name='username']").first.is_visible()
     except Exception:
         login_detected = False
 
-    state_valid = contains_store and not verification_seen and not login_detected
-    reason = None
-    if verification_seen:
+    state_valid = contains_store and not verification_seen and not login_detected and probe_error is None
+    if probe_error:
+        reason = "probe_navigation_error"
+    elif verification_seen:
         reason = "verification_redirect"
     elif login_detected:
         reason = "login_form_visible"
     elif not contains_store:
         reason = "store_code_missing_from_url"
+    else:
+        reason = None
 
     log_event(
         logger=logger,
@@ -533,6 +583,8 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger) -> S
         login_detected=login_detected,
         state_valid=state_valid,
         invalid_reason=reason,
+        probe_error=probe_error,
+        probe_target=target_url,
     )
     return SessionProbeResult(
         valid=state_valid,
@@ -1048,6 +1100,108 @@ async def _wait_for_date_ui(
     return observations
 
 
+async def _locate_date_range_control(
+    frame: FrameLocator, *, timeout_ms: int
+) -> tuple[Locator | None, list[dict[str, Any]]]:
+    attempts: list[dict[str, Any]] = []
+    candidates: list[tuple[str, Locator]] = [
+        (
+            "button_with_range_text",
+            frame.get_by_role("button", name=re.compile(r"[a-zA-Z]{3}\s+\d{1,2}.*,\s*\d{4}\s*-", re.I)),
+        ),
+        ("calendar_icon_button", frame.locator("button:has(.k-icon.k-i-calendar)")),
+        ("k-daterangepicker", frame.locator(".k-daterangepicker button, .k-daterangepicker .k-input-inner")),
+        ("text_select_date_button", frame.get_by_role("button", name=re.compile("date range|select date|calendar", re.I))),
+        ("div_range_with_icon", frame.locator("div:has(.k-icon.k-i-calendar):has-text('-')")),
+    ]
+
+    for label, locator in candidates:
+        try:
+            count = await locator.count()
+        except Exception:
+            count = 0
+        attempt = {"label": label, "count": count, "used": False}
+        attempts.append(attempt)
+        if count:
+            found = await _first_visible_locator([locator], timeout_ms=timeout_ms)
+            if found is not None:
+                attempt["used"] = True
+                return found, attempts
+    return None, attempts
+
+
+async def _locate_date_picker_popup(frame: FrameLocator, *, timeout_ms: int) -> Locator | None:
+    popup_candidates = [
+        frame.locator(".k-animation-container:has(.k-calendar)"),
+        frame.locator(".k-daterangepicker-popup"),
+        frame.locator(".k-popup:has(.k-calendar)"),
+        frame.get_by_role("dialog"),
+    ]
+    return await _first_visible_locator(popup_candidates, timeout_ms=timeout_ms)
+
+
+async def _select_date_in_open_picker(container: Locator, *, target_date: date, label: str) -> tuple[bool, dict[str, Any]]:
+    details: dict[str, Any] = {"label": label, "target_date": target_date.isoformat()}
+    day_label = str(target_date.day)
+    day_candidates = [
+        container.get_by_role("gridcell", name=re.compile(rf"^{day_label}\b")),
+        container.get_by_role("button", name=re.compile(rf"^{day_label}\b")),
+        container.locator(f"text={day_label}"),
+    ]
+    day_locator = await _first_visible_locator(day_candidates, timeout_ms=3_000)
+    if day_locator is None:
+        details["error"] = "day_not_found"
+        return False, details
+
+    try:
+        await day_locator.click()
+        details["clicked"] = True
+    except Exception as exc:
+        details["error"] = f"day_click_failed:{exc}"
+        return False, details
+
+    return True, details
+
+
+async def _wait_for_range_text_update(
+    control: Locator,
+    *,
+    expected_text: str,
+    timeout_ms: int,
+    logger: JsonLogger,
+    store: TdStore,
+) -> tuple[bool, str | None]:
+    deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
+    last_text: str | None = None
+    normalized_expected = " ".join(expected_text.split())
+
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            current_text = await control.inner_text()
+            last_text = current_text
+        except Exception as exc:
+            last_text = f"<unreadable:{exc}>"
+            await asyncio.sleep(0.3)
+            continue
+
+        normalized_current = " ".join((current_text or "").split())
+        if normalized_expected in normalized_current:
+            return True, current_text
+
+        await asyncio.sleep(0.3)
+
+    log_event(
+        logger=logger,
+        phase="iframe",
+        status="warn",
+        message="Date range text did not update to expected value",
+        store_code=store.store_code,
+        expected_text=expected_text,
+        final_text=last_text,
+    )
+    return False, last_text
+
+
 async def _locate_date_inputs(
     frame: FrameLocator, *, timeout_ms: int, logger: JsonLogger, store: TdStore
 ) -> tuple[Locator | None, Locator | None, list[dict[str, Any]]]:
@@ -1182,7 +1336,7 @@ async def _locate_date_inputs(
 
 
 async def _fill_date_via_picker(
-    frame: FrameLocator, locator: Locator, *, target_date: date, label: str
+    container: FrameLocator | Locator, locator: Locator, *, target_date: date, label: str
 ) -> tuple[bool, dict[str, Any]]:
     details: dict[str, Any] = {"strategy": "picker", "opened": False, "selected_day": False}
     try:
@@ -1192,14 +1346,16 @@ async def _fill_date_via_picker(
         details["error"] = f"click_failed:{exc}"
         return False, details
 
-    calendar = await _first_visible_locator(
-        [
-            frame.locator(".k-animation-container .k-calendar"),
-            frame.locator(".k-calendar"),
-            frame.get_by_role("grid", name=re.compile("calendar", re.I)),
-        ],
-        timeout_ms=4_000,
-    )
+    calendar_candidates = [
+        container.locator(".k-animation-container .k-calendar"),
+        container.locator(".k-calendar"),
+    ]
+    if isinstance(container, FrameLocator):
+        calendar_candidates.append(container.get_by_role("grid", name=re.compile("calendar", re.I)))
+    else:
+        calendar_candidates.append(container.locator("[role='grid']:has-text('calendar')"))
+
+    calendar = await _first_visible_locator(calendar_candidates, timeout_ms=4_000)
     if calendar is None:
         details["error"] = "calendar_not_visible"
         return False, details
@@ -1226,7 +1382,7 @@ async def _fill_date_via_picker(
 
 
 async def _fill_date_input(
-    frame: FrameLocator,
+    container: FrameLocator | Locator,
     locator: Locator,
     *,
     target_date: date,
@@ -1262,7 +1418,7 @@ async def _fill_date_input(
     picker_result = None
     if read_only_attr is not None or not direct_success:
         picker_ok, picker_details = await _fill_date_via_picker(
-            frame, locator, target_date=target_date, label=label
+            container, locator, target_date=target_date, label=label
         )
         picker_result = picker_details
         picker_details["success"] = picker_ok
@@ -1301,39 +1457,101 @@ async def _set_date_range(
     store: TdStore,
     timeout_ms: int,
 ) -> bool:
-    from_input, to_input, locate_attempts = await _locate_date_inputs(
-        frame, timeout_ms=timeout_ms, logger=logger, store=store
-    )
-    if not from_input or not to_input:
+    range_control, control_attempts = await _locate_date_range_control(frame, timeout_ms=timeout_ms)
+    if range_control is None:
         log_event(
             logger=logger,
             phase="iframe",
             status="warn",
-            message="Date inputs not located inside iframe",
+            message="Date range control not located inside iframe",
             store_code=store.store_code,
-            locate_attempts=locate_attempts,
+            control_attempts=control_attempts,
         )
         return False
 
-    from_ok, from_detail = await _fill_date_input(
-        frame, from_input, target_date=from_date, label="from", logger=logger, store=store
-    )
-    to_ok, to_detail = await _fill_date_input(
-        frame, to_input, target_date=to_date, label="to", logger=logger, store=store
-    )
-
-    await asyncio.sleep(0.2)
-
-    if from_ok and to_ok:
+    try:
+        await range_control.wait_for(state="visible", timeout=timeout_ms)
+        await range_control.click()
+    except Exception as exc:
         log_event(
             logger=logger,
             phase="iframe",
-            message="Date range populated via inputs",
+            status="warn",
+            message="Failed to open date range picker",
+            store_code=store.store_code,
+            error=str(exc),
+            control_attempts=control_attempts,
+        )
+        return False
+
+    picker_popup = await _locate_date_picker_popup(frame, timeout_ms=min(timeout_ms, 8_000))
+    picker_dom: str | None = None
+    if picker_popup is not None:
+        with contextlib.suppress(Exception):
+            await picker_popup.wait_for(state="visible", timeout=timeout_ms)
+        try:
+            picker_dom = await picker_popup.evaluate("el => el.outerHTML.slice(0, 2000)")
+        except Exception:
+            picker_dom = None
+    else:
+        log_event(
+            logger=logger,
+            phase="iframe",
+            status="warn",
+            message="Date picker popup not visible after clicking control",
+            store_code=store.store_code,
+            control_attempts=control_attempts,
+        )
+        return False
+
+    from_input, to_input, locate_attempts = await _locate_date_inputs(
+        frame, timeout_ms=timeout_ms, logger=logger, store=store
+    )
+
+    fill_details: list[dict[str, Any]] = []
+    select_details: list[dict[str, Any]] = []
+    from_ok = to_ok = False
+
+    if from_input and to_input:
+        from_ok, from_detail = await _fill_date_input(
+            picker_popup, from_input, target_date=from_date, label="from", logger=logger, store=store
+        )
+        to_ok, to_detail = await _fill_date_input(
+            picker_popup, to_input, target_date=to_date, label="to", logger=logger, store=store
+        )
+        fill_details.extend([from_detail, to_detail])
+    else:
+        from_ok, from_detail = await _select_date_in_open_picker(
+            picker_popup, target_date=from_date, label="from"
+        )
+        to_ok, to_detail = await _select_date_in_open_picker(
+            picker_popup, target_date=to_date, label="to"
+        )
+        select_details.extend([from_detail, to_detail])
+
+    expected_range_text = _format_report_range_text(from_date, to_date)
+    range_text_ok, final_range_text = await _wait_for_range_text_update(
+        range_control,
+        expected_text=expected_range_text,
+        timeout_ms=min(timeout_ms, 10_000),
+        logger=logger,
+        store=store,
+    )
+
+    if from_ok and to_ok and range_text_ok:
+        log_event(
+            logger=logger,
+            phase="iframe",
+            message="Date range set via date-range control",
             store_code=store.store_code,
             from_value=from_date.isoformat(),
             to_value=to_date.isoformat(),
+            control_attempts=control_attempts,
             locate_attempts=locate_attempts,
-            fill_details=[from_detail, to_detail],
+            fill_details=fill_details or None,
+            selection_details=select_details or None,
+            range_text=final_range_text,
+            picker_dom_preview=picker_dom,
         )
         return True
 
@@ -1341,12 +1559,16 @@ async def _set_date_range(
         logger=logger,
         phase="iframe",
         status="warn",
-        message="Failed to populate date range inputs",
+        message="Failed to set date range via date-range control",
         store_code=store.store_code,
         from_ok=from_ok,
         to_ok=to_ok,
+        control_attempts=control_attempts,
         locate_attempts=locate_attempts,
-        fill_details=[from_detail, to_detail],
+        fill_details=fill_details or None,
+        selection_details=select_details or None,
+        range_text=final_range_text,
+        picker_dom_preview=picker_dom,
     )
     return False
 
@@ -1475,7 +1697,7 @@ async def _run_orders_iframe_flow(
         frame, from_date=from_date, to_date=to_date, logger=logger, store=store, timeout_ms=nav_timeout_ms
     )
     if not date_range_set:
-        return False, "Date range inputs not set"
+        return False, "Date range selection failed"
 
     request_locator = await _first_visible_locator(
         [
@@ -1652,6 +1874,7 @@ async def _run_store_discovery(
     nav_selector = store.reports_nav_selector
     outcome = StoreOutcome(status="error", message="Store run did not complete")
     stored_state_path: str | None = None
+    probe_reason: str | None = None
     try:
         session_reused = False
         probe_result: SessionProbeResult | None = None
@@ -1661,6 +1884,7 @@ async def _run_store_discovery(
         if storage_state_exists:
             probe_result = await _probe_session(page, store=store, logger=store_logger)
             session_reused = probe_result.valid
+            probe_reason = probe_result.reason
             log_event(
                 logger=store_logger,
                 phase="session",
@@ -1671,20 +1895,44 @@ async def _run_store_discovery(
                 probe_reason=probe_result.reason,
                 final_url=probe_result.final_url,
             )
-
-        if not session_reused:
+        else:
+            probe_reason = "no_storage_state"
+        if session_reused:
+            log_event(
+                logger=store_logger,
+                phase="session",
+                message="state valid \u2192 reused (no OTP)",
+                store_code=store.store_code,
+                final_url=page.url,
+                storage_state=str(store.storage_state_path),
+                probe_reason=probe_reason,
+            )
+            if store.store_code.upper() == "A817":
+                log_event(
+                    logger=store_logger,
+                    phase="session",
+                    message="A817 storage state reused without OTP",
+                    store_code=store.store_code,
+                    storage_state=str(store.storage_state_path),
+                )
+            verification_ok = True
+            verification_seen = False
+        else:
             if storage_state_exists:
-                await context.close()
+                await _close_context(context)
                 context = await browser.new_context(accept_downloads=True)
                 page = await context.new_page()
             log_event(
                 logger=store_logger,
-                phase="login",
-                message="Stored session invalid; performing full login with provided credentials",
+                phase="session",
+                message="state invalid \u2192 relogin + OTP",
                 store_code=store.store_code,
                 storage_state=str(store.storage_state_path),
+                probe_reason=probe_reason,
             )
-            session_reused = await _perform_login(page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms)
+            session_reused = await _perform_login(
+                page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms
+            )
             login_performed = True
 
         if not session_reused:
@@ -1709,16 +1957,6 @@ async def _run_store_discovery(
                     final_url=page.url,
                     verification_seen=verification_seen,
                 )
-        else:
-            log_event(
-                logger=store_logger,
-                phase="login",
-                message="Storage state valid; reusing session without OTP dwell",
-                store_code=store.store_code,
-                final_url=page.url,
-            )
-            verification_ok = True
-            verification_seen = False
 
         if not verification_ok:
             log_event(
@@ -1768,6 +2006,8 @@ async def _run_store_discovery(
                 message="Persisted storage state for A817 after home detection",
                 store_code=store.store_code,
                 storage_state=stored_state_path,
+                session_reused=session_reused,
+                refreshed=login_performed,
             )
 
         container_ready = await _navigate_to_orders_container(
@@ -1846,6 +2086,20 @@ async def _run_store_discovery(
             store_code=store.store_code,
             session_reused=session_reused,
         )
+    except asyncio.CancelledError as exc:
+        outcome = StoreOutcome(
+            status="warning",
+            message="TD orders discovery cancelled",
+            final_url=page.url,
+        )
+        log_event(
+            logger=store_logger,
+            phase="store",
+            status="warn",
+            message="TD orders store discovery cancelled; closing context",
+            store_code=store.store_code,
+        )
+        raise exc
     except Exception as exc:  # pragma: no cover - runtime safeguard
         outcome = StoreOutcome(
             status="error",
@@ -1862,6 +2116,13 @@ async def _run_store_discovery(
         )
     finally:
         summary.record_store(store.store_code, outcome)
+        await _close_context(context)
+
+
+async def _close_context(context: BrowserContext | None) -> None:
+    if context is None:
+        return
+    with contextlib.suppress(Exception):
         await context.close()
 
 
