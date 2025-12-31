@@ -26,6 +26,7 @@ PIPELINE_NAME = "td_orders_sync"
 DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS = 90_000
 LOADING_LOCATOR_SELECTORS = ("text=/loading/i", ".k-loading-mask")
 OTP_VERIFICATION_DWELL_SECONDS = 600
+TEMP_ENABLED_STORES = {"A668"}
 
 
 async def main(
@@ -249,6 +250,13 @@ class TdStore:
         return f"https://subs.quickdrycleaning.com/{code}/App/home"
 
     @property
+    def session_probe_url(self) -> str | None:
+        code = (self.store_code or "").strip()
+        if not code:
+            return None
+        return f"https://subs.quickdrycleaning.com/{code.lower()}/App/home?EventClick=True"
+
+    @property
     def login_url(self) -> str | None:
         return _get_nested_str(self.sync_config, ("urls", "login"))
 
@@ -384,6 +392,8 @@ class SessionProbeResult:
     contains_store_code: bool | None = None
     verification_seen: bool | None = None
     login_detected: bool | None = None
+    nav_visible: bool | None = None
+    home_card_visible: bool | None = None
 
 
 async def _load_td_order_stores(*, logger: JsonLogger) -> List[TdStore]:
@@ -419,6 +429,20 @@ async def _load_td_order_stores(*, logger: JsonLogger) -> List[TdStore]:
                     sync_config=sync_config,
                 )
             )
+
+    if TEMP_ENABLED_STORES:
+        scoped = [store for store in stores if store.store_code in TEMP_ENABLED_STORES]
+        skipped = sorted({store.store_code for store in stores} - TEMP_ENABLED_STORES)
+        if scoped:
+            log_event(
+                logger=logger,
+                phase="init",
+                status="warn",
+                message="Temporarily restricting TD orders discovery to a subset of stores",
+                stores=[store.store_code for store in scoped],
+                skipped_stores=skipped or None,
+            )
+        stores = scoped
 
     log_event(
         logger=logger,
@@ -555,7 +579,7 @@ async def _launch_browser(*, playwright: Any, logger: JsonLogger) -> Browser:
 
 
 async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger, timeout_ms: int) -> SessionProbeResult:
-    target_url = store.home_url or store.default_home_url or store.orders_url
+    target_url = store.session_probe_url or store.home_url or store.default_home_url or store.orders_url
     if not target_url:
         log_event(
             logger=logger,
@@ -578,18 +602,32 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger, time
     contains_store = store.store_code.lower() in url_lower
     verification_seen = "frmverification" in url_lower
     login_detected = False
+    nav_visible = False
+    home_card_visible = False
     try:
         login_detected = await page.locator("#txtUserId, input[name='username']").first.is_visible()
     except Exception:
         login_detected = False
+    try:
+        nav_visible = await page.locator(store.reports_nav_selector).first.is_visible()
+    except Exception:
+        nav_visible = False
+    try:
+        home_card_visible = await page.locator("h5.card-title:has-text(\"Daily Operations Tracker\")").is_visible()
+    except Exception:
+        home_card_visible = False
 
-    state_valid = contains_store and not verification_seen and not login_detected and probe_error is None
+    state_valid = (
+        contains_store and (nav_visible or home_card_visible) and not verification_seen and not login_detected and probe_error is None
+    )
     if probe_error:
         reason = "probe_navigation_error"
     elif verification_seen:
         reason = "verification_redirect"
     elif login_detected:
         reason = "login_form_visible"
+    elif not (nav_visible or home_card_visible):
+        reason = "navigation_controls_missing"
     elif not contains_store:
         reason = "store_code_missing_from_url"
     else:
@@ -606,6 +644,8 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger, time
         contains_store_code=contains_store,
         verification_seen=verification_seen,
         login_detected=login_detected,
+        nav_visible=nav_visible,
+        home_card_visible=home_card_visible,
         state_valid=state_valid,
         invalid_reason=reason,
         probe_error=probe_error,
@@ -618,6 +658,8 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger, time
         contains_store_code=contains_store,
         verification_seen=verification_seen,
         login_detected=login_detected,
+        nav_visible=nav_visible,
+        home_card_visible=home_card_visible,
     )
 
 
@@ -1199,7 +1241,7 @@ async def _wait_for_range_text_update(
 ) -> tuple[bool, str | None]:
     deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
     last_text: str | None = None
-    normalized_expected = " ".join(expected_text.split())
+    normalized_expected = " ".join(expected_text.split()).lower()
 
     while asyncio.get_event_loop().time() < deadline:
         try:
@@ -1210,8 +1252,8 @@ async def _wait_for_range_text_update(
             await asyncio.sleep(0.3)
             continue
 
-        normalized_current = " ".join((current_text or "").split())
-        if normalized_expected in normalized_current:
+        normalized_current = " ".join((current_text or "").split()).lower()
+        if normalized_current == normalized_expected:
             return True, current_text
 
         await asyncio.sleep(0.3)
@@ -1435,6 +1477,53 @@ async def _fill_date_via_picker(
     return True, details
 
 
+async def _fill_numeric_triplet(
+    fields: list[Locator],
+    *,
+    target_date: date,
+    label: str,
+    logger: JsonLogger,
+    store: TdStore,
+) -> tuple[bool, dict[str, Any]]:
+    detail: dict[str, Any] = {
+        "label": label,
+        "strategy": "numeric_triplet",
+        "field_count": len(fields),
+        "values": {"day": f"{target_date.day:02d}", "month": f"{target_date.month:02d}", "year": f"{target_date.year:04d}"},
+        "fills": [],
+    }
+    if len(fields) < 3:
+        detail["error"] = "insufficient_fields"
+        return False, detail
+
+    success = True
+    for idx, (part_label, value) in enumerate(
+        (("day", f"{target_date.day:02d}"), ("month", f"{target_date.month:02d}"), ("year", f"{target_date.year:04d}"))
+    ):
+        field = fields[idx]
+        entry: dict[str, Any] = {"part": part_label, "value": value}
+        try:
+            await field.click()
+            await field.fill(value)
+            entry["filled"] = True
+        except Exception as exc:
+            entry["error"] = str(exc)
+            success = False
+        detail["fills"].append(entry)
+
+    if not success:
+        log_event(
+            logger=logger,
+            phase="iframe",
+            status="warn",
+            message="Failed to fill numeric date inputs",
+            store_code=store.store_code,
+            label=label,
+            detail=detail,
+        )
+    return success, detail
+
+
 async def _fill_date_input(
     container: FrameLocator | Locator,
     locator: Locator,
@@ -1521,6 +1610,7 @@ async def _set_date_range(
     logger: JsonLogger,
     store: TdStore,
     timeout_ms: int,
+    attempt: int = 1,
 ) -> bool:
     range_control, control_attempts = await _locate_date_range_control(frame, timeout_ms=timeout_ms)
     if range_control is None:
@@ -1531,6 +1621,7 @@ async def _set_date_range(
             message="Date range control not located inside iframe",
             store_code=store.store_code,
             control_attempts=control_attempts,
+            attempt=attempt,
         )
         return False
 
@@ -1546,6 +1637,7 @@ async def _set_date_range(
             store_code=store.store_code,
             error=str(exc),
             control_attempts=control_attempts,
+            attempt=attempt,
         )
         return False
 
@@ -1566,34 +1658,57 @@ async def _set_date_range(
             message="Date picker popup not visible after clicking control",
             store_code=store.store_code,
             control_attempts=control_attempts,
+            attempt=attempt,
         )
         return False
 
-    from_input, to_input, locate_attempts = await _locate_date_inputs(
-        frame, timeout_ms=timeout_ms, logger=logger, store=store, popup=picker_popup
-    )
+    try:
+        numeric_inputs = picker_popup.locator("input[type='number'], input[inputmode='numeric'], input[type='tel']")
+        numeric_count = await numeric_inputs.count()
+    except Exception:
+        numeric_inputs = picker_popup.locator("input[type='number'], input[inputmode='numeric'], input[type='tel']")
+        numeric_count = 0
 
+    use_numeric_triplets = numeric_count >= 6
+    numeric_fill_details: list[dict[str, Any]] = []
+
+    from_input = to_input = None
+    locate_attempts: list[dict[str, Any]] = []
     fill_details: list[dict[str, Any]] = []
     select_details: list[dict[str, Any]] = []
     from_ok = to_ok = False
     update_click_result: dict[str, Any] | None = None
 
-    if from_input and to_input:
-        from_ok, from_detail = await _fill_date_input(
-            picker_popup, from_input, target_date=from_date, label="from", logger=logger, store=store
+    if use_numeric_triplets:
+        from_fields = [numeric_inputs.nth(idx) for idx in range(3)]
+        to_fields = [numeric_inputs.nth(idx) for idx in range(3, 6)]
+        from_ok, from_detail = await _fill_numeric_triplet(
+            from_fields, target_date=from_date, label="from", logger=logger, store=store
         )
-        to_ok, to_detail = await _fill_date_input(
-            picker_popup, to_input, target_date=to_date, label="to", logger=logger, store=store
+        to_ok, to_detail = await _fill_numeric_triplet(
+            to_fields, target_date=to_date, label="to", logger=logger, store=store
         )
-        fill_details.extend([from_detail, to_detail])
+        numeric_fill_details.extend([from_detail, to_detail])
     else:
-        from_ok, from_detail = await _select_date_in_open_picker(
-            picker_popup, target_date=from_date, label="from"
+        from_input, to_input, locate_attempts = await _locate_date_inputs(
+            frame, timeout_ms=timeout_ms, logger=logger, store=store, popup=picker_popup
         )
-        to_ok, to_detail = await _select_date_in_open_picker(
-            picker_popup, target_date=to_date, label="to"
-        )
-        select_details.extend([from_detail, to_detail])
+        if from_input and to_input:
+            from_ok, from_detail = await _fill_date_input(
+                picker_popup, from_input, target_date=from_date, label="from", logger=logger, store=store
+            )
+            to_ok, to_detail = await _fill_date_input(
+                picker_popup, to_input, target_date=to_date, label="to", logger=logger, store=store
+            )
+            fill_details.extend([from_detail, to_detail])
+        else:
+            from_ok, from_detail = await _select_date_in_open_picker(
+                picker_popup, target_date=from_date, label="from"
+            )
+            to_ok, to_detail = await _select_date_in_open_picker(
+                picker_popup, target_date=to_date, label="to"
+            )
+            select_details.extend([from_detail, to_detail])
 
     update_button = await _first_visible_locator(
         [
@@ -1634,13 +1749,17 @@ async def _set_date_range(
             store_code=store.store_code,
             from_value=from_date.isoformat(),
             to_value=to_date.isoformat(),
+            numeric_input_count=numeric_count,
+            used_numeric_triplets=use_numeric_triplets,
             control_attempts=control_attempts,
             locate_attempts=locate_attempts,
             fill_details=fill_details or None,
             selection_details=select_details or None,
+            numeric_fill_details=numeric_fill_details or None,
             range_text=final_range_text,
             picker_dom_preview=picker_dom,
             update_click=update_click_result,
+            attempt=attempt,
         )
         return True
 
@@ -1652,14 +1771,44 @@ async def _set_date_range(
         store_code=store.store_code,
         from_ok=from_ok,
         to_ok=to_ok,
+        numeric_input_count=numeric_count,
+        used_numeric_triplets=use_numeric_triplets,
         control_attempts=control_attempts,
         locate_attempts=locate_attempts,
         fill_details=fill_details or None,
         selection_details=select_details or None,
+        numeric_fill_details=numeric_fill_details or None,
         range_text=final_range_text,
         picker_dom_preview=picker_dom,
         update_click=update_click_result,
+        attempt=attempt,
     )
+    return False
+
+
+async def _set_date_range_with_retry(
+    frame: FrameLocator,
+    *,
+    from_date: date,
+    to_date: date,
+    logger: JsonLogger,
+    store: TdStore,
+    timeout_ms: int,
+    attempts: int = 2,
+) -> bool:
+    for attempt in range(1, max(1, attempts) + 1):
+        success = await _set_date_range(
+            frame,
+            from_date=from_date,
+            to_date=to_date,
+            logger=logger,
+            store=store,
+            timeout_ms=timeout_ms,
+            attempt=attempt,
+        )
+        if success:
+            return True
+        await asyncio.sleep(0.5)
     return False
 
 
@@ -1783,8 +1932,14 @@ async def _run_orders_iframe_flow(
         frame, store=store, logger=logger, timeout_ms=nav_timeout_ms, phase="iframe_generate_report"
     )
 
-    date_range_set = await _set_date_range(
-        frame, from_date=from_date, to_date=to_date, logger=logger, store=store, timeout_ms=nav_timeout_ms
+    date_range_set = await _set_date_range_with_retry(
+        frame,
+        from_date=from_date,
+        to_date=to_date,
+        logger=logger,
+        store=store,
+        timeout_ms=nav_timeout_ms,
+        attempts=2,
     )
     if not date_range_set:
         return False, "Date range selection failed"
@@ -1986,6 +2141,8 @@ async def _run_store_discovery(
                 storage_state=str(store.storage_state_path),
                 probe_reason=probe_result.reason,
                 final_url=probe_result.final_url,
+                nav_visible=probe_result.nav_visible,
+                home_card_visible=probe_result.home_card_visible,
             )
         else:
             probe_reason = "no_storage_state"
@@ -1993,7 +2150,7 @@ async def _run_store_discovery(
             log_event(
                 logger=store_logger,
                 phase="session",
-                message="state valid \u2192 reused (no OTP)",
+                message="state reused (no OTP)",
                 store_code=store.store_code,
                 final_url=page.url,
                 storage_state=str(store.storage_state_path),
@@ -2017,7 +2174,7 @@ async def _run_store_discovery(
             log_event(
                 logger=store_logger,
                 phase="session",
-                message="state invalid \u2192 relogin + OTP",
+                message="state invalid → relogin+OTP",
                 store_code=store.store_code,
                 storage_state=str(store.storage_state_path),
                 probe_reason=probe_reason,
