@@ -1984,13 +1984,20 @@ async def _collect_report_request_rows(container: Locator, *, max_rows: int = 20
     seen_handles: set[int] = set()
     candidates = [
         container.get_by_role("row"),
+        container.locator(":scope [role='row']"),
         container.locator(".ag-center-cols-container .ag-row"),
         container.locator(".ag-row"),
         container.locator("[role='row']"),
         container.locator("[role='listitem']"),
+        container.locator(":scope li"),
         container.locator("li"),
+        container.locator(":scope tr"),
+        container.locator("xpath=.//tr"),
+        container.locator("xpath=.//tbody/tr"),
         container.locator(":scope > div"),
         container.locator(":scope > section"),
+        container.locator("xpath=.//*[self::div or self::section or self::article][@role='row']"),
+        container.locator("xpath=.//*[self::div or self::section or self::article][contains(@class,'row')]"),
     ]
 
     for candidate in candidates:
@@ -2051,9 +2058,12 @@ async def _wait_for_report_requests_container(
             if heading:
                 container_candidates.extend(
                     [
+                        heading.locator("xpath=ancestor::*[self::section or self::div or self::article or self::main][1]"),
                         heading.locator("xpath=ancestor::section[1]"),
                         heading.locator("xpath=ancestor::div[1]"),
                         heading.locator("xpath=ancestor::table[1]"),
+                        heading.locator("xpath=ancestor::*[@id][1]"),
+                        heading.locator("xpath=ancestor::*[@class][1]"),
                     ]
                 )
             container_candidates.extend(
@@ -2142,6 +2152,7 @@ async def _wait_for_report_request_download_link(
     last_logged_at = asyncio.get_event_loop().time() - REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS
     last_refresh_at = 0.0
     last_row_html: str | None = None
+    empty_poll_attempts = 0
 
     while asyncio.get_event_loop().time() < deadline:
         try:
@@ -2173,6 +2184,7 @@ async def _wait_for_report_request_download_link(
                         break
             if matched_row and matched_text:
                 matched_row_seen = True
+                last_seen_texts = visible_rows or [matched_text]
                 download_locator = await _first_visible_locator(
                     [
                         matched_row.get_by_role("link", name=re.compile("download", re.I)),
@@ -2193,6 +2205,7 @@ async def _wait_for_report_request_download_link(
                         matched_range_text=matched_text,
                         status_text=status_text,
                         expected_range_texts=list(expected_range_texts),
+                        all_row_texts=visible_rows or [matched_text],
                     )
                     return download_locator, matched_text, status_text or last_status
 
@@ -2254,7 +2267,7 @@ async def _wait_for_report_request_download_link(
                             matched_range_text=matched_text,
                             error=str(exc),
                         )
-                last_seen_texts = [matched_text]
+                last_seen_texts = visible_rows or [matched_text]
                 now = asyncio.get_event_loop().time()
                 if now - last_logged_at >= REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS:
                     log_event(
@@ -2268,15 +2281,60 @@ async def _wait_for_report_request_download_link(
                         backoff_seconds=backoff,
                         timeout_ms=extended_timeout_ms,
                         last_seen_rows=last_seen_texts or [matched_text],
+                        all_row_texts=visible_rows or [matched_text],
                         row_html_snippet=last_row_html,
                     )
                     last_logged_at = now
-            elif visible_rows:
-                last_seen_texts = visible_rows[-3:]
+            if visible_rows:
+                last_seen_texts = visible_rows
+                empty_poll_attempts = 0
+            else:
+                empty_poll_attempts += 1
         except Exception as exc:
             last_status = last_status or str(exc)
 
         now = asyncio.get_event_loop().time()
+        refresh_locator = await _first_visible_locator(
+            [
+                container.get_by_role("link", name=re.compile("refresh", re.I)),
+                frame.get_by_role("link", name=re.compile("refresh", re.I)),
+                frame.get_by_role("button", name=re.compile("refresh", re.I)),
+                frame.locator("button:has-text(\"Refresh\"), [role='button']:has-text(\"Refresh\")"),
+            ],
+            timeout_ms=700,
+        )
+        should_refresh_empty = (
+            empty_poll_attempts >= 2 and refresh_locator is not None and now - last_refresh_at >= 4.0
+        )
+        if should_refresh_empty:
+            try:
+                await refresh_locator.click()
+                await _wait_for_loading_indicators(
+                    frame,
+                    store=store,
+                    logger=logger,
+                    timeout_ms=timeout_ms,
+                    phase="iframe_report_requests_refresh_empty",
+                )
+                last_refresh_at = now
+                empty_poll_attempts = 0
+                log_event(
+                    logger=logger,
+                    phase="iframe",
+                    message="Triggered Report Requests refresh while searching for rows",
+                    store_code=store.store_code,
+                    expected_range_texts=list(expected_range_texts),
+                )
+            except Exception as exc:
+                log_event(
+                    logger=logger,
+                    phase="iframe",
+                    status="warn",
+                    message="Failed to refresh Report Requests while searching for rows",
+                    store_code=store.store_code,
+                    error=str(exc),
+                )
+
         if now - last_logged_at >= REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS and last_seen_texts:
             log_event(
                 logger=logger,
@@ -2289,6 +2347,7 @@ async def _wait_for_report_request_download_link(
                 backoff_seconds=backoff,
                 timeout_ms=extended_timeout_ms,
                 row_html_snippet=last_row_html,
+                all_row_texts=last_seen_texts,
             )
             last_logged_at = now
 
