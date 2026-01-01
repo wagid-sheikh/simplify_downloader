@@ -2,6 +2,14 @@
 
 ## Key Notes to always remember
 
+### PROTECTED PATHS (DO NOT MODIFY unless explicitly instructed):
+
+- app/dashboard_downloader/**
+- app/lead_assignment/**
+
+If you believe a change is required under protected paths, stop and ask for approval first.
+Any PR that touches protected paths must be isolated and explicitly labeled “protected-path-change”.
+
 ### DOs & DON'Ts
 
 * DO:
@@ -1093,7 +1101,7 @@ Workflow inside iframe (in order):
 7) Download:
    - Do not click Download until the row text exactly matches `DD Mon YYYY - DD Mon YYYY` for the requested window; when multiple matches exist, pick the newest/top-most entry before proceeding.
    - Wrap the exact click that triggers download in `page.expect_download()` / `page.waitForEvent('download')` to avoid race conditions, then save to disk with a deterministic filename:
-    `{store_master.store_code}_td_orders_{YYYYMMDD-from}_{YYYYMMDD-to}.xlsx`. Confirm whether the intended date token is `YYYYMMDD`; align the saved filename format once confirmed.
+     `{store_master.store_code}_td_orders_{YYYYMMDD-from}_{YYYYMMDD-to}.xlsx`. Confirm whether the intended date token is `YYYYMMDD`; align the saved filename format once confirmed.
 8) Locator rules:
 
 - Prefer getByRole within the iframe:
@@ -1108,6 +1116,7 @@ Workflow inside iframe (in order):
 
 Sales & Delivery Historical Report (within iframe) – Automation Steps (Playwright, same iframe entry/hydration rules as Orders report, except there is no "Expand" step):
 After login, navigate to Reports → Sales and Delivery and verify the container page URL is /{store_master.store_code}/App/Reports/NEWSalesAndDeliveryReport…. This page renders the actual report UI inside the iframe `iframe#ifrmReport` (its src is set dynamically). Rules:
+
 - Enter the iframe with `frameLocator('#ifrmReport')` and wait for non-empty `src` + spinner disappearance or primary controls visibility.
 - Prefer role-based locators (`getByRole("button", { name: "Generate Report" })`, `"Request Report"`, `"Download"`) with text fallbacks.
 - Inside the iframe: click the link/button labeled “Download historical report”; wait until the “Generate Report” button becomes visible and click it; a date-range overlay opens—set From and To dates using the date picker (or fill the inputs if they exist) and click “Update” to close the overlay; then click “Request Report”.

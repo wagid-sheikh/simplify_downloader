@@ -2,6 +2,14 @@
 
 ## Key Notes to always remember
 
+PROTECTED PATHS (DO NOT MODIFY unless explicitly instructed):
+
+- app/dashboard_downloader/**
+- app/lead_assignment/**
+
+If you believe a change is required under protected paths, stop and ask for approval first.
+Any PR that touches protected paths must be isolated and explicitly labeled “protected-path-change”.
+
 ### DOs & DON'Ts
 
 * DO:
