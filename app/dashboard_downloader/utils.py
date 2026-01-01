@@ -41,10 +41,8 @@ def first_login(store: Store, headless: bool = False) -> None:
         page.goto(config.LOGIN_URL, wait_until="domcontentloaded")
 
         # Fill and submit login
-        page.wait_for_selector(page_selectors.LOGIN_USERNAME, timeout=30000)
         page.fill(page_selectors.LOGIN_USERNAME, user)
         page.fill(page_selectors.LOGIN_PASSWORD, pwd)
-        page.fill(page_selectors.LOGIN_STORE_CODE, store)
         page.click(page_selectors.LOGIN_SUBMIT)
 
         # If OTP page appears, the site will prompt you.

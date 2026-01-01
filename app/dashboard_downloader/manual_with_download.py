@@ -103,10 +103,9 @@ STORES = ["A668", "A817", "A526"]
 # SELECTORS
 # -----------------------------------------------------------------------------
 
-LOGIN_USERNAME = "#txtUserId"
-LOGIN_PASSWORD = "#txtPassword"
-LOGIN_STORE_CODE = "#txtBranchPin"
-LOGIN_SUBMIT = "#btnLogin, button:has-text('Login')"
+LOGIN_USERNAME = "input[name='user_name']"
+LOGIN_PASSWORD = "input[name='password']"
+LOGIN_SUBMIT = "button[type='submit']"
 
 # Daily Ops Tracker card heading:
 # <h5 class="card-title">Daily Operations Tracker</h5>
@@ -220,10 +219,8 @@ async def main() -> None:
         await page.goto(TD_LOGIN_URL, wait_until="domcontentloaded")
 
         print("Filling login form...")
-        await page.wait_for_selector(LOGIN_USERNAME, timeout=30_000)
         await page.fill(LOGIN_USERNAME, TD_USERNAME)
         await page.fill(LOGIN_PASSWORD, TD_PASSWORD)
-        await page.fill(LOGIN_STORE_CODE, STORES[0])
         await page.click(LOGIN_SUBMIT)
 
         print("Waiting to land on home...")
