@@ -2069,6 +2069,11 @@ async def _collect_report_request_rows(
 
     for source in containers:
         candidates = [
+            source.locator(":scope > section > div.flex.items-start.justify-between"),
+            source.locator(":scope > section > div.border-b.border-gray-100"),
+            source.locator(":scope > section > div"),
+            source.locator(":scope > div.flex.items-start.justify-between"),
+            source.locator(":scope > div.border-b.border-gray-100"),
             source.get_by_role("row"),
             source.locator(":scope [role='row']"),
             source.locator(".ag-center-cols-container .ag-row"),
@@ -2146,7 +2151,20 @@ async def _wait_for_report_requests_container(
                     if text:
                         heading_texts.append(" ".join(text.split()))
             container_candidates = []
+            row_containers: list[Locator] = []
             if heading:
+                preferred_wrapper = heading.locator("xpath=ancestor::div[contains(@class,'py-10')][1]")
+                container_candidates.append(
+                    heading.locator("xpath=ancestor::div[contains(@class,'py-10')][1]/following-sibling::*[self::section or self::div or self::article][1]")
+                )
+                container_candidates.append(preferred_wrapper)
+                row_containers.extend(
+                    [
+                        preferred_wrapper.locator(":scope > section"),
+                        preferred_wrapper.locator(":scope > div"),
+                        preferred_wrapper.locator("xpath=following-sibling::*[self::section or self::div or self::article][1]"),
+                    ]
+                )
                 container_candidates.extend(
                     [
                         heading.locator(
@@ -2185,13 +2203,17 @@ async def _wait_for_report_requests_container(
             if container:
                 with contextlib.suppress(Exception):
                     await container.scroll_into_view_if_needed()
-                row_containers = [
-                    container.locator(
-                        "xpath=following-sibling::*[self::section or self::div or self::article or self::table or self::ul or self::ol][1]"
-                    ),
-                    container.locator("xpath=.//following::*[self::table or self::ul or self::ol][1]"),
-                    container.locator("xpath=.//*[self::table or self::ul or self::ol][1]"),
-                ]
+                row_containers.extend(
+                    [
+                        container.locator(
+                            "xpath=following-sibling::*[self::section or self::div or self::article or self::table or self::ul or self::ol][1]"
+                        ),
+                        container.locator(":scope > section"),
+                        container.locator(":scope > div"),
+                        container.locator("xpath=.//following::*[self::table or self::ul or self::ol][1]"),
+                        container.locator("xpath=.//*[self::table or self::ul or self::ol][1]"),
+                    ]
+                )
                 rows = await _collect_report_request_rows(
                     container,
                     max_rows=12,
@@ -2342,31 +2364,50 @@ async def _wait_for_report_request_download_link(
             visible_rows: list[str] = []
             matched_row: Locator | None = None
             matched_text: str | None = None
+            matched_row_full_text: str | None = None
             for row in rows:
-                displayed_text = None
-                try:
-                    displayed_text = await row.inner_text()
-                except Exception:
-                    displayed_text = None
-                if displayed_text:
-                    normalized_displayed = " ".join(displayed_text.split()).lower()
-                    visible_rows.append(displayed_text)
-                    matches_expected = normalized_displayed in normalized_expected or any(
-                        pattern.search(displayed_text) for pattern in range_patterns
+                date_range_text_raw = None
+                date_range_text = None
+                row_full_text_raw = None
+                row_full_text = None
+                with contextlib.suppress(Exception):
+                    date_range_text_raw = await row.locator("div.w-1\\/5.text-sm.italic").first.inner_text()
+                if date_range_text_raw:
+                    date_range_text = " ".join(date_range_text_raw.split())
+                with contextlib.suppress(Exception):
+                    row_full_text_raw = await row.inner_text()
+                if row_full_text_raw:
+                    row_full_text = " ".join(row_full_text_raw.split())
+                candidate_texts = [text for text in (date_range_text, row_full_text) if text]
+                if date_range_text:
+                    visible_rows.append(date_range_text)
+                elif row_full_text:
+                    visible_rows.append(row_full_text)
+                for candidate_text in candidate_texts:
+                    normalized_candidate = candidate_text.lower()
+                    matches_expected = normalized_candidate in normalized_expected or any(
+                        pattern.search(candidate_text) for pattern in range_patterns
                     )
                     if matches_expected:
                         matched_row = row
-                        matched_text = " ".join(displayed_text.split())
+                        matched_text = date_range_text or candidate_text
+                        matched_row_full_text = row_full_text or matched_text
                         try:
                             last_row_html = _truncate_html(await _capture_outer_html(row))
                         except Exception:
                             last_row_html = last_row_html
                         break
+                if matched_row:
+                    break
             if matched_row and matched_text:
                 matched_row_seen = True
                 last_seen_texts = visible_rows or [matched_text]
+                download_href = None
+                with contextlib.suppress(Exception):
+                    download_href = await matched_row.locator("a.text-sm.underline").first.get_attribute("href")
                 download_locator = await _first_visible_locator(
                     [
+                        matched_row.locator("a.text-sm.underline"),
                         matched_row.get_by_role("link", name=re.compile("download", re.I)),
                         matched_row.get_by_role("button", name=re.compile("download", re.I)),
                         matched_row.locator("text=Download"),
@@ -2390,6 +2431,8 @@ async def _wait_for_report_request_download_link(
                         expected_range_texts=list(expected_range_texts),
                         all_row_texts=visible_rows or [matched_text],
                         download_control_visible=True,
+                        matched_row_text_full=matched_row_full_text or matched_text,
+                        matched_row_download_href=download_href,
                         row_html_snippet=last_row_html,
                     )
                     return download_locator, matched_text, status_text or last_status
@@ -2408,6 +2451,8 @@ async def _wait_for_report_request_download_link(
                         backoff_seconds=backoff,
                         timeout_ms=extended_timeout_ms,
                         download_control_visible=False,
+                        matched_row_text_full=matched_row_full_text or matched_text,
+                        matched_row_download_href=download_href,
                         row_html_snippet=last_row_html,
                     )
                 refresh_locator = await _first_visible_locator(
@@ -2470,6 +2515,8 @@ async def _wait_for_report_request_download_link(
                         last_seen_rows=last_seen_texts or [matched_text],
                         all_row_texts=visible_rows or [matched_text],
                         download_control_visible=False,
+                        matched_row_text_full=matched_row_full_text or matched_text,
+                        matched_row_download_href=download_href,
                         row_html_snippet=last_row_html,
                     )
                     last_logged_at = now
@@ -2536,6 +2583,8 @@ async def _wait_for_report_request_download_link(
                 timeout_ms=extended_timeout_ms,
                 row_html_snippet=last_row_html,
                 all_row_texts=last_seen_texts,
+                matched_row_download_href=download_href if matched_row and matched_text else None,
+                matched_row_text_full=matched_row_full_text if matched_row and matched_text else None,
             )
             last_logged_at = now
 
