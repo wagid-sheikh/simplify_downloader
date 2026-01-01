@@ -1996,8 +1996,12 @@ async def _collect_report_request_rows(container: Locator, *, max_rows: int = 20
         container.locator("xpath=.//tbody/tr"),
         container.locator(":scope > div"),
         container.locator(":scope > section"),
+        container.locator(":scope > article"),
+        container.locator(":scope > ul > li"),
+        container.locator(":scope > div[class*='row'], :scope > div[class*='list'], :scope > div[class*='item']"),
+        container.locator(":scope > li"),
         container.locator("xpath=.//*[self::div or self::section or self::article][@role='row']"),
-        container.locator("xpath=.//*[self::div or self::section or self::article][contains(@class,'row')]"),
+        container.locator("xpath=.//*[self::div or self::section or self::article][contains(@class,'row') or contains(@class,'list-item') or contains(@class,'ag-row')]"),
     ]
 
     for candidate in candidates:
