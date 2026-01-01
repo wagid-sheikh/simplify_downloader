@@ -1927,6 +1927,34 @@ async def _capture_outer_html(locator: Locator) -> str | None:
         return None
 
 
+async def _capture_body_inner_html(frame: FrameLocator) -> str | None:
+    try:
+        return await frame.locator("body").first.evaluate("(el) => el.innerHTML")
+    except Exception:
+        return None
+
+
+async def _log_iframe_body_dom(
+    frame: FrameLocator,
+    *,
+    logger: JsonLogger,
+    store: TdStore,
+    label: str = "iframe_body_after_modal",
+) -> str | None:
+    html = await _capture_body_inner_html(frame)
+    snippet = _truncate_html(html)
+    log_event(
+        logger=logger,
+        phase="iframe",
+        message="Captured iframe body HTML",
+        store_code=store.store_code,
+        label=label,
+        body_html_snippet=snippet,
+        body_html_length=len(html) if html else None,
+    )
+    return snippet
+
+
 async def _wait_for_modal_close(
     frame: FrameLocator,
     *,
@@ -2062,6 +2090,22 @@ async def _wait_for_report_requests_container(
             if heading:
                 container_candidates.extend(
                     [
+                        heading.locator(
+                            "xpath=following-sibling::*[self::section or self::div or self::article or self::table][1]"
+                        ),
+                        heading.locator(
+                            "xpath=ancestor::*[self::section or self::div or self::article][1]/following-sibling::*[self::section or self::div or self::article or self::table][1]"
+                        ),
+                        heading.locator(
+                            "xpath=parent::*[self::div or self::section or self::article]/following-sibling::*[self::div or self::section or self::article or self::table][1]"
+                        ),
+                        heading.locator(
+                            "xpath=ancestor::*[self::section or self::div or self::article][1]//*[self::table or self::ul or self::ol][1]"
+                        ),
+                    ]
+                )
+                container_candidates.extend(
+                    [
                         heading.locator("xpath=ancestor::*[self::section or self::div or self::article or self::main][1]"),
                         heading.locator("xpath=ancestor::section[1]"),
                         heading.locator("xpath=ancestor::div[1]"),
@@ -2084,13 +2128,20 @@ async def _wait_for_report_requests_container(
                     await container.scroll_into_view_if_needed()
                 rows = await _collect_report_request_rows(container, max_rows=10)
                 sample: list[str] = []
-                for row in rows[:3]:
+                for row in rows:
                     with contextlib.suppress(Exception):
                         sample_text = await row.inner_text()
                         if sample_text:
                             sample.append(" ".join(sample_text.split()))
                 if sample:
-                    last_seen = sample
+                    last_seen = sample[:10]
+                    log_event(
+                        logger=logger,
+                        phase="iframe",
+                        message="Observed Report Requests rows",
+                        store_code=store.store_code,
+                        rows=last_seen,
+                    )
                 diagnostics = {"header_seen": header_seen, "heading_texts": heading_texts or None, "last_seen_rows": last_seen or None}
                 return container, diagnostics
         except Exception:
@@ -2483,6 +2534,13 @@ async def _run_orders_iframe_flow(
     )
 
     await _wait_for_modal_close(frame, logger=logger, store=store, timeout_ms=nav_timeout_ms)
+    with contextlib.suppress(Exception):
+        await _log_iframe_body_dom(
+            frame,
+            logger=logger,
+            store=store,
+            label="iframe_body_after_modal_close",
+        )
     container_locator, container_diagnostics = await _wait_for_report_requests_container(
         frame, logger=logger, store=store, timeout_ms=nav_timeout_ms
     )
