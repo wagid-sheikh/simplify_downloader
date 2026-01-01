@@ -26,8 +26,8 @@ DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS = 90_000
 LOADING_LOCATOR_SELECTORS = ("text=/loading/i", ".k-loading-mask")
 OTP_VERIFICATION_DWELL_SECONDS = 600
 TEMP_ENABLED_STORES = {"A668", "A817"}
-REPORT_REQUEST_POLL_EXTENSION_MS = 120_000
-REPORT_REQUEST_MAX_TIMEOUT_MS = 90_000
+REPORT_REQUEST_POLL_EXTENSION_MS = 30_000
+REPORT_REQUEST_MAX_TIMEOUT_MS = 60_000
 REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS = 20.0
 
 
@@ -1927,6 +1927,34 @@ async def _capture_outer_html(locator: Locator) -> str | None:
         return None
 
 
+async def _capture_body_inner_html(frame: FrameLocator) -> str | None:
+    try:
+        return await frame.locator("body").first.evaluate("(el) => el.innerHTML")
+    except Exception:
+        return None
+
+
+async def _log_iframe_body_dom(
+    frame: FrameLocator,
+    *,
+    logger: JsonLogger,
+    store: TdStore,
+    label: str = "iframe_body_after_modal",
+) -> str | None:
+    html = await _capture_body_inner_html(frame)
+    snippet = _truncate_html(html)
+    log_event(
+        logger=logger,
+        phase="iframe",
+        message="Captured iframe body HTML",
+        store_code=store.store_code,
+        label=label,
+        body_html_snippet=snippet,
+        body_html_length=len(html) if html else None,
+    )
+    return snippet
+
+
 async def _wait_for_modal_close(
     frame: FrameLocator,
     *,
@@ -2062,6 +2090,22 @@ async def _wait_for_report_requests_container(
             if heading:
                 container_candidates.extend(
                     [
+                        heading.locator(
+                            "xpath=following-sibling::*[self::section or self::div or self::article or self::table][1]"
+                        ),
+                        heading.locator(
+                            "xpath=ancestor::*[self::section or self::div or self::article][1]/following-sibling::*[self::section or self::div or self::article or self::table][1]"
+                        ),
+                        heading.locator(
+                            "xpath=parent::*[self::div or self::section or self::article]/following-sibling::*[self::div or self::section or self::article or self::table][1]"
+                        ),
+                        heading.locator(
+                            "xpath=ancestor::*[self::section or self::div or self::article][1]//*[self::table or self::ul or self::ol][1]"
+                        ),
+                    ]
+                )
+                container_candidates.extend(
+                    [
                         heading.locator("xpath=ancestor::*[self::section or self::div or self::article or self::main][1]"),
                         heading.locator("xpath=ancestor::section[1]"),
                         heading.locator("xpath=ancestor::div[1]"),
@@ -2084,13 +2128,20 @@ async def _wait_for_report_requests_container(
                     await container.scroll_into_view_if_needed()
                 rows = await _collect_report_request_rows(container, max_rows=10)
                 sample: list[str] = []
-                for row in rows[:3]:
+                for row in rows:
                     with contextlib.suppress(Exception):
                         sample_text = await row.inner_text()
                         if sample_text:
                             sample.append(" ".join(sample_text.split()))
                 if sample:
-                    last_seen = sample
+                    last_seen = sample[:10]
+                    log_event(
+                        logger=logger,
+                        phase="iframe",
+                        message="Observed Report Requests rows",
+                        store_code=store.store_code,
+                        rows=last_seen,
+                    )
                 diagnostics = {"header_seen": header_seen, "heading_texts": heading_texts or None, "last_seen_rows": last_seen or None}
                 return container, diagnostics
         except Exception:
@@ -2483,6 +2534,13 @@ async def _run_orders_iframe_flow(
     )
 
     await _wait_for_modal_close(frame, logger=logger, store=store, timeout_ms=nav_timeout_ms)
+    with contextlib.suppress(Exception):
+        await _log_iframe_body_dom(
+            frame,
+            logger=logger,
+            store=store,
+            label="iframe_body_after_modal_close",
+        )
     container_locator, container_diagnostics = await _wait_for_report_requests_container(
         frame, logger=logger, store=store, timeout_ms=nav_timeout_ms
     )
@@ -2682,38 +2740,36 @@ async def _run_store_discovery(
     outcome = StoreOutcome(status="error", message="Store run did not complete")
     stored_state_path: str | None = None
     probe_reason: str | None = None
-    probe_requires_login = False
     try:
-        session_reused = False
-        probe_result: SessionProbeResult | None = None
+        session_reused = storage_state_exists
         login_performed = False
         verification_seen = False
         verification_ok = True
         if storage_state_exists:
-            probe_result = await _probe_session(
-                page, store=store, logger=store_logger, timeout_ms=nav_timeout_ms
-            )
-            session_reused = probe_result.valid
-            probe_reason = probe_result.reason
-            probe_requires_login = bool(probe_result.login_detected or probe_result.verification_seen)
+            probe_reason = "probe_skipped"
             log_event(
                 logger=store_logger,
                 phase="session",
-                message="Existing storage state probe completed",
+                message="Skipping session probe; using stored storage state",
                 store_code=store.store_code,
                 session_reused=session_reused,
                 storage_state=str(store.storage_state_path),
-                probe_reason=probe_result.reason,
-                final_url=probe_result.final_url,
-                nav_visible=probe_result.nav_visible,
-                home_card_visible=probe_result.home_card_visible,
-                contains_store_path=probe_result.contains_store_path,
+                probe_reason=probe_reason,
             )
-        else:
+        else:  # no storage state → must login
             probe_reason = "no_storage_state"
-            probe_requires_login = True
-        verification_seen = bool(probe_result.verification_seen) if probe_result else False
-        if session_reused:
+            log_event(
+                logger=store_logger,
+                phase="session",
+                message="No storage state found; performing login",
+                store_code=store.store_code,
+            )
+            session_reused = await _perform_login(
+                page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms
+            )
+            login_performed = True
+
+        if session_reused and not login_performed:
             log_event(
                 logger=store_logger,
                 phase="session",
@@ -2733,45 +2789,35 @@ async def _run_store_discovery(
                 )
             verification_ok = True
             verification_seen = False
+        elif session_reused and login_performed:
+            log_event(
+                logger=store_logger,
+                phase="session",
+                message="Login completed; session ready",
+                store_code=store.store_code,
+                final_url=page.url,
+                storage_state=str(store.storage_state_path),
+                probe_reason=probe_reason,
+                login_performed=login_performed,
+            )
+            verification_ok = True
+            verification_seen = False
         else:
-            should_login = (not storage_state_exists) or probe_requires_login
-            if should_login:
-                log_event(
-                    logger=store_logger,
-                    phase="session",
-                    message="state invalid → relogin+OTP",
-                    store_code=store.store_code,
-                    storage_state=str(store.storage_state_path),
-                    probe_reason=probe_reason,
-                    login_prompt_seen=bool(probe_result and probe_result.login_detected),
-                    verification_seen=verification_seen,
-                )
+            log_event(
+                logger=store_logger,
+                phase="session",
+                message="state invalid → relogin+OTP",
+                store_code=store.store_code,
+                storage_state=str(store.storage_state_path),
+                probe_reason=probe_reason,
+                login_prompt_seen=False,
+                verification_seen=verification_seen,
+            )
+            if not login_performed:
                 session_reused = await _perform_login(
                     page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms
                 )
                 login_performed = True
-            else:
-                log_event(
-                    logger=store_logger,
-                    phase="session",
-                    message="state invalid but reusing probed session without relogin",
-                    store_code=store.store_code,
-                    storage_state=str(store.storage_state_path),
-                    probe_reason=probe_reason,
-                )
-                if store.session_probe_url:
-                    with contextlib.suppress(Exception):
-                        await page.goto(store.session_probe_url, wait_until="domcontentloaded", timeout=nav_timeout_ms)
-                session_reused = True
-                log_event(
-                    logger=store_logger,
-                    phase="session",
-                    message="Probed session reused without relogin",
-                    store_code=store.store_code,
-                    final_url=page.url,
-                    storage_state=str(store.storage_state_path),
-                    probe_reason=probe_reason,
-                )
 
         if not session_reused:
             outcome = StoreOutcome(
