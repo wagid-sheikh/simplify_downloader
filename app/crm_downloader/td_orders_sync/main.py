@@ -2007,52 +2007,67 @@ async def _wait_for_modal_close(
         )
 
 
-async def _collect_report_request_rows(container: Locator, *, max_rows: int = 20) -> list[Locator]:
+async def _collect_report_request_rows(
+    container: Locator,
+    *,
+    max_rows: int = 20,
+    extra_containers: Sequence[Locator] | None = None,
+) -> list[Locator]:
     rows: list[Locator] = []
     seen_handles: set[int] = set()
-    candidates = [
-        container.get_by_role("row"),
-        container.locator(":scope [role='row']"),
-        container.locator(".ag-center-cols-container .ag-row"),
-        container.locator(".ag-row"),
-        container.locator("[role='row']"),
-        container.locator("[role='listitem']"),
-        container.locator(":scope li"),
-        container.locator("li"),
-        container.locator(":scope tr"),
-        container.locator("xpath=.//tr"),
-        container.locator("xpath=.//tbody/tr"),
-        container.locator(":scope > div"),
-        container.locator(":scope > section"),
-        container.locator(":scope > article"),
-        container.locator(":scope > ul > li"),
-        container.locator(":scope > div[class*='row'], :scope > div[class*='list'], :scope > div[class*='item']"),
-        container.locator(":scope > li"),
-        container.locator("xpath=.//*[self::div or self::section or self::article][@role='row']"),
-        container.locator("xpath=.//*[self::div or self::section or self::article][contains(@class,'row') or contains(@class,'list-item') or contains(@class,'ag-row')]"),
-    ]
+    containers = [container]
+    if extra_containers:
+        containers.extend(extra_containers)
 
-    for candidate in candidates:
-        try:
-            count = await candidate.count()
-        except Exception:
-            continue
-        for idx in range(min(count, max_rows)):
-            row_locator = candidate.nth(idx)
+    for source in containers:
+        candidates = [
+            source.locator(":scope > section > div.flex.items-start.justify-between"),
+            source.locator(":scope > section > div.border-b.border-gray-100"),
+            source.locator(":scope > section > div"),
+            source.locator(":scope > div.flex.items-start.justify-between"),
+            source.locator(":scope > div.border-b.border-gray-100"),
+            source.get_by_role("row"),
+            source.locator(":scope [role='row']"),
+            source.locator(".ag-center-cols-container .ag-row"),
+            source.locator(".ag-row"),
+            source.locator("[role='row']"),
+            source.locator("[role='listitem']"),
+            source.locator(":scope li"),
+            source.locator("li"),
+            source.locator(":scope tr"),
+            source.locator("xpath=.//tr"),
+            source.locator("xpath=.//tbody/tr"),
+            source.locator(":scope > div"),
+            source.locator(":scope > section"),
+            source.locator(":scope > article"),
+            source.locator(":scope > ul > li"),
+            source.locator(":scope > div[class*='row'], :scope > div[class*='list'], :scope > div[class*='item']"),
+            source.locator(":scope > li"),
+            source.locator("xpath=.//*[self::div or self::section or self::article][@role='row']"),
+            source.locator("xpath=.//*[self::div or self::section or self::article][contains(@class,'row') or contains(@class,'list-item') or contains(@class,'ag-row')]"),
+        ]
+
+        for candidate in candidates:
             try:
-                handle = await row_locator.element_handle()
+                count = await candidate.count()
             except Exception:
-                handle = None
-            if handle is None:
                 continue
-            key = id(handle)
-            if key in seen_handles:
-                continue
-            seen_handles.add(key)
-            with contextlib.suppress(Exception):
-                if not await row_locator.is_visible():
+            for idx in range(min(count, max_rows)):
+                row_locator = candidate.nth(idx)
+                try:
+                    handle = await row_locator.element_handle()
+                except Exception:
+                    handle = None
+                if handle is None:
                     continue
-            rows.append(row_locator)
+                key = id(handle)
+                if key in seen_handles:
+                    continue
+                seen_handles.add(key)
+                with contextlib.suppress(Exception):
+                    if not await row_locator.is_visible():
+                        continue
+                rows.append(row_locator)
     return rows
 
 
@@ -2068,6 +2083,7 @@ async def _wait_for_report_requests_container(
     header_seen = False
     heading_texts: list[str] = []
     diagnostics: dict[str, Any] = {}
+    empty_dom_logged = False
 
     while asyncio.get_event_loop().time() < deadline:
         try:
@@ -2087,7 +2103,36 @@ async def _wait_for_report_requests_container(
                     if text:
                         heading_texts.append(" ".join(text.split()))
             container_candidates = []
+            row_containers: list[Locator] = []
             if heading:
+                preferred_wrapper = heading.locator("xpath=ancestor::div[contains(@class,'py-10')][1]")
+                container_candidates.append(
+                    heading.locator("xpath=ancestor::div[contains(@class,'py-10')][1]/following-sibling::*[self::section or self::div or self::article][1]")
+                )
+                container_candidates.append(preferred_wrapper)
+                row_containers.extend(
+                    [
+                        preferred_wrapper.locator(":scope > section"),
+                        preferred_wrapper.locator(":scope > div"),
+                        preferred_wrapper.locator("xpath=following-sibling::*[self::section or self::div or self::article][1]"),
+                    ]
+                )
+                container_candidates.extend(
+                    [
+                        heading.locator(
+                            "xpath=following-sibling::*[self::section or self::div or self::article or self::table][1]"
+                        ),
+                        heading.locator(
+                            "xpath=ancestor::*[self::section or self::div or self::article][1]/following-sibling::*[self::section or self::div or self::article or self::table][1]"
+                        ),
+                        heading.locator(
+                            "xpath=parent::*[self::div or self::section or self::article]/following-sibling::*[self::div or self::section or self::article or self::table][1]"
+                        ),
+                        heading.locator(
+                            "xpath=ancestor::*[self::section or self::div or self::article][1]//*[self::table or self::ul or self::ol][1]"
+                        ),
+                    ]
+                )
                 container_candidates.extend(
                     [
                         heading.locator(
@@ -2126,13 +2171,71 @@ async def _wait_for_report_requests_container(
             if container:
                 with contextlib.suppress(Exception):
                     await container.scroll_into_view_if_needed()
-                rows = await _collect_report_request_rows(container, max_rows=10)
+                row_containers.extend(
+                    [
+                        container.locator(
+                            "xpath=following-sibling::*[self::section or self::div or self::article or self::table or self::ul or self::ol][1]"
+                        ),
+                        container.locator(":scope > section"),
+                        container.locator(":scope > div"),
+                        container.locator("xpath=.//following::*[self::table or self::ul or self::ol][1]"),
+                        container.locator("xpath=.//*[self::table or self::ul or self::ol][1]"),
+                    ]
+                )
+                rows = await _collect_report_request_rows(
+                    container,
+                    max_rows=12,
+                    extra_containers=row_containers,
+                )
                 sample: list[str] = []
                 for row in rows:
                     with contextlib.suppress(Exception):
                         sample_text = await row.inner_text()
                         if sample_text:
                             sample.append(" ".join(sample_text.split()))
+                if not sample:
+                    refresh_locator = await _first_visible_locator(
+                        [
+                            frame.get_by_role("button", name=re.compile("refresh", re.I)),
+                            frame.locator("button:has-text(\"Refresh\"), [role='button']:has-text(\"Refresh\")"),
+                        ],
+                        timeout_ms=1_500,
+                    )
+                    if refresh_locator:
+                        try:
+                            await refresh_locator.click()
+                            await _wait_for_loading_indicators(
+                                frame,
+                                store=store,
+                                logger=logger,
+                                timeout_ms=timeout_ms,
+                                phase="iframe_report_requests_refresh_initial",
+                            )
+                            rows = await _collect_report_request_rows(
+                                container,
+                                max_rows=14,
+                                extra_containers=row_containers,
+                            )
+                            for row in rows:
+                                with contextlib.suppress(Exception):
+                                    sample_text = await row.inner_text()
+                                    if sample_text:
+                                        sample.append(" ".join(sample_text.split()))
+                            log_event(
+                                logger=logger,
+                                phase="iframe",
+                                message="Triggered Report Requests refresh due to empty rows",
+                                store_code=store.store_code,
+                            )
+                        except Exception as exc:
+                            log_event(
+                                logger=logger,
+                                phase="iframe",
+                                status="warn",
+                                message="Failed to refresh Report Requests after empty state",
+                                store_code=store.store_code,
+                                error=str(exc),
+                            )
                 if sample:
                     last_seen = sample[:10]
                     log_event(
@@ -2217,31 +2320,50 @@ async def _wait_for_report_request_download_link(
             visible_rows: list[str] = []
             matched_row: Locator | None = None
             matched_text: str | None = None
+            matched_row_full_text: str | None = None
             for row in rows:
-                displayed_text = None
-                try:
-                    displayed_text = await row.inner_text()
-                except Exception:
-                    displayed_text = None
-                if displayed_text:
-                    normalized_displayed = " ".join(displayed_text.split()).lower()
-                    visible_rows.append(displayed_text)
-                    matches_expected = normalized_displayed in normalized_expected or any(
-                        pattern.search(displayed_text) for pattern in range_patterns
+                date_range_text_raw = None
+                date_range_text = None
+                row_full_text_raw = None
+                row_full_text = None
+                with contextlib.suppress(Exception):
+                    date_range_text_raw = await row.locator("div.w-1\\/5.text-sm.italic").first.inner_text()
+                if date_range_text_raw:
+                    date_range_text = " ".join(date_range_text_raw.split())
+                with contextlib.suppress(Exception):
+                    row_full_text_raw = await row.inner_text()
+                if row_full_text_raw:
+                    row_full_text = " ".join(row_full_text_raw.split())
+                candidate_texts = [text for text in (date_range_text, row_full_text) if text]
+                if date_range_text:
+                    visible_rows.append(date_range_text)
+                elif row_full_text:
+                    visible_rows.append(row_full_text)
+                for candidate_text in candidate_texts:
+                    normalized_candidate = candidate_text.lower()
+                    matches_expected = normalized_candidate in normalized_expected or any(
+                        pattern.search(candidate_text) for pattern in range_patterns
                     )
                     if matches_expected:
                         matched_row = row
-                        matched_text = " ".join(displayed_text.split())
+                        matched_text = date_range_text or candidate_text
+                        matched_row_full_text = row_full_text or matched_text
                         try:
                             last_row_html = _truncate_html(await _capture_outer_html(row))
                         except Exception:
                             last_row_html = last_row_html
                         break
+                if matched_row:
+                    break
             if matched_row and matched_text:
                 matched_row_seen = True
                 last_seen_texts = visible_rows or [matched_text]
+                download_href = None
+                with contextlib.suppress(Exception):
+                    download_href = await matched_row.locator("a.text-sm.underline").first.get_attribute("href")
                 download_locator = await _first_visible_locator(
                     [
+                        matched_row.locator("a.text-sm.underline"),
                         matched_row.get_by_role("link", name=re.compile("download", re.I)),
                         matched_row.get_by_role("button", name=re.compile("download", re.I)),
                         matched_row.locator("text=Download"),
@@ -2249,6 +2371,9 @@ async def _wait_for_report_request_download_link(
                     timeout_ms=1_000,
                 )
                 if download_locator:
+                    if last_row_html is None:
+                        with contextlib.suppress(Exception):
+                            last_row_html = _truncate_html(await _capture_outer_html(matched_row))
                     status_text = await _extract_row_status_text(matched_row)
                     if status_text:
                         last_status = status_text
@@ -2261,6 +2386,10 @@ async def _wait_for_report_request_download_link(
                         status_text=status_text,
                         expected_range_texts=list(expected_range_texts),
                         all_row_texts=visible_rows or [matched_text],
+                        download_control_visible=True,
+                        matched_row_text_full=matched_row_full_text or matched_text,
+                        matched_row_download_href=download_href,
+                        row_html_snippet=last_row_html,
                     )
                     return download_locator, matched_text, status_text or last_status
 
@@ -2277,6 +2406,10 @@ async def _wait_for_report_request_download_link(
                         expected_range_texts=list(expected_range_texts),
                         backoff_seconds=backoff,
                         timeout_ms=extended_timeout_ms,
+                        download_control_visible=False,
+                        matched_row_text_full=matched_row_full_text or matched_text,
+                        matched_row_download_href=download_href,
+                        row_html_snippet=last_row_html,
                     )
                 refresh_locator = await _first_visible_locator(
                     [
@@ -2337,6 +2470,9 @@ async def _wait_for_report_request_download_link(
                         timeout_ms=extended_timeout_ms,
                         last_seen_rows=last_seen_texts or [matched_text],
                         all_row_texts=visible_rows or [matched_text],
+                        download_control_visible=False,
+                        matched_row_text_full=matched_row_full_text or matched_text,
+                        matched_row_download_href=download_href,
                         row_html_snippet=last_row_html,
                     )
                     last_logged_at = now
@@ -2403,6 +2539,8 @@ async def _wait_for_report_request_download_link(
                 timeout_ms=extended_timeout_ms,
                 row_html_snippet=last_row_html,
                 all_row_texts=last_seen_texts,
+                matched_row_download_href=download_href if matched_row and matched_text else None,
+                matched_row_text_full=matched_row_full_text if matched_row and matched_text else None,
             )
             last_logged_at = now
 
