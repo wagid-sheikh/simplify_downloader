@@ -1,0 +1,389 @@
+Design Sequence,Sequence,Link Name,URL,Group,Subgroup
+1,18,ARIS - Practitioner Access - Logging In,https://charmswiki.com/wiki/199/aris-practitioner-access-logging-in,Platform & Access,Authentication & Access
+2,21,Carer Login - 2 Factor Authentication,https://charmswiki.com/wiki/400/carer-login-2-factor-authentication,Platform & Access,Authentication & Access
+3,22,Carer Login - Carer Logs,https://charmswiki.com/wiki/171/carer-login-carer-logs,Platform & Access,Authentication & Access
+4,23,Carer Login - Carer Record,https://charmswiki.com/wiki/249/carer-login-carer-record,Platform & Access,Authentication & Access
+5,24,Carer Login - Chat Facility,https://charmswiki.com/wiki/343/carer-login-chat-facility,Platform & Access,Authentication & Access
+6,25,Carer Login - Child Record,https://charmswiki.com/wiki/4/carer-login-child-record,Platform & Access,Authentication & Access
+7,26,Carer Login - Downloads,https://charmswiki.com/wiki/5/carer-login-downloads,Platform & Access,Authentication & Access
+8,27,Carer Login - Form F,https://charmswiki.com/wiki/6/carer-login-form-f,Platform & Access,Authentication & Access
+9,28,Carer Login - Main Menu,https://charmswiki.com/wiki/3/carer-login-main-menu,Platform & Access,Authentication & Access
+10,29,Carer Login - PAR,https://charmswiki.com/wiki/7/carer-login-par,Platform & Access,Authentication & Access
+11,30,Carer Login - Remittances,https://charmswiki.com/wiki/250/carer-login-remittances,Platform & Access,Authentication & Access
+12,31,Carer Login - Setup,https://charmswiki.com/wiki/1/carer-login-setup,Platform & Access,Authentication & Access
+13,57,Charms-Pay - Logging In,https://charmswiki.com/wiki/264/charms-pay-logging-in,Platform & Access,Authentication & Access
+14,74,Charms-Portal - Logging In,https://charmswiki.com/wiki/126/charms-portal-logging-in,Platform & Access,Authentication & Access
+15,153,Logging In,https://charmswiki.com/wiki/51/logging-in,Platform & Access,Authentication & Access
+16,154,Logging in - Resetting Passwords,https://charmswiki.com/wiki/147/logging-in-resetting-passwords,Platform & Access,Authentication & Access
+17,1,Login,https://charmswiki.com/user/login?returnurl=%2fpages%2fallpages,Platform & Access,Authentication & Access
+18,312,Other Options - Training - Self Enrolment for Staff and Carer Login,https://charmswiki.com/wiki/221/other-options-training-self-enrolment-for-staff-and-carer-login,Platform & Access,Authentication & Access
+19,316,Panel Member Login,https://charmswiki.com/wiki/49/panel-member-login,Platform & Access,Authentication & Access
+20,351,Settings - Administer All Accounts - Resetting a user’s password or passphrase,https://charmswiki.com/wiki/108/settings-administer-all-accounts-resetting-a-users-password-or-passphrase,Platform & Access,Authentication & Access
+21,379,Staff Hub - Registration and Logging in,https://charmswiki.com/wiki/251/staff-hub-registration-and-logging-in,Platform & Access,Authentication & Access
+22,19,ARIS - Practitioner Access - Main Menu,https://charmswiki.com/wiki/196/aris-practitioner-access-main-menu,Platform & Access,Navigation & UI
+23,3,Categories,https://charmswiki.com/pages/alltags,Platform & Access,Navigation & UI
+24,48,Charms-Pay - Child Search,https://charmswiki.com/wiki/266/charms-pay-child-search,Platform & Access,Navigation & UI
+25,59,Charms-Pay - Main Menu,https://charmswiki.com/wiki/167/charms-pay-main-menu,Platform & Access,Navigation & UI
+26,70,Charms-Portal - Charms Live Search,https://charmswiki.com/wiki/127/charms-portal-charms-live-search,Platform & Access,Navigation & UI
+27,77,Charms-Portal - Record Card,https://charmswiki.com/wiki/260/charms-portal-record-card,Platform & Access,Navigation & UI
+28,156,Main Menu - My Account,https://charmswiki.com/wiki/223/main-menu-my-account,Platform & Access,Navigation & UI
+29,157,Main Menu - Notice Board,https://charmswiki.com/wiki/406/main-menu-notice-board,Platform & Access,Navigation & UI
+30,158,Main Menu - Overview,https://charmswiki.com/wiki/362/main-menu-overview,Platform & Access,Navigation & UI
+31,159,Main Menu - Reports - Vacancy List,https://charmswiki.com/wiki/369/main-menu-reports-vacancy-list,Platform & Access,Navigation & UI
+32,2,Main Page,https://charmswiki.com/,Platform & Access,Navigation & UI
+33,160,Mini Record Card,https://charmswiki.com/wiki/297/mini-record-card,Platform & Access,Navigation & UI
+34,187,Modify Child - Record Card,https://charmswiki.com/wiki/62/modify-child-record-card,Platform & Access,Navigation & UI
+35,201,Modify Establishment - Record Card,https://charmswiki.com/wiki/178/modify-establishment-record-card,Platform & Access,Navigation & UI
+36,229,Modify Family - Record Card,https://charmswiki.com/wiki/91/modify-family-record-card,Platform & Access,Navigation & UI
+37,281,Options - Outcomes Tracker - Home,https://charmswiki.com/wiki/376/options-outcomes-tracker-home,Platform & Access,Navigation & UI
+38,288,Options - Training - Course Search and Settings,https://charmswiki.com/wiki/45/options-training-course-search-and-settings,Platform & Access,Navigation & UI
+39,302,Other Options - Enquiries - Record Card,https://charmswiki.com/wiki/13/other-options-enquiries-record-card,Platform & Access,Navigation & UI
+40,310,Other Options - Postcode Search,https://charmswiki.com/wiki/111/other-options-postcode-search,Platform & Access,Navigation & UI
+41,335,Progress Tags,https://charmswiki.com/wiki/415/progress-tags,Platform & Access,Navigation & UI
+42,340,Reports - My Reports - Search Reports,https://charmswiki.com/wiki/201/reports-my-reports-search-reports,Platform & Access,Navigation & UI
+43,362,Settings - Record Card Settings,https://charmswiki.com/wiki/184/settings-record-card-settings,Platform & Access,Navigation & UI
+44,375,Staff / Others - Record Card,https://charmswiki.com/wiki/262/staff-others-record-card,Platform & Access,Navigation & UI
+45,376,Staff / Others - Search and Setup,https://charmswiki.com/wiki/42/staff-others-search-and-setup,Platform & Access,Navigation & UI
+46,20,ARIS - Practitioner Access - Setup,https://charmswiki.com/wiki/200/aris-practitioner-access-setup,Tenant & System Administration,"Users, Roles & Configuration"
+47,50,Charms-Pay - How to Disable a User Account,https://charmswiki.com/wiki/328/charms-pay-how-to-disable-a-user-account,Tenant & System Administration,"Users, Roles & Configuration"
+48,61,Charms-Pay - System Settings,https://charmswiki.com/wiki/286/charms-pay-system-settings,Tenant & System Administration,"Users, Roles & Configuration"
+49,81,Charms-Portal - User Account Details,https://charmswiki.com/wiki/130/charms-portal-user-account-details,Tenant & System Administration,"Users, Roles & Configuration"
+50,190,Modify Child - Social Worker,https://charmswiki.com/wiki/58/modify-child-social-worker,Tenant & System Administration,"Users, Roles & Configuration"
+51,217,Modify Family - Main Details - User Registration,https://charmswiki.com/wiki/382/modify-family-main-details-user-registration,Tenant & System Administration,"Users, Roles & Configuration"
+52,232,Modify Family - Social Worker,https://charmswiki.com/wiki/92/modify-family-social-worker,Tenant & System Administration,"Users, Roles & Configuration"
+53,235,Modify Records - Manage User Access,https://charmswiki.com/wiki/305/modify-records-manage-user-access,Tenant & System Administration,"Users, Roles & Configuration"
+54,283,Options - Outcomes Tracker - Settings,https://charmswiki.com/wiki/379/options-outcomes-tracker-settings,Tenant & System Administration,"Users, Roles & Configuration"
+55,338,Reports - Admin Reports,https://charmswiki.com/wiki/325/reports-admin-reports,Tenant & System Administration,"Users, Roles & Configuration"
+56,347,Settings - Administer All Accounts - Account Details,https://charmswiki.com/wiki/311/settings-administer-all-accounts-account-details,Tenant & System Administration,"Users, Roles & Configuration"
+57,348,Settings - Administer All Accounts - Account Details - Permissions/Groups,https://charmswiki.com/wiki/104/settings-administer-all-accounts-account-details-permissionsgroups,Tenant & System Administration,"Users, Roles & Configuration"
+58,349,Settings - Administer All Accounts - Add User (Account Set Up),https://charmswiki.com/wiki/103/settings-administer-all-accounts-add-user-account-set-up,Tenant & System Administration,"Users, Roles & Configuration"
+59,350,Settings - Administer All Accounts - Online Users,https://charmswiki.com/wiki/107/settings-administer-all-accounts-online-users,Tenant & System Administration,"Users, Roles & Configuration"
+60,352,Settings - Administer All Accounts - User Log,https://charmswiki.com/wiki/106/settings-administer-all-accounts-user-log,Tenant & System Administration,"Users, Roles & Configuration"
+61,353,Settings - Administer All Accounts - User Main Details - User Roles,https://charmswiki.com/wiki/402/settings-administer-all-accounts-user-main-details-user-roles,Tenant & System Administration,"Users, Roles & Configuration"
+62,354,Settings - Administer All Accounts - User Restrictions,https://charmswiki.com/wiki/105/settings-administer-all-accounts-user-restrictions,Tenant & System Administration,"Users, Roles & Configuration"
+63,355,Settings - Assessment Checklist Setup,https://charmswiki.com/wiki/303/settings-assessment-checklist-setup,Tenant & System Administration,"Users, Roles & Configuration"
+64,356,Settings - Audit Log,https://charmswiki.com/wiki/366/settings-audit-log,Tenant & System Administration,"Users, Roles & Configuration"
+65,360,Settings - Manage Links,https://charmswiki.com/wiki/134/settings-manage-links,Tenant & System Administration,"Users, Roles & Configuration"
+66,361,Settings - Manage Theme,https://charmswiki.com/wiki/102/settings-manage-theme,Tenant & System Administration,"Users, Roles & Configuration"
+67,367,Staff - Main Details,https://charmswiki.com/wiki/43/staff-main-details,Tenant & System Administration,"Users, Roles & Configuration"
+68,368,Staff / Other - Checklist,https://charmswiki.com/wiki/322/staff-other-checklist,Tenant & System Administration,"Users, Roles & Configuration"
+69,369,Staff / Others - Audit Log,https://charmswiki.com/wiki/233/staff-others-audit-log,Tenant & System Administration,"Users, Roles & Configuration"
+70,370,Staff / Others - Manage Annual Leave,https://charmswiki.com/wiki/292/staff-others-manage-annual-leave,Tenant & System Administration,"Users, Roles & Configuration"
+71,371,"Staff / Others - Personal Details, Additional Info, Training and Contacts",https://charmswiki.com/wiki/44/staff-others-personal-details-additional-info-training-and-contacts,Tenant & System Administration,"Users, Roles & Configuration"
+72,372,Staff / Others - Private,https://charmswiki.com/wiki/323/staff-others-private,Tenant & System Administration,"Users, Roles & Configuration"
+73,373,Staff / Others - Progress,https://charmswiki.com/wiki/247/staff-others-progress,Tenant & System Administration,"Users, Roles & Configuration"
+74,374,Staff / Others - Qualifications,https://charmswiki.com/wiki/293/staff-others-qualifications,Tenant & System Administration,"Users, Roles & Configuration"
+75,377,Staff / Others - Self Enrolment on Courses,https://charmswiki.com/wiki/222/staff-others-self-enrolment-on-courses,Tenant & System Administration,"Users, Roles & Configuration"
+76,378,Staff Hub - My Record,https://charmswiki.com/wiki/252/staff-hub-my-record,Tenant & System Administration,"Users, Roles & Configuration"
+77,381,Third Party User - Account Setup,https://charmswiki.com/wiki/245/third-party-user-account-setup,Tenant & System Administration,"Users, Roles & Configuration"
+78,91,Edit Lookup Lists - Action Automated Emails,https://charmswiki.com/wiki/231/edit-lookup-lists-action-automated-emails,Tenant & System Administration,Reference Data / Lookups
+79,238,My Reports - Fostering OFSTED Dataset 2015-16 - Mapping Codes,https://charmswiki.com/wiki/14/my-reports-fostering-ofsted-dataset-2015-16-mapping-codes,Tenant & System Administration,Reference Data / Lookups
+80,242,My Reports - Fostering OFSTED Dataset 2016-17 - Mapping Codes,https://charmswiki.com/wiki/135/my-reports-fostering-ofsted-dataset-2016-17-mapping-codes,Tenant & System Administration,Reference Data / Lookups
+81,246,My Reports - Fostering OFSTED Dataset 2019-20 - Mapping Codes,https://charmswiki.com/wiki/193/my-reports-fostering-ofsted-dataset-2019-20-mapping-codes,Tenant & System Administration,Reference Data / Lookups
+82,249,My Reports - Fostering OFSTED Dataset 2021-22 - Mapping Codes,https://charmswiki.com/wiki/383/my-reports-fostering-ofsted-dataset-2021-22-mapping-codes,Tenant & System Administration,Reference Data / Lookups
+83,251,My Reports - Fostering Ofsted Dataset 2022-23 - Mapping Codes,https://charmswiki.com/wiki/399/my-reports-fostering-ofsted-dataset-2022-23-mapping-codes,Tenant & System Administration,Reference Data / Lookups
+84,252,My Reports - Fostering Ofsted Dataset 2023-2024 - Mapping Codes,https://charmswiki.com/wiki/410/my-reports-fostering-ofsted-dataset-2023-2024-mapping-codes,Tenant & System Administration,Reference Data / Lookups
+85,296,Other Options - Edit Lookup Lists - Manage Lookup Lists,https://charmswiki.com/wiki/381/other-options-edit-lookup-lists-manage-lookup-lists,Tenant & System Administration,Reference Data / Lookups
+86,297,Other Options - Edit Lookup Lists - Staff Actions,https://charmswiki.com/wiki/248/other-options-edit-lookup-lists-staff-actions,Tenant & System Administration,Reference Data / Lookups
+87,357,Settings - Edit Lookup Lists - Action Related Data Fields,https://charmswiki.com/wiki/416/settings-edit-lookup-lists-action-related-data-fields,Tenant & System Administration,Reference Data / Lookups
+88,358,Settings - Edit Lookup Lists - Actions,https://charmswiki.com/wiki/230/settings-edit-lookup-lists-actions,Tenant & System Administration,Reference Data / Lookups
+89,359,Settings - Edit Lookup Lists - Daily Log Scores,https://charmswiki.com/wiki/405/settings-edit-lookup-lists-daily-log-scores,Tenant & System Administration,Reference Data / Lookups
+90,51,Charms-Pay - How to Use Reports,https://charmswiki.com/wiki/285/charms-pay-how-to-use-reports,Tenant & System Administration,Help & Training
+91,147,Formatting text in CHARMS,https://charmswiki.com/wiki/332/formatting-text-in-charms,Tenant & System Administration,Help & Training
+92,152,Independent Assessors - Using Charms,https://charmswiki.com/wiki/121/independent-assessors-using-charms,Tenant & System Administration,Help & Training
+93,192,Modify Child - Training,https://charmswiki.com/wiki/139/modify-child-training,Tenant & System Administration,Help & Training
+94,206,Modify Family - Carer Training,https://charmswiki.com/wiki/94/modify-family-carer-training,Tenant & System Administration,Help & Training
+95,239,My Reports - Fostering OFSTED Dataset 2016-17 - Guidance for Children,https://charmswiki.com/wiki/136/my-reports-fostering-ofsted-dataset-2016-17-guidance-for-children,Tenant & System Administration,Help & Training
+96,240,My Reports - Fostering OFSTED Dataset 2016-17 - Guidance for Families,https://charmswiki.com/wiki/137/my-reports-fostering-ofsted-dataset-2016-17-guidance-for-families,Tenant & System Administration,Help & Training
+97,241,My Reports - Fostering OFSTED Dataset 2016-17 - Guidance for Other Data,https://charmswiki.com/wiki/138/my-reports-fostering-ofsted-dataset-2016-17-guidance-for-other-data,Tenant & System Administration,Help & Training
+98,243,My Reports - Fostering OFSTED Dataset 2017-18 - Guidance for Children,https://charmswiki.com/wiki/191/my-reports-fostering-ofsted-dataset-2017-18-guidance-for-children,Tenant & System Administration,Help & Training
+99,244,My Reports - Fostering OFSTED Dataset 2017-18 - Guidance for Families,https://charmswiki.com/wiki/190/my-reports-fostering-ofsted-dataset-2017-18-guidance-for-families,Tenant & System Administration,Help & Training
+100,245,My Reports - Fostering OFSTED Dataset 2017-18 - Guidance for Other Data,https://charmswiki.com/wiki/192/my-reports-fostering-ofsted-dataset-2017-18-guidance-for-other-data,Tenant & System Administration,Help & Training
+101,247,My Reports - Fostering OFSTED Dataset 2020-21 - Guidance for Families,https://charmswiki.com/wiki/368/my-reports-fostering-ofsted-dataset-2020-21-guidance-for-families,Tenant & System Administration,Help & Training
+102,248,My Reports - Fostering OFSTED Dataset 2021-22 - Guidance for Families,https://charmswiki.com/wiki/384/my-reports-fostering-ofsted-dataset-2021-22-guidance-for-families,Tenant & System Administration,Help & Training
+103,250,My Reports - Fostering Ofsted Dataset 2022-23 - Guidance for Families,https://charmswiki.com/wiki/398/my-reports-fostering-ofsted-dataset-2022-23-guidance-for-families,Tenant & System Administration,Help & Training
+104,253,My Reports - Fostering Ofsted Dataset 2023-24 - Guidance for Families,https://charmswiki.com/wiki/409/my-reports-fostering-ofsted-dataset-2023-24-guidance-for-families,Tenant & System Administration,Help & Training
+105,254,My Reports - Fostering Ofsted Dataset 2024-25 - Guidance for Families,https://charmswiki.com/wiki/413/my-reports-fostering-ofsted-dataset-2024-25-guidance-for-families,Tenant & System Administration,Help & Training
+106,285,Options - Training - Adding a Course,https://charmswiki.com/wiki/46/options-training-adding-a-course,Tenant & System Administration,Help & Training
+107,286,Options - Training - Archiving a Course,https://charmswiki.com/wiki/172/options-training-archiving-a-course,Tenant & System Administration,Help & Training
+108,287,Options - Training - Calendar,https://charmswiki.com/wiki/385/options-training-calendar,Tenant & System Administration,Help & Training
+109,289,Options - Training - Delegate lists and Certificates,https://charmswiki.com/wiki/170/options-training-delegate-lists-and-certificates,Tenant & System Administration,Help & Training
+110,290,Options - Training - Using a course,https://charmswiki.com/wiki/47/options-training-using-a-course,Tenant & System Administration,Help & Training
+111,291,Options - Training - Waiting Lists,https://charmswiki.com/wiki/234/options-training-waiting-lists,Tenant & System Administration,Help & Training
+112,303,Other Options - Fostering OFSTED Dataset 2015-16 - Guidance for Children,https://charmswiki.com/wiki/16/other-options-fostering-ofsted-dataset-2015-16-guidance-for-children,Tenant & System Administration,Help & Training
+113,304,Other Options - Fostering OFSTED Dataset 2015-16 - Guidance for Families,https://charmswiki.com/wiki/15/other-options-fostering-ofsted-dataset-2015-16-guidance-for-families,Tenant & System Administration,Help & Training
+114,341,SCN Accredited Training,https://charmswiki.com/wiki/157/scn-accredited-training,Tenant & System Administration,Help & Training
+115,342,SCN Accredited Training - Course Description,https://charmswiki.com/wiki/158/scn-accredited-training-course-description,Tenant & System Administration,Help & Training
+116,380,Subject Access Request (SAR) - How to get the Information out of CHARMS,https://charmswiki.com/wiki/339/subject-access-request-sar-how-to-get-the-information-out-of-charms,Tenant & System Administration,Help & Training
+117,386,Useful information when using CHARMS,https://charmswiki.com/wiki/255/useful-information-when-using-charms,Tenant & System Administration,Help & Training
+118,67,Charms-Portal - Charms Lite,https://charmswiki.com/wiki/140/charms-portal-charms-lite,External Portals,Portal (External Providers/Partners)
+119,68,Charms-Portal - Charms Lite - Care Homes,https://charmswiki.com/wiki/143/charms-portal-charms-lite-care-homes,External Portals,Portal (External Providers/Partners)
+120,69,Charms-Portal - Charms Lite - Supported Accommodation,https://charmswiki.com/wiki/224/charms-portal-charms-lite-supported-accommodation,External Portals,Portal (External Providers/Partners)
+121,71,Charms-Portal - Frameworks,https://charmswiki.com/wiki/131/charms-portal-frameworks,External Portals,Portal (External Providers/Partners)
+122,72,Charms-Portal - IFP Compliance,https://charmswiki.com/wiki/141/charms-portal-ifp-compliance,External Portals,Portal (External Providers/Partners)
+123,73,Charms-Portal - Independent Children's Homes Association Handbook,https://charmswiki.com/wiki/263/charms-portal-independent-childrens-homes-association-handbook,External Portals,Portal (External Providers/Partners)
+124,75,Charms-Portal - Managing Organisation Details,https://charmswiki.com/wiki/129/charms-portal-managing-organisation-details,External Portals,Portal (External Providers/Partners)
+125,76,Charms-Portal - Receiving Documents,https://charmswiki.com/wiki/125/charms-portal-receiving-documents,External Portals,Portal (External Providers/Partners)
+126,78,Charms-Portal - Referrals,https://charmswiki.com/wiki/128/charms-portal-referrals,External Portals,Portal (External Providers/Partners)
+127,79,Charms-Portal - Responding to Referrals,https://charmswiki.com/wiki/144/charms-portal-responding-to-referrals,External Portals,Portal (External Providers/Partners)
+128,80,Charms-Portal - Sharing a document safely and securely,https://charmswiki.com/wiki/124/charms-portal-sharing-a-document-safely-and-securely,External Portals,Portal (External Providers/Partners)
+129,364,Sharing vacancies in the Charms-Portal,https://charmswiki.com/wiki/243/sharing-vacancies-in-the-charms-portal,External Portals,Portal (External Providers/Partners)
+130,8,Adding a New Establishment,https://charmswiki.com/wiki/195/adding-a-new-establishment,Provider / Partner Management,Providers & Establishments
+131,193,Modify Establishment - Carer Log,https://charmswiki.com/wiki/176/modify-establishment-carer-log,Provider / Partner Management,Providers & Establishments
+132,194,Modify Establishment - Carer Log History,https://charmswiki.com/wiki/177/modify-establishment-carer-log-history,Provider / Partner Management,Providers & Establishments
+133,195,Modify Establishment - Ending a Placement,https://charmswiki.com/wiki/185/modify-establishment-ending-a-placement,Provider / Partner Management,Providers & Establishments
+134,196,Modify Establishment - Health and Safety,https://charmswiki.com/wiki/175/modify-establishment-health-and-safety,Provider / Partner Management,Providers & Establishments
+135,197,Modify Establishment - Main Details,https://charmswiki.com/wiki/160/modify-establishment-main-details,Provider / Partner Management,Providers & Establishments
+136,198,Modify Establishment - Making a Placement and Placement Details,https://charmswiki.com/wiki/163/modify-establishment-making-a-placement-and-placement-details,Provider / Partner Management,Providers & Establishments
+137,199,Modify Establishment - Other Details,https://charmswiki.com/wiki/173/modify-establishment-other-details,Provider / Partner Management,Providers & Establishments
+138,200,Modify Establishment - Progress,https://charmswiki.com/wiki/164/modify-establishment-progress,Provider / Partner Management,Providers & Establishments
+139,202,Modify Establishment - Services,https://charmswiki.com/wiki/161/modify-establishment-services,Provider / Partner Management,Providers & Establishments
+140,203,Modify Establishment - Significant Events / Chronology,https://charmswiki.com/wiki/321/modify-establishment-significant-events-chronology,Provider / Partner Management,Providers & Establishments
+141,204,Modify Establishment - Statutory Checks,https://charmswiki.com/wiki/174/modify-establishment-statutory-checks,Provider / Partner Management,Providers & Establishments
+142,345,Searching for an Establishment Record,https://charmswiki.com/wiki/159/searching-for-an-establishment-record,Provider / Partner Management,Providers & Establishments
+143,7,Adding a new Employer,https://charmswiki.com/wiki/225/adding-a-new-employer,Provider / Partner Management,Employers
+144,92,Employer - Employment Offerings,https://charmswiki.com/wiki/308/employer-employment-offerings,Provider / Partner Management,Employers
+145,93,Employer - Main Details,https://charmswiki.com/wiki/226/employer-main-details,Provider / Partner Management,Employers
+146,94,Employer - Progress,https://charmswiki.com/wiki/227/employer-progress,Provider / Partner Management,Employers
+147,16,ARIS - Monthly Data Requirements - Children,https://charmswiki.com/wiki/197/aris-monthly-data-requirements-children,Child & Family Case Management,Child Record
+148,5,Adding a Child Record,https://charmswiki.com/wiki/53/adding-a-child-record,Child & Family Case Management,Child Record
+149,49,Charms-Pay - Children,https://charmswiki.com/wiki/169/charms-pay-children,Child & Family Case Management,Child Record
+150,82,Closing/Withdrawing a Child Record,https://charmswiki.com/wiki/389/closingwithdrawing-a-child-record,Child & Family Case Management,Child Record
+151,89,Deleting a Family or Child Record,https://charmswiki.com/wiki/396/deleting-a-family-or-child-record,Child & Family Case Management,Child Record
+152,161,Modify Child - Address At Referral,https://charmswiki.com/wiki/69/modify-child-address-at-referral,Child & Family Case Management,Child Record
+153,162,Modify Child - Address Moved Onto,https://charmswiki.com/wiki/70/modify-child-address-moved-onto,Child & Family Case Management,Child Record
+154,163,Modify Child - Audit Log,https://charmswiki.com/wiki/101/modify-child-audit-log,Child & Family Case Management,Child Record
+155,164,Modify Child - Birth Parents,https://charmswiki.com/wiki/64/modify-child-birth-parents,Child & Family Case Management,Child Record
+156,165,Modify Child - Checklist,https://charmswiki.com/wiki/74/modify-child-checklist,Child & Family Case Management,Child Record
+157,166,Modify Child - Child Protection Plan,https://charmswiki.com/wiki/68/modify-child-child-protection-plan,Child & Family Case Management,Child Record
+158,167,Modify Child - Contact Issues,https://charmswiki.com/wiki/56/modify-child-contact-issues,Child & Family Case Management,Child Record
+159,168,Modify Child - Contacts,https://charmswiki.com/wiki/60/modify-child-contacts,Child & Family Case Management,Child Record
+160,169,Modify Child - Diary,https://charmswiki.com/wiki/76/modify-child-diary,Child & Family Case Management,Child Record
+161,170,Modify Child - Education Details,https://charmswiki.com/wiki/67/modify-child-education-details,Child & Family Case Management,Child Record
+162,172,Modify Child - Find A Family,https://charmswiki.com/wiki/72/modify-child-find-a-family,Child & Family Case Management,Child Record
+163,173,Modify Child - GP Details,https://charmswiki.com/wiki/65/modify-child-gp-details,Child & Family Case Management,Child Record
+164,174,Modify Child - Letterbox,https://charmswiki.com/wiki/300/modify-child-letterbox,Child & Family Case Management,Child Record
+165,175,Modify Child - Letterbox - Managing Agreements,https://charmswiki.com/wiki/301/modify-child-letterbox-managing-agreements,Child & Family Case Management,Child Record
+166,176,Modify Child - Main Details,https://charmswiki.com/wiki/54/modify-child-main-details,Child & Family Case Management,Child Record
+167,179,Modify Child - Making Progress visible to other users,https://charmswiki.com/wiki/318/modify-child-making-progress-visible-to-other-users,Child & Family Case Management,Child Record
+168,181,Modify Child - Notes (Care Plan),https://charmswiki.com/wiki/57/modify-child-notes-care-plan,Child & Family Case Management,Child Record
+169,182,Modify Child - Other Professionals,https://charmswiki.com/wiki/71/modify-child-other-professionals,Child & Family Case Management,Child Record
+170,183,Modify Child - Personal Details,https://charmswiki.com/wiki/61/modify-child-personal-details,Child & Family Case Management,Child Record
+171,184,Modify Child - Photo,https://charmswiki.com/wiki/63/modify-child-photo,Child & Family Case Management,Child Record
+172,185,Modify Child - Potential Links,https://charmswiki.com/wiki/360/modify-child-potential-links,Child & Family Case Management,Child Record
+173,186,Modify Child - Progress,https://charmswiki.com/wiki/59/modify-child-progress,Child & Family Case Management,Child Record
+174,188,Modify Child - Relatives,https://charmswiki.com/wiki/66/modify-child-relatives,Child & Family Case Management,Child Record
+175,189,Modify Child - Significant Events/Chronology,https://charmswiki.com/wiki/75/modify-child-significant-eventschronology,Child & Family Case Management,Child Record
+176,191,Modify Child - Standard Letter,https://charmswiki.com/wiki/77/modify-child-standard-letter,Child & Family Case Management,Child Record
+177,212,Modify Family - Find a Child,https://charmswiki.com/wiki/89/modify-family-find-a-child,Child & Family Case Management,Child Record
+178,265,OMG2 - Adding a Child,https://charmswiki.com/wiki/133/omg2-adding-a-child,Child & Family Case Management,Child Record
+179,256,Ofsted Assurance Visits: Children's Homes,https://charmswiki.com/wiki/357/ofsted-assurance-visits-childrens-homes,Child & Family Case Management,Child Record
+180,343,Searching for a Child Record,https://charmswiki.com/wiki/52/searching-for-a-child-record,Child & Family Case Management,Child Record
+181,6,Adding a Family Record,https://charmswiki.com/wiki/80/adding-a-family-record,Child & Family Case Management,Family & Relationships
+182,98,Family - Application Form,https://charmswiki.com/wiki/288/family-application-form,Child & Family Case Management,Family & Relationships
+183,205,Modify Family - Audit Log,https://charmswiki.com/wiki/232/modify-family-audit-log,Child & Family Case Management,Family & Relationships
+184,207,Modify Family - CHARMS Chat,https://charmswiki.com/wiki/340/modify-family-charms-chat,Child & Family Case Management,Family & Relationships
+185,208,Modify Family - Contact Issues,https://charmswiki.com/wiki/84/modify-family-contact-issues,Child & Family Case Management,Family & Relationships
+186,209,Modify Family - Copy Record,https://charmswiki.com/wiki/375/modify-family-copy-record,Child & Family Case Management,Family & Relationships
+187,210,Modify Family - Diary,https://charmswiki.com/wiki/98/modify-family-diary,Child & Family Case Management,Family & Relationships
+188,213,Modify Family - GP Details,https://charmswiki.com/wiki/96/modify-family-gp-details,Child & Family Case Management,Family & Relationships
+189,214,Modify Family - Health & Safety,https://charmswiki.com/wiki/97/modify-family-health-safety,Child & Family Case Management,Family & Relationships
+190,215,Modify Family - Mailing Lists,https://charmswiki.com/wiki/99/modify-family-mailing-lists,Child & Family Case Management,Family & Relationships
+191,216,Modify Family - Main Details,https://charmswiki.com/wiki/81/modify-family-main-details,Child & Family Case Management,Family & Relationships
+192,220,Modify Family - Notes,https://charmswiki.com/wiki/86/modify-family-notes,Child & Family Case Management,Family & Relationships
+193,221,Modify Family - Other Family Members,https://charmswiki.com/wiki/83/modify-family-other-family-members,Child & Family Case Management,Family & Relationships
+194,222,Modify Family - Other Professionals,https://charmswiki.com/wiki/364/modify-family-other-professionals,Child & Family Case Management,Family & Relationships
+195,223,Modify Family - Personal Details,https://charmswiki.com/wiki/88/modify-family-personal-details,Child & Family Case Management,Family & Relationships
+196,224,Modify Family - Photos,https://charmswiki.com/wiki/380/modify-family-photos,Child & Family Case Management,Family & Relationships
+197,225,Modify Family - Placements - Shared Lives,https://charmswiki.com/wiki/90/modify-family-placements-shared-lives,Child & Family Case Management,Family & Relationships
+198,226,Modify Family - Potential Links,https://charmswiki.com/wiki/359/modify-family-potential-links,Child & Family Case Management,Family & Relationships
+199,227,Modify Family - Previous Address,https://charmswiki.com/wiki/95/modify-family-previous-address,Child & Family Case Management,Family & Relationships
+200,228,Modify Family - Progress,https://charmswiki.com/wiki/87/modify-family-progress,Child & Family Case Management,Family & Relationships
+201,230,Modify Family - Referees,https://charmswiki.com/wiki/82/modify-family-referees,Child & Family Case Management,Family & Relationships
+202,231,Modify Family - Significant Events / Chronology,https://charmswiki.com/wiki/314/modify-family-significant-events-chronology,Child & Family Case Management,Family & Relationships
+203,233,Modify Family - Standard Letter,https://charmswiki.com/wiki/100/modify-family-standard-letter,Child & Family Case Management,Family & Relationships
+204,234,Modify Family - Stat Checks,https://charmswiki.com/wiki/93/modify-family-stat-checks,Child & Family Case Management,Family & Relationships
+205,318,PAR - Family Tree,https://charmswiki.com/wiki/22/par-family-tree,Child & Family Case Management,Family & Relationships
+206,344,Searching for a Family Record,https://charmswiki.com/wiki/79/searching-for-a-family-record,Child & Family Case Management,Family & Relationships
+207,85,COVID-19 Risk Assessment,https://charmswiki.com/wiki/358/covid-19-risk-assessment,Child & Family Case Management,Assessments
+208,320,PAR - Part 1: Assessment Report,https://charmswiki.com/wiki/23/par-part-1-assessment-report,Child & Family Case Management,Assessments
+209,326,PAR 2016 - Part 1: Assessment Report,https://charmswiki.com/wiki/187/par-2016-part-1-assessment-report,Child & Family Case Management,Assessments
+210,330,PAR 2018 - Part 1:Assessment Report,https://charmswiki.com/wiki/335/par-2018-part-1assessment-report,Child & Family Case Management,Assessments
+211,339,Reports - Assessment Checklist,https://charmswiki.com/wiki/112/reports-assessment-checklist,Child & Family Case Management,Assessments
+212,4,Add a new Adult record,https://charmswiki.com/wiki/228/add-a-new-adult-record,Child & Family Case Management,Adult Record
+213,12,Adult - Education and Employment Details,https://charmswiki.com/wiki/306/adult-education-and-employment-details,Child & Family Case Management,Adult Record
+214,13,Adult - Employment Requirements,https://charmswiki.com/wiki/307/adult-employment-requirements,Child & Family Case Management,Adult Record
+215,14,Adult - Main Details,https://charmswiki.com/wiki/229/adult-main-details,Child & Family Case Management,Adult Record
+216,15,Adult - Progress,https://charmswiki.com/wiki/390/adult-progress,Child & Family Case Management,Adult Record
+217,95,Employment Episodes - Adult Services - additional fields,https://charmswiki.com/wiki/183/employment-episodes-adult-services-additional-fields,Child & Family Case Management,Adult Record
+218,36,Charms-Pay - Carer Annual Statement (Report 67),https://charmswiki.com/wiki/327/charms-pay-carer-annual-statement-report-67,Foster Care - Carers,Carer Assessment & Approval (Form F)
+219,100,Form F 2014 - Completing and Updating,https://charmswiki.com/wiki/34/form-f-2014-completing-and-updating,Foster Care - Carers,Carer Assessment & Approval (Form F)
+220,101,Form F 2014 - Documents,https://charmswiki.com/wiki/33/form-f-2014-documents,Foster Care - Carers,Carer Assessment & Approval (Form F)
+221,102,Form F 2014 - Front Sheet,https://charmswiki.com/wiki/27/form-f-2014-front-sheet,Foster Care - Carers,Carer Assessment & Approval (Form F)
+222,103,Form F 2014 - Print Form F,https://charmswiki.com/wiki/35/form-f-2014-print-form-f,Foster Care - Carers,Carer Assessment & Approval (Form F)
+223,104,Form F 2014 - Section A,https://charmswiki.com/wiki/28/form-f-2014-section-a,Foster Care - Carers,Carer Assessment & Approval (Form F)
+224,105,Form F 2014 - Section B,https://charmswiki.com/wiki/29/form-f-2014-section-b,Foster Care - Carers,Carer Assessment & Approval (Form F)
+225,106,Form F 2014 - Section C,https://charmswiki.com/wiki/30/form-f-2014-section-c,Foster Care - Carers,Carer Assessment & Approval (Form F)
+226,107,Form F 2014 - Section D,https://charmswiki.com/wiki/31/form-f-2014-section-d,Foster Care - Carers,Carer Assessment & Approval (Form F)
+227,108,Form F 2014 - Section E,https://charmswiki.com/wiki/32/form-f-2014-section-e,Foster Care - Carers,Carer Assessment & Approval (Form F)
+228,109,Form F 2014 - Setup,https://charmswiki.com/wiki/25/form-f-2014-setup,Foster Care - Carers,Carer Assessment & Approval (Form F)
+229,110,Form F 2014 - Summary Screen,https://charmswiki.com/wiki/26/form-f-2014-summary-screen,Foster Care - Carers,Carer Assessment & Approval (Form F)
+230,111,Form F 2016 Scotland - Completing or Updating,https://charmswiki.com/wiki/238/form-f-2016-scotland-completing-or-updating,Foster Care - Carers,Carer Assessment & Approval (Form F)
+231,112,Form F 2016 Scotland - Documents,https://charmswiki.com/wiki/237/form-f-2016-scotland-documents,Foster Care - Carers,Carer Assessment & Approval (Form F)
+232,113,Form F 2016 Scotland - Printing,https://charmswiki.com/wiki/239/form-f-2016-scotland-printing,Foster Care - Carers,Carer Assessment & Approval (Form F)
+233,114,Form F 2016 Scotland - Section A,https://charmswiki.com/wiki/240/form-f-2016-scotland-section-a,Foster Care - Carers,Carer Assessment & Approval (Form F)
+234,115,Form F 2016 Scotland - Section B,https://charmswiki.com/wiki/241/form-f-2016-scotland-section-b,Foster Care - Carers,Carer Assessment & Approval (Form F)
+235,116,Form F 2016 Scotland - Section C,https://charmswiki.com/wiki/242/form-f-2016-scotland-section-c,Foster Care - Carers,Carer Assessment & Approval (Form F)
+236,117,Form F 2016 Scotland - Section D,https://charmswiki.com/wiki/256/form-f-2016-scotland-section-d,Foster Care - Carers,Carer Assessment & Approval (Form F)
+237,118,Form F 2016 Scotland - Section E,https://charmswiki.com/wiki/257/form-f-2016-scotland-section-e,Foster Care - Carers,Carer Assessment & Approval (Form F)
+238,119,Form F 2016 Scotland - Section F,https://charmswiki.com/wiki/258/form-f-2016-scotland-section-f,Foster Care - Carers,Carer Assessment & Approval (Form F)
+239,120,Form F 2016 Scotland - Section G,https://charmswiki.com/wiki/259/form-f-2016-scotland-section-g,Foster Care - Carers,Carer Assessment & Approval (Form F)
+240,121,Form F 2016 Scotland - Setup,https://charmswiki.com/wiki/235/form-f-2016-scotland-setup,Foster Care - Carers,Carer Assessment & Approval (Form F)
+241,122,Form F 2016 Scotland - Summary,https://charmswiki.com/wiki/236/form-f-2016-scotland-summary,Foster Care - Carers,Carer Assessment & Approval (Form F)
+242,123,Form F 2017 - Completing or Updating,https://charmswiki.com/wiki/204/form-f-2017-completing-or-updating,Foster Care - Carers,Carer Assessment & Approval (Form F)
+243,124,Form F 2017 - Documents,https://charmswiki.com/wiki/205/form-f-2017-documents,Foster Care - Carers,Carer Assessment & Approval (Form F)
+244,125,Form F 2017 - Front Sheet,https://charmswiki.com/wiki/206/form-f-2017-front-sheet,Foster Care - Carers,Carer Assessment & Approval (Form F)
+245,126,Form F 2017 - Printing,https://charmswiki.com/wiki/207/form-f-2017-printing,Foster Care - Carers,Carer Assessment & Approval (Form F)
+246,127,Form F 2017 - Section A (Part 1),https://charmswiki.com/wiki/208/form-f-2017-section-a-part-1,Foster Care - Carers,Carer Assessment & Approval (Form F)
+247,128,Form F 2017 - Section A (Part 2),https://charmswiki.com/wiki/209/form-f-2017-section-a-part-2,Foster Care - Carers,Carer Assessment & Approval (Form F)
+248,129,Form F 2017 - Section B,https://charmswiki.com/wiki/210/form-f-2017-section-b,Foster Care - Carers,Carer Assessment & Approval (Form F)
+249,130,Form F 2017 - Section C,https://charmswiki.com/wiki/211/form-f-2017-section-c,Foster Care - Carers,Carer Assessment & Approval (Form F)
+250,131,Form F 2017 - Section D,https://charmswiki.com/wiki/212/form-f-2017-section-d,Foster Care - Carers,Carer Assessment & Approval (Form F)
+251,132,Form F 2017 - Section E,https://charmswiki.com/wiki/213/form-f-2017-section-e,Foster Care - Carers,Carer Assessment & Approval (Form F)
+252,133,Form F 2017 - Setup,https://charmswiki.com/wiki/214/form-f-2017-setup,Foster Care - Carers,Carer Assessment & Approval (Form F)
+253,134,Form F 2017 - Summary,https://charmswiki.com/wiki/215/form-f-2017-summary,Foster Care - Carers,Carer Assessment & Approval (Form F)
+254,135,Form F 2018 - Completing or Updating,https://charmswiki.com/wiki/351/form-f-2018-completing-or-updating,Foster Care - Carers,Carer Assessment & Approval (Form F)
+255,136,Form F 2018 - Documents,https://charmswiki.com/wiki/344/form-f-2018-documents,Foster Care - Carers,Carer Assessment & Approval (Form F)
+256,137,Form F 2018 - Front Sheet,https://charmswiki.com/wiki/348/form-f-2018-front-sheet,Foster Care - Carers,Carer Assessment & Approval (Form F)
+257,138,Form F 2018 - Printing,https://charmswiki.com/wiki/345/form-f-2018-printing,Foster Care - Carers,Carer Assessment & Approval (Form F)
+258,139,Form F 2018 - Section A,https://charmswiki.com/wiki/355/form-f-2018-section-a,Foster Care - Carers,Carer Assessment & Approval (Form F)
+259,140,Form F 2018 - Section A (Part 2),https://charmswiki.com/wiki/354/form-f-2018-section-a-part-2,Foster Care - Carers,Carer Assessment & Approval (Form F)
+260,141,Form F 2018 - Section B,https://charmswiki.com/wiki/349/form-f-2018-section-b,Foster Care - Carers,Carer Assessment & Approval (Form F)
+261,142,Form F 2018 - Section C,https://charmswiki.com/wiki/353/form-f-2018-section-c,Foster Care - Carers,Carer Assessment & Approval (Form F)
+262,143,Form F 2018 - Section D,https://charmswiki.com/wiki/347/form-f-2018-section-d,Foster Care - Carers,Carer Assessment & Approval (Form F)
+263,144,Form F 2018 - Section E,https://charmswiki.com/wiki/352/form-f-2018-section-e,Foster Care - Carers,Carer Assessment & Approval (Form F)
+264,145,Form F 2018 - Setup,https://charmswiki.com/wiki/346/form-f-2018-setup,Foster Care - Carers,Carer Assessment & Approval (Form F)
+265,146,Form F 2018 - Summary,https://charmswiki.com/wiki/350/form-f-2018-summary,Foster Care - Carers,Carer Assessment & Approval (Form F)
+266,148,Foster Carer Transfers,https://charmswiki.com/wiki/361/foster-carer-transfers,Foster Care - Carers,Carer Assessment & Approval (Form F)
+267,149,Fostering / Adoption Enquiry - Application Form,https://charmswiki.com/wiki/8/fostering-adoption-enquiry-application-form,Foster Care - Carers,Carer Assessment & Approval (Form F)
+268,257,Ofsted Assurance Visits: Independent Fostering Agencies,https://charmswiki.com/wiki/356/ofsted-assurance-visits-independent-fostering-agencies,Foster Care - Carers,Carer Assessment & Approval (Form F)
+269,314,Panel Member - Making progress actions visible to Panel Members,https://charmswiki.com/wiki/220/panel-member-making-progress-actions-visible-to-panel-members,Foster Care - Carers,Approval Workflow & Panel
+270,315,Panel Member - Setup,https://charmswiki.com/wiki/48/panel-member-setup,Foster Care - Carers,Approval Workflow & Panel
+271,40,Charms-Pay - Carers - Placement / Details,https://charmswiki.com/wiki/273/charms-pay-carers-placement-details,Placements & Matching,Placement Lifecycle
+272,43,Charms-Pay - Carers - Respite,https://charmswiki.com/wiki/278/charms-pay-carers-respite,Placements & Matching,Placement Lifecycle
+273,44,Charms-Pay - Child Details - Placement Details - Invoices,https://charmswiki.com/wiki/269/charms-pay-child-details-placement-details-invoices,Placements & Matching,Placement Lifecycle
+274,45,Charms-Pay - Child Details - Placement Details - Payment History,https://charmswiki.com/wiki/268/charms-pay-child-details-placement-details-payment-history,Placements & Matching,Placement Lifecycle
+275,46,Charms-Pay - Child Details - Placement Details - Placement Costs,https://charmswiki.com/wiki/267/charms-pay-child-details-placement-details-placement-costs,Placements & Matching,Placement Lifecycle
+276,47,Charms-Pay - Child Details - Placement Details - Savings,https://charmswiki.com/wiki/270/charms-pay-child-details-placement-details-savings,Placements & Matching,Placement Lifecycle
+277,171,Modify Child - Ending a Placement,https://charmswiki.com/wiki/156/modify-child-ending-a-placement,Placements & Matching,Placement Lifecycle
+278,177,Modify Child - Making a Placement and Placement Details,https://charmswiki.com/wiki/155/modify-child-making-a-placement-and-placement-details,Placements & Matching,Placement Lifecycle
+279,178,Modify Child - Making a Placement and Placement Details - Residential,https://charmswiki.com/wiki/73/modify-child-making-a-placement-and-placement-details-residential,Placements & Matching,Placement Lifecycle
+280,180,Modify Child - Matching Considerations,https://charmswiki.com/wiki/55/modify-child-matching-considerations,Placements & Matching,Placement Lifecycle
+281,211,Modify Family - Ending A Placement,https://charmswiki.com/wiki/154/modify-family-ending-a-placement,Placements & Matching,Placement Lifecycle
+282,218,Modify Family - Making A Placement and Placement Details,https://charmswiki.com/wiki/153/modify-family-making-a-placement-and-placement-details,Placements & Matching,Placement Lifecycle
+283,219,Modify Family - Matching Considerations,https://charmswiki.com/wiki/85/modify-family-matching-considerations,Placements & Matching,Placement Lifecycle
+284,33,"CHARMS Pay Remote Desktop - Download Files, Upload Files & Using Fullscreen Mode",https://charmswiki.com/wiki/411/charms-pay-remote-desktop-download-files-upload-files-using-fullscreen-mode,Finance & Payments,Charms-Pay
+285,34,Charms-Pay - Approved Carers,https://charmswiki.com/wiki/272/charms-pay-approved-carers,Finance & Payments,Charms-Pay
+286,35,Charms-Pay - Average count of placements by region and agency (Report 18),https://charmswiki.com/wiki/317/charms-pay-average-count-of-placements-by-region-and-agency-report-18,Finance & Payments,Charms-Pay
+287,37,Charms-Pay - Carers,https://charmswiki.com/wiki/271/charms-pay-carers,Finance & Payments,Charms-Pay
+288,38,Charms-Pay - Carers - Other Payments,https://charmswiki.com/wiki/275/charms-pay-carers-other-payments,Finance & Payments,Charms-Pay
+289,39,Charms-Pay - Carers - Payment Details,https://charmswiki.com/wiki/274/charms-pay-carers-payment-details,Finance & Payments,Charms-Pay
+290,41,Charms-Pay - Carers - Regular Payments,https://charmswiki.com/wiki/277/charms-pay-carers-regular-payments,Finance & Payments,Charms-Pay
+291,42,Charms-Pay - Carers - Remittances,https://charmswiki.com/wiki/276/charms-pay-carers-remittances,Finance & Payments,Charms-Pay
+292,52,Charms-Pay - Invoices,https://charmswiki.com/wiki/279/charms-pay-invoices,Finance & Payments,Charms-Pay
+293,53,Charms-Pay - Invoices - Credit Notes,https://charmswiki.com/wiki/281/charms-pay-invoices-credit-notes,Finance & Payments,Charms-Pay
+294,54,Charms-Pay - Invoices - Export to Excel,https://charmswiki.com/wiki/282/charms-pay-invoices-export-to-excel,Finance & Payments,Charms-Pay
+295,55,Charms-Pay - Invoices - Invoice Summary Reports,https://charmswiki.com/wiki/283/charms-pay-invoices-invoice-summary-reports,Finance & Payments,Charms-Pay
+296,56,Charms-Pay - Invoices - Re-send Invoices,https://charmswiki.com/wiki/280/charms-pay-invoices-re-send-invoices,Finance & Payments,Charms-Pay
+297,58,Charms-Pay - Logging Off,https://charmswiki.com/wiki/265/charms-pay-logging-off,Finance & Payments,Charms-Pay
+298,60,Charms-Pay - Pay Carers,https://charmswiki.com/wiki/284/charms-pay-pay-carers,Finance & Payments,Charms-Pay
+299,62,Charms-Pay Report - All payments between dates summary MS Excel Export (Report 57),https://charmswiki.com/wiki/363/charms-pay-report-all-payments-between-dates-summary-ms-excel-export-report,Finance & Payments,Charms-Pay
+300,63,Charms-Pay Report - All placements active at given date showing payment/invoice amounts (cross module)  (Report 58),https://charmswiki.com/wiki/310/charms-pay-report-all-placements-active-at-given-date-showing-paymentinvoic,Finance & Payments,Charms-Pay
+301,64,Charms-Pay Report - All placements costs/charges between dates (Report 45),https://charmswiki.com/wiki/313/charms-pay-report-all-placements-costscharges-between-dates-report-45,Finance & Payments,Charms-Pay
+302,65,Charms-Pay Report - All placements fees/charges between dates (Report 50),https://charmswiki.com/wiki/309/charms-pay-report-all-placements-feescharges-between-dates-report-50,Finance & Payments,Charms-Pay
+303,66,Charms-Pay Report - All placements with daily charge (cross module) (Report 56),https://charmswiki.com/wiki/316/charms-pay-report-all-placements-with-daily-charge-cross-module-report-56,Finance & Payments,Charms-Pay
+304,11,Adoption Leadership Board - Families report,https://charmswiki.com/wiki/148/adoption-leadership-board-families-report,Reporting & Compliance,Reporting & Exports
+305,87,Dashboard - Accessing the Dashboard,https://charmswiki.com/wiki/118/dashboard-accessing-the-dashboard,Reporting & Compliance,Reporting & Exports
+306,88,Dashboard - Widget Guide,https://charmswiki.com/wiki/119/dashboard-widget-guide,Reporting & Compliance,Reporting & Exports
+307,236,My Reports - Adoption Inspection Report,https://charmswiki.com/wiki/194/my-reports-adoption-inspection-report,Reporting & Compliance,Reporting & Exports
+308,237,My Reports - Adoption List 11 report,https://charmswiki.com/wiki/261/my-reports-adoption-list-11-report,Reporting & Compliance,Reporting & Exports
+309,17,ARIS - Monthly Data Requirements - Families,https://charmswiki.com/wiki/198/aris-monthly-data-requirements-families,Reporting & Compliance,Statutory Returns
+310,96,Enquiries - Audit Log,https://charmswiki.com/wiki/342/enquiries-audit-log,Reporting & Compliance,Audit & Compliance
+311,258,Ofsted Inspections,https://charmswiki.com/wiki/367/ofsted-inspections,Reporting & Compliance,Audit & Compliance
+312,90,Document Store,https://charmswiki.com/wiki/373/document-store,Documents & Communications,Documents & Correspondence
+313,99,Fixing PDFs that do not view properly in the CHARMS document viewer,https://charmswiki.com/wiki/374/fixing-pdfs-that-do-not-view-properly-in-the-charms-document-viewer,Documents & Communications,Documents & Correspondence
+314,155,Mail Merge - Quick Merge,https://charmswiki.com/wiki/331/mail-merge-quick-merge,Documents & Communications,Documents & Correspondence
+315,275,Options - Mail Merge - Merge Fields,https://charmswiki.com/wiki/370/options-mail-merge-merge-fields,Documents & Communications,Documents & Correspondence
+316,276,Options - Mail Merge - Running Mail Merge,https://charmswiki.com/wiki/330/options-mail-merge-running-mail-merge,Documents & Communications,Documents & Correspondence
+317,277,Options - Mail Merge - Setting Up Templates,https://charmswiki.com/wiki/329/options-mail-merge-setting-up-templates,Documents & Communications,Documents & Correspondence
+318,311,Other Options - Standard Letter,https://charmswiki.com/wiki/115/other-options-standard-letter,Documents & Communications,Documents & Correspondence
+319,313,Other Options - Uploaded Files (View or Upload),https://charmswiki.com/wiki/146/other-options-uploaded-files-view-or-upload,Documents & Communications,Documents & Correspondence
+320,333,Progress - Editing documents uploaded to Progress in CHARMS,https://charmswiki.com/wiki/290/progress-editing-documents-uploaded-to-progress-in-charms,Documents & Communications,Documents & Correspondence
+321,346,Sending SMS and Emails in CHARMS,https://charmswiki.com/wiki/254/sending-sms-and-emails-in-charms,Documents & Communications,Documents & Correspondence
+322,83,Comments,https://charmswiki.com/wiki/412/comments,Documents & Communications,Notes & Contacts
+323,84,Contacts,https://charmswiki.com/wiki/116/contacts,Documents & Communications,Notes & Contacts
+324,150,General Notes,https://charmswiki.com/wiki/50/general-notes,Documents & Communications,Notes & Contacts
+325,384,University of Salford - Adding comments to a reflection,https://charmswiki.com/wiki/338/university-of-salford-adding-comments-to-a-reflection,Documents & Communications,Notes & Contacts
+326,9,Adoption - On Hold Process,https://charmswiki.com/wiki/386/adoption-on-hold-process,Other / Unclassified,Other
+327,10,Adoption Leadership Board - Adoption Support,https://charmswiki.com/wiki/203/adoption-leadership-board-adoption-support,Other / Unclassified,Other
+328,32,CHARMS - 2 Factor Authentication Setup,https://charmswiki.com/wiki/387/charms-2-factor-authentication-setup,Other / Unclassified,Other
+329,86,Current messages and alerts,https://charmswiki.com/wiki/253/current-messages-and-alerts,Other / Unclassified,Other
+330,97,Enquiries - Progress,https://charmswiki.com/wiki/11/enquiries-progress,Other / Unclassified,Other
+331,151,Independent Assessors - Setup,https://charmswiki.com/wiki/120/independent-assessors-setup,Other / Unclassified,Other
+332,255,My Reports - History and Shared With Me,https://charmswiki.com/wiki/324/my-reports-history-and-shared-with-me,Other / Unclassified,Other
+333,259,OMG,https://charmswiki.com/wiki/393/omg,Other / Unclassified,Other
+334,260,OMG - Changing an expired secret,https://charmswiki.com/wiki/401/omg-changing-an-expired-secret,Other / Unclassified,Other
+335,261,OMG - Google Technical Setup,https://charmswiki.com/wiki/408/omg-google-technical-setup,Other / Unclassified,Other
+336,262,OMG - Microsoft Azure Technical Setup (IMAP),https://charmswiki.com/wiki/394/omg-microsoft-azure-technical-setup-imap,Other / Unclassified,Other
+337,263,OMG - Microsoft Azure Technical Setup (Microsoft Graph API Permissions),https://charmswiki.com/wiki/403/omg-microsoft-azure-technical-setup-microsoft-graph-api-permissions,Other / Unclassified,Other
+338,264,OMG2,https://charmswiki.com/wiki/41/omg2,Other / Unclassified,Other
+339,266,OMG3 - Google Technical Setup,https://charmswiki.com/wiki/404/omg3-google-technical-setup,Other / Unclassified,Other
+340,267,Options - Administer All Accounts - Disabling Users,https://charmswiki.com/wiki/145/options-administer-all-accounts-disabling-users,Other / Unclassified,Other
+341,268,Options - Data Change Requests,https://charmswiki.com/wiki/388/options-data-change-requests,Other / Unclassified,Other
+342,269,Options - Data Retention - Authorising a Request,https://charmswiki.com/wiki/217/options-data-retention-authorising-a-request,Other / Unclassified,Other
+343,270,Options - Data Retention - Details of changes to records,https://charmswiki.com/wiki/219/options-data-retention-details-of-changes-to-records,Other / Unclassified,Other
+344,271,Options - Data Retention - Making a Request,https://charmswiki.com/wiki/202/options-data-retention-making-a-request,Other / Unclassified,Other
+345,272,Options - Data Retention - Request Completed,https://charmswiki.com/wiki/216/options-data-retention-request-completed,Other / Unclassified,Other
+346,273,Options - Data Retention - Setup,https://charmswiki.com/wiki/218/options-data-retention-setup,Other / Unclassified,Other
+347,274,Options - Diary,https://charmswiki.com/wiki/110/options-diary,Other / Unclassified,Other
+348,278,Options - Manage Notice Board,https://charmswiki.com/wiki/407/options-manage-notice-board,Other / Unclassified,Other
+349,279,Options - Manage Signatures - Viewing and Removing Signature Requests,https://charmswiki.com/wiki/333/options-manage-signatures-viewing-and-removing-signature-requests,Other / Unclassified,Other
+350,280,Options - Outcomes Tracker - Edit Recordings,https://charmswiki.com/wiki/378/options-outcomes-tracker-edit-recordings,Other / Unclassified,Other
+351,282,Options - Outcomes Tracker - Outcome Profile,https://charmswiki.com/wiki/377/options-outcomes-tracker-outcome-profile,Other / Unclassified,Other
+352,284,Options - Social Workers,https://charmswiki.com/wiki/113/options-social-workers,Other / Unclassified,Other
+353,292,Other Options - Administer All Accounts - Modules,https://charmswiki.com/wiki/312/other-options-administer-all-accounts-modules,Other / Unclassified,Other
+354,293,Other Options - Administer All Accounts - Record Locks,https://charmswiki.com/wiki/287/other-options-administer-all-accounts-record-locks,Other / Unclassified,Other
+355,294,Other Options - Agencies,https://charmswiki.com/wiki/365/other-options-agencies,Other / Unclassified,Other
+356,295,Other Options - Correspondence,https://charmswiki.com/wiki/114/other-options-correspondence,Other / Unclassified,Other
+357,298,Other Options - Enquiries,https://charmswiki.com/wiki/9/other-options-enquiries,Other / Unclassified,Other
+358,299,Other Options - Enquiries - Main Details,https://charmswiki.com/wiki/10/other-options-enquiries-main-details,Other / Unclassified,Other
+359,300,Other Options - Enquiries - Other Professionals,https://charmswiki.com/wiki/391/other-options-enquiries-other-professionals,Other / Unclassified,Other
+360,301,Other Options - Enquiries - Personal Details,https://charmswiki.com/wiki/12/other-options-enquiries-personal-details,Other / Unclassified,Other
+361,305,Other Options - Letterbox - Correspondence Setup,https://charmswiki.com/wiki/302/other-options-letterbox-correspondence-setup,Other / Unclassified,Other
+362,306,Other Options - Letterbox - Enter Post,https://charmswiki.com/wiki/298/other-options-letterbox-enter-post,Other / Unclassified,Other
+363,307,Other Options - Letterbox - Letterbox Manager,https://charmswiki.com/wiki/294/other-options-letterbox-letterbox-manager,Other / Unclassified,Other
+364,308,Other Options - Letterbox - Mail Overview,https://charmswiki.com/wiki/299/other-options-letterbox-mail-overview,Other / Unclassified,Other
+365,309,"Other Options - Maintain Other Professionals, GPs, and Schools",https://charmswiki.com/wiki/315/other-options-maintain-other-professionals-gps-and-schools,Other / Unclassified,Other
+366,317,PAR - Contents Page,https://charmswiki.com/wiki/20/par-contents-page,Other / Unclassified,Other
+367,319,PAR - Front sheet,https://charmswiki.com/wiki/19/par-front-sheet,Other / Unclassified,Other
+368,321,PAR - Part 2: Factual Information,https://charmswiki.com/wiki/24/par-part-2-factual-information,Other / Unclassified,Other
+369,322,PAR - Setup,https://charmswiki.com/wiki/17/par-setup,Other / Unclassified,Other
+370,323,PAR - Summary Pen Picture,https://charmswiki.com/wiki/21/par-summary-pen-picture,Other / Unclassified,Other
+371,324,PAR - Summary screen,https://charmswiki.com/wiki/18/par-summary-screen,Other / Unclassified,Other
+372,325,PAR 2016 - Contents,https://charmswiki.com/wiki/186/par-2016-contents,Other / Unclassified,Other
+373,327,PAR 2016 - Part 2: Factual Information,https://charmswiki.com/wiki/188/par-2016-part-2-factual-information,Other / Unclassified,Other
+374,328,PAR 2016 - Summary Pen Picture,https://charmswiki.com/wiki/189/par-2016-summary-pen-picture,Other / Unclassified,Other
+375,329,PAR 2018 - Contents,https://charmswiki.com/wiki/334/par-2018-contents,Other / Unclassified,Other
+376,331,PAR 2018 - Part 2:Factual Information,https://charmswiki.com/wiki/336/par-2018-part-2factual-information,Other / Unclassified,Other
+377,332,PAR 2018 - Summary Pen Picture,https://charmswiki.com/wiki/337/par-2018-summary-pen-picture,Other / Unclassified,Other
+378,334,Progress - Prompting users to sign progress items,https://charmswiki.com/wiki/244/progress-prompting-users-to-sign-progress-items,Other / Unclassified,Other
+379,336,Recruitment Widget,https://charmswiki.com/wiki/414/recruitment-widget,Other / Unclassified,Other
+380,337,Reports,https://charmswiki.com/wiki/117/reports,Other / Unclassified,Other
+381,363,Sharing an SDQ,https://charmswiki.com/wiki/392/sharing-an-sdq,Other / Unclassified,Other
+382,365,Single Sign On,https://charmswiki.com/wiki/371/single-sign-on,Other / Unclassified,Other
+383,366,Single Sign On - Technical Setup,https://charmswiki.com/wiki/397/single-sign-on-technical-setup,Other / Unclassified,Other
+384,382,Third Party Users - Homepage and Uploaded Files,https://charmswiki.com/wiki/304/third-party-users-homepage-and-uploaded-files,Other / Unclassified,Other
+385,383,Third Party Users - Progress,https://charmswiki.com/wiki/246/third-party-users-progress,Other / Unclassified,Other
+386,385,University of Salford - Step Up to Social Work process,https://charmswiki.com/wiki/326/university-of-salford-step-up-to-social-work-process,Other / Unclassified,Other
+387,387,Verifying Progress and Logs,https://charmswiki.com/wiki/132/verifying-progress-and-logs,Other / Unclassified,Other
+388,388,Welcome to the CHARMS wiki,https://charmswiki.com/wiki/2/welcome-to-the-charms-wiki,Other / Unclassified,Other
