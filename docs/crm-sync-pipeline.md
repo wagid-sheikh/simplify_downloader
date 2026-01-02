@@ -1118,7 +1118,9 @@ Sales & Delivery Historical Report (within iframe) – Automation Steps (Playwri
 After login, navigate to Reports → Sales and Delivery and verify the container page URL is /{store_master.store_code}/App/Reports/NEWSalesAndDeliveryReport…. This page renders the actual report UI inside the iframe `iframe#ifrmReport` (its src is set dynamically). Rules:
 
 - Enter the iframe with `frameLocator('#ifrmReport')` and wait for non-empty `src` + spinner disappearance or primary controls visibility.
+- Reuse the same TD Orders session/context (storage_state) without forcing a new login; Sales runs on the identical platform and URL family.
 - Prefer role-based locators (`getByRole("button", { name: "Generate Report" })`, `"Request Report"`, `"Download"`) with text fallbacks.
+- Assume the Sales “Download” link uses the same underline-link row control verified for TD Orders; prioritize that locator strategy before falling back.
 - Inside the iframe: click the link/button labeled “Download historical report”; wait until the “Generate Report” button becomes visible and click it; a date-range overlay opens—set From and To dates using the date picker (or fill the inputs if they exist) and click “Update” to close the overlay; then click “Request Report”.
 - After requesting, wait for the spinner/loading animation to finish and for the “Report Requests” table to appear. Locate the row whose date range text exactly matches the requested UI-formatted range `DD Mon YYYY - DD Mon YYYY`; if multiple matches exist, pick the newest entry before clicking “Download” in that row only.
 - Use `page.waitForEvent('download')` (scoped to the click) and save using `{store_master.store_code}_td_sales_{YYYYMMDD-from}_{YYYYMMDD-to}.xlsx`. Confirm whether the intended date token is `YYYYMMDD` and apply the chosen format consistently after validation.

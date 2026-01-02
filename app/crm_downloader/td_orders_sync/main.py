@@ -15,8 +15,10 @@ import sqlalchemy as sa
 from playwright.async_api import Browser, BrowserContext, FrameLocator, Locator, Page, TimeoutError, async_playwright
 
 from app.common.db import session_scope
+from app.common.date_utils import get_timezone
 from app.config import config
 from app.crm_downloader.config import default_download_dir, default_profiles_dir
+from app.crm_downloader.td_orders_sync.ingest import TdOrdersIngestResult, ingest_td_orders_workbook
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from app.dashboard_downloader.notifications import send_notifications_for_run
 from app.dashboard_downloader.run_summary import fetch_summary_for_run, insert_run_summary, update_run_summary
@@ -46,6 +48,7 @@ async def main(
     """Run the TD Orders sync flow (login + iframe historical orders download)."""
 
     resolved_run_id = run_id or new_run_id()
+    resolved_run_date = datetime.now(get_timezone())
     resolved_env = run_env or config.run_env
     today = datetime.now(timezone.utc).date()
     run_start_date = from_date or today - timedelta(days=30)
@@ -105,6 +108,8 @@ async def main(
                     store=store,
                     logger=logger,
                     run_env=resolved_env,
+                    run_id=resolved_run_id,
+                    run_date=resolved_run_date,
                     run_start_date=run_start_date,
                     run_end_date=run_end_date,
                     nav_timeout_ms=nav_timeout_ms,
@@ -287,6 +292,7 @@ def _format_orders_filename(store_code: str, from_date: date, to_date: date) -> 
 class TdStore:
     store_code: str
     store_name: str | None
+    cost_center: str | None
     sync_config: Dict[str, Any]
 
     @property
@@ -451,7 +457,7 @@ class SessionProbeResult:
 async def _load_td_order_stores(*, logger: JsonLogger) -> List[TdStore]:
     query = sa.text(
         """
-        SELECT store_code, store_name, sync_config
+        SELECT store_code, store_name, sync_config, cost_center
         FROM store_master
         WHERE sync_group = :sync_group
           AND sync_orders_flag = TRUE
@@ -478,6 +484,7 @@ async def _load_td_order_stores(*, logger: JsonLogger) -> List[TdStore]:
                 TdStore(
                     store_code=raw_code.upper(),
                     store_name=row.get("store_name"),
+                    cost_center=row.get("cost_center"),
                     sync_config=sync_config,
                 )
             )
@@ -2610,6 +2617,8 @@ async def _run_store_discovery(
     store: TdStore,
     logger: JsonLogger,
     run_env: str,
+    run_id: str,
+    run_date: datetime,
     run_start_date: date,
     run_end_date: date,
     nav_timeout_ms: int,
@@ -2858,6 +2867,95 @@ async def _run_store_discovery(
                 download_dir=download_dir,
             )
             if success:
+                ingest_result: TdOrdersIngestResult | None = None
+                status_label = "ok"
+                if config.database_url:
+                    if not store.cost_center:
+                        log_event(
+                            logger=store_logger,
+                            phase="ingest",
+                            status="error",
+                            message="Missing cost_center for TD store; cannot ingest orders",
+                            store_code=store.store_code,
+                        )
+                        outcome = StoreOutcome(
+                            status="error",
+                            message="Missing cost_center for TD store; cannot ingest orders",
+                            final_url=page.url,
+                            iframe_attached=True,
+                            verification_seen=verification_seen,
+                            storage_state=stored_state_path,
+                        )
+                        return
+                    try:
+                        ingest_result = await ingest_td_orders_workbook(
+                            workbook_path=Path(detail),
+                            store_code=store.store_code,
+                            cost_center=store.cost_center or "",
+                            run_id=run_id,
+                            run_date=run_date,
+                            database_url=config.database_url,
+                            logger=store_logger,
+                        )
+                        status_label = "warning" if ingest_result.warnings else "ok"
+                        if ingest_result.warnings:
+                            log_event(
+                                logger=store_logger,
+                                phase="ingest",
+                                status="warn",
+                                message="TD Orders workbook ingested with warnings",
+                                store_code=store.store_code,
+                                warnings=ingest_result.warnings,
+                                staging_rows=ingest_result.staging_rows,
+                                final_rows=ingest_result.final_rows,
+                            )
+                        else:
+                            log_event(
+                                logger=store_logger,
+                                phase="ingest",
+                                message="TD Orders workbook ingested",
+                                store_code=store.store_code,
+                                staging_rows=ingest_result.staging_rows,
+                                final_rows=ingest_result.final_rows,
+                            )
+                    except Exception as exc:
+                        log_event(
+                            logger=store_logger,
+                            phase="ingest",
+                            status="error",
+                            message="TD Orders ingestion failed",
+                            store_code=store.store_code,
+                            error=str(exc),
+                        )
+                        outcome = StoreOutcome(
+                            status="error",
+                            message=f"Orders ingestion failed: {exc}",
+                            final_url=page.url,
+                            iframe_attached=True,
+                            verification_seen=verification_seen,
+                            storage_state=stored_state_path,
+                        )
+                        return
+                else:
+                    log_event(
+                        logger=store_logger,
+                        phase="ingest",
+                        status="warn",
+                        message="Skipping TD Orders ingestion because database_url is missing",
+                        store_code=store.store_code,
+                    )
+                    status_label = "warning"
+
+                outcome_status = "ok"
+                outcome_message = "Orders report downloaded"
+                if status_label == "warning":
+                    outcome_status = "warning"
+                    outcome_message = "Orders downloaded with ingest warnings"
+                if ingest_result:
+                    outcome_message = (
+                        f"Orders ingested: staging={ingest_result.staging_rows}, final={ingest_result.final_rows}"
+                    )
+
                 log_event(
                     logger=store_logger,
                     phase="iframe",
@@ -2866,8 +2964,8 @@ async def _run_store_discovery(
                     download_path=detail,
                 )
                 outcome = StoreOutcome(
-                    status="ok",
-                    message="Orders report downloaded",
+                    status=outcome_status,
+                    message=outcome_message,
                     final_url=page.url,
                     iframe_attached=True,
                     verification_seen=verification_seen,
