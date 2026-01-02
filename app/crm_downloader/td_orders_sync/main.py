@@ -28,6 +28,12 @@ OTP_VERIFICATION_DWELL_SECONDS = 600
 TEMP_ENABLED_STORES = {"A668", "A817"}
 REPORT_REQUEST_MAX_TIMEOUT_MS = 60_000
 REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS = 20.0
+STABLE_LOCATOR_STRATEGIES = {
+    "container_locator_strategy": "heading_preferred_wrapper",
+    "range_match_strategy": "date_range_text_pattern",
+    "download_locator_strategy": "underline_link",
+}
+ENABLE_LEGACY_REPORT_REQUEST_ROW_LOCATORS = False
 
 
 async def main(
@@ -2029,49 +2035,48 @@ async def _collect_report_request_rows(
     container: Locator,
     *,
     max_rows: int = 20,
-    extra_containers: Sequence[Locator] | None = None,
 ) -> list[Locator]:
     rows: list[Locator] = []
     seen_handles: set[int] = set()
-    containers = [container]
-    if extra_containers:
-        containers.extend(extra_containers)
+    candidates = [
+        container.locator(":scope > section > div.flex.items-start.justify-between"),
+        container.locator(":scope > section > div.border-b.border-gray-100"),
+        container.locator(":scope > section > div"),
+    ]
+    if ENABLE_LEGACY_REPORT_REQUEST_ROW_LOCATORS:
+        candidates.extend(
+            [
+                container.locator(":scope > div.flex.items-start.justify-between"),
+                container.locator(":scope > div.border-b.border-gray-100"),
+                container.locator(":scope > div"),
+                container.locator(":scope > section"),
+                container.locator(":scope > article"),
+                container.locator(":scope > ul > li"),
+                container.locator(":scope li"),
+            ]
+        )
 
-    for source in containers:
-        candidates = [
-            source.locator(":scope > section > div.flex.items-start.justify-between"),
-            source.locator(":scope > section > div.border-b.border-gray-100"),
-            source.locator(":scope > section > div"),
-            source.locator(":scope > div.flex.items-start.justify-between"),
-            source.locator(":scope > div.border-b.border-gray-100"),
-            source.locator(":scope > div"),
-            source.locator(":scope > section"),
-            source.locator(":scope > article"),
-            source.locator(":scope > ul > li"),
-            source.locator(":scope li"),
-        ]
-
-        for candidate in candidates:
+    for candidate in candidates:
+        try:
+            count = await candidate.count()
+        except Exception:
+            continue
+        for idx in range(min(count, max_rows)):
+            row_locator = candidate.nth(idx)
             try:
-                count = await candidate.count()
+                handle = await row_locator.element_handle()
             except Exception:
+                handle = None
+            if handle is None:
                 continue
-            for idx in range(min(count, max_rows)):
-                row_locator = candidate.nth(idx)
-                try:
-                    handle = await row_locator.element_handle()
-                except Exception:
-                    handle = None
-                if handle is None:
+            key = id(handle)
+            if key in seen_handles:
+                continue
+            seen_handles.add(key)
+            with contextlib.suppress(Exception):
+                if not await row_locator.is_visible():
                     continue
-                key = id(handle)
-                if key in seen_handles:
-                    continue
-                seen_handles.add(key)
-                with contextlib.suppress(Exception):
-                    if not await row_locator.is_visible():
-                        continue
-                rows.append(row_locator)
+            rows.append(row_locator)
     return rows
 
 
@@ -2089,6 +2094,7 @@ async def _wait_for_report_requests_container(
     diagnostics: dict[str, Any] = {}
     container_strategy_seen: str | None = None
     strategies_logged = False
+    container_label = STABLE_LOCATOR_STRATEGIES["container_locator_strategy"]
 
     while asyncio.get_event_loop().time() < deadline:
         try:
@@ -2109,7 +2115,7 @@ async def _wait_for_report_requests_container(
                     heading_texts.append(" ".join(text.split()))
             if heading:
                 preferred_wrapper = heading.locator("xpath=ancestor::div[contains(@class,'py-10')][1]")
-                container_candidates = [("heading_preferred_wrapper", preferred_wrapper)]
+                container_candidates = [(container_label, preferred_wrapper)]
             else:
                 container_candidates = []
 
@@ -2130,20 +2136,14 @@ async def _wait_for_report_requests_container(
                             phase="iframe",
                             message="Using TD orders locator strategies",
                             store_code=store.store_code,
-                            container_locator_strategy="heading_preferred_wrapper",
-                            range_match_strategy="date_range_text_pattern",
-                            download_locator_strategy="underline_link",
+                            **STABLE_LOCATOR_STRATEGIES,
                         )
-                        strategies_logged = True
+                    strategies_logged = True
                 with contextlib.suppress(Exception):
                     await container.scroll_into_view_if_needed()
                 rows = await _collect_report_request_rows(
                     container,
                     max_rows=12,
-                    extra_containers=[
-                        container.locator(":scope > section"),
-                        container.locator(":scope > div"),
-                    ],
                 )
                 sample: list[str] = []
                 for row in rows:
@@ -2231,7 +2231,7 @@ async def _wait_for_report_request_download_link(
     backoff = 0.5
     matched_row_seen = False
     last_row_html: str | None = None
-    last_range_match_strategy: str | None = "date_range_text_pattern"
+    last_range_match_strategy: str | None = STABLE_LOCATOR_STRATEGIES["range_match_strategy"]
     last_pending_log_at = 0.0
     pending_attempts = 0
     download_strategy: str | None = None
@@ -2266,7 +2266,7 @@ async def _wait_for_report_request_download_link(
                 if status_text:
                     last_status = status_text
                 download_locator, download_strategy = await _first_visible_locator_with_label(
-                    [("underline_link", matched_row.locator("a.text-sm.underline"))],
+                    [(STABLE_LOCATOR_STRATEGIES["download_locator_strategy"], matched_row.locator("a.text-sm.underline"))],
                     timeout_ms=800,
                 )
                 if download_locator:
@@ -2284,7 +2284,7 @@ async def _wait_for_report_request_download_link(
                         row_html_snippet=last_row_html,
                         range_match_strategy=last_range_match_strategy,
                         download_locator_strategy=download_strategy,
-                        container_locator_strategy="heading_preferred_wrapper",
+                        container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
                     )
                     try:
                         async with page.expect_download(timeout=download_wait_timeout_ms) as download_info:
@@ -2302,7 +2302,7 @@ async def _wait_for_report_request_download_link(
                             expected_range_texts=list(expected_range_texts),
                             download_locator_strategy=download_strategy,
                             range_match_strategy=last_range_match_strategy,
-                            container_locator_strategy="heading_preferred_wrapper",
+                            container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
                         )
                         return True, str(download_path), matched_text, last_status
                     except Exception as exc:
@@ -2337,7 +2337,7 @@ async def _wait_for_report_request_download_link(
                             last_seen_rows=last_seen_texts or [matched_text],
                             row_html_snippet=last_row_html,
                             range_match_strategy=last_range_match_strategy,
-                            container_locator_strategy="heading_preferred_wrapper",
+                            container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
                         )
                         last_pending_log_at = now
                 else:
