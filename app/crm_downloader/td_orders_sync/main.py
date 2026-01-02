@@ -26,7 +26,6 @@ DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS = 90_000
 LOADING_LOCATOR_SELECTORS = ("text=/loading/i", ".k-loading-mask")
 OTP_VERIFICATION_DWELL_SECONDS = 600
 TEMP_ENABLED_STORES = {"A668", "A817"}
-REPORT_REQUEST_POLL_EXTENSION_MS = 30_000
 REPORT_REQUEST_MAX_TIMEOUT_MS = 60_000
 REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS = 20.0
 
@@ -1213,6 +1212,22 @@ async def _first_visible_locator(candidates: list[Locator], *, timeout_ms: int) 
     return None
 
 
+async def _first_visible_locator_with_label(
+    candidates: list[tuple[str, Locator]], *, timeout_ms: int
+) -> tuple[Locator | None, str | None]:
+    deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
+    while asyncio.get_event_loop().time() < deadline:
+        for label, candidate in candidates:
+            try:
+                count = await candidate.count()
+                if count and await candidate.first.is_visible():
+                    return candidate.first, label
+            except Exception:
+                continue
+        await asyncio.sleep(0.3)
+    return None, None
+
+
 async def _wait_for_date_ui(
     frame: FrameLocator, *, timeout_ms: int
 ) -> list[dict[str, Any]]:
@@ -2084,6 +2099,7 @@ async def _wait_for_report_requests_container(
     heading_texts: list[str] = []
     diagnostics: dict[str, Any] = {}
     empty_dom_logged = False
+    container_strategy_seen: str | None = None
 
     while asyncio.get_event_loop().time() < deadline:
         try:
@@ -2100,16 +2116,19 @@ async def _wait_for_report_requests_container(
                     await heading.scroll_into_view_if_needed()
                 with contextlib.suppress(Exception):
                     text = await heading.inner_text()
-                    if text:
-                        heading_texts.append(" ".join(text.split()))
+                if text:
+                    heading_texts.append(" ".join(text.split()))
             container_candidates = []
             row_containers: list[Locator] = []
             if heading:
                 preferred_wrapper = heading.locator("xpath=ancestor::div[contains(@class,'py-10')][1]")
                 container_candidates.append(
-                    heading.locator("xpath=ancestor::div[contains(@class,'py-10')][1]/following-sibling::*[self::section or self::div or self::article][1]")
+                    (
+                        "heading_wrapper_following",
+                        heading.locator("xpath=ancestor::div[contains(@class,'py-10')][1]/following-sibling::*[self::section or self::div or self::article][1]"),
+                    )
                 )
-                container_candidates.append(preferred_wrapper)
+                container_candidates.append(("heading_preferred_wrapper", preferred_wrapper))
                 row_containers.extend(
                     [
                         preferred_wrapper.locator(":scope > section"),
@@ -2119,56 +2138,89 @@ async def _wait_for_report_requests_container(
                 )
                 container_candidates.extend(
                     [
-                        heading.locator(
-                            "xpath=following-sibling::*[self::section or self::div or self::article or self::table][1]"
+                        (
+                            "heading_following_sibling",
+                            heading.locator(
+                                "xpath=following-sibling::*[self::section or self::div or self::article or self::table][1]"
+                            ),
                         ),
-                        heading.locator(
-                            "xpath=ancestor::*[self::section or self::div or self::article][1]/following-sibling::*[self::section or self::div or self::article or self::table][1]"
+                        (
+                            "heading_ancestor_following",
+                            heading.locator(
+                                "xpath=ancestor::*[self::section or self::div or self::article][1]/following-sibling::*[self::section or self::div or self::article or self::table][1]"
+                            ),
                         ),
-                        heading.locator(
-                            "xpath=parent::*[self::div or self::section or self::article]/following-sibling::*[self::div or self::section or self::article or self::table][1]"
+                        (
+                            "heading_parent_following",
+                            heading.locator(
+                                "xpath=parent::*[self::div or self::section or self::article]/following-sibling::*[self::div or self::section or self::article or self::table][1]"
+                            ),
                         ),
-                        heading.locator(
-                            "xpath=ancestor::*[self::section or self::div or self::article][1]//*[self::table or self::ul or self::ol][1]"
-                        ),
-                    ]
-                )
-                container_candidates.extend(
-                    [
-                        heading.locator(
-                            "xpath=following-sibling::*[self::section or self::div or self::article or self::table][1]"
-                        ),
-                        heading.locator(
-                            "xpath=ancestor::*[self::section or self::div or self::article][1]/following-sibling::*[self::section or self::div or self::article or self::table][1]"
-                        ),
-                        heading.locator(
-                            "xpath=parent::*[self::div or self::section or self::article]/following-sibling::*[self::div or self::section or self::article or self::table][1]"
-                        ),
-                        heading.locator(
-                            "xpath=ancestor::*[self::section or self::div or self::article][1]//*[self::table or self::ul or self::ol][1]"
+                        (
+                            "heading_ancestor_descendant_table_like",
+                            heading.locator(
+                                "xpath=ancestor::*[self::section or self::div or self::article][1]//*[self::table or self::ul or self::ol][1]"
+                            ),
                         ),
                     ]
                 )
                 container_candidates.extend(
                     [
-                        heading.locator("xpath=ancestor::*[self::section or self::div or self::article or self::main][1]"),
-                        heading.locator("xpath=ancestor::section[1]"),
-                        heading.locator("xpath=ancestor::div[1]"),
-                        heading.locator("xpath=ancestor::table[1]"),
-                        heading.locator("xpath=ancestor::*[@id][1]"),
-                        heading.locator("xpath=ancestor::*[@class][1]"),
+                        (
+                            "heading_following_sibling_dup",
+                            heading.locator(
+                                "xpath=following-sibling::*[self::section or self::div or self::article or self::table][1]"
+                            ),
+                        ),
+                        (
+                            "heading_ancestor_following_dup",
+                            heading.locator(
+                                "xpath=ancestor::*[self::section or self::div or self::article][1]/following-sibling::*[self::section or self::div or self::article or self::table][1]"
+                            ),
+                        ),
+                        (
+                            "heading_parent_following_dup",
+                            heading.locator(
+                                "xpath=parent::*[self::div or self::section or self::article]/following-sibling::*[self::div or self::section or self::article or self::table][1]"
+                            ),
+                        ),
+                        (
+                            "heading_ancestor_descendant_table_like_dup",
+                            heading.locator(
+                                "xpath=ancestor::*[self::section or self::div or self::article][1]//*[self::table or self::ul or self::ol][1]"
+                            ),
+                        ),
+                    ]
+                )
+                container_candidates.extend(
+                    [
+                        ("heading_section_ancestor", heading.locator("xpath=ancestor::*[self::section or self::div or self::article or self::main][1]")),
+                        ("heading_section_direct", heading.locator("xpath=ancestor::section[1]")),
+                        ("heading_div_direct", heading.locator("xpath=ancestor::div[1]")),
+                        ("heading_table_direct", heading.locator("xpath=ancestor::table[1]")),
+                        ("heading_id_ancestor", heading.locator("xpath=ancestor::*[@id][1]")),
+                        ("heading_class_ancestor", heading.locator("xpath=ancestor::*[@class][1]")),
                     ]
                 )
             container_candidates.extend(
                 [
-                    frame.get_by_role("table", name=re.compile("report requests", re.I)),
-                    frame.locator("table:has-text(\"Report Requests\")"),
-                    frame.locator("section:has-text(\"Report Requests\")"),
-                    frame.locator("div:has-text(\"Report Requests\")"),
+                    ("table_role", frame.get_by_role("table", name=re.compile("report requests", re.I))),
+                    ("table_text", frame.locator("table:has-text(\"Report Requests\")")),
+                    ("section_text", frame.locator("section:has-text(\"Report Requests\")")),
+                    ("div_text", frame.locator("div:has-text(\"Report Requests\")")),
                 ]
             )
-            container = await _first_visible_locator(container_candidates, timeout_ms=1_000)
+            container, container_strategy = await _first_visible_locator_with_label(container_candidates, timeout_ms=1_000)
             if container:
+                if container_strategy and not container_strategy_seen:
+                    container_strategy_seen = container_strategy
+                    log_event(
+                        logger=logger,
+                        phase="iframe",
+                        message="Report Requests container located",
+                        store_code=store.store_code,
+                        container_locator_strategy=container_strategy_seen,
+                    )
                 with contextlib.suppress(Exception):
                     await container.scroll_into_view_if_needed()
                 row_containers.extend(
@@ -2244,8 +2296,14 @@ async def _wait_for_report_requests_container(
                         message="Observed Report Requests rows",
                         store_code=store.store_code,
                         rows=last_seen,
+                        container_locator_strategy=container_strategy,
                     )
-                diagnostics = {"header_seen": header_seen, "heading_texts": heading_texts or None, "last_seen_rows": last_seen or None}
+                diagnostics = {
+                    "header_seen": header_seen,
+                    "heading_texts": heading_texts or None,
+                    "last_seen_rows": last_seen or None,
+                    "container_locator_strategy": container_strategy,
+                }
                 return container, diagnostics
         except Exception:
             pass
@@ -2263,6 +2321,7 @@ async def _wait_for_report_requests_container(
         last_seen_rows=last_seen or None,
         header_seen=header_seen,
         heading_texts=heading_texts or None,
+        container_locator_strategy=container_strategy_seen,
     )
     return None, diagnostics
 
@@ -2298,9 +2357,9 @@ async def _wait_for_report_request_download_link(
     store: TdStore,
     timeout_ms: int,
     container_html_snippet: str | None = None,
-) -> tuple[Locator | None, str | None, str | None]:
-    extended_timeout_ms = min(REPORT_REQUEST_MAX_TIMEOUT_MS, timeout_ms + REPORT_REQUEST_POLL_EXTENSION_MS)
-    deadline = asyncio.get_event_loop().time() + (extended_timeout_ms / 1000)
+) -> tuple[Locator | None, str | None, str | None, str | None]:
+    poll_timeout_ms = min(REPORT_REQUEST_MAX_TIMEOUT_MS, timeout_ms)
+    deadline = asyncio.get_event_loop().time() + (poll_timeout_ms / 1000)
     normalized_expected = {" ".join(text.split()).lower() for text in expected_range_texts}
     last_seen_texts: list[str] = []
     last_status: str | None = None
@@ -2311,6 +2370,7 @@ async def _wait_for_report_request_download_link(
     last_refresh_at = 0.0
     last_row_html: str | None = None
     empty_poll_attempts = 0
+    last_range_match_strategy: str | None = None
 
     while asyncio.get_event_loop().time() < deadline:
         try:
@@ -2321,6 +2381,7 @@ async def _wait_for_report_request_download_link(
             matched_row: Locator | None = None
             matched_text: str | None = None
             matched_row_full_text: str | None = None
+            matched_range_strategy: str | None = None
             for row in rows:
                 date_range_text_raw = None
                 date_range_text = None
@@ -2334,20 +2395,26 @@ async def _wait_for_report_request_download_link(
                     row_full_text_raw = await row.inner_text()
                 if row_full_text_raw:
                     row_full_text = " ".join(row_full_text_raw.split())
-                candidate_texts = [text for text in (date_range_text, row_full_text) if text]
+                candidate_texts = []
+                if date_range_text:
+                    candidate_texts.append(("date_range_text", date_range_text))
+                if row_full_text:
+                    candidate_texts.append(("row_full_text", row_full_text))
                 if date_range_text:
                     visible_rows.append(date_range_text)
                 elif row_full_text:
                     visible_rows.append(row_full_text)
-                for candidate_text in candidate_texts:
+                for label, candidate_text in candidate_texts:
                     normalized_candidate = candidate_text.lower()
-                    matches_expected = normalized_candidate in normalized_expected or any(
+                    matched_by_pattern = any(
                         pattern.search(candidate_text) for pattern in range_patterns
                     )
+                    matches_expected = normalized_candidate in normalized_expected or matched_by_pattern
                     if matches_expected:
                         matched_row = row
                         matched_text = date_range_text or candidate_text
                         matched_row_full_text = row_full_text or matched_text
+                        matched_range_strategy = f"{label}_{'pattern' if matched_by_pattern else 'exact'}"
                         try:
                             last_row_html = _truncate_html(await _capture_outer_html(row))
                         except Exception:
@@ -2361,12 +2428,12 @@ async def _wait_for_report_request_download_link(
                 download_href = None
                 with contextlib.suppress(Exception):
                     download_href = await matched_row.locator("a.text-sm.underline").first.get_attribute("href")
-                download_locator = await _first_visible_locator(
+                download_locator, download_strategy = await _first_visible_locator_with_label(
                     [
-                        matched_row.locator("a.text-sm.underline"),
-                        matched_row.get_by_role("link", name=re.compile("download", re.I)),
-                        matched_row.get_by_role("button", name=re.compile("download", re.I)),
-                        matched_row.locator("text=Download"),
+                        ("underline_link", matched_row.locator("a.text-sm.underline")),
+                        ("download_link_role", matched_row.get_by_role("link", name=re.compile("download", re.I))),
+                        ("download_button_role", matched_row.get_by_role("button", name=re.compile("download", re.I))),
+                        ("download_text_locator", matched_row.locator("text=Download")),
                     ],
                     timeout_ms=1_000,
                 )
@@ -2390,8 +2457,11 @@ async def _wait_for_report_request_download_link(
                         matched_row_text_full=matched_row_full_text or matched_text,
                         matched_row_download_href=download_href,
                         row_html_snippet=last_row_html,
+                        range_match_strategy=matched_range_strategy or last_range_match_strategy,
+                        download_locator_strategy=download_strategy,
                     )
-                    return download_locator, matched_text, status_text or last_status
+                    last_range_match_strategy = matched_range_strategy or last_range_match_strategy
+                    return download_locator, matched_text, status_text or last_status, download_strategy
 
                 status_text = await _extract_row_status_text(matched_row)
                 if status_text:
@@ -2405,12 +2475,14 @@ async def _wait_for_report_request_download_link(
                         status_text=status_text,
                         expected_range_texts=list(expected_range_texts),
                         backoff_seconds=backoff,
-                        timeout_ms=extended_timeout_ms,
+                        timeout_ms=poll_timeout_ms,
                         download_control_visible=False,
                         matched_row_text_full=matched_row_full_text or matched_text,
                         matched_row_download_href=download_href,
                         row_html_snippet=last_row_html,
+                        range_match_strategy=matched_range_strategy or last_range_match_strategy,
                     )
+                last_range_match_strategy = matched_range_strategy or last_range_match_strategy
                 refresh_locator = await _first_visible_locator(
                     [
                         matched_row.get_by_role("link", name=re.compile("refresh", re.I)),
@@ -2467,13 +2539,14 @@ async def _wait_for_report_request_download_link(
                         matched_range_text=matched_text,
                         last_status=last_status,
                         backoff_seconds=backoff,
-                        timeout_ms=extended_timeout_ms,
+                        timeout_ms=poll_timeout_ms,
                         last_seen_rows=last_seen_texts or [matched_text],
                         all_row_texts=visible_rows or [matched_text],
                         download_control_visible=False,
                         matched_row_text_full=matched_row_full_text or matched_text,
                         matched_row_download_href=download_href,
                         row_html_snippet=last_row_html,
+                        range_match_strategy=matched_range_strategy or last_range_match_strategy,
                     )
                     last_logged_at = now
             if visible_rows:
@@ -2536,11 +2609,12 @@ async def _wait_for_report_request_download_link(
                 last_seen_rows=last_seen_texts,
                 last_status=last_status,
                 backoff_seconds=backoff,
-                timeout_ms=extended_timeout_ms,
+                timeout_ms=poll_timeout_ms,
                 row_html_snippet=last_row_html,
                 all_row_texts=last_seen_texts,
                 matched_row_download_href=download_href if matched_row and matched_text else None,
                 matched_row_text_full=matched_row_full_text if matched_row and matched_text else None,
+                range_match_strategy=last_range_match_strategy,
             )
             last_logged_at = now
 
@@ -2557,11 +2631,12 @@ async def _wait_for_report_request_download_link(
         last_seen_rows=last_seen_texts or None,
         last_status=last_status,
         row_seen=matched_row_seen,
-        timeout_ms=extended_timeout_ms,
+        timeout_ms=poll_timeout_ms,
         row_html_snippet=last_row_html,
         container_html_snippet=container_html_snippet,
+        range_match_strategy=last_range_match_strategy,
     )
-    return None, None, last_status
+    return None, None, last_status, None
 
 
 async def _run_orders_iframe_flow(
@@ -2714,7 +2789,7 @@ async def _run_orders_iframe_flow(
                 store_code=store.store_code,
             )
 
-    download_locator, matched_range_text, last_status = await _wait_for_report_request_download_link(
+    download_locator, matched_range_text, last_status, download_strategy = await _wait_for_report_request_download_link(
         frame,
         container_locator,
         expected_range_texts=range_text_candidates,
@@ -2734,12 +2809,14 @@ async def _run_orders_iframe_flow(
         store_code=store.store_code,
         matched_range_text=matched_range_text,
         last_status=last_status,
+        download_locator_strategy=download_strategy,
     )
 
     filename = _format_orders_filename(store.store_code, from_date, to_date)
     target_path = download_dir / filename
 
-    async with page.expect_download(timeout=nav_timeout_ms) as download_info:
+    download_wait_timeout_ms = min(nav_timeout_ms, 20_000)
+    async with page.expect_download(timeout=download_wait_timeout_ms) as download_info:
         await download_locator.click()
     download = await download_info.value
     await download.save_as(str(target_path))
