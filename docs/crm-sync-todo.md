@@ -49,7 +49,8 @@
 ## Phase 4: TD Sales – session/frame discovery
 
 6. **TD Sales: login reuse + iframe hydration detection**
-   * Reuse session; navigate to Sales & Delivery report; enter iframe; log selectors/spinner/date controls (no download yet).
+   * Reuse the same TD Orders session/context (no fresh login); navigate to Sales & Delivery report; enter iframe; log selectors/spinner/date controls (no download yet).
+   * Assume the Sales download link follows the same underline-link pattern proven for TD Orders; reuse that locator strategy unless new evidence is found.
 
 ---
 
