@@ -2878,22 +2878,55 @@ async def _run_store_discovery(
     outcome = StoreOutcome(status="error", message="Store run did not complete")
     stored_state_path: str | None = None
     probe_reason: str | None = None
+    probe_result: SessionProbeResult | None = None
     try:
-        session_reused = storage_state_exists
+        session_reused = False
         login_performed = False
         verification_seen = False
         verification_ok = True
         if storage_state_exists:
-            probe_reason = "probe_skipped"
             log_event(
                 logger=store_logger,
                 phase="session",
-                message="Skipping session probe; using stored storage state",
+                message="Storage state found; probing session validity",
                 store_code=store.store_code,
-                session_reused=session_reused,
                 storage_state=str(store.storage_state_path),
-                probe_reason=probe_reason,
             )
+            probe_result = await _probe_session(
+                page, store=store, logger=store_logger, timeout_ms=nav_timeout_ms
+            )
+            probe_reason = probe_result.reason or "state_valid"
+            verification_seen = bool(probe_result.verification_seen)
+            if probe_result.valid:
+                session_reused = True
+                log_event(
+                    logger=store_logger,
+                    phase="session",
+                    message="Storage state probe valid; reusing session",
+                    store_code=store.store_code,
+                    storage_state=str(store.storage_state_path),
+                    probe_reason=probe_reason,
+                    probe_valid=probe_result.valid,
+                    re_login_performed=login_performed,
+                )
+            else:
+                log_event(
+                    logger=store_logger,
+                    phase="session",
+                    message="Storage state probe invalid; performing login",
+                    store_code=store.store_code,
+                    storage_state=str(store.storage_state_path),
+                    probe_reason=probe_reason,
+                    probe_valid=probe_result.valid,
+                    verification_seen=verification_seen,
+                    nav_visible=probe_result.nav_visible,
+                    home_card_visible=probe_result.home_card_visible,
+                    re_login_performed=True,
+                )
+                session_reused = await _perform_login(
+                    page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms
+                )
+                login_performed = True
         else:  # no storage state → must login
             probe_reason = "no_storage_state"
             log_event(
@@ -2901,6 +2934,7 @@ async def _run_store_discovery(
                 phase="session",
                 message="No storage state found; performing login",
                 store_code=store.store_code,
+                re_login_performed=True,
             )
             session_reused = await _perform_login(
                 page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms
@@ -2916,6 +2950,8 @@ async def _run_store_discovery(
                 final_url=page.url,
                 storage_state=str(store.storage_state_path),
                 probe_reason=probe_reason,
+                probe_valid=probe_result.valid if probe_result else None,
+                re_login_performed=login_performed,
             )
             if store.store_code.upper() == "A817":
                 log_event(
@@ -2936,7 +2972,9 @@ async def _run_store_discovery(
                 final_url=page.url,
                 storage_state=str(store.storage_state_path),
                 probe_reason=probe_reason,
+                probe_valid=probe_result.valid if probe_result else None,
                 login_performed=login_performed,
+                re_login_performed=login_performed,
             )
             verification_ok = True
             verification_seen = False
@@ -2944,12 +2982,13 @@ async def _run_store_discovery(
             log_event(
                 logger=store_logger,
                 phase="session",
-                message="state invalid → relogin+OTP",
+                message="Session invalid after probe/login attempt",
                 store_code=store.store_code,
                 storage_state=str(store.storage_state_path),
                 probe_reason=probe_reason,
-                login_prompt_seen=False,
                 verification_seen=verification_seen,
+                probe_valid=probe_result.valid if probe_result else None,
+                re_login_performed=login_performed,
             )
             if not login_performed:
                 session_reused = await _perform_login(
