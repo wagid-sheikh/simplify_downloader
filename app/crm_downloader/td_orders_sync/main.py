@@ -30,6 +30,7 @@ OTP_VERIFICATION_DWELL_SECONDS = 600
 TEMP_ENABLED_STORES = {"A668", "A817"}
 REPORT_REQUEST_MAX_TIMEOUT_MS = 60_000
 REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS = 20.0
+REPORT_REQUEST_REFRESH_INTERVAL_SECONDS = 15.0
 STABLE_LOCATOR_STRATEGIES = {
     "container_locator_strategy": "heading_preferred_wrapper",
     "range_match_strategy": "date_range_text_pattern",
@@ -1948,6 +1949,25 @@ def _truncate_html(html: str | None, limit: int = 4000) -> str | None:
     return f"{html[:limit]}…[truncated {len(html) - limit} chars]"
 
 
+def _parse_eta_seconds(status_text: str | None) -> int | None:
+    if not status_text:
+        return None
+    lowered = status_text.lower()
+    match = re.search(r"(\d+)\s*h(?=\D|$)", lowered)
+    hours = int(match.group(1)) * 3600 if match else 0
+    match = re.search(r"(\d+)\s*m(?=\D|$)", lowered)
+    minutes = int(match.group(1)) * 60 if match else 0
+    match = re.search(r"(\d+)\s*s(?=\D|$)", lowered)
+    seconds = int(match.group(1)) if match else 0
+    total = hours + minutes + seconds
+    if total > 0:
+        return total
+    match = re.search(r"eta\s*[:\-]?\s*(\d+)", lowered)
+    if match:
+        return int(match.group(1))
+    return None
+
+
 async def _capture_outer_html(locator: Locator) -> str | None:
     try:
         return await locator.evaluate("(el) => el.outerHTML")
@@ -2231,8 +2251,9 @@ async def _wait_for_report_request_download_link(
     download_wait_timeout_ms: int,
     container_html_snippet: str | None = None,
 ) -> tuple[bool, str | None, str | None, str | None]:
+    start_time = asyncio.get_event_loop().time()
     poll_timeout_ms = min(REPORT_REQUEST_MAX_TIMEOUT_MS, timeout_ms)
-    deadline = asyncio.get_event_loop().time() + (poll_timeout_ms / 1000)
+    deadline = start_time + (poll_timeout_ms / 1000)
     last_seen_texts: list[str] = []
     last_status: str | None = None
     backoff = 0.5
@@ -2242,6 +2263,7 @@ async def _wait_for_report_request_download_link(
     last_pending_log_at = 0.0
     pending_attempts = 0
     download_strategy: str | None = None
+    last_refresh_attempt_at = 0.0
 
     while asyncio.get_event_loop().time() < deadline:
         try:
@@ -2251,6 +2273,9 @@ async def _wait_for_report_request_download_link(
             visible_rows: list[str] = []
             matched_row: Locator | None = None
             matched_text: str | None = None
+            matched_status: str | None = None
+            matched_row_state: str | None = None
+            matched_candidates: list[dict[str, Any]] = []
             for row in rows:
                 date_range_text_raw = None
                 with contextlib.suppress(Exception):
@@ -2261,21 +2286,67 @@ async def _wait_for_report_request_download_link(
                 visible_rows.append(date_range_text)
                 matches_expected = any(pattern.search(date_range_text) for pattern in range_patterns)
                 if matches_expected:
-                    matched_row = row
-                    matched_text = date_range_text
+                    status_text = await _extract_row_status_text(row)
+                    download_locator, strategy = await _first_visible_locator_with_label(
+                        [(STABLE_LOCATOR_STRATEGIES["download_locator_strategy"], row.locator("a.text-sm.underline"))],
+                        timeout_ms=800,
+                    )
                     with contextlib.suppress(Exception):
                         last_row_html = _truncate_html(await _capture_outer_html(row))
-                    break
-            if matched_row and matched_text:
+                    matched_candidates.append(
+                        {
+                            "row": row,
+                            "range_text": date_range_text,
+                            "status_text": status_text,
+                            "download_locator": download_locator,
+                            "download_strategy": strategy,
+                            "row_html": last_row_html,
+                        }
+                    )
+
+            if matched_candidates:
                 matched_row_seen = True
-                last_seen_texts = visible_rows or [matched_text]
-                status_text = await _extract_row_status_text(matched_row)
-                if status_text:
-                    last_status = status_text
-                download_locator, download_strategy = await _first_visible_locator_with_label(
-                    [(STABLE_LOCATOR_STRATEGIES["download_locator_strategy"], matched_row.locator("a.text-sm.underline"))],
-                    timeout_ms=800,
+                last_seen_texts = visible_rows or [matched_candidates[0]["range_text"]]
+                downloadable_candidates = [candidate for candidate in matched_candidates if candidate["download_locator"] is not None]
+                pending_candidates = [
+                    candidate
+                    for candidate in matched_candidates
+                    if candidate.get("status_text") and "pending" in candidate["status_text"].lower()
+                ]
+                selected_candidate = (
+                    downloadable_candidates[0]
+                    if downloadable_candidates
+                    else pending_candidates[0]
+                    if pending_candidates
+                    else matched_candidates[0]
                 )
+                matched_row = selected_candidate["row"]
+                matched_text = selected_candidate["range_text"]
+                matched_status = selected_candidate.get("status_text")
+                last_status = matched_status or last_status
+                download_locator = selected_candidate.get("download_locator")
+                download_strategy = selected_candidate.get("download_strategy")
+                matched_row_state = "downloadable" if download_locator else "pending" if pending_candidates else "unknown"
+                last_row_html = selected_candidate.get("row_html")
+
+                if matched_status:
+                    eta_seconds = _parse_eta_seconds(matched_status)
+                    if eta_seconds is not None:
+                        desired_deadline = start_time + eta_seconds
+                        if desired_deadline > deadline:
+                            deadline = desired_deadline
+                            poll_timeout_ms = int((deadline - start_time) * 1000)
+                            log_event(
+                                logger=logger,
+                                phase="iframe",
+                                message="Extended report request poll window to ETA",
+                                store_code=store.store_code,
+                                matched_range_text=matched_text,
+                                eta_seconds=eta_seconds,
+                                new_timeout_ms=poll_timeout_ms,
+                                range_match_strategy=last_range_match_strategy,
+                            )
+
                 if download_locator:
                     log_event(
                         logger=logger,
@@ -2283,7 +2354,7 @@ async def _wait_for_report_request_download_link(
                         message="Report Requests row ready for download",
                         store_code=store.store_code,
                         matched_range_text=matched_text,
-                        status_text=last_status,
+                        status_text=matched_status,
                         expected_range_texts=list(expected_range_texts),
                         all_row_texts=visible_rows or [matched_text],
                         download_control_visible=True,
@@ -2292,6 +2363,7 @@ async def _wait_for_report_request_download_link(
                         range_match_strategy=last_range_match_strategy,
                         download_locator_strategy=download_strategy,
                         container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+                        selected_row_state=matched_row_state,
                     )
                     try:
                         async with page.expect_download(timeout=download_wait_timeout_ms) as download_info:
@@ -2310,8 +2382,9 @@ async def _wait_for_report_request_download_link(
                             download_locator_strategy=download_strategy,
                             range_match_strategy=last_range_match_strategy,
                             container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+                            selected_row_state=matched_row_state,
                         )
-                        return True, str(download_path), matched_text, last_status
+                        return True, str(download_path), matched_text, matched_status
                     except Exception as exc:
                         last_status = str(exc)
                         log_event(
@@ -2324,10 +2397,11 @@ async def _wait_for_report_request_download_link(
                             error=str(exc),
                             range_match_strategy=last_range_match_strategy,
                             download_locator_strategy=download_strategy,
+                            selected_row_state=matched_row_state,
                         )
                         return False, None, matched_text, last_status
 
-                if status_text and "pending" in status_text.lower():
+                if matched_status and "pending" in matched_status.lower():
                     pending_attempts += 1
                     now = asyncio.get_event_loop().time()
                     if now - last_pending_log_at >= REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS or pending_attempts == 1:
@@ -2337,7 +2411,7 @@ async def _wait_for_report_request_download_link(
                             message="Report Requests row pending; retrying download poll",
                             store_code=store.store_code,
                             matched_range_text=matched_text,
-                            status_text=status_text,
+                            status_text=matched_status,
                             expected_range_texts=list(expected_range_texts),
                             backoff_seconds=backoff,
                             timeout_ms=poll_timeout_ms,
@@ -2345,8 +2419,60 @@ async def _wait_for_report_request_download_link(
                             row_html_snippet=last_row_html,
                             range_match_strategy=last_range_match_strategy,
                             container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+                            download_locator_strategy=download_strategy,
+                            selected_row_state=matched_row_state,
                         )
                         last_pending_log_at = now
+
+                    if now - last_refresh_attempt_at >= REPORT_REQUEST_REFRESH_INTERVAL_SECONDS:
+                        refresh_locator = await _first_visible_locator(
+                            [
+                                container.get_by_role("button", name=re.compile("refresh", re.I)),
+                                frame.get_by_role("button", name=re.compile("refresh", re.I)),
+                                container.locator("text=/Refresh/i"),
+                            ],
+                            timeout_ms=1_200,
+                        )
+                        refresh_timestamp = datetime.now(timezone.utc).isoformat()
+                        if refresh_locator:
+                            try:
+                                await refresh_locator.click()
+                                log_event(
+                                    logger=logger,
+                                    phase="iframe",
+                                    message="Triggered Report Requests refresh during pending state",
+                                    store_code=store.store_code,
+                                    matched_range_text=matched_text,
+                                    status_text=matched_status,
+                                    refresh_timestamp=refresh_timestamp,
+                                    range_match_strategy=last_range_match_strategy,
+                                )
+                            except Exception as exc:
+                                log_event(
+                                    logger=logger,
+                                    phase="iframe",
+                                    status="warn",
+                                    message="Failed to click Refresh during pending state",
+                                    store_code=store.store_code,
+                                    matched_range_text=matched_text,
+                                    status_text=matched_status,
+                                    refresh_timestamp=refresh_timestamp,
+                                    error=str(exc),
+                                    range_match_strategy=last_range_match_strategy,
+                                )
+                        else:
+                            log_event(
+                                logger=logger,
+                                phase="iframe",
+                                status="warn",
+                                message="Refresh control not visible during pending state",
+                                store_code=store.store_code,
+                                matched_range_text=matched_text,
+                                status_text=matched_status,
+                                refresh_timestamp=refresh_timestamp,
+                                range_match_strategy=last_range_match_strategy,
+                            )
+                        last_refresh_attempt_at = now
                 else:
                     break
             if visible_rows:
@@ -2370,6 +2496,7 @@ async def _wait_for_report_request_download_link(
         row_html_snippet=last_row_html,
         container_html_snippet=container_html_snippet,
         range_match_strategy=last_range_match_strategy,
+        download_locator_strategy=download_strategy,
     )
     return False, None, None, last_status
 
