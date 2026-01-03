@@ -2242,8 +2242,7 @@ async def _locate_report_request_download(row: Locator) -> tuple[Locator | None,
     download_candidates: list[tuple[str, Locator]] = [
         ("href_contains_order_reports", row.locator(":scope a[href*='order-reports']")),
         ("link_role_download", row.get_by_role("link", name=re.compile("download", re.I))),
-        ("has_text_download", row.locator(":scope a:has-text('Download')")),
-        ("underline_link", row.locator(":scope a.text-sm.underline")),
+        ("has_text_download", row.locator(':scope a:has-text("Download")')),
     ]
     return await _first_visible_locator_with_label(download_candidates, timeout_ms=1_200)
 
@@ -2277,6 +2276,8 @@ async def _wait_for_report_request_download_link(
     last_refresh_attempt_at = 0.0
     selected_row_state: str | None = None
     selection_source: str | None = None
+    last_matched_range_text: str | None = None
+    last_download_locator_strategy: str | None = None
 
     while asyncio.get_event_loop().time() < deadline:
         try:
@@ -2284,10 +2285,6 @@ async def _wait_for_report_request_download_link(
                 await container.scroll_into_view_if_needed()
             rows = await _collect_report_request_rows(container, max_rows=25)
             visible_rows: list[str] = []
-            matched_row: Locator | None = None
-            matched_text: str | None = None
-            matched_status: str | None = None
-            matched_row_state: str | None = None
             matched_candidates: list[dict[str, Any]] = []
             for row_index, row in enumerate(rows):
                 date_range_text_raw = None
@@ -2339,14 +2336,15 @@ async def _wait_for_report_request_download_link(
                     matched_row_state = "unknown"
                     selection_source = "first_match_row"
 
-                matched_row = selected_candidate["row"]
                 matched_text = selected_candidate["range_text"]
                 matched_status = selected_candidate.get("status_text")
                 last_status = matched_status or last_status
                 download_locator = selected_candidate.get("download_locator")
-                download_strategy = selected_candidate.get("download_strategy")
+                download_strategy = selected_candidate.get("download_strategy") or download_strategy
                 selected_row_state = matched_row_state
                 last_row_html = selected_candidate.get("row_html")
+                last_matched_range_text = matched_text or last_matched_range_text
+                last_download_locator_strategy = download_strategy or last_download_locator_strategy
 
                 log_event(
                     logger=logger,
@@ -2550,11 +2548,12 @@ async def _wait_for_report_request_download_link(
         row_html_snippet=last_row_html,
         container_html_snippet=container_html_snippet,
         range_match_strategy=last_range_match_strategy,
-        download_locator_strategy=download_strategy,
+        download_locator_strategy=last_download_locator_strategy or download_strategy,
         container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
-        selected_row_state=selected_row_state,
+        selected_row_state=selected_row_state or ("pending" if matched_row_seen else None),
+        matched_range_text=last_matched_range_text,
     )
-    return False, None, None, last_status
+    return False, None, last_matched_range_text, last_status
 
 
 async def _run_orders_iframe_flow(
