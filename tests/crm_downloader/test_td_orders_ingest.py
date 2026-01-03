@@ -120,6 +120,107 @@ def _build_sample_workbook(path: Path) -> Path:
     return path
 
 
+def _build_sample_workbook_with_invalid_data(path: Path) -> Path:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    headers = list(_expected_headers())
+    ws.append(headers)
+    ws.append(
+        [
+            "2025-05-10 09:30",
+            "ORD-001",
+            "C001",
+            "Alice",
+            "123 Street",
+            "A668--7051",
+            "Pickup",
+            "",
+            "not-a-date",
+            2,
+            1.5,
+            "1,200.00",
+            "100",
+            "50",
+            "1050",
+            None,
+            500,
+            0,
+            550,
+            None,
+            None,
+            "Bob",
+            "Note A",
+            "Order note",
+            "Yes",
+            "North",
+            "Charlie",
+            "GST123",
+            "App",
+            "POS1",
+            "Yes",
+            "TypeA",
+            "Pack1",
+            "Positive",
+            "tag1",
+            "Comment",
+            "Dry Clean",
+            "Extra",
+            "Pending",
+            "2025-05-11 08:00",
+            "Info",
+            "CPN1",
+        ]
+    )
+    ws.append(
+        [
+            "2025-05-11",
+            "ORD-002",
+            "C002",
+            "Bob",
+            "456 Lane",
+            "+91 99999-88888",
+            "Delivery",
+            "2025-05-15",
+            None,
+            3,
+            2.0,
+            900,
+            "0",
+            "0",
+            "900",
+            0,
+            0,
+            0,
+            900,
+            0,
+            0,
+            "Dana",
+            None,
+            None,
+            "No",
+            None,
+            None,
+            None,
+            None,
+            "No",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ]
+    )
+    wb.save(path)
+    return path
+
+
 def _build_sample_workbook_with_footer(path: Path) -> Path:
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -312,6 +413,7 @@ async def test_ingest_td_orders_workbook(tmp_path: Path) -> None:
     assert result.staging_rows == 2
     assert result.final_rows == 2
     assert len(result.warnings) == 1  # invalid phone in second row
+    assert result.warnings == ["Invalid phone number dropped: 12345"]
 
     async with session_scope(database_url) as session:
         metadata = sa.MetaData()
@@ -427,6 +529,44 @@ async def test_footer_row_is_skipped(tmp_path: Path) -> None:
     log_stream.seek(0)
     logs = log_stream.read().splitlines()
     assert logs == []
+
+
+@pytest.mark.asyncio
+async def test_ingest_remarks_populated_for_invalid_data(tmp_path: Path) -> None:
+    db_path = tmp_path / "orders.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    run_date = datetime(2025, 5, 20, 12, 0, tzinfo=tz)
+    log_stream = io.StringIO()
+    logger = JsonLogger(run_id="test_run", stream=log_stream, log_file_path=None)
+
+    workbook = _build_sample_workbook_with_invalid_data(tmp_path / "orders_invalid.xlsx")
+
+    result = await ingest_td_orders_workbook(
+        workbook_path=workbook,
+        store_code="A668",
+        cost_center="UN3668",
+        run_id="test_run",
+        run_date=run_date,
+        database_url=database_url,
+        logger=logger,
+    )
+
+    assert result.staging_rows == 2
+    assert result.final_rows == 2
+
+    async with session_scope(database_url) as session:
+        metadata = sa.MetaData()
+        stg_table = _stg_td_orders_table(metadata)
+        stg_rows = (
+            await session.execute(
+                sa.select(stg_table.c.order_number, stg_table.c.ingest_remarks).order_by(stg_table.c.order_number)
+            )
+        ).all()
+        assert stg_rows[0].ingest_remarks == "last_activity: not-a-date; phone: A668--7051"
+        assert stg_rows[1].ingest_remarks is None
 
 
 @pytest.mark.asyncio

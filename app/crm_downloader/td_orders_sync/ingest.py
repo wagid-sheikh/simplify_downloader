@@ -61,6 +61,7 @@ STG_TD_ORDERS_COLUMNS = [
     "last_payment_activity",
     "package_payment_info",
     "coupon_code",
+    "ingest_remarks",
 ]
 
 ORDERS_COLUMNS = [
@@ -240,6 +241,7 @@ def _stg_td_orders_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("last_payment_activity", sa.DateTime(timezone=True)),
         sa.Column("package_payment_info", sa.String(length=32)),
         sa.Column("coupon_code", sa.String(length=32)),
+        sa.Column("ingest_remarks", sa.Text()),
         sa.UniqueConstraint("store_code", "order_number", "order_date", name="uq_stg_td_orders_store_order_date"),
         sqlite_autoincrement=True,
     )
@@ -301,7 +303,9 @@ def _orders_table(metadata: sa.MetaData) -> sa.Table:
     )
 
 
-def _normalize_phone(value: str | None, *, warnings: list[str], invalid_phone_numbers: set[str]) -> str | None:
+def _normalize_phone(
+    value: str | None, *, warnings: list[str], invalid_phone_numbers: set[str], row_remarks: list[str]
+) -> str | None:
     if value is None:
         return None
     digits = re.sub(r"\D", "", str(value))
@@ -312,13 +316,14 @@ def _normalize_phone(value: str | None, *, warnings: list[str], invalid_phone_nu
     if len(digits) == 10:
         return digits
     value_str = str(value)
+    row_remarks.append(f"phone: {value_str}")
     if value_str not in invalid_phone_numbers:
         invalid_phone_numbers.add(value_str)
         warnings.append(f"Invalid phone number dropped: {value_str}")
     return None
 
 
-def _parse_numeric(value: Any, *, warnings: list[str], field: str) -> Decimal:
+def _parse_numeric(value: Any, *, warnings: list[str], field: str, row_remarks: list[str]) -> Decimal:
     if value is None or value == "":
         return Decimal("0")
     try:
@@ -328,10 +333,13 @@ def _parse_numeric(value: Any, *, warnings: list[str], field: str) -> Decimal:
         return Decimal(cleaned)
     except (InvalidOperation, ValueError):
         warnings.append(f"Non-numeric value for {field}: {value}")
+        row_remarks.append(f"{field}: {value}")
         return Decimal("0")
 
 
-def _parse_datetime(value: Any, *, tz: ZoneInfo, field: str, warnings: list[str]) -> datetime | None:
+def _parse_datetime(
+    value: Any, *, tz: ZoneInfo, field: str, warnings: list[str], row_remarks: list[str]
+) -> datetime | None:
     if value in (None, ""):
         return None
     if isinstance(value, datetime):
@@ -341,26 +349,35 @@ def _parse_datetime(value: Any, *, tz: ZoneInfo, field: str, warnings: list[str]
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=tz)
     except Exception:
         warnings.append(f"Could not parse datetime for {field}: {value}")
+        row_remarks.append(f"{field}: {value}")
         return None
 
 
 def _coerce_row(raw: Mapping[str, Any], *, tz: ZoneInfo, warnings: list[str], invalid_phone_numbers: set[str]) -> Dict[str, Any]:
     row: Dict[str, Any] = {}
+    row_remarks: list[str] = []
     for header, field in HEADER_MAP.items():
         row[field] = raw.get(header)
 
-    row["order_date"] = _parse_datetime(row["order_date"], tz=tz, field="order_date", warnings=warnings)
-    row["due_date"] = _parse_datetime(row["due_date"], tz=tz, field="due_date", warnings=warnings)
-    row["last_activity"] = _parse_datetime(row["last_activity"], tz=tz, field="last_activity", warnings=warnings)
+    row["order_date"] = _parse_datetime(
+        row["order_date"], tz=tz, field="order_date", warnings=warnings, row_remarks=row_remarks
+    )
+    row["due_date"] = _parse_datetime(row["due_date"], tz=tz, field="due_date", warnings=warnings, row_remarks=row_remarks)
+    row["last_activity"] = _parse_datetime(
+        row["last_activity"], tz=tz, field="last_activity", warnings=warnings, row_remarks=row_remarks
+    )
     row["last_payment_activity"] = _parse_datetime(
-        row["last_payment_activity"], tz=tz, field="last_payment_activity", warnings=warnings
+        row["last_payment_activity"], tz=tz, field="last_payment_activity", warnings=warnings, row_remarks=row_remarks
     )
 
     for field in NUMERIC_FIELDS:
-        row[field] = _parse_numeric(row[field], warnings=warnings, field=field)
+        row[field] = _parse_numeric(row[field], warnings=warnings, field=field, row_remarks=row_remarks)
 
     row["mobile_number"] = _normalize_phone(
-        row.get("mobile_number"), warnings=warnings, invalid_phone_numbers=invalid_phone_numbers
+        row.get("mobile_number"),
+        warnings=warnings,
+        invalid_phone_numbers=invalid_phone_numbers,
+        row_remarks=row_remarks,
     )
     if row["order_number"] in (None, ""):
         warnings.append("Skipping row with blank order_number")
@@ -370,6 +387,8 @@ def _coerce_row(raw: Mapping[str, Any], *, tz: ZoneInfo, warnings: list[str], in
         return {}
     if row["due_date"] is None and row["order_date"] is not None:
         row["due_date"] = row["order_date"] + timedelta(days=3)
+
+    row["ingest_remarks"] = "; ".join(row_remarks) if row_remarks else None
 
     return row
 
