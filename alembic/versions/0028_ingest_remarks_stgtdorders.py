@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0028_add_ingest_remarks_to_stg_td_orders"
+revision = "0028_ingest_remarks_stgtdorders"
 down_revision = "0027_store_master_sync_fields"
 branch_labels = None
 depends_on = None
