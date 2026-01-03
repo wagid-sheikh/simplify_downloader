@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import io
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import openpyxl
-import sqlalchemy as sa
 import pytest
+import sqlalchemy as sa
 
 from app.common.db import session_scope
 from app.crm_downloader.td_orders_sync.ingest import (
@@ -16,7 +17,7 @@ from app.crm_downloader.td_orders_sync.ingest import (
     _stg_td_orders_table,
     ingest_td_orders_workbook,
 )
-from app.dashboard_downloader.json_logger import get_logger
+from app.dashboard_downloader.json_logger import JsonLogger, get_logger
 
 
 def _build_sample_workbook(path: Path) -> Path:
@@ -115,6 +116,108 @@ def _build_sample_workbook(path: Path) -> Path:
             None,
         ]
     )
+    wb.save(path)
+    return path
+
+
+def _build_sample_workbook_with_footer(path: Path) -> Path:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    headers = list(_expected_headers())
+    ws.append(headers)
+    ws.append(
+        [
+            "2025-05-10 09:30",
+            "ORD-001",
+            "C001",
+            "Alice",
+            "123 Street",
+            "+91 99999-88888",
+            "Pickup",
+            "",
+            "2025-05-12 10:00",
+            2,
+            1.5,
+            "1,200.00",
+            "100",
+            "50",
+            "1050",
+            None,
+            500,
+            0,
+            550,
+            None,
+            None,
+            "Bob",
+            "Note A",
+            "Order note",
+            "Yes",
+            "North",
+            "Charlie",
+            "GST123",
+            "App",
+            "POS1",
+            "Yes",
+            "TypeA",
+            "Pack1",
+            "Positive",
+            "tag1",
+            "Comment",
+            "Dry Clean",
+            "Extra",
+            "Pending",
+            "2025-05-11 08:00",
+            "Info",
+            "CPN1",
+        ]
+    )
+    ws.append(
+        [
+            "2025-05-11",
+            "ORD-002",
+            "C002",
+            "Bob",
+            "456 Lane",
+            "12345",
+            "Delivery",
+            "2025-05-15",
+            None,
+            3,
+            2.0,
+            900,
+            "0",
+            "0",
+            "900",
+            0,
+            0,
+            0,
+            900,
+            0,
+            0,
+            "Dana",
+            None,
+            None,
+            "No",
+            None,
+            None,
+            None,
+            None,
+            "No",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ]
+    )
+    ws.append(["Total Records: 2", None, None, None, None, None, None, None, None, None, None])
     wb.save(path)
     return path
 
@@ -236,3 +339,36 @@ async def test_ingest_upsert_updates_existing(tmp_path: Path) -> None:
             )
         ).all()
         assert net_amounts[1].net_amount == 950
+
+
+@pytest.mark.asyncio
+async def test_footer_row_is_skipped(tmp_path: Path) -> None:
+    db_path = tmp_path / "orders.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    workbook = _build_sample_workbook_with_footer(tmp_path / "orders_with_footer.xlsx")
+
+    tz = ZoneInfo("Asia/Kolkata")
+    run_date = datetime(2025, 5, 20, 12, 0, tzinfo=tz)
+    log_stream = io.StringIO()
+    logger = JsonLogger(run_id="test_run", stream=log_stream, log_file_path=None)
+
+    result = await ingest_td_orders_workbook(
+        workbook_path=workbook,
+        store_code="A668",
+        cost_center="UN3668",
+        run_id="test_run",
+        run_date=run_date,
+        database_url=database_url,
+        logger=logger,
+    )
+
+    assert result.staging_rows == 2
+    assert result.final_rows == 2
+    # footer row should not add warnings beyond existing invalid phone warning
+    assert len(result.warnings) == 1
+
+    log_stream.seek(0)
+    logs = log_stream.read().splitlines()
+    assert any("Skipping trailing TD Orders summary/footer row" in line for line in logs)
