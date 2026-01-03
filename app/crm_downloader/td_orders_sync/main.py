@@ -2070,6 +2070,9 @@ async def _collect_report_request_rows(
         container.locator(":scope > section > div.flex.items-start.justify-between"),
         container.locator(":scope > section > div.border-b.border-gray-100"),
         container.locator(":scope > section > div"),
+        container.locator(":scope > div.flex.items-start.justify-between"),
+        container.locator(":scope > div.border-b.border-gray-100"),
+        container.locator(":scope > div"),
     ]
     if ENABLE_LEGACY_REPORT_REQUEST_ROW_LOCATORS:
         candidates.extend(
