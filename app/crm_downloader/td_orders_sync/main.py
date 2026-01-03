@@ -31,6 +31,7 @@ TEMP_ENABLED_STORES = {"A668", "A817"}
 REPORT_REQUEST_MAX_TIMEOUT_MS = 60_000
 REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS = 20.0
 REPORT_REQUEST_REFRESH_INTERVAL_SECONDS = 15.0
+PENDING_MIN_POLL_SECONDS = 135
 STABLE_LOCATOR_STRATEGIES = {
     "container_locator_strategy": "heading_preferred_wrapper",
     "range_match_strategy": "date_range_text_pattern",
@@ -2264,6 +2265,7 @@ async def _wait_for_report_request_download_link(
     pending_attempts = 0
     download_strategy: str | None = None
     last_refresh_attempt_at = 0.0
+    selection_source: str | None = None
 
     while asyncio.get_event_loop().time() < deadline:
         try:
@@ -2276,7 +2278,7 @@ async def _wait_for_report_request_download_link(
             matched_status: str | None = None
             matched_row_state: str | None = None
             matched_candidates: list[dict[str, Any]] = []
-            for row in rows:
+            for position, row in enumerate(rows):
                 date_range_text_raw = None
                 with contextlib.suppress(Exception):
                     date_range_text_raw = await row.locator("div.w-1\\/5.text-sm.italic").first.inner_text()
@@ -2301,24 +2303,27 @@ async def _wait_for_report_request_download_link(
                             "download_locator": download_locator,
                             "download_strategy": strategy,
                             "row_html": last_row_html,
+                            "position": position,
                         }
                     )
 
             if matched_candidates:
                 matched_row_seen = True
                 last_seen_texts = visible_rows or [matched_candidates[0]["range_text"]]
-                downloadable_candidates = [candidate for candidate in matched_candidates if candidate["download_locator"] is not None]
+                position_sorted = sorted(matched_candidates, key=lambda candidate: candidate.get("position", 0))
+                downloadable_candidates = [candidate for candidate in position_sorted if candidate["download_locator"] is not None]
                 pending_candidates = [
                     candidate
-                    for candidate in matched_candidates
+                    for candidate in position_sorted
                     if candidate.get("status_text") and "pending" in candidate["status_text"].lower()
                 ]
+                selection_source = "downloadable" if downloadable_candidates else "pending" if pending_candidates else "fallback"
                 selected_candidate = (
                     downloadable_candidates[0]
                     if downloadable_candidates
                     else pending_candidates[0]
                     if pending_candidates
-                    else matched_candidates[0]
+                    else position_sorted[0]
                 )
                 matched_row = selected_candidate["row"]
                 matched_text = selected_candidate["range_text"]
@@ -2331,21 +2336,26 @@ async def _wait_for_report_request_download_link(
 
                 if matched_status:
                     eta_seconds = _parse_eta_seconds(matched_status)
-                    if eta_seconds is not None:
-                        desired_deadline = start_time + eta_seconds
-                        if desired_deadline > deadline:
-                            deadline = desired_deadline
-                            poll_timeout_ms = int((deadline - start_time) * 1000)
-                            log_event(
-                                logger=logger,
-                                phase="iframe",
-                                message="Extended report request poll window to ETA",
-                                store_code=store.store_code,
-                                matched_range_text=matched_text,
-                                eta_seconds=eta_seconds,
-                                new_timeout_ms=poll_timeout_ms,
-                                range_match_strategy=last_range_match_strategy,
-                            )
+                    pending_eta_seconds = None
+                    if "pending" in matched_status.lower():
+                        pending_eta_seconds = max(eta_seconds or 0, PENDING_MIN_POLL_SECONDS)
+                        desired_deadline = start_time + pending_eta_seconds
+                    else:
+                        desired_deadline = start_time + eta_seconds if eta_seconds is not None else None
+                    if desired_deadline and desired_deadline > deadline:
+                        deadline = desired_deadline
+                        poll_timeout_ms = int((deadline - start_time) * 1000)
+                        log_event(
+                            logger=logger,
+                            phase="iframe",
+                            message="Extended report request poll window to ETA",
+                            store_code=store.store_code,
+                            matched_range_text=matched_text,
+                            eta_seconds=eta_seconds,
+                            pending_eta_seconds=pending_eta_seconds,
+                            new_timeout_ms=poll_timeout_ms,
+                            range_match_strategy=last_range_match_strategy,
+                        )
 
                 if download_locator:
                     log_event(
@@ -2364,6 +2374,7 @@ async def _wait_for_report_request_download_link(
                         download_locator_strategy=download_strategy,
                         container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
                         selected_row_state=matched_row_state,
+                        selection_source=selection_source,
                     )
                     try:
                         async with page.expect_download(timeout=download_wait_timeout_ms) as download_info:
@@ -2383,6 +2394,7 @@ async def _wait_for_report_request_download_link(
                             range_match_strategy=last_range_match_strategy,
                             container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
                             selected_row_state=matched_row_state,
+                            selection_source=selection_source,
                         )
                         return True, str(download_path), matched_text, matched_status
                     except Exception as exc:
@@ -2398,6 +2410,7 @@ async def _wait_for_report_request_download_link(
                             range_match_strategy=last_range_match_strategy,
                             download_locator_strategy=download_strategy,
                             selected_row_state=matched_row_state,
+                            selection_source=selection_source,
                         )
                         return False, None, matched_text, last_status
 
@@ -2421,6 +2434,7 @@ async def _wait_for_report_request_download_link(
                             container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
                             download_locator_strategy=download_strategy,
                             selected_row_state=matched_row_state,
+                            selection_source=selection_source,
                         )
                         last_pending_log_at = now
 
@@ -2446,6 +2460,9 @@ async def _wait_for_report_request_download_link(
                                     status_text=matched_status,
                                     refresh_timestamp=refresh_timestamp,
                                     range_match_strategy=last_range_match_strategy,
+                                    container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+                                    selected_row_state=matched_row_state,
+                                    selection_source=selection_source,
                                 )
                             except Exception as exc:
                                 log_event(
@@ -2459,6 +2476,9 @@ async def _wait_for_report_request_download_link(
                                     refresh_timestamp=refresh_timestamp,
                                     error=str(exc),
                                     range_match_strategy=last_range_match_strategy,
+                                    container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+                                    selected_row_state=matched_row_state,
+                                    selection_source=selection_source,
                                 )
                         else:
                             log_event(
@@ -2471,6 +2491,9 @@ async def _wait_for_report_request_download_link(
                                 status_text=matched_status,
                                 refresh_timestamp=refresh_timestamp,
                                 range_match_strategy=last_range_match_strategy,
+                                container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+                                selected_row_state=matched_row_state,
+                                selection_source=selection_source,
                             )
                         last_refresh_attempt_at = now
                 else:
@@ -2497,6 +2520,9 @@ async def _wait_for_report_request_download_link(
         container_html_snippet=container_html_snippet,
         range_match_strategy=last_range_match_strategy,
         download_locator_strategy=download_strategy,
+        container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+        selected_row_state="downloadable" if download_strategy else "pending" if last_status and "pending" in (last_status or "").lower() else None,
+        selection_source=selection_source,
     )
     return False, None, None, last_status
 
