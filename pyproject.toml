@@ -24,6 +24,7 @@ dependencies = [
     "openpyxl>=3.1.5",
     "python-dateutil>=2.9.0",
     "python-docx (>=1.2.0,<2.0.0)",
+    "pypdf (>=6.5.0,<7.0.0)",
 ]
 
 # Turn off packaging (we’re using Poetry for env + deps + scripts)

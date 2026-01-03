@@ -1,6 +1,16 @@
+#!/usr/bin/env python3
 """
-Builds a resumable, grouped, editable Word reference document from CharmsWiki
-pages, ordered for system design and SRS authoring.
+CharmsWiki Reference Binder Builder (PDF-only)
+
+- Reads existing wiki_links_grouped.csv (authoritative order) from the same folder as this script.
+- Uses local Google Chrome (not Playwright bundled Chromium) for compatibility.
+- Caches each visited page as an individual PDF (idempotent).
+- Maintains resume state (merge_state.json) so runs can continue after interruptions.
+- Produces:
+  1) CharmsWiki_REFERENCE_MERGED.pdf  (content-only, incremental merge)
+  2) CharmsWiki_REFERENCE_FINAL.pdf   (Intro + Table of Contents prepended)
+
+Table of Contents is generated AFTER download/merge, then inserted at the front of FINAL.
 """
 
 import asyncio
@@ -11,40 +21,46 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Dict, List, Optional, Set
 
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+from pypdf import PdfReader, PdfWriter
 
-from docx import Document
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
 
 
-# ---------- Paths (all relative to this script file) ----------
+# ---------- Inputs (existing files; NOT regenerated) ----------
 BASE_DIR = Path(__file__).resolve().parent
+GROUPED_CSV = BASE_DIR / "wiki_links_grouped.csv"
+RAW_CSV = BASE_DIR / "wiki_links.csv"  # present per your process; not used except presence check
 
-RAW_CSV = BASE_DIR / "wiki_links.csv"             # exists already (not regenerated)
-GROUPED_CSV = BASE_DIR / "wiki_links_grouped.csv" # exists already (design order)
+# ---------- Output ----------
+OUT_DIR = BASE_DIR / "Wiki-PDF"
+CACHE_DIR = OUT_DIR / "_cache_pages_pdf"
 
-OUT_DIR = BASE_DIR / "Wiki-PDF"  # keep same folder name you already use
-CACHE_DIR = OUT_DIR / "_cache_pages_text"         # per-page cached text
-STATE_PATH = OUT_DIR / "merge_state.json"         # resume marker (kept)
-DOCX_OUT = OUT_DIR / "CharmsWiki_REFERENCE.docx"
-DOCX_TMP = OUT_DIR / "CharmsWiki_REFERENCE.tmp.docx"
+STATE_PATH = OUT_DIR / "merge_state.json"
 
+MERGED_PDF = OUT_DIR / "CharmsWiki_REFERENCE_MERGED.pdf"
+MERGED_TMP = OUT_DIR / "CharmsWiki_REFERENCE_MERGED.tmp.pdf"
+
+FRONTMATTER_PDF = OUT_DIR / "_frontmatter_intro_toc.pdf"
+FINAL_PDF = OUT_DIR / "CharmsWiki_REFERENCE_FINAL.pdf"
+FINAL_TMP = OUT_DIR / "CharmsWiki_REFERENCE_FINAL.tmp.pdf"
 
 # ---------- Controls ----------
 NAV_TIMEOUT_MS = 45_000
 RETRY_COUNT = 2
 
-# Validation run: keep 2 for now, then set to None for full run (388+)
-MAX_TO_SAVE = 2
+# Validation run: keep 2; set to None for full run (388+)
+MAX_TO_SAVE: Optional[int] = None
 
-# Throttle delay between pages
+# Throttle delay to reduce rate limiting
 DELAY_MIN = 15
 DELAY_MAX = 20
 
 
-@dataclass
+@dataclass(frozen=True)
 class LinkRow:
     design_seq: int
     seq: int
@@ -56,10 +72,10 @@ class LinkRow:
 
 def chrome_executable_path() -> str:
     """
-    Prefer explicit override, else use standard macOS Chrome path.
-    Set CHROME_PATH if needed.
+    Uses CHROME_PATH if set; else typical macOS paths.
     """
     import os
+
     env = os.environ.get("CHROME_PATH")
     if env and Path(env).exists():
         return env
@@ -74,12 +90,14 @@ def chrome_executable_path() -> str:
             return p
 
     raise FileNotFoundError(
-        "Could not find a local Chrome/Canary/Chromium executable. "
-        "Install Google Chrome, or set CHROME_PATH to the full executable path."
+        "Local Chrome executable not found. Install Google Chrome or set CHROME_PATH."
     )
 
 
 def sanitize_filename(name: str, max_len: int = 140) -> str:
+    """
+    Safe filename derived from Link Name (human readable).
+    """
     name = (name or "").strip()
     name = re.sub(r"\s+", " ", name)
     name = re.sub(r'[\/\\\:\*\?\"\<\>\|\n\r\t]', "-", name)
@@ -92,22 +110,22 @@ def sanitize_filename(name: str, max_len: int = 140) -> str:
     return name
 
 
-def cache_text_path(design_seq: int, label: str) -> Path:
+def cache_pdf_path(design_seq: int, label: str) -> Path:
     safe = sanitize_filename(label, max_len=120)
-    return CACHE_DIR / f"{design_seq:04d} - {safe}.json"
+    return CACHE_DIR / f"{design_seq:04d} - {safe}.pdf"
 
 
 def load_state() -> dict:
     if STATE_PATH.exists():
         return json.loads(STATE_PATH.read_text(encoding="utf-8"))
-    return {"last_completed_design_seq": 0, "cached_design_seqs": []}
+    return {"last_completed_design_seq": 0, "merged_design_seqs": []}
 
 
 def save_state(state: dict) -> None:
     STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
 
-def read_grouped_csv(path: Path) -> list[LinkRow]:
+def read_grouped_csv(path: Path) -> List[LinkRow]:
     """
     Expected header:
     Design Sequence,Sequence,Group,Subgroup,Link Name,URL
@@ -115,10 +133,8 @@ def read_grouped_csv(path: Path) -> list[LinkRow]:
     if not path.exists():
         raise FileNotFoundError(f"Missing required file: {path}")
 
-    rows: list[LinkRow] = []
     with path.open("r", newline="", encoding="utf-8") as f:
         r = csv.DictReader(f)
-
         required = {"Design Sequence", "Sequence", "Group", "Subgroup", "Link Name", "URL"}
         got = set(r.fieldnames or [])
         if required != got:
@@ -126,51 +142,52 @@ def read_grouped_csv(path: Path) -> list[LinkRow]:
                 f"Grouped CSV header mismatch.\nExpected: {required}\nGot:      {got}\nFile: {path}"
             )
 
+        rows: List[LinkRow] = []
         for line in r:
+            name = (line["Link Name"] or "").strip()
+            url = (line["URL"] or "").strip()
+            if not name or not url:
+                continue
             rows.append(
                 LinkRow(
                     design_seq=int(line["Design Sequence"]),
                     seq=int(line["Sequence"]),
                     group=(line["Group"] or "").strip(),
                     subgroup=(line["Subgroup"] or "").strip(),
-                    name=(line["Link Name"] or "").strip(),
-                    url=(line["URL"] or "").strip(),
+                    name=name,
+                    url=url,
                 )
             )
 
     rows.sort(key=lambda x: x.design_seq)
-    return [x for x in rows if x.name and x.url]
+    return rows
 
 
-async def fetch_page_text(context, row: LinkRow, idx: int, total: int) -> dict:
+async def download_page_pdf(context, row: LinkRow, idx: int, total: int) -> Path:
     """
-    Fetch page and return structured cache payload.
-    Idempotency: caller decides whether to fetch based on cached file existence.
+    Downloads a single page as a PDF (rendered) into CACHE_DIR.
+    Idempotent: returns existing cache if present.
     """
+    pdf_path = cache_pdf_path(row.design_seq, row.name)
+    if pdf_path.exists():
+        print(f"[{idx}/{total}] CACHE HIT  {pdf_path.name}")
+        return pdf_path
+
     for attempt in range(RETRY_COUNT + 1):
         page = await context.new_page()
         try:
-            print(f"[{idx}/{total}] FETCH  {row.group} > {row.subgroup} :: {row.name}")
+            print(f"[{idx}/{total}] FETCH      {row.group} > {row.subgroup} :: {row.name}")
             await page.goto(row.url, wait_until="networkidle", timeout=NAV_TIMEOUT_MS)
 
-            # Try to capture the core readable content.
-            # We keep it simple and robust: use body innerText.
-            body_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
-            page_title = await page.title()
-
-            payload = {
-                "design_seq": row.design_seq,
-                "seq": row.seq,
-                "group": row.group,
-                "subgroup": row.subgroup,
-                "name": row.name,
-                "url": row.url,
-                "page_title": page_title or "",
-                "text": body_text or "",
-            }
-
+            await page.pdf(
+                path=str(pdf_path),
+                format="A4",
+                print_background=True,
+                margin={"top": "12mm", "right": "12mm", "bottom": "12mm", "left": "12mm"},
+                prefer_css_page_size=True,
+            )
             await page.close()
-            return payload
+            return pdf_path
 
         except PlaywrightTimeoutError:
             await page.close()
@@ -186,177 +203,214 @@ async def fetch_page_text(context, row: LinkRow, idx: int, total: int) -> dict:
             print(f"[{idx}/{total}] Error, retrying ({attempt+1}/{RETRY_COUNT})...")
             await asyncio.sleep(1.5)
 
-
-def write_cache(payload: dict) -> Path:
-    p = cache_text_path(payload["design_seq"], payload["name"])
-    p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    return p
+    # Should never reach here
+    return pdf_path
 
 
-def load_all_cached_payloads(rows: list[LinkRow]) -> list[dict]:
+def append_to_merged(merged_path: Path, new_pdf: Path) -> None:
     """
-    Load cached payloads for rows that exist in cache.
-    Returns in design_seq order (the same as grouped CSV).
+    Incrementally appends a PDF onto merged_path. merged_path remains valid after each call.
     """
-    cached = []
+    writer = PdfWriter()
+
+    if merged_path.exists():
+        existing = PdfReader(str(merged_path))
+        for p in existing.pages:
+            writer.add_page(p)
+
+    incoming = PdfReader(str(new_pdf))
+    for p in incoming.pages:
+        writer.add_page(p)
+
+    with MERGED_TMP.open("wb") as f:
+        writer.write(f)
+
+    MERGED_TMP.replace(merged_path)
+
+
+def rebuild_merged_from_cache(rows: List[LinkRow]) -> None:
+    """
+    Self-heal: rebuild MERGED_PDF from cached PDFs in design order.
+    Useful when state indicates completion but merged file is missing/corrupt.
+    """
+    writer = PdfWriter()
+    added_any = False
+
     for row in rows:
-        # Find file by deterministic name pattern; we compute expected path.
-        p = cache_text_path(row.design_seq, row.name)
-        if p.exists():
-            cached.append(json.loads(p.read_text(encoding="utf-8")))
-    cached.sort(key=lambda x: int(x.get("design_seq", 0)))
-    return cached
+        p = cache_pdf_path(row.design_seq, row.name)
+        if not p.exists():
+            continue
+        reader = PdfReader(str(p))
+        for page in reader.pages:
+            writer.add_page(page)
+        added_any = True
+
+    if not added_any:
+        return
+
+    with MERGED_TMP.open("wb") as f:
+        writer.write(f)
+
+    MERGED_TMP.replace(MERGED_PDF)
 
 
-def add_toc_field(paragraph):
+def compute_start_pages(rows: List[LinkRow], frontmatter_pages: int = 0) -> Dict[int, int]:
     """
-    Insert a TOC field that Word can update.
+    Starting page number (1-based) for each design_seq within the FINAL PDF.
+    frontmatter_pages is added as an offset because intro+TOC are prepended.
     """
-    fld = OxmlElement("w:fldSimple")
-    fld.set(qn("w:instr"), r'TOC \o "1-3" \h \z \u')
-    r = OxmlElement("w:r")
-    t = OxmlElement("w:t")
-    t.text = "Table of Contents (Right-click → Update Field)"
-    r.append(t)
-    fld.append(r)
-    paragraph._p.append(fld)
+    starts: Dict[int, int] = {}
+    cursor = 1 + int(frontmatter_pages)
+
+    for row in rows:
+        p = cache_pdf_path(row.design_seq, row.name)
+        if not p.exists():
+            continue
+        starts[row.design_seq] = cursor
+        reader = PdfReader(str(p))
+        cursor += len(reader.pages)
+
+    return starts
 
 
-def build_docx_from_cache(rows: list[LinkRow], cached_payloads: list[dict], out_path: Path) -> None:
+def _draw_wrapped_text(
+    c: canvas.Canvas,
+    text: str,
+    x: float,
+    y: float,
+    max_width: float,
+    line_height: float,
+) -> float:
     """
-    Build the main DOCX from cached data (idempotent build).
-    TOC will be inserted afterward (per your requirement).
+    Minimal wrapping for ReportLab. Returns updated y.
     """
-    doc = Document()
+    words = text.split()
+    line: List[str] = []
 
-    # Title
-    doc.add_heading("CharmsWiki Reference Binder (Grouped)", level=0)
+    while words:
+        line.append(words.pop(0))
+        w = c.stringWidth(" ".join(line), "Helvetica", 11)
+        if w > max_width:
+            last = line.pop()
+            c.drawString(x, y, " ".join(line))
+            y -= line_height
+            line = [last]
+            if y < 60:
+                c.showPage()
+                y = A4[1] - 60
+                c.setFont("Helvetica", 11)
 
-    # Intro paragraph (as requested)
+    if line:
+        c.drawString(x, y, " ".join(line))
+        y -= line_height
+
+    return y
+
+
+def generate_frontmatter_pdf(rows: List[LinkRow], starts: Dict[int, int], out_pdf: Path) -> int:
+    """
+    Creates Intro + TOC PDF. Returns number of pages in the created PDF.
+    """
+    c = canvas.Canvas(str(out_pdf), pagesize=A4)
+    width, height = A4
+
+    # --- Intro ---
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, height - 70, "CharmsWiki Reference Binder (Grouped)")
+
+    c.setFont("Helvetica", 11)
     intro = (
-        "This document is an automatically compiled reference binder created by visiting the CharmsWiki pages "
-        "in a system-design-oriented order (grouped by modules such as Platform & Access, Case Management, "
+        "This PDF is an automatically compiled reference binder created by visiting CharmsWiki pages in a "
+        "system-design-oriented order (grouped by modules such as Platform & Access, Case Management, "
         "Carer Lifecycle, Placements, Finance, Reporting, and Documents). "
-        "Use it alongside the Blueprint to validate requirements, terminology, workflows, and report definitions. "
-        "The Table of Contents is generated from headings—open this file in Microsoft Word and Update the TOC "
-        "to refresh page numbers after any edits."
+        "Each section in this binder is the original page as rendered in a browser (including images, tables, and layout). "
+        "Use the Table of Contents to jump to the starting page of any reference item. "
+        "The ordering is controlled by wiki_links_grouped.csv."
     )
-    doc.add_paragraph(intro)
+    y = height - 110
+    y = _draw_wrapped_text(c, intro, 50, y, max_width=width - 100, line_height=16)
 
-    doc.add_paragraph("Source inventory (authoritative order): wiki_links_grouped.csv")
-    doc.add_paragraph(f"Total pages intended: {len(rows)}")
-    doc.add_page_break()
+    c.setFont("Helvetica", 10)
+    c.drawString(50, 70, "Tip: If you regenerate this binder later, page numbers may change; regenerate the TOC as well.")
+    c.showPage()
 
-    # Content in grouped order:
-    # Heading 1: Group
-    # Heading 2: Subgroup
-    # Heading 3: Page name
-    current_group = None
-    current_subgroup = None
+    # --- TOC ---
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(50, height - 70, "Table of Contents")
+    c.setFont("Helvetica", 10)
+    c.drawString(50, height - 90, "Page numbers refer to CharmsWiki_REFERENCE_FINAL.pdf (this file).")
 
-    payload_by_seq = {int(p["design_seq"]): p for p in cached_payloads}
+    y = height - 125
+    last_group = None
+    last_sub = None
+
+    def ensure_space(lines: int = 1):
+        nonlocal y
+        if y - (lines * 16) < 60:
+            c.showPage()
+            c.setFont("Helvetica", 11)
+            y = height - 60
 
     for row in rows:
-        p = payload_by_seq.get(row.design_seq)
-        if not p:
-            # Not cached yet; skip content but keep structure optional
-            # For now, we will include a placeholder entry
-            if row.group != current_group:
-                current_group = row.group
-                doc.add_heading(current_group, level=1)
-                current_subgroup = None
-
-            if row.subgroup != current_subgroup:
-                current_subgroup = row.subgroup
-                doc.add_heading(current_subgroup, level=2)
-
-            doc.add_heading(f"{row.design_seq:04d}. {row.name}", level=3)
-            doc.add_paragraph(f"URL: {row.url}")
-            doc.add_paragraph("Status: Not cached yet (run script again to fetch).")
-            doc.add_page_break()
+        page_no = starts.get(row.design_seq)
+        if not page_no:
             continue
 
-        if p.get("group") != current_group:
-            current_group = p.get("group") or "Unclassified"
-            doc.add_heading(current_group, level=1)
-            current_subgroup = None
+        if row.group != last_group:
+            ensure_space(2)
+            c.setFont("Helvetica-Bold", 12)
+            c.drawString(50, y, row.group)
+            y -= 18
+            last_group = row.group
+            last_sub = None
 
-        if p.get("subgroup") != current_subgroup:
-            current_subgroup = p.get("subgroup") or "Other"
-            doc.add_heading(current_subgroup, level=2)
+        if row.subgroup != last_sub:
+            ensure_space(2)
+            c.setFont("Helvetica-Bold", 11)
+            c.drawString(70, y, row.subgroup)
+            y -= 16
+            last_sub = row.subgroup
 
-        doc.add_heading(f"{int(p['design_seq']):04d}. {p.get('name','')}", level=3)
-        doc.add_paragraph(f"URL: {p.get('url','')}")
-        title = (p.get("page_title") or "").strip()
-        if title:
-            doc.add_paragraph(f"Page Title: {title}")
+        ensure_space(1)
+        c.setFont("Helvetica", 10)
 
-        text = (p.get("text") or "").strip()
-        if not text:
-            doc.add_paragraph("(No text extracted.)")
-        else:
-            # Split into paragraphs for Word readability.
-            for block in [b.strip() for b in text.split("\n\n") if b.strip()]:
-                doc.add_paragraph(block)
+        title = f"{row.design_seq:04d}. {row.name}"
+        if len(title) > 110:
+            title = title[:107] + "..."
 
-        doc.add_page_break()
+        c.drawString(90, y, title)
+        c.drawRightString(width - 50, y, str(page_no))
+        y -= 14
 
-    doc.save(str(out_path))
+    c.save()
+
+    fm_reader = PdfReader(str(out_pdf))
+    return len(fm_reader.pages)
 
 
-def insert_toc_at_front(docx_path: Path) -> None:
+def prepend_frontmatter(frontmatter_pdf: Path, merged_pdf: Path, final_pdf: Path) -> None:
     """
-    Your requirement:
-    - produce TOC toward the end (we do it after building content),
-    - then insert it back into the final document.
-    Here: we open the doc and insert a TOC section near the start.
+    final_pdf = frontmatter + merged
     """
-    doc = Document(str(docx_path))
+    writer = PdfWriter()
 
-    # Insert TOC after the second paragraph (after title + intro) for best usability.
-    # python-docx has limited true insertion; we do a pragmatic method:
-    # create TOC at end of intro area by inserting paragraphs near start using XML.
-    # We'll insert after paragraph index 2 if possible.
+    fm = PdfReader(str(frontmatter_pdf))
+    for p in fm.pages:
+        writer.add_page(p)
 
-    insert_at = 2 if len(doc.paragraphs) >= 2 else len(doc.paragraphs)
+    if merged_pdf.exists():
+        merged = PdfReader(str(merged_pdf))
+        for p in merged.pages:
+            writer.add_page(p)
 
-    # Create a new paragraph for TOC heading
-    toc_heading = doc.add_paragraph()
-    toc_heading.style = doc.styles["Heading 1"]
-    toc_heading.add_run("Table of Contents")
+    with FINAL_TMP.open("wb") as f:
+        writer.write(f)
 
-    toc_field_para = doc.add_paragraph()
-    add_toc_field(toc_field_para)
-
-    doc.add_paragraph("Note: In Word, right-click the Table of Contents → Update Field → Update entire table.")
-    doc.add_page_break()
-
-    # Move these last inserted paragraphs to the front region by XML manipulation.
-    # We appended them at the end; now we relocate them.
-    body = doc._body._element
-    # Grab the last 4 block elements we just added: heading, field para, note para, page break para
-    moved = [body[-4], body[-3], body[-2], body[-1]]
-
-    # Insert them after the chosen paragraph position in the body
-    # Find the XML element corresponding to the insert_at paragraph
-    if insert_at < len(doc.paragraphs):
-        anchor_p = doc.paragraphs[insert_at]._p
-        anchor_idx = list(body).index(anchor_p)
-        for i, el in enumerate(moved):
-            body.insert(anchor_idx + 1 + i, el)
-    else:
-        # If no anchor, keep at top (insert after title)
-        if len(doc.paragraphs) > 0:
-            anchor_p = doc.paragraphs[0]._p
-            anchor_idx = list(body).index(anchor_p)
-            for i, el in enumerate(moved):
-                body.insert(anchor_idx + 1 + i, el)
-
-    doc.save(str(docx_path))
+    FINAL_TMP.replace(final_pdf)
 
 
-async def main():
-    # Required CSVs must exist (per your instruction)
+async def main() -> None:
+    # Hard requirement: read existing files, do not regenerate
     if not RAW_CSV.exists():
         raise FileNotFoundError(f"Expected existing file not found: {RAW_CSV}")
     if not GROUPED_CSV.exists():
@@ -367,23 +421,25 @@ async def main():
 
     rows = read_grouped_csv(GROUPED_CSV)
 
-    # Validation cap (keep resume logic intact)
     if MAX_TO_SAVE is not None:
         rows = rows[:MAX_TO_SAVE]
 
     total = len(rows)
+    if total == 0:
+        raise RuntimeError("No rows found in wiki_links_grouped.csv (after filtering).")
 
     state = load_state()
     last_completed = int(state.get("last_completed_design_seq", 0))
-    cached_set = set(state.get("cached_design_seqs", []))
+    merged_set: Set[int] = set(state.get("merged_design_seqs", []))
 
-    print(f"Script dir:  {BASE_DIR}")
-    print(f"Grouped CSV: {GROUPED_CSV.name}")
-    print(f"Cache dir:   {CACHE_DIR}")
-    print(f"State file:  {STATE_PATH}")
-    print(f"DOCX out:    {DOCX_OUT.name}")
-    print(f"Total now:   {total}")
-    print(f"Resume: last_completed_design_seq={last_completed}, cached={len(cached_set)}\n")
+    print(f"Script dir:      {BASE_DIR}")
+    print(f"Grouped CSV:     {GROUPED_CSV.name}")
+    print(f"Cache dir:       {CACHE_DIR}")
+    print(f"Merged PDF:      {MERGED_PDF.name}")
+    print(f"Final PDF:       {FINAL_PDF.name}")
+    print(f"State file:      {STATE_PATH.name}")
+    print(f"Total (this run):{total}")
+    print(f"Resume: last_completed_design_seq={last_completed}, merged={len(merged_set)}\n")
 
     chrome_path = chrome_executable_path()
     print(f"Using local Chrome: {chrome_path}\n")
@@ -397,24 +453,28 @@ async def main():
         context = await browser.new_context()
 
         for idx, row in enumerate(rows, start=1):
-            # Resume rule: skip completed
-            if row.design_seq <= last_completed:
+            cached_pdf = cache_pdf_path(row.design_seq, row.name)
+
+            # Self-healing skip rule:
+            # - Only skip if state says done AND the cache file exists.
+            # - If cache is missing, we must fetch again even if state says done.
+            if row.design_seq <= last_completed and cached_pdf.exists():
                 print(f"[{idx}/{total}] SKIP DONE  {row.design_seq:04d} :: {row.name}")
                 continue
 
-            cache_file = cache_text_path(row.design_seq, row.name)
-            if cache_file.exists():
-                print(f"[{idx}/{total}] CACHE HIT  {cache_file.name}")
-                cached_set.add(row.design_seq)
-            else:
-                payload = await fetch_page_text(context, row, idx, total)
-                written = write_cache(payload)
-                cached_set.add(row.design_seq)
-                print(f"[{idx}/{total}] CACHED     {written.name}")
+            pdf_path = await download_page_pdf(context, row, idx, total)
 
-            # checkpoint AFTER successful cache creation
+            # Merge rule:
+            # - If state says it's already merged, we do not append again.
+            # - BUT if MERGED_PDF is missing, we'll rebuild later from cache.
+            if row.design_seq not in merged_set:
+                print(f"[{idx}/{total}] MERGE      + {pdf_path.name}")
+                append_to_merged(MERGED_PDF, pdf_path)
+                merged_set.add(row.design_seq)
+
+            # checkpoint after successful fetch (+ merge attempt)
             state["last_completed_design_seq"] = row.design_seq
-            state["cached_design_seqs"] = sorted(cached_set)
+            state["merged_design_seqs"] = sorted(merged_set)
             save_state(state)
 
             delay = random.randint(DELAY_MIN, DELAY_MAX)
@@ -424,20 +484,46 @@ async def main():
         await context.close()
         await browser.close()
 
-    # Build DOCX from cached content (idempotent rebuild)
-    print("Building DOCX from cached pages...")
-    cached_payloads = load_all_cached_payloads(rows)
-    build_docx_from_cache(rows, cached_payloads, DOCX_TMP)
+    # Self-heal merged PDF if missing
+    if not MERGED_PDF.exists():
+        print("Merged PDF missing. Rebuilding from cached PDFs...")
+        rebuild_merged_from_cache(rows)
 
-    # Insert TOC (created at end of process, then inserted into final document)
-    print("Inserting TOC into DOCX...")
-    DOCX_TMP.replace(DOCX_OUT)  # promote temp -> final
-    insert_toc_at_front(DOCX_OUT)
+    # If still missing, we can't make a final binder
+    if not MERGED_PDF.exists():
+        raise RuntimeError(
+            "Merged PDF was not created and could not be rebuilt. "
+            "Verify that cached per-page PDFs exist in Wiki-PDF/_cache_pages_pdf/."
+        )
+
+    # Two-pass frontmatter:
+    # Pass 1: build frontmatter with temporary page numbers (no offset)
+    print("Generating Intro + TOC (pass 1)...")
+    starts_pass1 = compute_start_pages(rows, frontmatter_pages=0)
+    fm_pages = generate_frontmatter_pdf(rows, starts_pass1, FRONTMATTER_PDF)
+
+    # Pass 2: rebuild TOC with correct offset
+    print("Generating Intro + TOC (pass 2 with correct offsets)...")
+    starts_pass2 = compute_start_pages(rows, frontmatter_pages=fm_pages)
+    generate_frontmatter_pdf(rows, starts_pass2, FRONTMATTER_PDF)
+
+    print("Prepending Intro + TOC to merged binder...")
+    prepend_frontmatter(FRONTMATTER_PDF, MERGED_PDF, FINAL_PDF)
+
+    # Sanity check: final should have more pages than frontmatter alone
+    final_pages = len(PdfReader(str(FINAL_PDF)).pages)
+    fm_pages_check = len(PdfReader(str(FRONTMATTER_PDF)).pages)
+    if final_pages <= fm_pages_check:
+        raise RuntimeError(
+            "Final PDF contains only frontmatter (Intro/TOC) and no merged content. "
+            "This indicates cached PDFs were not merged or MERGED_PDF is empty."
+        )
 
     print("\nDone.")
-    print(f"DOCX:  {DOCX_OUT}")
-    print(f"State: {STATE_PATH}")
-    print(f"Cache: {CACHE_DIR}")
+    print(f"Cache:      {CACHE_DIR}")
+    print(f"Merged PDF: {MERGED_PDF}")
+    print(f"Final PDF:  {FINAL_PDF}")
+    print(f"State:      {STATE_PATH}")
 
 
 if __name__ == "__main__":
