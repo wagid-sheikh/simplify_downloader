@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -183,6 +183,7 @@ class TdOrdersIngestResult:
     staging_rows: int
     final_rows: int
     warnings: list[str]
+    ingest_remarks: list[dict[str, str]] = field(default_factory=list)
 
 
 def _stg_td_orders_table(metadata: sa.MetaData) -> sa.Table:
@@ -464,6 +465,15 @@ async def ingest_td_orders_workbook(
     tz = get_timezone()
     warnings: list[str] = []
     rows = _read_workbook_rows(workbook_path, tz=tz, warnings=warnings, logger=logger)
+    remark_entries = [
+        {
+            "store_code": store_code,
+            "order_number": str(row.get("order_number")) if row.get("order_number") is not None else "",
+            "ingest_remarks": str(row["ingest_remarks"]),
+        }
+        for row in rows
+        if row.get("ingest_remarks")
+    ]
     if not rows:
         log_event(
             logger=logger,
@@ -473,7 +483,9 @@ async def ingest_td_orders_workbook(
             store_code=store_code,
             workbook=str(workbook_path),
         )
-        return TdOrdersIngestResult(staging_rows=0, final_rows=0, warnings=warnings)
+        return TdOrdersIngestResult(
+            staging_rows=0, final_rows=0, warnings=warnings, ingest_remarks=remark_entries
+        )
 
     metadata = sa.MetaData()
     stg_table = _stg_td_orders_table(metadata)
@@ -566,7 +578,12 @@ async def ingest_td_orders_workbook(
 
         await session.commit()
 
-    return TdOrdersIngestResult(staging_rows=staging_count, final_rows=final_count, warnings=warnings)
+    return TdOrdersIngestResult(
+        staging_rows=staging_count,
+        final_rows=final_count,
+        warnings=warnings,
+        ingest_remarks=remark_entries,
+    )
 
 
 def _expected_headers() -> Sequence[str]:

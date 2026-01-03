@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
 import sqlalchemy as sa
 from playwright.async_api import Browser, BrowserContext, FrameLocator, Locator, Page, TimeoutError, async_playwright
@@ -38,6 +38,8 @@ STABLE_LOCATOR_STRATEGIES = {
     "download_locator_strategy": "href_contains_order_reports",
 }
 ENABLE_LEGACY_REPORT_REQUEST_ROW_LOCATORS = False
+INGEST_REMARKS_MAX_ROWS = 50
+INGEST_REMARKS_MAX_CHARS = 200
 
 
 async def main(
@@ -371,6 +373,7 @@ class TdOrdersDiscoverySummary:
         default_factory=lambda: defaultdict(lambda: {"ok": 0, "warning": 0, "error": 0})
     )
     notes: list[str] = field(default_factory=list)
+    ingest_remarks: list[dict[str, str]] = field(default_factory=list)
 
     def mark_phase(self, phase: str, status: str) -> None:
         counters = self.phases.setdefault(phase, {"ok": 0, "warning": 0, "error": 0})
@@ -384,6 +387,21 @@ class TdOrdersDiscoverySummary:
     def add_note(self, note: str) -> None:
         if note not in self.notes:
             self.notes.append(note)
+
+    def add_ingest_remarks(self, remarks: Iterable[dict[str, str]]) -> None:
+        for entry in remarks:
+            store_code = entry.get("store_code")
+            order_number = entry.get("order_number")
+            remark_text = entry.get("ingest_remarks")
+            if not remark_text:
+                continue
+            self.ingest_remarks.append(
+                {
+                    "store_code": (store_code or "").upper(),
+                    "order_number": str(order_number) if order_number is not None else "",
+                    "ingest_remarks": str(remark_text),
+                }
+            )
 
     def overall_status(self) -> str:
         if any(outcome.status == "error" for outcome in self.store_outcomes.values()):
@@ -402,6 +420,9 @@ class TdOrdersDiscoverySummary:
         return f"{hh:02d}:{mm:02d}:{ss:02d}"
 
     def summary_text(self) -> str:
+        remarks_lines, truncated_rows, truncated_length = self._ingest_remarks_section(
+            max_rows=INGEST_REMARKS_MAX_ROWS, max_chars=INGEST_REMARKS_MAX_CHARS
+        )
         lines = [
             f"Pipeline: {PIPELINE_NAME}",
             f"Run ID: {self.run_id}",
@@ -422,12 +443,42 @@ class TdOrdersDiscoverySummary:
             lines.append("")
             lines.append("Notes:")
             lines.extend(f"- {note}" for note in self.notes)
+        lines.append("")
+        lines.append("Ingest remarks:")
+        lines.extend(remarks_lines)
+        if truncated_rows:
+            lines.append(
+                f"... additional {len(self.ingest_remarks) - INGEST_REMARKS_MAX_ROWS} remarks truncated"
+            )
+        elif truncated_length:
+            lines.append("... some remarks truncated for length")
         return "\n".join(lines)
+
+    def _ingest_remarks_section(self, *, max_rows: int, max_chars: int) -> tuple[list[str], bool, bool]:
+        if not self.ingest_remarks:
+            return ["- None."], False, False
+        truncated_length = False
+        truncated_rows = len(self.ingest_remarks) > max_rows
+        limited_rows = self.ingest_remarks[:max_rows]
+        lines = []
+        for entry in limited_rows:
+            remark = entry.get("ingest_remarks") or ""
+            if len(remark) > max_chars:
+                remark = remark[: max_chars - 1] + "…"
+                truncated_length = True
+            store_code = (entry.get("store_code") or "").upper()
+            order_number = entry.get("order_number") or ""
+            lines.append(f"- {store_code} {order_number}: {remark}")
+        return lines, truncated_rows, truncated_length
 
     def build_record(self, *, finished_at: datetime) -> Dict[str, Any]:
         metrics = {
             "stores": {code: asdict(outcome) for code, outcome in self.store_outcomes.items()},
             "store_order": self.store_codes,
+            "ingest_remarks": {
+                "rows": list(self.ingest_remarks),
+                "total": len(self.ingest_remarks),
+            },
         }
         return {
             "pipeline_name": PIPELINE_NAME,
@@ -3104,6 +3155,7 @@ async def _run_store_discovery(
                                 staging_rows=ingest_result.staging_rows,
                                 final_rows=ingest_result.final_rows,
                             )
+                        summary.add_ingest_remarks(ingest_result.ingest_remarks)
                     except Exception as exc:
                         log_event(
                             logger=store_logger,
