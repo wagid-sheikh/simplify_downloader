@@ -29,6 +29,8 @@ STORE_PROFILE_DOC_TYPES: dict[tuple[str, str], str] = {
     ("dashboard_weekly", "store_weekly_reports"): "store_weekly_pdf",
     ("dashboard_monthly", "store_monthly_reports"): "store_monthly_pdf",
 }
+INGEST_REMARKS_MAX_ROWS = 50
+INGEST_REMARKS_MAX_CHARS = 200
 
 
 @dataclass
@@ -159,6 +161,39 @@ def _group_documents(rows: list[dict[str, Any]]) -> list[DocumentRecord]:
         store_code = _normalize_store_code(row.get("reference_id_3"))
         records.append(DocumentRecord(doc_type=doc_type, store_code=store_code, path=Path(raw_path)))
     return records
+
+
+def _prepare_ingest_remarks(
+    rows: list[dict[str, Any]], *, max_rows: int = INGEST_REMARKS_MAX_ROWS, max_chars: int = INGEST_REMARKS_MAX_CHARS
+) -> tuple[list[dict[str, str]], bool, bool, str]:
+    if not rows:
+        return [], False, False, ""
+
+    truncated_rows = len(rows) > max_rows
+    truncated_length = False
+    cleaned_rows: list[dict[str, str]] = []
+    for entry in rows[:max_rows]:
+        remark = str(entry.get("ingest_remarks") or "")
+        if len(remark) > max_chars:
+            remark = remark[: max_chars - 1] + "…"
+            truncated_length = True
+        cleaned_rows.append(
+            {
+                "store_code": (_normalize_store_code(entry.get("store_code")) or ""),
+                "order_number": str(entry.get("order_number") or ""),
+                "ingest_remarks": remark,
+            }
+        )
+
+    lines = [f"- {row['store_code']} {row['order_number']}: {row['ingest_remarks']}" for row in cleaned_rows]
+    if truncated_rows:
+        hidden = len(rows) - max_rows
+        if hidden > 0:
+            lines.append(f"... additional {hidden} remarks truncated")
+    elif truncated_length:
+        lines.append("... some remarks truncated for length")
+    ingest_text = "\n".join(lines)
+    return cleaned_rows, truncated_rows, truncated_length, ingest_text
 
 
 def _build_run_plan(
@@ -465,6 +500,13 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
         "overall_status": run_data.get("overall_status"),
         "summary_text": run_data.get("summary_text", ""),
     }
+    ingest_rows = (run_data.get("metrics_json") or {}).get("ingest_remarks", {}).get("rows") or []
+    prepared_rows, truncated_rows, truncated_length, ingest_text = _prepare_ingest_remarks(ingest_rows)
+    context["ingest_remarks"] = prepared_rows
+    context["ingest_remarks_truncated"] = truncated_rows or truncated_length
+    context["ingest_remarks_truncated_rows"] = truncated_rows
+    context["ingest_remarks_truncated_length"] = truncated_length
+    context["ingest_remarks_text"] = ingest_text
 
     plans = _build_email_plans(
         pipeline_code=pipeline_name,
