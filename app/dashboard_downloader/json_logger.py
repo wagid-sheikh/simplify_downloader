@@ -43,6 +43,9 @@ class JsonLogger:
         else:
             file_path = log_file_path
         self.file_handle = open(file_path, "a", encoding="utf-8") if file_path else None
+        self._owns_file_handle = self.file_handle is not None
+        self._owns_state = True
+        self._state: Dict[str, bool] = {"closed": False}
         self.aggregator = None
 
     def bind(self, **kwargs: Any) -> "JsonLogger":
@@ -50,12 +53,21 @@ class JsonLogger:
         child.default_context = {**self.default_context, **kwargs}
         child.file_handle = self.file_handle
         child.aggregator = self.aggregator
+        child._owns_state = False
+        child._state = self._state
+        child._owns_file_handle = False
         return child
+
+    @property
+    def closed(self) -> bool:
+        return self._state["closed"]
 
     def attach_aggregator(self, aggregator: Any) -> None:
         self.aggregator = aggregator
 
     def _emit(self, payload: Dict[str, Any]) -> None:
+        if self.closed:
+            return
         event = {**self.default_context, **payload}
         event.setdefault("ts", datetime.now(timezone.utc).isoformat())
         encoded = json.dumps(event, default=str, ensure_ascii=False)
@@ -66,6 +78,8 @@ class JsonLogger:
             self.file_handle.flush()
 
     def info(self, *, phase: str, status: str = "ok", message: str = "", **fields: Any) -> None:
+        if self.closed:
+            return
         payload = {"phase": phase, "status": status, "message": message, **fields}
         if self.aggregator:
             try:
@@ -81,12 +95,20 @@ class JsonLogger:
         self.info(phase=phase, status="error", message=message, **fields)
 
     def close(self) -> None:
-        if self.file_handle:
+        if not self._owns_state:
+            return
+        if self.closed:
+            return
+        self._state["closed"] = True
+        if self.file_handle and self._owns_file_handle:
             self.file_handle.close()
             self.file_handle = None
 
     def __del__(self) -> None:  # pragma: no cover
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            pass
 
 
 def get_logger(run_id: Optional[str] = None) -> JsonLogger:

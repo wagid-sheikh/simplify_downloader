@@ -192,7 +192,8 @@ async def main(
     finally:
         if not persist_attempted and not interrupted:
             await _persist_summary(summary=summary, logger=logger)
-        logger.close()
+        with contextlib.suppress(Exception):
+            logger.close()
 
 
 # ── Data helpers ─────────────────────────────────────────────────────────────
