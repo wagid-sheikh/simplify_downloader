@@ -188,7 +188,12 @@ def _stg_td_orders_table(metadata: sa.MetaData) -> sa.Table:
     return sa.Table(
         "stg_td_orders",
         metadata,
-        sa.Column("id", sa.BigInteger(), primary_key=True),
+        sa.Column(
+            "id",
+            sa.BigInteger().with_variant(sa.Integer(), "sqlite"),
+            primary_key=True,
+            autoincrement=True,
+        ),
         sa.Column("run_id", sa.Text()),
         sa.Column("run_date", sa.DateTime(timezone=True)),
         sa.Column("cost_center", sa.String(length=8)),
@@ -236,6 +241,7 @@ def _stg_td_orders_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("package_payment_info", sa.String(length=32)),
         sa.Column("coupon_code", sa.String(length=32)),
         sa.UniqueConstraint("store_code", "order_number", "order_date", name="uq_stg_td_orders_store_order_date"),
+        sqlite_autoincrement=True,
     )
 
 
@@ -243,7 +249,12 @@ def _orders_table(metadata: sa.MetaData) -> sa.Table:
     return sa.Table(
         "orders",
         metadata,
-        sa.Column("id", sa.BigInteger(), primary_key=True),
+        sa.Column(
+            "id",
+            sa.BigInteger().with_variant(sa.Integer(), "sqlite"),
+            primary_key=True,
+            autoincrement=True,
+        ),
         sa.Column("run_id", sa.Text()),
         sa.Column("run_date", sa.DateTime(timezone=True)),
         sa.Column("cost_center", sa.String(length=8), nullable=False),
@@ -286,13 +297,18 @@ def _orders_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("updated_by", sa.BigInteger()),
         sa.Column("updated_at", sa.DateTime(timezone=True)),
         sa.UniqueConstraint("cost_center", "order_number", "order_date", name="uq_orders_cost_center_order_number_order_date"),
+        sqlite_autoincrement=True,
     )
 
 
 def _normalize_phone(value: str | None, *, warnings: list[str]) -> str | None:
     if value is None:
         return None
-    digits = re.sub(r"\\D", "", str(value))
+    digits = re.sub(r"\D", "", str(value))
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[-10:]
+    if len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
     if len(digits) == 10:
         return digits
     warnings.append(f"Invalid phone number dropped: {value}")
@@ -414,7 +430,14 @@ async def ingest_td_orders_workbook(
     use_sqlite = database_url.startswith("sqlite")
 
     async with session_scope(database_url) as session:
-        await session.run_sync(metadata.create_all)
+        bind = session.bind
+        if isinstance(bind, sa.ext.asyncio.AsyncEngine):
+            async with bind.begin() as conn:
+                await conn.run_sync(metadata.create_all)
+        elif isinstance(bind, sa.ext.asyncio.AsyncConnection):
+            await bind.run_sync(metadata.create_all)
+        else:
+            raise TypeError(f"Unsupported SQLAlchemy bind for TD Orders ingest: {type(bind)!r}")
 
         staging_count = 0
         final_count = 0
