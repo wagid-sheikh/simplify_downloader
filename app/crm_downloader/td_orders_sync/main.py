@@ -35,7 +35,7 @@ PENDING_MIN_POLL_SECONDS = 135
 STABLE_LOCATOR_STRATEGIES = {
     "container_locator_strategy": "heading_preferred_wrapper",
     "range_match_strategy": "date_range_text_pattern",
-    "download_locator_strategy": "underline_link",
+    "download_locator_strategy": "href_contains_order_reports",
 }
 ENABLE_LEGACY_REPORT_REQUEST_ROW_LOCATORS = False
 
@@ -2238,6 +2238,16 @@ async def _log_report_requests_dom(
     return snippet
 
 
+async def _locate_report_request_download(row: Locator) -> tuple[Locator | None, str | None]:
+    download_candidates: list[tuple[str, Locator]] = [
+        ("href_contains_order_reports", row.locator(":scope a[href*='order-reports']")),
+        ("link_role_download", row.get_by_role("link", name=re.compile("download", re.I))),
+        ("has_text_download", row.locator(":scope a:has-text('Download')")),
+        ("underline_link", row.locator(":scope a.text-sm.underline")),
+    ]
+    return await _first_visible_locator_with_label(download_candidates, timeout_ms=1_200)
+
+
 async def _wait_for_report_request_download_link(
     frame: FrameLocator,
     page: Page,
@@ -2265,7 +2275,7 @@ async def _wait_for_report_request_download_link(
     pending_attempts = 0
     download_strategy: str | None = None
     last_refresh_attempt_at = 0.0
-    selection_source: str | None = None
+    selected_row_state: str | None = None
 
     while asyncio.get_event_loop().time() < deadline:
         try:
@@ -2278,7 +2288,7 @@ async def _wait_for_report_request_download_link(
             matched_status: str | None = None
             matched_row_state: str | None = None
             matched_candidates: list[dict[str, Any]] = []
-            for position, row in enumerate(rows):
+            for row_index, row in enumerate(rows):
                 date_range_text_raw = None
                 with contextlib.suppress(Exception):
                     date_range_text_raw = await row.locator("div.w-1\\/5.text-sm.italic").first.inner_text()
@@ -2289,14 +2299,12 @@ async def _wait_for_report_request_download_link(
                 matches_expected = any(pattern.search(date_range_text) for pattern in range_patterns)
                 if matches_expected:
                     status_text = await _extract_row_status_text(row)
-                    download_locator, strategy = await _first_visible_locator_with_label(
-                        [(STABLE_LOCATOR_STRATEGIES["download_locator_strategy"], row.locator("a.text-sm.underline"))],
-                        timeout_ms=800,
-                    )
+                    download_locator, strategy = await _locate_report_request_download(row)
                     with contextlib.suppress(Exception):
                         last_row_html = _truncate_html(await _capture_outer_html(row))
                     matched_candidates.append(
                         {
+                            "index": row_index,
                             "row": row,
                             "range_text": date_range_text,
                             "status_text": status_text,
@@ -2310,14 +2318,14 @@ async def _wait_for_report_request_download_link(
             if matched_candidates:
                 matched_row_seen = True
                 last_seen_texts = visible_rows or [matched_candidates[0]["range_text"]]
-                position_sorted = sorted(matched_candidates, key=lambda candidate: candidate.get("position", 0))
-                downloadable_candidates = [candidate for candidate in position_sorted if candidate["download_locator"] is not None]
+                downloadable_candidates = [candidate for candidate in matched_candidates if candidate["download_locator"] is not None]
+                downloadable_candidates.sort(key=lambda candidate: candidate["index"])
                 pending_candidates = [
                     candidate
                     for candidate in position_sorted
                     if candidate.get("status_text") and "pending" in candidate["status_text"].lower()
                 ]
-                selection_source = "downloadable" if downloadable_candidates else "pending" if pending_candidates else "fallback"
+                pending_candidates.sort(key=lambda candidate: candidate["index"])
                 selected_candidate = (
                     downloadable_candidates[0]
                     if downloadable_candidates
@@ -2332,7 +2340,24 @@ async def _wait_for_report_request_download_link(
                 download_locator = selected_candidate.get("download_locator")
                 download_strategy = selected_candidate.get("download_strategy")
                 matched_row_state = "downloadable" if download_locator else "pending" if pending_candidates else "unknown"
+                selected_row_state = matched_row_state
                 last_row_html = selected_candidate.get("row_html")
+
+                log_event(
+                    logger=logger,
+                    phase="iframe",
+                    message="Selected Report Requests row for follow-up",
+                    store_code=store.store_code,
+                    matched_range_text=matched_text,
+                    status_text=matched_status,
+                    expected_range_texts=list(expected_range_texts),
+                    all_row_texts=visible_rows or [matched_text],
+                    row_html_snippet=last_row_html,
+                    range_match_strategy=last_range_match_strategy,
+                    download_locator_strategy=download_strategy,
+                    container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+                    selected_row_state=matched_row_state,
+                )
 
                 if matched_status:
                     eta_seconds = _parse_eta_seconds(matched_status)
@@ -2521,8 +2546,7 @@ async def _wait_for_report_request_download_link(
         range_match_strategy=last_range_match_strategy,
         download_locator_strategy=download_strategy,
         container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
-        selected_row_state="downloadable" if download_strategy else "pending" if last_status and "pending" in (last_status or "").lower() else None,
-        selection_source=selection_source,
+        selected_row_state=selected_row_state,
     )
     return False, None, None, last_status
 
