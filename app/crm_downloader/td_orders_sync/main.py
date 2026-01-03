@@ -2276,6 +2276,7 @@ async def _wait_for_report_request_download_link(
     download_strategy: str | None = None
     last_refresh_attempt_at = 0.0
     selected_row_state: str | None = None
+    selection_source: str | None = None
 
     while asyncio.get_event_loop().time() < deadline:
         try:
@@ -2311,35 +2312,39 @@ async def _wait_for_report_request_download_link(
                             "download_locator": download_locator,
                             "download_strategy": strategy,
                             "row_html": last_row_html,
-                            "position": position,
                         }
                     )
 
             if matched_candidates:
                 matched_row_seen = True
                 last_seen_texts = visible_rows or [matched_candidates[0]["range_text"]]
-                downloadable_candidates = [candidate for candidate in matched_candidates if candidate["download_locator"] is not None]
-                downloadable_candidates.sort(key=lambda candidate: candidate["index"])
+                sorted_candidates = sorted(matched_candidates, key=lambda candidate: candidate["index"])
+                downloadable_candidates = [candidate for candidate in sorted_candidates if candidate["download_locator"] is not None]
                 pending_candidates = [
                     candidate
-                    for candidate in position_sorted
+                    for candidate in sorted_candidates
                     if candidate.get("status_text") and "pending" in candidate["status_text"].lower()
                 ]
-                pending_candidates.sort(key=lambda candidate: candidate["index"])
-                selected_candidate = (
-                    downloadable_candidates[0]
-                    if downloadable_candidates
-                    else pending_candidates[0]
-                    if pending_candidates
-                    else position_sorted[0]
-                )
+                selected_candidate: dict[str, Any] | None = None
+                if downloadable_candidates:
+                    selected_candidate = downloadable_candidates[0]
+                    matched_row_state = "downloadable"
+                    selection_source = "downloadable_row"
+                elif pending_candidates:
+                    selected_candidate = pending_candidates[0]
+                    matched_row_state = "pending"
+                    selection_source = "pending_row"
+                else:
+                    selected_candidate = sorted_candidates[0]
+                    matched_row_state = "unknown"
+                    selection_source = "first_match_row"
+
                 matched_row = selected_candidate["row"]
                 matched_text = selected_candidate["range_text"]
                 matched_status = selected_candidate.get("status_text")
                 last_status = matched_status or last_status
                 download_locator = selected_candidate.get("download_locator")
                 download_strategy = selected_candidate.get("download_strategy")
-                matched_row_state = "downloadable" if download_locator else "pending" if pending_candidates else "unknown"
                 selected_row_state = matched_row_state
                 last_row_html = selected_candidate.get("row_html")
 
@@ -2357,6 +2362,7 @@ async def _wait_for_report_request_download_link(
                     download_locator_strategy=download_strategy,
                     container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
                     selected_row_state=matched_row_state,
+                    selection_source=selection_source,
                 )
 
                 if matched_status:
