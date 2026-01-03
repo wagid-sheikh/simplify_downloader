@@ -369,7 +369,27 @@ def _coerce_row(raw: Mapping[str, Any], *, tz: ZoneInfo, warnings: list[str]) ->
     return row
 
 
-def _read_workbook_rows(workbook_path: Path, *, tz: ZoneInfo, warnings: list[str]) -> list[Dict[str, Any]]:
+def _is_footer_row(values: Sequence[Any]) -> bool:
+    non_empty = [value for value in values if value not in (None, "")]
+    if not non_empty:
+        return False
+    combined = " ".join(str(value).strip().lower() for value in non_empty)
+    footer_markers = (
+        "total records",
+        "report generated",
+        "this is a computer generated",
+        "this is a system generated",
+        "powered by quick",
+    )
+    if any(marker in combined for marker in footer_markers):
+        return True
+    first_value = non_empty[0]
+    return isinstance(first_value, str) and first_value.strip().lower().startswith("total")
+
+
+def _read_workbook_rows(
+    workbook_path: Path, *, tz: ZoneInfo, warnings: list[str], logger: JsonLogger
+) -> list[Dict[str, Any]]:
     wb = openpyxl.load_workbook(workbook_path, data_only=True)
     sheet = wb.active
     header_cells = list(next(sheet.iter_rows(min_row=1, max_row=1, values_only=True)))
@@ -379,7 +399,20 @@ def _read_workbook_rows(workbook_path: Path, *, tz: ZoneInfo, warnings: list[str
         raise ValueError(f"TD Orders workbook missing expected columns: {sorted(missing)}")
 
     rows: list[Dict[str, Any]] = []
-    for values in sheet.iter_rows(min_row=2, values_only=True):
+    data_rows = list(sheet.iter_rows(min_row=2, values_only=True))
+    if data_rows and _is_footer_row(data_rows[-1]):
+        footer_row_number = len(data_rows) + 1  # account for header row
+        log_event(
+            logger=logger,
+            phase="ingest",
+            status="warn",
+            message="Skipping trailing TD Orders summary/footer row",
+            workbook=str(workbook_path),
+            row_number=footer_row_number,
+        )
+        data_rows = data_rows[:-1]
+
+    for values in data_rows:
         raw_row = {header: values[idx] if idx < len(values) else None for idx, header in enumerate(headers)}
         normalized = _coerce_row(raw_row, tz=tz, warnings=warnings)
         if normalized:
@@ -412,7 +445,7 @@ async def ingest_td_orders_workbook(
 ) -> TdOrdersIngestResult:
     tz = get_timezone()
     warnings: list[str] = []
-    rows = _read_workbook_rows(workbook_path, tz=tz, warnings=warnings)
+    rows = _read_workbook_rows(workbook_path, tz=tz, warnings=warnings, logger=logger)
     if not rows:
         log_event(
             logger=logger,
