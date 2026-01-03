@@ -301,7 +301,7 @@ def _orders_table(metadata: sa.MetaData) -> sa.Table:
     )
 
 
-def _normalize_phone(value: str | None, *, warnings: list[str]) -> str | None:
+def _normalize_phone(value: str | None, *, warnings: list[str], invalid_phone_numbers: set[str]) -> str | None:
     if value is None:
         return None
     digits = re.sub(r"\D", "", str(value))
@@ -311,7 +311,10 @@ def _normalize_phone(value: str | None, *, warnings: list[str]) -> str | None:
         digits = digits[1:]
     if len(digits) == 10:
         return digits
-    warnings.append(f"Invalid phone number dropped: {value}")
+    value_str = str(value)
+    if value_str not in invalid_phone_numbers:
+        invalid_phone_numbers.add(value_str)
+        warnings.append(f"Invalid phone number dropped: {value_str}")
     return None
 
 
@@ -341,7 +344,7 @@ def _parse_datetime(value: Any, *, tz: ZoneInfo, field: str, warnings: list[str]
         return None
 
 
-def _coerce_row(raw: Mapping[str, Any], *, tz: ZoneInfo, warnings: list[str]) -> Dict[str, Any]:
+def _coerce_row(raw: Mapping[str, Any], *, tz: ZoneInfo, warnings: list[str], invalid_phone_numbers: set[str]) -> Dict[str, Any]:
     row: Dict[str, Any] = {}
     for header, field in HEADER_MAP.items():
         row[field] = raw.get(header)
@@ -356,7 +359,9 @@ def _coerce_row(raw: Mapping[str, Any], *, tz: ZoneInfo, warnings: list[str]) ->
     for field in NUMERIC_FIELDS:
         row[field] = _parse_numeric(row[field], warnings=warnings, field=field)
 
-    row["mobile_number"] = _normalize_phone(row.get("mobile_number"), warnings=warnings)
+    row["mobile_number"] = _normalize_phone(
+        row.get("mobile_number"), warnings=warnings, invalid_phone_numbers=invalid_phone_numbers
+    )
     if row["order_number"] in (None, ""):
         warnings.append("Skipping row with blank order_number")
         return {}
@@ -376,6 +381,7 @@ def _is_footer_row(values: Sequence[Any]) -> bool:
     combined = " ".join(str(value).strip().lower() for value in non_empty)
     footer_markers = (
         "total records",
+        "total order",
         "report generated",
         "this is a computer generated",
         "this is a system generated",
@@ -400,21 +406,14 @@ def _read_workbook_rows(
 
     rows: list[Dict[str, Any]] = []
     data_rows = list(sheet.iter_rows(min_row=2, values_only=True))
-    if data_rows and _is_footer_row(data_rows[-1]):
-        footer_row_number = len(data_rows) + 1  # account for header row
-        log_event(
-            logger=logger,
-            phase="ingest",
-            status="warn",
-            message="Skipping trailing TD Orders summary/footer row",
-            workbook=str(workbook_path),
-            row_number=footer_row_number,
-        )
-        data_rows = data_rows[:-1]
+    while data_rows and _is_footer_row(data_rows[-1]):
+        data_rows.pop()
+
+    invalid_phone_numbers: set[str] = set()
 
     for values in data_rows:
         raw_row = {header: values[idx] if idx < len(values) else None for idx, header in enumerate(headers)}
-        normalized = _coerce_row(raw_row, tz=tz, warnings=warnings)
+        normalized = _coerce_row(raw_row, tz=tz, warnings=warnings, invalid_phone_numbers=invalid_phone_numbers)
         if normalized:
             rows.append(normalized)
     return rows

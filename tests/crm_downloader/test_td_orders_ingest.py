@@ -217,7 +217,63 @@ def _build_sample_workbook_with_footer(path: Path) -> Path:
             None,
         ]
     )
-    ws.append(["Total Records: 2", None, None, None, None, None, None, None, None, None, None])
+    ws.append(["Total Order Summary", None, None, None, None, None, None, None, None, None, None])
+    wb.save(path)
+    return path
+
+
+def _build_workbook_with_duplicate_bad_phones(path: Path) -> Path:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    headers = list(_expected_headers())
+    ws.append(headers)
+    for idx in range(2):
+        ws.append(
+            [
+                "2025-05-10 09:30",
+                f"ORD-00{idx + 1}",
+                "C001",
+                "Alice",
+                "123 Street",
+                "12345",
+                "Pickup",
+                "",
+                "2025-05-12 10:00",
+                2,
+                1.5,
+                "1,200.00",
+                "100",
+                "50",
+                "1050",
+                None,
+                500,
+                0,
+                550,
+                None,
+                None,
+                "Bob",
+                "Note A",
+                "Order note",
+                "Yes",
+                "North",
+                "Charlie",
+                "GST123",
+                "App",
+                "POS1",
+                "Yes",
+                "TypeA",
+                "Pack1",
+                "Positive",
+                "tag1",
+                "Comment",
+                "Dry Clean",
+                "Extra",
+                "Pending",
+                "2025-05-11 08:00",
+                "Info",
+                "CPN1",
+            ]
+        )
     wb.save(path)
     return path
 
@@ -366,9 +422,38 @@ async def test_footer_row_is_skipped(tmp_path: Path) -> None:
 
     assert result.staging_rows == 2
     assert result.final_rows == 2
-    # footer row should not add warnings beyond existing invalid phone warning
-    assert len(result.warnings) == 1
-
+    # footer row should not add warnings beyond existing invalid phone warning and should not log warnings
+    assert result.warnings == ["Invalid phone number dropped: 12345"]
     log_stream.seek(0)
     logs = log_stream.read().splitlines()
-    assert any("Skipping trailing TD Orders summary/footer row" in line for line in logs)
+    assert logs == []
+
+
+@pytest.mark.asyncio
+async def test_duplicate_invalid_phone_warns_once(tmp_path: Path) -> None:
+    db_path = tmp_path / "orders.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    workbook = _build_workbook_with_duplicate_bad_phones(tmp_path / "orders_bad_phone.xlsx")
+
+    tz = ZoneInfo("Asia/Kolkata")
+    run_date = datetime(2025, 5, 20, 12, 0, tzinfo=tz)
+    log_stream = io.StringIO()
+    logger = JsonLogger(run_id="test_run", stream=log_stream, log_file_path=None)
+
+    result = await ingest_td_orders_workbook(
+        workbook_path=workbook,
+        store_code="A668",
+        cost_center="UN3668",
+        run_id="test_run",
+        run_date=run_date,
+        database_url=database_url,
+        logger=logger,
+    )
+
+    assert result.staging_rows == 2
+    assert result.final_rows == 2
+    assert result.warnings == ["Invalid phone number dropped: 12345"]
+    log_stream.seek(0)
+    assert log_stream.read().splitlines() == []
