@@ -37,7 +37,7 @@ def _build_database_url() -> str:
     database = _require_env("POSTGRES_DB")
 
     if host.lower() == "sqlite":
-        return f"sqlite:///{database}"
+        return f"sqlite+aiosqlite:///{database}"
 
     port = _require_env("POSTGRES_PORT")
     try:
