@@ -2137,6 +2137,33 @@ async def _collect_report_request_rows(
     return rows
 
 
+def _summarize_row_texts(row_texts: Sequence[str], *, max_range_examples: int = 3) -> dict[str, Any]:
+    range_pattern = re.compile(
+        r"\b(?:\d{1,2}\s+\w{3,9}\s+\d{4}|\w{3,9}\s+\d{1,2},?\s+\d{4})\s*-\s*(?:\d{1,2}\s+\w{3,9}\s+\d{4}|\w{3,9}\s+\d{1,2},?\s+\d{4})",
+        re.IGNORECASE,
+    )
+
+    matched_range_examples: list[str] = []
+    seen_ranges: set[str] = set()
+    for text in row_texts:
+        candidate = text
+        match = range_pattern.search(text)
+        if match:
+            candidate = " ".join(match.group(0).split())
+        if candidate in seen_ranges:
+            continue
+        seen_ranges.add(candidate)
+        matched_range_examples.append(candidate)
+        if len(matched_range_examples) >= max_range_examples:
+            break
+
+    return {
+        "row_count": len(row_texts),
+        "first_row_text": row_texts[0] if row_texts else None,
+        "matched_range_examples": matched_range_examples or None,
+    }
+
+
 async def _wait_for_report_requests_container(
     frame: FrameLocator,
     *,
@@ -2145,7 +2172,7 @@ async def _wait_for_report_requests_container(
     timeout_ms: int,
 ) -> tuple[Locator | None, dict[str, Any]]:
     deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
-    last_seen: list[str] = []
+    last_seen_summary: dict[str, Any] | None = None
     header_seen = False
     heading_texts: list[str] = []
     diagnostics: dict[str, Any] = {}
@@ -2209,19 +2236,22 @@ async def _wait_for_report_requests_container(
                         if sample_text:
                             sample.append(" ".join(sample_text.split()))
                 if sample:
-                    last_seen = sample[:10]
+                    summary = _summarize_row_texts(sample[:10])
+                    last_seen_summary = summary
                     log_event(
                         logger=logger,
                         phase="iframe",
                         message="Observed Report Requests rows",
                         store_code=store.store_code,
-                        rows=last_seen,
+                        row_count=summary["row_count"],
+                        first_row_text=summary["first_row_text"],
+                        matched_range_examples=summary["matched_range_examples"],
                         container_locator_strategy=container_strategy,
                     )
                 diagnostics = {
                     "header_seen": header_seen,
                     "heading_texts": heading_texts or None,
-                    "last_seen_rows": last_seen or None,
+                    "last_seen_rows_summary": last_seen_summary,
                     "container_locator_strategy": container_strategy,
                 }
                 return container, diagnostics
@@ -2230,7 +2260,11 @@ async def _wait_for_report_requests_container(
 
         await asyncio.sleep(0.4)
 
-    diagnostics = {"header_seen": header_seen, "heading_texts": heading_texts or None, "last_seen_rows": last_seen or None}
+    diagnostics = {
+        "header_seen": header_seen,
+        "heading_texts": heading_texts or None,
+        "last_seen_rows_summary": last_seen_summary,
+    }
     log_event(
         logger=logger,
         phase="iframe",
@@ -2238,7 +2272,7 @@ async def _wait_for_report_requests_container(
         message="Report Requests container not visible after request",
         store_code=store.store_code,
         timeout_ms=timeout_ms,
-        last_seen_rows=last_seen or None,
+        last_seen_rows_summary=last_seen_summary,
         header_seen=header_seen,
         heading_texts=heading_texts or None,
         container_locator_strategy=container_strategy_seen,
