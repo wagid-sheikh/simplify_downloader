@@ -59,7 +59,7 @@ def test_orders_ingest_remark_migration_is_symmetrical(monkeypatch: pytest.Monke
                     store_code TEXT,
                     order_number TEXT,
                     order_date TIMESTAMP,
-                    ingest_remarks TEXT
+                    ingest_remark TEXT
                 )
                 """
             )
@@ -72,14 +72,14 @@ def test_orders_ingest_remark_migration_is_symmetrical(monkeypatch: pytest.Monke
                     store_code,
                     order_number,
                     order_date,
-                    ingest_remarks
+                    ingest_remark
                 )
                 VALUES (
                     :cost_center,
                     :store_code,
                     :order_number,
                     :order_date,
-                    :ingest_remarks
+                    :ingest_remark
                 )
                 """
             ),
@@ -88,28 +88,28 @@ def test_orders_ingest_remark_migration_is_symmetrical(monkeypatch: pytest.Monke
                 "store_code": "A123",
                 "order_number": "ORD-001",
                 "order_date": order_date,
-                "ingest_remarks": "invalid phone",
+                "ingest_remark": "invalid phone",
             },
         )
 
-    assert "ingest_remarks" in _order_columns(engine)
+    assert "ingest_remark" in _order_columns(engine)
 
     with engine.begin() as connection:
         _run_migration(connection, migration.upgrade, monkeypatch)
-
-    columns = _order_columns(engine)
-    assert "ingest_remark" in columns
-    assert "ingest_remarks" not in columns
-    with engine.connect() as connection:
-        remark = connection.execute(sa.text("SELECT ingest_remark FROM orders")).scalar()
-    assert remark == "invalid phone"
-
-    with engine.begin() as connection:
-        _run_migration(connection, migration.downgrade, monkeypatch)
 
     columns = _order_columns(engine)
     assert "ingest_remarks" in columns
     assert "ingest_remark" not in columns
     with engine.connect() as connection:
         remark = connection.execute(sa.text("SELECT ingest_remarks FROM orders")).scalar()
+    assert remark == "invalid phone"
+
+    with engine.begin() as connection:
+        _run_migration(connection, migration.downgrade, monkeypatch)
+
+    columns = _order_columns(engine)
+    assert "ingest_remark" in columns
+    assert "ingest_remarks" not in columns
+    with engine.connect() as connection:
+        remark = connection.execute(sa.text("SELECT ingest_remark FROM orders")).scalar()
     assert remark == "invalid phone"

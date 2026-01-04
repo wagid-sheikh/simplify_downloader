@@ -1,4 +1,4 @@
-"""Rename orders.ingest_remarks to ingest_remark."""
+"""Ensure orders.ingest_remarks is used instead of ingest_remark."""
 
 from __future__ import annotations
 
@@ -25,10 +25,10 @@ def upgrade() -> None:
         return
 
     with op.batch_alter_table("orders") as batch_op:
-        if "ingest_remarks" in columns and "ingest_remark" not in columns:
-            batch_op.alter_column("ingest_remarks", new_column_name="ingest_remark")
-        elif "ingest_remark" not in columns:
-            batch_op.add_column(sa.Column("ingest_remark", sa.Text(), nullable=True))
+        if "ingest_remark" in columns and "ingest_remarks" not in columns:
+            batch_op.alter_column("ingest_remark", new_column_name="ingest_remarks")
+        elif "ingest_remarks" not in columns:
+            batch_op.add_column(sa.Column("ingest_remarks", sa.Text(), nullable=True))
 
 
 def downgrade() -> None:
@@ -37,7 +37,7 @@ def downgrade() -> None:
         return
 
     with op.batch_alter_table("orders") as batch_op:
-        if "ingest_remark" in columns and "ingest_remarks" not in columns:
-            batch_op.alter_column("ingest_remark", new_column_name="ingest_remarks")
-        elif "ingest_remarks" not in columns:
-            batch_op.add_column(sa.Column("ingest_remarks", sa.Text(), nullable=True))
+        if "ingest_remarks" in columns and "ingest_remark" not in columns:
+            batch_op.alter_column("ingest_remarks", new_column_name="ingest_remark")
+        elif "ingest_remark" not in columns:
+            batch_op.add_column(sa.Column("ingest_remark", sa.Text(), nullable=True))
