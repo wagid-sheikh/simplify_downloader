@@ -579,6 +579,36 @@ async def test_ingest_remarks_populated_for_invalid_data(tmp_path: Path) -> None
         assert orders_rows[0].ingest_remark == "last_activity: not-a-date; phone: A668--7051"
         assert orders_rows[1].ingest_remark is None
 
+    second_result = await ingest_td_orders_workbook(
+        workbook_path=workbook,
+        store_code="A668",
+        cost_center="UN3668",
+        run_id="test_run",
+        run_date=run_date + timedelta(hours=1),
+        database_url=database_url,
+        logger=logger,
+    )
+    assert second_result.staging_rows == 2
+    assert second_result.final_rows == 2
+    assert second_result.ingest_remarks == [
+        {
+            "store_code": "A668",
+            "order_number": "ORD-001",
+            "ingest_remarks": "last_activity: not-a-date; phone: A668--7051",
+        }
+    ]
+
+    async with session_scope(database_url) as session:
+        metadata = sa.MetaData()
+        orders_table = _orders_table(metadata)
+        orders_rows = (
+            await session.execute(
+                sa.select(orders_table.c.order_number, orders_table.c.ingest_remark).order_by(orders_table.c.order_number)
+            )
+        ).all()
+        assert orders_rows[0].ingest_remark == "last_activity: not-a-date; phone: A668--7051"
+        assert orders_rows[1].ingest_remark is None
+
 
 @pytest.mark.asyncio
 async def test_duplicate_invalid_phone_warns_once(tmp_path: Path) -> None:
