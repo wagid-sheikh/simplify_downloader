@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
 from urllib.parse import urlparse
 
 import sqlalchemy as sa
@@ -293,6 +293,10 @@ def _build_date_range_patterns(from_date: date, to_date: date) -> list[re.Patter
 
 def _format_orders_filename(store_code: str, from_date: date, to_date: date) -> str:
     return f"{store_code}_td_orders_{from_date.strftime('%Y%m%d')}_{to_date.strftime('%Y%m%d')}.xlsx"
+
+
+def _format_sales_filename(store_code: str, from_date: date, to_date: date) -> str:
+    return f"{store_code}_td_sales_{from_date.strftime('%Y%m%d')}_{to_date.strftime('%Y%m%d')}.xlsx"
 
 
 @dataclass
@@ -1095,13 +1099,113 @@ async def _navigate_to_orders_container(
     return True
 
 
-async def _wait_for_iframe(page: Page, *, store: TdStore, logger: JsonLogger) -> FrameLocator | None:
+def _build_sales_report_url(store: TdStore, current_url: str | None = None) -> str | None:
+    base_url = store.home_url or store.default_home_url or current_url
+    if not base_url:
+        return None
+    parsed = urlparse(base_url)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    store_code_lower = (store.store_code or "").strip().lower()
+    if not store_code_lower:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}/{store_code_lower}/App/Reports/NEWSalesAndDeliveryReport"
+
+
+async def _navigate_to_sales_report(
+    page: Page, *, store: TdStore, logger: JsonLogger, nav_timeout_ms: int
+) -> bool:
+    target_url = _build_sales_report_url(store, page.url)
+    if not target_url:
+        log_event(
+            logger=logger,
+            phase="sales",
+            status="warn",
+            message="Unable to build Sales & Delivery report URL",
+            store_code=store.store_code,
+            current_url=page.url,
+        )
+        return False
+
+    current_url = page.url or ""
+    target_fragment = "/app/reports/newsalesanddeliveryreport"
+    if target_fragment in current_url.lower() and store.store_code.lower() in current_url.lower():
+        log_event(
+            logger=logger,
+            phase="sales",
+            message="Already on Sales & Delivery report page",
+            store_code=store.store_code,
+            final_url=current_url,
+        )
+        return True
+
+    try:
+        await page.goto(target_url, wait_until="domcontentloaded", timeout=nav_timeout_ms)
+    except Exception as exc:
+        log_event(
+            logger=logger,
+            phase="sales",
+            status="error",
+            message="Navigation to Sales & Delivery report failed",
+            store_code=store.store_code,
+            target_url=target_url,
+            error=str(exc),
+        )
+        return False
+
+    try:
+        await page.wait_for_url(
+            re.compile(
+                rf"/{re.escape(store.store_code)}/App/Reports/NEWSalesAndDeliveryReport",
+                re.IGNORECASE,
+            ),
+            timeout=nav_timeout_ms,
+        )
+    except Exception:
+        pass
+
+    final_url = page.url or ""
+    url_contains_store = store.store_code.lower() in final_url.lower()
+    url_contains_path = target_fragment in final_url.lower()
+    if not (url_contains_store and url_contains_path):
+        log_event(
+            logger=logger,
+            phase="sales",
+            status="warn",
+            message="Sales & Delivery report URL validation failed",
+            store_code=store.store_code,
+            final_url=final_url,
+            target_url=target_url,
+            contains_store_code=url_contains_store,
+            contains_sales_path=url_contains_path,
+        )
+        return False
+
+    log_event(
+        logger=logger,
+        phase="sales",
+        message="Navigated to Sales & Delivery report page",
+        store_code=store.store_code,
+        final_url=final_url,
+        target_url=target_url,
+    )
+    return True
+
+
+async def _wait_for_iframe(
+    page: Page,
+    *,
+    store: TdStore,
+    logger: JsonLogger,
+    require_src: bool = False,
+    phase: str = "orders",
+) -> FrameLocator | None:
     try:
         await page.wait_for_selector("#ifrmReport", state="attached", timeout=20_000)
     except TimeoutError:
         log_event(
             logger=logger,
-            phase="orders",
+            phase=phase,
             status="error",
             message="iframe#ifrmReport not attached within timeout",
             store_code=store.store_code,
@@ -1118,14 +1222,26 @@ async def _wait_for_iframe(page: Page, *, store: TdStore, logger: JsonLogger) ->
     except Exception:
         iframe_src = None
 
+    if require_src and not (iframe_src or "").strip():
+        log_event(
+            logger=logger,
+            phase=phase,
+            status="error",
+            message="iframe#ifrmReport attached without src",
+            store_code=store.store_code,
+            final_url=page.url,
+            iframe_attached=True,
+        )
+        return None
+
     iframe_src_length = len(iframe_src) if iframe_src else None
     iframe_src_prefix = iframe_src[:64] if iframe_src else None
     iframe_src_hostname = urlparse(iframe_src).hostname if iframe_src else None
 
     log_event(
         logger=logger,
-        phase="orders",
-        message="Orders container ready; iframe attached",
+        phase=phase,
+        message="Report container ready; iframe attached",
         store_code=store.store_code,
         final_url=page.url,
         iframe_src_hostname=iframe_src_hostname,
@@ -2308,8 +2424,10 @@ async def _log_report_requests_dom(
 async def _locate_report_request_download(row: Locator) -> tuple[Locator | None, str | None]:
     download_candidates: list[tuple[str, Locator]] = [
         ("href_contains_order_reports", row.locator(":scope a[href*='order-reports']")),
+        ("href_contains_sales_reports", row.locator(":scope a[href*='sales']")),
         ("link_role_download", row.get_by_role("link", name=re.compile("download", re.I))),
         ("has_text_download", row.locator(':scope a:has-text("Download")')),
+        ("href_contains_report", row.locator(":scope a[href*='report']")),
     ]
     return await _first_visible_locator_with_label(download_candidates, timeout_ms=1_200)
 
@@ -2612,7 +2730,7 @@ async def _wait_for_report_request_download_link(
     return False, None, last_matched_range_text, last_status
 
 
-async def _run_orders_iframe_flow(
+async def _run_report_iframe_flow(
     page: Page,
     frame: FrameLocator,
     *,
@@ -2622,6 +2740,8 @@ async def _run_orders_iframe_flow(
     to_date: date,
     nav_timeout_ms: int,
     download_dir: Path,
+    report_label: str,
+    filename_builder: Callable[[str, date, date], str],
 ) -> tuple[bool, str | None]:
     await _wait_for_loading_indicators(
         frame, store=store, logger=logger, timeout_ms=nav_timeout_ms, phase="iframe_preflight"
@@ -2665,7 +2785,7 @@ async def _run_orders_iframe_flow(
         timeout_ms=nav_timeout_ms,
     )
     if not historical_locator:
-        return False, "Download Historical Report control not visible inside iframe"
+        return False, f"{report_label.title()} Download Historical Report control not visible inside iframe"
 
     await historical_locator.click()
     await _wait_for_loading_indicators(
@@ -2680,7 +2800,7 @@ async def _run_orders_iframe_flow(
         timeout_ms=nav_timeout_ms,
     )
     if not generate_locator:
-        return False, "Generate Report control not visible inside iframe"
+        return False, f"{report_label.title()} Generate Report control not visible inside iframe"
 
     await generate_locator.click()
     await _wait_for_loading_indicators(
@@ -2712,7 +2832,7 @@ async def _run_orders_iframe_flow(
         timeout_ms=nav_timeout_ms,
     )
     if not request_locator:
-        return False, "Request Report control not visible inside iframe"
+        return False, f"{report_label.title()} Request Report control not visible inside iframe"
 
     await request_locator.click()
     await _wait_for_loading_indicators(
@@ -2740,7 +2860,7 @@ async def _run_orders_iframe_flow(
             store=store,
             label="report_requests_after_request",
         )
-    filename = _format_orders_filename(store.store_code, from_date, to_date)
+    filename = filename_builder(store.store_code, from_date, to_date)
     target_path = download_dir / filename
     download_wait_timeout_ms = min(nav_timeout_ms, 8_000)
 
@@ -2757,9 +2877,59 @@ async def _run_orders_iframe_flow(
         download_wait_timeout_ms=download_wait_timeout_ms,
     )
     if not downloaded:
-        return False, last_status or "Matching Report Requests row not ready for download"
+        return False, last_status or f"Matching {report_label.title()} Report Requests row not ready for download"
 
     return True, downloaded_path or str(target_path)
+
+
+async def _run_orders_iframe_flow(
+    page: Page,
+    frame: FrameLocator,
+    *,
+    store: TdStore,
+    logger: JsonLogger,
+    from_date: date,
+    to_date: date,
+    nav_timeout_ms: int,
+    download_dir: Path,
+) -> tuple[bool, str | None]:
+    return await _run_report_iframe_flow(
+        page,
+        frame,
+        store=store,
+        logger=logger,
+        from_date=from_date,
+        to_date=to_date,
+        nav_timeout_ms=nav_timeout_ms,
+        download_dir=download_dir,
+        report_label="orders",
+        filename_builder=_format_orders_filename,
+    )
+
+
+async def _run_sales_iframe_flow(
+    page: Page,
+    frame: FrameLocator,
+    *,
+    store: TdStore,
+    logger: JsonLogger,
+    from_date: date,
+    to_date: date,
+    nav_timeout_ms: int,
+    download_dir: Path,
+) -> tuple[bool, str | None]:
+    return await _run_report_iframe_flow(
+        page,
+        frame,
+        store=store,
+        logger=logger,
+        from_date=from_date,
+        to_date=to_date,
+        nav_timeout_ms=nav_timeout_ms,
+        download_dir=download_dir,
+        report_label="sales",
+        filename_builder=_format_sales_filename,
+    )
 
 
 async def _wait_for_otp_verification(
@@ -3192,6 +3362,81 @@ async def _run_store_discovery(
                     outcome_message = (
                         f"Orders ingested: staging={ingest_result.staging_rows}, final={ingest_result.final_rows}"
                     )
+
+                sales_status: str | None = None
+                sales_message: str | None = None
+                sales_download_path: str | None = None
+                sales_nav_ready = await _navigate_to_sales_report(
+                    page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms
+                )
+                if sales_nav_ready:
+                    sales_iframe = await _wait_for_iframe(
+                        page, store=store, logger=store_logger, require_src=True, phase="sales"
+                    )
+                    if sales_iframe is not None:
+                        await _observe_iframe_hydration(
+                            sales_iframe, store=store, logger=store_logger, timeout_ms=nav_timeout_ms
+                        )
+                        sales_success, sales_detail = await _run_sales_iframe_flow(
+                            page,
+                            sales_iframe,
+                            store=store,
+                            logger=store_logger,
+                            from_date=run_start_date,
+                            to_date=run_end_date,
+                            nav_timeout_ms=nav_timeout_ms,
+                            download_dir=download_dir,
+                        )
+                        if sales_success:
+                            sales_status = "ok"
+                            sales_download_path = sales_detail
+                            log_event(
+                                logger=store_logger,
+                                phase="sales",
+                                message="Sales & Delivery report downloaded",
+                                store_code=store.store_code,
+                                download_path=sales_detail,
+                            )
+                        else:
+                            sales_status = "warning"
+                            sales_message = sales_detail or "Sales iframe flow failed"
+                            log_event(
+                                logger=store_logger,
+                                phase="sales",
+                                status="warn",
+                                message="Sales & Delivery iframe flow failed",
+                                store_code=store.store_code,
+                                error=sales_detail,
+                            )
+                    else:
+                        sales_status = "warning"
+                        sales_message = "Sales iframe did not attach"
+                        log_event(
+                            logger=store_logger,
+                            phase="sales",
+                            status="warn",
+                            message="Sales iframe not ready after navigation",
+                            store_code=store.store_code,
+                            final_url=page.url,
+                        )
+                else:
+                    sales_status = "warning"
+                    sales_message = "Sales & Delivery report navigation failed"
+                    log_event(
+                        logger=store_logger,
+                        phase="sales",
+                        status="warn",
+                        message="Navigation to Sales & Delivery report did not complete",
+                        store_code=store.store_code,
+                        final_url=page.url,
+                    )
+
+                if sales_status == "ok":
+                    outcome_message = f"{outcome_message}; Sales report downloaded"
+                elif sales_status == "warning":
+                    if outcome_status == "ok":
+                        outcome_status = "warning"
+                    outcome_message = f"{outcome_message}; Sales report failed: {sales_message}"
 
                 log_event(
                     logger=store_logger,
