@@ -1,4 +1,4 @@
-"""Ensure orders.ingest_remarks is used instead of ingest_remark."""
+"""Rename orders.ingest_remark to ingest_remarks."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0030_ingest_remark_orders"
-down_revision = "0029_ingest_remarks_orders"
+revision = "0031_align_td_orders_ingest_remarks"
+down_revision = "0030_ingest_remark_orders"
 branch_labels = None
 depends_on = None
 
