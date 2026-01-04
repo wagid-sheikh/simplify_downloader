@@ -2245,15 +2245,21 @@ async def _log_report_requests_dom(
     logger: JsonLogger,
     store: TdStore,
     label: str = "report_requests_container_dom",
-) -> str | None:
-    html = await _capture_outer_html(container)
+) -> None:
+    row_count: int | None = None
+    try:
+        rows = await _collect_report_request_rows(container, max_rows=20)
+        row_count = len(rows)
+    except Exception:
+        row_count = None
     log_event(
         logger=logger,
         phase="iframe",
-        message="Captured Report Requests container outerHTML",
+        message="Captured Report Requests container structure",
         store_code=store.store_code,
         label=label,
-        outer_html_length=len(html) if html else None,
+        row_count=row_count,
+        container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
     )
     return None
 
@@ -2279,7 +2285,6 @@ async def _wait_for_report_request_download_link(
     timeout_ms: int,
     download_path: Path,
     download_wait_timeout_ms: int,
-    container_html_snippet: str | None = None,
 ) -> tuple[bool, str | None, str | None, str | None]:
     start_time = asyncio.get_event_loop().time()
     poll_timeout_ms = min(REPORT_REQUEST_MAX_TIMEOUT_MS, timeout_ms)
@@ -2557,7 +2562,6 @@ async def _wait_for_report_request_download_link(
         last_status=last_status,
         row_seen=matched_row_seen,
         timeout_ms=poll_timeout_ms,
-        container_html_snippet=container_html_snippet,
         range_match_strategy=last_range_match_strategy,
         download_locator_strategy=last_download_locator_strategy or download_strategy,
         container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
@@ -2688,9 +2692,8 @@ async def _run_orders_iframe_flow(
     if container_locator is None:
         return False, "Report Requests list not visible after requesting report"
 
-    container_html_snippet = None
     with contextlib.suppress(Exception):
-        container_html_snippet = await _log_report_requests_dom(
+        await _log_report_requests_dom(
             container_locator,
             logger=logger,
             store=store,
@@ -2711,7 +2714,6 @@ async def _run_orders_iframe_flow(
         timeout_ms=nav_timeout_ms,
         download_path=target_path,
         download_wait_timeout_ms=download_wait_timeout_ms,
-        container_html_snippet=container_html_snippet or container_diagnostics.get("container_html_snippet"),
     )
     if not downloaded:
         return False, last_status or "Matching Report Requests row not ready for download"
