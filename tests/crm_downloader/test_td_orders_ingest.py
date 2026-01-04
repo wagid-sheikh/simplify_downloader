@@ -429,6 +429,7 @@ async def test_ingest_td_orders_workbook(tmp_path: Path) -> None:
                 sa.select(
                     orders_table.c.order_number,
                     orders_table.c.mobile_number,
+                    orders_table.c.ingest_remark,
                     orders_table.c.due_date,
                     orders_table.c.default_due_date,
                     orders_table.c.due_date_flag,
@@ -439,8 +440,10 @@ async def test_ingest_td_orders_workbook(tmp_path: Path) -> None:
         ord2 = orders_rows[1]
         assert ord1.order_number == "ORD-001"
         assert ord1.mobile_number == "9999988888"
+        assert ord1.ingest_remark is None
         assert ord1.due_date_flag == "Normal Delivery"
         assert ord2.mobile_number == ""  # invalid phone dropped
+        assert ord2.ingest_remark == "phone: 12345"
         due_date = ord2.due_date if ord2.due_date.tzinfo else ord2.due_date.replace(tzinfo=tz)
         default_due_date = (
             ord2.default_due_date
@@ -560,6 +563,7 @@ async def test_ingest_remarks_populated_for_invalid_data(tmp_path: Path) -> None
     async with session_scope(database_url) as session:
         metadata = sa.MetaData()
         stg_table = _stg_td_orders_table(metadata)
+        orders_table = _orders_table(metadata)
         stg_rows = (
             await session.execute(
                 sa.select(stg_table.c.order_number, stg_table.c.ingest_remarks).order_by(stg_table.c.order_number)
@@ -567,6 +571,13 @@ async def test_ingest_remarks_populated_for_invalid_data(tmp_path: Path) -> None
         ).all()
         assert stg_rows[0].ingest_remarks == "last_activity: not-a-date; phone: A668--7051"
         assert stg_rows[1].ingest_remarks is None
+        orders_rows = (
+            await session.execute(
+                sa.select(orders_table.c.order_number, orders_table.c.ingest_remark).order_by(orders_table.c.order_number)
+            )
+        ).all()
+        assert orders_rows[0].ingest_remark == "last_activity: not-a-date; phone: A668--7051"
+        assert orders_rows[1].ingest_remark is None
 
 
 @pytest.mark.asyncio
