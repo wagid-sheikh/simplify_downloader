@@ -2004,17 +2004,23 @@ async def _log_iframe_body_dom(
     logger: JsonLogger,
     store: TdStore,
     label: str = "iframe_body_after_modal",
-) -> str | None:
-    html = await _capture_body_inner_html(frame)
+    capture_html: bool = False,
+) -> bool:
+    body_html: str | None = None
+    if capture_html:
+        body_html = await _capture_body_inner_html(frame)
+
     log_event(
         logger=logger,
         phase="iframe",
-        message="Captured iframe body HTML",
+        message="Iframe body log executed",
         store_code=store.store_code,
         label=label,
-        body_html_length=len(html) if html else None,
+        body_log_attempted=True,
+        body_html_captured=bool(body_html) if capture_html else False,
+        body_html_length=len(body_html) if capture_html and body_html else None,
     )
-    return None
+    return True
 
 
 async def _wait_for_modal_close(
