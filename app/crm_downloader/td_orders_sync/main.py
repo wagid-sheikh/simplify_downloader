@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
+from urllib.parse import urlparse
 
 import sqlalchemy as sa
 from playwright.async_api import Browser, BrowserContext, FrameLocator, Locator, Page, TimeoutError, async_playwright
@@ -1117,13 +1118,19 @@ async def _wait_for_iframe(page: Page, *, store: TdStore, logger: JsonLogger) ->
     except Exception:
         iframe_src = None
 
+    iframe_src_length = len(iframe_src) if iframe_src else None
+    iframe_src_prefix = iframe_src[:64] if iframe_src else None
+    iframe_src_hostname = urlparse(iframe_src).hostname if iframe_src else None
+
     log_event(
         logger=logger,
         phase="orders",
         message="Orders container ready; iframe attached",
         store_code=store.store_code,
         final_url=page.url,
-        iframe_src=iframe_src,
+        iframe_src_hostname=iframe_src_hostname,
+        iframe_src_prefix=iframe_src_prefix,
+        iframe_src_length=iframe_src_length,
         iframe_attached=True,
     )
     return page.frame_locator("#ifrmReport")
