@@ -1803,14 +1803,9 @@ async def _set_date_range(
         return False, final_range_text
 
     picker_popup = await _locate_date_picker_popup(frame, timeout_ms=min(timeout_ms, 8_000))
-    picker_dom: str | None = None
     if picker_popup is not None:
         with contextlib.suppress(Exception):
             await picker_popup.wait_for(state="visible", timeout=timeout_ms)
-        try:
-            picker_dom = await picker_popup.evaluate(f"el => el.outerHTML.slice(0, {DOM_SNIPPET_MAX_CHARS})")
-        except Exception:
-            picker_dom = None
     else:
         log_event(
             logger=logger,
@@ -1831,45 +1826,33 @@ async def _set_date_range(
         numeric_count = 0
 
     use_numeric_triplets = numeric_count >= 6
-    numeric_fill_details: list[dict[str, Any]] = []
-
     from_input = to_input = None
-    locate_attempts: list[dict[str, Any]] = []
-    fill_details: list[dict[str, Any]] = []
-    select_details: list[dict[str, Any]] = []
     from_ok = to_ok = False
     update_click_result: dict[str, Any] | None = None
 
     if use_numeric_triplets:
         from_fields = [numeric_inputs.nth(idx) for idx in range(3)]
         to_fields = [numeric_inputs.nth(idx) for idx in range(3, 6)]
-        from_ok, from_detail = await _fill_numeric_triplet(
+        from_ok, _ = await _fill_numeric_triplet(
             from_fields, target_date=from_date, label="from", logger=logger, store=store
         )
-        to_ok, to_detail = await _fill_numeric_triplet(
+        to_ok, _ = await _fill_numeric_triplet(
             to_fields, target_date=to_date, label="to", logger=logger, store=store
         )
-        numeric_fill_details.extend([from_detail, to_detail])
     else:
-        from_input, to_input, locate_attempts = await _locate_date_inputs(
+        from_input, to_input, _ = await _locate_date_inputs(
             frame, timeout_ms=timeout_ms, logger=logger, store=store, popup=picker_popup
         )
         if from_input and to_input:
-            from_ok, from_detail = await _fill_date_input(
+            from_ok, _ = await _fill_date_input(
                 picker_popup, from_input, target_date=from_date, label="from", logger=logger, store=store
             )
-            to_ok, to_detail = await _fill_date_input(
+            to_ok, _ = await _fill_date_input(
                 picker_popup, to_input, target_date=to_date, label="to", logger=logger, store=store
             )
-            fill_details.extend([from_detail, to_detail])
         else:
-            from_ok, from_detail = await _select_date_in_open_picker(
-                picker_popup, target_date=from_date, label="from"
-            )
-            to_ok, to_detail = await _select_date_in_open_picker(
-                picker_popup, target_date=to_date, label="to"
-            )
-            select_details.extend([from_detail, to_detail])
+            from_ok, _ = await _select_date_in_open_picker(picker_popup, target_date=from_date, label="from")
+            to_ok, _ = await _select_date_in_open_picker(picker_popup, target_date=to_date, label="to")
 
     update_button = await _first_visible_locator(
         [
@@ -1912,13 +1895,7 @@ async def _set_date_range(
             to_value=to_date.isoformat(),
             numeric_input_count=numeric_count,
             used_numeric_triplets=use_numeric_triplets,
-            control_attempts=control_attempts,
-            locate_attempts=locate_attempts,
-            fill_details=fill_details or None,
-            selection_details=select_details or None,
-            numeric_fill_details=numeric_fill_details or None,
             range_text=final_range_text,
-            picker_dom_length=len(picker_dom) if picker_dom else None,
             update_click=update_click_result,
             attempt=attempt,
         )
@@ -1934,13 +1911,7 @@ async def _set_date_range(
         to_ok=to_ok,
         numeric_input_count=numeric_count,
         used_numeric_triplets=use_numeric_triplets,
-        control_attempts=control_attempts,
-        locate_attempts=locate_attempts,
-        fill_details=fill_details or None,
-        selection_details=select_details or None,
-        numeric_fill_details=numeric_fill_details or None,
         range_text=final_range_text,
-        picker_dom_length=len(picker_dom) if picker_dom else None,
         update_click=update_click_result,
         attempt=attempt,
     )
