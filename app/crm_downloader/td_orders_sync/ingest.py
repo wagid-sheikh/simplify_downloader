@@ -319,7 +319,7 @@ def _normalize_phone(
     if len(digits) == 10:
         return digits
     value_str = str(value)
-    row_remarks.append(f"Invalid phone dropped (original value: {value_str})")
+    row_remarks.append(f"Phone value '{value_str}' is invalid and was dropped")
     if value_str not in invalid_phone_numbers:
         invalid_phone_numbers.add(value_str)
         warnings.append(f"Invalid phone number dropped: {value_str}")
@@ -336,7 +336,7 @@ def _parse_numeric(value: Any, *, warnings: list[str], field: str, row_remarks: 
         return Decimal(cleaned)
     except (InvalidOperation, ValueError):
         warnings.append(f"Non-numeric value for {field}: {value}")
-        row_remarks.append(f"Non-numeric value for {field}: {value}")
+        row_remarks.append(f"Field {field} contained non-numeric value '{value}' (stored as 0)")
         return Decimal("0")
 
 
@@ -352,7 +352,7 @@ def _parse_datetime(
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=tz)
     except Exception:
         warnings.append(f"Could not parse datetime for {field}: {value}")
-        row_remarks.append(f"Could not parse datetime for {field}: {value}")
+        row_remarks.append(f"Field {field} could not be parsed from value '{value}' (field cleared)")
         return None
 
 
