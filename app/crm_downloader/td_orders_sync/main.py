@@ -40,6 +40,7 @@ STABLE_LOCATOR_STRATEGIES = {
 ENABLE_LEGACY_REPORT_REQUEST_ROW_LOCATORS = False
 INGEST_REMARKS_MAX_ROWS = 50
 INGEST_REMARKS_MAX_CHARS = 200
+DOM_SNIPPET_MAX_CHARS = 600
 
 
 async def main(
@@ -1807,7 +1808,7 @@ async def _set_date_range(
         with contextlib.suppress(Exception):
             await picker_popup.wait_for(state="visible", timeout=timeout_ms)
         try:
-            picker_dom = await picker_popup.evaluate("el => el.outerHTML.slice(0, 2000)")
+            picker_dom = await picker_popup.evaluate(f"el => el.outerHTML.slice(0, {DOM_SNIPPET_MAX_CHARS})")
         except Exception:
             picker_dom = None
     else:
@@ -1917,7 +1918,7 @@ async def _set_date_range(
             selection_details=select_details or None,
             numeric_fill_details=numeric_fill_details or None,
             range_text=final_range_text,
-            picker_dom_preview=picker_dom,
+            picker_dom_length=len(picker_dom) if picker_dom else None,
             update_click=update_click_result,
             attempt=attempt,
         )
@@ -1939,7 +1940,7 @@ async def _set_date_range(
         selection_details=select_details or None,
         numeric_fill_details=numeric_fill_details or None,
         range_text=final_range_text,
-        picker_dom_preview=picker_dom,
+        picker_dom_length=len(picker_dom) if picker_dom else None,
         update_click=update_click_result,
         attempt=attempt,
     )
@@ -1993,15 +1994,6 @@ async def _extract_row_status_text(row: Locator) -> str | None:
     return None
 
 
-def _truncate_html(html: str | None, limit: int = 4000) -> str | None:
-    if html is None:
-        return None
-    html = html.strip()
-    if len(html) <= limit:
-        return html
-    return f"{html[:limit]}…[truncated {len(html) - limit} chars]"
-
-
 def _parse_eta_seconds(status_text: str | None) -> int | None:
     if not status_text:
         return None
@@ -2043,17 +2035,15 @@ async def _log_iframe_body_dom(
     label: str = "iframe_body_after_modal",
 ) -> str | None:
     html = await _capture_body_inner_html(frame)
-    snippet = _truncate_html(html)
     log_event(
         logger=logger,
         phase="iframe",
         message="Captured iframe body HTML",
         store_code=store.store_code,
         label=label,
-        body_html_snippet=snippet,
         body_html_length=len(html) if html else None,
     )
-    return snippet
+    return None
 
 
 async def _wait_for_modal_close(
@@ -2280,17 +2270,15 @@ async def _log_report_requests_dom(
     label: str = "report_requests_container_dom",
 ) -> str | None:
     html = await _capture_outer_html(container)
-    snippet = _truncate_html(html)
     log_event(
         logger=logger,
         phase="iframe",
         message="Captured Report Requests container outerHTML",
         store_code=store.store_code,
         label=label,
-        outer_html_snippet=snippet,
         outer_html_length=len(html) if html else None,
     )
-    return snippet
+    return None
 
 
 async def _locate_report_request_download(row: Locator) -> tuple[Locator | None, str | None]:
@@ -2323,7 +2311,6 @@ async def _wait_for_report_request_download_link(
     last_status: str | None = None
     backoff = 0.5
     matched_row_seen = False
-    last_row_html: str | None = None
     last_range_match_strategy: str | None = STABLE_LOCATOR_STRATEGIES["range_match_strategy"]
     last_pending_log_at = 0.0
     pending_attempts = 0
@@ -2353,8 +2340,6 @@ async def _wait_for_report_request_download_link(
                 if matches_expected:
                     status_text = await _extract_row_status_text(row)
                     download_locator, strategy = await _locate_report_request_download(row)
-                    with contextlib.suppress(Exception):
-                        last_row_html = _truncate_html(await _capture_outer_html(row))
                     matched_candidates.append(
                         {
                             "index": row_index,
@@ -2363,7 +2348,6 @@ async def _wait_for_report_request_download_link(
                             "status_text": status_text,
                             "download_locator": download_locator,
                             "download_strategy": strategy,
-                            "row_html": last_row_html,
                         }
                     )
 
@@ -2397,7 +2381,6 @@ async def _wait_for_report_request_download_link(
                 download_locator = selected_candidate.get("download_locator")
                 download_strategy = selected_candidate.get("download_strategy") or download_strategy
                 selected_row_state = matched_row_state
-                last_row_html = selected_candidate.get("row_html")
                 last_matched_range_text = matched_text or last_matched_range_text
                 last_download_locator_strategy = download_strategy or last_download_locator_strategy
 
@@ -2410,7 +2393,6 @@ async def _wait_for_report_request_download_link(
                     status_text=matched_status,
                     expected_range_texts=list(expected_range_texts),
                     all_row_texts=visible_rows or [matched_text],
-                    row_html_snippet=last_row_html,
                     range_match_strategy=last_range_match_strategy,
                     download_locator_strategy=download_strategy,
                     container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
@@ -2453,7 +2435,6 @@ async def _wait_for_report_request_download_link(
                         all_row_texts=visible_rows or [matched_text],
                         download_control_visible=True,
                         matched_row_text_full=matched_text,
-                        row_html_snippet=last_row_html,
                         range_match_strategy=last_range_match_strategy,
                         download_locator_strategy=download_strategy,
                         container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
@@ -2513,7 +2494,6 @@ async def _wait_for_report_request_download_link(
                             backoff_seconds=backoff,
                             timeout_ms=poll_timeout_ms,
                             last_seen_rows=last_seen_texts or [matched_text],
-                            row_html_snippet=last_row_html,
                             range_match_strategy=last_range_match_strategy,
                             container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
                             download_locator_strategy=download_strategy,
@@ -2600,7 +2580,6 @@ async def _wait_for_report_request_download_link(
         last_status=last_status,
         row_seen=matched_row_seen,
         timeout_ms=poll_timeout_ms,
-        row_html_snippet=last_row_html,
         container_html_snippet=container_html_snippet,
         range_match_strategy=last_range_match_strategy,
         download_locator_strategy=last_download_locator_strategy or download_strategy,
