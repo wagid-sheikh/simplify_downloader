@@ -564,7 +564,7 @@ async def ingest_td_orders_workbook(
                 "payment_amount": None,
                 "order_edited_flag": False,
                 "system_order_status": "Active",
-                "ingest_remarks": stg_values.get("ingest_remarks"),
+                "ingest_remarks": stg_values["ingest_remarks"],
                 "google_maps_url": None,
                 "latitude": None,
                 "longitude": None,

@@ -108,8 +108,8 @@ def test_orders_ingest_remark_migration_is_symmetrical(monkeypatch: pytest.Monke
         _run_migration(connection, migration.downgrade, monkeypatch)
 
     columns = _order_columns(engine)
-    assert "ingest_remark" in columns
-    assert "ingest_remarks" not in columns
+    assert "ingest_remarks" in columns
+    assert "ingest_remark" not in columns
     with engine.connect() as connection:
-        remark = connection.execute(sa.text("SELECT ingest_remark FROM orders")).scalar()
+        remark = connection.execute(sa.text("SELECT ingest_remarks FROM orders")).scalar()
     assert remark == "invalid phone"
