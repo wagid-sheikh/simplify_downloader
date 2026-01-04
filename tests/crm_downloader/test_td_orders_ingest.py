@@ -443,7 +443,7 @@ async def test_ingest_td_orders_workbook(tmp_path: Path) -> None:
         assert ord1.ingest_remarks is None
         assert ord1.due_date_flag == "Normal Delivery"
         assert ord2.mobile_number == ""  # invalid phone dropped
-        assert ord2.ingest_remarks == "Invalid phone dropped (original value: 12345)"
+        assert ord2.ingest_remarks == "Phone value '12345' is invalid and was dropped"
         due_date = ord2.due_date if ord2.due_date.tzinfo else ord2.due_date.replace(tzinfo=tz)
         default_due_date = (
             ord2.default_due_date
@@ -570,8 +570,8 @@ async def test_ingest_remarks_populated_for_invalid_data(tmp_path: Path) -> None
             )
         ).all()
         assert stg_rows[0].ingest_remarks == (
-            "Could not parse datetime for last_activity: not-a-date; "
-            "Invalid phone dropped (original value: A668--7051)"
+            "Field last_activity could not be parsed from value 'not-a-date' (field cleared); "
+            "Phone value 'A668--7051' is invalid and was dropped"
         )
         assert stg_rows[1].ingest_remarks is None
         orders_rows = (
@@ -580,8 +580,8 @@ async def test_ingest_remarks_populated_for_invalid_data(tmp_path: Path) -> None
             )
         ).all()
         assert orders_rows[0].ingest_remarks == (
-            "Could not parse datetime for last_activity: not-a-date; "
-            "Invalid phone dropped (original value: A668--7051)"
+            "Field last_activity could not be parsed from value 'not-a-date' (field cleared); "
+            "Phone value 'A668--7051' is invalid and was dropped"
         )
         assert orders_rows[1].ingest_remarks is None
 
@@ -601,8 +601,8 @@ async def test_ingest_remarks_populated_for_invalid_data(tmp_path: Path) -> None
             "store_code": "A668",
             "order_number": "ORD-001",
             "ingest_remarks": (
-                "Could not parse datetime for last_activity: not-a-date; "
-                "Invalid phone dropped (original value: A668--7051)"
+                "Field last_activity could not be parsed from value 'not-a-date' (field cleared); "
+                "Phone value 'A668--7051' is invalid and was dropped"
             ),
         }
     ]
@@ -616,8 +616,8 @@ async def test_ingest_remarks_populated_for_invalid_data(tmp_path: Path) -> None
             )
         ).all()
         assert orders_rows[0].ingest_remarks == (
-            "Could not parse datetime for last_activity: not-a-date; "
-            "Invalid phone dropped (original value: A668--7051)"
+            "Field last_activity could not be parsed from value 'not-a-date' (field cleared); "
+            "Phone value 'A668--7051' is invalid and was dropped"
         )
         assert orders_rows[1].ingest_remarks is None
 
