@@ -76,3 +76,25 @@ def test_summary_records_orders_and_sales_results() -> None:
     assert "Orders results:" in text
     assert "- A1: WARNING | rows: staging=2, final=2 | files: orders_A1.xlsx | warnings: duplicate rows dropped" in text
     assert "- A1: OK | rows: staging=3, final=3 | files: sales_A1.xlsx | Sales ingested: staging=3, final=3" in text
+
+
+def test_sales_warnings_do_not_downgrade_status() -> None:
+    summary = TdOrdersDiscoverySummary(run_id="run-4", run_env="test", report_date=date(2024, 1, 4))
+    sales_report = StoreReport(
+        status="ok",
+        filenames=["sales_A2.xlsx"],
+        staging_rows=4,
+        final_rows=4,
+        warnings=["Phone value '12345' is invalid and was dropped"],
+    )
+    summary.record_store("A2", StoreOutcome(status="ok", message="Store run completed"), sales_result=sales_report)
+
+    record = summary.build_record(finished_at=datetime(2024, 1, 4, tzinfo=timezone.utc))
+    sales_metrics = record["metrics_json"]["sales"]
+    assert sales_metrics["overall_status"] == "ok"
+
+    text_lines = summary.summary_text().splitlines()
+    sales_section_index = text_lines.index("Sales results:")
+    sales_lines = [line for line in text_lines[sales_section_index + 1 :] if line.startswith("- A2:")]
+    sales_line = sales_lines[0]
+    assert "warnings: Phone value '12345' is invalid and was dropped" in sales_line
