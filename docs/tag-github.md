@@ -49,3 +49,8 @@ git push origin v2.02
 git tag -a v2.03 -m "Stable after development of leads_assignment pipeline"
 
 git push origin v2.03
+
+
+git tag -a v2.04 -m "Stable after development of TD Orders Sync (Sales pending)"
+
+git push origin v2.04
