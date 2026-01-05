@@ -1579,20 +1579,59 @@ async def _navigate_to_sales_report(
 
         return False, page.url or "", transitions, "orders_not_ready"
 
-    async def _locate_sales_left_nav() -> tuple[Locator | None, str | None, list[dict[str, Any]]]:
+    async def _locate_sales_left_nav() -> tuple[Locator | None, str | None, list[dict[str, Any]], bool]:
+        def _normalize_label(value: str | None) -> str:
+            normalized = (value or "").replace("&", " and ")
+            normalized = re.sub(r"\s+", " ", normalized)
+            return normalized.strip().lower()
+
         try:
             nav_root = page.locator("ul.nav.nav-sidebar")
             await nav_root.wait_for(state="visible", timeout=nav_timeout_ms)
-        except Exception:
-            return None, None, []
+            reports_section = nav_root.locator("li:has(> a:has-text(\"Reports\"))").first
+            await reports_section.wait_for(state="visible", timeout=nav_timeout_ms)
+        except Exception as exc:
+            log_event(
+                logger=logger,
+                phase="sales",
+                status="warn",
+                message="Sales left-nav submenu not available",
+                store_code=store.store_code,
+                error=str(exc),
+                final_url=page.url,
+            )
+            return None, None, [], False
 
-        links = nav_root.locator("a")
+        hover_error: str | None = None
+        hover_attempted = False
+        submenu_visible = False
+        submenu_root = reports_section.locator("ul")
+        try:
+            await reports_section.hover()
+            hover_attempted = True
+        except Exception as exc:
+            hover_error = str(exc)
+            try:
+                await reports_section.locator("> a").first.hover()
+                hover_attempted = True
+                hover_error = None
+            except Exception as inner_exc:
+                hover_error = hover_error or str(inner_exc)
+
+        try:
+            await submenu_root.wait_for(state="visible", timeout=nav_timeout_ms)
+            submenu_visible = True
+        except TimeoutError as exc:
+            hover_error = hover_error or str(exc)
+
+        links = submenu_root.locator("a")
         count = await links.count()
         samples: list[dict[str, Any]] = []
         selected_locator: Locator | None = None
         normalized_href: str | None = None
+        target_label = "sales and delivery"
 
-        for idx in range(min(count, 20)):
+        for idx in range(min(count, 30)):
             locator = links.nth(idx)
             href = None
             text = None
@@ -1606,12 +1645,9 @@ async def _navigate_to_sales_report(
                 text = text or None
                 visible = False
 
-            href_lower = (href or "").lower()
-            text_lower = (text or "").lower()
+            normalized_text = _normalize_label(text)
             normalized = urljoin(page.url or target_url, href) if href else None
-            matches_sales = "newsalesanddeliveryreport" in href_lower
-            matches_text = "sales" in text_lower
-            matches_label = "sales and delivery" in text_lower
+            matches_label = target_label in normalized_text
 
             samples.append(
                 {
@@ -1619,26 +1655,28 @@ async def _navigate_to_sales_report(
                     "href": href,
                     "normalized_href": normalized,
                     "text": text,
+                    "normalized_text": normalized_text,
                     "visible": visible,
-                    "matches_sales": matches_sales,
-                    "matches_text": matches_text,
                     "matches_label": matches_label,
                 }
             )
 
-            if selected_locator is None and matches_sales and (matches_label or matches_text):
+            if selected_locator is None and matches_label:
                 selected_locator = locator
                 normalized_href = normalized or href
 
         log_event(
             logger=logger,
             phase="sales",
-            message="Sales left-nav candidates snapshot",
+            message="Sales left-nav submenu snapshot",
             store_code=store.store_code,
             samples=samples,
+            submenu_visible=submenu_visible,
+            hover_attempted=hover_attempted,
+            hover_error=hover_error,
         )
 
-        return selected_locator, normalized_href, samples
+        return selected_locator, normalized_href, samples, submenu_visible
 
     async def _click_sales_left_nav(
         *, retry_label: str
@@ -1647,10 +1685,11 @@ async def _navigate_to_sales_report(
         if not orders_ready:
             return False, page.url or "", f"orders_not_ready:{orders_reason}", transitions, False, None, []
 
-        sales_locator, normalized_href, samples = await _locate_sales_left_nav()
+        sales_locator, normalized_href, samples, submenu_visible = await _locate_sales_left_nav()
         transitions.append({"label": "orders_ready", "url": page.url or ""})
         if sales_locator is None:
-            return False, page.url or "", "sales_nav_not_found", transitions, False, normalized_href, samples
+            reason = "sales_nav_not_found" if submenu_visible else "sales_submenu_not_visible"
+            return False, page.url or "", reason, transitions, False, normalized_href, samples
 
         try:
             await sales_locator.wait_for(state="visible", timeout=nav_timeout_ms)
