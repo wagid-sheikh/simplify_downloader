@@ -584,6 +584,24 @@ class TdOrdersDiscoverySummary:
             lines.append("... some remarks truncated for length")
         return "\n".join(lines)
 
+    def _ingest_warnings_payload(self, *, max_rows: int, max_chars: int) -> dict[str, Any]:
+        if not self.ingest_remarks:
+            return {"rows": [], "total": 0, "truncated": False}
+        truncated = len(self.ingest_remarks) > max_rows
+        rows: list[dict[str, str]] = []
+        for entry in self.ingest_remarks[:max_rows]:
+            remark = entry.get("ingest_remarks") or ""
+            if len(remark) > max_chars:
+                remark = remark[: max_chars - 1] + "…"
+            rows.append(
+                {
+                    "store_code": (entry.get("store_code") or "").upper(),
+                    "order_number": entry.get("order_number") or "",
+                    "ingest_remarks": remark,
+                }
+            )
+        return {"rows": rows, "total": len(self.ingest_remarks), "truncated": truncated}
+
     def _ingest_remarks_section(self, *, max_rows: int, max_chars: int) -> tuple[list[str], bool, bool]:
         if not self.ingest_remarks:
             return ["- None."], False, False
@@ -663,6 +681,9 @@ class TdOrdersDiscoverySummary:
             "orders_status": self.orders_overall_status(),
             "sales_status": self.sales_overall_status(),
             "stores": stores,
+            "ingest_warnings": self._ingest_warnings_payload(
+                max_rows=INGEST_REMARKS_MAX_ROWS, max_chars=INGEST_REMARKS_MAX_CHARS
+            ),
             "started_at": self.started_at.isoformat(),
             "finished_at": finished_at.isoformat(),
         }
@@ -3953,7 +3974,7 @@ async def _execute_sales_flow(
                             sales_status = "error"
                             sales_message = f"Sales ingestion failed: {exc}"
                         else:
-                            if sales_ingest_result:
+                            if sales_ingest_result and sales_message is None:
                                 sales_message = (
                                     f"Sales ingested: staging={sales_ingest_result.staging_rows}, "
                                     f"final={sales_ingest_result.final_rows}"
@@ -4391,6 +4412,7 @@ async def _run_store_discovery(
                 if success:
                     ingest_result: TdOrdersIngestResult | None = None
                     status_label = "ok"
+                    orders_warning_summary: dict[str, Any] | None = None
                     if config.database_url:
                         if not store.cost_center:
                             log_event(
@@ -4425,18 +4447,17 @@ async def _run_store_discovery(
                                 database_url=config.database_url,
                                 logger=store_logger,
                             )
-                            status_label = "warning" if ingest_result.warnings else "ok"
                             if ingest_result.warnings:
-                                warning_summary = _summarize_warnings(ingest_result.warnings)
+                                orders_warning_summary = _summarize_warnings(ingest_result.warnings)
                                 log_event(
                                     logger=store_logger,
                                     phase="ingest",
                                     status="warn",
                                     message="TD Orders workbook ingested with warnings",
                                     store_code=store.store_code,
-                                    warning_count=warning_summary["count"],
-                                    warning_samples=warning_summary["samples"],
-                                    warnings_truncated=warning_summary["truncated"],
+                                    warning_count=orders_warning_summary["count"],
+                                    warning_samples=orders_warning_summary["samples"],
+                                    warnings_truncated=orders_warning_summary["truncated"],
                                     staging_rows=ingest_result.staging_rows,
                                     final_rows=ingest_result.final_rows,
                                 )
@@ -4484,15 +4505,18 @@ async def _run_store_discovery(
                         )
                         status_label = "warning"
 
-                    outcome_status = "ok"
+                    outcome_status = "warning" if status_label == "warning" else "ok"
                     outcome_message = "Orders report downloaded"
-                    if status_label == "warning":
-                        outcome_status = "warning"
-                        outcome_message = "Orders downloaded with ingest warnings"
                     if ingest_result:
                         outcome_message = (
                             f"Orders ingested: staging={ingest_result.staging_rows}, final={ingest_result.final_rows}"
                         )
+                        if ingest_result.warnings:
+                            warning_preview = _format_warning_preview(
+                                orders_warning_summary or _summarize_warnings(ingest_result.warnings)
+                            )
+                            if warning_preview:
+                                outcome_message = f"{outcome_message} (warnings: {warning_preview})"
                     orders_report = StoreReport(
                         status=status_label,
                         filenames=[Path(detail).name],
