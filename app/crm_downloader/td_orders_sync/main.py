@@ -1237,10 +1237,9 @@ async def _navigate_to_sales_report(
         re.IGNORECASE,
     )
     nav_selector = store.reports_nav_selector
-    sales_link_selector = "a[href*='NEWSalesAndDeliveryReport'], a[href*='SalesAndDeliveryReport']"
-    navigation_path_direct = "direct_url"
-    navigation_path_reports = "reports_nav"
-    navigation_path_home_reports = "home_reports_sales"
+    sales_tile_selector = "a.padding6, a[href*='Reports'], a[href*='Sales']"
+    navigation_path_direct = "direct_url_fallback"
+    navigation_path_home_sales = "home_sales_tile"
     attempts: list[dict[str, Any]] = []
     last_attempt: dict[str, Any] | None = None
 
@@ -1274,6 +1273,7 @@ async def _navigate_to_sales_report(
         final_url: str,
         reason: str,
         url_transitions: list[dict[str, str]] | None = None,
+        sales_nav_selector: str | None = None,
     ) -> dict[str, Any]:
         attempt = {
             "navigation_method": method_label,
@@ -1284,7 +1284,8 @@ async def _navigate_to_sales_report(
             "final_url": final_url,
             "target_url": target_url,
             "nav_selector": nav_selector,
-            "sales_link_selector": sales_link_selector,
+            "sales_tile_selector": sales_tile_selector,
+            "sales_nav_selector": sales_nav_selector,
             "reason": reason,
             "url_transitions": url_transitions,
         }
@@ -1321,8 +1322,67 @@ async def _navigate_to_sales_report(
             attempts=attempts,
         )
 
-    def _should_refresh_session(reason: str) -> bool:
-        return reason.startswith("login_redirect") or reason.startswith("validation_failed")
+    async def _locate_sales_nav_selector() -> tuple[Locator | None, str | None, list[dict[str, Any]]]:
+        candidates = page.locator(sales_tile_selector)
+        count = await candidates.count()
+        samples: list[dict[str, Any]] = []
+        selected_locator: Locator | None = None
+        selected_selector: str | None = None
+
+        for idx in range(min(count, 15)):
+            locator = candidates.nth(idx)
+            href = None
+            text = None
+            visible = False
+            try:
+                href = await locator.get_attribute("href")
+                text = (await locator.inner_text()) or ""
+                visible = await locator.is_visible()
+            except Exception:
+                href = href or None
+                text = text or None
+                visible = False
+
+            href_lower = (href or "").lower()
+            text_lower = (text or "").lower()
+            matches_sales = (
+                target_fragment in href_lower
+                or "salesanddeliveryreport" in href_lower
+                or "sales" in href_lower
+                or "sales" in text_lower
+            )
+
+            samples.append(
+                {
+                    "index": idx,
+                    "href": href,
+                    "text": text,
+                    "visible": visible,
+                    "matches_sales": matches_sales,
+                }
+            )
+
+            if matches_sales and selected_locator is None:
+                selected_locator = locator
+                if target_fragment.strip("/") in href_lower:
+                    selected_selector = f"a[href*='{target_fragment.strip('/')}']"
+                elif "salesanddeliveryreport" in href_lower:
+                    selected_selector = "a[href*='SalesAndDeliveryReport']"
+                elif "sales" in href_lower:
+                    selected_selector = "a[href*='Sales']"
+                elif "sales" in text_lower:
+                    selected_selector = "text=/sales/i"
+
+        log_event(
+            logger=logger,
+            phase="sales",
+            message="Sales navigation candidates snapshot",
+            store_code=store.store_code,
+            sales_tile_selector=sales_tile_selector,
+            samples=samples,
+        )
+
+        return selected_locator, selected_selector, samples
 
     async def _refresh_sales_session_with_guard(*, retry_label: str) -> tuple[bool, str | None]:
         relogin_attempts = 0
@@ -1424,7 +1484,7 @@ async def _navigate_to_sales_report(
         log_event(
             logger=logger,
             phase="sales",
-            message="Starting Sales navigation via direct URL",
+            message="Starting Sales navigation via direct URL fallback",
             store_code=store.store_code,
             navigation_method=method_label,
             navigation_path=navigation_path_direct,
@@ -1491,199 +1551,87 @@ async def _navigate_to_sales_report(
             transitions,
         )
 
-    async def _navigate_via_reports(
-        method_label: str, *, ensure_home: bool, navigation_path: str, retry_status: str
-    ) -> tuple[bool, str, str, list[dict[str, str]]]:
+    async def _navigate_via_home_sales(
+        method_label: str, *, retry_status: str
+    ) -> tuple[bool, str, str, list[dict[str, str]], str | None]:
         transitions: list[dict[str, str]] = [{"label": "start", "url": page.url or ""}]
-        if ensure_home:
-            home_url = store.home_url or store.default_home_url
-            log_event(
-                logger=logger,
-                phase="sales",
-                message="Navigating to Sales via home → reports → sales path",
-                store_code=store.store_code,
-                navigation_method=method_label,
-                navigation_path=navigation_path,
-                nav_selector=nav_selector,
-                sales_link_selector=sales_link_selector,
-                retry_status=retry_status,
-                home_url=home_url,
-            )
-            if home_url and not _url_matches_home(page.url or "", store):
-                try:
-                    await page.goto(home_url, wait_until="domcontentloaded", timeout=nav_timeout_ms)
-                    transitions.append({"label": "after_home_goto", "url": page.url or home_url})
-                except Exception as exc:
-                    transitions.append({"label": "home_navigation_error", "url": page.url or home_url})
-                    return False, page.url or "", f"home_navigation_error:{exc}", transitions
-            home_ready = await _wait_for_home(
-                page,
-                store=store,
-                logger=logger,
-                nav_selector=nav_selector,
-                timeout_ms=nav_timeout_ms,
-            )
-            transitions.append({"label": "home_ready", "url": page.url or ""})
-            if not home_ready:
-                return False, page.url or "", "home_not_ready", transitions
+        home_url = store.home_url or store.default_home_url
+        log_event(
+            logger=logger,
+            phase="sales",
+            message="Navigating to Sales via home tile click",
+            store_code=store.store_code,
+            navigation_method=method_label,
+            navigation_path=navigation_path_home_sales,
+            retry_status=retry_status,
+            home_url=home_url,
+        )
+
+        if home_url and not _url_matches_home(page.url or "", store):
+            try:
+                await page.goto(home_url, wait_until="domcontentloaded", timeout=nav_timeout_ms)
+                transitions.append({"label": "after_home_goto", "url": page.url or home_url})
+            except Exception as exc:
+                transitions.append({"label": "home_navigation_error", "url": page.url or home_url})
+                return False, page.url or "", f"home_navigation_error:{exc}", transitions, None
+
+        home_ready = await _wait_for_home(
+            page,
+            store=store,
+            logger=logger,
+            nav_selector=nav_selector,
+            timeout_ms=nav_timeout_ms,
+        )
+        transitions.append({"label": "home_ready", "url": page.url or ""})
+        if not home_ready:
+            return False, page.url or "", "home_not_ready", transitions, None
+
+        sales_locator, sales_nav_selector, samples = await _locate_sales_nav_selector()
+        if sales_locator is None:
+            return False, page.url or "", "sales_nav_not_found", transitions, sales_nav_selector
+
+        try:
+            await sales_locator.wait_for(state="visible", timeout=nav_timeout_ms)
+        except TimeoutError:
+            return False, page.url or "", "sales_nav_not_visible", transitions, sales_nav_selector
 
         log_event(
             logger=logger,
             phase="sales",
-            message="Starting Sales navigation via Reports",
+            message="Clicking Sales navigation tile",
             store_code=store.store_code,
             navigation_method=method_label,
-            navigation_path=navigation_path,
-            nav_selector=nav_selector,
-            sales_link_selector=sales_link_selector,
+            navigation_path=navigation_path_home_sales,
+            sales_nav_selector=sales_nav_selector,
             retry_status=retry_status,
         )
-        try:
-            log_event(
-                logger=logger,
-                phase="sales",
-                message="Waiting for Reports navigation selector",
-                store_code=store.store_code,
-                navigation_method=method_label,
-                navigation_path=navigation_path,
-                nav_selector=nav_selector,
-                retry_status=retry_status,
-            )
-            await page.wait_for_selector(nav_selector, state="visible", timeout=nav_timeout_ms)
-            log_event(
-                logger=logger,
-                phase="sales",
-                message="Reports navigation selector available",
-                store_code=store.store_code,
-                navigation_method=method_label,
-                navigation_path=navigation_path,
-                nav_selector=nav_selector,
-                retry_status=retry_status,
-            )
-        except TimeoutError:
-            return False, page.url or "", "nav_selector_missing", transitions
 
         try:
-            log_event(
-                logger=logger,
-                phase="sales",
-                message="Clicking Reports navigation selector",
-                store_code=store.store_code,
-                navigation_method=method_label,
-                navigation_path=navigation_path,
-                nav_selector=nav_selector,
-                retry_status=retry_status,
-            )
-            await page.click(nav_selector)
-            transitions.append({"label": "after_reports_click", "url": page.url or ""})
-            log_event(
-                logger=logger,
-                phase="sales",
-                message="Clicked Reports navigation selector",
-                store_code=store.store_code,
-                navigation_method=method_label,
-                navigation_path=navigation_path,
-                nav_selector=nav_selector,
-                retry_status=retry_status,
-                url_after_reports_click=page.url,
-            )
-        except Exception as exc:
-            return False, page.url or "", f"nav_click_failed:{exc}", transitions
-
-        try:
-            log_event(
-                logger=logger,
-                phase="sales",
-                message="Waiting for Sales link selector",
-                store_code=store.store_code,
-                navigation_method=method_label,
-                navigation_path=navigation_path,
-                sales_link_selector=sales_link_selector,
-                retry_status=retry_status,
-            )
-            await page.wait_for_selector(sales_link_selector, state="visible", timeout=nav_timeout_ms)
-            log_event(
-                logger=logger,
-                phase="sales",
-                message="Sales link selector available",
-                store_code=store.store_code,
-                navigation_method=method_label,
-                navigation_path=navigation_path,
-                sales_link_selector=sales_link_selector,
-                retry_status=retry_status,
-            )
-        except TimeoutError:
-            return False, page.url or "", "sales_link_missing", transitions
-
-        try:
-            log_event(
-                logger=logger,
-                phase="sales",
-                message="Clicking Sales link selector",
-                store_code=store.store_code,
-                navigation_method=method_label,
-                navigation_path=navigation_path,
-                sales_link_selector=sales_link_selector,
-                retry_status=retry_status,
-            )
-            await page.click(sales_link_selector)
+            await sales_locator.click()
             transitions.append({"label": "after_sales_click", "url": page.url or ""})
-            log_event(
-                logger=logger,
-                phase="sales",
-                message="Clicked Sales link selector",
-                store_code=store.store_code,
-                navigation_method=method_label,
-                navigation_path=navigation_path,
-                sales_link_selector=sales_link_selector,
-                retry_status=retry_status,
-                url_after_sales_click=page.url,
-            )
         except Exception as exc:
-            return False, page.url or "", f"sales_link_click_failed:{exc}", transitions
+            return False, page.url or "", f"sales_nav_click_failed:{exc}", transitions, sales_nav_selector
 
         try:
-            log_event(
-                logger=logger,
-                phase="sales",
-                message="Waiting for Sales URL match after Reports navigation",
-                store_code=store.store_code,
-                navigation_method=method_label,
-                navigation_path=navigation_path,
-                target_pattern=str(target_pattern.pattern),
-                target_url=target_url,
-                retry_status=retry_status,
-            )
             await page.wait_for_url(target_pattern, wait_until="domcontentloaded", timeout=nav_timeout_ms)
             transitions.append({"label": "after_sales_wait", "url": page.url or ""})
-            log_event(
-                logger=logger,
-                phase="sales",
-                message="Finished waiting for Sales URL after Reports navigation",
-                store_code=store.store_code,
-                navigation_method=method_label,
-                navigation_path=navigation_path,
-                target_pattern=str(target_pattern.pattern),
-                target_url=target_url,
-                retry_status=retry_status,
-            )
         except Exception:
             pass
 
         final_url = page.url or ""
         valid, contains_store, contains_path = _validate_destination(final_url)
         if valid:
-            return True, final_url, "ok", transitions
+            return True, final_url, "ok", transitions, sales_nav_selector
 
         is_login_url = _is_login_url(final_url)
         log_event(
             logger=logger,
             phase="sales",
             status="warn",
-            message="Sales destination validation failed after Reports navigation",
+            message="Sales destination validation failed after home navigation",
             store_code=store.store_code,
             navigation_method=method_label,
-            navigation_path=navigation_path,
+            navigation_path=navigation_path_home_sales,
             final_url=final_url,
             target_url=target_url,
             contains_store_code=contains_store,
@@ -1697,6 +1645,7 @@ async def _navigate_to_sales_report(
             final_url,
             "login_redirect" if is_login_url else f"validation_failed:{contains_store}:{contains_path}",
             transitions,
+            sales_nav_selector,
         )
 
     current_url = page.url or ""
@@ -1717,16 +1666,19 @@ async def _navigate_to_sales_report(
         )
         return True
 
-    success, final_url, reason, transitions = await _navigate_direct("direct")
+    success, final_url, reason, transitions, sales_nav_selector = await _navigate_via_home_sales(
+        "home_sales", retry_status="initial"
+    )
     last_attempt = _record_attempt(
-        method_label="direct",
-        navigation_path=navigation_path_direct,
+        method_label="home_sales",
+        navigation_path=navigation_path_home_sales,
         attempt_label="initial",
         retry_status="initial",
         success=success,
         final_url=final_url,
         reason=reason,
         url_transitions=transitions,
+        sales_nav_selector=sales_nav_selector,
     )
     if success:
         log_event(
@@ -1736,21 +1688,21 @@ async def _navigate_to_sales_report(
             store_code=store.store_code,
             final_url=final_url,
             target_url=target_url,
-            navigation_method="direct",
-            navigation_path=navigation_path_direct,
+            navigation_method="home_sales",
+            navigation_path=navigation_path_home_sales,
             retry_status="initial",
             attempts=attempts,
         )
         _log_navigation_outcome(
             status="ok",
-            navigation_method="direct",
-            navigation_path=navigation_path_direct,
+            navigation_method="home_sales",
+            navigation_path=navigation_path_home_sales,
             retry_status="initial",
             final_url=final_url,
         )
         return True
 
-    if _should_refresh_session(reason):
+    if reason.startswith("login_redirect"):
         relogin_ok, relogin_reason = await _refresh_sales_session_with_guard(retry_label="after_login")
         if not relogin_ok:
             log_event(
@@ -1767,8 +1719,8 @@ async def _navigate_to_sales_report(
             )
             _log_navigation_outcome(
                 status="warn",
-                navigation_method=(last_attempt or {}).get("navigation_method", "direct"),
-                navigation_path=(last_attempt or {}).get("navigation_path", navigation_path_direct),
+                navigation_method=(last_attempt or {}).get("navigation_method", "home_sales"),
+                navigation_path=(last_attempt or {}).get("navigation_path", navigation_path_home_sales),
                 retry_status="after_login",
                 final_url=page.url or "",
                 reason=relogin_reason or reason,
@@ -1779,24 +1731,68 @@ async def _navigate_to_sales_report(
         log_event(
             logger=logger,
             phase="sales",
-            message="Retrying Sales navigation via Reports after login redirect or validation failure using authenticated path",
+            message="Retrying Sales navigation via Sales tile after login redirect",
             store_code=store.store_code,
             retry_status="after_login",
             target_url=target_url,
             last_reason=reason,
-            navigation_path=navigation_path_home_reports,
+            navigation_path=navigation_path_home_sales,
         )
-        success, final_url, reports_reason, transitions = await _navigate_via_reports(
-            "reports_nav_after_login",
-            ensure_home=True,
-            navigation_path=navigation_path_home_reports,
-            retry_status="after_login",
+        success, final_url, reports_reason, transitions, sales_nav_selector = await _navigate_via_home_sales(
+            "home_sales_after_login", retry_status="after_login"
         )
         last_attempt = _record_attempt(
-            method_label="reports_nav",
-            navigation_path=navigation_path_home_reports,
+            method_label="home_sales",
+            navigation_path=navigation_path_home_sales,
             attempt_label="after_login",
             retry_status="after_login",
+            success=success,
+            final_url=final_url,
+            reason=reports_reason,
+            url_transitions=transitions,
+            sales_nav_selector=sales_nav_selector,
+        )
+        if success:
+            log_event(
+                logger=logger,
+                phase="sales",
+                message="Navigated to Sales & Delivery report page via Sales tile after login",
+                store_code=store.store_code,
+                final_url=final_url,
+                target_url=target_url,
+                navigation_method="home_sales_after_login",
+                navigation_path=navigation_path_home_sales,
+                retry_status="after_login",
+                attempts=attempts,
+            )
+            _log_navigation_outcome(
+                status="ok",
+                navigation_method="home_sales_after_login",
+                navigation_path=navigation_path_home_sales,
+                retry_status="after_login",
+                final_url=final_url,
+            )
+            return True
+        reason = reports_reason
+
+    if reason.startswith("sales_nav"):
+        log_event(
+            logger=logger,
+            phase="sales",
+            message="Falling back to direct Sales URL because Sales navigation tile was unavailable",
+            store_code=store.store_code,
+            target_url=target_url,
+            last_final_url=final_url,
+            last_reason=reason,
+            attempts=attempts,
+        )
+
+        success, final_url, reports_reason, transitions = await _navigate_direct("direct_fallback")
+        last_attempt = _record_attempt(
+            method_label="direct_fallback",
+            navigation_path=navigation_path_direct,
+            attempt_label="fallback",
+            retry_status="fallback",
             success=success,
             final_url=final_url,
             reason=reports_reason,
@@ -1806,147 +1802,24 @@ async def _navigate_to_sales_report(
             log_event(
                 logger=logger,
                 phase="sales",
-                message="Navigated to Sales & Delivery report page via Reports navigation after login",
+                message="Navigated to Sales & Delivery report page via direct fallback",
                 store_code=store.store_code,
                 final_url=final_url,
                 target_url=target_url,
-                navigation_method="reports_nav_after_login",
-                navigation_path=navigation_path_home_reports,
-                retry_status="after_login",
+                navigation_method="direct_fallback",
+                navigation_path=navigation_path_direct,
+                retry_status="fallback",
                 attempts=attempts,
             )
             _log_navigation_outcome(
                 status="ok",
-                navigation_method="reports_nav_after_login",
-                navigation_path=navigation_path_home_reports,
-                retry_status="after_login",
+                navigation_method="direct_fallback",
+                navigation_path=navigation_path_direct,
+                retry_status="fallback",
                 final_url=final_url,
             )
             return True
         reason = reports_reason
-
-    log_event(
-        logger=logger,
-        phase="sales",
-        message="Falling back to Reports navigation for Sales",
-        store_code=store.store_code,
-        target_url=target_url,
-        last_final_url=final_url,
-        last_reason=reason,
-    )
-
-    success, final_url, reports_reason, transitions = await _navigate_via_reports(
-        "reports_nav",
-        ensure_home=False,
-        navigation_path=navigation_path_reports,
-        retry_status="primary",
-    )
-    last_attempt = _record_attempt(
-        method_label="reports_nav",
-        navigation_path=navigation_path_reports,
-        attempt_label="primary",
-        retry_status="primary",
-        success=success,
-        final_url=final_url,
-        reason=reports_reason,
-        url_transitions=transitions,
-    )
-    if success:
-        log_event(
-            logger=logger,
-            phase="sales",
-            message="Navigated to Sales & Delivery report page via Reports navigation",
-            store_code=store.store_code,
-            final_url=final_url,
-            target_url=target_url,
-            navigation_method="reports_nav",
-            navigation_path=navigation_path_reports,
-            retry_status="primary",
-            attempts=attempts,
-        )
-        _log_navigation_outcome(
-            status="ok",
-            navigation_method="reports_nav",
-            navigation_path=navigation_path_reports,
-            retry_status="primary",
-            final_url=final_url,
-        )
-        return True
-
-    if _should_refresh_session(reports_reason):
-        relogin_ok, relogin_reason = await _refresh_sales_session_with_guard(retry_label="after_login_reports")
-        if not relogin_ok:
-            log_event(
-                logger=logger,
-                phase="sales",
-                status="warn",
-                message="Sales navigation via Reports retry aborted because session refresh failed",
-                store_code=store.store_code,
-                final_url=page.url,
-                target_url=target_url,
-                reason=reports_reason,
-                attempts=attempts,
-                retry_status="after_login_reports",
-            )
-            _log_navigation_outcome(
-                status="warn",
-                navigation_method=(last_attempt or {}).get("navigation_method", "reports_nav"),
-                navigation_path=(last_attempt or {}).get("navigation_path", navigation_path_reports),
-                retry_status="after_login_reports",
-                final_url=page.url or "",
-                reason=relogin_reason or reports_reason,
-            )
-            return False
-
-        target_url = _build_sales_report_url(store, page.url) or target_url
-        log_event(
-            logger=logger,
-            phase="sales",
-            message="Retrying Sales navigation via Reports after login redirect or validation failure on Reports path",
-            store_code=store.store_code,
-            retry_status="after_login_reports",
-            target_url=target_url,
-            last_reason=reports_reason,
-            navigation_path=navigation_path_home_reports,
-        )
-        success, final_url, second_reports_reason, transitions = await _navigate_via_reports(
-            "reports_nav_retry",
-            ensure_home=True,
-            navigation_path=navigation_path_home_reports,
-            retry_status="after_login_reports",
-        )
-        last_attempt = _record_attempt(
-            method_label="reports_nav",
-            navigation_path=navigation_path_home_reports,
-            attempt_label="after_login",
-            retry_status="after_login_reports",
-            success=success,
-            final_url=final_url,
-            reason=second_reports_reason,
-            url_transitions=transitions,
-        )
-        if success:
-            log_event(
-                logger=logger,
-                phase="sales",
-                message="Navigated to Sales & Delivery report page via Reports navigation",
-                store_code=store.store_code,
-                final_url=final_url,
-                target_url=target_url,
-                navigation_method="reports_nav_retry",
-                navigation_path=navigation_path_home_reports,
-                retry_status="after_login_reports",
-                attempts=attempts,
-            )
-            _log_navigation_outcome(
-                status="ok",
-                navigation_method="reports_nav_retry",
-                navigation_path=navigation_path_home_reports,
-                retry_status="after_login_reports",
-                final_url=final_url,
-            )
-            return True
-        reports_reason = second_reports_reason
 
     log_event(
         logger=logger,
@@ -1956,7 +1829,7 @@ async def _navigate_to_sales_report(
         store_code=store.store_code,
         final_url=final_url,
         target_url=target_url,
-        reason=reports_reason,
+        reason=reason,
         attempts=attempts,
         navigation_method=(last_attempt or {}).get("navigation_method"),
         navigation_path=(last_attempt or {}).get("navigation_path"),
@@ -1968,7 +1841,7 @@ async def _navigate_to_sales_report(
         navigation_path=(last_attempt or {}).get("navigation_path", "unknown"),
         retry_status=(last_attempt or {}).get("retry_status", "unknown"),
         final_url=final_url,
-        reason=reports_reason,
+        reason=reason,
     )
     return False
 
