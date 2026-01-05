@@ -63,9 +63,9 @@ PROFILE_ENV = "any"
 PROFILE_CODE = "default"
 
 TEMPLATE_SUBJECTS = {
-    "td_orders_sync": "TD Orders Sync – {{ status }}",
-    "uc_orders_sync": "UC Orders Sync – {{ status }}",
-    "bank_sync": "Bank Sync – {{ status }}",
+    "td_orders_sync": "TD Orders Sync – {{ overall_status }}",
+    "uc_orders_sync": "UC Orders Sync – {{ overall_status }}",
+    "bank_sync": "Bank Sync – {{ overall_status }}",
 }
 
 TEMPLATE_BODIES = {
@@ -73,14 +73,11 @@ TEMPLATE_BODIES = {
 Run ID: {{ run_id }} | Overall Status: {{ overall_status }}
 Started: {{ started_at }} | Finished: {{ finished_at }}
 
-Per-store order status:
-{% for store in stores %}
-- {{ store.store_code }}: {{ store.status }} | orders: {{ store.order_count }} | files: {{ store.filenames | join(', ') if store.filenames }}{% if store.error_message %} | error: {{ store.error_message }}{% endif %}
-{% endfor %}
+{{ summary_text }}
 
-{% if status == 'ok' %}
+{% if overall_status == 'ok' %}
 All TD stores completed successfully. Proceed with merge to production using (cost_center, order_number, order_date).
-{% elif status == 'warning' %}
+{% elif overall_status == 'warning' %}
 Mixed TD outcomes: review failed stores above, re-run after fixing source data, and rely on the unique business key to avoid duplicates.
 {% else %}
 All TD stores failed. Check error summaries and retry; no production rows were updated due to the enforced unique constraint.
@@ -95,9 +92,9 @@ Per-store UC order status:
 - {{ store.store_code }}: {{ store.status }} | orders: {{ store.order_count }} | files: {{ store.filenames | join(', ') if store.filenames }}{% if store.error_message %} | error: {{ store.error_message }}{% endif %}
 {% endfor %}
 
-{% if status == 'ok' %}
+{% if overall_status == 'ok' %}
 All UC stores completed successfully. Upsert using (cost_center, order_number, invoice_date) to keep reruns idempotent.
-{% elif status == 'warning' %}
+{% elif overall_status == 'warning' %}
 Mixed UC outcomes: some stores failed. Fix issues and rerun; unique constraints prevent duplicate rows on retry.
 {% else %}
 All UC stores failed. Review the errors above before reattempting the sync.
@@ -112,9 +109,9 @@ Bank file status:
 - {{ file.file_name }}: {{ file.status }} | rows: {{ file.row_count }}{% if file.error_message %} | error: {{ file.error_message }}{% endif %}
 {% endfor %}
 
-{% if status == 'ok' %}
+{% if overall_status == 'ok' %}
 All bank files processed successfully; upserts are keyed on row_id for safe retries.
-{% elif status == 'warning' %}
+{% elif overall_status == 'warning' %}
 Partial bank success. Investigate failed files above; successful rows remain unique on row_id.
 {% else %}
 Bank sync failed. Check error summaries and rerun once resolved.
