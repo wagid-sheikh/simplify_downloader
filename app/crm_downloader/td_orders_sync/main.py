@@ -20,6 +20,7 @@ from app.common.date_utils import get_timezone
 from app.config import config
 from app.crm_downloader.config import default_download_dir, default_profiles_dir
 from app.crm_downloader.td_orders_sync.ingest import TdOrdersIngestResult, ingest_td_orders_workbook
+from app.crm_downloader.td_orders_sync.sales_ingest import TdSalesIngestResult, ingest_td_sales_workbook
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from app.dashboard_downloader.notifications import send_notifications_for_run
 from app.dashboard_downloader.run_summary import fetch_summary_for_run, insert_run_summary, update_run_summary
@@ -3366,6 +3367,7 @@ async def _run_store_discovery(
                 sales_status: str | None = None
                 sales_message: str | None = None
                 sales_download_path: str | None = None
+                sales_ingest_result: TdSalesIngestResult | None = None
                 sales_nav_ready = await _navigate_to_sales_report(
                     page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms
                 )
@@ -3397,6 +3399,77 @@ async def _run_store_discovery(
                                 store_code=store.store_code,
                                 download_path=sales_detail,
                             )
+                            if config.database_url:
+                                if not store.cost_center:
+                                    log_event(
+                                        logger=store_logger,
+                                        phase="sales_ingest",
+                                        status="error",
+                                        message="Missing cost_center for TD store; cannot ingest sales",
+                                        store_code=store.store_code,
+                                    )
+                                    sales_status = "error"
+                                    sales_message = "Missing cost_center for TD store; cannot ingest sales"
+                                else:
+                                    try:
+                                        sales_ingest_result = await ingest_td_sales_workbook(
+                                            workbook_path=Path(sales_detail),
+                                            store_code=store.store_code,
+                                            cost_center=store.cost_center or "",
+                                            run_id=run_id,
+                                            run_date=run_date,
+                                            database_url=config.database_url,
+                                            logger=store_logger,
+                                        )
+                                        sales_status = "warning" if sales_ingest_result.warnings else "ok"
+                                        if sales_ingest_result.warnings:
+                                            log_event(
+                                                logger=store_logger,
+                                                phase="sales_ingest",
+                                                status="warn",
+                                                message="TD Sales workbook ingested with warnings",
+                                                store_code=store.store_code,
+                                                warnings=sales_ingest_result.warnings,
+                                                staging_rows=sales_ingest_result.staging_rows,
+                                                final_rows=sales_ingest_result.final_rows,
+                                            )
+                                        else:
+                                            log_event(
+                                                logger=store_logger,
+                                                phase="sales_ingest",
+                                                message="TD Sales workbook ingested",
+                                                store_code=store.store_code,
+                                                staging_rows=sales_ingest_result.staging_rows,
+                                                final_rows=sales_ingest_result.final_rows,
+                                            )
+                                        summary.add_ingest_remarks(sales_ingest_result.ingest_remarks)
+                                    except Exception as exc:
+                                        log_event(
+                                            logger=store_logger,
+                                            phase="sales_ingest",
+                                            status="error",
+                                            message="TD Sales ingestion failed",
+                                            store_code=store.store_code,
+                                            error=str(exc),
+                                        )
+                                        sales_status = "error"
+                                        sales_message = f"Sales ingestion failed: {exc}"
+                                    else:
+                                        if sales_ingest_result:
+                                            sales_message = (
+                                                f"Sales ingested: staging={sales_ingest_result.staging_rows}, "
+                                                f"final={sales_ingest_result.final_rows}"
+                                            )
+                            else:
+                                log_event(
+                                    logger=store_logger,
+                                    phase="sales_ingest",
+                                    status="warn",
+                                    message="Skipping TD Sales ingestion because database_url is missing",
+                                    store_code=store.store_code,
+                                )
+                                sales_status = "warning"
+                                sales_message = "Skipping TD Sales ingestion because database_url is missing"
                         else:
                             sales_status = "warning"
                             sales_message = sales_detail or "Sales iframe flow failed"
@@ -3433,10 +3506,18 @@ async def _run_store_discovery(
 
                 if sales_status == "ok":
                     outcome_message = f"{outcome_message}; Sales report downloaded"
+                    if sales_ingest_result:
+                        outcome_message = (
+                            f"{outcome_message}; Sales ingested: staging={sales_ingest_result.staging_rows}, "
+                            f"final={sales_ingest_result.final_rows}"
+                        )
                 elif sales_status == "warning":
                     if outcome_status == "ok":
                         outcome_status = "warning"
-                    outcome_message = f"{outcome_message}; Sales report failed: {sales_message}"
+                    outcome_message = f"{outcome_message}; Sales issue: {sales_message}"
+                elif sales_status == "error":
+                    outcome_status = "error"
+                    outcome_message = f"{outcome_message}; Sales failed: {sales_message}"
 
                 log_event(
                     logger=store_logger,
