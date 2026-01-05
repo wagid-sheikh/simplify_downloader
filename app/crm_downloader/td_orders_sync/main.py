@@ -1542,6 +1542,14 @@ async def _navigate_to_sales_report(
     ) -> tuple[bool, str, list[dict[str, str]], str]:
         transitions: list[dict[str, str]] = [{"label": "start", "url": page.url or ""}]
         if orders_target_pattern.search(page.url or ""):
+            await _capture_orders_left_nav_snapshot(
+                page,
+                logger=logger,
+                store=store,
+                context=f"sales_left_nav:{retry_label}:already_on_orders",
+                nav_timeout_ms=nav_timeout_ms,
+                sales_only_mode=sales_only_mode,
+            )
             transitions.append({"label": "already_on_orders", "url": page.url or ""})
             return True, page.url or "", transitions, "ok"
 
@@ -1913,6 +1921,16 @@ async def _navigate_to_sales_report(
         navigation_path=(last_attempt or {}).get("navigation_path"),
         retry_status=(last_attempt or {}).get("retry_status"),
     )
+    if nav_missing:
+        log_event(
+            logger=logger,
+            phase="sales",
+            status="warn",
+            message="Sales left-nav link not found; exiting without direct URL navigation",
+            store_code=store.store_code,
+            final_url=final_url,
+            attempts=attempts,
+        )
     _log_navigation_outcome(
         status="warn",
         navigation_method=(last_attempt or {}).get("navigation_method", "unknown"),
