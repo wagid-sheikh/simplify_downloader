@@ -1231,8 +1231,164 @@ async def _navigate_to_sales_report(
         )
         return False
 
-    current_url = page.url or ""
     target_fragment = "/app/reports/newsalesanddeliveryreport"
+    target_pattern = re.compile(
+        rf"/{re.escape(store.store_code)}/App/Reports/NEWSalesAndDeliveryReport",
+        re.IGNORECASE,
+    )
+    nav_selector = store.reports_nav_selector
+    sales_link_selector = "a[href*='NEWSalesAndDeliveryReport'], a[href*='SalesAndDeliveryReport']"
+
+    def _is_login_url(url: str | None) -> bool:
+        if not url:
+            return False
+        url_lower = url.lower()
+        login_url = store.login_url or ""
+        try:
+            if login_url and login_url.lower() in url_lower:
+                return True
+        except Exception:
+            pass
+        return "/login" in url_lower
+
+    def _validate_destination(url: str) -> tuple[bool, bool, bool]:
+        url_lower = url.lower()
+        return (
+            store.store_code.lower() in url_lower and target_fragment in url_lower and not _is_login_url(url),
+            store.store_code.lower() in url_lower,
+            target_fragment in url_lower,
+        )
+
+    async def _refresh_sales_session() -> bool:
+        relogin_ok = await _perform_login(page, store=store, logger=logger, nav_timeout_ms=nav_timeout_ms)
+        if not relogin_ok:
+            log_event(
+                logger=logger,
+                phase="sales",
+                status="warn",
+                message="Sales navigation retry login failed",
+                store_code=store.store_code,
+                final_url=page.url,
+                target_url=target_url,
+            )
+            return False
+
+        home_ready = await _wait_for_home(
+            page,
+            store=store,
+            logger=logger,
+            nav_selector=nav_selector,
+            timeout_ms=nav_timeout_ms,
+        )
+        if not home_ready:
+            log_event(
+                logger=logger,
+                phase="sales",
+                status="warn",
+                message="Home not ready after Sales re-login attempt",
+                store_code=store.store_code,
+                final_url=page.url,
+                target_url=target_url,
+            )
+            return False
+
+        store.storage_state_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            await page.context.storage_state(path=str(store.storage_state_path))
+            log_event(
+                logger=logger,
+                phase="sales",
+                message="Refreshed storage state after Sales re-login",
+                store_code=store.store_code,
+                storage_state=str(store.storage_state_path),
+                final_url=page.url,
+            )
+        except Exception as exc:  # pragma: no cover - best effort persistence
+            log_event(
+                logger=logger,
+                phase="sales",
+                status="warn",
+                message="Failed to persist refreshed Sales storage state",
+                store_code=store.store_code,
+                storage_state=str(store.storage_state_path),
+                error=str(exc),
+            )
+        return True
+
+    async def _navigate_direct(method_label: str) -> tuple[bool, str, str]:
+        try:
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=nav_timeout_ms)
+        except Exception as exc:
+            return False, page.url or target_url, f"navigation_error:{exc}"
+
+        try:
+            await page.wait_for_url(target_pattern, timeout=nav_timeout_ms)
+        except Exception:
+            pass
+
+        final_url = page.url or ""
+        valid, contains_store, contains_path = _validate_destination(final_url)
+        if valid:
+            log_event(
+                logger=logger,
+                phase="sales",
+                message="Navigated to Sales & Delivery report page",
+                store_code=store.store_code,
+                final_url=final_url,
+                target_url=target_url,
+                navigation_method=method_label,
+            )
+            return True, final_url, "ok"
+
+        return False, final_url, (
+            "login_redirect" if _is_login_url(final_url) else f"validation_failed:{contains_store}:{contains_path}"
+        )
+
+    async def _navigate_via_reports(method_label: str) -> tuple[bool, str, str]:
+        try:
+            await page.wait_for_selector(nav_selector, timeout=nav_timeout_ms)
+        except TimeoutError:
+            return False, page.url or "", "nav_selector_missing"
+
+        try:
+            await page.click(nav_selector)
+        except Exception as exc:
+            return False, page.url or "", f"nav_click_failed:{exc}"
+
+        try:
+            await page.wait_for_selector(sales_link_selector, timeout=nav_timeout_ms)
+        except TimeoutError:
+            return False, page.url or "", "sales_link_missing"
+
+        try:
+            await page.click(sales_link_selector)
+        except Exception as exc:
+            return False, page.url or "", f"sales_link_click_failed:{exc}"
+
+        try:
+            await page.wait_for_url(target_pattern, wait_until="domcontentloaded", timeout=nav_timeout_ms)
+        except Exception:
+            pass
+
+        final_url = page.url or ""
+        valid, contains_store, contains_path = _validate_destination(final_url)
+        if valid:
+            log_event(
+                logger=logger,
+                phase="sales",
+                message="Navigated to Sales & Delivery report page via Reports navigation",
+                store_code=store.store_code,
+                final_url=final_url,
+                target_url=target_url,
+                navigation_method=method_label,
+            )
+            return True, final_url, "ok"
+
+        return False, final_url, (
+            "login_redirect" if _is_login_url(final_url) else f"validation_failed:{contains_store}:{contains_path}"
+        )
+
+    current_url = page.url or ""
     if target_fragment in current_url.lower() and store.store_code.lower() in current_url.lower():
         log_event(
             logger=logger,
@@ -1243,57 +1399,51 @@ async def _navigate_to_sales_report(
         )
         return True
 
-    try:
-        await page.goto(target_url, wait_until="domcontentloaded", timeout=nav_timeout_ms)
-    except Exception as exc:
-        log_event(
-            logger=logger,
-            phase="sales",
-            status="error",
-            message="Navigation to Sales & Delivery report failed",
-            store_code=store.store_code,
-            target_url=target_url,
-            error=str(exc),
-        )
-        return False
-
-    try:
-        await page.wait_for_url(
-            re.compile(
-                rf"/{re.escape(store.store_code)}/App/Reports/NEWSalesAndDeliveryReport",
-                re.IGNORECASE,
-            ),
-            timeout=nav_timeout_ms,
-        )
-    except Exception:
-        pass
-
-    final_url = page.url or ""
-    url_contains_store = store.store_code.lower() in final_url.lower()
-    url_contains_path = target_fragment in final_url.lower()
-    if not (url_contains_store and url_contains_path):
-        log_event(
-            logger=logger,
-            phase="sales",
-            status="warn",
-            message="Sales & Delivery report URL validation failed",
-            store_code=store.store_code,
-            final_url=final_url,
-            target_url=target_url,
-            contains_store_code=url_contains_store,
-            contains_sales_path=url_contains_path,
-        )
-        return False
+    success, final_url, reason = await _navigate_direct("direct")
+    if success:
+        return True
 
     log_event(
         logger=logger,
         phase="sales",
-        message="Navigated to Sales & Delivery report page",
+        status="warn",
+        message="Sales navigation attempt failed; retrying after session refresh",
         store_code=store.store_code,
         final_url=final_url,
         target_url=target_url,
+        reason=reason,
     )
-    return True
+
+    relogin_ok = await _refresh_sales_session()
+    if not relogin_ok:
+        log_event(
+            logger=logger,
+            phase="sales",
+            status="warn",
+            message="Sales navigation retry aborted because session refresh failed",
+            store_code=store.store_code,
+            final_url=page.url,
+            target_url=target_url,
+            reason=reason,
+        )
+        return False
+
+    target_url = _build_sales_report_url(store, page.url) or target_url
+    success, final_url, retry_reason = await _navigate_via_reports("reports_nav_retry")
+    if success:
+        return True
+
+    log_event(
+        logger=logger,
+        phase="sales",
+        status="warn",
+        message="Sales & Delivery report navigation failed after retry",
+        store_code=store.store_code,
+        final_url=final_url,
+        target_url=target_url,
+        reason=retry_reason,
+    )
+    return False
 
 
 async def _wait_for_iframe(
