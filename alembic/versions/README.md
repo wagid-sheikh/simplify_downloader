@@ -8,3 +8,4 @@ Apply `0024_align_td_uc_bank_keys_and_seeds` after the lead assignment seed (`00
 This ordering keeps staging/production constraints in place before Playwright/ETL automation relies on them.
 
 `0028_ingest_remarks_stgtdorders` and `0029_ingest_remarks_orders` introduce the pluralized ingest remarks field for TD orders in both staging and production tables; keep them adjacent in the chain before applying corrective rename logic in `0030_ingest_remark_orders`.
+`0031_ingest_remarks_td_sales` applies the same ingest remarks normalization for TD sales staging/production tables and should follow the orders rename fix.
