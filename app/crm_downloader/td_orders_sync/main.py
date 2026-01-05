@@ -43,6 +43,30 @@ ENABLE_LEGACY_REPORT_REQUEST_ROW_LOCATORS = False
 INGEST_REMARKS_MAX_ROWS = 50
 INGEST_REMARKS_MAX_CHARS = 200
 DOM_SNIPPET_MAX_CHARS = 600
+WARNING_SAMPLE_LIMIT = 3
+
+
+def _summarize_warnings(
+    warnings: Sequence[str], *, sample_size: int = WARNING_SAMPLE_LIMIT
+) -> dict[str, int | bool | list[str]]:
+    samples: list[str] = []
+    for warning in warnings:
+        if warning not in samples:
+            samples.append(warning)
+        if len(samples) >= sample_size:
+            break
+    return {"count": len(warnings), "samples": samples, "truncated": len(warnings) > len(samples)}
+
+
+def _format_warning_preview(summary: Mapping[str, Any]) -> str:
+    count = int(summary.get("count") or 0)
+    samples = [str(entry) for entry in (summary.get("samples") or [])]
+    if not count:
+        return ""
+    suffix = "…" if summary.get("truncated") else ""
+    if samples:
+        return f"{count} warning(s) (samples: {', '.join(samples)}{suffix})"
+    return f"{count} warning(s)"
 
 
 async def main(
@@ -3739,6 +3763,8 @@ async def _execute_sales_flow(
     sales_message: str | None = None
     sales_download_path: str | None = None
     sales_ingest_result: TdSalesIngestResult | None = None
+    sales_warning_summary: dict[str, Any] | None = None
+    sales_counts_message: str | None = None
 
     sales_nav_ready = await _navigate_to_sales_report(
         page, store=store, logger=logger, nav_timeout_ms=nav_timeout_ms, sales_only_mode=sales_only_mode
@@ -3789,18 +3815,33 @@ async def _execute_sales_flow(
                                 database_url=config.database_url,
                                 logger=logger,
                             )
-                            sales_status = "warning" if sales_ingest_result.warnings else "ok"
+                            sales_status = "ok"
+                            sales_counts_message = (
+                                f"staging={sales_ingest_result.staging_rows}, final={sales_ingest_result.final_rows}"
+                            )
                             if sales_ingest_result.warnings:
+                                sales_warning_summary = _summarize_warnings(sales_ingest_result.warnings)
                                 log_event(
                                     logger=logger,
                                     phase="sales_ingest",
                                     status="warn",
                                     message="TD Sales workbook ingested with warnings",
                                     store_code=store.store_code,
-                                    warnings=sales_ingest_result.warnings,
+                                    warning_count=sales_warning_summary["count"],
+                                    warning_samples=sales_warning_summary["samples"],
+                                    warnings_truncated=sales_warning_summary["truncated"],
                                     staging_rows=sales_ingest_result.staging_rows,
                                     final_rows=sales_ingest_result.final_rows,
                                 )
+                                warning_preview = _format_warning_preview(sales_warning_summary)
+                                warning_message = (
+                                    f"Sales ingested with warnings ({warning_preview})"
+                                    if warning_preview
+                                    else "Sales ingested with warnings"
+                                )
+                                if sales_counts_message:
+                                    warning_message = f"{warning_message}; {sales_counts_message}"
+                                sales_message = warning_message
                             else:
                                 log_event(
                                     logger=logger,
@@ -3874,7 +3915,9 @@ async def _execute_sales_flow(
 
     if sales_status == "ok" and sales_message is None:
         sales_message = "Sales report downloaded"
-        if sales_ingest_result:
+        if sales_counts_message:
+            sales_message = f"Sales ingested: {sales_counts_message}"
+        elif sales_ingest_result:
             sales_message = (
                 f"Sales ingested: staging={sales_ingest_result.staging_rows}, "
                 f"final={sales_ingest_result.final_rows}"
@@ -4295,13 +4338,16 @@ async def _run_store_discovery(
                             )
                             status_label = "warning" if ingest_result.warnings else "ok"
                             if ingest_result.warnings:
+                                warning_summary = _summarize_warnings(ingest_result.warnings)
                                 log_event(
                                     logger=store_logger,
                                     phase="ingest",
                                     status="warn",
                                     message="TD Orders workbook ingested with warnings",
                                     store_code=store.store_code,
-                                    warnings=ingest_result.warnings,
+                                    warning_count=warning_summary["count"],
+                                    warning_samples=warning_summary["samples"],
+                                    warnings_truncated=warning_summary["truncated"],
                                     staging_rows=ingest_result.staging_rows,
                                     final_rows=ingest_result.final_rows,
                                 )
