@@ -476,6 +476,51 @@ async def _load_notification_resources(
     return resources, []
 
 
+def _normalize_datetime(value: Any) -> str:
+    try:
+        return value.isoformat()  # type: ignore[attr-defined]
+    except Exception:
+        return str(value) if value is not None else ""
+
+
+def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
+    metrics = run_data.get("metrics_json") or {}
+    payload = metrics.get("notification_payload") or {}
+    stores_payload = payload.get("stores") or []
+    stores: list[dict[str, Any]] = []
+    for store in stores_payload:
+        orders = store.get("orders") or {}
+        sales = store.get("sales") or {}
+        stores.append(
+            {
+                "store_code": store.get("store_code"),
+                "status": store.get("status"),
+                "message": store.get("message"),
+                "orders_status": orders.get("status"),
+                "orders_filenames": orders.get("filenames") or [],
+                "orders_staging_rows": orders.get("staging_rows"),
+                "orders_final_rows": orders.get("final_rows"),
+                "orders_warnings": orders.get("warnings") or [],
+                "orders_error": orders.get("error_message"),
+                "sales_status": sales.get("status"),
+                "sales_filenames": sales.get("filenames") or [],
+                "sales_staging_rows": sales.get("staging_rows"),
+                "sales_final_rows": sales.get("final_rows"),
+                "sales_warnings": sales.get("warnings") or [],
+                "sales_error": sales.get("error_message"),
+            }
+        )
+
+    return {
+        "started_at": _normalize_datetime(payload.get("started_at") or run_data.get("started_at")),
+        "finished_at": _normalize_datetime(payload.get("finished_at") or run_data.get("finished_at")),
+        "overall_status": payload.get("overall_status") or run_data.get("overall_status"),
+        "orders_status": payload.get("orders_status") or (metrics.get("orders") or {}).get("overall_status"),
+        "sales_status": payload.get("sales_status") or (metrics.get("sales") or {}).get("overall_status"),
+        "stores": stores,
+    }
+
+
 async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
     resources, errors = await _load_notification_resources(pipeline_name, run_id)
     if errors:
@@ -491,7 +536,7 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
     recipients_by_profile = resources["recipients"]
     store_names = resources["store_names"]
 
-    context = {
+    context: dict[str, Any] = {
         "pipeline_name": pipeline_name,
         "pipeline_description": pipeline_data["description"],
         "run_id": run_id,
@@ -500,6 +545,11 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
         "overall_status": run_data.get("overall_status"),
         "summary_text": run_data.get("summary_text", ""),
     }
+    if pipeline_name == "td_orders_sync":
+        context.update(_build_td_orders_context(run_data))
+    else:
+        context["started_at"] = _normalize_datetime(run_data.get("started_at"))
+        context["finished_at"] = _normalize_datetime(run_data.get("finished_at"))
     ingest_rows = (run_data.get("metrics_json") or {}).get("ingest_remarks", {}).get("rows") or []
     prepared_rows, truncated_rows, truncated_length, ingest_text = _prepare_ingest_remarks(ingest_rows)
     context["ingest_remarks"] = prepared_rows
