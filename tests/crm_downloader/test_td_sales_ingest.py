@@ -124,6 +124,17 @@ def _build_duplicate_workbook(path: Path) -> Path:
     return path
 
 
+def _build_workbook_from_rows(path: Path, rows: list[dict[str, object]]) -> Path:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    headers = list(_expected_headers())
+    ws.append(headers)
+    for row in rows:
+        ws.append([row.get(header) for header in headers])
+    wb.save(path)
+    return path
+
+
 @pytest.mark.asyncio
 async def test_sales_ingest_happy_path(tmp_path: Path) -> None:
     db_path = tmp_path / "sales.db"
@@ -306,3 +317,221 @@ async def test_sales_ingest_marks_existing_duplicates(tmp_path: Path) -> None:
             )
         ).all()
         assert all(flag.is_duplicate is True for flag in dupe_flags)
+
+
+@pytest.mark.asyncio
+async def test_sales_ingest_parses_dates_numbers_and_mobile(tmp_path: Path) -> None:
+    db_path = tmp_path / "sales_parsing.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    await _create_tables(database_url)
+
+    workbook = _build_workbook_from_rows(
+        tmp_path / "sales_parsing.xlsx",
+        [
+            {
+                "Order Date": "10 May 2025",
+                "Payment Date": datetime(2025, 5, 11, 9, 30),
+                "Order Number": "PARSE-001",
+                "Customer Code": "C123",
+                "Customer Name": "Parsey",
+                "Customer Address": "123 Parsing St",
+                "Customer Mobile No.": "+91-99999 88888",
+                "Payment Received": "1,000.75",
+                "Adjustments": "oops",
+                "Balance": 1000.75,
+                "Accept By": "Checker",
+                "Payment Mode": "Cash",
+                "Online TransactionID": "TXP1",
+                "Payment Made At": " Counter ",
+                "Type": "Regular",
+            }
+        ],
+    )
+    tz = ZoneInfo("Asia/Kolkata")
+    run_date = datetime(2025, 5, 22, 12, 0, tzinfo=tz)
+    logger = get_logger(run_id="parse_run")
+
+    result = await ingest_td_sales_workbook(
+        workbook_path=workbook,
+        store_code="A668",
+        cost_center="UN3668",
+        run_id="parse_run",
+        run_date=run_date,
+        database_url=database_url,
+        logger=logger,
+    )
+
+    assert result.warnings == ["Non-numeric value for adjustments: oops"]
+    assert result.staging_rows == 1
+    assert result.final_rows == 1
+    assert result.ingest_remarks == [
+        {
+            "store_code": "A668",
+            "order_number": "PARSE-001",
+            "ingest_remarks": "Field adjustments contained non-numeric value 'oops' (stored as 0)",
+        }
+    ]
+
+    async with session_scope(database_url) as session:
+        metadata = sa.MetaData()
+        stg_table = _stg_td_sales_table(metadata)
+        final_table = _td_sales_table(metadata)
+        stg_row = (
+            await session.execute(
+                sa.select(
+                    stg_table.c.order_date,
+                    stg_table.c.payment_date,
+                    stg_table.c.mobile_number,
+                    stg_table.c.payment_received,
+                    stg_table.c.adjustments,
+                    stg_table.c.payment_made_at,
+                    stg_table.c.ingest_remark,
+                )
+            )
+        ).one()
+        assert stg_row.order_date.replace(tzinfo=tz) == datetime(2025, 5, 10, tzinfo=tz)
+        assert stg_row.payment_date.replace(tzinfo=tz) == datetime(2025, 5, 11, 9, 30, tzinfo=tz)
+        assert stg_row.mobile_number == "9999988888"
+        assert float(stg_row.payment_received) == 1000.75
+        assert float(stg_row.adjustments) == 0
+        assert stg_row.payment_made_at == "Counter"
+        assert stg_row.ingest_remark == "Field adjustments contained non-numeric value 'oops' (stored as 0)"
+
+        final_row = (
+            await session.execute(
+                sa.select(final_table.c.ingest_remark, final_table.c.mobile_number, final_table.c.payment_mode)
+            )
+        ).one()
+        assert final_row.ingest_remark == stg_row.ingest_remark
+        assert final_row.mobile_number == "9999988888"
+        assert final_row.payment_mode == "Cash"
+
+
+@pytest.mark.asyncio
+async def test_sales_upsert_respects_business_keys_and_propagates_remarks(tmp_path: Path) -> None:
+    db_path = tmp_path / "sales_upsert.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    await _create_tables(database_url)
+
+    base_workbook = _build_workbook_from_rows(
+        tmp_path / "sales_upsert.xlsx",
+        [
+            {
+                "Order Date": "2025-05-10",
+                "Payment Date": "2025-05-11 09:30",
+                "Order Number": "UP-001",
+                "Customer Code": "CU1",
+                "Customer Name": "Upsert One",
+                "Customer Address": "123 Up Lane",
+                "Customer Mobile No.": "09876543210",
+                "Payment Received": "500",
+                "Adjustments": 0,
+                "Balance": 500,
+                "Accept By": "A",
+                "Payment Mode": "UPI",
+                "Online TransactionID": "T1",
+                "Payment Made At": "Counter",
+                "Type": "Regular",
+            }
+        ],
+    )
+    tz = ZoneInfo("Asia/Kolkata")
+    run_date = datetime(2025, 5, 23, 12, 0, tzinfo=tz)
+    logger = get_logger(run_id="upsert_run")
+
+    await ingest_td_sales_workbook(
+        workbook_path=base_workbook,
+        store_code="A668",
+        cost_center="UN3668",
+        run_id="upsert_run",
+        run_date=run_date,
+        database_url=database_url,
+        logger=logger,
+    )
+
+    updated_workbook = _build_workbook_from_rows(
+        tmp_path / "sales_upsert_updated.xlsx",
+        [
+            {
+                "Order Date": "2025-05-10",
+                "Payment Date": "2025-05-11 09:30",
+                "Order Number": "UP-001",
+                "Customer Code": "CU1",
+                "Customer Name": "Upsert One",
+                "Customer Address": "123 Up Lane",
+                "Customer Mobile No.": "09876543210",
+                "Payment Received": "750",
+                "Adjustments": 10,
+                "Balance": 740,
+                "Accept By": "A",
+                "Payment Mode": "Card",
+                "Online TransactionID": "T1",
+                "Payment Made At": "Counter",
+                "Type": "Regular",
+            }
+        ],
+    )
+    second_run_date = datetime(2025, 5, 24, 12, 0, tzinfo=tz)
+    result = await ingest_td_sales_workbook(
+        workbook_path=updated_workbook,
+        store_code="A668",
+        cost_center="UN3668",
+        run_id="upsert_run",
+        run_date=second_run_date,
+        database_url=database_url,
+        logger=logger,
+    )
+
+    assert result.staging_rows == 1
+    assert result.final_rows == 1
+    assert result.ingest_remarks == [
+        {
+            "store_code": "A668",
+            "order_number": "UP-001",
+            "ingest_remarks": "Duplicate order_number 'UP-001' detected in sales data",
+        }
+    ]
+
+    async with session_scope(database_url) as session:
+        metadata = sa.MetaData()
+        stg_table = _stg_td_sales_table(metadata)
+        final_table = _td_sales_table(metadata)
+
+        stg_count = (await session.execute(sa.select(sa.func.count()).select_from(stg_table))).scalar_one()
+        final_count = (await session.execute(sa.select(sa.func.count()).select_from(final_table))).scalar_one()
+        assert stg_count == 1
+        assert final_count == 1
+
+        stg_row = (
+            await session.execute(
+                sa.select(
+                    stg_table.c.payment_received,
+                    stg_table.c.adjustments,
+                    stg_table.c.is_duplicate,
+                    stg_table.c.ingest_remark,
+                    stg_table.c.payment_mode,
+                )
+            )
+        ).one()
+        assert float(stg_row.payment_received) == 750
+        assert float(stg_row.adjustments) == 10
+        assert stg_row.is_duplicate is True
+        assert stg_row.ingest_remark == "Duplicate order_number 'UP-001' detected in sales data"
+        assert stg_row.payment_mode == "Card"
+
+        final_row = (
+            await session.execute(
+                sa.select(
+                    final_table.c.payment_received,
+                    final_table.c.adjustments,
+                    final_table.c.is_duplicate,
+                    final_table.c.ingest_remark,
+                    final_table.c.payment_mode,
+                )
+            )
+        ).one()
+        assert float(final_row.payment_received) == 750
+        assert float(final_row.adjustments) == 10
+        assert final_row.is_duplicate is True
+        assert final_row.ingest_remark == stg_row.ingest_remark
+        assert final_row.payment_mode == "Card"
