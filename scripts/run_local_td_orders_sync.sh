@@ -22,7 +22,10 @@ ensure_writable_dir() {
   fi
 }
 
-readarray -t TD_SYNC_PATHS < <(poetry run python - <<'PY'
+TD_SYNC_PATHS=()
+while IFS= read -r line; do
+  TD_SYNC_PATHS+=("$line")
+done < <(poetry run python - <<'PY'
 from app.crm_downloader.config import default_download_dir, default_profiles_dir
 
 print(default_download_dir())
