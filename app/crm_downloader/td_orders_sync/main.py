@@ -1238,6 +1238,7 @@ async def _navigate_to_sales_report(
     )
     nav_selector = store.reports_nav_selector
     sales_link_selector = "a[href*='NEWSalesAndDeliveryReport'], a[href*='SalesAndDeliveryReport']"
+    attempts: list[dict[str, Any]] = []
 
     def _is_login_url(url: str | None) -> bool:
         if not url:
@@ -1258,6 +1259,29 @@ async def _navigate_to_sales_report(
             store.store_code.lower() in url_lower,
             target_fragment in url_lower,
         )
+
+    def _record_attempt(
+        *, method_label: str, attempt_label: str, success: bool, final_url: str, reason: str
+    ) -> None:
+        attempt = {
+            "navigation_method": method_label,
+            "attempt": attempt_label,
+            "success": success,
+            "final_url": final_url,
+            "target_url": target_url,
+            "reason": reason,
+        }
+        attempts.append(attempt)
+        log_event(
+            logger=logger,
+            phase="sales",
+            message="Sales navigation attempt",
+            store_code=store.store_code,
+            **attempt,
+        )
+
+    def _should_refresh_session(reason: str) -> bool:
+        return reason.startswith("login_redirect") or reason.startswith("validation_failed")
 
     async def _refresh_sales_session() -> bool:
         relogin_ok = await _perform_login(page, store=store, logger=logger, nav_timeout_ms=nav_timeout_ms)
@@ -1329,15 +1353,6 @@ async def _navigate_to_sales_report(
         final_url = page.url or ""
         valid, contains_store, contains_path = _validate_destination(final_url)
         if valid:
-            log_event(
-                logger=logger,
-                phase="sales",
-                message="Navigated to Sales & Delivery report page",
-                store_code=store.store_code,
-                final_url=final_url,
-                target_url=target_url,
-                navigation_method=method_label,
-            )
             return True, final_url, "ok"
 
         return False, final_url, (
@@ -1373,15 +1388,6 @@ async def _navigate_to_sales_report(
         final_url = page.url or ""
         valid, contains_store, contains_path = _validate_destination(final_url)
         if valid:
-            log_event(
-                logger=logger,
-                phase="sales",
-                message="Navigated to Sales & Delivery report page via Reports navigation",
-                store_code=store.store_code,
-                final_url=final_url,
-                target_url=target_url,
-                navigation_method=method_label,
-            )
             return True, final_url, "ok"
 
         return False, final_url, (
@@ -1400,38 +1406,130 @@ async def _navigate_to_sales_report(
         return True
 
     success, final_url, reason = await _navigate_direct("direct")
+    _record_attempt(
+        method_label="direct",
+        attempt_label="initial",
+        success=success,
+        final_url=final_url,
+        reason=reason,
+    )
     if success:
+        log_event(
+            logger=logger,
+            phase="sales",
+            message="Navigated to Sales & Delivery report page",
+            store_code=store.store_code,
+            final_url=final_url,
+            target_url=target_url,
+            navigation_method="direct",
+        )
         return True
+
+    if _should_refresh_session(reason):
+        relogin_ok = await _refresh_sales_session()
+        if not relogin_ok:
+            log_event(
+                logger=logger,
+                phase="sales",
+                status="warn",
+                message="Sales navigation retry aborted because session refresh failed",
+                store_code=store.store_code,
+                final_url=page.url,
+                target_url=target_url,
+                reason=reason,
+                attempts=attempts,
+            )
+            return False
+
+        target_url = _build_sales_report_url(store, page.url) or target_url
+        success, final_url, retry_reason = await _navigate_direct("direct_after_login")
+        _record_attempt(
+            method_label="direct",
+            attempt_label="after_login",
+            success=success,
+            final_url=final_url,
+            reason=retry_reason,
+        )
+        if success:
+            log_event(
+                logger=logger,
+                phase="sales",
+                message="Navigated to Sales & Delivery report page",
+                store_code=store.store_code,
+                final_url=final_url,
+                target_url=target_url,
+                navigation_method="direct_after_login",
+            )
+            return True
+        reason = retry_reason
 
     log_event(
         logger=logger,
         phase="sales",
-        status="warn",
-        message="Sales navigation attempt failed; retrying after session refresh",
+        message="Falling back to Reports navigation for Sales",
         store_code=store.store_code,
-        final_url=final_url,
         target_url=target_url,
-        reason=reason,
+        last_final_url=final_url,
+        last_reason=reason,
     )
 
-    relogin_ok = await _refresh_sales_session()
-    if not relogin_ok:
+    success, final_url, reports_reason = await _navigate_via_reports("reports_nav")
+    _record_attempt(
+        method_label="reports_nav",
+        attempt_label="primary",
+        success=success,
+        final_url=final_url,
+        reason=reports_reason,
+    )
+    if success:
         log_event(
             logger=logger,
             phase="sales",
-            status="warn",
-            message="Sales navigation retry aborted because session refresh failed",
+            message="Navigated to Sales & Delivery report page via Reports navigation",
             store_code=store.store_code,
-            final_url=page.url,
+            final_url=final_url,
             target_url=target_url,
-            reason=reason,
+            navigation_method="reports_nav",
         )
-        return False
-
-    target_url = _build_sales_report_url(store, page.url) or target_url
-    success, final_url, retry_reason = await _navigate_via_reports("reports_nav_retry")
-    if success:
         return True
+
+    if _should_refresh_session(reports_reason):
+        relogin_ok = await _refresh_sales_session()
+        if not relogin_ok:
+            log_event(
+                logger=logger,
+                phase="sales",
+                status="warn",
+                message="Sales navigation via Reports retry aborted because session refresh failed",
+                store_code=store.store_code,
+                final_url=page.url,
+                target_url=target_url,
+                reason=reports_reason,
+                attempts=attempts,
+            )
+            return False
+
+        target_url = _build_sales_report_url(store, page.url) or target_url
+        success, final_url, second_reports_reason = await _navigate_via_reports("reports_nav_retry")
+        _record_attempt(
+            method_label="reports_nav",
+            attempt_label="after_login",
+            success=success,
+            final_url=final_url,
+            reason=second_reports_reason,
+        )
+        if success:
+            log_event(
+                logger=logger,
+                phase="sales",
+                message="Navigated to Sales & Delivery report page via Reports navigation",
+                store_code=store.store_code,
+                final_url=final_url,
+                target_url=target_url,
+                navigation_method="reports_nav_retry",
+            )
+            return True
+        reports_reason = second_reports_reason
 
     log_event(
         logger=logger,
@@ -1441,7 +1539,8 @@ async def _navigate_to_sales_report(
         store_code=store.store_code,
         final_url=final_url,
         target_url=target_url,
-        reason=retry_reason,
+        reason=reports_reason,
+        attempts=attempts,
     )
     return False
 
