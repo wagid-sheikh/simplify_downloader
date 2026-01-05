@@ -42,6 +42,6 @@ ensure_writable_dir "${PROFILES_DIR}"
 CLI_ARGS=("$@")
 
 # Example invocations (uncomment one to choose a pipeline slice)
-# exec poetry run python -m app.crm_downloader.td_orders_sync.main ${CLI_ARGS[@]+"${CLI_ARGS[@]}"}
+exec poetry run python -m app.crm_downloader.td_orders_sync.main ${CLI_ARGS[@]+"${CLI_ARGS[@]}"}
 # exec poetry run python -m app.crm_downloader.td_orders_sync.main --orders-only ${CLI_ARGS[@]+"${CLI_ARGS[@]}"}
-exec poetry run python -m app.crm_downloader.td_orders_sync.main --sales-only ${CLI_ARGS[@]+"${CLI_ARGS[@]}"}
+# exec poetry run python -m app.crm_downloader.td_orders_sync.main --sales-only ${CLI_ARGS[@]+"${CLI_ARGS[@]}"}
