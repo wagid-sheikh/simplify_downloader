@@ -51,6 +51,8 @@ async def main(
     run_id: str | None = None,
     from_date: date | None = None,
     to_date: date | None = None,
+    run_orders: bool = True,
+    run_sales: bool = True,
 ) -> None:
     """Run the TD Orders sync flow (login + iframe historical orders download)."""
 
@@ -121,6 +123,8 @@ async def main(
                     run_end_date=run_end_date,
                     nav_timeout_ms=nav_timeout_ms,
                     summary=summary,
+                    run_orders=run_orders,
+                    run_sales=run_sales,
                 )
 
             await browser.close()
@@ -473,10 +477,15 @@ class TdOrdersDiscoverySummary:
         if not reports:
             return "warning"
         statuses = {report.status for report in reports.values()}
-        if statuses == {"ok"}:
+        normalized = {status for status in statuses if status != "skipped"}
+        if not normalized:
             return "ok"
-        if statuses == {"error"}:
+        if "error" in normalized:
             return "error"
+        if "warning" in normalized:
+            return "warning"
+        if normalized == {"ok"}:
+            return "ok"
         return "warning"
 
     def _format_duration(self, finished_at: datetime) -> str:
@@ -3027,6 +3036,179 @@ async def _run_sales_iframe_flow(
     )
 
 
+async def _execute_sales_flow(
+    page: Page,
+    *,
+    store: TdStore,
+    logger: JsonLogger,
+    from_date: date,
+    to_date: date,
+    nav_timeout_ms: int,
+    download_dir: Path,
+    run_id: str,
+    run_date: datetime,
+    summary: TdOrdersDiscoverySummary,
+) -> StoreReport:
+    sales_status: str | None = None
+    sales_message: str | None = None
+    sales_download_path: str | None = None
+    sales_ingest_result: TdSalesIngestResult | None = None
+
+    sales_nav_ready = await _navigate_to_sales_report(
+        page, store=store, logger=logger, nav_timeout_ms=nav_timeout_ms
+    )
+    if sales_nav_ready:
+        sales_iframe = await _wait_for_iframe(page, store=store, logger=logger, require_src=True, phase="sales")
+        if sales_iframe is not None:
+            await _observe_iframe_hydration(sales_iframe, store=store, logger=logger, timeout_ms=nav_timeout_ms)
+            sales_success, sales_detail = await _run_sales_iframe_flow(
+                page,
+                sales_iframe,
+                store=store,
+                logger=logger,
+                from_date=from_date,
+                to_date=to_date,
+                nav_timeout_ms=nav_timeout_ms,
+                download_dir=download_dir,
+            )
+            if sales_success:
+                sales_status = "ok"
+                sales_download_path = sales_detail
+                log_event(
+                    logger=logger,
+                    phase="sales",
+                    message="Sales & Delivery report downloaded",
+                    store_code=store.store_code,
+                    download_path=sales_detail,
+                )
+                if config.database_url:
+                    if not store.cost_center:
+                        log_event(
+                            logger=logger,
+                            phase="sales_ingest",
+                            status="error",
+                            message="Missing cost_center for TD store; cannot ingest sales",
+                            store_code=store.store_code,
+                        )
+                        sales_status = "error"
+                        sales_message = "Missing cost_center for TD store; cannot ingest sales"
+                    else:
+                        try:
+                            sales_ingest_result = await ingest_td_sales_workbook(
+                                workbook_path=Path(sales_detail),
+                                store_code=store.store_code,
+                                cost_center=store.cost_center or "",
+                                run_id=run_id,
+                                run_date=run_date,
+                                database_url=config.database_url,
+                                logger=logger,
+                            )
+                            sales_status = "warning" if sales_ingest_result.warnings else "ok"
+                            if sales_ingest_result.warnings:
+                                log_event(
+                                    logger=logger,
+                                    phase="sales_ingest",
+                                    status="warn",
+                                    message="TD Sales workbook ingested with warnings",
+                                    store_code=store.store_code,
+                                    warnings=sales_ingest_result.warnings,
+                                    staging_rows=sales_ingest_result.staging_rows,
+                                    final_rows=sales_ingest_result.final_rows,
+                                )
+                            else:
+                                log_event(
+                                    logger=logger,
+                                    phase="sales_ingest",
+                                    message="TD Sales workbook ingested",
+                                    store_code=store.store_code,
+                                    staging_rows=sales_ingest_result.staging_rows,
+                                    final_rows=sales_ingest_result.final_rows,
+                                )
+                            summary.add_ingest_remarks(sales_ingest_result.ingest_remarks)
+                        except Exception as exc:
+                            log_event(
+                                logger=logger,
+                                phase="sales_ingest",
+                                status="error",
+                                message="TD Sales ingestion failed",
+                                store_code=store.store_code,
+                                error=str(exc),
+                            )
+                            sales_status = "error"
+                            sales_message = f"Sales ingestion failed: {exc}"
+                        else:
+                            if sales_ingest_result:
+                                sales_message = (
+                                    f"Sales ingested: staging={sales_ingest_result.staging_rows}, "
+                                    f"final={sales_ingest_result.final_rows}"
+                                )
+                else:
+                    log_event(
+                        logger=logger,
+                        phase="sales_ingest",
+                        status="warn",
+                        message="Skipping TD Sales ingestion because database_url is missing",
+                        store_code=store.store_code,
+                    )
+                    sales_status = "warning"
+                    sales_message = "Skipping TD Sales ingestion because database_url is missing"
+            else:
+                sales_status = "warning"
+                sales_message = sales_detail or "Sales iframe flow failed"
+                log_event(
+                    logger=logger,
+                    phase="sales",
+                    status="warn",
+                    message="Sales & Delivery iframe flow failed",
+                    store_code=store.store_code,
+                    error=sales_detail,
+                )
+        else:
+            sales_status = "warning"
+            sales_message = "Sales iframe did not attach"
+            log_event(
+                logger=logger,
+                phase="sales",
+                status="warn",
+                message="Sales iframe not ready after navigation",
+                store_code=store.store_code,
+                final_url=page.url,
+            )
+    else:
+        sales_status = "warning"
+        sales_message = "Sales & Delivery report navigation failed"
+        log_event(
+            logger=logger,
+            phase="sales",
+            status="warn",
+            message="Navigation to Sales & Delivery report did not complete",
+            store_code=store.store_code,
+            final_url=page.url,
+        )
+
+    if sales_status == "ok" and sales_message is None:
+        sales_message = "Sales report downloaded"
+        if sales_ingest_result:
+            sales_message = (
+                f"Sales ingested: staging={sales_ingest_result.staging_rows}, "
+                f"final={sales_ingest_result.final_rows}"
+            )
+    elif sales_status == "warning" and sales_message is None:
+        sales_message = "Sales completed with warnings"
+    elif sales_status == "error" and sales_message is None:
+        sales_message = "Sales sync failed"
+
+    return StoreReport(
+        status=sales_status or "error",
+        filenames=[Path(sales_download_path).name] if sales_download_path else [],
+        staging_rows=sales_ingest_result.staging_rows if sales_ingest_result else None,
+        final_rows=sales_ingest_result.final_rows if sales_ingest_result else None,
+        message=sales_message,
+        error_message=sales_message if sales_status == "error" else None,
+        warnings=sales_ingest_result.warnings if sales_ingest_result else [],
+    )
+
+
 async def _wait_for_otp_verification(
     page: Page,
     *,
@@ -3124,6 +3306,8 @@ async def _run_store_discovery(
     run_end_date: date,
     nav_timeout_ms: int,
     summary: TdOrdersDiscoverySummary,
+    run_orders: bool,
+    run_sales: bool,
 ) -> None:
     store_logger = logger.bind(store_code=store.store_code)
     log_event(
@@ -3143,7 +3327,7 @@ async def _run_store_discovery(
     )
     page = await context.new_page()
     nav_selector = store.reports_nav_selector
-    outcome = StoreOutcome(status="error", message="Store run did not complete")
+    outcome: StoreOutcome | None = None
     orders_report: StoreReport | None = None
     sales_report: StoreReport | None = None
     stored_state_path: str | None = None
@@ -3343,357 +3527,284 @@ async def _run_store_discovery(
                 refreshed=login_performed,
             )
 
-        container_ready = await _navigate_to_orders_container(
-            page, store=store, logger=store_logger, nav_selector=nav_selector, nav_timeout_ms=nav_timeout_ms
-        )
-        if not container_ready:
-            outcome = StoreOutcome(
-                status="error",
-                message="Orders container did not load from Reports navigation",
-                final_url=page.url,
-                verification_seen=verification_seen,
-                storage_state=stored_state_path,
-            )
-            return
-
-        iframe_locator = await _wait_for_iframe(page, store=store, logger=store_logger)
-        if iframe_locator is not None:
-            await _observe_iframe_hydration(iframe_locator, store=store, logger=store_logger)
-            success, detail = await _run_orders_iframe_flow(
-                page,
-                iframe_locator,
-                store=store,
+        if not run_orders:
+            log_event(
                 logger=store_logger,
-                from_date=run_start_date,
-                to_date=run_end_date,
-                nav_timeout_ms=nav_timeout_ms,
-                download_dir=download_dir,
+                phase="orders",
+                message="Skipping Orders iframe flow because Orders segment was disabled by flag",
+                store_code=store.store_code,
             )
-            if success:
-                ingest_result: TdOrdersIngestResult | None = None
-                status_label = "ok"
-                if config.database_url:
-                    if not store.cost_center:
-                        log_event(
-                            logger=store_logger,
-                            phase="ingest",
-                            status="error",
-                            message="Missing cost_center for TD store; cannot ingest orders",
-                            store_code=store.store_code,
-                        )
-                        orders_report = StoreReport(
-                            status="error",
-                            filenames=[Path(detail).name],
-                            message="Orders downloaded but could not ingest",
-                            error_message="Missing cost_center for TD store; cannot ingest orders",
-                        )
-                        outcome = StoreOutcome(
-                            status="error",
-                            message="Missing cost_center for TD store; cannot ingest orders",
-                            final_url=page.url,
-                            iframe_attached=True,
-                            verification_seen=verification_seen,
-                            storage_state=stored_state_path,
-                        )
-                        return
-                    try:
-                        ingest_result = await ingest_td_orders_workbook(
-                            workbook_path=Path(detail),
-                            store_code=store.store_code,
-                            cost_center=store.cost_center or "",
-                            run_id=run_id,
-                            run_date=run_date,
-                            database_url=config.database_url,
-                            logger=store_logger,
-                        )
-                        status_label = "warning" if ingest_result.warnings else "ok"
-                        if ingest_result.warnings:
+            orders_report = StoreReport(status="skipped", message="Orders sync skipped by flag")
+        else:
+            container_ready = await _navigate_to_orders_container(
+                page, store=store, logger=store_logger, nav_selector=nav_selector, nav_timeout_ms=nav_timeout_ms
+            )
+            if not container_ready:
+                outcome = StoreOutcome(
+                    status="error",
+                    message="Orders container did not load from Reports navigation",
+                    final_url=page.url,
+                    verification_seen=verification_seen,
+                    storage_state=stored_state_path,
+                )
+                return
+
+            iframe_locator = await _wait_for_iframe(page, store=store, logger=store_logger)
+            if iframe_locator is not None:
+                await _observe_iframe_hydration(iframe_locator, store=store, logger=store_logger)
+                success, detail = await _run_orders_iframe_flow(
+                    page,
+                    iframe_locator,
+                    store=store,
+                    logger=store_logger,
+                    from_date=run_start_date,
+                    to_date=run_end_date,
+                    nav_timeout_ms=nav_timeout_ms,
+                    download_dir=download_dir,
+                )
+                if success:
+                    ingest_result: TdOrdersIngestResult | None = None
+                    status_label = "ok"
+                    if config.database_url:
+                        if not store.cost_center:
                             log_event(
                                 logger=store_logger,
                                 phase="ingest",
-                                status="warn",
-                                message="TD Orders workbook ingested with warnings",
+                                status="error",
+                                message="Missing cost_center for TD store; cannot ingest orders",
                                 store_code=store.store_code,
-                                warnings=ingest_result.warnings,
-                                staging_rows=ingest_result.staging_rows,
-                                final_rows=ingest_result.final_rows,
                             )
-                        else:
+                            orders_report = StoreReport(
+                                status="error",
+                                filenames=[Path(detail).name],
+                                message="Orders downloaded but could not ingest",
+                                error_message="Missing cost_center for TD store; cannot ingest orders",
+                            )
+                            outcome = StoreOutcome(
+                                status="error",
+                                message="Missing cost_center for TD store; cannot ingest orders",
+                                final_url=page.url,
+                                iframe_attached=True,
+                                verification_seen=verification_seen,
+                                storage_state=stored_state_path,
+                            )
+                            return
+                        try:
+                            ingest_result = await ingest_td_orders_workbook(
+                                workbook_path=Path(detail),
+                                store_code=store.store_code,
+                                cost_center=store.cost_center or "",
+                                run_id=run_id,
+                                run_date=run_date,
+                                database_url=config.database_url,
+                                logger=store_logger,
+                            )
+                            status_label = "warning" if ingest_result.warnings else "ok"
+                            if ingest_result.warnings:
+                                log_event(
+                                    logger=store_logger,
+                                    phase="ingest",
+                                    status="warn",
+                                    message="TD Orders workbook ingested with warnings",
+                                    store_code=store.store_code,
+                                    warnings=ingest_result.warnings,
+                                    staging_rows=ingest_result.staging_rows,
+                                    final_rows=ingest_result.final_rows,
+                                )
+                            else:
+                                log_event(
+                                    logger=store_logger,
+                                    phase="ingest",
+                                    message="TD Orders workbook ingested",
+                                    store_code=store.store_code,
+                                    staging_rows=ingest_result.staging_rows,
+                                    final_rows=ingest_result.final_rows,
+                                )
+                            summary.add_ingest_remarks(ingest_result.ingest_remarks)
+                        except Exception as exc:
                             log_event(
                                 logger=store_logger,
                                 phase="ingest",
-                                message="TD Orders workbook ingested",
+                                status="error",
+                                message="TD Orders ingestion failed",
                                 store_code=store.store_code,
-                                staging_rows=ingest_result.staging_rows,
-                                final_rows=ingest_result.final_rows,
+                                error=str(exc),
                             )
-                        summary.add_ingest_remarks(ingest_result.ingest_remarks)
-                    except Exception as exc:
+                            orders_report = StoreReport(
+                                status="error",
+                                filenames=[Path(detail).name],
+                                message="Orders ingestion failed",
+                                error_message=str(exc),
+                            )
+                            outcome = StoreOutcome(
+                                status="error",
+                                message=f"Orders ingestion failed: {exc}",
+                                final_url=page.url,
+                                iframe_attached=True,
+                                verification_seen=verification_seen,
+                                storage_state=stored_state_path,
+                            )
+                            return
+                    else:
                         log_event(
                             logger=store_logger,
                             phase="ingest",
-                            status="error",
-                            message="TD Orders ingestion failed",
+                            status="warn",
+                            message="Skipping TD Orders ingestion because database_url is missing",
                             store_code=store.store_code,
-                            error=str(exc),
                         )
-                        orders_report = StoreReport(
-                            status="error",
-                            filenames=[Path(detail).name],
-                            message="Orders ingestion failed",
-                            error_message=str(exc),
-                        )
-                        outcome = StoreOutcome(
-                            status="error",
-                            message=f"Orders ingestion failed: {exc}",
-                            final_url=page.url,
-                            iframe_attached=True,
-                            verification_seen=verification_seen,
-                            storage_state=stored_state_path,
-                        )
-                        return
-                else:
-                    log_event(
-                        logger=store_logger,
-                        phase="ingest",
-                        status="warn",
-                        message="Skipping TD Orders ingestion because database_url is missing",
-                        store_code=store.store_code,
-                    )
-                    status_label = "warning"
+                        status_label = "warning"
 
-                outcome_status = "ok"
-                outcome_message = "Orders report downloaded"
-                if status_label == "warning":
-                    outcome_status = "warning"
-                    outcome_message = "Orders downloaded with ingest warnings"
-                if ingest_result:
-                    outcome_message = (
-                        f"Orders ingested: staging={ingest_result.staging_rows}, final={ingest_result.final_rows}"
-                    )
-                orders_report = StoreReport(
-                    status=status_label,
-                    filenames=[Path(detail).name],
-                    staging_rows=ingest_result.staging_rows if ingest_result else None,
-                    final_rows=ingest_result.final_rows if ingest_result else None,
-                    message=outcome_message,
-                    warnings=ingest_result.warnings if ingest_result else [],
-                )
-
-                sales_status: str | None = None
-                sales_message: str | None = None
-                sales_download_path: str | None = None
-                sales_ingest_result: TdSalesIngestResult | None = None
-                sales_nav_ready = await _navigate_to_sales_report(
-                    page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms
-                )
-                if sales_nav_ready:
-                    sales_iframe = await _wait_for_iframe(
-                        page, store=store, logger=store_logger, require_src=True, phase="sales"
-                    )
-                    if sales_iframe is not None:
-                        await _observe_iframe_hydration(
-                            sales_iframe, store=store, logger=store_logger, timeout_ms=nav_timeout_ms
+                    outcome_status = "ok"
+                    outcome_message = "Orders report downloaded"
+                    if status_label == "warning":
+                        outcome_status = "warning"
+                        outcome_message = "Orders downloaded with ingest warnings"
+                    if ingest_result:
+                        outcome_message = (
+                            f"Orders ingested: staging={ingest_result.staging_rows}, final={ingest_result.final_rows}"
                         )
-                        sales_success, sales_detail = await _run_sales_iframe_flow(
+                    orders_report = StoreReport(
+                        status=status_label,
+                        filenames=[Path(detail).name],
+                        staging_rows=ingest_result.staging_rows if ingest_result else None,
+                        final_rows=ingest_result.final_rows if ingest_result else None,
+                        message=outcome_message,
+                        warnings=ingest_result.warnings if ingest_result else [],
+                    )
+
+                    if run_sales:
+                        sales_report = await _execute_sales_flow(
                             page,
-                            sales_iframe,
                             store=store,
                             logger=store_logger,
                             from_date=run_start_date,
                             to_date=run_end_date,
                             nav_timeout_ms=nav_timeout_ms,
                             download_dir=download_dir,
+                            run_id=run_id,
+                            run_date=run_date,
+                            summary=summary,
                         )
-                        if sales_success:
-                            sales_status = "ok"
-                            sales_download_path = sales_detail
-                            log_event(
-                                logger=store_logger,
-                                phase="sales",
-                                message="Sales & Delivery report downloaded",
-                                store_code=store.store_code,
-                                download_path=sales_detail,
-                            )
-                            if config.database_url:
-                                if not store.cost_center:
-                                    log_event(
-                                        logger=store_logger,
-                                        phase="sales_ingest",
-                                        status="error",
-                                        message="Missing cost_center for TD store; cannot ingest sales",
-                                        store_code=store.store_code,
-                                    )
-                                    sales_status = "error"
-                                    sales_message = "Missing cost_center for TD store; cannot ingest sales"
-                                else:
-                                    try:
-                                        sales_ingest_result = await ingest_td_sales_workbook(
-                                            workbook_path=Path(sales_detail),
-                                            store_code=store.store_code,
-                                            cost_center=store.cost_center or "",
-                                            run_id=run_id,
-                                            run_date=run_date,
-                                            database_url=config.database_url,
-                                            logger=store_logger,
-                                        )
-                                        sales_status = "warning" if sales_ingest_result.warnings else "ok"
-                                        if sales_ingest_result.warnings:
-                                            log_event(
-                                                logger=store_logger,
-                                                phase="sales_ingest",
-                                                status="warn",
-                                                message="TD Sales workbook ingested with warnings",
-                                                store_code=store.store_code,
-                                                warnings=sales_ingest_result.warnings,
-                                                staging_rows=sales_ingest_result.staging_rows,
-                                                final_rows=sales_ingest_result.final_rows,
-                                            )
-                                        else:
-                                            log_event(
-                                                logger=store_logger,
-                                                phase="sales_ingest",
-                                                message="TD Sales workbook ingested",
-                                                store_code=store.store_code,
-                                                staging_rows=sales_ingest_result.staging_rows,
-                                                final_rows=sales_ingest_result.final_rows,
-                                            )
-                                        summary.add_ingest_remarks(sales_ingest_result.ingest_remarks)
-                                    except Exception as exc:
-                                        log_event(
-                                            logger=store_logger,
-                                            phase="sales_ingest",
-                                            status="error",
-                                            message="TD Sales ingestion failed",
-                                            store_code=store.store_code,
-                                            error=str(exc),
-                                        )
-                                        sales_status = "error"
-                                        sales_message = f"Sales ingestion failed: {exc}"
-                                    else:
-                                        if sales_ingest_result:
-                                            sales_message = (
-                                                f"Sales ingested: staging={sales_ingest_result.staging_rows}, "
-                                                f"final={sales_ingest_result.final_rows}"
-                                            )
-                            else:
-                                log_event(
-                                    logger=store_logger,
-                                    phase="sales_ingest",
-                                    status="warn",
-                                    message="Skipping TD Sales ingestion because database_url is missing",
-                                    store_code=store.store_code,
-                                )
-                                sales_status = "warning"
-                                sales_message = "Skipping TD Sales ingestion because database_url is missing"
-                        else:
-                            sales_status = "warning"
-                            sales_message = sales_detail or "Sales iframe flow failed"
-                            log_event(
-                                logger=store_logger,
-                                phase="sales",
-                                status="warn",
-                                message="Sales & Delivery iframe flow failed",
-                                store_code=store.store_code,
-                                error=sales_detail,
-                            )
+                        sales_status = sales_report.status
+                        sales_message = sales_report.message
                     else:
-                        sales_status = "warning"
-                        sales_message = "Sales iframe did not attach"
-                        log_event(
-                            logger=store_logger,
-                            phase="sales",
-                            status="warn",
-                            message="Sales iframe not ready after navigation",
-                            store_code=store.store_code,
-                            final_url=page.url,
-                        )
-                else:
-                    sales_status = "warning"
-                    sales_message = "Sales & Delivery report navigation failed"
+                        sales_message = "Sales sync skipped by flag"
+                        sales_status = "skipped"
+                        sales_report = StoreReport(status="skipped", message=sales_message)
+
+                    if sales_status == "ok":
+                        detail_message = sales_message or "Sales report downloaded"
+                        outcome_message = f"{outcome_message}; {detail_message}"
+                    elif sales_status == "warning":
+                        if outcome_status == "ok":
+                            outcome_status = "warning"
+                        outcome_message = f"{outcome_message}; Sales issue: {sales_message}"
+                    elif sales_status == "error":
+                        outcome_status = "error"
+                        outcome_message = f"{outcome_message}; Sales failed: {sales_message}"
+                    elif sales_status == "skipped":
+                        outcome_message = f"{outcome_message}; Sales skipped"
+
                     log_event(
                         logger=store_logger,
-                        phase="sales",
-                        status="warn",
-                        message="Navigation to Sales & Delivery report did not complete",
+                        phase="iframe",
+                        message="Orders iframe flow completed",
                         store_code=store.store_code,
-                        final_url=page.url,
+                        download_path=detail,
                     )
-
-                if sales_status == "ok":
-                    outcome_message = f"{outcome_message}; Sales report downloaded"
-                    if sales_ingest_result:
-                        outcome_message = (
-                            f"{outcome_message}; Sales ingested: staging={sales_ingest_result.staging_rows}, "
-                            f"final={sales_ingest_result.final_rows}"
-                        )
-                elif sales_status == "warning":
-                    if outcome_status == "ok":
-                        outcome_status = "warning"
-                    outcome_message = f"{outcome_message}; Sales issue: {sales_message}"
-                elif sales_status == "error":
-                    outcome_status = "error"
-                    outcome_message = f"{outcome_message}; Sales failed: {sales_message}"
-                sales_report = StoreReport(
-                    status=sales_status or "error",
-                    filenames=[Path(sales_download_path).name] if sales_download_path else [],
-                    staging_rows=sales_ingest_result.staging_rows if sales_ingest_result else None,
-                    final_rows=sales_ingest_result.final_rows if sales_ingest_result else None,
-                    message=sales_message,
-                    error_message=sales_message if sales_status == "error" else None,
-                    warnings=sales_ingest_result.warnings if sales_ingest_result else [],
-                )
-
-                log_event(
-                    logger=store_logger,
-                    phase="iframe",
-                    message="Orders iframe flow completed",
-                    store_code=store.store_code,
-                    download_path=detail,
-                )
+                    outcome = StoreOutcome(
+                        status=outcome_status,
+                        message=outcome_message,
+                        final_url=page.url,
+                        iframe_attached=True,
+                        verification_seen=verification_seen,
+                        storage_state=stored_state_path,
+                    )
+                else:
+                    log_event(
+                        logger=store_logger,
+                        phase="iframe",
+                        status="error",
+                        message="Orders iframe flow failed",
+                        store_code=store.store_code,
+                        error=detail,
+                    )
+                    orders_report = StoreReport(
+                        status="error",
+                        message=detail or "Orders iframe flow failed",
+                        error_message=detail or "Orders iframe flow failed",
+                    )
+                    outcome = StoreOutcome(
+                        status="error",
+                        message=detail or "Orders iframe flow failed",
+                        final_url=page.url,
+                        iframe_attached=True,
+                        verification_seen=verification_seen,
+                        storage_state=stored_state_path,
+                    )
+            else:
                 outcome = StoreOutcome(
-                    status=outcome_status,
-                    message=outcome_message,
+                    status="error",
+                    message="Orders iframe did not attach",
                     final_url=page.url,
-                    iframe_attached=True,
+                    iframe_attached=False,
                     verification_seen=verification_seen,
                     storage_state=stored_state_path,
-                )
-            else:
-                log_event(
-                    logger=store_logger,
-                    phase="iframe",
-                    status="error",
-                    message="Orders iframe flow failed",
-                    store_code=store.store_code,
-                    error=detail,
                 )
                 orders_report = StoreReport(
                     status="error",
-                    message=detail or "Orders iframe flow failed",
-                    error_message=detail or "Orders iframe flow failed",
+                    message="Orders iframe did not attach",
+                    error_message="Orders iframe did not attach",
                 )
-                outcome = StoreOutcome(
-                    status="error",
-                    message=detail or "Orders iframe flow failed",
-                    final_url=page.url,
-                    iframe_attached=True,
-                    verification_seen=verification_seen,
-                    storage_state=stored_state_path,
-                )
-        else:
+
+        if sales_report is None and run_sales:
+            sales_report = await _execute_sales_flow(
+                page,
+                store=store,
+                logger=store_logger,
+                from_date=run_start_date,
+                to_date=run_end_date,
+                nav_timeout_ms=nav_timeout_ms,
+                download_dir=download_dir,
+                run_id=run_id,
+                run_date=run_date,
+                summary=summary,
+            )
+        elif sales_report is None:
+            log_event(
+                logger=store_logger,
+                phase="sales",
+                message="Skipping Sales & Delivery report because flag disabled sales run",
+                store_code=store.store_code,
+            )
+            sales_report = StoreReport(status="skipped", message="Sales sync skipped by flag")
+
+        if outcome is None:
+
+            def _merge_status(current: str, incoming: str | None) -> str:
+                if incoming == "error":
+                    return "error"
+                if incoming == "warning" and current != "error":
+                    return "warning"
+                return current
+
+            outcome_status = "ok"
+            outcome_messages: list[str] = []
+            if orders_report:
+                outcome_status = _merge_status(outcome_status, orders_report.status)
+                if orders_report.message:
+                    outcome_messages.append(f"Orders: {orders_report.message}")
+            if sales_report:
+                outcome_status = _merge_status(outcome_status, sales_report.status)
+                if sales_report.message:
+                    outcome_messages.append(f"Sales: {sales_report.message}")
             outcome = StoreOutcome(
-                status="error",
-                message="Orders iframe did not attach",
+                status=outcome_status,
+                message="; ".join(outcome_messages) if outcome_messages else "Store run completed",
                 final_url=page.url,
-                iframe_attached=False,
                 verification_seen=verification_seen,
                 storage_state=stored_state_path,
-            )
-            orders_report = StoreReport(
-                status="error",
-                message="Orders iframe did not attach",
-                error_message="Orders iframe did not attach",
             )
 
         log_event(
@@ -3772,13 +3883,33 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-id", dest="run_id", type=str, default=None, help="Override generated run id")
     parser.add_argument("--from-date", dest="from_date", type=_parse_date, default=None, help="Start date (YYYY-MM-DD)")
     parser.add_argument("--to-date", dest="to_date", type=_parse_date, default=None, help="End date (YYYY-MM-DD)")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--orders-only",
+        dest="orders_only",
+        action="store_true",
+        help="Run only the Orders sync (skip Sales)",
+    )
+    group.add_argument(
+        "--sales-only",
+        dest="sales_only",
+        action="store_true",
+        help="Run only the Sales sync (skip Orders)",
+    )
     return parser
 
 
 async def _async_entrypoint(argv: Sequence[str] | None = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
-    await main(run_env=args.run_env, run_id=args.run_id, from_date=args.from_date, to_date=args.to_date)
+    await main(
+        run_env=args.run_env,
+        run_id=args.run_id,
+        from_date=args.from_date,
+        to_date=args.to_date,
+        run_orders=not args.sales_only,
+        run_sales=not args.orders_only,
+    )
 
 
 def run(argv: Sequence[str] | None = None) -> None:
