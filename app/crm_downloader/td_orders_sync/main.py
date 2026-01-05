@@ -369,6 +369,28 @@ class StoreOutcome:
 
 
 @dataclass
+class StoreReport:
+    status: str
+    filenames: list[str] = field(default_factory=list)
+    staging_rows: int | None = None
+    final_rows: int | None = None
+    message: str | None = None
+    error_message: str | None = None
+    warnings: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "status": self.status,
+            "filenames": list(self.filenames),
+            "staging_rows": self.staging_rows,
+            "final_rows": self.final_rows,
+            "message": self.message,
+            "error_message": self.error_message,
+            "warnings": list(self.warnings),
+        }
+
+
+@dataclass
 class TdOrdersDiscoverySummary:
     run_id: str
     run_env: str
@@ -381,14 +403,36 @@ class TdOrdersDiscoverySummary:
     )
     notes: list[str] = field(default_factory=list)
     ingest_remarks: list[dict[str, str]] = field(default_factory=list)
+    orders_results: Dict[str, StoreReport] = field(default_factory=dict)
+    sales_results: Dict[str, StoreReport] = field(default_factory=dict)
 
     def mark_phase(self, phase: str, status: str) -> None:
         counters = self.phases.setdefault(phase, {"ok": 0, "warning": 0, "error": 0})
         normalized = status if status in counters else "ok"
         counters[normalized] += 1
 
-    def record_store(self, store_code: str, outcome: StoreOutcome) -> None:
+    def record_store(
+        self,
+        store_code: str,
+        outcome: StoreOutcome,
+        *,
+        orders_result: StoreReport | None = None,
+        sales_result: StoreReport | None = None,
+    ) -> None:
         self.store_outcomes[store_code] = outcome
+        resolved_orders = orders_result or StoreReport(
+            status=outcome.status,
+            message=outcome.message,
+            error_message=outcome.message if outcome.status in {"error", "warning"} else None,
+        )
+        fallback_sales_status = outcome.status if outcome.status in {"error", "warning"} else "warning"
+        resolved_sales = sales_result or StoreReport(
+            status=fallback_sales_status,
+            message=outcome.message or "Sales not attempted",
+            error_message=outcome.message if fallback_sales_status in {"error", "warning"} else None,
+        )
+        self.orders_results[store_code] = resolved_orders
+        self.sales_results[store_code] = resolved_sales
         self.mark_phase("store", outcome.status)
 
     def add_note(self, note: str) -> None:
@@ -419,6 +463,22 @@ class TdOrdersDiscoverySummary:
             return "warning"
         return "ok"
 
+    def orders_overall_status(self) -> str:
+        return self._overall_status_for_reports(self.orders_results)
+
+    def sales_overall_status(self) -> str:
+        return self._overall_status_for_reports(self.sales_results)
+
+    def _overall_status_for_reports(self, reports: Mapping[str, StoreReport]) -> str:
+        if not reports:
+            return "warning"
+        statuses = {report.status for report in reports.values()}
+        if statuses == {"ok"}:
+            return "ok"
+        if statuses == {"error"}:
+            return "error"
+        return "warning"
+
     def _format_duration(self, finished_at: datetime) -> str:
         seconds = max(0, int((finished_at - self.started_at).total_seconds()))
         hh = seconds // 3600
@@ -436,16 +496,15 @@ class TdOrdersDiscoverySummary:
             f"Env: {self.run_env}",
             f"Report Date: {self.report_date.isoformat()}",
             f"Overall Status: {self.overall_status()}",
+            f"Orders Status: {self.orders_overall_status()}",
+            f"Sales Status: {self.sales_overall_status()}",
             "",
-            "Stores:",
+            "Orders results:",
         ]
-        if not self.store_outcomes:
-            lines.append("- none processed")
-        else:
-            for code in sorted(self.store_outcomes):
-                outcome = self.store_outcomes[code]
-                message = outcome.message or "completed"
-                lines.append(f"- {code}: {outcome.status.upper()} – {message}")
+        lines.extend(self._format_report_section(self.orders_results))
+        lines.append("")
+        lines.append("Sales results:")
+        lines.extend(self._format_report_section(self.sales_results))
         if self.notes:
             lines.append("")
             lines.append("Notes:")
@@ -478,6 +537,33 @@ class TdOrdersDiscoverySummary:
             lines.append(f"- {store_code} {order_number}: {remark}")
         return lines, truncated_rows, truncated_length
 
+    def _format_report_section(self, reports: Mapping[str, StoreReport]) -> list[str]:
+        if not reports:
+            return ["- none recorded"]
+        lines: list[str] = []
+        for code in sorted(reports):
+            report = reports[code]
+            counts = self._format_report_counts(report)
+            files = ", ".join(report.filenames) if report.filenames else "none"
+            details: list[str] = [counts, f"files: {files}"]
+            if report.error_message:
+                details.append(f"error: {report.error_message}")
+            elif report.message:
+                details.append(report.message)
+            if report.warnings:
+                details.append(f"warnings: {', '.join(report.warnings)}")
+            lines.append(f"- {code}: {report.status.upper()} | " + " | ".join(details))
+        return lines
+
+    def _format_report_counts(self, report: StoreReport) -> str:
+        if report.final_rows is not None and report.staging_rows is not None:
+            return f"rows: staging={report.staging_rows}, final={report.final_rows}"
+        if report.final_rows is not None:
+            return f"rows: final={report.final_rows}"
+        if report.staging_rows is not None:
+            return f"rows: staging={report.staging_rows}"
+        return "rows: n/a"
+
     def build_record(self, *, finished_at: datetime) -> Dict[str, Any]:
         metrics = {
             "stores": {code: asdict(outcome) for code, outcome in self.store_outcomes.items()},
@@ -485,6 +571,14 @@ class TdOrdersDiscoverySummary:
             "ingest_remarks": {
                 "rows": list(self.ingest_remarks),
                 "total": len(self.ingest_remarks),
+            },
+            "orders": {
+                "overall_status": self.orders_overall_status(),
+                "stores": {code: report.as_dict() for code, report in self.orders_results.items()},
+            },
+            "sales": {
+                "overall_status": self.sales_overall_status(),
+                "stores": {code: report.as_dict() for code, report in self.sales_results.items()},
             },
         }
         return {
@@ -3050,6 +3144,8 @@ async def _run_store_discovery(
     page = await context.new_page()
     nav_selector = store.reports_nav_selector
     outcome = StoreOutcome(status="error", message="Store run did not complete")
+    orders_report: StoreReport | None = None
+    sales_report: StoreReport | None = None
     stored_state_path: str | None = None
     probe_reason: str | None = None
     probe_result: SessionProbeResult | None = None
@@ -3285,6 +3381,12 @@ async def _run_store_discovery(
                             message="Missing cost_center for TD store; cannot ingest orders",
                             store_code=store.store_code,
                         )
+                        orders_report = StoreReport(
+                            status="error",
+                            filenames=[Path(detail).name],
+                            message="Orders downloaded but could not ingest",
+                            error_message="Missing cost_center for TD store; cannot ingest orders",
+                        )
                         outcome = StoreOutcome(
                             status="error",
                             message="Missing cost_center for TD store; cannot ingest orders",
@@ -3335,6 +3437,12 @@ async def _run_store_discovery(
                             store_code=store.store_code,
                             error=str(exc),
                         )
+                        orders_report = StoreReport(
+                            status="error",
+                            filenames=[Path(detail).name],
+                            message="Orders ingestion failed",
+                            error_message=str(exc),
+                        )
                         outcome = StoreOutcome(
                             status="error",
                             message=f"Orders ingestion failed: {exc}",
@@ -3363,6 +3471,14 @@ async def _run_store_discovery(
                     outcome_message = (
                         f"Orders ingested: staging={ingest_result.staging_rows}, final={ingest_result.final_rows}"
                     )
+                orders_report = StoreReport(
+                    status=status_label,
+                    filenames=[Path(detail).name],
+                    staging_rows=ingest_result.staging_rows if ingest_result else None,
+                    final_rows=ingest_result.final_rows if ingest_result else None,
+                    message=outcome_message,
+                    warnings=ingest_result.warnings if ingest_result else [],
+                )
 
                 sales_status: str | None = None
                 sales_message: str | None = None
@@ -3518,6 +3634,15 @@ async def _run_store_discovery(
                 elif sales_status == "error":
                     outcome_status = "error"
                     outcome_message = f"{outcome_message}; Sales failed: {sales_message}"
+                sales_report = StoreReport(
+                    status=sales_status or "error",
+                    filenames=[Path(sales_download_path).name] if sales_download_path else [],
+                    staging_rows=sales_ingest_result.staging_rows if sales_ingest_result else None,
+                    final_rows=sales_ingest_result.final_rows if sales_ingest_result else None,
+                    message=sales_message,
+                    error_message=sales_message if sales_status == "error" else None,
+                    warnings=sales_ingest_result.warnings if sales_ingest_result else [],
+                )
 
                 log_event(
                     logger=store_logger,
@@ -3543,6 +3668,11 @@ async def _run_store_discovery(
                     store_code=store.store_code,
                     error=detail,
                 )
+                orders_report = StoreReport(
+                    status="error",
+                    message=detail or "Orders iframe flow failed",
+                    error_message=detail or "Orders iframe flow failed",
+                )
                 outcome = StoreOutcome(
                     status="error",
                     message=detail or "Orders iframe flow failed",
@@ -3559,6 +3689,11 @@ async def _run_store_discovery(
                 iframe_attached=False,
                 verification_seen=verification_seen,
                 storage_state=stored_state_path,
+            )
+            orders_report = StoreReport(
+                status="error",
+                message="Orders iframe did not attach",
+                error_message="Orders iframe did not attach",
             )
 
         log_event(
@@ -3612,7 +3747,12 @@ async def _run_store_discovery(
             error=str(exc),
         )
     finally:
-        summary.record_store(store.store_code, outcome)
+        summary.record_store(
+            store.store_code,
+            outcome,
+            orders_result=orders_report,
+            sales_result=sales_report,
+        )
         await _close_context(context)
 
 

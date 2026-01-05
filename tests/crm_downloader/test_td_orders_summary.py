@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from app.crm_downloader.td_orders_sync.main import TdOrdersDiscoverySummary
+from app.crm_downloader.td_orders_sync.main import StoreOutcome, StoreReport, TdOrdersDiscoverySummary
 
 
 def test_summary_text_lists_ingest_remarks() -> None:
@@ -38,3 +38,41 @@ def test_summary_ingest_remarks_truncate_notice() -> None:
 
     assert "... additional 5 remarks truncated" in text
     assert "…" in text.splitlines()[text.splitlines().index("Ingest remarks:") + 1]
+
+
+def test_summary_records_orders_and_sales_results() -> None:
+    summary = TdOrdersDiscoverySummary(run_id="run-3", run_env="test", report_date=date(2024, 1, 3))
+    orders_report = StoreReport(
+        status="warning",
+        filenames=["orders_A1.xlsx"],
+        staging_rows=2,
+        final_rows=2,
+        warnings=["duplicate rows dropped"],
+    )
+    sales_report = StoreReport(
+        status="ok",
+        filenames=["sales_A1.xlsx"],
+        staging_rows=3,
+        final_rows=3,
+        message="Sales ingested: staging=3, final=3",
+    )
+
+    summary.record_store(
+        "A1",
+        StoreOutcome(status="warning", message="Orders downloaded with ingest warnings"),
+        orders_result=orders_report,
+        sales_result=sales_report,
+    )
+    record = summary.build_record(finished_at=datetime(2024, 1, 3, tzinfo=timezone.utc))
+
+    orders_metrics = record["metrics_json"]["orders"]
+    sales_metrics = record["metrics_json"]["sales"]
+    assert orders_metrics["overall_status"] == "warning"
+    assert sales_metrics["overall_status"] == "ok"
+    assert orders_metrics["stores"]["A1"]["filenames"] == ["orders_A1.xlsx"]
+    assert sales_metrics["stores"]["A1"]["final_rows"] == 3
+
+    text = summary.summary_text()
+    assert "Orders results:" in text
+    assert "- A1: WARNING | rows: staging=2, final=2 | files: orders_A1.xlsx | warnings: duplicate rows dropped" in text
+    assert "- A1: OK | rows: staging=3, final=3 | files: sales_A1.xlsx | Sales ingested: staging=3, final=3" in text
