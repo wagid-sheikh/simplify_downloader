@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
 import contextlib
 from dataclasses import asdict, dataclass, field
@@ -44,6 +45,31 @@ INGEST_REMARKS_MAX_ROWS = 50
 INGEST_REMARKS_MAX_CHARS = 200
 DOM_SNIPPET_MAX_CHARS = 600
 WARNING_SAMPLE_LIMIT = 3
+VERBOSE_DOM_LOGGING = os.environ.get("TD_ORDERS_VERBOSE_LOGGING", "").strip().lower() in {"1", "true", "yes"}
+NAV_SNAPSHOT_SAMPLE_LIMIT = 8
+SALES_NAV_SAMPLE_LIMIT = 8
+ROW_SAMPLE_LIMIT = 6
+SNAPSHOT_TEXT_MAX_CHARS = 120
+
+
+def _truncate_text(value: str | None, *, max_chars: int = SNAPSHOT_TEXT_MAX_CHARS) -> str | None:
+    if not value:
+        return value
+    value = value.strip()
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 1] + "…"
+
+
+def _summarize_text_samples(values: Sequence[str], *, limit: int = ROW_SAMPLE_LIMIT) -> dict[str, Any]:
+    samples: list[str] = []
+    for value in values:
+        trimmed = _truncate_text(value)
+        if trimmed not in samples:
+            samples.append(trimmed or "")
+        if len(samples) >= limit:
+            break
+    return {"count": len(values), "samples": samples, "truncated": len(values) > len(samples)}
 
 
 def _summarize_warnings(
@@ -1179,10 +1205,10 @@ async def _log_home_nav_diagnostics(page: Page, *, logger: JsonLogger, store: Td
         links = page.locator("a.padding6, a#achrOrderReport, a[href*='Reports']")
         link_count = await links.count()
         snapshot: list[dict[str, Any]] = []
-        for idx in range(min(link_count, 5)):
+        for idx in range(min(link_count, NAV_SNAPSHOT_SAMPLE_LIMIT)):
             handle = links.nth(idx)
             try:
-                text = (await handle.inner_text()).strip()
+                text = _truncate_text(await handle.inner_text())
                 href = await handle.get_attribute("href")
                 visible = await handle.is_visible()
             except Exception:
@@ -1194,6 +1220,7 @@ async def _log_home_nav_diagnostics(page: Page, *, logger: JsonLogger, store: Td
             message="Navigation controls snapshot",
             store_code=store.store_code,
             links=snapshot,
+            link_count=link_count,
         )
     except Exception as exc:  # pragma: no cover - diagnostics best effort
         log_event(
@@ -1235,11 +1262,11 @@ async def _capture_orders_left_nav_snapshot(
     links = nav_root.locator("a")
     count = await links.count()
     snapshot: list[dict[str, Any]] = []
-    for idx in range(min(count, 50)):
+    for idx in range(min(count, NAV_SNAPSHOT_SAMPLE_LIMIT)):
         anchor = links.nth(idx)
         try:
             href = await anchor.get_attribute("href")
-            text = (await anchor.inner_text()) or ""
+            text = _truncate_text(await anchor.inner_text()) or ""
             visible = await anchor.is_visible()
             normalized = urljoin(page.url or "", href) if href else None
         except Exception:
@@ -1262,11 +1289,11 @@ async def _capture_orders_left_nav_snapshot(
             reports_root = reports_sections.first
             report_links = reports_root.locator("a")
             reports_count = await report_links.count()
-            for idx in range(min(reports_count, 30)):
+            for idx in range(min(reports_count, NAV_SNAPSHOT_SAMPLE_LIMIT)):
                 anchor = report_links.nth(idx)
                 try:
                     href = await anchor.get_attribute("href")
-                    text = (await anchor.inner_text()) or ""
+                    text = _truncate_text(await anchor.inner_text()) or ""
                     normalized = urljoin(page.url or "", href) if href else None
                     visible = await anchor.is_visible()
                 except Exception:
@@ -1292,6 +1319,8 @@ async def _capture_orders_left_nav_snapshot(
         context=context,
         sales_only_mode=sales_only_mode,
         nav_url=page.url,
+        link_count=count,
+        reports_count=len(reports_links),
         links=snapshot,
         reports_links=reports_links,
     )
@@ -1700,7 +1729,7 @@ async def _navigate_to_sales_report(
         normalized_href: str | None = None
         target_label = "sales and delivery"
 
-        for idx in range(min(count, 30)):
+        for idx in range(min(count, SALES_NAV_SAMPLE_LIMIT)):
             locator = links.nth(idx)
             href = None
             text = None
@@ -1723,12 +1752,12 @@ async def _navigate_to_sales_report(
                     "index": idx,
                     "href": href,
                     "normalized_href": normalized,
-                    "text": text,
-                    "normalized_text": normalized_text,
-                    "visible": visible,
-                    "matches_label": matches_label,
-                }
-            )
+                "text": _truncate_text(text),
+                "normalized_text": _truncate_text(normalized_text),
+                "visible": visible,
+                "matches_label": matches_label,
+            }
+        )
 
             if selected_locator is None and matches_label:
                 selected_locator = locator
@@ -1740,6 +1769,7 @@ async def _navigate_to_sales_report(
             message="Sales left-nav submenu snapshot",
             store_code=store.store_code,
             samples=samples,
+            link_count=count,
             submenu_visible=submenu_visible,
             hover_attempted=hover_attempted,
             hover_error=hover_error,
@@ -3307,6 +3337,7 @@ async def _wait_for_report_request_download_link(
     poll_timeout_ms = min(REPORT_REQUEST_MAX_TIMEOUT_MS, timeout_ms)
     deadline = start_time + (poll_timeout_ms / 1000)
     last_seen_texts: list[str] = []
+    last_seen_summary: dict[str, Any] | None = None
     last_status: str | None = None
     backoff = 0.5
     matched_row_seen = False
@@ -3382,6 +3413,7 @@ async def _wait_for_report_request_download_link(
                 selected_row_state = matched_row_state
                 last_matched_range_text = matched_text or last_matched_range_text
                 last_download_locator_strategy = download_strategy or last_download_locator_strategy
+                last_seen_summary = _summarize_text_samples(visible_rows) if visible_rows else None
 
                 log_event(
                     logger=logger,
@@ -3391,7 +3423,9 @@ async def _wait_for_report_request_download_link(
                     matched_range_text=matched_text,
                     status_text=matched_status,
                     expected_range_texts=list(expected_range_texts),
-                    all_row_texts=visible_rows or [matched_text],
+                    row_count=last_seen_summary["count"] if last_seen_summary else None,
+                    row_samples=last_seen_summary["samples"] if last_seen_summary else None,
+                    rows_truncated=last_seen_summary["truncated"] if last_seen_summary else None,
                     range_match_strategy=last_range_match_strategy,
                     download_locator_strategy=download_strategy,
                     container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
@@ -3431,7 +3465,9 @@ async def _wait_for_report_request_download_link(
                         matched_range_text=matched_text,
                         status_text=matched_status,
                         expected_range_texts=list(expected_range_texts),
-                        all_row_texts=visible_rows or [matched_text],
+                        row_count=last_seen_summary["count"] if last_seen_summary else None,
+                        row_samples=last_seen_summary["samples"] if last_seen_summary else None,
+                        rows_truncated=last_seen_summary["truncated"] if last_seen_summary else None,
                         download_control_visible=True,
                         matched_row_text_full=matched_text,
                         range_match_strategy=last_range_match_strategy,
@@ -3482,6 +3518,9 @@ async def _wait_for_report_request_download_link(
                     pending_attempts += 1
                     now = asyncio.get_event_loop().time()
                     if now - last_pending_log_at >= REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS or pending_attempts == 1:
+                        pending_summary = last_seen_summary or (
+                            _summarize_text_samples(visible_rows) if visible_rows else None
+                        )
                         log_event(
                             logger=logger,
                             phase="iframe",
@@ -3492,7 +3531,9 @@ async def _wait_for_report_request_download_link(
                             expected_range_texts=list(expected_range_texts),
                             backoff_seconds=backoff,
                             timeout_ms=poll_timeout_ms,
-                            last_seen_rows=last_seen_texts or [matched_text],
+                            last_seen_rows_count=pending_summary["count"] if pending_summary else None,
+                            last_seen_rows_samples=pending_summary["samples"] if pending_summary else None,
+                            last_seen_rows_truncated=pending_summary["truncated"] if pending_summary else None,
                             range_match_strategy=last_range_match_strategy,
                             container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
                             download_locator_strategy=download_strategy,
@@ -3563,6 +3604,7 @@ async def _wait_for_report_request_download_link(
                     break
             if visible_rows:
                 last_seen_texts = visible_rows
+                last_seen_summary = _summarize_text_samples(visible_rows)
         except Exception as exc:
             last_status = last_status or str(exc)
 
@@ -3575,7 +3617,9 @@ async def _wait_for_report_request_download_link(
         message="Report Requests download link not available before timeout",
         store_code=store.store_code,
         expected_range_texts=list(expected_range_texts),
-        last_seen_rows=last_seen_texts or None,
+        last_seen_rows_count=last_seen_summary["count"] if last_seen_summary else None,
+        last_seen_rows_samples=last_seen_summary["samples"] if last_seen_summary else None,
+        last_seen_rows_truncated=last_seen_summary["truncated"] if last_seen_summary else None,
         last_status=last_status,
         row_seen=matched_row_seen,
         timeout_ms=poll_timeout_ms,
