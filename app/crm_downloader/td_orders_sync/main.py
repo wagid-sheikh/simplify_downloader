@@ -483,11 +483,13 @@ class TdOrdersDiscoverySummary:
             )
 
     def overall_status(self) -> str:
-        if any(outcome.status == "error" for outcome in self.store_outcomes.values()):
+        if not self.store_outcomes:
+            return "warning" if self.phases.get("init", {}).get("warning") else "ok"
+
+        statuses = {outcome.status for outcome in self.store_outcomes.values()}
+        if statuses == {"error"}:
             return "error"
-        if any(outcome.status == "warning" for outcome in self.store_outcomes.values()):
-            return "warning"
-        if self.phases.get("init", {}).get("warning"):
+        if "error" in statuses:
             return "warning"
         return "ok"
 
@@ -519,7 +521,8 @@ class TdOrdersDiscoverySummary:
         ss = seconds % 60
         return f"{hh:02d}:{mm:02d}:{ss:02d}"
 
-    def summary_text(self) -> str:
+    def summary_text(self, *, finished_at: datetime | None = None) -> str:
+        resolved_finished_at = finished_at or datetime.now(timezone.utc)
         remarks_lines, truncated_rows, truncated_length = self._ingest_remarks_section(
             max_rows=INGEST_REMARKS_MAX_ROWS, max_chars=INGEST_REMARKS_MAX_CHARS
         )
@@ -527,6 +530,8 @@ class TdOrdersDiscoverySummary:
             f"Pipeline: {PIPELINE_NAME}",
             f"Run ID: {self.run_id}",
             f"Env: {self.run_env}",
+            f"Started: {self.started_at.isoformat()}",
+            f"Finished: {resolved_finished_at.isoformat()}",
             f"Report Date: {self.report_date.isoformat()}",
             f"Overall Status: {self.overall_status()}",
             f"Orders Status: {self.orders_overall_status()}",
@@ -597,6 +602,45 @@ class TdOrdersDiscoverySummary:
             return f"rows: staging={report.staging_rows}"
         return "rows: n/a"
 
+    def _store_codes_for_payload(self) -> list[str]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for code in self.store_codes:
+            normalized = code.upper()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                ordered.append(normalized)
+        for mapping in (self.orders_results, self.sales_results, self.store_outcomes):
+            for code in mapping:
+                normalized = code.upper()
+                if normalized not in seen:
+                    seen.add(normalized)
+                    ordered.append(normalized)
+        return ordered
+
+    def _build_notification_payload(self, *, finished_at: datetime) -> Dict[str, Any]:
+        stores: list[dict[str, Any]] = []
+        for code in self._store_codes_for_payload():
+            outcome = self.store_outcomes.get(code)
+            stores.append(
+                {
+                    "store_code": code,
+                    "status": outcome.status if outcome else None,
+                    "message": outcome.message if outcome else None,
+                    "orders": (self.orders_results.get(code) or StoreReport(status="skipped")).as_dict(),
+                    "sales": (self.sales_results.get(code) or StoreReport(status="skipped")).as_dict(),
+                }
+            )
+
+        return {
+            "overall_status": self.overall_status(),
+            "orders_status": self.orders_overall_status(),
+            "sales_status": self.sales_overall_status(),
+            "stores": stores,
+            "started_at": self.started_at.isoformat(),
+            "finished_at": finished_at.isoformat(),
+        }
+
     def build_record(self, *, finished_at: datetime) -> Dict[str, Any]:
         metrics = {
             "stores": {code: asdict(outcome) for code, outcome in self.store_outcomes.items()},
@@ -614,6 +658,7 @@ class TdOrdersDiscoverySummary:
                 "stores": {code: report.as_dict() for code, report in self.sales_results.items()},
             },
         }
+        metrics["notification_payload"] = self._build_notification_payload(finished_at=finished_at)
         return {
             "pipeline_name": PIPELINE_NAME,
             "run_id": self.run_id,
@@ -623,7 +668,7 @@ class TdOrdersDiscoverySummary:
             "total_time_taken": self._format_duration(finished_at),
             "report_date": self.report_date,
             "overall_status": self.overall_status(),
-            "summary_text": self.summary_text(),
+            "summary_text": self.summary_text(finished_at=finished_at),
             "phases_json": {phase: dict(counts) for phase, counts in self.phases.items()},
             "metrics_json": metrics,
         }
