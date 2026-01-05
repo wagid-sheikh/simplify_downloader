@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import sqlalchemy as sa
 from playwright.async_api import Browser, BrowserContext, FrameLocator, Locator, Page, TimeoutError, async_playwright
@@ -1140,7 +1140,7 @@ async def _log_home_nav_diagnostics(page: Page, *, logger: JsonLogger, store: Td
 async def _navigate_to_orders_container(
     page: Page, *, store: TdStore, logger: JsonLogger, nav_selector: str, nav_timeout_ms: int
 ) -> bool:
-    target_pattern = re.compile(r"/app/Reports/OrderReport", re.IGNORECASE)
+    target_pattern = re.compile(r"/Reports/OrderReport", re.IGNORECASE)
     if target_pattern.search(page.url or ""):
         log_event(
             logger=logger,
@@ -1236,10 +1236,10 @@ async def _navigate_to_sales_report(
         rf"/{re.escape(store.store_code)}/App/Reports/NEWSalesAndDeliveryReport",
         re.IGNORECASE,
     )
+    orders_target_pattern = re.compile(r"/Reports/OrderReport", re.IGNORECASE)
     nav_selector = store.reports_nav_selector
-    sales_tile_selector = "a.padding6, a[href*='Reports'], a[href*='Sales']"
     navigation_path_direct = "direct_url_fallback"
-    navigation_path_home_sales = "home_sales_tile"
+    navigation_path_left_nav = "orders_left_nav"
     attempts: list[dict[str, Any]] = []
     last_attempt: dict[str, Any] | None = None
 
@@ -1284,7 +1284,6 @@ async def _navigate_to_sales_report(
             "final_url": final_url,
             "target_url": target_url,
             "nav_selector": nav_selector,
-            "sales_tile_selector": sales_tile_selector,
             "sales_nav_selector": sales_nav_selector,
             "reason": reason,
             "url_transitions": url_transitions,
@@ -1321,68 +1320,6 @@ async def _navigate_to_sales_report(
             reason=reason,
             attempts=attempts,
         )
-
-    async def _locate_sales_nav_selector() -> tuple[Locator | None, str | None, list[dict[str, Any]]]:
-        candidates = page.locator(sales_tile_selector)
-        count = await candidates.count()
-        samples: list[dict[str, Any]] = []
-        selected_locator: Locator | None = None
-        selected_selector: str | None = None
-
-        for idx in range(min(count, 15)):
-            locator = candidates.nth(idx)
-            href = None
-            text = None
-            visible = False
-            try:
-                href = await locator.get_attribute("href")
-                text = (await locator.inner_text()) or ""
-                visible = await locator.is_visible()
-            except Exception:
-                href = href or None
-                text = text or None
-                visible = False
-
-            href_lower = (href or "").lower()
-            text_lower = (text or "").lower()
-            matches_sales = (
-                target_fragment in href_lower
-                or "salesanddeliveryreport" in href_lower
-                or "sales" in href_lower
-                or "sales" in text_lower
-            )
-
-            samples.append(
-                {
-                    "index": idx,
-                    "href": href,
-                    "text": text,
-                    "visible": visible,
-                    "matches_sales": matches_sales,
-                }
-            )
-
-            if matches_sales and selected_locator is None:
-                selected_locator = locator
-                if target_fragment.strip("/") in href_lower:
-                    selected_selector = f"a[href*='{target_fragment.strip('/')}']"
-                elif "salesanddeliveryreport" in href_lower:
-                    selected_selector = "a[href*='SalesAndDeliveryReport']"
-                elif "sales" in href_lower:
-                    selected_selector = "a[href*='Sales']"
-                elif "sales" in text_lower:
-                    selected_selector = "text=/sales/i"
-
-        log_event(
-            logger=logger,
-            phase="sales",
-            message="Sales navigation candidates snapshot",
-            store_code=store.store_code,
-            sales_tile_selector=sales_tile_selector,
-            samples=samples,
-        )
-
-        return selected_locator, selected_selector, samples
 
     async def _refresh_sales_session_with_guard(*, retry_label: str) -> tuple[bool, str | None]:
         relogin_attempts = 0
@@ -1479,6 +1416,148 @@ async def _navigate_to_sales_report(
             )
         return True
 
+    async def _ensure_orders_container(*, retry_label: str) -> tuple[bool, str, list[dict[str, str]], str]:
+        transitions: list[dict[str, str]] = [{"label": "start", "url": page.url or ""}]
+        if orders_target_pattern.search(page.url or ""):
+            transitions.append({"label": "already_on_orders", "url": page.url or ""})
+            return True, page.url or "", transitions, "ok"
+
+        log_event(
+            logger=logger,
+            phase="sales",
+            message="Navigating to Orders container before Sales",
+            store_code=store.store_code,
+            navigation_method="orders_reports_tile",
+            navigation_path=navigation_path_left_nav,
+            retry_status=retry_label,
+            nav_selector=nav_selector,
+        )
+        ready = await _navigate_to_orders_container(
+            page, store=store, logger=logger, nav_selector=nav_selector, nav_timeout_ms=nav_timeout_ms
+        )
+        transitions.append({"label": "after_orders_nav", "url": page.url or ""})
+        if ready:
+            return True, page.url or "", transitions, "ok"
+
+        return False, page.url or "", transitions, "orders_not_ready"
+
+    async def _locate_sales_left_nav() -> tuple[Locator | None, str | None, list[dict[str, Any]]]:
+        try:
+            nav_root = page.locator("ul.nav.nav-sidebar")
+            await nav_root.wait_for(state="visible", timeout=nav_timeout_ms)
+        except Exception:
+            return None, None, []
+
+        links = nav_root.locator("a")
+        count = await links.count()
+        samples: list[dict[str, Any]] = []
+        selected_locator: Locator | None = None
+        normalized_href: str | None = None
+
+        for idx in range(min(count, 20)):
+            locator = links.nth(idx)
+            href = None
+            text = None
+            visible = False
+            try:
+                href = await locator.get_attribute("href")
+                text = (await locator.inner_text()) or ""
+                visible = await locator.is_visible()
+            except Exception:
+                href = href or None
+                text = text or None
+                visible = False
+
+            href_lower = (href or "").lower()
+            text_lower = (text or "").lower()
+            normalized = urljoin(page.url or target_url, href) if href else None
+            matches_sales = "newsalesanddeliveryreport" in href_lower
+            matches_text = "sales" in text_lower
+            matches_label = "sales and delivery" in text_lower
+
+            samples.append(
+                {
+                    "index": idx,
+                    "href": href,
+                    "normalized_href": normalized,
+                    "text": text,
+                    "visible": visible,
+                    "matches_sales": matches_sales,
+                    "matches_text": matches_text,
+                    "matches_label": matches_label,
+                }
+            )
+
+            if selected_locator is None and matches_sales and (matches_label or matches_text):
+                selected_locator = locator
+                normalized_href = normalized or href
+
+        log_event(
+            logger=logger,
+            phase="sales",
+            message="Sales left-nav candidates snapshot",
+            store_code=store.store_code,
+            samples=samples,
+        )
+
+        return selected_locator, normalized_href, samples
+
+    async def _click_sales_left_nav(
+        *, retry_label: str
+    ) -> tuple[bool, str, str, list[dict[str, str]], bool, str | None]:
+        orders_ready, _, transitions, orders_reason = await _ensure_orders_container(retry_label=retry_label)
+        if not orders_ready:
+            return False, page.url or "", f"orders_not_ready:{orders_reason}", transitions, False, None
+
+        sales_locator, normalized_href, samples = await _locate_sales_left_nav()
+        transitions.append({"label": "orders_ready", "url": page.url or ""})
+        if sales_locator is None:
+            return False, page.url or "", "sales_nav_not_found", transitions, False, normalized_href
+
+        try:
+            await sales_locator.wait_for(state="visible", timeout=nav_timeout_ms)
+        except TimeoutError:
+            return False, page.url or "", "sales_nav_not_visible", transitions, True, normalized_href
+
+        log_event(
+            logger=logger,
+            phase="sales",
+            message="Clicking Sales navigation from Orders left-nav",
+            store_code=store.store_code,
+            navigation_method="orders_left_nav",
+            navigation_path=navigation_path_left_nav,
+            retry_status=retry_label,
+            sales_nav_href=normalized_href,
+            samples=samples,
+        )
+
+        try:
+            await sales_locator.click()
+            transitions.append({"label": "after_sales_nav_click", "url": page.url or ""})
+        except Exception as exc:
+            return False, page.url or "", f"sales_nav_click_failed:{exc}", transitions, True, normalized_href
+
+        try:
+            await page.wait_for_url(target_pattern, wait_until="domcontentloaded", timeout=nav_timeout_ms)
+            transitions.append({"label": "after_sales_nav_wait", "url": page.url or ""})
+        except Exception:
+            pass
+
+        final_url = page.url or ""
+        valid, contains_store, contains_path = _validate_destination(final_url)
+        if valid:
+            return True, final_url, "ok", transitions, True, normalized_href
+
+        is_login_url = _is_login_url(final_url)
+        return (
+            False,
+            final_url,
+            "login_redirect" if is_login_url else f"validation_failed:{contains_store}:{contains_path}",
+            transitions,
+            True,
+            normalized_href,
+        )
+
     async def _navigate_direct(method_label: str) -> tuple[bool, str, str, list[dict[str, str]]]:
         transitions: list[dict[str, str]] = [{"label": "start", "url": page.url or ""}]
         log_event(
@@ -1551,103 +1630,6 @@ async def _navigate_to_sales_report(
             transitions,
         )
 
-    async def _navigate_via_home_sales(
-        method_label: str, *, retry_status: str
-    ) -> tuple[bool, str, str, list[dict[str, str]], str | None]:
-        transitions: list[dict[str, str]] = [{"label": "start", "url": page.url or ""}]
-        home_url = store.home_url or store.default_home_url
-        log_event(
-            logger=logger,
-            phase="sales",
-            message="Navigating to Sales via home tile click",
-            store_code=store.store_code,
-            navigation_method=method_label,
-            navigation_path=navigation_path_home_sales,
-            retry_status=retry_status,
-            home_url=home_url,
-        )
-
-        if home_url and not _url_matches_home(page.url or "", store):
-            try:
-                await page.goto(home_url, wait_until="domcontentloaded", timeout=nav_timeout_ms)
-                transitions.append({"label": "after_home_goto", "url": page.url or home_url})
-            except Exception as exc:
-                transitions.append({"label": "home_navigation_error", "url": page.url or home_url})
-                return False, page.url or "", f"home_navigation_error:{exc}", transitions, None
-
-        home_ready = await _wait_for_home(
-            page,
-            store=store,
-            logger=logger,
-            nav_selector=nav_selector,
-            timeout_ms=nav_timeout_ms,
-        )
-        transitions.append({"label": "home_ready", "url": page.url or ""})
-        if not home_ready:
-            return False, page.url or "", "home_not_ready", transitions, None
-
-        sales_locator, sales_nav_selector, samples = await _locate_sales_nav_selector()
-        if sales_locator is None:
-            return False, page.url or "", "sales_nav_not_found", transitions, sales_nav_selector
-
-        try:
-            await sales_locator.wait_for(state="visible", timeout=nav_timeout_ms)
-        except TimeoutError:
-            return False, page.url or "", "sales_nav_not_visible", transitions, sales_nav_selector
-
-        log_event(
-            logger=logger,
-            phase="sales",
-            message="Clicking Sales navigation tile",
-            store_code=store.store_code,
-            navigation_method=method_label,
-            navigation_path=navigation_path_home_sales,
-            sales_nav_selector=sales_nav_selector,
-            retry_status=retry_status,
-        )
-
-        try:
-            await sales_locator.click()
-            transitions.append({"label": "after_sales_click", "url": page.url or ""})
-        except Exception as exc:
-            return False, page.url or "", f"sales_nav_click_failed:{exc}", transitions, sales_nav_selector
-
-        try:
-            await page.wait_for_url(target_pattern, wait_until="domcontentloaded", timeout=nav_timeout_ms)
-            transitions.append({"label": "after_sales_wait", "url": page.url or ""})
-        except Exception:
-            pass
-
-        final_url = page.url or ""
-        valid, contains_store, contains_path = _validate_destination(final_url)
-        if valid:
-            return True, final_url, "ok", transitions, sales_nav_selector
-
-        is_login_url = _is_login_url(final_url)
-        log_event(
-            logger=logger,
-            phase="sales",
-            status="warn",
-            message="Sales destination validation failed after home navigation",
-            store_code=store.store_code,
-            navigation_method=method_label,
-            navigation_path=navigation_path_home_sales,
-            final_url=final_url,
-            target_url=target_url,
-            contains_store_code=contains_store,
-            contains_sales_path=contains_path,
-            is_login_url=is_login_url,
-            retry_status=retry_status,
-        )
-
-        return (
-            False,
-            final_url,
-            "login_redirect" if is_login_url else f"validation_failed:{contains_store}:{contains_path}",
-            transitions,
-            sales_nav_selector,
-        )
-
     current_url = page.url or ""
     if target_fragment in current_url.lower() and store.store_code.lower() in current_url.lower():
         log_event(
@@ -1666,19 +1648,20 @@ async def _navigate_to_sales_report(
         )
         return True
 
-    success, final_url, reason, transitions, sales_nav_selector = await _navigate_via_home_sales(
-        "home_sales", retry_status="initial"
+    success, final_url, reason, transitions, nav_found, sales_nav_href = await _click_sales_left_nav(
+        retry_label="initial"
     )
+    nav_missing = reason == "sales_nav_not_found"
     last_attempt = _record_attempt(
-        method_label="home_sales",
-        navigation_path=navigation_path_home_sales,
+        method_label="orders_left_nav",
+        navigation_path=navigation_path_left_nav,
         attempt_label="initial",
         retry_status="initial",
         success=success,
         final_url=final_url,
         reason=reason,
         url_transitions=transitions,
-        sales_nav_selector=sales_nav_selector,
+        sales_nav_selector=sales_nav_href,
     )
     if success:
         log_event(
@@ -1688,15 +1671,15 @@ async def _navigate_to_sales_report(
             store_code=store.store_code,
             final_url=final_url,
             target_url=target_url,
-            navigation_method="home_sales",
-            navigation_path=navigation_path_home_sales,
+            navigation_method="orders_left_nav",
+            navigation_path=navigation_path_left_nav,
             retry_status="initial",
             attempts=attempts,
         )
         _log_navigation_outcome(
             status="ok",
-            navigation_method="home_sales",
-            navigation_path=navigation_path_home_sales,
+            navigation_method="orders_left_nav",
+            navigation_path=navigation_path_left_nav,
             retry_status="initial",
             final_url=final_url,
         )
@@ -1719,8 +1702,8 @@ async def _navigate_to_sales_report(
             )
             _log_navigation_outcome(
                 status="warn",
-                navigation_method=(last_attempt or {}).get("navigation_method", "home_sales"),
-                navigation_path=(last_attempt or {}).get("navigation_path", navigation_path_home_sales),
+                navigation_method=(last_attempt or {}).get("navigation_method", "orders_left_nav"),
+                navigation_path=(last_attempt or {}).get("navigation_path", navigation_path_left_nav),
                 retry_status="after_login",
                 final_url=page.url or "",
                 reason=relogin_reason or reason,
@@ -1731,55 +1714,57 @@ async def _navigate_to_sales_report(
         log_event(
             logger=logger,
             phase="sales",
-            message="Retrying Sales navigation via Sales tile after login redirect",
+            message="Retrying Sales navigation via Orders left-nav after login redirect",
             store_code=store.store_code,
             retry_status="after_login",
             target_url=target_url,
             last_reason=reason,
-            navigation_path=navigation_path_home_sales,
+            navigation_path=navigation_path_left_nav,
         )
-        success, final_url, reports_reason, transitions, sales_nav_selector = await _navigate_via_home_sales(
-            "home_sales_after_login", retry_status="after_login"
+        success, final_url, reports_reason, transitions, nav_found_retry, sales_nav_href = await _click_sales_left_nav(
+            retry_label="after_login"
         )
+        nav_found = nav_found or nav_found_retry
+        nav_missing = nav_missing or reports_reason == "sales_nav_not_found"
         last_attempt = _record_attempt(
-            method_label="home_sales",
-            navigation_path=navigation_path_home_sales,
+            method_label="orders_left_nav",
+            navigation_path=navigation_path_left_nav,
             attempt_label="after_login",
             retry_status="after_login",
             success=success,
             final_url=final_url,
             reason=reports_reason,
             url_transitions=transitions,
-            sales_nav_selector=sales_nav_selector,
+            sales_nav_selector=sales_nav_href,
         )
         if success:
             log_event(
                 logger=logger,
                 phase="sales",
-                message="Navigated to Sales & Delivery report page via Sales tile after login",
+                message="Navigated to Sales & Delivery report page via Orders left-nav after login",
                 store_code=store.store_code,
                 final_url=final_url,
                 target_url=target_url,
-                navigation_method="home_sales_after_login",
-                navigation_path=navigation_path_home_sales,
+                navigation_method="orders_left_nav_after_login",
+                navigation_path=navigation_path_left_nav,
                 retry_status="after_login",
                 attempts=attempts,
             )
             _log_navigation_outcome(
                 status="ok",
-                navigation_method="home_sales_after_login",
-                navigation_path=navigation_path_home_sales,
+                navigation_method="orders_left_nav_after_login",
+                navigation_path=navigation_path_left_nav,
                 retry_status="after_login",
                 final_url=final_url,
             )
             return True
         reason = reports_reason
 
-    if reason.startswith("sales_nav"):
+    if nav_missing:
         log_event(
             logger=logger,
             phase="sales",
-            message="Falling back to direct Sales URL because Sales navigation tile was unavailable",
+            message="Falling back to direct Sales URL because Sales navigation link was unavailable",
             store_code=store.store_code,
             target_url=target_url,
             last_final_url=final_url,
