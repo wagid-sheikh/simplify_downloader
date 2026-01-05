@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
 import contextlib
 from dataclasses import asdict, dataclass, field
@@ -44,6 +45,31 @@ INGEST_REMARKS_MAX_ROWS = 50
 INGEST_REMARKS_MAX_CHARS = 200
 DOM_SNIPPET_MAX_CHARS = 600
 WARNING_SAMPLE_LIMIT = 3
+VERBOSE_DOM_LOGGING = os.environ.get("TD_ORDERS_VERBOSE_LOGGING", "").strip().lower() in {"1", "true", "yes"}
+NAV_SNAPSHOT_SAMPLE_LIMIT = 8
+SALES_NAV_SAMPLE_LIMIT = 8
+ROW_SAMPLE_LIMIT = 6
+SNAPSHOT_TEXT_MAX_CHARS = 120
+
+
+def _truncate_text(value: str | None, *, max_chars: int = SNAPSHOT_TEXT_MAX_CHARS) -> str | None:
+    if not value:
+        return value
+    value = value.strip()
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 1] + "…"
+
+
+def _summarize_text_samples(values: Sequence[str], *, limit: int = ROW_SAMPLE_LIMIT) -> dict[str, Any]:
+    samples: list[str] = []
+    for value in values:
+        trimmed = _truncate_text(value)
+        if trimmed not in samples:
+            samples.append(trimmed or "")
+        if len(samples) >= limit:
+            break
+    return {"count": len(values), "samples": samples, "truncated": len(values) > len(samples)}
 
 
 def _summarize_warnings(
@@ -483,11 +509,13 @@ class TdOrdersDiscoverySummary:
             )
 
     def overall_status(self) -> str:
-        if any(outcome.status == "error" for outcome in self.store_outcomes.values()):
+        if not self.store_outcomes:
+            return "warning" if self.phases.get("init", {}).get("warning") else "ok"
+
+        statuses = {outcome.status for outcome in self.store_outcomes.values()}
+        if statuses == {"error"}:
             return "error"
-        if any(outcome.status == "warning" for outcome in self.store_outcomes.values()):
-            return "warning"
-        if self.phases.get("init", {}).get("warning"):
+        if "error" in statuses:
             return "warning"
         return "ok"
 
@@ -519,7 +547,8 @@ class TdOrdersDiscoverySummary:
         ss = seconds % 60
         return f"{hh:02d}:{mm:02d}:{ss:02d}"
 
-    def summary_text(self) -> str:
+    def summary_text(self, *, finished_at: datetime | None = None) -> str:
+        resolved_finished_at = finished_at or datetime.now(timezone.utc)
         remarks_lines, truncated_rows, truncated_length = self._ingest_remarks_section(
             max_rows=INGEST_REMARKS_MAX_ROWS, max_chars=INGEST_REMARKS_MAX_CHARS
         )
@@ -527,6 +556,8 @@ class TdOrdersDiscoverySummary:
             f"Pipeline: {PIPELINE_NAME}",
             f"Run ID: {self.run_id}",
             f"Env: {self.run_env}",
+            f"Started: {self.started_at.isoformat()}",
+            f"Finished: {resolved_finished_at.isoformat()}",
             f"Report Date: {self.report_date.isoformat()}",
             f"Overall Status: {self.overall_status()}",
             f"Orders Status: {self.orders_overall_status()}",
@@ -552,6 +583,24 @@ class TdOrdersDiscoverySummary:
         elif truncated_length:
             lines.append("... some remarks truncated for length")
         return "\n".join(lines)
+
+    def _ingest_warnings_payload(self, *, max_rows: int, max_chars: int) -> dict[str, Any]:
+        if not self.ingest_remarks:
+            return {"rows": [], "total": 0, "truncated": False}
+        truncated = len(self.ingest_remarks) > max_rows
+        rows: list[dict[str, str]] = []
+        for entry in self.ingest_remarks[:max_rows]:
+            remark = entry.get("ingest_remarks") or ""
+            if len(remark) > max_chars:
+                remark = remark[: max_chars - 1] + "…"
+            rows.append(
+                {
+                    "store_code": (entry.get("store_code") or "").upper(),
+                    "order_number": entry.get("order_number") or "",
+                    "ingest_remarks": remark,
+                }
+            )
+        return {"rows": rows, "total": len(self.ingest_remarks), "truncated": truncated}
 
     def _ingest_remarks_section(self, *, max_rows: int, max_chars: int) -> tuple[list[str], bool, bool]:
         if not self.ingest_remarks:
@@ -597,6 +646,48 @@ class TdOrdersDiscoverySummary:
             return f"rows: staging={report.staging_rows}"
         return "rows: n/a"
 
+    def _store_codes_for_payload(self) -> list[str]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for code in self.store_codes:
+            normalized = code.upper()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                ordered.append(normalized)
+        for mapping in (self.orders_results, self.sales_results, self.store_outcomes):
+            for code in mapping:
+                normalized = code.upper()
+                if normalized not in seen:
+                    seen.add(normalized)
+                    ordered.append(normalized)
+        return ordered
+
+    def _build_notification_payload(self, *, finished_at: datetime) -> Dict[str, Any]:
+        stores: list[dict[str, Any]] = []
+        for code in self._store_codes_for_payload():
+            outcome = self.store_outcomes.get(code)
+            stores.append(
+                {
+                    "store_code": code,
+                    "status": outcome.status if outcome else None,
+                    "message": outcome.message if outcome else None,
+                    "orders": (self.orders_results.get(code) or StoreReport(status="skipped")).as_dict(),
+                    "sales": (self.sales_results.get(code) or StoreReport(status="skipped")).as_dict(),
+                }
+            )
+
+        return {
+            "overall_status": self.overall_status(),
+            "orders_status": self.orders_overall_status(),
+            "sales_status": self.sales_overall_status(),
+            "stores": stores,
+            "ingest_warnings": self._ingest_warnings_payload(
+                max_rows=INGEST_REMARKS_MAX_ROWS, max_chars=INGEST_REMARKS_MAX_CHARS
+            ),
+            "started_at": self.started_at.isoformat(),
+            "finished_at": finished_at.isoformat(),
+        }
+
     def build_record(self, *, finished_at: datetime) -> Dict[str, Any]:
         metrics = {
             "stores": {code: asdict(outcome) for code, outcome in self.store_outcomes.items()},
@@ -614,6 +705,7 @@ class TdOrdersDiscoverySummary:
                 "stores": {code: report.as_dict() for code, report in self.sales_results.items()},
             },
         }
+        metrics["notification_payload"] = self._build_notification_payload(finished_at=finished_at)
         return {
             "pipeline_name": PIPELINE_NAME,
             "run_id": self.run_id,
@@ -623,7 +715,7 @@ class TdOrdersDiscoverySummary:
             "total_time_taken": self._format_duration(finished_at),
             "report_date": self.report_date,
             "overall_status": self.overall_status(),
-            "summary_text": self.summary_text(),
+            "summary_text": self.summary_text(finished_at=finished_at),
             "phases_json": {phase: dict(counts) for phase, counts in self.phases.items()},
             "metrics_json": metrics,
         }
@@ -1134,10 +1226,10 @@ async def _log_home_nav_diagnostics(page: Page, *, logger: JsonLogger, store: Td
         links = page.locator("a.padding6, a#achrOrderReport, a[href*='Reports']")
         link_count = await links.count()
         snapshot: list[dict[str, Any]] = []
-        for idx in range(min(link_count, 5)):
+        for idx in range(min(link_count, NAV_SNAPSHOT_SAMPLE_LIMIT)):
             handle = links.nth(idx)
             try:
-                text = (await handle.inner_text()).strip()
+                text = _truncate_text(await handle.inner_text())
                 href = await handle.get_attribute("href")
                 visible = await handle.is_visible()
             except Exception:
@@ -1149,6 +1241,7 @@ async def _log_home_nav_diagnostics(page: Page, *, logger: JsonLogger, store: Td
             message="Navigation controls snapshot",
             store_code=store.store_code,
             links=snapshot,
+            link_count=link_count,
         )
     except Exception as exc:  # pragma: no cover - diagnostics best effort
         log_event(
@@ -1190,11 +1283,11 @@ async def _capture_orders_left_nav_snapshot(
     links = nav_root.locator("a")
     count = await links.count()
     snapshot: list[dict[str, Any]] = []
-    for idx in range(min(count, 50)):
+    for idx in range(min(count, NAV_SNAPSHOT_SAMPLE_LIMIT)):
         anchor = links.nth(idx)
         try:
             href = await anchor.get_attribute("href")
-            text = (await anchor.inner_text()) or ""
+            text = _truncate_text(await anchor.inner_text()) or ""
             visible = await anchor.is_visible()
             normalized = urljoin(page.url or "", href) if href else None
         except Exception:
@@ -1217,11 +1310,11 @@ async def _capture_orders_left_nav_snapshot(
             reports_root = reports_sections.first
             report_links = reports_root.locator("a")
             reports_count = await report_links.count()
-            for idx in range(min(reports_count, 30)):
+            for idx in range(min(reports_count, NAV_SNAPSHOT_SAMPLE_LIMIT)):
                 anchor = report_links.nth(idx)
                 try:
                     href = await anchor.get_attribute("href")
-                    text = (await anchor.inner_text()) or ""
+                    text = _truncate_text(await anchor.inner_text()) or ""
                     normalized = urljoin(page.url or "", href) if href else None
                     visible = await anchor.is_visible()
                 except Exception:
@@ -1247,6 +1340,8 @@ async def _capture_orders_left_nav_snapshot(
         context=context,
         sales_only_mode=sales_only_mode,
         nav_url=page.url,
+        link_count=count,
+        reports_count=len(reports_links),
         links=snapshot,
         reports_links=reports_links,
     )
@@ -1655,7 +1750,7 @@ async def _navigate_to_sales_report(
         normalized_href: str | None = None
         target_label = "sales and delivery"
 
-        for idx in range(min(count, 30)):
+        for idx in range(min(count, SALES_NAV_SAMPLE_LIMIT)):
             locator = links.nth(idx)
             href = None
             text = None
@@ -1678,12 +1773,12 @@ async def _navigate_to_sales_report(
                     "index": idx,
                     "href": href,
                     "normalized_href": normalized,
-                    "text": text,
-                    "normalized_text": normalized_text,
-                    "visible": visible,
-                    "matches_label": matches_label,
-                }
-            )
+                "text": _truncate_text(text),
+                "normalized_text": _truncate_text(normalized_text),
+                "visible": visible,
+                "matches_label": matches_label,
+            }
+        )
 
             if selected_locator is None and matches_label:
                 selected_locator = locator
@@ -1695,6 +1790,7 @@ async def _navigate_to_sales_report(
             message="Sales left-nav submenu snapshot",
             store_code=store.store_code,
             samples=samples,
+            link_count=count,
             submenu_visible=submenu_visible,
             hover_attempted=hover_attempted,
             hover_error=hover_error,
@@ -3262,6 +3358,7 @@ async def _wait_for_report_request_download_link(
     poll_timeout_ms = min(REPORT_REQUEST_MAX_TIMEOUT_MS, timeout_ms)
     deadline = start_time + (poll_timeout_ms / 1000)
     last_seen_texts: list[str] = []
+    last_seen_summary: dict[str, Any] | None = None
     last_status: str | None = None
     backoff = 0.5
     matched_row_seen = False
@@ -3337,6 +3434,7 @@ async def _wait_for_report_request_download_link(
                 selected_row_state = matched_row_state
                 last_matched_range_text = matched_text or last_matched_range_text
                 last_download_locator_strategy = download_strategy or last_download_locator_strategy
+                last_seen_summary = _summarize_text_samples(visible_rows) if visible_rows else None
 
                 log_event(
                     logger=logger,
@@ -3346,7 +3444,9 @@ async def _wait_for_report_request_download_link(
                     matched_range_text=matched_text,
                     status_text=matched_status,
                     expected_range_texts=list(expected_range_texts),
-                    all_row_texts=visible_rows or [matched_text],
+                    row_count=last_seen_summary["count"] if last_seen_summary else None,
+                    row_samples=last_seen_summary["samples"] if last_seen_summary else None,
+                    rows_truncated=last_seen_summary["truncated"] if last_seen_summary else None,
                     range_match_strategy=last_range_match_strategy,
                     download_locator_strategy=download_strategy,
                     container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
@@ -3386,7 +3486,9 @@ async def _wait_for_report_request_download_link(
                         matched_range_text=matched_text,
                         status_text=matched_status,
                         expected_range_texts=list(expected_range_texts),
-                        all_row_texts=visible_rows or [matched_text],
+                        row_count=last_seen_summary["count"] if last_seen_summary else None,
+                        row_samples=last_seen_summary["samples"] if last_seen_summary else None,
+                        rows_truncated=last_seen_summary["truncated"] if last_seen_summary else None,
                         download_control_visible=True,
                         matched_row_text_full=matched_text,
                         range_match_strategy=last_range_match_strategy,
@@ -3437,6 +3539,9 @@ async def _wait_for_report_request_download_link(
                     pending_attempts += 1
                     now = asyncio.get_event_loop().time()
                     if now - last_pending_log_at >= REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS or pending_attempts == 1:
+                        pending_summary = last_seen_summary or (
+                            _summarize_text_samples(visible_rows) if visible_rows else None
+                        )
                         log_event(
                             logger=logger,
                             phase="iframe",
@@ -3447,7 +3552,9 @@ async def _wait_for_report_request_download_link(
                             expected_range_texts=list(expected_range_texts),
                             backoff_seconds=backoff,
                             timeout_ms=poll_timeout_ms,
-                            last_seen_rows=last_seen_texts or [matched_text],
+                            last_seen_rows_count=pending_summary["count"] if pending_summary else None,
+                            last_seen_rows_samples=pending_summary["samples"] if pending_summary else None,
+                            last_seen_rows_truncated=pending_summary["truncated"] if pending_summary else None,
                             range_match_strategy=last_range_match_strategy,
                             container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
                             download_locator_strategy=download_strategy,
@@ -3518,6 +3625,7 @@ async def _wait_for_report_request_download_link(
                     break
             if visible_rows:
                 last_seen_texts = visible_rows
+                last_seen_summary = _summarize_text_samples(visible_rows)
         except Exception as exc:
             last_status = last_status or str(exc)
 
@@ -3530,7 +3638,9 @@ async def _wait_for_report_request_download_link(
         message="Report Requests download link not available before timeout",
         store_code=store.store_code,
         expected_range_texts=list(expected_range_texts),
-        last_seen_rows=last_seen_texts or None,
+        last_seen_rows_count=last_seen_summary["count"] if last_seen_summary else None,
+        last_seen_rows_samples=last_seen_summary["samples"] if last_seen_summary else None,
+        last_seen_rows_truncated=last_seen_summary["truncated"] if last_seen_summary else None,
         last_status=last_status,
         row_seen=matched_row_seen,
         timeout_ms=poll_timeout_ms,
@@ -3864,7 +3974,7 @@ async def _execute_sales_flow(
                             sales_status = "error"
                             sales_message = f"Sales ingestion failed: {exc}"
                         else:
-                            if sales_ingest_result:
+                            if sales_ingest_result and sales_message is None:
                                 sales_message = (
                                     f"Sales ingested: staging={sales_ingest_result.staging_rows}, "
                                     f"final={sales_ingest_result.final_rows}"
@@ -4302,6 +4412,7 @@ async def _run_store_discovery(
                 if success:
                     ingest_result: TdOrdersIngestResult | None = None
                     status_label = "ok"
+                    orders_warning_summary: dict[str, Any] | None = None
                     if config.database_url:
                         if not store.cost_center:
                             log_event(
@@ -4336,18 +4447,17 @@ async def _run_store_discovery(
                                 database_url=config.database_url,
                                 logger=store_logger,
                             )
-                            status_label = "warning" if ingest_result.warnings else "ok"
                             if ingest_result.warnings:
-                                warning_summary = _summarize_warnings(ingest_result.warnings)
+                                orders_warning_summary = _summarize_warnings(ingest_result.warnings)
                                 log_event(
                                     logger=store_logger,
                                     phase="ingest",
                                     status="warn",
                                     message="TD Orders workbook ingested with warnings",
                                     store_code=store.store_code,
-                                    warning_count=warning_summary["count"],
-                                    warning_samples=warning_summary["samples"],
-                                    warnings_truncated=warning_summary["truncated"],
+                                    warning_count=orders_warning_summary["count"],
+                                    warning_samples=orders_warning_summary["samples"],
+                                    warnings_truncated=orders_warning_summary["truncated"],
                                     staging_rows=ingest_result.staging_rows,
                                     final_rows=ingest_result.final_rows,
                                 )
@@ -4395,15 +4505,18 @@ async def _run_store_discovery(
                         )
                         status_label = "warning"
 
-                    outcome_status = "ok"
+                    outcome_status = "warning" if status_label == "warning" else "ok"
                     outcome_message = "Orders report downloaded"
-                    if status_label == "warning":
-                        outcome_status = "warning"
-                        outcome_message = "Orders downloaded with ingest warnings"
                     if ingest_result:
                         outcome_message = (
                             f"Orders ingested: staging={ingest_result.staging_rows}, final={ingest_result.final_rows}"
                         )
+                        if ingest_result.warnings:
+                            warning_preview = _format_warning_preview(
+                                orders_warning_summary or _summarize_warnings(ingest_result.warnings)
+                            )
+                            if warning_preview:
+                                outcome_message = f"{outcome_message} (warnings: {warning_preview})"
                     orders_report = StoreReport(
                         status=status_label,
                         filenames=[Path(detail).name],
