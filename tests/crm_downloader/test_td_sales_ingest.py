@@ -172,14 +172,14 @@ async def test_sales_ingest_happy_path(tmp_path: Path) -> None:
                     stg_table.c.order_number,
                     stg_table.c.payment_received,
                     stg_table.c.is_duplicate,
-                    stg_table.c.ingest_remark,
+                    stg_table.c.ingest_remarks,
                 ).order_by(stg_table.c.order_number)
             )
         ).all()
         assert stg_rows[0].order_number == "SAL-001"
         assert float(stg_rows[0].payment_received) == 1200.5
         assert stg_rows[0].is_duplicate is False
-        assert stg_rows[0].ingest_remark is None
+        assert stg_rows[0].ingest_remarks is None
         assert stg_rows[1].is_duplicate is False
 
         final_rows = (
@@ -188,14 +188,14 @@ async def test_sales_ingest_happy_path(tmp_path: Path) -> None:
                     final_table.c.order_number,
                     final_table.c.payment_mode,
                     final_table.c.is_duplicate,
-                    final_table.c.ingest_remark,
+                    final_table.c.ingest_remarks,
                 ).order_by(final_table.c.order_number)
             )
         ).all()
         assert final_rows[0].payment_mode == "UPI"
         assert final_rows[0].is_duplicate is False
         assert final_rows[1].is_duplicate is False
-        assert final_rows[0].ingest_remark is None
+        assert final_rows[0].ingest_remarks is None
 
 
 @pytest.mark.asyncio
@@ -246,15 +246,15 @@ async def test_sales_ingest_marks_duplicates_and_warnings(tmp_path: Path) -> Non
                 sa.select(
                     stg_table.c.order_number,
                     stg_table.c.is_duplicate,
-                    stg_table.c.ingest_remark,
+                    stg_table.c.ingest_remarks,
                 ).order_by(stg_table.c.id)
             )
         ).all()
         assert stg_rows[0].is_duplicate is True
-        assert "Phone value '12345' is invalid and was dropped" in stg_rows[0].ingest_remark
-        assert "Duplicate order_number 'DUP-001' detected in sales data" in stg_rows[0].ingest_remark
+        assert "Phone value '12345' is invalid and was dropped" in stg_rows[0].ingest_remarks
+        assert "Duplicate order_number 'DUP-001' detected in sales data" in stg_rows[0].ingest_remarks
         assert stg_rows[1].is_duplicate is True
-        assert stg_rows[1].ingest_remark == "Duplicate order_number 'DUP-001' detected in sales data"
+        assert stg_rows[1].ingest_remarks == "Duplicate order_number 'DUP-001' detected in sales data"
 
         final_rows = (
             await session.execute(
@@ -385,7 +385,7 @@ async def test_sales_ingest_parses_dates_numbers_and_mobile(tmp_path: Path) -> N
                     stg_table.c.payment_received,
                     stg_table.c.adjustments,
                     stg_table.c.payment_made_at,
-                    stg_table.c.ingest_remark,
+                    stg_table.c.ingest_remarks,
                 )
             )
         ).one()
@@ -395,14 +395,14 @@ async def test_sales_ingest_parses_dates_numbers_and_mobile(tmp_path: Path) -> N
         assert float(stg_row.payment_received) == 1000.75
         assert float(stg_row.adjustments) == 0
         assert stg_row.payment_made_at == "Counter"
-        assert stg_row.ingest_remark == "Field adjustments contained non-numeric value 'oops' (stored as 0)"
+        assert stg_row.ingest_remarks == "Field adjustments contained non-numeric value 'oops' (stored as 0)"
 
         final_row = (
             await session.execute(
-                sa.select(final_table.c.ingest_remark, final_table.c.mobile_number, final_table.c.payment_mode)
+                sa.select(final_table.c.ingest_remarks, final_table.c.mobile_number, final_table.c.payment_mode)
             )
         ).one()
-        assert final_row.ingest_remark == stg_row.ingest_remark
+        assert final_row.ingest_remarks == stg_row.ingest_remarks
         assert final_row.mobile_number == "9999988888"
         assert final_row.payment_mode == "Cash"
 
@@ -508,7 +508,7 @@ async def test_sales_upsert_respects_business_keys_and_propagates_remarks(tmp_pa
                     stg_table.c.payment_received,
                     stg_table.c.adjustments,
                     stg_table.c.is_duplicate,
-                    stg_table.c.ingest_remark,
+                    stg_table.c.ingest_remarks,
                     stg_table.c.payment_mode,
                 )
             )
@@ -516,7 +516,7 @@ async def test_sales_upsert_respects_business_keys_and_propagates_remarks(tmp_pa
         assert float(stg_row.payment_received) == 750
         assert float(stg_row.adjustments) == 10
         assert stg_row.is_duplicate is True
-        assert stg_row.ingest_remark == "Duplicate order_number 'UP-001' detected in sales data"
+        assert stg_row.ingest_remarks == "Duplicate order_number 'UP-001' detected in sales data"
         assert stg_row.payment_mode == "Card"
 
         final_row = (
@@ -525,7 +525,7 @@ async def test_sales_upsert_respects_business_keys_and_propagates_remarks(tmp_pa
                     final_table.c.payment_received,
                     final_table.c.adjustments,
                     final_table.c.is_duplicate,
-                    final_table.c.ingest_remark,
+                    final_table.c.ingest_remarks,
                     final_table.c.payment_mode,
                 )
             )
@@ -533,5 +533,5 @@ async def test_sales_upsert_respects_business_keys_and_propagates_remarks(tmp_pa
         assert float(final_row.payment_received) == 750
         assert float(final_row.adjustments) == 10
         assert final_row.is_duplicate is True
-        assert final_row.ingest_remark == stg_row.ingest_remark
+        assert final_row.ingest_remarks == stg_row.ingest_remarks
         assert final_row.payment_mode == "Card"

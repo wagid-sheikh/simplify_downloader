@@ -37,7 +37,7 @@ STG_TD_SALES_COLUMNS = [
     "order_type",
     "is_duplicate",
     "is_edited_order",
-    "ingest_remark",
+    "ingest_remarks",
 ]
 
 TD_SALES_COLUMNS = [
@@ -58,7 +58,7 @@ TD_SALES_COLUMNS = [
     "order_type",
     "is_duplicate",
     "is_edited_order",
-    "ingest_remark",
+    "ingest_remarks",
 ]
 
 HEADER_MAP: Mapping[str, str] = {
@@ -123,7 +123,7 @@ def _stg_td_sales_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("order_type", sa.String(length=32)),
         sa.Column("is_duplicate", sa.Boolean()),
         sa.Column("is_edited_order", sa.Boolean()),
-        sa.Column("ingest_remark", sa.Text()),
+        sa.Column("ingest_remarks", sa.Text()),
         sa.UniqueConstraint(
             "store_code",
             "order_number",
@@ -165,7 +165,7 @@ def _td_sales_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("order_type", sa.String(length=32)),
         sa.Column("is_duplicate", sa.Boolean()),
         sa.Column("is_edited_order", sa.Boolean()),
-        sa.Column("ingest_remark", sa.Text()),
+        sa.Column("ingest_remarks", sa.Text()),
         sa.UniqueConstraint(
             "cost_center",
             "order_number",
@@ -399,14 +399,14 @@ async def ingest_td_sales_workbook(
                 remarks.append(f"Duplicate order_number '{order_number}' detected in sales data")
             row["is_duplicate"] = is_duplicate
             row["is_edited_order"] = is_duplicate
-            row["ingest_remark"] = "; ".join(remarks) if remarks else None
+            row["ingest_remarks"] = "; ".join(remarks) if remarks else None
 
-            if row.get("ingest_remark"):
+            if row.get("ingest_remarks"):
                 remark_entries.append(
                     {
                         "store_code": store_code,
                         "order_number": order_number,
-                        "ingest_remarks": str(row["ingest_remark"]),
+                        "ingest_remarks": str(row["ingest_remarks"]),
                     }
                 )
 

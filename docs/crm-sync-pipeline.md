@@ -466,7 +466,7 @@ create table stg_td_sales (
     order_type          varchar(32),
     is_duplicate        boolean,
     is_edited_order     boolean,
-    ingest_remark       text,
+    ingest_remarks      text,
     constraint pk_stg_td_sales primary key (id)
 );
 ```
@@ -631,7 +631,7 @@ create table td_sales (
     order_type          varchar(32),
     is_duplicate        boolean,
     is_edited_order     boolean,
-    ingest_remark       text,
+    ingest_remarks      text,
     constraint pk_td_sales primary key (id),
     constraint unq_td_sales(cost_center, order_number, payment_date)
 );
@@ -968,16 +968,16 @@ Type
 | 19  | *(Not in Excel)*     | stg_td_sales | is_edited_order  | After ingest → if duplicate (`store_code`, `order_number`) then `TRUE` else `FALSE`                  |
 | 20  | *(Not in Excel)*     | stg_td_sales | run_id           | Set from ETL `RUN_ID`                                                                                |
 | 21  | *(Not in Excel)*     | stg_td_sales | run_date         | Set from ETL `RUN_DATE`                                                                              |
-| 22  | *(Not in Excel)*     | stg_td_sales | ingest_remark    | Derived during ingest – aggregated validation warnings (NULL when no issues)                         |
+| 22  | *(Not in Excel)*     | stg_td_sales | ingest_remarks   | Derived during ingest – aggregated validation warnings (NULL when no issues)                         |
 | 23  | *(Not in Excel)*     | stg_td_sales | created_at       | Set from ETL `RUN_DATE`                                                                              |
 
-**Phase 4 – TD Sales ingest:** populate `stg_td_sales.ingest_remark` alongside other derived fields so that validation/warning context is retained with the staging row.
+**Phase 4 – TD Sales ingest:** populate `stg_td_sales.ingest_remarks` alongside other derived fields so that validation/warning context is retained with the staging row.
 
-**Phase 5 – TD Sales publish:** when appending/upserting into `td_sales`, include `ingest_remark` as a straight passthrough from staging so downstream consumers see the same remark text.
+**Phase 5 – TD Sales publish:** when appending/upserting into `td_sales`, include `ingest_remarks` as a straight passthrough from staging so downstream consumers see the same remark text.
 
 #### from `stg_td_sales` to `td_sales`
 
-The table structure of `stg_td_sales` and `td_sales` are almost identical; append/upsert from `stg_td_sales` to `td_sales` must carry `ingest_remark` forward unchanged.
+The table structure of `stg_td_sales` and `td_sales` are almost identical; append/upsert from `stg_td_sales` to `td_sales` must carry `ingest_remarks` forward unchanged.
 
 ### from `*bank.xlsx` to `stg_bank
 
