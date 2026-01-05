@@ -1148,14 +1148,36 @@ After login, navigate to Reports → Sales and Delivery and verify the container
 - After requesting, wait for the spinner/loading animation to finish and for the “Report Requests” table to appear. Locate the row whose date range text exactly matches the requested UI-formatted range `DD Mon YYYY - DD Mon YYYY`; if multiple matches exist, pick the newest entry before clicking “Download” in that row only.
 - Use `page.waitForEvent('download')` (scoped to the click) and save using `{store_master.store_code}_td_sales_{YYYYMMDD-from}_{YYYYMMDD-to}.xlsx`. Confirm whether the intended date token is `YYYYMMDD` and apply the chosen format consistently after validation.
 
+#### Validated TD Sales iframe selectors and UI cues
+
+- **Iframe and hydration**
+  - The report renders inside `iframe#ifrmReport`; continue to enter via `frameLocator('#ifrmReport')` and wait for `div.ant-spin.ant-spin-spinning` (with `.ant-spin-dot` children) to disappear before interacting.
+  - Primary controls hydrate together: **Download historical report**, **Generate Report**, **Request Report**, and the **Report Requests** header. Treat any reappearance of `.ant-spin` as an in-flight state and pause interactions until it clears.
+- **Control labels (validated)**
+  - Historical trigger: link text **Download historical report**.
+  - Generation: button text **Generate Report**.
+  - Date overlay: buttons **Update** and **Cancel** with labelled inputs **From Date** and **To Date** (`input[placeholder="From Date"]`, `input[placeholder="To Date"]`). When open, the overlay accepts direct text entry in `DD Mon YYYY` (e.g., `01 Oct 2025`).
+  - Submission: button text **Request Report**.
+- **Date-range UI notes**
+  - After clicking **Generate Report**, the overlay shows the currently selected range in `DD Mon YYYY - DD Mon YYYY` at the top.
+  - You can overwrite the From/To inputs directly without clearing; no calendar clicks are required when typing the range.
+  - After **Update**, the overlay closes and the inline range display beside the controls reflects the newly set dates.
+- **Report Requests table (validated matching rules)**
+  - Observed columns: **Report Duration**, **Requested On**, **Status**, and **Action** (with underline link **Download** in Action).
+  - The table is sorted newest-first; choose the first row whose **Report Duration** exactly matches `DD Mon YYYY - DD Mon YYYY` for the requested window **and** whose **Status** is `Ready` or `Completed`.
+  - Skip rows in `Processing`/`Queued`; re-poll until the matching row reaches `Ready`/`Completed` before downloading.
+  - Wrap the **Download** click with `page.waitForEvent('download')` so the deterministic filename below is captured reliably.
+- **Deterministic Sales filename (confirmed)**
+  - Save downloads as `{store_code}_td_sales_{YYYYMMDD-from}_{YYYYMMDD-to}.xlsx` (e.g., `A668_td_sales_20251001_20251206.xlsx`).
+
 #### TD Orders/Sales filename and date-range matching rules
 
 - Deterministic filenames after saving downloads:
   - Orders: `{store_code}_td_orders_{YYYYMMDD-from}_{YYYYMMDD-to}.xlsx`
-  - Sales: `{store_code}_td_sales_{YYYYMMDD-from}_{YYYYMMDD-to}.xlsx`
+  - Sales: `{store_code}_td_sales_{YYYYMMDD-from}_{YYYYMMDD-to}.xlsx` (confirmed – use eight-digit `YYYYMMDD` tokens)
 - Confirm whether the CRM date tokens are 7 or 8 digits; if the UI emits `YYYYMMDD`, switch to that format consistently after validation.
 - Report Requests table validation:
-  - Do not click Download until a row with date text exactly matching `DD Mon YYYY - DD Mon YYYY` for the requested window is visible.
+  - Do not click Download until a row with date text exactly matching `DD Mon YYYY - DD Mon YYYY` for the requested window is visible **and** the status is `Ready`/`Completed`.
   - When multiple matching rows exist, pick the newest/top-most entry (latest timestamp/status) before triggering the download.
 
 ---
