@@ -294,7 +294,7 @@ def _coerce_row(
 
 
 def _read_workbook_rows(
-    workbook_path: Path, *, tz: ZoneInfo, warnings: list[str]
+    workbook_path: Path, *, tz: ZoneInfo, warnings: list[str], store_code: str
 ) -> tuple[list[Dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int]:
     wb = openpyxl.load_workbook(workbook_path, data_only=True)
     sheet = wb.active
@@ -319,23 +319,30 @@ def _read_workbook_rows(
         normalized, row_remarks, drop_reason = _coerce_row(
             raw_row, tz=tz, warnings=warnings, invalid_phone_numbers=invalid_phone_numbers
         )
+        order_number = _stringify_value(raw_row.get("Order Number"))
         if normalized:
             normalized["_remarks"] = row_remarks
             if row_remarks:
                 warning_rows.append(
                     {
+                        "store_code": store_code,
+                        "order_number": order_number,
                         "headers": headers,
                         "values": {header: _stringify_value(raw_row.get(header)) for header in headers},
                         "remarks": "; ".join(row_remarks),
+                        "ingest_remarks": "; ".join(row_remarks),
                     }
                 )
             rows.append(normalized)
         else:
             dropped_rows.append(
                 {
+                    "store_code": store_code,
+                    "order_number": order_number,
                     "headers": headers,
                     "values": {header: _stringify_value(raw_row.get(header)) for header in headers},
                     "remarks": drop_reason or "; ".join(row_remarks) or "Row dropped due to missing required values",
+                    "ingest_remarks": drop_reason or "; ".join(row_remarks) or "Row dropped due to missing required values",
                 }
             )
     return rows, warning_rows, dropped_rows, rows_downloaded
@@ -383,7 +390,9 @@ async def ingest_td_sales_workbook(
 ) -> TdSalesIngestResult:
     tz = get_timezone()
     warnings: list[str] = []
-    rows, warning_rows, dropped_rows, rows_downloaded = _read_workbook_rows(workbook_path, tz=tz, warnings=warnings)
+    rows, warning_rows, dropped_rows, rows_downloaded = _read_workbook_rows(
+        workbook_path, tz=tz, warnings=warnings, store_code=store_code
+    )
     header_labels = list(HEADER_MAP.keys())
 
     if not rows:
@@ -456,15 +465,21 @@ async def ingest_td_sales_workbook(
             if row["is_edited_order"]:
                 edited_rows.append(
                     {
+                        "store_code": store_code,
+                        "order_number": order_number,
                         "headers": header_labels,
                         "values": {label: _stringify_value(row.get(field)) for label, field in HEADER_MAP.items()},
+                        "ingest_remarks": row.get("ingest_remarks"),
                     }
                 )
             if row["is_duplicate"]:
                 duplicate_rows.append(
                     {
+                        "store_code": store_code,
+                        "order_number": order_number,
                         "headers": header_labels,
                         "values": {label: _stringify_value(row.get(field)) for label, field in HEADER_MAP.items()},
+                        "ingest_remarks": row.get("ingest_remarks"),
                     }
                 )
 

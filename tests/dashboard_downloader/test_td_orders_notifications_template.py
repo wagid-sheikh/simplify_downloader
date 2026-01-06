@@ -64,6 +64,22 @@ def _sample_run_data(*, summary_text: str = "") -> dict[str, object]:
                     "rows_ingested": 10,
                     "warning_count": 1,
                     "dropped_rows_count": 0,
+                    "warning_rows": [
+                        {
+                            "store_code": "A1",
+                            "order_number": "ORD-1",
+                            "ingest_remarks": "warning row remark",
+                            "values": {"Order No.": "ORD-1"},
+                        }
+                    ],
+                    "dropped_rows": [
+                        {
+                            "store_code": "A1",
+                            "order_number": "ORD-2",
+                            "ingest_remarks": "drop row remark",
+                            "values": {"Order No.": "ORD-2"},
+                        }
+                    ],
                 },
                 "sales": {
                     "status": "warning",
@@ -73,6 +89,36 @@ def _sample_run_data(*, summary_text: str = "") -> dict[str, object]:
                     "dropped_rows_count": 1,
                     "edited_rows_count": 1,
                     "duplicate_rows_count": 0,
+                    "warning_rows": [
+                        {
+                            "store_code": "A1",
+                            "order_number": "S-1",
+                            "ingest_remarks": "sales warning row remark",
+                            "values": {"Order Number": "S-1"},
+                        }
+                    ],
+                    "dropped_rows": [
+                        {
+                            "store_code": "A1",
+                            "order_number": "S-2",
+                            "ingest_remarks": "sales drop row remark",
+                            "values": {"Order Number": "S-2"},
+                        }
+                    ],
+                    "edited_rows": [
+                        {
+                            "store_code": "A1",
+                            "order_number": "S-3",
+                            "values": {"Order Number": "S-3"},
+                        }
+                    ],
+                    "duplicate_rows": [
+                        {
+                            "store_code": "A1",
+                            "order_number": "S-4",
+                            "values": {"Order Number": "S-4"},
+                        }
+                    ],
                 },
             },
             {
@@ -141,3 +187,39 @@ def test_td_template_renders_payload_without_false_failure_note() -> None:
     assert "duplicate_count: 0" in body
     assert "05-01-2024 10:30:00" in body
     assert "All TD stores failed" not in body
+
+
+def test_td_context_includes_store_metadata_on_row_details() -> None:
+    run_data = _sample_run_data(summary_text="")
+
+    context = _build_td_orders_context(run_data)
+    store = context["stores"][0]
+
+    orders_warning_row = store["orders_warning_rows"][0]
+    orders_dropped_row = store["orders_dropped_rows"][0]
+    sales_warning_row = store["sales_warning_rows"][0]
+    sales_dropped_row = store["sales_dropped_rows"][0]
+    sales_edited_row = store["sales_edited_rows"][0]
+    sales_duplicate_row = store["sales_duplicate_rows"][0]
+
+    assert orders_warning_row["store_code"] == "A1"
+    assert orders_warning_row["order_number"] == "ORD-1"
+    assert orders_warning_row["ingest_remarks"] == "warning row remark"
+
+    assert orders_dropped_row["store_code"] == "A1"
+    assert orders_dropped_row["order_number"] == "ORD-2"
+    assert orders_dropped_row["ingest_remarks"] == "drop row remark"
+
+    assert sales_warning_row["store_code"] == "A1"
+    assert sales_warning_row["order_number"] == "S-1"
+    assert sales_warning_row["ingest_remarks"] == "sales warning row remark"
+
+    assert sales_dropped_row["store_code"] == "A1"
+    assert sales_dropped_row["order_number"] == "S-2"
+    assert sales_dropped_row["ingest_remarks"] == "sales drop row remark"
+
+    assert sales_edited_row["store_code"] == "A1"
+    assert sales_edited_row["order_number"] == "S-3"
+
+    assert sales_duplicate_row["store_code"] == "A1"
+    assert sales_duplicate_row["order_number"] == "S-4"

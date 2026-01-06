@@ -814,17 +814,65 @@ class TdOrdersDiscoverySummary:
                     ordered.append(normalized)
         return ordered
 
+    def _rows_with_store_metadata(
+        self,
+        rows: Iterable[Mapping[str, Any]] | None,
+        *,
+        store_code: str,
+        include_order_number: bool = False,
+        include_remarks: bool = False,
+    ) -> list[dict[str, Any]]:
+        prepared: list[dict[str, Any]] = []
+        for row in rows or []:
+            data = dict(row)
+            data.setdefault("store_code", store_code)
+            if include_order_number:
+                order_number = data.get("order_number")
+                if not order_number:
+                    values = data.get("values") or {}
+                    for key in ("order_number", "Order Number", "Order No."):
+                        if values.get(key):
+                            order_number = values.get(key)
+                            break
+                data["order_number"] = "" if order_number in (None, "") else str(order_number)
+            if include_remarks:
+                remarks = data.get("ingest_remarks") or data.get("remarks")
+                if remarks is not None:
+                    data["ingest_remarks"] = str(remarks)
+            prepared.append(data)
+        return prepared
+
     def _build_notification_payload(self, *, finished_at: datetime) -> Dict[str, Any]:
         stores: list[dict[str, Any]] = []
         for code in self._store_codes_for_payload():
             outcome = self.store_outcomes.get(code)
+            orders_report = (self.orders_results.get(code) or StoreReport(status="skipped")).as_dict()
+            sales_report = (self.sales_results.get(code) or StoreReport(status="skipped")).as_dict()
+            orders_report["warning_rows"] = self._rows_with_store_metadata(
+                orders_report.get("warning_rows"), store_code=code, include_order_number=True, include_remarks=True
+            )
+            orders_report["dropped_rows"] = self._rows_with_store_metadata(
+                orders_report.get("dropped_rows"), store_code=code, include_order_number=True, include_remarks=True
+            )
+            sales_report["warning_rows"] = self._rows_with_store_metadata(
+                sales_report.get("warning_rows"), store_code=code, include_order_number=True, include_remarks=True
+            )
+            sales_report["dropped_rows"] = self._rows_with_store_metadata(
+                sales_report.get("dropped_rows"), store_code=code, include_order_number=True, include_remarks=True
+            )
+            sales_report["edited_rows"] = self._rows_with_store_metadata(
+                sales_report.get("edited_rows"), store_code=code, include_order_number=True
+            )
+            sales_report["duplicate_rows"] = self._rows_with_store_metadata(
+                sales_report.get("duplicate_rows"), store_code=code, include_order_number=True
+            )
             stores.append(
                 {
                     "store_code": code,
                     "status": outcome.status if outcome else None,
                     "message": outcome.message if outcome else None,
-                    "orders": (self.orders_results.get(code) or StoreReport(status="skipped")).as_dict(),
-                    "sales": (self.sales_results.get(code) or StoreReport(status="skipped")).as_dict(),
+                    "orders": orders_report,
+                    "sales": sales_report,
                 }
             )
 

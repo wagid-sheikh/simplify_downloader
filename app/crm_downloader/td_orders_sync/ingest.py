@@ -438,7 +438,7 @@ def _is_footer_row(values: Sequence[Any]) -> bool:
 
 
 def _read_workbook_rows(
-    workbook_path: Path, *, tz: ZoneInfo, warnings: list[str], logger: JsonLogger
+    workbook_path: Path, *, tz: ZoneInfo, warnings: list[str], logger: JsonLogger, store_code: str
 ) -> tuple[list[Dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int]:
     wb = openpyxl.load_workbook(workbook_path, data_only=True)
     sheet = wb.active
@@ -463,22 +463,29 @@ def _read_workbook_rows(
         normalized, row_remarks, drop_reason = _coerce_row(
             raw_row, tz=tz, warnings=warnings, invalid_phone_numbers=invalid_phone_numbers
         )
+        order_number = _stringify_value(raw_row.get("Order No."))
         if normalized:
             if normalized.get("ingest_remarks"):
                 warning_rows.append(
                     {
+                        "store_code": store_code,
+                        "order_number": order_number,
                         "headers": headers,
                         "values": {header: _stringify_value(raw_row.get(header)) for header in headers},
                         "remarks": normalized.get("ingest_remarks"),
+                        "ingest_remarks": normalized.get("ingest_remarks"),
                     }
                 )
             rows.append(normalized)
         else:
             dropped_rows.append(
                 {
+                    "store_code": store_code,
+                    "order_number": order_number,
                     "headers": headers,
                     "values": {header: _stringify_value(raw_row.get(header)) for header in headers},
                     "remarks": drop_reason or "; ".join(row_remarks) or "Row dropped due to missing required values",
+                    "ingest_remarks": drop_reason or "; ".join(row_remarks) or "Row dropped due to missing required values",
                 }
             )
     return rows, warning_rows, dropped_rows, rows_downloaded
@@ -510,7 +517,7 @@ async def ingest_td_orders_workbook(
     tz = get_timezone()
     warnings: list[str] = []
     rows, warning_rows, dropped_rows, rows_downloaded = _read_workbook_rows(
-        workbook_path, tz=tz, warnings=warnings, logger=logger
+        workbook_path, tz=tz, warnings=warnings, logger=logger, store_code=store_code
     )
     remark_entries = [
         {
