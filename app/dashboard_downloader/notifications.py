@@ -511,10 +511,63 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
                 return len(value)
         return 0
 
+    def _with_store_metadata(
+        rows: Iterable[Mapping[str, Any]] | None,
+        *,
+        store_code: str,
+        include_order_number: bool = False,
+        include_remarks: bool = False,
+    ) -> list[dict[str, Any]]:
+        prepared: list[dict[str, Any]] = []
+        for row in rows or []:
+            data = dict(row)
+            data.setdefault("store_code", store_code)
+            if include_order_number:
+                order_number = data.get("order_number")
+                if not order_number:
+                    values = data.get("values") or {}
+                    for key in ("order_number", "Order Number", "Order No."):
+                        if values.get(key):
+                            order_number = values.get(key)
+                            break
+                data["order_number"] = "" if order_number in (None, "") else str(order_number)
+            if include_remarks:
+                remarks = data.get("ingest_remarks") or data.get("remarks")
+                if remarks is not None:
+                    data["ingest_remarks"] = str(remarks)
+            prepared.append(data)
+        return prepared
+
     stores: list[dict[str, Any]] = []
     for store in stores_payload:
         orders = store.get("orders") or {}
         sales = store.get("sales") or {}
+        orders_warning_rows = _with_store_metadata(
+            orders.get("warning_rows"), store_code=store.get("store_code"), include_order_number=True, include_remarks=True
+        )
+        orders_dropped_rows = _with_store_metadata(
+            orders.get("dropped_rows"), store_code=store.get("store_code"), include_order_number=True, include_remarks=True
+        )
+        sales_warning_rows = _with_store_metadata(
+            sales.get("warning_rows"), store_code=store.get("store_code"), include_order_number=True, include_remarks=True
+        )
+        sales_dropped_rows = _with_store_metadata(
+            sales.get("dropped_rows"), store_code=store.get("store_code"), include_order_number=True, include_remarks=True
+        )
+        sales_edited_rows = _with_store_metadata(
+            sales.get("edited_rows"), store_code=store.get("store_code"), include_order_number=True
+        )
+        sales_duplicate_rows = _with_store_metadata(
+            sales.get("duplicate_rows"), store_code=store.get("store_code"), include_order_number=True
+        )
+        orders = {**orders, "warning_rows": orders_warning_rows, "dropped_rows": orders_dropped_rows}
+        sales = {
+            **sales,
+            "warning_rows": sales_warning_rows,
+            "dropped_rows": sales_dropped_rows,
+            "edited_rows": sales_edited_rows,
+            "duplicate_rows": sales_duplicate_rows,
+        }
         stores.append(
             {
                 "store_code": store.get("store_code"),
