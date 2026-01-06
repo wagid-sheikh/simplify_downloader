@@ -1671,10 +1671,11 @@ async def _navigate_to_orders_container(
     max_attempts = 3
     redirected_home_logged = False
     for attempt in range(1, max_attempts + 1):
-        locator_candidates = _build_locator_candidates()
         locator_used: Locator | None = None
         locator_label: str | None = None
         nav_root_ready = await _ensure_nav_root_ready()
+        locator_candidates = _build_locator_candidates()
+        appended_attempt = False
 
         for label, locator in locator_candidates:
             try:
@@ -1726,31 +1727,37 @@ async def _navigate_to_orders_container(
             await asyncio.sleep(1)
             continue
 
+        final_url = page.url or ""
         attempt_record.update(
             {
                 "container_ready": container_ready,
                 "ready_reason": ready_reason,
-                "final_url": page.url,
+                "final_url": final_url,
             }
         )
-        redirected_to_home = (
-            not container_ready and not target_pattern.search(page.url or "") and _is_home_url(page.url)
-        )
-        if redirected_to_home:
-            attempt_record["redirected_to_home"] = True
+        redirected_to_home = not container_ready and not target_pattern.search(final_url) and _is_home_url(final_url)
+        non_target_url = not container_ready and not target_pattern.search(final_url)
+        if non_target_url:
+            attempt_record["redirected_to_home"] = redirected_to_home or None
             attempt_record["nav_root_revalidated"] = await _ensure_nav_root_ready()
-            if not redirected_home_logged:
+            if redirected_to_home and not redirected_home_logged:
                 log_event(
                     logger=logger,
                     phase="orders",
-                    message="redirected to home after click",
+                    message="redirected to home after click; retrying",
                     store_code=store.store_code,
                     final_url=page.url,
                     attempt=attempt,
                 )
                 redirected_home_logged = True
+            attempts.append(attempt_record)
+            appended_attempt = True
+            if attempt < max_attempts:
+                await asyncio.sleep(1)
+                continue
 
-        attempts.append(attempt_record)
+        if not appended_attempt:
+            attempts.append(attempt_record)
         if container_ready:
             await _log_left_nav(f"{snapshot_context}:attempt_{attempt}:success")
             log_event(
