@@ -1642,18 +1642,40 @@ async def _navigate_to_orders_container(
         await _log_left_nav(f"{snapshot_context}:already_loaded")
         return True
 
-    locator_candidates: list[tuple[str, Locator]] = [
-        ("orders_report_role", page.get_by_role("link", name=re.compile("orders report", re.I))),
-        ("orders_report_text", page.locator("a:has-text(\"Order Report\")")),
-        ("orders_report_aria", page.locator("[aria-label*='order report' i]")),
-        ("reports_nav_selector", page.locator(nav_selector)),
-    ]
+    async def _ensure_nav_root_ready() -> bool:
+        nav_root = page.locator("ul.nav.nav-sidebar")
+        try:
+            await nav_root.first.wait_for(state="visible", timeout=nav_timeout_ms)
+            return True
+        except Exception:
+            return False
+
+    def _build_locator_candidates() -> list[tuple[str, Locator]]:
+        return [
+            ("orders_report_role", page.get_by_role("link", name=re.compile("orders report", re.I))),
+            ("orders_report_text", page.locator("a:has-text(\"Order Report\")")),
+            ("orders_report_aria", page.locator("[aria-label*='order report' i]")),
+            ("reports_nav_selector", page.locator(nav_selector)),
+        ]
+
+    def _is_home_url(url: str | None) -> bool:
+        if not url:
+            return False
+        lowered_url = url.lower()
+        candidate_homes = [store.home_url, store.default_home_url]
+        if any(home and home.lower() in lowered_url for home in candidate_homes):
+            return True
+        return "/home" in lowered_url
 
     attempts: list[dict[str, Any]] = []
     max_attempts = 3
+    redirected_home_logged = False
     for attempt in range(1, max_attempts + 1):
+        locator_candidates = _build_locator_candidates()
         locator_used: Locator | None = None
         locator_label: str | None = None
+        nav_root_ready = await _ensure_nav_root_ready()
+
         for label, locator in locator_candidates:
             try:
                 await locator.first.wait_for(state="visible", timeout=min(nav_timeout_ms, 10_000))
@@ -1667,7 +1689,14 @@ async def _navigate_to_orders_container(
             "attempt": attempt,
             "locator_strategy": locator_label,
             "nav_selector": nav_selector if locator_label == "reports_nav_selector" else None,
+            "nav_root_ready": nav_root_ready,
         }
+
+        if not nav_root_ready:
+            attempt_record["reason"] = "nav_root_not_ready"
+            attempts.append(attempt_record)
+            await asyncio.sleep(1)
+            continue
 
         if locator_used is None:
             attempt_record["reason"] = "locator_not_visible"
@@ -1704,6 +1733,23 @@ async def _navigate_to_orders_container(
                 "final_url": page.url,
             }
         )
+        redirected_to_home = (
+            not container_ready and not target_pattern.search(page.url or "") and _is_home_url(page.url)
+        )
+        if redirected_to_home:
+            attempt_record["redirected_to_home"] = True
+            attempt_record["nav_root_revalidated"] = await _ensure_nav_root_ready()
+            if not redirected_home_logged:
+                log_event(
+                    logger=logger,
+                    phase="orders",
+                    message="redirected to home after click",
+                    store_code=store.store_code,
+                    final_url=page.url,
+                    attempt=attempt,
+                )
+                redirected_home_logged = True
+
         attempts.append(attempt_record)
         if container_ready:
             await _log_left_nav(f"{snapshot_context}:attempt_{attempt}:success")
