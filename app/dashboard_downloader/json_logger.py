@@ -6,6 +6,7 @@ import sys
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
 __all__ = ["JsonLogger", "get_logger", "log_event", "timed_event", "new_run_id"]
@@ -42,7 +43,10 @@ class JsonLogger:
             file_path = _default_log_file_path()
         else:
             file_path = log_file_path
-        self.file_handle = open(file_path, "a", encoding="utf-8") if file_path else None
+        self.log_file_path = self._resolve_path(file_path)
+        self.file_handle = (
+            open(self.log_file_path, "a", encoding="utf-8") if self.log_file_path else None
+        )
         self._owns_file_handle = self.file_handle is not None
         self._owns_state = True
         self._state: Dict[str, bool] = {"closed": False}
@@ -52,11 +56,20 @@ class JsonLogger:
         child = JsonLogger(run_id=self.run_id, stream=self.stream, log_file_path=None)
         child.default_context = {**self.default_context, **kwargs}
         child.file_handle = self.file_handle
+        child.log_file_path = self.log_file_path
         child.aggregator = self.aggregator
         child._owns_state = False
         child._state = self._state
         child._owns_file_handle = False
         return child
+
+    @staticmethod
+    def _resolve_path(raw_path: str | None) -> str | None:
+        if not raw_path:
+            return None
+        path = Path(raw_path).expanduser().resolve()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return str(path)
 
     @property
     def closed(self) -> bool:
