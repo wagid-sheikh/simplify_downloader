@@ -101,3 +101,5 @@
 {"run_id": "20260106_141554862608", "store_code": "A817", "phase": "store", "status": "ok", "message": "Completed TD orders store discovery", "session_reused": true, "ts": "2026-01-06T14:24:21.060516+00:00"}
 {"run_id": "20260106_141554862608", "phase": "notifications", "status": "ok", "message": "TD orders sync discovery flow complete; notifying", "run_env": "dev", "ts": "2026-01-06T14:24:21.495681+00:00"}
 {"run_id": "20260106_141554862608", "phase": "run_summary", "status": "ok", "message": "Run summary inserted", "overall_status": "warning", "ts": "2026-01-06T14:24:21.545420+00:00"}
+{"run_id": "verify-log-path", "phase": "init", "status": "ok", "message": "Verification run for log path", "log_file_path": "/workspace/simplify_downloader/scripts/simplify_downloader.jsonl", "ts": "2026-01-06T15:18:11.010527+00:00"}
+{"run_id": "verify-log-path", "phase": "store", "status": "ok", "message": "Sample store phase", "store_code": "A001", "ts": "2026-01-06T15:18:11.010753+00:00"}
