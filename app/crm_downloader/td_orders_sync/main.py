@@ -428,9 +428,19 @@ class StoreReport:
     filenames: list[str] = field(default_factory=list)
     staging_rows: int | None = None
     final_rows: int | None = None
+    rows_downloaded: int | None = None
+    rows_ingested: int | None = None
+    warning_count: int | None = None
+    dropped_rows_count: int | None = None
+    edited_rows_count: int | None = None
+    duplicate_rows_count: int | None = None
     message: str | None = None
     error_message: str | None = None
     warnings: list[str] = field(default_factory=list)
+    dropped_rows: list[dict[str, Any]] = field(default_factory=list)
+    warning_rows: list[dict[str, Any]] = field(default_factory=list)
+    edited_rows: list[dict[str, Any]] = field(default_factory=list)
+    duplicate_rows: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -438,9 +448,19 @@ class StoreReport:
             "filenames": list(self.filenames),
             "staging_rows": self.staging_rows,
             "final_rows": self.final_rows,
+            "rows_downloaded": self.rows_downloaded,
+            "rows_ingested": self.rows_ingested,
+            "warning_count": self.warning_count,
+            "dropped_rows_count": self.dropped_rows_count,
+            "edited_rows_count": self.edited_rows_count,
+            "duplicate_rows_count": self.duplicate_rows_count,
             "message": self.message,
             "error_message": self.error_message,
             "warnings": list(self.warnings),
+            "dropped_rows": list(self.dropped_rows),
+            "warning_rows": list(self.warning_rows),
+            "edited_rows": list(self.edited_rows),
+            "duplicate_rows": list(self.duplicate_rows),
         }
 
 
@@ -549,39 +569,79 @@ class TdOrdersDiscoverySummary:
 
     def summary_text(self, *, finished_at: datetime | None = None) -> str:
         resolved_finished_at = finished_at or datetime.now(timezone.utc)
-        remarks_lines, truncated_rows, truncated_length = self._ingest_remarks_section(
-            max_rows=INGEST_REMARKS_MAX_ROWS, max_chars=INGEST_REMARKS_MAX_CHARS
-        )
+        tz = get_timezone()
+        started_local = self.started_at.astimezone(tz)
+        finished_local = resolved_finished_at.astimezone(tz)
+
+        def _format_row_entries(rows: list[dict[str, Any]]) -> list[str]:
+            if not rows:
+                return ["- None"]
+            rendered: list[str] = []
+            for row in rows:
+                headers = row.get("headers") or []
+                values = row.get("values") or {}
+                remarks = row.get("remarks")
+                parts: list[str] = []
+                if isinstance(values, Mapping):
+                    keys = headers or list(values.keys())
+                    for header in keys:
+                        parts.append(f"{header}={_truncate_text(str(values.get(header))) if values else None}")
+                else:
+                    parts.append(_truncate_text(str(values)) or "")
+                if remarks:
+                    parts.append(f"remarks: {_truncate_text(str(remarks))}")
+                rendered.append(f"- {' | '.join([part for part in parts if part])}")
+            return rendered
+
+        def _format_store_section(
+            reports: Mapping[str, StoreReport], *, sales: bool = False
+        ) -> list[str]:
+            lines: list[str] = []
+            for code in sorted(reports):
+                report = reports[code]
+                rows_downloaded = report.rows_downloaded or 0
+                rows_ingested = report.rows_ingested or (report.final_rows or 0)
+                warning_count = report.warning_count if report.warning_count is not None else len(report.warnings)
+                dropped_count = report.dropped_rows_count if report.dropped_rows_count is not None else len(report.dropped_rows)
+                summary_parts = [
+                    f"{code} | {rows_downloaded} - Downloaded | {rows_ingested} - Ingested | {warning_count} - Warning | {dropped_count} Dropped Rows"
+                ]
+                if sales:
+                    edited_count = report.edited_rows_count if report.edited_rows_count is not None else len(report.edited_rows)
+                    duplicate_count = (
+                        report.duplicate_rows_count if report.duplicate_rows_count is not None else len(report.duplicate_rows)
+                    )
+                    summary_parts[0] = (
+                        summary_parts[0] + f" | {edited_count} - Edited | {duplicate_count} - Duplicate"
+                    )
+                lines.append(summary_parts[0])
+                lines.append("Dropped Rows:")
+                lines.extend(_format_row_entries(report.dropped_rows))
+                lines.append("Warning Rows:")
+                lines.extend(_format_row_entries(report.warning_rows))
+                if sales:
+                    lines.append("Edited Rows:")
+                    lines.extend(_format_row_entries(report.edited_rows))
+                    lines.append("Duplicate Rows:")
+                    lines.extend(_format_row_entries(report.duplicate_rows))
+            if not lines:
+                lines.append("- None recorded")
+            return lines
+
+        overall_run_summary = "; ".join(self.notes) if self.notes else f"Run completed with status {self.overall_status()}"
         lines = [
-            f"Pipeline: {PIPELINE_NAME}",
-            f"Run ID: {self.run_id}",
-            f"Env: {self.run_env}",
-            f"Started: {self.started_at.isoformat()}",
-            f"Finished: {resolved_finished_at.isoformat()}",
+            f"Run ID: {self.run_id} | Overall Status: {self.overall_status()}",
+            f"Started: {started_local.strftime('%d-%m-%Y %H:%M:%S')} | Finished: {finished_local.strftime('%d-%m-%Y %H:%M:%S')} | Total Time Taken: {self._format_duration(resolved_finished_at)}",
             f"Report Date: {self.report_date.isoformat()}",
-            f"Overall Status: {self.overall_status()}",
-            f"Orders Status: {self.orders_overall_status()}",
-            f"Sales Status: {self.sales_overall_status()}",
             "",
-            "Orders results:",
+            "**Per Store Orders Status:**",
         ]
-        lines.extend(self._format_report_section(self.orders_results))
+        lines.extend(_format_store_section(self.orders_results))
         lines.append("")
-        lines.append("Sales results:")
-        lines.extend(self._format_report_section(self.sales_results))
-        if self.notes:
-            lines.append("")
-            lines.append("Notes:")
-            lines.extend(f"- {note}" for note in self.notes)
+        lines.append("**Per Store Sales Status:**")
+        lines.extend(_format_store_section(self.sales_results, sales=True))
         lines.append("")
-        lines.append("Ingest remarks:")
-        lines.extend(remarks_lines)
-        if truncated_rows:
-            lines.append(
-                f"... additional {len(self.ingest_remarks) - INGEST_REMARKS_MAX_ROWS} remarks truncated"
-            )
-        elif truncated_length:
-            lines.append("... some remarks truncated for length")
+        lines.append(overall_run_summary)
         return "\n".join(lines)
 
     def _ingest_warnings_payload(self, *, max_rows: int, max_chars: int) -> dict[str, Any]:
@@ -686,6 +746,7 @@ class TdOrdersDiscoverySummary:
             ),
             "started_at": self.started_at.isoformat(),
             "finished_at": finished_at.isoformat(),
+            "total_time_taken": self._format_duration(finished_at),
         }
 
     def build_record(self, *, finished_at: datetime) -> Dict[str, Any]:
@@ -2238,13 +2299,30 @@ async def _observe_iframe_hydration(
             break
         await asyncio.sleep(0.5)
 
+    spinner_summary = [
+        {
+            "label": entry["label"],
+            "count": entry.get("count"),
+            "ever_visible": entry.get("ever_visible"),
+            "visible": entry.get("visible"),
+        }
+        for entry in observed_spinners.values()
+    ]
+    control_summary = [
+        {
+            "label": entry["label"],
+            "count": entry.get("count"),
+            "samples": [sample for sample in (entry.get("texts") or [])[:3]],
+        }
+        for entry in observed_controls.values()
+    ]
     log_event(
         logger=logger,
         phase="iframe",
         message="Iframe hydration observations",
         store_code=store.store_code,
-        observed_controls=list(observed_controls.values()),
-        observed_spinners=list(observed_spinners.values()),
+        observed_controls=control_summary,
+        observed_spinners=spinner_summary,
     )
 
 
@@ -4042,9 +4120,21 @@ async def _execute_sales_flow(
         filenames=[Path(sales_download_path).name] if sales_download_path else [],
         staging_rows=sales_ingest_result.staging_rows if sales_ingest_result else None,
         final_rows=sales_ingest_result.final_rows if sales_ingest_result else None,
+        rows_downloaded=sales_ingest_result.rows_downloaded if sales_ingest_result else None,
+        rows_ingested=sales_ingest_result.final_rows if sales_ingest_result else None,
+        warning_count=(
+            len(sales_ingest_result.warning_rows) if sales_ingest_result and sales_ingest_result.warning_rows else len(sales_ingest_result.warnings) if sales_ingest_result else None
+        ),
+        dropped_rows_count=len(sales_ingest_result.dropped_rows) if sales_ingest_result else None,
+        edited_rows_count=sales_ingest_result.rows_edited if sales_ingest_result else None,
+        duplicate_rows_count=sales_ingest_result.rows_duplicate if sales_ingest_result else None,
         message=sales_message,
         error_message=sales_message if sales_status == "error" else None,
         warnings=sales_ingest_result.warnings if sales_ingest_result else [],
+        dropped_rows=sales_ingest_result.dropped_rows if sales_ingest_result else [],
+        warning_rows=sales_ingest_result.warning_rows if sales_ingest_result else [],
+        edited_rows=sales_ingest_result.edited_rows if sales_ingest_result else [],
+        duplicate_rows=sales_ingest_result.duplicate_rows if sales_ingest_result else [],
     )
 
 
@@ -4522,6 +4612,14 @@ async def _run_store_discovery(
                         filenames=[Path(detail).name],
                         staging_rows=ingest_result.staging_rows if ingest_result else None,
                         final_rows=ingest_result.final_rows if ingest_result else None,
+                        rows_downloaded=ingest_result.rows_downloaded if ingest_result else None,
+                        rows_ingested=ingest_result.final_rows if ingest_result else None,
+                        warning_count=(
+                            len(ingest_result.warning_rows) if ingest_result and ingest_result.warning_rows else len(ingest_result.warnings) if ingest_result else None
+                        ),
+                        dropped_rows_count=len(ingest_result.dropped_rows) if ingest_result else None,
+                        warning_rows=ingest_result.warning_rows if ingest_result else [],
+                        dropped_rows=ingest_result.dropped_rows if ingest_result else [],
                         message=outcome_message,
                         warnings=ingest_result.warnings if ingest_result else [],
                     )
