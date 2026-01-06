@@ -1662,6 +1662,7 @@ async def _navigate_to_orders_container(
         deadline = asyncio.get_event_loop().time() + (nav_timeout_ms / 1000)
         nav_root_seen = False
         locator_seen: str | None = None
+        initial_probe_window = asyncio.get_event_loop().time() + min(nav_timeout_ms / 1000, 3)
 
         while asyncio.get_event_loop().time() < deadline:
             try:
@@ -1676,6 +1677,17 @@ async def _navigate_to_orders_container(
                         return True, locator_seen, nav_root_seen
                 except Exception:
                     continue
+
+            if (
+                not nav_root_seen
+                and locator_seen is None
+                and asyncio.get_event_loop().time() > initial_probe_window
+            ):
+                try:
+                    await page.reload(wait_until="domcontentloaded", timeout=min(nav_timeout_ms, 5_000))
+                except Exception:
+                    pass
+                continue
 
             await asyncio.sleep(0.25)
 
@@ -1716,10 +1728,11 @@ async def _navigate_to_orders_container(
         log_event(
             logger=logger,
             phase="orders",
-            message="Orders nav root not visible before navigation; proceeding with visible locator",
+            message="Nav root missing; proceeding with direct click",
             store_code=store.store_code,
             nav_root_visible=False,
             locator_strategy=initial_locator_label,
+            initial_probe=True,
         )
 
     for attempt in range(1, max_attempts + 1):
@@ -1750,7 +1763,7 @@ async def _navigate_to_orders_container(
             log_event(
                 logger=logger,
                 phase="orders",
-                message="Nav root not visible before Orders click; proceeding",
+                message="Nav root missing; proceeding with direct click",
                 store_code=store.store_code,
                 nav_root_visible=False,
                 attempt=attempt,
