@@ -1663,6 +1663,18 @@ def _build_sales_report_url(store: TdStore, current_url: str | None = None) -> s
     return f"{parsed.scheme}://{parsed.netloc}/{store_code_lower}/App/Reports/NEWSalesAndDeliveryReport"
 
 
+def _log_sales_navigation_attempt_event(
+    *, logger: JsonLogger, store_code: str, attempt: dict[str, Any]
+) -> None:
+    log_event(
+        logger=logger,
+        phase="sales",
+        message="Sales navigation attempt",
+        store_code=store_code,
+        **attempt,
+    )
+
+
 async def _navigate_to_sales_report(
     page: Page,
     *,
@@ -1744,14 +1756,7 @@ async def _navigate_to_sales_report(
             "page_title": page_title,
         }
         attempts.append(attempt)
-        log_event(
-            logger=logger,
-            phase="sales",
-            message="Sales navigation attempt",
-            store_code=store.store_code,
-            page_title=page_title,
-            **attempt,
-        )
+        _log_sales_navigation_attempt_event(logger=logger, store_code=store.store_code, attempt=attempt)
         return attempt
 
     async def _log_navigation_outcome(
