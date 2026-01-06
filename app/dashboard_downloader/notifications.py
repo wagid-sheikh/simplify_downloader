@@ -3,13 +3,15 @@ from __future__ import annotations
 import logging
 import smtplib
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import sqlalchemy as sa
 from jinja2 import Template
 
+from app.common.date_utils import get_timezone
 from app.common.db import session_scope
 from app.dashboard_downloader.db_tables import (
     documents,
@@ -487,6 +489,28 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
     metrics = run_data.get("metrics_json") or {}
     payload = metrics.get("notification_payload") or {}
     stores_payload = payload.get("stores") or []
+
+    def _coerce_int(value: Any) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return 0
+
+    def _rows_ingested(report: Mapping[str, Any]) -> int:
+        for candidate in (report.get("rows_ingested"), report.get("final_rows"), report.get("staging_rows")):
+            if candidate is not None:
+                return _coerce_int(candidate)
+        return 0
+
+    def _count_from_fields(report: Mapping[str, Any], *keys: str) -> int:
+        for key in keys:
+            value = report.get(key)
+            if isinstance(value, int):
+                return _coerce_int(value)
+            if isinstance(value, list):
+                return len(value)
+        return 0
+
     stores: list[dict[str, Any]] = []
     for store in stores_payload:
         orders = store.get("orders") or {}
@@ -500,10 +524,10 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
                 "orders_filenames": orders.get("filenames") or [],
                 "orders_staging_rows": orders.get("staging_rows"),
                 "orders_final_rows": orders.get("final_rows"),
-                "orders_rows_downloaded": orders.get("rows_downloaded"),
-                "orders_rows_ingested": orders.get("rows_ingested"),
-                "orders_warning_count": orders.get("warning_count"),
-                "orders_dropped_rows_count": orders.get("dropped_rows_count"),
+                "orders_rows_downloaded": _coerce_int(orders.get("rows_downloaded")),
+                "orders_rows_ingested": _rows_ingested(orders),
+                "orders_warning_count": _count_from_fields(orders, "warning_count", "warning_rows", "warnings"),
+                "orders_dropped_rows_count": _count_from_fields(orders, "dropped_rows_count", "dropped_rows"),
                 "orders_dropped_rows": orders.get("dropped_rows") or [],
                 "orders_warning_rows": orders.get("warning_rows") or [],
                 "orders_warnings": orders.get("warnings") or [],
@@ -512,12 +536,12 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
                 "sales_filenames": sales.get("filenames") or [],
                 "sales_staging_rows": sales.get("staging_rows"),
                 "sales_final_rows": sales.get("final_rows"),
-                "sales_rows_downloaded": sales.get("rows_downloaded"),
-                "sales_rows_ingested": sales.get("rows_ingested"),
-                "sales_warning_count": sales.get("warning_count"),
-                "sales_dropped_rows_count": sales.get("dropped_rows_count"),
-                "sales_rows_edited": sales.get("edited_rows_count"),
-                "sales_rows_duplicate": sales.get("duplicate_rows_count"),
+                "sales_rows_downloaded": _coerce_int(sales.get("rows_downloaded")),
+                "sales_rows_ingested": _rows_ingested(sales),
+                "sales_warning_count": _count_from_fields(sales, "warning_count", "warning_rows", "warnings"),
+                "sales_dropped_rows_count": _count_from_fields(sales, "dropped_rows_count", "dropped_rows"),
+                "sales_rows_edited": _count_from_fields(sales, "edited_rows_count", "edited_rows"),
+                "sales_rows_duplicate": _count_from_fields(sales, "duplicate_rows_count", "duplicate_rows"),
                 "sales_dropped_rows": sales.get("dropped_rows") or [],
                 "sales_warning_rows": sales.get("warning_rows") or [],
                 "sales_edited_rows": sales.get("edited_rows") or [],
@@ -527,15 +551,148 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    summary_text = run_data.get("summary_text") or _td_summary_text_from_payload(run_data)
+    started_at_formatted = _format_td_timestamp(payload.get("started_at") or run_data.get("started_at"))
+    finished_at_formatted = _format_td_timestamp(payload.get("finished_at") or run_data.get("finished_at"))
+
     return {
+        "summary_text": summary_text,
+        "td_summary_text": summary_text,
         "started_at": _normalize_datetime(payload.get("started_at") or run_data.get("started_at")),
         "finished_at": _normalize_datetime(payload.get("finished_at") or run_data.get("finished_at")),
+        "started_at_formatted": started_at_formatted,
+        "finished_at_formatted": finished_at_formatted,
         "total_time_taken": payload.get("total_time_taken") or run_data.get("total_time_taken"),
         "overall_status": payload.get("overall_status") or run_data.get("overall_status"),
+        "td_overall_status": payload.get("overall_status") or run_data.get("overall_status"),
         "orders_status": payload.get("orders_status") or (metrics.get("orders") or {}).get("overall_status"),
         "sales_status": payload.get("sales_status") or (metrics.get("sales") or {}).get("overall_status"),
         "stores": stores,
+        "td_all_stores_failed": _td_all_stores_failed(stores_payload),
+        "notification_payload": payload,
     }
+
+
+def _td_all_stores_failed(stores_payload: list[Mapping[str, Any]]) -> bool:
+    if not stores_payload:
+        return True
+
+    def _failed(report: Mapping[str, Any]) -> bool:
+        status = str(report.get("status") or "").lower()
+        return status not in {"ok", "warning"}
+
+    for store in stores_payload:
+        orders_failed = _failed(store.get("orders") or {})
+        sales_failed = _failed(store.get("sales") or {})
+        if not (orders_failed and sales_failed):
+            return False
+    return True
+
+
+def _format_td_timestamp(value: Any) -> str:
+    if not value:
+        return ""
+    tz = get_timezone()
+    try:
+        if isinstance(value, str):
+            dt = datetime.fromisoformat(value)
+        elif isinstance(value, datetime):
+            dt = value
+        else:
+            return _normalize_datetime(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(tz).strftime("%d-%m-%Y %H:%M:%S")
+    except Exception:
+        return _normalize_datetime(value)
+
+
+def _td_summary_text_from_payload(run_data: Mapping[str, Any]) -> str:
+    metrics = run_data.get("metrics_json") or {}
+    payload = metrics.get("notification_payload") or {}
+    if not payload:
+        return ""
+
+    stores_payload = payload.get("stores") or []
+
+    def _rows_ingested(report: Mapping[str, Any]) -> int:
+        for candidate in (report.get("rows_ingested"), report.get("final_rows"), report.get("staging_rows")):
+            if candidate is not None:
+                try:
+                    return int(candidate)
+                except Exception:
+                    return 0
+        return 0
+
+    def _count(report: Mapping[str, Any], *keys: str) -> int:
+        for key in keys:
+            value = report.get(key)
+            if isinstance(value, int):
+                return value
+            if isinstance(value, list):
+                return len(value)
+        return 0
+
+    def _format_store_section(*, sales: bool = False) -> list[str]:
+        lines: list[str] = []
+        for store in stores_payload:
+            report = (store.get("sales") if sales else store.get("orders")) or {}
+            status = str(report.get("status") or "unknown").upper()
+            rows_downloaded = report.get("rows_downloaded") or 0
+            rows_ingested = _rows_ingested(report)
+            warning_count = _count(report, "warning_count", "warning_rows", "warnings")
+            dropped_count = _count(report, "dropped_rows_count", "dropped_rows")
+            base = [
+                f"- {store.get('store_code') or 'UNKNOWN'} — {status}",
+                f"  rows_downloaded: {rows_downloaded}",
+                f"  rows_ingested: {rows_ingested}",
+                f"  warning_count: {warning_count}",
+                f"  dropped_count: {dropped_count}",
+            ]
+            if sales:
+                edited = _count(report, "edited_rows_count", "edited_rows")
+                duplicate = _count(report, "duplicate_rows_count", "duplicate_rows")
+                base.extend(
+                    [
+                        f"  edited_count: {edited}",
+                        f"  duplicate_count: {duplicate}",
+                    ]
+                )
+            lines.extend(base)
+        if not lines:
+            lines.append("- (none)")
+        return lines
+
+    started = _format_td_timestamp(payload.get("started_at") or run_data.get("started_at"))
+    finished = _format_td_timestamp(payload.get("finished_at") or run_data.get("finished_at"))
+    duration = payload.get("total_time_taken") or run_data.get("total_time_taken") or ""
+    orders_status = payload.get("orders_status") or (metrics.get("orders") or {}).get("overall_status")
+    sales_status = payload.get("sales_status") or (metrics.get("sales") or {}).get("overall_status")
+    status_line = f"Overall Status: {payload.get('overall_status') or run_data.get('overall_status')} (Orders: {orders_status}, Sales: {sales_status})"
+
+    lines = [
+        "TD Orders & Sales Run Summary",
+        f"Run ID: {run_data.get('run_id')} | Env: {run_data.get('run_env')}",
+        f"Report Date: {(run_data.get('report_date') or '')}",
+        f"Started (Asia/Kolkata): {started}",
+        f"Finished (Asia/Kolkata): {finished}",
+    ]
+    if duration:
+        lines.append(f"Total Duration: {duration}")
+    lines.extend(
+        [
+            status_line,
+            "",
+            "**Per Store Orders Metrics:**",
+            *_format_store_section(sales=False),
+            "",
+            "**Per Store Sales Metrics:**",
+            *_format_store_section(sales=True),
+        ]
+    )
+    if _td_all_stores_failed(stores_payload):
+        lines.append("All TD stores failed for Orders and Sales.")
+    return "\n".join(lines)
 
 
 async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
@@ -560,7 +717,9 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
         "run_env": run_data["run_env"],
         "report_date": run_data.get("report_date").isoformat() if run_data.get("report_date") else "",
         "overall_status": run_data.get("overall_status"),
+        "total_time_taken": run_data.get("total_time_taken"),
         "summary_text": run_data.get("summary_text", ""),
+        "metrics_json": run_data.get("metrics_json") or {},
     }
     if pipeline_name == "td_orders_sync":
         context.update(_build_td_orders_context(run_data))
@@ -632,8 +791,15 @@ async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str
         "run_env": run_data["run_env"],
         "report_date": run_data.get("report_date").isoformat() if run_data.get("report_date") else "",
         "overall_status": run_data.get("overall_status"),
+        "total_time_taken": run_data.get("total_time_taken"),
         "summary_text": run_data.get("summary_text", ""),
+        "metrics_json": run_data.get("metrics_json") or {},
     }
+    if pipeline_name == "td_orders_sync":
+        context.update(_build_td_orders_context(run_data))
+    else:
+        context["started_at"] = _normalize_datetime(run_data.get("started_at"))
+        context["finished_at"] = _normalize_datetime(run_data.get("finished_at"))
 
     plans = _build_email_plans(
         pipeline_code=pipeline_name,
