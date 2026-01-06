@@ -46,9 +46,9 @@ INGEST_REMARKS_MAX_CHARS = 200
 DOM_SNIPPET_MAX_CHARS = 600
 WARNING_SAMPLE_LIMIT = 3
 VERBOSE_DOM_LOGGING = os.environ.get("TD_ORDERS_VERBOSE_LOGGING", "").strip().lower() in {"1", "true", "yes"}
-NAV_SNAPSHOT_SAMPLE_LIMIT = 8
-SALES_NAV_SAMPLE_LIMIT = 8
-ROW_SAMPLE_LIMIT = 6
+NAV_SNAPSHOT_SAMPLE_LIMIT = 3
+SALES_NAV_SAMPLE_LIMIT = 3
+ROW_SAMPLE_LIMIT = 3
 SNAPSHOT_TEXT_MAX_CHARS = 120
 
 
@@ -69,7 +69,11 @@ def _summarize_text_samples(values: Sequence[str], *, limit: int = ROW_SAMPLE_LI
             samples.append(trimmed or "")
         if len(samples) >= limit:
             break
-    return {"count": len(values), "samples": samples, "truncated": len(values) > len(samples)}
+    truncated = len(values) > len(samples)
+    rendered_samples = list(samples)
+    if truncated:
+        rendered_samples.append("…truncated")
+    return {"count": len(values), "samples": rendered_samples, "truncated": truncated}
 
 
 def _summarize_warnings(
@@ -81,7 +85,11 @@ def _summarize_warnings(
             samples.append(warning)
         if len(samples) >= sample_size:
             break
-    return {"count": len(warnings), "samples": samples, "truncated": len(warnings) > len(samples)}
+    truncated = len(warnings) > len(samples)
+    rendered_samples = list(samples)
+    if truncated:
+        rendered_samples.append("…truncated")
+    return {"count": len(warnings), "samples": rendered_samples, "truncated": truncated}
 
 
 def _format_warning_preview(summary: Mapping[str, Any]) -> str:
@@ -354,6 +362,13 @@ def _format_sales_filename(store_code: str, from_date: date, to_date: date) -> s
     return f"{store_code}_td_sales_{from_date.strftime('%Y%m%d')}_{to_date.strftime('%Y%m%d')}.xlsx"
 
 
+async def _safe_page_title(page: Page) -> str | None:
+    with contextlib.suppress(Exception):
+        title = await page.title()
+        return _truncate_text(title)
+    return None
+
+
 @dataclass
 class TdStore:
     store_code: str
@@ -528,36 +543,68 @@ class TdOrdersDiscoverySummary:
                 }
             )
 
+    def _report_has_data_warnings(self, report: StoreReport, *, include_sales_fields: bool = False) -> bool:
+        warning_count = report.warning_count if report.warning_count is not None else len(report.warning_rows) or len(report.warnings)
+        dropped_count = report.dropped_rows_count if report.dropped_rows_count is not None else len(report.dropped_rows)
+        edited_count = (
+            report.edited_rows_count
+            if include_sales_fields and report.edited_rows_count is not None
+            else len(report.edited_rows)
+            if include_sales_fields
+            else 0
+        )
+        duplicate_count = (
+            report.duplicate_rows_count
+            if include_sales_fields and report.duplicate_rows_count is not None
+            else len(report.duplicate_rows)
+            if include_sales_fields
+            else 0
+        )
+        return any(count > 0 for count in (warning_count, dropped_count, edited_count, duplicate_count))
+
+    def _has_any_data_warnings(self) -> bool:
+        return any(self._report_has_data_warnings(report) for report in self.orders_results.values()) or any(
+            self._report_has_data_warnings(report, include_sales_fields=True) for report in self.sales_results.values()
+        )
+
     def overall_status(self) -> str:
         if not self.store_outcomes:
-            return "warning" if self.phases.get("init", {}).get("warning") else "ok"
-
-        statuses = {outcome.status for outcome in self.store_outcomes.values()}
-        if statuses == {"error"}:
             return "error"
-        if "error" in statuses:
-            return "warning"
-        return "ok"
+
+        statuses = [outcome.status for outcome in self.store_outcomes.values()]
+        all_success = statuses and all(status == "ok" for status in statuses)
+        all_error = statuses and all(status == "error" for status in statuses)
+        has_success_like = any(status in {"ok", "warning"} for status in statuses)
+        data_warnings = self._has_any_data_warnings()
+        if all_success and not data_warnings:
+            return "ok"
+        if all_error or not has_success_like:
+            return "error"
+        return "warning"
 
     def orders_overall_status(self) -> str:
         return self._overall_status_for_reports(self.orders_results)
 
     def sales_overall_status(self) -> str:
-        return self._overall_status_for_reports(self.sales_results)
+        return self._overall_status_for_reports(self.sales_results, include_sales_fields=True)
 
-    def _overall_status_for_reports(self, reports: Mapping[str, StoreReport]) -> str:
+    def _overall_status_for_reports(self, reports: Mapping[str, StoreReport], *, include_sales_fields: bool = False) -> str:
         if not reports:
-            return "warning"
-        statuses = {report.status for report in reports.values()}
-        normalized = {status for status in statuses if status != "skipped"}
-        if not normalized:
-            return "ok"
-        if "error" in normalized:
             return "error"
-        if "warning" in normalized:
-            return "warning"
-        if normalized == {"ok"}:
+        statuses = [report.status for report in reports.values()]
+        non_skipped = [status for status in statuses if status != "skipped"]
+        if not non_skipped:
             return "ok"
+        all_success = all(status == "ok" for status in non_skipped)
+        all_error = all(status == "error" for status in non_skipped)
+        has_success_like = any(status in {"ok", "warning"} for status in non_skipped)
+        data_warnings = any(
+            self._report_has_data_warnings(report, include_sales_fields=include_sales_fields) for report in reports.values()
+        )
+        if all_success and not data_warnings:
+            return "ok"
+        if all_error or not has_success_like:
+            return "error"
         return "warning"
 
     def _format_duration(self, finished_at: datetime) -> str:
@@ -570,14 +617,25 @@ class TdOrdersDiscoverySummary:
     def summary_text(self, *, finished_at: datetime | None = None) -> str:
         resolved_finished_at = finished_at or datetime.now(timezone.utc)
         tz = get_timezone()
+        tz_label = getattr(tz, "key", "Asia/Kolkata")
         started_local = self.started_at.astimezone(tz)
         finished_local = resolved_finished_at.astimezone(tz)
 
-        def _format_row_entries(rows: list[dict[str, Any]]) -> list[str]:
+        def _coerce_count(value: int | None) -> int:
+            return int(value) if value is not None else 0
+
+        def _rows_ingested(report: StoreReport) -> int:
+            for candidate in (report.rows_ingested, report.final_rows, report.staging_rows):
+                if candidate is not None:
+                    return candidate
+            return 0
+
+        def _format_row_entries(rows: list[dict[str, Any]], *, indent: str = "    ") -> list[str]:
             if not rows:
-                return ["- None"]
+                return [f"{indent}- (none)"]
+            limited_rows = rows[:ROW_SAMPLE_LIMIT]
             rendered: list[str] = []
-            for row in rows:
+            for row in limited_rows:
                 headers = row.get("headers") or []
                 values = row.get("values") or {}
                 remarks = row.get("remarks")
@@ -590,58 +648,92 @@ class TdOrdersDiscoverySummary:
                     parts.append(_truncate_text(str(values)) or "")
                 if remarks:
                     parts.append(f"remarks: {_truncate_text(str(remarks))}")
-                rendered.append(f"- {' | '.join([part for part in parts if part])}")
+                rendered.append(f"{indent}- {' | '.join([part for part in parts if part])}")
+            if len(rows) > len(limited_rows):
+                rendered.append(f"{indent}- …truncated")
             return rendered
 
-        def _format_store_section(
-            reports: Mapping[str, StoreReport], *, sales: bool = False
-        ) -> list[str]:
+        def _format_store_report(code: str, report: StoreReport, *, sales: bool = False) -> list[str]:
+            rows_downloaded = _coerce_count(report.rows_downloaded)
+            warning_count = _coerce_count(
+                report.warning_count if report.warning_count is not None else len(report.warning_rows) or len(report.warnings)
+            )
+            dropped_count = _coerce_count(report.dropped_rows_count if report.dropped_rows_count is not None else len(report.dropped_rows))
+            base_lines = [
+                f"- {code} — {report.status.upper()}",
+                f"  rows_downloaded: {rows_downloaded}",
+                f"  rows_ingested: {_rows_ingested(report)}",
+                f"  warning_count: {warning_count}",
+                "  warning rows:",
+                *(_format_row_entries(report.warning_rows)),
+                f"  dropped_count: {dropped_count}",
+                "  dropped rows:",
+                *(_format_row_entries(report.dropped_rows)),
+            ]
+            if sales:
+                edited_count = _coerce_count(report.edited_rows_count if report.edited_rows_count is not None else len(report.edited_rows))
+                duplicate_count = _coerce_count(
+                    report.duplicate_rows_count if report.duplicate_rows_count is not None else len(report.duplicate_rows)
+                )
+                base_lines.extend(
+                    [
+                        f"  edited_count: {edited_count}",
+                        "  edited rows:",
+                        *(_format_row_entries(report.edited_rows)),
+                        f"  duplicate_count: {duplicate_count}",
+                        "  duplicate rows:",
+                        *(_format_row_entries(report.duplicate_rows)),
+                    ]
+                )
+            return base_lines
+
+        def _format_store_section(reports: Mapping[str, StoreReport], *, sales: bool = False) -> list[str]:
             lines: list[str] = []
-            for code in sorted(reports):
-                report = reports[code]
-                rows_downloaded = report.rows_downloaded or 0
-                rows_ingested = report.rows_ingested or (report.final_rows or 0)
-                warning_count = report.warning_count if report.warning_count is not None else len(report.warnings)
-                dropped_count = report.dropped_rows_count if report.dropped_rows_count is not None else len(report.dropped_rows)
-                summary_parts = [
-                    f"{code} | {rows_downloaded} - Downloaded | {rows_ingested} - Ingested | {warning_count} - Warning | {dropped_count} Dropped Rows"
-                ]
-                if sales:
-                    edited_count = report.edited_rows_count if report.edited_rows_count is not None else len(report.edited_rows)
-                    duplicate_count = (
-                        report.duplicate_rows_count if report.duplicate_rows_count is not None else len(report.duplicate_rows)
-                    )
-                    summary_parts[0] = (
-                        summary_parts[0] + f" | {edited_count} - Edited | {duplicate_count} - Duplicate"
-                    )
-                lines.append(summary_parts[0])
-                lines.append("Dropped Rows:")
-                lines.extend(_format_row_entries(report.dropped_rows))
-                lines.append("Warning Rows:")
-                lines.extend(_format_row_entries(report.warning_rows))
-                if sales:
-                    lines.append("Edited Rows:")
-                    lines.extend(_format_row_entries(report.edited_rows))
-                    lines.append("Duplicate Rows:")
-                    lines.extend(_format_row_entries(report.duplicate_rows))
+            for code in self._store_codes_for_payload():
+                report = reports.get(code) or StoreReport(status="error", message="No report recorded")
+                lines.extend(_format_store_report(code, report, sales=sales))
             if not lines:
-                lines.append("- None recorded")
+                lines.append("- (none)")
             return lines
 
-        overall_run_summary = "; ".join(self.notes) if self.notes else f"Run completed with status {self.overall_status()}"
+        def _all_stores_failed() -> bool:
+            if not self.store_outcomes:
+                return True
+            codes = self._store_codes_for_payload()
+            if not codes:
+                return True
+            for code in codes:
+                orders_status = (self.orders_results.get(code) or StoreReport(status="error")).status
+                sales_status = (self.sales_results.get(code) or StoreReport(status="error")).status
+                if orders_status != "error" or sales_status != "error":
+                    return False
+            return True
+
+        notes_lines = [f"- {note}" for note in self.notes] if self.notes else ["- (none)"]
+        status_line = (
+            f"Overall Status: {self.overall_status()} (Orders: {self.orders_overall_status()}, Sales: {self.sales_overall_status()})"
+        )
+
         lines = [
-            f"Run ID: {self.run_id} | Overall Status: {self.overall_status()}",
-            f"Started: {started_local.strftime('%d-%m-%Y %H:%M:%S')} | Finished: {finished_local.strftime('%d-%m-%Y %H:%M:%S')} | Total Time Taken: {self._format_duration(resolved_finished_at)}",
+            "TD Orders & Sales Run Summary",
+            f"Run ID: {self.run_id} | Env: {self.run_env}",
             f"Report Date: {self.report_date.isoformat()}",
+            f"Started ({tz_label}): {started_local.strftime('%d-%m-%Y %H:%M:%S')}",
+            f"Finished ({tz_label}): {finished_local.strftime('%d-%m-%Y %H:%M:%S')}",
+            f"Total Duration: {self._format_duration(resolved_finished_at)}",
+            status_line,
             "",
-            "**Per Store Orders Status:**",
+            "**Per Store Orders Metrics:**",
         ]
         lines.extend(_format_store_section(self.orders_results))
         lines.append("")
-        lines.append("**Per Store Sales Status:**")
+        lines.append("**Per Store Sales Metrics:**")
         lines.extend(_format_store_section(self.sales_results, sales=True))
         lines.append("")
-        lines.append(overall_run_summary)
+        lines.append("Notes:")
+        lines.extend(notes_lines)
+        if _all_stores_failed():
+            lines.append("All TD stores failed for Orders and Sales.")
         return "\n".join(lines)
 
     def _ingest_warnings_payload(self, *, max_rows: int, max_chars: int) -> dict[str, Any]:
@@ -1365,6 +1457,7 @@ async def _capture_orders_left_nav_snapshot(
         )
 
     reports_links: list[dict[str, Any]] = []
+    reports_count = 0
     try:
         reports_sections = nav_root.locator("li:has(> a:has-text(\"Reports\"))")
         if await reports_sections.count():
@@ -1393,6 +1486,13 @@ async def _capture_orders_left_nav_snapshot(
     except Exception:
         reports_links = reports_links
 
+    snapshot_truncated = count > len(snapshot)
+    reports_truncated = reports_count > len(reports_links)
+    if snapshot_truncated:
+        snapshot.append({"note": "…truncated"})
+    if reports_truncated:
+        reports_links.append({"note": "…truncated"})
+
     log_event(
         logger=logger,
         phase="orders",
@@ -1403,6 +1503,8 @@ async def _capture_orders_left_nav_snapshot(
         nav_url=page.url,
         link_count=count,
         reports_count=len(reports_links),
+        links_truncated=snapshot_truncated,
+        reports_truncated=reports_truncated,
         links=snapshot,
         reports_links=reports_links,
     )
@@ -1434,6 +1536,25 @@ async def _navigate_to_orders_container(
             sales_only_mode=sales_only_mode,
         )
 
+    async def _orders_container_ready() -> tuple[bool, str]:
+        try:
+            await page.wait_for_url(target_pattern, wait_until="domcontentloaded", timeout=nav_timeout_ms)
+        except TimeoutError:
+            return False, "url_wait_timeout"
+
+        try:
+            await page.wait_for_selector("#ifrmReport", timeout=nav_timeout_ms)
+            return True, "iframe_ready"
+        except Exception:
+            pass
+
+        try:
+            heading = page.get_by_role("heading", name=re.compile("order report", re.I))
+            await heading.first.wait_for(state="visible", timeout=min(nav_timeout_ms, 5_000))
+            return True, "heading_visible"
+        except Exception:
+            return False, "container_not_visible"
+
     if target_pattern.search(page.url or ""):
         log_event(
             logger=logger,
@@ -1445,57 +1566,88 @@ async def _navigate_to_orders_container(
         await _log_left_nav(f"{snapshot_context}:already_loaded")
         return True
 
-    try:
-        await page.wait_for_selector(nav_selector, timeout=nav_timeout_ms)
-    except TimeoutError:
-        log_event(
-            logger=logger,
-            phase="orders",
-            status="error",
-            message="Reports navigation selector not found on home page",
-            store_code=store.store_code,
-            nav_selector=nav_selector,
-            final_url=page.url,
-        )
-        return False
+    locator_candidates: list[tuple[str, Locator]] = [
+        ("orders_report_role", page.get_by_role("link", name=re.compile("orders report", re.I))),
+        ("orders_report_text", page.locator("a:has-text(\"Order Report\")")),
+        ("orders_report_aria", page.locator("[aria-label*='order report' i]")),
+        ("reports_nav_selector", page.locator(nav_selector)),
+    ]
 
-    try:
-        await page.click(nav_selector)
-        await page.wait_for_url(target_pattern, wait_until="domcontentloaded", timeout=nav_timeout_ms)
-    except TimeoutError:
-        log_event(
-            logger=logger,
-            phase="orders",
-            status="error",
-            message="Orders container did not load via Reports navigation",
-            store_code=store.store_code,
-            final_url=page.url,
-            nav_selector=nav_selector,
-        )
-        return False
+    attempts: list[dict[str, Any]] = []
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        locator_used: Locator | None = None
+        locator_label: str | None = None
+        for label, locator in locator_candidates:
+            try:
+                await locator.first.wait_for(state="visible", timeout=min(nav_timeout_ms, 10_000))
+                locator_used = locator.first
+                locator_label = label
+                break
+            except Exception:
+                continue
 
-    final_url = page.url or ""
-    await _log_left_nav(f"{snapshot_context}:after_navigation")
-    if "simplifytumbledry.in/tms/orders" in final_url.lower():
-        log_event(
-            logger=logger,
-            phase="orders",
-            status="error",
-            message="Navigated to unsupported TMS Orders URL instead of Orders Report container",
-            store_code=store.store_code,
-            final_url=final_url,
-        )
-        return False
+        attempt_record: dict[str, Any] = {
+            "attempt": attempt,
+            "locator_strategy": locator_label,
+            "nav_selector": nav_selector if locator_label == "reports_nav_selector" else None,
+        }
 
+        if locator_used is None:
+            attempt_record["reason"] = "locator_not_visible"
+            attempts.append(attempt_record)
+            await asyncio.sleep(1)
+            continue
+
+        try:
+            await locator_used.click()
+            container_ready, ready_reason = await _orders_container_ready()
+        except Exception as exc:
+            attempt_record["reason"] = f"click_failed:{exc}"
+            attempt_record["final_url"] = page.url
+            attempts.append(attempt_record)
+            await asyncio.sleep(1)
+            continue
+
+        attempt_record.update(
+            {
+                "container_ready": container_ready,
+                "ready_reason": ready_reason,
+                "final_url": page.url,
+            }
+        )
+        attempts.append(attempt_record)
+        if container_ready:
+            await _log_left_nav(f"{snapshot_context}:attempt_{attempt}:success")
+            log_event(
+                logger=logger,
+                phase="orders",
+                message="Navigated to Orders container via Reports entry",
+                store_code=store.store_code,
+                final_url=page.url,
+                nav_selector=nav_selector,
+                locator_strategy=locator_label,
+                attempt=attempt,
+            )
+            return True
+
+        await asyncio.sleep(1)
+
+    page_title = await _safe_page_title(page)
+    await _log_left_nav(f"{snapshot_context}:failed")
     log_event(
         logger=logger,
         phase="orders",
-        message="Navigated to Orders container via Reports entry",
+        status="error",
+        message="Orders container navigation failed after retries",
         store_code=store.store_code,
-        final_url=final_url,
+        final_url=page.url,
+        page_title=page_title,
+        step=snapshot_context,
         nav_selector=nav_selector,
+        attempts=attempts,
     )
-    return True
+    return False
 
 
 def _build_sales_report_url(store: TdStore, current_url: str | None = None) -> str | None:
@@ -1562,7 +1714,7 @@ async def _navigate_to_sales_report(
             target_fragment in url_lower,
         )
 
-    def _record_attempt(
+    async def _record_attempt(
         *,
         method_label: str,
         navigation_path: str,
@@ -1575,6 +1727,7 @@ async def _navigate_to_sales_report(
         sales_nav_selector: str | None = None,
         nav_samples: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        page_title = await _safe_page_title(page)
         attempt = {
             "navigation_method": method_label,
             "navigation_path": navigation_path,
@@ -1588,6 +1741,7 @@ async def _navigate_to_sales_report(
             "reason": reason,
             "url_transitions": url_transitions,
             "nav_samples": nav_samples,
+            "page_title": page_title,
         }
         attempts.append(attempt)
         log_event(
@@ -1595,11 +1749,12 @@ async def _navigate_to_sales_report(
             phase="sales",
             message="Sales navigation attempt",
             store_code=store.store_code,
+            page_title=page_title,
             **attempt,
         )
         return attempt
 
-    def _log_navigation_outcome(
+    async def _log_navigation_outcome(
         *,
         status: str,
         navigation_method: str,
@@ -1608,6 +1763,7 @@ async def _navigate_to_sales_report(
         final_url: str,
         reason: str | None = None,
     ) -> None:
+        page_title = await _safe_page_title(page)
         log_event(
             logger=logger,
             phase="sales",
@@ -1619,6 +1775,7 @@ async def _navigate_to_sales_report(
             retry_status=retry_status,
             final_url=final_url,
             reason=reason,
+            page_title=page_title,
             attempts=attempts,
         )
 
@@ -1834,16 +1991,20 @@ async def _navigate_to_sales_report(
                     "index": idx,
                     "href": href,
                     "normalized_href": normalized,
-                "text": _truncate_text(text),
-                "normalized_text": _truncate_text(normalized_text),
-                "visible": visible,
-                "matches_label": matches_label,
-            }
-        )
+                    "text": _truncate_text(text),
+                    "normalized_text": _truncate_text(normalized_text),
+                    "visible": visible,
+                    "matches_label": matches_label,
+                }
+            )
 
             if selected_locator is None and matches_label:
                 selected_locator = locator
                 normalized_href = normalized or href
+
+        samples_truncated = count > len(samples)
+        if samples_truncated:
+            samples.append({"note": "…truncated"})
 
         log_event(
             logger=logger,
@@ -1851,6 +2012,7 @@ async def _navigate_to_sales_report(
             message="Sales left-nav submenu snapshot",
             store_code=store.store_code,
             samples=samples,
+            samples_truncated=samples_truncated,
             link_count=count,
             submenu_visible=submenu_visible,
             hover_attempted=hover_attempted,
@@ -1934,7 +2096,7 @@ async def _navigate_to_sales_report(
             store_code=store.store_code,
             final_url=current_url,
         )
-        _log_navigation_outcome(
+        await _log_navigation_outcome(
             status="ok",
             navigation_method="already_loaded",
             navigation_path="already_loaded",
@@ -1953,7 +2115,7 @@ async def _navigate_to_sales_report(
         nav_samples,
     ) = await _click_sales_left_nav(retry_label="initial")
     nav_missing = reason == "sales_nav_not_found"
-    last_attempt = _record_attempt(
+    last_attempt = await _record_attempt(
         method_label="orders_left_nav",
         navigation_path=navigation_path_left_nav,
         attempt_label="initial",
@@ -1978,7 +2140,7 @@ async def _navigate_to_sales_report(
             retry_status="initial",
             attempts=attempts,
         )
-        _log_navigation_outcome(
+        await _log_navigation_outcome(
             status="ok",
             navigation_method="orders_left_nav",
             navigation_path=navigation_path_left_nav,
@@ -2002,7 +2164,7 @@ async def _navigate_to_sales_report(
                 attempts=attempts,
                 retry_status="after_login",
             )
-            _log_navigation_outcome(
+            await _log_navigation_outcome(
                 status="warn",
                 navigation_method=(last_attempt or {}).get("navigation_method", "orders_left_nav"),
                 navigation_path=(last_attempt or {}).get("navigation_path", navigation_path_left_nav),
@@ -2034,7 +2196,7 @@ async def _navigate_to_sales_report(
         ) = await _click_sales_left_nav(retry_label="after_login")
         nav_found = nav_found or nav_found_retry
         nav_missing = nav_missing or reports_reason == "sales_nav_not_found"
-        last_attempt = _record_attempt(
+        last_attempt = await _record_attempt(
             method_label="orders_left_nav",
             navigation_path=navigation_path_left_nav,
             attempt_label="after_login",
@@ -2059,7 +2221,7 @@ async def _navigate_to_sales_report(
                 retry_status="after_login",
                 attempts=attempts,
             )
-            _log_navigation_outcome(
+            await _log_navigation_outcome(
                 status="ok",
                 navigation_method="orders_left_nav_after_login",
                 navigation_path=navigation_path_left_nav,
@@ -2072,7 +2234,7 @@ async def _navigate_to_sales_report(
     elif reason.startswith("validation_failed"):
         relogin_ok, relogin_reason = await _refresh_sales_session_with_guard(retry_label="after_validation")
         if not relogin_ok:
-            _log_navigation_outcome(
+            await _log_navigation_outcome(
                 status="warn",
                 navigation_method=(last_attempt or {}).get("navigation_method", "orders_left_nav"),
                 navigation_path=(last_attempt or {}).get("navigation_path", navigation_path_left_nav),
@@ -2104,7 +2266,7 @@ async def _navigate_to_sales_report(
         ) = await _click_sales_left_nav(retry_label="after_validation")
         nav_found = nav_found or nav_found_retry
         nav_missing = nav_missing or reports_reason == "sales_nav_not_found"
-        last_attempt = _record_attempt(
+        last_attempt = await _record_attempt(
             method_label="orders_left_nav",
             navigation_path=navigation_path_left_nav,
             attempt_label="after_validation",
@@ -2117,7 +2279,7 @@ async def _navigate_to_sales_report(
             nav_samples=nav_samples,
         )
         if success:
-            _log_navigation_outcome(
+            await _log_navigation_outcome(
                 status="ok",
                 navigation_method="orders_left_nav_after_validation",
                 navigation_path=navigation_path_left_nav,
@@ -2127,6 +2289,7 @@ async def _navigate_to_sales_report(
             return True
         reason = reports_reason
 
+    page_title = await _safe_page_title(page)
     log_event(
         logger=logger,
         phase="sales",
@@ -2134,6 +2297,7 @@ async def _navigate_to_sales_report(
         message="Sales & Delivery report navigation failed after retry",
         store_code=store.store_code,
         final_url=final_url,
+        page_title=page_title,
         target_url=target_url,
         reason=reason,
         attempts=attempts,
@@ -2149,9 +2313,10 @@ async def _navigate_to_sales_report(
             message="Sales left-nav link not found; exiting without direct URL navigation",
             store_code=store.store_code,
             final_url=final_url,
+            page_title=page_title,
             attempts=attempts,
         )
-    _log_navigation_outcome(
+    await _log_navigation_outcome(
         status="warn",
         navigation_method=(last_attempt or {}).get("navigation_method", "unknown"),
         navigation_path=(last_attempt or {}).get("navigation_path", "unknown"),
@@ -2170,6 +2335,7 @@ async def _wait_for_iframe(
     require_src: bool = False,
     phase: str = "orders",
 ) -> FrameLocator | None:
+    page_title = await _safe_page_title(page)
     try:
         await page.wait_for_selector("#ifrmReport", state="attached", timeout=20_000)
     except TimeoutError:
@@ -2180,6 +2346,7 @@ async def _wait_for_iframe(
             message="iframe#ifrmReport not attached within timeout",
             store_code=store.store_code,
             final_url=page.url,
+            page_title=page_title,
             iframe_attached=False,
         )
         return None
@@ -2200,6 +2367,7 @@ async def _wait_for_iframe(
             message="iframe#ifrmReport attached without src",
             store_code=store.store_code,
             final_url=page.url,
+            page_title=page_title,
             iframe_attached=True,
         )
         return None
@@ -2214,6 +2382,7 @@ async def _wait_for_iframe(
         message="Report container ready; iframe attached",
         store_code=store.store_code,
         final_url=page.url,
+        page_title=page_title,
         iframe_src_hostname=iframe_src_hostname,
         iframe_src_prefix=iframe_src_prefix,
         iframe_src_length=iframe_src_length,
@@ -2284,7 +2453,13 @@ async def _observe_iframe_hydration(
                         visible_texts.append(text)
             except Exception:
                 continue
-        observed_controls[candidate["label"]] = {"label": candidate["label"], "count": count, "texts": visible_texts}
+        text_summary = _summarize_text_samples(visible_texts, limit=ROW_SAMPLE_LIMIT)
+        observed_controls[candidate["label"]] = {
+            "label": candidate["label"],
+            "count": count,
+            "samples": text_summary["samples"],
+            "samples_truncated": text_summary["truncated"],
+        }
         return bool(visible_texts)
 
     while asyncio.get_event_loop().time() < deadline:
@@ -2312,7 +2487,8 @@ async def _observe_iframe_hydration(
         {
             "label": entry["label"],
             "count": entry.get("count"),
-            "samples": [sample for sample in (entry.get("texts") or [])[:3]],
+            "samples": entry.get("samples") or [],
+            "samples_truncated": entry.get("samples_truncated") or False,
         }
         for entry in observed_controls.values()
     ]
@@ -3094,45 +3270,6 @@ def _parse_eta_seconds(status_text: str | None) -> int | None:
     return None
 
 
-async def _capture_outer_html(locator: Locator) -> str | None:
-    try:
-        return await locator.evaluate("(el) => el.outerHTML")
-    except Exception:
-        return None
-
-
-async def _capture_body_inner_html(frame: FrameLocator) -> str | None:
-    try:
-        return await frame.locator("body").first.evaluate("(el) => el.innerHTML")
-    except Exception:
-        return None
-
-
-async def _log_iframe_body_dom(
-    frame: FrameLocator,
-    *,
-    logger: JsonLogger,
-    store: TdStore,
-    label: str = "iframe_body_after_modal",
-    capture_html: bool = False,
-) -> bool:
-    body_html: str | None = None
-    if capture_html:
-        body_html = await _capture_body_inner_html(frame)
-
-    log_event(
-        logger=logger,
-        phase="iframe",
-        message="Iframe body log executed",
-        store_code=store.store_code,
-        label=label,
-        body_log_attempted=True,
-        body_html_captured=bool(body_html) if capture_html else False,
-        body_html_length=len(body_html) if capture_html and body_html else None,
-    )
-    return True
-
-
 async def _wait_for_modal_close(
     frame: FrameLocator,
     *,
@@ -3841,13 +3978,6 @@ async def _run_report_iframe_flow(
     )
 
     await _wait_for_modal_close(frame, logger=logger, store=store, timeout_ms=nav_timeout_ms)
-    with contextlib.suppress(Exception):
-        await _log_iframe_body_dom(
-            frame,
-            logger=logger,
-            store=store,
-            label="iframe_body_after_modal_close",
-        )
     container_locator, container_diagnostics = await _wait_for_report_requests_container(
         frame, logger=logger, store=store, timeout_ms=nav_timeout_ms
     )
