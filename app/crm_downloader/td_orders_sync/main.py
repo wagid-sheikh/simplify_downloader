@@ -121,13 +121,6 @@ async def main(
     run_start_date = from_date or today - timedelta(days=30)
     run_end_date = to_date or today
     logger = get_logger(run_id=resolved_run_id)
-    log_event(
-        logger=logger,
-        phase="init",
-        message="Initialized JSON logger",
-        log_file_path=logger.log_file_path,
-        run_id=resolved_run_id,
-    )
     summary = TdOrdersDiscoverySummary(
         run_id=resolved_run_id,
         run_env=resolved_env,
