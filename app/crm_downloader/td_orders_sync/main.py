@@ -1645,7 +1645,7 @@ async def _navigate_to_orders_container(
     async def _ensure_nav_root_ready() -> bool:
         nav_root = page.locator("ul.nav.nav-sidebar")
         try:
-            await nav_root.first.wait_for(state="visible", timeout=nav_timeout_ms)
+            await nav_root.first.wait_for(state="visible", timeout=min(nav_timeout_ms, 5_000))
             return True
         except Exception:
             return False
@@ -1673,13 +1673,9 @@ async def _navigate_to_orders_container(
                 try:
                     if await locator.first.is_visible():
                         locator_seen = locator_seen or label
-                        if nav_root_seen:
-                            return True, locator_seen, nav_root_seen
+                        return True, locator_seen, nav_root_seen
                 except Exception:
                     continue
-
-            if nav_root_seen and locator_seen:
-                return True, locator_seen, nav_root_seen
 
             await asyncio.sleep(0.25)
 
@@ -1716,6 +1712,16 @@ async def _navigate_to_orders_container(
         )
         return False
 
+    if not nav_root_seen:
+        log_event(
+            logger=logger,
+            phase="orders",
+            message="Orders nav root not visible before navigation; proceeding with visible locator",
+            store_code=store.store_code,
+            nav_root_visible=False,
+            locator_strategy=initial_locator_label,
+        )
+
     for attempt in range(1, max_attempts + 1):
         attempt_diagnostic_logged = False
         locator_used: Locator | None = None
@@ -1741,10 +1747,14 @@ async def _navigate_to_orders_container(
         }
 
         if not nav_root_ready:
-            attempt_record["reason"] = "nav_root_not_ready"
-            attempts.append(attempt_record)
-            await asyncio.sleep(1)
-            continue
+            log_event(
+                logger=logger,
+                phase="orders",
+                message="Nav root not visible before Orders click; proceeding",
+                store_code=store.store_code,
+                nav_root_visible=False,
+                attempt=attempt,
+            )
 
         if locator_used is None:
             attempt_record["reason"] = "locator_not_visible"
