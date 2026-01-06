@@ -1669,8 +1669,8 @@ async def _navigate_to_orders_container(
 
     attempts: list[dict[str, Any]] = []
     max_attempts = 3
-    redirected_home_logged = False
     for attempt in range(1, max_attempts + 1):
+        attempt_diagnostic_logged = False
         locator_used: Locator | None = None
         locator_label: str | None = None
         nav_root_ready = await _ensure_nav_root_ready()
@@ -1705,7 +1705,24 @@ async def _navigate_to_orders_container(
             await asyncio.sleep(1)
             continue
 
+        overlay_checks = 0
         modal_status, modal_selector = await _handle_overdue_modal()
+        while modal_status == "blocking" and overlay_checks < 2:
+            if not attempt_diagnostic_logged:
+                log_event(
+                    logger=logger,
+                    phase="orders",
+                    status="warn",
+                    message="Overlay blocking Orders click; retrying",
+                    store_code=store.store_code,
+                    modal_selector=modal_selector,
+                    attempt=attempt,
+                )
+                attempt_diagnostic_logged = True
+            overlay_checks += 1
+            await asyncio.sleep(1)
+            modal_status, modal_selector = await _handle_overdue_modal()
+
         if modal_status == "blocking":
             attempt_record.update(
                 {
@@ -1739,17 +1756,32 @@ async def _navigate_to_orders_container(
         non_target_url = not container_ready and not target_pattern.search(final_url)
         if non_target_url:
             attempt_record["redirected_to_home"] = redirected_to_home or None
-            attempt_record["nav_root_revalidated"] = await _ensure_nav_root_ready()
-            if redirected_to_home and not redirected_home_logged:
+            nav_root_revalidated = await _ensure_nav_root_ready()
+            attempt_record["nav_root_revalidated"] = nav_root_revalidated
+            revalidated_locator_label: str | None = None
+            if nav_root_revalidated:
+                for revalidated_label, revalidated_locator in _build_locator_candidates():
+                    try:
+                        await revalidated_locator.first.wait_for(
+                            state="visible", timeout=min(nav_timeout_ms, 5_000)
+                        )
+                        revalidated_locator_label = revalidated_label
+                        break
+                    except Exception:
+                        continue
+
+            attempt_record["locator_revalidated"] = revalidated_locator_label
+            if not attempt_diagnostic_logged:
                 log_event(
                     logger=logger,
                     phase="orders",
-                    message="redirected to home after click; retrying",
+                    status="warn",
+                    message="Redirected away from Orders after click; retrying",
                     store_code=store.store_code,
                     final_url=page.url,
                     attempt=attempt,
                 )
-                redirected_home_logged = True
+                attempt_diagnostic_logged = True
             attempts.append(attempt_record)
             appended_attempt = True
             if attempt < max_attempts:
