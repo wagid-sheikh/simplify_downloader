@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from contextlib import contextmanager
@@ -16,11 +17,15 @@ def new_run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S%f")
 
 
-def _default_log_file_path() -> str | None:
+def _default_log_file_path() -> tuple[str | None, str | None]:
+    env_value = os.getenv("JSON_LOG_FILE", "").strip()
+    if env_value:
+        return env_value, "env:JSON_LOG_FILE"
+
     from app.config import config
 
     raw = config.json_log_file.strip()
-    return raw or None
+    return (raw or None, "config.json_log_file" if raw else None)
 
 
 _AUTO = object()
@@ -40,9 +45,10 @@ class JsonLogger:
         self.stream = stream or sys.stdout
         self.default_context: Dict[str, Any] = {"run_id": self.run_id}
         if log_file_path is _AUTO:
-            file_path = _default_log_file_path()
+            file_path, source = _default_log_file_path()
         else:
-            file_path = log_file_path
+            file_path, source = log_file_path, "explicit"
+        self.log_file_path_source: str | None = source
         self.log_file_path = self._resolve_path(file_path)
         self.file_handle = (
             open(self.log_file_path, "a", encoding="utf-8") if self.log_file_path else None
@@ -57,6 +63,7 @@ class JsonLogger:
         child.default_context = {**self.default_context, **kwargs}
         child.file_handle = self.file_handle
         child.log_file_path = self.log_file_path
+        child.log_file_path_source = self.log_file_path_source
         child.aggregator = self.aggregator
         child._owns_state = False
         child._state = self._state
@@ -107,6 +114,15 @@ class JsonLogger:
     def error(self, *, phase: str, message: str, **fields: Any) -> None:
         self.info(phase=phase, status="error", message=message, **fields)
 
+    def log_startup_event(self) -> None:
+        self.info(
+            phase="logger",
+            message="Initialized JSON logger",
+            log_file_path=self.log_file_path,
+            log_file_source=self.log_file_path_source,
+            run_id=self.run_id,
+        )
+
     def close(self) -> None:
         if not self._owns_state:
             return
@@ -125,7 +141,9 @@ class JsonLogger:
 
 
 def get_logger(run_id: Optional[str] = None) -> JsonLogger:
-    return JsonLogger(run_id=run_id)
+    logger = JsonLogger(run_id=run_id)
+    logger.log_startup_event()
+    return logger
 
 
 def log_event(*, logger: JsonLogger, phase: str, status: str = "ok", message: str = "", **extras: Any) -> None:
