@@ -1658,6 +1658,33 @@ async def _navigate_to_orders_container(
             ("reports_nav_selector", page.locator(nav_selector)),
         ]
 
+    async def _await_initial_nav_entrypoint() -> tuple[bool, str | None, bool]:
+        deadline = asyncio.get_event_loop().time() + (nav_timeout_ms / 1000)
+        nav_root_seen = False
+        locator_seen: str | None = None
+
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                nav_root_seen = nav_root_seen or await page.locator("ul.nav.nav-sidebar").first.is_visible()
+            except Exception:
+                nav_root_seen = nav_root_seen or False
+
+            for label, locator in _build_locator_candidates():
+                try:
+                    if await locator.first.is_visible():
+                        locator_seen = locator_seen or label
+                        if nav_root_seen:
+                            return True, locator_seen, nav_root_seen
+                except Exception:
+                    continue
+
+            if nav_root_seen and locator_seen:
+                return True, locator_seen, nav_root_seen
+
+            await asyncio.sleep(0.25)
+
+        return False, locator_seen, nav_root_seen
+
     def _is_home_url(url: str | None) -> bool:
         if not url:
             return False
@@ -1669,6 +1696,26 @@ async def _navigate_to_orders_container(
 
     attempts: list[dict[str, Any]] = []
     max_attempts = 3
+
+    nav_ready, initial_locator_label, nav_root_seen = await _await_initial_nav_entrypoint()
+    if not nav_ready:
+        page_title = await _safe_page_title(page)
+        log_event(
+            logger=logger,
+            phase="orders",
+            status="error",
+            message="Orders navigation not ready within timeout",
+            store_code=store.store_code,
+            nav_selector=nav_selector,
+            nav_timeout_ms=nav_timeout_ms,
+            nav_root_visible=nav_root_seen,
+            locator_strategy=initial_locator_label,
+            final_url=page.url,
+            page_title=page_title,
+            step=snapshot_context,
+        )
+        return False
+
     for attempt in range(1, max_attempts + 1):
         attempt_diagnostic_logged = False
         locator_used: Locator | None = None
