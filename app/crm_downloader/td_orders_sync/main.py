@@ -1510,6 +1510,60 @@ async def _capture_orders_left_nav_snapshot(
     )
 
 
+async def _dismiss_overdue_modal(page: Page, *, wait_timeout_ms: int) -> tuple[str, str | None]:
+    modal_selectors = ["#pnlOrderOverDuePopup", ".modal.in", ".modal.show"]
+    close_selectors = [
+        "#pnlOrderOverDuePopup button.close",
+        "#pnlOrderOverDuePopup button[data-dismiss='modal']",
+        "#pnlOrderOverDuePopup .modal-footer button",
+        ".modal.in button.close",
+        ".modal.in button[data-dismiss='modal']",
+        ".modal.in .modal-footer button",
+    ]
+
+    active_selector: str | None = None
+    for selector in modal_selectors:
+        modal = page.locator(selector)
+        try:
+            if await modal.count() and await modal.first.is_visible():
+                active_selector = selector
+                break
+        except Exception:
+            continue
+
+    if not active_selector:
+        return "absent", None
+
+    for close_selector in close_selectors:
+        close_button = page.locator(close_selector)
+        try:
+            if await close_button.count() and await close_button.first.is_visible():
+                await close_button.first.click()
+                break
+        except Exception:
+            continue
+
+    deadline = asyncio.get_event_loop().time() + (wait_timeout_ms / 1000)
+    while asyncio.get_event_loop().time() < deadline:
+        still_visible = False
+        for selector in modal_selectors:
+            modal = page.locator(selector)
+            try:
+                if await modal.count() and await modal.first.is_visible():
+                    still_visible = True
+                    active_selector = active_selector or selector
+                    break
+            except Exception:
+                continue
+
+        if not still_visible:
+            return "dismissed", active_selector
+
+        await asyncio.sleep(0.2)
+
+    return "blocking", active_selector
+
+
 async def _navigate_to_orders_container(
     page: Page,
     *,
@@ -1555,6 +1609,28 @@ async def _navigate_to_orders_container(
         except Exception:
             return False, "container_not_visible"
 
+    modal_log_emitted = False
+
+    async def _handle_overdue_modal() -> tuple[str, str | None]:
+        nonlocal modal_log_emitted
+        modal_status, modal_selector = await _dismiss_overdue_modal(
+            page, wait_timeout_ms=min(nav_timeout_ms, 5_000)
+        )
+        if modal_status != "absent" and not modal_log_emitted:
+            log_event(
+                logger=logger,
+                phase="orders",
+                status="warn" if modal_status == "blocking" else None,
+                message="Overdue modal dismissed before navigation"
+                if modal_status == "dismissed"
+                else "Overdue modal blocking navigation",
+                store_code=store.store_code,
+                modal_status=modal_status,
+                modal_selector=modal_selector,
+            )
+            modal_log_emitted = True
+        return modal_status, modal_selector
+
     if target_pattern.search(page.url or ""):
         log_event(
             logger=logger,
@@ -1595,6 +1671,18 @@ async def _navigate_to_orders_container(
 
         if locator_used is None:
             attempt_record["reason"] = "locator_not_visible"
+            attempts.append(attempt_record)
+            await asyncio.sleep(1)
+            continue
+
+        modal_status, modal_selector = await _handle_overdue_modal()
+        if modal_status == "blocking":
+            attempt_record.update(
+                {
+                    "reason": "modal_blocking",
+                    "modal_selector": modal_selector,
+                }
+            )
             attempts.append(attempt_record)
             await asyncio.sleep(1)
             continue
