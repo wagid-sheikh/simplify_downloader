@@ -632,7 +632,9 @@ def _td_all_stores_failed(stores_payload: list[Mapping[str, Any]]) -> bool:
 
     def _failed(report: Mapping[str, Any]) -> bool:
         status = str(report.get("status") or "").lower()
-        return status not in {"ok", "warning"}
+        if status in {"ok", "warning", "skipped"}:
+            return False
+        return True
 
     for store in stores_payload:
         orders_failed = _failed(store.get("orders") or {})

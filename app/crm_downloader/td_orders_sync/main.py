@@ -621,12 +621,24 @@ class TdOrdersDiscoverySummary:
         ss = seconds % 60
         return f"{hh:02d}:{mm:02d}:{ss:02d}"
 
-    def summary_text(self, *, finished_at: datetime | None = None) -> str:
+    def summary_text(
+        self,
+        *,
+        finished_at: datetime | None = None,
+        orders_snapshot: Mapping[str, Mapping[str, Any]] | None = None,
+        sales_snapshot: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> str:
         resolved_finished_at = finished_at or datetime.now(timezone.utc)
         tz = get_timezone()
         tz_label = getattr(tz, "key", "Asia/Kolkata")
         started_local = self.started_at.astimezone(tz)
         finished_local = resolved_finished_at.astimezone(tz)
+
+        snapshot_orders, snapshot_sales = (
+            (orders_snapshot, sales_snapshot)
+            if orders_snapshot is not None and sales_snapshot is not None
+            else self._build_store_reports_snapshot()
+        )
 
         def _coerce_count(value: int | None) -> int:
             return int(value) if value is not None else 0
@@ -659,6 +671,16 @@ class TdOrdersDiscoverySummary:
             if len(rows) > len(limited_rows):
                 rendered.append(f"{indent}- …truncated")
             return rendered
+
+        def _report_from_payload(
+            code: str, *, sales: bool = False, default_status: str = "error", default_message: str | None = None
+        ) -> StoreReport:
+            payload = (snapshot_sales if sales else snapshot_orders).get(code)
+            if isinstance(payload, StoreReport):
+                return payload
+            if payload is None:
+                return StoreReport(status=default_status, message=default_message)
+            return StoreReport(**payload)
 
         def _format_store_report(code: str, report: StoreReport, *, sales: bool = False) -> list[str]:
             rows_downloaded = _coerce_count(report.rows_downloaded)
@@ -697,22 +719,22 @@ class TdOrdersDiscoverySummary:
         def _format_store_section(reports: Mapping[str, StoreReport], *, sales: bool = False) -> list[str]:
             lines: list[str] = []
             for code in self._store_codes_for_payload():
-                report = reports.get(code) or StoreReport(status="error", message="No report recorded")
+                report = _report_from_payload(code, sales=sales, default_message="No report recorded")
                 lines.extend(_format_store_report(code, report, sales=sales))
             if not lines:
                 lines.append("- (none)")
             return lines
 
         def _all_stores_failed() -> bool:
-            if not self.store_outcomes:
-                return True
             codes = self._store_codes_for_payload()
             if not codes:
                 return True
             for code in codes:
-                orders_status = (self.orders_results.get(code) or StoreReport(status="error")).status
-                sales_status = (self.sales_results.get(code) or StoreReport(status="error")).status
-                if orders_status != "error" or sales_status != "error":
+                orders_status = (snapshot_orders.get(code) or {}).get("status")
+                sales_status = (snapshot_sales.get(code) or {}).get("status")
+                if orders_status in {"ok", "warning"} or sales_status in {"ok", "warning"}:
+                    return False
+                if orders_status == "skipped" or sales_status == "skipped":
                     return False
             return True
 
@@ -732,10 +754,10 @@ class TdOrdersDiscoverySummary:
             "",
             "**Per Store Orders Metrics:**",
         ]
-        lines.extend(_format_store_section(self.orders_results))
+        lines.extend(_format_store_section(snapshot_orders))
         lines.append("")
         lines.append("**Per Store Sales Metrics:**")
-        lines.extend(_format_store_section(self.sales_results, sales=True))
+        lines.extend(_format_store_section(snapshot_sales, sales=True))
         lines.append("")
         lines.append("Notes:")
         lines.extend(notes_lines)
@@ -849,12 +871,31 @@ class TdOrdersDiscoverySummary:
             prepared.append(data)
         return prepared
 
-    def _build_notification_payload(self, *, finished_at: datetime) -> Dict[str, Any]:
+    def _build_store_reports_snapshot(self) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        orders_snapshot: dict[str, dict[str, Any]] = {}
+        sales_snapshot: dict[str, dict[str, Any]] = {}
+        for code in self._store_codes_for_payload():
+            orders_snapshot[code] = (self.orders_results.get(code) or StoreReport(status="skipped")).as_dict()
+            sales_snapshot[code] = (self.sales_results.get(code) or StoreReport(status="skipped")).as_dict()
+        return orders_snapshot, sales_snapshot
+
+    def _build_notification_payload(
+        self,
+        *,
+        finished_at: datetime,
+        orders_snapshot: Mapping[str, Mapping[str, Any]] | None = None,
+        sales_snapshot: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> Dict[str, Any]:
+        snapshot_orders, snapshot_sales = (
+            (orders_snapshot, sales_snapshot)
+            if orders_snapshot is not None and sales_snapshot is not None
+            else self._build_store_reports_snapshot()
+        )
         stores: list[dict[str, Any]] = []
         for code in self._store_codes_for_payload():
             outcome = self.store_outcomes.get(code)
-            orders_report = (self.orders_results.get(code) or StoreReport(status="skipped")).as_dict()
-            sales_report = (self.sales_results.get(code) or StoreReport(status="skipped")).as_dict()
+            orders_report = dict(snapshot_orders.get(code) or StoreReport(status="skipped").as_dict())
+            sales_report = dict(snapshot_sales.get(code) or StoreReport(status="skipped").as_dict())
             orders_report["warning_rows"] = self._rows_with_store_metadata(
                 orders_report.get("warning_rows"), store_code=code, include_order_number=True, include_remarks=True
             )
@@ -897,6 +938,7 @@ class TdOrdersDiscoverySummary:
         }
 
     def build_record(self, *, finished_at: datetime) -> Dict[str, Any]:
+        orders_snapshot, sales_snapshot = self._build_store_reports_snapshot()
         metrics = {
             "stores": {code: asdict(outcome) for code, outcome in self.store_outcomes.items()},
             "store_order": self.store_codes,
@@ -906,14 +948,16 @@ class TdOrdersDiscoverySummary:
             },
             "orders": {
                 "overall_status": self.orders_overall_status(),
-                "stores": {code: report.as_dict() for code, report in self.orders_results.items()},
+                "stores": orders_snapshot,
             },
             "sales": {
                 "overall_status": self.sales_overall_status(),
-                "stores": {code: report.as_dict() for code, report in self.sales_results.items()},
+                "stores": sales_snapshot,
             },
         }
-        metrics["notification_payload"] = self._build_notification_payload(finished_at=finished_at)
+        metrics["notification_payload"] = self._build_notification_payload(
+            finished_at=finished_at, orders_snapshot=orders_snapshot, sales_snapshot=sales_snapshot
+        )
         return {
             "pipeline_name": PIPELINE_NAME,
             "run_id": self.run_id,
@@ -923,7 +967,9 @@ class TdOrdersDiscoverySummary:
             "total_time_taken": self._format_duration(finished_at),
             "report_date": self.report_date,
             "overall_status": self.overall_status(),
-            "summary_text": self.summary_text(finished_at=finished_at),
+            "summary_text": self.summary_text(
+                finished_at=finished_at, orders_snapshot=orders_snapshot, sales_snapshot=sales_snapshot
+            ),
             "phases_json": {phase: dict(counts) for phase, counts in self.phases.items()},
             "metrics_json": metrics,
         }
