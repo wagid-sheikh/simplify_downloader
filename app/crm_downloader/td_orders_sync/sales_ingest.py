@@ -84,12 +84,28 @@ DATE_FIELDS = {"order_date", "payment_date"}
 REQUIRED_HEADERS = set(HEADER_MAP.keys())
 
 
+def _stringify_value(value: Any) -> str:
+    try:
+        if hasattr(value, "isoformat"):
+            return value.isoformat()  # type: ignore[call-arg]
+    except Exception:
+        pass
+    return str(value) if value is not None else ""
+
+
 @dataclass
 class TdSalesIngestResult:
     staging_rows: int
     final_rows: int
     warnings: list[str]
     ingest_remarks: list[dict[str, str]] = field(default_factory=list)
+    rows_downloaded: int = 0
+    dropped_rows: list[dict[str, Any]] = field(default_factory=list)
+    warning_rows: list[dict[str, Any]] = field(default_factory=list)
+    edited_rows: list[dict[str, Any]] = field(default_factory=list)
+    duplicate_rows: list[dict[str, Any]] = field(default_factory=list)
+    rows_edited: int = 0
+    rows_duplicate: int = 0
 
 
 def _stg_td_sales_table(metadata: sa.MetaData) -> sa.Table:
@@ -245,9 +261,10 @@ def _is_footer_row(values: Sequence[Any]) -> bool:
 
 def _coerce_row(
     raw: Mapping[str, Any], *, tz: ZoneInfo, warnings: list[str], invalid_phone_numbers: set[str]
-) -> tuple[Dict[str, Any], list[str]]:
+) -> tuple[Dict[str, Any], list[str], str | None]:
     row: Dict[str, Any] = {}
     row_remarks: list[str] = []
+    drop_reason: str | None = None
     for header, field in HEADER_MAP.items():
         row[field] = raw.get(header)
 
@@ -262,19 +279,23 @@ def _coerce_row(
     )
 
     if row.get("order_number") in (None, ""):
-        warnings.append("Skipping row with blank order_number")
-        return {}, []
+        drop_reason = "Skipping row with blank order_number"
+        warnings.append(drop_reason)
+        return {}, [], drop_reason
     if row.get("payment_date") is None:
-        warnings.append(f"Skipping row with missing payment_date for order {row.get('order_number')}")
-        return {}, []
+        drop_reason = f"Skipping row with missing payment_date for order {row.get('order_number')}"
+        warnings.append(drop_reason)
+        return {}, [], drop_reason
 
     if isinstance(row.get("payment_made_at"), str):
         row["payment_made_at"] = row["payment_made_at"].strip()
 
-    return row, row_remarks
+    return row, row_remarks, drop_reason
 
 
-def _read_workbook_rows(workbook_path: Path, *, tz: ZoneInfo, warnings: list[str]) -> list[Dict[str, Any]]:
+def _read_workbook_rows(
+    workbook_path: Path, *, tz: ZoneInfo, warnings: list[str]
+) -> tuple[list[Dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int]:
     wb = openpyxl.load_workbook(workbook_path, data_only=True)
     sheet = wb.active
     header_cells = list(next(sheet.iter_rows(min_row=1, max_row=1, values_only=True)))
@@ -284,19 +305,40 @@ def _read_workbook_rows(workbook_path: Path, *, tz: ZoneInfo, warnings: list[str
         raise ValueError(f"TD Sales workbook missing expected columns: {sorted(missing)}")
 
     rows: list[Dict[str, Any]] = []
+    warning_rows: list[dict[str, Any]] = []
+    dropped_rows: list[dict[str, Any]] = []
     data_rows = list(sheet.iter_rows(min_row=2, values_only=True))
     while data_rows and _is_footer_row(data_rows[-1]):
         data_rows.pop()
+    rows_downloaded = len(data_rows)
 
     invalid_phone_numbers: set[str] = set()
 
     for values in data_rows:
         raw_row = {header: values[idx] if idx < len(values) else None for idx, header in enumerate(headers)}
-        normalized, row_remarks = _coerce_row(raw_row, tz=tz, warnings=warnings, invalid_phone_numbers=invalid_phone_numbers)
+        normalized, row_remarks, drop_reason = _coerce_row(
+            raw_row, tz=tz, warnings=warnings, invalid_phone_numbers=invalid_phone_numbers
+        )
         if normalized:
             normalized["_remarks"] = row_remarks
+            if row_remarks:
+                warning_rows.append(
+                    {
+                        "headers": headers,
+                        "values": {header: _stringify_value(raw_row.get(header)) for header in headers},
+                        "remarks": "; ".join(row_remarks),
+                    }
+                )
             rows.append(normalized)
-    return rows
+        else:
+            dropped_rows.append(
+                {
+                    "headers": headers,
+                    "values": {header: _stringify_value(raw_row.get(header)) for header in headers},
+                    "remarks": drop_reason or "; ".join(row_remarks) or "Row dropped due to missing required values",
+                }
+            )
+    return rows, warning_rows, dropped_rows, rows_downloaded
 
 
 def _make_insert(table: sa.Table, values: Mapping[str, Any], *, use_sqlite: bool) -> sa.sql.dml.Insert:
@@ -341,7 +383,8 @@ async def ingest_td_sales_workbook(
 ) -> TdSalesIngestResult:
     tz = get_timezone()
     warnings: list[str] = []
-    rows = _read_workbook_rows(workbook_path, tz=tz, warnings=warnings)
+    rows, warning_rows, dropped_rows, rows_downloaded = _read_workbook_rows(workbook_path, tz=tz, warnings=warnings)
+    header_labels = list(HEADER_MAP.keys())
 
     if not rows:
         log_event(
@@ -352,7 +395,15 @@ async def ingest_td_sales_workbook(
             store_code=store_code,
             workbook=str(workbook_path),
         )
-        return TdSalesIngestResult(staging_rows=0, final_rows=0, warnings=warnings, ingest_remarks=[])
+        return TdSalesIngestResult(
+            staging_rows=0,
+            final_rows=0,
+            warnings=warnings,
+            ingest_remarks=[],
+            rows_downloaded=rows_downloaded,
+            dropped_rows=dropped_rows,
+            warning_rows=warning_rows,
+        )
 
     metadata = sa.MetaData()
     stg_table = _stg_td_sales_table(metadata)
@@ -378,6 +429,8 @@ async def ingest_td_sales_workbook(
         staging_count = 0
         final_count = 0
         remark_entries: list[dict[str, str]] = []
+        edited_rows: list[dict[str, Any]] = []
+        duplicate_rows: list[dict[str, Any]] = []
 
         if duplicates_set:
             await session.execute(
@@ -400,6 +453,20 @@ async def ingest_td_sales_workbook(
             row["is_duplicate"] = is_duplicate
             row["is_edited_order"] = is_duplicate
             row["ingest_remarks"] = "; ".join(remarks) if remarks else None
+            if row["is_edited_order"]:
+                edited_rows.append(
+                    {
+                        "headers": header_labels,
+                        "values": {label: _stringify_value(row.get(field)) for label, field in HEADER_MAP.items()},
+                    }
+                )
+            if row["is_duplicate"]:
+                duplicate_rows.append(
+                    {
+                        "headers": header_labels,
+                        "values": {label: _stringify_value(row.get(field)) for label, field in HEADER_MAP.items()},
+                    }
+                )
 
             if row.get("ingest_remarks"):
                 remark_entries.append(
@@ -439,6 +506,13 @@ async def ingest_td_sales_workbook(
         final_rows=final_count,
         warnings=warnings,
         ingest_remarks=remark_entries,
+        rows_downloaded=rows_downloaded,
+        dropped_rows=dropped_rows,
+        warning_rows=warning_rows,
+        edited_rows=edited_rows,
+        duplicate_rows=duplicate_rows,
+        rows_edited=len(edited_rows),
+        rows_duplicate=len(duplicate_rows),
     )
 
 

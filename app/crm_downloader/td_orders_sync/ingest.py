@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
 import openpyxl
@@ -179,12 +179,27 @@ DATE_FIELDS = {
 REQUIRED_HEADERS = set(HEADER_MAP.keys())
 
 
+def _stringify_value(value: Any) -> str:
+    try:
+        if hasattr(value, "isoformat"):
+            return value.isoformat()  # type: ignore[call-arg]
+    except Exception:
+        pass
+    return str(value) if value is not None else ""
+
+
 @dataclass
 class TdOrdersIngestResult:
     staging_rows: int
     final_rows: int
     warnings: list[str]
     ingest_remarks: list[dict[str, str]] = field(default_factory=list)
+    rows_downloaded: int = 0
+    dropped_rows: list[dict[str, Any]] = field(default_factory=list)
+    warning_rows: list[dict[str, Any]] = field(default_factory=list)
+    rows_downloaded: int = 0
+    dropped_rows: list[dict[str, Any]] = field(default_factory=list)
+    warning_rows: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _stg_td_orders_table(metadata: sa.MetaData) -> sa.Table:
@@ -356,9 +371,12 @@ def _parse_datetime(
         return None
 
 
-def _coerce_row(raw: Mapping[str, Any], *, tz: ZoneInfo, warnings: list[str], invalid_phone_numbers: set[str]) -> Dict[str, Any]:
+def _coerce_row(
+    raw: Mapping[str, Any], *, tz: ZoneInfo, warnings: list[str], invalid_phone_numbers: set[str]
+) -> tuple[Dict[str, Any], list[str], str | None]:
     row: Dict[str, Any] = {}
     row_remarks: list[str] = []
+    drop_reason: str | None = None
     for header, field in HEADER_MAP.items():
         row[field] = raw.get(header)
 
@@ -383,17 +401,21 @@ def _coerce_row(raw: Mapping[str, Any], *, tz: ZoneInfo, warnings: list[str], in
         row_remarks=row_remarks,
     )
     if row["order_number"] in (None, ""):
-        warnings.append("Skipping row with blank order_number")
-        return {}
+        warning = "Skipping row with blank order_number"
+        warnings.append(warning)
+        drop_reason = warning
+        return {}, row_remarks, drop_reason
     if row["order_date"] is None:
-        warnings.append(f"Skipping row with missing order_date for order {row['order_number']}")
-        return {}
+        warning = f"Skipping row with missing order_date for order {row['order_number']}"
+        warnings.append(warning)
+        drop_reason = warning
+        return {}, row_remarks, drop_reason
     if row["due_date"] is None and row["order_date"] is not None:
         row["due_date"] = row["order_date"] + timedelta(days=3)
 
     row["ingest_remarks"] = "; ".join(row_remarks) if row_remarks else None
 
-    return row
+    return row, row_remarks, drop_reason
 
 
 def _is_footer_row(values: Sequence[Any]) -> bool:
@@ -417,7 +439,7 @@ def _is_footer_row(values: Sequence[Any]) -> bool:
 
 def _read_workbook_rows(
     workbook_path: Path, *, tz: ZoneInfo, warnings: list[str], logger: JsonLogger
-) -> list[Dict[str, Any]]:
+) -> tuple[list[Dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int]:
     wb = openpyxl.load_workbook(workbook_path, data_only=True)
     sheet = wb.active
     header_cells = list(next(sheet.iter_rows(min_row=1, max_row=1, values_only=True)))
@@ -427,18 +449,39 @@ def _read_workbook_rows(
         raise ValueError(f"TD Orders workbook missing expected columns: {sorted(missing)}")
 
     rows: list[Dict[str, Any]] = []
+    warning_rows: list[dict[str, Any]] = []
+    dropped_rows: list[dict[str, Any]] = []
     data_rows = list(sheet.iter_rows(min_row=2, values_only=True))
     while data_rows and _is_footer_row(data_rows[-1]):
         data_rows.pop()
+    rows_downloaded = len(data_rows)
 
     invalid_phone_numbers: set[str] = set()
 
     for values in data_rows:
         raw_row = {header: values[idx] if idx < len(values) else None for idx, header in enumerate(headers)}
-        normalized = _coerce_row(raw_row, tz=tz, warnings=warnings, invalid_phone_numbers=invalid_phone_numbers)
+        normalized, row_remarks, drop_reason = _coerce_row(
+            raw_row, tz=tz, warnings=warnings, invalid_phone_numbers=invalid_phone_numbers
+        )
         if normalized:
+            if normalized.get("ingest_remarks"):
+                warning_rows.append(
+                    {
+                        "headers": headers,
+                        "values": {header: _stringify_value(raw_row.get(header)) for header in headers},
+                        "remarks": normalized.get("ingest_remarks"),
+                    }
+                )
             rows.append(normalized)
-    return rows
+        else:
+            dropped_rows.append(
+                {
+                    "headers": headers,
+                    "values": {header: _stringify_value(raw_row.get(header)) for header in headers},
+                    "remarks": drop_reason or "; ".join(row_remarks) or "Row dropped due to missing required values",
+                }
+            )
+    return rows, warning_rows, dropped_rows, rows_downloaded
 
 
 def _make_insert(table: sa.Table, values: Mapping[str, Any], *, use_sqlite: bool) -> sa.sql.dml.Insert:
@@ -466,7 +509,9 @@ async def ingest_td_orders_workbook(
 ) -> TdOrdersIngestResult:
     tz = get_timezone()
     warnings: list[str] = []
-    rows = _read_workbook_rows(workbook_path, tz=tz, warnings=warnings, logger=logger)
+    rows, warning_rows, dropped_rows, rows_downloaded = _read_workbook_rows(
+        workbook_path, tz=tz, warnings=warnings, logger=logger
+    )
     remark_entries = [
         {
             "store_code": store_code,
@@ -486,7 +531,13 @@ async def ingest_td_orders_workbook(
             workbook=str(workbook_path),
         )
         return TdOrdersIngestResult(
-            staging_rows=0, final_rows=0, warnings=warnings, ingest_remarks=remark_entries
+            staging_rows=0,
+            final_rows=0,
+            warnings=warnings,
+            ingest_remarks=remark_entries,
+            rows_downloaded=rows_downloaded,
+            dropped_rows=dropped_rows,
+            warning_rows=warning_rows,
         )
 
     metadata = sa.MetaData()
@@ -586,6 +637,9 @@ async def ingest_td_orders_workbook(
         final_rows=final_count,
         warnings=warnings,
         ingest_remarks=remark_entries,
+        rows_downloaded=rows_downloaded,
+        dropped_rows=dropped_rows,
+        warning_rows=warning_rows,
     )
 
 
