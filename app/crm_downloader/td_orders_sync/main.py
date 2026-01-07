@@ -658,31 +658,20 @@ class TdOrdersDiscoverySummary:
                     values_source = raw_values if isinstance(raw_values, Mapping) else row
                     headers_source = row.get("headers") or []
                     remarks_source = row.get("remarks")
+                row_mapping = row if isinstance(row, Mapping) else {}
                 filtered_values: dict[str, Any] = {}
                 for field in allowed_fields:
                     if field == "store_code":
                         value = values_source.get("store_code", store_code)
                     elif field == "order_number":
-                        value = values_source.get("order_number")
-                        if value is None:
-                            for candidate in ("Order Number", "Order No.", "Order No", "order no"):
-                                if values_source.get(candidate) is not None:
-                                    value = values_source.get(candidate)
-                                    break
-                    elif field == "order_date":
-                        value = values_source.get("order_date")
-                        if value is None:
-                            for candidate in ("Order Date", "Order Date / Time", "order date"):
-                                if values_source.get(candidate) is not None:
-                                    value = values_source.get(candidate)
-                                    break
-                    elif field == "customer_identifier":
-                        value = values_source.get("customer_code")
-                        if value is None:
-                            for candidate in ("customer_id", "customer_name", "customer_gstin", "customer"):
-                                if values_source.get(candidate) is not None:
-                                    value = values_source.get(candidate)
-                                    break
+                        value = (
+                            values_source.get("order_number")
+                            or values_source.get("Order Number")
+                            or values_source.get("Order No.")
+                            or row_mapping.get("order_number")
+                        )
+                    elif field == "payment_date":
+                        value = values_source.get("payment_date") or values_source.get("Payment Date") or row_mapping.get("payment_date")
                     elif field == "ingest_remarks":
                         value = values_source.get("ingest_remarks")
                         if value is None and remarks_source is not None:
@@ -698,6 +687,22 @@ class TdOrdersDiscoverySummary:
                     filtered_headers = [field for field in allowed_fields if field in filtered_values]
                 filtered_rows.append({"headers": filtered_headers, "values": filtered_values})
             return filtered_rows
+
+        def _distinct_rows(
+            rows: list[dict[str, Any]],
+            *,
+            identifier_fields: Sequence[str],
+        ) -> list[dict[str, Any]]:
+            distinct_rows: list[dict[str, Any]] = []
+            seen: set[tuple[Any, ...]] = set()
+            for row in rows:
+                values = row.get("values") or {}
+                key = tuple(values.get(field) for field in identifier_fields)
+                if key in seen:
+                    continue
+                seen.add(key)
+                distinct_rows.append(row)
+            return distinct_rows
 
         def _format_row_entries(rows: list[dict[str, Any]], *, indent: str = "    ") -> list[str]:
             if not rows:
@@ -719,7 +724,7 @@ class TdOrdersDiscoverySummary:
                     parts.append(f"remarks: {_truncate_text(str(remarks))}")
                 rendered.append(f"{indent}- {' | '.join([part for part in parts if part])}")
             if len(rows) > len(limited_rows):
-                rendered.append(f"{indent}- …truncated")
+                rendered.append(f"{indent}- …truncated (showing {len(limited_rows)} of {len(rows)})")
             return rendered
 
         def _report_from_payload(
@@ -776,22 +781,28 @@ class TdOrdersDiscoverySummary:
                         "  edited rows:",
                         *(
                             _format_row_entries(
-                                _filter_row_fields(
-                                    report.edited_rows,
-                                    allowed_fields=("store_code", "order_number", "customer_identifier", "order_date"),
-                                    store_code=code,
-                                )
+                                _distinct_rows(
+                                    _filter_row_fields(
+                                        report.edited_rows,
+                                        allowed_fields=("store_code", "order_number", "payment_date"),
+                                        store_code=code,
+                                    ),
+                                    identifier_fields=("store_code", "order_number", "payment_date"),
+                                ),
                             )
                         ),
                         f"  duplicate_count: {duplicate_count}",
                         "  duplicate rows:",
                         *(
                             _format_row_entries(
-                                _filter_row_fields(
-                                    report.duplicate_rows,
-                                    allowed_fields=("store_code", "order_number", "customer_identifier", "order_date"),
-                                    store_code=code,
-                                )
+                                _distinct_rows(
+                                    _filter_row_fields(
+                                        report.duplicate_rows,
+                                        allowed_fields=("store_code", "order_number", "payment_date"),
+                                        store_code=code,
+                                    ),
+                                    identifier_fields=("store_code", "order_number", "payment_date"),
+                                ),
                             )
                         ),
                     ]
