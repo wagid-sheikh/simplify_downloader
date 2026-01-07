@@ -3971,6 +3971,7 @@ async def _wait_for_report_request_download_link(
     page: Page,
     container: Locator,
     *,
+    report_label: str,
     expected_range_texts: Sequence[str],
     range_patterns: Sequence[re.Pattern[str]],
     logger: JsonLogger,
@@ -4124,13 +4125,13 @@ async def _wait_for_report_request_download_link(
                     )
                     try:
                         async with page.expect_download(timeout=download_wait_timeout_ms) as download_info:
-                            await download_locator.click()
+                        await download_locator.click()
                         download = await download_info.value
                         await download.save_as(str(download_path))
                         log_event(
                             logger=logger,
                             phase="iframe",
-                            message="Orders report download saved",
+                            message=f"{report_label.title()} report download saved",
                             store_code=store.store_code,
                             download_path=str(download_path),
                             suggested_filename=download.suggested_filename,
@@ -4409,6 +4410,7 @@ async def _run_report_iframe_flow(
         frame,
         page,
         container_locator,
+        report_label=report_label,
         expected_range_texts=range_text_candidates,
         range_patterns=range_patterns,
         logger=logger,

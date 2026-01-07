@@ -223,6 +223,10 @@ async def test_sales_ingest_marks_duplicates_and_warnings(tmp_path: Path) -> Non
     assert result.staging_rows == 2
     assert result.final_rows == 2
     assert result.warnings == ["Invalid phone number dropped: 12345"]
+    assert result.rows_duplicate == 2
+    assert result.rows_edited == 2
+    assert len(result.duplicate_rows) == 2
+    assert len(result.edited_rows) == 2
     assert result.ingest_remarks == [
         {
             "store_code": "A668",
@@ -266,7 +270,7 @@ async def test_sales_ingest_marks_duplicates_and_warnings(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_sales_ingest_marks_existing_duplicates(tmp_path: Path) -> None:
+async def test_sales_ingest_reingest_same_range_is_not_duplicate(tmp_path: Path) -> None:
     db_path = tmp_path / "sales_existing.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     await _create_tables(database_url)
@@ -286,7 +290,7 @@ async def test_sales_ingest_marks_existing_duplicates(tmp_path: Path) -> None:
         logger=logger,
     )
 
-    # second workbook with same order_number but different payment_date should be treated as duplicate
+    # second workbook with same order_number but different payment_date should not be treated as duplicate
     wb = openpyxl.load_workbook(base_workbook)
     ws = wb.active
     ws["B2"] = "2025-05-15 09:30"
@@ -306,7 +310,10 @@ async def test_sales_ingest_marks_existing_duplicates(tmp_path: Path) -> None:
 
     assert result.staging_rows == 2
     assert result.final_rows == 2
-    assert any("Duplicate order_number 'SAL-001'" in entry["ingest_remarks"] for entry in result.ingest_remarks)
+    assert result.rows_duplicate == 0
+    assert result.rows_edited == 0
+    assert result.duplicate_rows == []
+    assert result.edited_rows == []
 
     async with session_scope(database_url) as session:
         metadata = sa.MetaData()
@@ -316,7 +323,7 @@ async def test_sales_ingest_marks_existing_duplicates(tmp_path: Path) -> None:
                 sa.select(stg_table.c.order_number, stg_table.c.is_duplicate).order_by(stg_table.c.id)
             )
         ).all()
-        assert all(flag.is_duplicate is True for flag in dupe_flags)
+        assert all(flag.is_duplicate is False for flag in dupe_flags)
 
 
 @pytest.mark.asyncio
@@ -488,7 +495,7 @@ async def test_sales_upsert_respects_business_keys_and_propagates_remarks(tmp_pa
         {
             "store_code": "A668",
             "order_number": "UP-001",
-            "ingest_remarks": "Duplicate order_number 'UP-001' detected in sales data",
+            "ingest_remarks": "Order already exists in sales data for payment_date '2025-05-11T09:30:00+05:30'",
         }
     ]
 
@@ -515,8 +522,11 @@ async def test_sales_upsert_respects_business_keys_and_propagates_remarks(tmp_pa
         ).one()
         assert float(stg_row.payment_received) == 750
         assert float(stg_row.adjustments) == 10
-        assert stg_row.is_duplicate is True
-        assert stg_row.ingest_remarks == "Duplicate order_number 'UP-001' detected in sales data"
+        assert stg_row.is_duplicate is False
+        assert (
+            stg_row.ingest_remarks
+            == "Order already exists in sales data for payment_date '2025-05-11T09:30:00+05:30'"
+        )
         assert stg_row.payment_mode == "Card"
 
         final_row = (
@@ -532,6 +542,6 @@ async def test_sales_upsert_respects_business_keys_and_propagates_remarks(tmp_pa
         ).one()
         assert float(final_row.payment_received) == 750
         assert float(final_row.adjustments) == 10
-        assert final_row.is_duplicate is True
+        assert final_row.is_duplicate is False
         assert final_row.ingest_remarks == stg_row.ingest_remarks
         assert final_row.payment_mode == "Card"
