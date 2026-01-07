@@ -79,12 +79,18 @@ async def run_leads_assignment(
             )
 
             if not assignments:
+                quota_blocking = _build_quota_blocking_log_payload(
+                    eligible_rows, today_counts
+                )
                 log_event(
                     logger=logger,
                     phase="lead_assignment",
                     status="warn",
                     message="eligible leads exceeded quota limits",
-                    extras={"batch_id": batch_id},
+                    extras={
+                        "batch_id": batch_id,
+                        "quota_blocking": quota_blocking,
+                    },
                 )
             else:
                 inserted_count = await _insert_assignments(db_session, assignments)
@@ -221,6 +227,41 @@ async def _fetch_today_assignment_counts(db_session: AsyncSession) -> dict[tuple
         }
         for row in result
     }
+
+
+def _build_quota_blocking_log_payload(
+    leads: Iterable[_LeadRow],
+    today_counts: dict[tuple[str, int], dict[str, int]],
+) -> list[dict[str, object]]:
+    grouped: dict[tuple[str, int], dict[str, object]] = {}
+    for lead in leads:
+        key = (lead.store_code, lead.agent_id)
+        entry = grouped.get(key)
+        if entry is None:
+            entry = {
+                "store_code": lead.store_code,
+                "agent_id": lead.agent_id,
+                "eligible_count": 0,
+                "max_existing_per_lot": lead.max_existing_per_lot,
+                "max_new_per_lot": lead.max_new_per_lot,
+                "max_daily_leads": lead.max_daily_leads,
+            }
+            grouped[key] = entry
+        entry["eligible_count"] = int(entry["eligible_count"]) + 1
+
+    payload: list[dict[str, object]] = []
+    for key, entry in sorted(grouped.items(), key=lambda item: item[0]):
+        counts = today_counts.get(key, {})
+        payload.append(
+            {
+                **entry,
+                "today_existing": int(counts.get("existing", 0)),
+                "today_new": int(counts.get("new", 0)),
+                "today_total": int(counts.get("total", 0)),
+            }
+        )
+
+    return payload
 
 
 def _build_assignments(
