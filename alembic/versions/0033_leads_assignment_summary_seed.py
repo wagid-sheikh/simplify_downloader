@@ -42,6 +42,15 @@ Assignments created: {{ assignments }}
 Documents generated: {{ documents_generated }}
 Emails planned: {{ emails_planned }}
 Emails sent: {{ emails_sent }}
+
+Per-store diagnostics:
+{% if store_diagnostics %}
+{% for store in store_diagnostics %}
+- {{ store.store_code }}: eligible {{ store.eligible_leads_count }}, assigned {{ store.assigned_leads_count }} ({{ store.reasons | join('; ') }})
+{% endfor %}
+{% else %}
+- No eligible stores found.
+{% endif %}
 """.strip()
 
 RECIPIENT_EMAIL = "leads.assignment.summary@example.com"
