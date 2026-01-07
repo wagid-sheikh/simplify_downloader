@@ -753,7 +753,7 @@ class TdOrdersDiscoverySummary:
                     _format_row_entries(
                         _filter_row_fields(
                             report.warning_rows,
-                            allowed_fields=("store_code", "order_number", "ingest_remarks"),
+                            allowed_fields=("store_code", "order_number", "customer_identifier", "order_date", "ingest_remarks"),
                             store_code=code,
                         )
                     )
