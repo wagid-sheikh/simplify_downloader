@@ -642,6 +642,42 @@ class TdOrdersDiscoverySummary:
                     return candidate
             return 0
 
+        def _filter_row_fields(
+            rows: Iterable[Mapping[str, Any]] | None,
+            *,
+            allowed_fields: Sequence[str],
+            store_code: str | None = None,
+        ) -> list[dict[str, Any]]:
+            filtered_rows: list[dict[str, Any]] = []
+            for row in rows or []:
+                values_source: Mapping[str, Any] = {}
+                headers_source: Sequence[str] = []
+                remarks_source = None
+                if isinstance(row, Mapping):
+                    raw_values = row.get("values")
+                    values_source = raw_values if isinstance(raw_values, Mapping) else row
+                    headers_source = row.get("headers") or []
+                    remarks_source = row.get("remarks")
+                filtered_values: dict[str, Any] = {}
+                for field in allowed_fields:
+                    if field == "store_code":
+                        value = values_source.get("store_code", store_code)
+                    elif field == "ingest_remarks":
+                        value = values_source.get("ingest_remarks")
+                        if value is None and remarks_source is not None:
+                            value = remarks_source
+                    else:
+                        value = values_source.get(field)
+                    if value is not None:
+                        filtered_values[field] = value
+                if "store_code" in allowed_fields and store_code and "store_code" not in filtered_values:
+                    filtered_values["store_code"] = store_code
+                filtered_headers = [field for field in headers_source if field in filtered_values]
+                if not filtered_headers:
+                    filtered_headers = [field for field in allowed_fields if field in filtered_values]
+                filtered_rows.append({"headers": filtered_headers, "values": filtered_values})
+            return filtered_rows
+
         def _format_row_entries(rows: list[dict[str, Any]], *, indent: str = "    ") -> list[str]:
             if not rows:
                 return [f"{indent}- (none)"]
@@ -687,10 +723,26 @@ class TdOrdersDiscoverySummary:
                 f"  rows_ingested: {_rows_ingested(report)}",
                 f"  warning_count: {warning_count}",
                 "  warning rows:",
-                *(_format_row_entries(report.warning_rows)),
+                *(
+                    _format_row_entries(
+                        _filter_row_fields(
+                            report.warning_rows,
+                            allowed_fields=("store_code", "order_number", "ingest_remarks"),
+                            store_code=code,
+                        )
+                    )
+                ),
                 f"  dropped_count: {dropped_count}",
                 "  dropped rows:",
-                *(_format_row_entries(report.dropped_rows)),
+                *(
+                    _format_row_entries(
+                        _filter_row_fields(
+                            report.dropped_rows,
+                            allowed_fields=("store_code", "order_number", "ingest_remarks"),
+                            store_code=code,
+                        )
+                    )
+                ),
             ]
             if sales:
                 edited_count = _coerce_count(report.edited_rows_count if report.edited_rows_count is not None else len(report.edited_rows))
@@ -701,10 +753,26 @@ class TdOrdersDiscoverySummary:
                     [
                         f"  edited_count: {edited_count}",
                         "  edited rows:",
-                        *(_format_row_entries(report.edited_rows)),
+                        *(
+                            _format_row_entries(
+                                _filter_row_fields(
+                                    report.edited_rows,
+                                    allowed_fields=("store_code", "order_number"),
+                                    store_code=code,
+                                )
+                            )
+                        ),
                         f"  duplicate_count: {duplicate_count}",
                         "  duplicate rows:",
-                        *(_format_row_entries(report.duplicate_rows)),
+                        *(
+                            _format_row_entries(
+                                _filter_row_fields(
+                                    report.duplicate_rows,
+                                    allowed_fields=("store_code", "order_number"),
+                                    store_code=code,
+                                )
+                            )
+                        ),
                     ]
                 )
             return base_lines
