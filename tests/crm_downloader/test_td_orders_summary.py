@@ -118,10 +118,14 @@ def test_summary_text_filters_row_fields_and_truncates_samples() -> None:
     dropped_rows = [
         {"values": {"store_code": "A1", "order_number": "D1", "ingest_remarks": "drop 1", "address": "hidden"}},
         {"values": {"store_code": "A1", "order_number": "D2", "ingest_remarks": "drop 2", "mobile_number": "000"}},
+        {"values": {"store_code": "A1", "order_number": "D3", "ingest_remarks": "drop 3", "fax": "111"}},
+        {"values": {"store_code": "A1", "order_number": "D4", "ingest_remarks": "drop 4", "carrier": "555"}},
     ]
     edited_rows = [
         {"values": {"store_code": "A1", "order_number": "E1", "payment_mode": "cash"}},
         {"values": {"store_code": "A1", "order_number": "E2", "adjustment": "1.23"}},
+        {"values": {"store_code": "A1", "order_number": "E3", "refund": "2.00"}},
+        {"values": {"store_code": "A1", "order_number": "E4", "notes": "fix"}},
     ]
     duplicate_rows = [
         {"values": {"store_code": "A1", "order_number": "DU1", "notes": "dup 1"}},
@@ -155,17 +159,23 @@ def test_summary_text_filters_row_fields_and_truncates_samples() -> None:
     duplicate_lines = _collect_row_lines("  duplicate rows:")
 
     assert len(warning_lines) == len(warning_rows)
+    assert len(dropped_lines) == len(dropped_rows)
+    assert len(edited_lines) == len(edited_rows)
+    assert len(duplicate_lines) == len(duplicate_rows)
     assert all("ingest_remarks=" in line for line in warning_lines)
     assert all("phone" not in line and "email" not in line and "customer" not in line for line in warning_lines)
+    assert all("…truncated" not in line for line in warning_lines)
 
     assert all("ingest_remarks=" in line for line in dropped_lines)
     assert all("mobile_number" not in line and "address" not in line for line in dropped_lines)
+    assert all("…truncated" not in line for line in dropped_lines)
 
     assert all("payment_mode" not in line and "adjustment" not in line for line in edited_lines)
     assert all("ingest_remarks" not in line for line in edited_lines)
     assert all("store_code=" in line and "order_number=" in line for line in edited_lines)
+    assert all("…truncated" not in line for line in edited_lines)
 
-    assert len(duplicate_lines) == len(duplicate_rows)
     assert all("notes" not in line for line in duplicate_lines)
     assert all("ingest_remarks" not in line for line in duplicate_lines)
     assert all("store_code=" in line and "order_number=" in line for line in duplicate_lines)
+    assert all("…truncated" not in line for line in duplicate_lines)

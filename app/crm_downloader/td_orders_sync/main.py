@@ -716,11 +716,13 @@ class TdOrdersDiscoverySummary:
                 if isinstance(values, Mapping):
                     keys = headers or list(values.keys())
                     for header in keys:
-                        parts.append(f"{header}={_truncate_text(str(values.get(header))) if values else None}")
+                        value = values.get(header) if values else None
+                        rendered_value = str(value) if value is not None else "None"
+                        parts.append(f"{header}={rendered_value}")
                 else:
-                    parts.append(_truncate_text(str(values)) or "")
+                    parts.append(str(values) if values is not None else "")
                 if remarks:
-                    parts.append(f"remarks: {_truncate_text(str(remarks))}")
+                    parts.append(f"remarks: {remarks}")
                 rendered.append(f"{indent}- {' | '.join([part for part in parts if part])}")
             return rendered
 
