@@ -662,6 +662,27 @@ class TdOrdersDiscoverySummary:
                 for field in allowed_fields:
                     if field == "store_code":
                         value = values_source.get("store_code", store_code)
+                    elif field == "order_number":
+                        value = values_source.get("order_number")
+                        if value is None:
+                            for candidate in ("Order Number", "Order No.", "Order No", "order no"):
+                                if values_source.get(candidate) is not None:
+                                    value = values_source.get(candidate)
+                                    break
+                    elif field == "order_date":
+                        value = values_source.get("order_date")
+                        if value is None:
+                            for candidate in ("Order Date", "Order Date / Time", "order date"):
+                                if values_source.get(candidate) is not None:
+                                    value = values_source.get(candidate)
+                                    break
+                    elif field == "customer_identifier":
+                        value = values_source.get("customer_code")
+                        if value is None:
+                            for candidate in ("customer_id", "customer_name", "customer_gstin", "customer"):
+                                if values_source.get(candidate) is not None:
+                                    value = values_source.get(candidate)
+                                    break
                     elif field == "ingest_remarks":
                         value = values_source.get("ingest_remarks")
                         if value is None and remarks_source is not None:
@@ -727,7 +748,7 @@ class TdOrdersDiscoverySummary:
                     _format_row_entries(
                         _filter_row_fields(
                             report.warning_rows,
-                            allowed_fields=("store_code", "order_number", "ingest_remarks"),
+                            allowed_fields=("store_code", "order_number", "customer_identifier", "order_date", "ingest_remarks"),
                             store_code=code,
                         )
                     )
@@ -757,7 +778,7 @@ class TdOrdersDiscoverySummary:
                             _format_row_entries(
                                 _filter_row_fields(
                                     report.edited_rows,
-                                    allowed_fields=("store_code", "order_number"),
+                                    allowed_fields=("store_code", "order_number", "customer_identifier", "order_date"),
                                     store_code=code,
                                 )
                             )
@@ -768,7 +789,7 @@ class TdOrdersDiscoverySummary:
                             _format_row_entries(
                                 _filter_row_fields(
                                     report.duplicate_rows,
-                                    allowed_fields=("store_code", "order_number"),
+                                    allowed_fields=("store_code", "order_number", "customer_identifier", "order_date"),
                                     store_code=code,
                                 )
                             )
