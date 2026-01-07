@@ -707,9 +707,8 @@ class TdOrdersDiscoverySummary:
         def _format_row_entries(rows: list[dict[str, Any]], *, indent: str = "    ") -> list[str]:
             if not rows:
                 return [f"{indent}- (none)"]
-            limited_rows = rows[:ROW_SAMPLE_LIMIT]
             rendered: list[str] = []
-            for row in limited_rows:
+            for row in rows:
                 headers = row.get("headers") or []
                 values = row.get("values") or {}
                 remarks = row.get("remarks")
@@ -723,8 +722,6 @@ class TdOrdersDiscoverySummary:
                 if remarks:
                     parts.append(f"remarks: {_truncate_text(str(remarks))}")
                 rendered.append(f"{indent}- {' | '.join([part for part in parts if part])}")
-            if len(rows) > len(limited_rows):
-                rendered.append(f"{indent}- …truncated (showing {len(limited_rows)} of {len(rows)})")
             return rendered
 
         def _report_from_payload(

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
-from app.crm_downloader.td_orders_sync.main import ROW_SAMPLE_LIMIT, StoreOutcome, StoreReport, TdOrdersDiscoverySummary
+from app.crm_downloader.td_orders_sync.main import StoreOutcome, StoreReport, TdOrdersDiscoverySummary
 
 
 def test_summary_text_lists_ingest_remarks() -> None:
@@ -154,9 +154,8 @@ def test_summary_text_filters_row_fields_and_truncates_samples() -> None:
     edited_lines = _collect_row_lines("  edited rows:")
     duplicate_lines = _collect_row_lines("  duplicate rows:")
 
-    assert len(warning_lines) == ROW_SAMPLE_LIMIT + 1
-    assert warning_lines[-1] == "- …truncated"
-    assert all("ingest_remarks=" in line for line in warning_lines[:-1])
+    assert len(warning_lines) == len(warning_rows)
+    assert all("ingest_remarks=" in line for line in warning_lines)
     assert all("phone" not in line and "email" not in line and "customer" not in line for line in warning_lines)
 
     assert all("ingest_remarks=" in line for line in dropped_lines)
@@ -166,8 +165,7 @@ def test_summary_text_filters_row_fields_and_truncates_samples() -> None:
     assert all("ingest_remarks" not in line for line in edited_lines)
     assert all("store_code=" in line and "order_number=" in line for line in edited_lines)
 
-    assert len(duplicate_lines) == ROW_SAMPLE_LIMIT + 1
-    assert duplicate_lines[-1] == "- …truncated"
+    assert len(duplicate_lines) == len(duplicate_rows)
     assert all("notes" not in line for line in duplicate_lines)
     assert all("ingest_remarks" not in line for line in duplicate_lines)
-    assert all("store_code=" in line and "order_number=" in line for line in duplicate_lines[:-1])
+    assert all("store_code=" in line and "order_number=" in line for line in duplicate_lines)
