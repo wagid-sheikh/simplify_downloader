@@ -361,20 +361,36 @@ def _make_insert(table: sa.Table, values: Mapping[str, Any], *, use_sqlite: bool
     return insert.on_conflict_do_update(index_elements=conflict_cols, set_={key: insert.excluded[key] for key in values})
 
 
-async def _existing_order_numbers(
-    session: AsyncSession, *, stg_table: sa.Table, final_table: sa.Table, store_code: str
-) -> set[str]:
-    existing: set[str] = set()
+def _normalize_payment_key(value: datetime | None, *, tz: ZoneInfo) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is not None:
+        return value.astimezone(tz).replace(tzinfo=None)
+    return value
+
+
+async def _existing_sales_keys(
+    session: AsyncSession, *, stg_table: sa.Table, final_table: sa.Table, store_code: str, tz: ZoneInfo
+) -> set[tuple[str, str, datetime]]:
+    existing: set[tuple[str, str, datetime]] = set()
     stg_rows = await session.execute(
-        sa.select(sa.distinct(stg_table.c.order_number)).where(stg_table.c.store_code == store_code)
+        sa.select(stg_table.c.store_code, stg_table.c.order_number, stg_table.c.payment_date).where(
+            stg_table.c.store_code == store_code
+        )
     )
     final_rows = await session.execute(
-        sa.select(sa.distinct(final_table.c.order_number)).where(final_table.c.store_code == store_code)
+        sa.select(final_table.c.store_code, final_table.c.order_number, final_table.c.payment_date).where(
+            final_table.c.store_code == store_code
+        )
     )
-    for row in stg_rows.scalars():
-        existing.add(str(row))
-    for row in final_rows.scalars():
-        existing.add(str(row))
+    for row in stg_rows:
+        normalized_payment_date = _normalize_payment_key(row.payment_date, tz=tz)
+        if normalized_payment_date is not None and row.order_number is not None:
+            existing.add((row.store_code, str(row.order_number), normalized_payment_date))
+    for row in final_rows:
+        normalized_payment_date = _normalize_payment_key(row.payment_date, tz=tz)
+        if normalized_payment_date is not None and row.order_number is not None:
+            existing.add((row.store_code, str(row.order_number), normalized_payment_date))
     return existing
 
 
@@ -429,11 +445,11 @@ async def ingest_td_sales_workbook(
         else:  # pragma: no cover - safety fallback
             raise TypeError(f"Unsupported SQLAlchemy bind for TD Sales ingest: {type(bind)!r}")
 
-        existing_numbers = await _existing_order_numbers(
-            session, stg_table=stg_table, final_table=final_table, store_code=store_code
+        existing_keys = await _existing_sales_keys(
+            session, stg_table=stg_table, final_table=final_table, store_code=store_code, tz=tz
         )
         counts = Counter(str(row.get("order_number")) for row in rows)
-        duplicates_set = {order for order, count in counts.items() if count > 1} | existing_numbers
+        duplicates_set = {order for order, count in counts.items() if count > 1}
 
         staging_count = 0
         final_count = 0
@@ -455,10 +471,18 @@ async def ingest_td_sales_workbook(
 
         for row in rows:
             order_number = str(row.get("order_number"))
+            payment_date = row.get("payment_date")
+            normalized_payment_date = _normalize_payment_key(payment_date, tz=tz)
+            sales_key = (store_code, order_number, normalized_payment_date) if normalized_payment_date else None
             remarks = row.pop("_remarks", [])
             is_duplicate = order_number in duplicates_set
             if is_duplicate:
                 remarks.append(f"Duplicate order_number '{order_number}' detected in sales data")
+            if sales_key and sales_key in existing_keys:
+                remarks.append(
+                    "Order already exists in sales data for payment_date "
+                    f"'{_stringify_value(row.get('payment_date'))}'"
+                )
             row["is_duplicate"] = is_duplicate
             row["is_edited_order"] = is_duplicate
             row["ingest_remarks"] = "; ".join(remarks) if remarks else None
