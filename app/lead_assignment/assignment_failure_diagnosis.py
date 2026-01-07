@@ -37,6 +37,8 @@ class StoreDiagnosis:
     documents: int
     missing_files: int
     has_recipients: bool
+    quota_summary: str
+    today_counts_summary: str
     reasons: list[str]
 
 
@@ -96,6 +98,63 @@ async def _load_eligible_leads(db_session, store_codes: Iterable[str]) -> dict[s
     return {row.store_code: int(row.eligible_count) for row in result}
 
 
+async def _load_quota_settings(db_session, store_codes: Iterable[str]) -> dict[str, list[dict[str, object]]]:
+    result = await db_session.execute(
+        text(
+            """
+            SELECT
+                slam.store_code,
+                slam.agent_id,
+                am.agent_code,
+                slam.max_existing_per_lot,
+                slam.max_new_per_lot,
+                slam.max_daily_leads
+            FROM store_lead_assignment_map slam
+            JOIN agents_master am ON am.id = slam.agent_id AND am.is_active = true
+            WHERE slam.is_enabled = true
+              AND slam.store_code IN :store_codes
+            ORDER BY slam.store_code, am.agent_code
+            """
+        ).bindparams(bindparam("store_codes", expanding=True)),
+        {"store_codes": list(store_codes)},
+    )
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for row in result.mappings():
+        grouped.setdefault(row["store_code"], []).append(dict(row))
+    return grouped
+
+
+async def _load_today_assignment_counts(
+    db_session, store_codes: Iterable[str]
+) -> dict[tuple[str, int], dict[str, int]]:
+    result = await db_session.execute(
+        text(
+            """
+            SELECT
+                store_code,
+                agent_id,
+                SUM(CASE WHEN lead_type = 'E' THEN 1 ELSE 0 END) AS existing_count,
+                SUM(CASE WHEN lead_type = 'N' THEN 1 ELSE 0 END) AS new_count,
+                COUNT(*) AS total_count
+            FROM lead_assignments
+            WHERE (lead_date = CURRENT_DATE OR CAST(assigned_at AS DATE) = CURRENT_DATE)
+              AND store_code IN :store_codes
+            GROUP BY store_code, agent_id
+            """
+        ).bindparams(bindparam("store_codes", expanding=True)),
+        {"store_codes": list(store_codes)},
+    )
+
+    return {
+        (row.store_code, row.agent_id): {
+            "existing": int(row.existing_count or 0),
+            "new": int(row.new_count or 0),
+            "total": int(row.total_count or 0),
+        }
+        for row in result
+    }
+
+
 async def _load_documents(
     db_session,
     *,
@@ -131,6 +190,72 @@ async def _load_documents(
             continue
         grouped.setdefault(row.store_code, []).append(Path(row.file_path))
     return grouped
+
+
+def _format_limit(value: object) -> str:
+    if value is None:
+        return "unlimited"
+    return str(value)
+
+
+def _build_quota_summary(quota_settings: list[dict[str, object]]) -> str:
+    if not quota_settings:
+        return "none"
+    summaries = []
+    for setting in quota_settings:
+        summaries.append(
+            f"{setting['agent_code']}("
+            f"existing={_format_limit(setting['max_existing_per_lot'])},"
+            f"new={_format_limit(setting['max_new_per_lot'])},"
+            f"daily={_format_limit(setting['max_daily_leads'])})"
+        )
+    return "; ".join(summaries)
+
+
+def _build_today_counts_summary(
+    store_code: str,
+    quota_settings: list[dict[str, object]],
+    today_counts: dict[tuple[str, int], dict[str, int]],
+) -> str:
+    if not quota_settings:
+        return "none"
+    summaries = []
+    for setting in quota_settings:
+        key = (store_code, setting["agent_id"])
+        counts = today_counts.get(key, {"existing": 0, "new": 0, "total": 0})
+        summaries.append(
+            f"{setting['agent_code']}"
+            f"(existing={counts['existing']},new={counts['new']},total={counts['total']})"
+        )
+    return "; ".join(summaries)
+
+
+def _build_quota_reason(
+    store_code: str,
+    quota_settings: list[dict[str, object]],
+    today_counts: dict[tuple[str, int], dict[str, int]],
+) -> str:
+    if not quota_settings:
+        return "quota limits met: no enabled store/agent mappings"
+    met = []
+    for setting in quota_settings:
+        key = (store_code, setting["agent_id"])
+        counts = today_counts.get(key, {"existing": 0, "new": 0, "total": 0})
+        met_parts = []
+        max_existing = setting["max_existing_per_lot"]
+        max_new = setting["max_new_per_lot"]
+        max_daily = setting["max_daily_leads"]
+        if max_existing is not None and counts["existing"] >= max_existing:
+            met_parts.append(f"existing {counts['existing']}/{max_existing}")
+        if max_new is not None and counts["new"] >= max_new:
+            met_parts.append(f"new {counts['new']}/{max_new}")
+        if max_daily is not None and counts["total"] >= max_daily:
+            met_parts.append(f"daily {counts['total']}/{max_daily}")
+        if met_parts:
+            met.append(f"{setting['agent_code']}: " + ", ".join(met_parts))
+    if met:
+        return "quota limits met: " + "; ".join(met)
+    return "quota limits met: none"
 
 
 async def _load_recipients(db_session, run_env: str) -> list[dict[str, object]]:
@@ -182,6 +307,8 @@ async def _diagnose(run_id: str, run_env: str) -> list[StoreDiagnosis]:
                     documents=0,
                     missing_files=0,
                     has_recipients=False,
+                    quota_summary="none",
+                    today_counts_summary="none",
                     reasons=[f"no lead_assignment batch found for run_id {run_id}"],
                 )
                 for store_code in STORE_CODES
@@ -189,6 +316,8 @@ async def _diagnose(run_id: str, run_env: str) -> list[StoreDiagnosis]:
 
         assignments = await _load_assignments(session, batch_row["id"], STORE_CODES)
         eligible = await _load_eligible_leads(session, STORE_CODES)
+        quota_settings = await _load_quota_settings(session, STORE_CODES)
+        today_counts = await _load_today_assignment_counts(session, STORE_CODES)
         documents = await _load_documents(
             session,
             batch_date=batch_row["batch_date"],
@@ -202,6 +331,11 @@ async def _diagnose(run_id: str, run_env: str) -> list[StoreDiagnosis]:
         assignment_count = assignments.get(store_code, 0)
         eligible_count = eligible.get(store_code, 0)
         document_paths = documents.get(store_code, [])
+        store_quota_settings = quota_settings.get(store_code, [])
+        quota_summary = _build_quota_summary(store_quota_settings)
+        today_counts_summary = _build_today_counts_summary(
+            store_code, store_quota_settings, today_counts
+        )
         missing_files = sum(1 for path in document_paths if not path.exists())
         to, cc, _bcc = _collect_recipient_lists(recipients, store_code=store_code)
         has_recipients = bool(to or cc)
@@ -211,6 +345,10 @@ async def _diagnose(run_id: str, run_env: str) -> list[StoreDiagnosis]:
             reasons.append("no assignments created for store")
             if eligible_count == 0:
                 reasons.append("no eligible leads matched assignment filters")
+            if eligible_count > 0:
+                reasons.append(
+                    _build_quota_reason(store_code, store_quota_settings, today_counts)
+                )
         if assignment_count > 0 and not document_paths:
             reasons.append("no documents generated for assignment batch window")
         if document_paths and missing_files:
@@ -228,6 +366,8 @@ async def _diagnose(run_id: str, run_env: str) -> list[StoreDiagnosis]:
                 documents=len(document_paths),
                 missing_files=missing_files,
                 has_recipients=has_recipients,
+                quota_summary=quota_summary,
+                today_counts_summary=today_counts_summary,
                 reasons=reasons,
             )
         )
@@ -245,6 +385,8 @@ def _render_report(diagnoses: list[StoreDiagnosis]) -> None:
             f"documents={diagnosis.documents}\t"
             f"missing_files={diagnosis.missing_files}\t"
             f"has_recipients={diagnosis.has_recipients}\t"
+            f"quotas={diagnosis.quota_summary}\t"
+            f"today_counts={diagnosis.today_counts_summary}\t"
             f"reasons={reasons}"
         )
 
