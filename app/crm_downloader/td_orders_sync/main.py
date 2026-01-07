@@ -4125,24 +4125,24 @@ async def _wait_for_report_request_download_link(
                     )
                     try:
                         async with page.expect_download(timeout=download_wait_timeout_ms) as download_info:
-                        await download_locator.click()
-                        download = await download_info.value
-                        await download.save_as(str(download_path))
-                        log_event(
-                            logger=logger,
-                            phase="iframe",
-                            message=f"{report_label.title()} report download saved",
-                            store_code=store.store_code,
-                            download_path=str(download_path),
-                            suggested_filename=download.suggested_filename,
-                            matched_range_text=matched_text,
-                            expected_range_texts=list(expected_range_texts),
-                            download_locator_strategy=download_strategy,
-                            range_match_strategy=last_range_match_strategy,
-                            container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
-                            selected_row_state=matched_row_state,
-                            selection_source=selection_source,
-                        )
+                            await download_locator.click()
+                            download = await download_info.value
+                            await download.save_as(str(download_path))
+                            log_event(
+                                logger=logger,
+                                phase="iframe",
+                                message=f"{report_label.title()} report download saved",
+                                store_code=store.store_code,
+                                download_path=str(download_path),
+                                suggested_filename=download.suggested_filename,
+                                matched_range_text=matched_text,
+                                expected_range_texts=list(expected_range_texts),
+                                download_locator_strategy=download_strategy,
+                                range_match_strategy=last_range_match_strategy,
+                                container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+                                selected_row_state=matched_row_state,
+                                selection_source=selection_source,
+                            )
                         return True, str(download_path), matched_text, matched_status
                     except Exception as exc:
                         last_status = str(exc)
