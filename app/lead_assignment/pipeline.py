@@ -36,6 +36,108 @@ async def _count_assignments(db_session, batch_id: int) -> int:
     return int(result.scalar_one() or 0)
 
 
+async def _load_assignable_store_codes(db_session) -> list[str]:
+    result = await db_session.execute(
+        text(
+            """
+            SELECT upper(store_code) AS store_code
+            FROM store_master
+            WHERE etl_flag = true
+              AND assign_leads = true
+            """
+        )
+    )
+    return [row.store_code for row in result if row.store_code]
+
+
+async def _load_assignments_by_store(
+    db_session, batch_id: int, store_codes: Iterable[str]
+) -> dict[str, int]:
+    codes = list(store_codes)
+    if not codes:
+        return {}
+
+    result = await db_session.execute(
+        text(
+            """
+            SELECT upper(store_code) AS store_code, COUNT(*) AS assignment_count
+            FROM lead_assignments
+            WHERE assignment_batch_id = :batch_id
+              AND upper(store_code) IN :store_codes
+            GROUP BY upper(store_code)
+            """
+        ).bindparams(bindparam("store_codes", expanding=True)),
+        {"batch_id": batch_id, "store_codes": codes},
+    )
+    return {row.store_code: int(row.assignment_count) for row in result}
+
+
+async def _load_eligible_leads_by_store(
+    db_session, store_codes: Iterable[str]
+) -> dict[str, int]:
+    codes = list(store_codes)
+    if not codes:
+        return {}
+
+    result = await db_session.execute(
+        text(
+            """
+            SELECT
+                upper(ml.store_code) AS store_code,
+                COUNT(*) AS eligible_count
+            FROM missed_leads ml
+            JOIN store_master sm
+              ON upper(sm.store_code) = upper(ml.store_code)
+              AND sm.etl_flag = true
+              AND sm.assign_leads = true
+            JOIN store_lead_assignment_map slam
+              ON slam.store_code = ml.store_code AND slam.is_enabled = true
+            JOIN agents_master am ON am.id = slam.agent_id AND am.is_active = true
+            WHERE ml.customer_type = 'New'
+              AND ml.lead_assigned = false
+              AND (ml.is_order_placed = false OR ml.is_order_placed IS NULL)
+              AND upper(ml.store_code) IN :store_codes
+            GROUP BY upper(ml.store_code)
+            """
+        ).bindparams(bindparam("store_codes", expanding=True)),
+        {"store_codes": codes},
+    )
+    return {row.store_code: int(row.eligible_count) for row in result}
+
+
+async def _load_store_diagnostics(db_session, batch_id: int) -> list[dict[str, object]]:
+    store_codes = await _load_assignable_store_codes(db_session)
+    if not store_codes:
+        return []
+
+    assignments = await _load_assignments_by_store(db_session, batch_id, store_codes)
+    eligible = await _load_eligible_leads_by_store(db_session, store_codes)
+    diagnostics: list[dict[str, object]] = []
+
+    for store_code in sorted(store_codes):
+        assigned_count = assignments.get(store_code, 0)
+        eligible_count = eligible.get(store_code, 0)
+        reasons: list[str] = []
+
+        if assigned_count == 0:
+            reasons.append("no assignments created for store")
+            if eligible_count == 0:
+                reasons.append("no eligible leads matched assignment filters")
+        if not reasons:
+            reasons.append("assignments created for store")
+
+        diagnostics.append(
+            {
+                "store_code": store_code,
+                "eligible_leads_count": eligible_count,
+                "assigned_leads_count": assigned_count,
+                "reasons": reasons,
+            }
+        )
+
+    return diagnostics
+
+
 async def _load_documents(db_session, document_ids: list[int]) -> dict[str, list[Path]]:
     if not document_ids:
         return {}
@@ -238,6 +340,7 @@ def _build_summary_context(
     document_count: int,
     emails_planned: int,
     emails_sent: int,
+    store_diagnostics: list[dict[str, object]],
 ) -> dict[str, object]:
     return {
         "run_id": run_id,
@@ -247,6 +350,7 @@ def _build_summary_context(
         "documents_generated": document_count,
         "emails_planned": emails_planned,
         "emails_sent": emails_sent,
+        "store_diagnostics": store_diagnostics,
     }
 
 
@@ -370,6 +474,7 @@ async def run_leads_assignment_pipeline(env: str | None = None, run_id: str | No
                 summary_template,
                 recipients,
             ) = await _load_notification_resources(session, run_env)
+            store_diagnostics = await _load_store_diagnostics(session, batch_id)
 
     if not document_ids or not store_documents:
         log_event(
@@ -430,6 +535,7 @@ async def run_leads_assignment_pipeline(env: str | None = None, run_id: str | No
             document_count=len(document_ids),
             emails_planned=emails_planned,
             emails_sent=emails_sent,
+            store_diagnostics=store_diagnostics,
         )
         planned_summary, sent_summary = _send_run_summary(
             profile=profile,

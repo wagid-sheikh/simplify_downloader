@@ -49,7 +49,8 @@ def _reset_lead_assignment_schema(db_path: Path) -> None:
         CREATE TABLE IF NOT EXISTS store_master (
             store_code TEXT PRIMARY KEY,
             store_name TEXT,
-            assign_leads BOOLEAN NOT NULL DEFAULT 0
+            assign_leads BOOLEAN NOT NULL DEFAULT 0,
+            etl_flag BOOLEAN NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS agents_master (
@@ -210,7 +211,7 @@ def _seed_data(db_path: Path) -> dict[str, object]:
     cursor = conn.cursor()
 
     cursor.execute(
-        "INSERT INTO store_master (store_code, store_name, assign_leads) VALUES (?, ?, 1)",
+        "INSERT INTO store_master (store_code, store_name, assign_leads, etl_flag) VALUES (?, ?, 1, 1)",
         ("S001", "Test Store",),
     )
 
