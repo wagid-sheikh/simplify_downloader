@@ -415,6 +415,36 @@ async def _run_store_discovery(
             return
 
         await page.goto(store.orders_url, wait_until="domcontentloaded")
+        if await _session_invalid(page=page, store=store):
+            log_event(
+                logger=logger,
+                phase="login",
+                status="warn",
+                message="Session invalid; re-authenticated",
+                store_code=store.store_code,
+                current_url=page.url,
+            )
+            login_used = True
+            login_ok = await _perform_login(page=page, store=store, logger=logger)
+            if not login_ok:
+                outcome = StoreOutcome(
+                    status="error",
+                    message="Login failed after session invalidation",
+                    storage_state=str(storage_state_path) if storage_state_path.exists() else None,
+                    login_used=True,
+                )
+                summary.record_store(store.store_code, outcome)
+                return
+            storage_state_path.parent.mkdir(parents=True, exist_ok=True)
+            await context.storage_state(path=str(storage_state_path))
+            log_event(
+                logger=logger,
+                phase="login",
+                message="Saved storage state",
+                store_code=store.store_code,
+                storage_state=str(storage_state_path),
+            )
+            await page.goto(store.orders_url, wait_until="domcontentloaded")
         await _wait_for_gst_report_ready(page=page, logger=logger, store=store)
         selectors_payload = await _discover_selector_cues(page)
         spinner_payload = await _discover_spinner_cues(page)
@@ -559,6 +589,26 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
         selector=selectors["submit"],
     )
     return True
+
+
+async def _session_invalid(*, page: Page, store: UcStore) -> bool:
+    current_url = page.url or ""
+    login_url = store.login_url or ""
+    if login_url and (current_url.startswith(login_url) or login_url in current_url):
+        return True
+
+    selectors = {
+        "username": _normalize_id_selector(store.login_selectors.get("username", "")),
+        "password": _normalize_id_selector(store.login_selectors.get("password", "")),
+    }
+    markers = [selector for selector in selectors.values() if selector]
+    for marker in markers:
+        try:
+            if await page.locator(marker).count():
+                return True
+        except Exception:
+            continue
+    return False
 
 
 async def _wait_for_gst_report_ready(*, page: Page, logger: JsonLogger, store: UcStore) -> None:
