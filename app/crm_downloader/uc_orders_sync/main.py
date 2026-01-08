@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
 import sqlalchemy as sa
-from playwright.async_api import Browser, Page, TimeoutError, async_playwright
+from playwright.async_api import Browser, Locator, Page, TimeoutError, async_playwright
 
 from app.common.date_utils import get_daily_report_date
 from app.common.db import session_scope
@@ -26,6 +26,15 @@ PIPELINE_NAME = "uc_orders_sync"
 NAV_TIMEOUT_MS = 90_000
 SPINNER_CSS_SELECTORS = [".spinner", ".loading", ".loader", ".k-loading-mask"]
 SPINNER_TEXT_SELECTOR = "text=/loading/i"
+DOM_SNIPPET_MAX_CHARS = 600
+GST_CONTAINER_SELECTORS = (
+    "form",
+    "section",
+    "div[role='form']",
+    "div[class*=report]",
+    "div[class*=gst]",
+    "div[id*=gst]",
+)
 CONTROL_CUES = {
     "start_date": ["Start Date", "From Date", "From"],
     "end_date": ["End Date", "To Date", "To"],
@@ -445,8 +454,18 @@ async def _run_store_discovery(
                 storage_state=str(storage_state_path),
             )
             await page.goto(store.orders_url, wait_until="domcontentloaded")
-        await _wait_for_gst_report_ready(page=page, logger=logger, store=store)
-        selectors_payload = await _discover_selector_cues(page)
+        ready, container = await _wait_for_gst_report_ready(page=page, logger=logger, store=store)
+        if not ready or container is None:
+            outcome = StoreOutcome(
+                status="warning",
+                message="GST report readiness signal missing",
+                final_url=page.url,
+                storage_state=str(storage_state_path) if storage_state_path.exists() else None,
+                login_used=login_used,
+            )
+            summary.record_store(store.store_code, outcome)
+            return
+        selectors_payload = await _discover_selector_cues(container)
         spinner_payload = await _discover_spinner_cues(page)
         log_event(
             logger=logger,
@@ -611,40 +630,46 @@ async def _session_invalid(*, page: Page, store: UcStore) -> bool:
     return False
 
 
-async def _wait_for_gst_report_ready(*, page: Page, logger: JsonLogger, store: UcStore) -> None:
+async def _wait_for_gst_report_ready(
+    *, page: Page, logger: JsonLogger, store: UcStore
+) -> tuple[bool, Locator | None]:
     await page.wait_for_load_state("domcontentloaded")
-    spinner_selector = ", ".join(SPINNER_CSS_SELECTORS)
     readiness_selector = "text=/Start Date|End Date|Export Report|Apply/i"
-
-    tasks = []
-    if spinner_selector:
-        tasks.append(
-            asyncio.create_task(
-                page.wait_for_selector(spinner_selector, state="hidden", timeout=NAV_TIMEOUT_MS)
-            )
-        )
-    tasks.append(
-        asyncio.create_task(page.wait_for_selector(readiness_selector, timeout=NAV_TIMEOUT_MS))
-    )
-
-    done, pending = await asyncio.wait(
-        tasks,
-        return_when=asyncio.FIRST_COMPLETED,
-        timeout=NAV_TIMEOUT_MS / 1000,
-    )
-    for task in pending:
-        task.cancel()
-
-    if not done:
+    container = await _find_gst_report_container(page=page, readiness_selector=readiness_selector)
+    if container is None:
+        dom_snippet = await _get_dom_snippet(page)
         log_event(
             logger=logger,
             phase="navigation",
             status="warn",
-            message="GST report readiness check timed out",
+            message="GST report container not detected",
             store_code=store.store_code,
             selector=readiness_selector,
+            current_url=page.url,
+            dom_snippet=dom_snippet,
         )
-        return
+        return False, None
+
+    try:
+        await container.locator(readiness_selector).first.wait_for(timeout=NAV_TIMEOUT_MS)
+    except TimeoutError:
+        dom_snippet = await _get_dom_snippet(page)
+        log_event(
+            logger=logger,
+            phase="navigation",
+            status="warn",
+            message="GST report readiness signal missing",
+            store_code=store.store_code,
+            selector=readiness_selector,
+            current_url=page.url,
+            dom_snippet=dom_snippet,
+        )
+        return False, container
+
+    spinner_selector = ", ".join(SPINNER_CSS_SELECTORS)
+    if spinner_selector:
+        with contextlib.suppress(TimeoutError):
+            await page.wait_for_selector(spinner_selector, state="hidden", timeout=NAV_TIMEOUT_MS)
 
     log_event(
         logger=logger,
@@ -652,15 +677,39 @@ async def _wait_for_gst_report_ready(*, page: Page, logger: JsonLogger, store: U
         message="GST report readiness signal detected",
         store_code=store.store_code,
     )
+    return True, container
 
 
-async def _discover_selector_cues(page: Page) -> Dict[str, Any]:
+async def _find_gst_report_container(*, page: Page, readiness_selector: str) -> Locator | None:
+    readiness_locator = page.locator(readiness_selector)
+    for selector in GST_CONTAINER_SELECTORS:
+        locator = page.locator(selector).filter(has=readiness_locator)
+        try:
+            if await locator.count():
+                return locator.first
+        except Exception:
+            continue
+    return None
+
+
+async def _get_dom_snippet(page: Page) -> str:
+    try:
+        content = await page.content()
+    except Exception:
+        return ""
+    cleaned = re.sub(r"\s+", " ", content).strip()
+    if len(cleaned) <= DOM_SNIPPET_MAX_CHARS:
+        return cleaned
+    return cleaned[: DOM_SNIPPET_MAX_CHARS - 1] + "…"
+
+
+async def _discover_selector_cues(container: Locator) -> Dict[str, Any]:
     results: Dict[str, Any] = {}
     for label, cues in CONTROL_CUES.items():
         matches: list[Dict[str, Any]] = []
         for cue in cues:
             selector = f"text=/{re.escape(cue)}/i"
-            locator = page.locator(selector)
+            locator = container.locator(selector)
             try:
                 count = await locator.count()
             except Exception:
