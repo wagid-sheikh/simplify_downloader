@@ -16,6 +16,7 @@ from playwright.async_api import Browser, Page, TimeoutError, async_playwright
 from app.common.date_utils import get_daily_report_date
 from app.common.db import session_scope
 from app.config import config
+from app.crm_downloader.browser import launch_browser
 from app.crm_downloader.config import default_profiles_dir
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from app.dashboard_downloader.notifications import send_notifications_for_run
@@ -192,7 +193,7 @@ async def main(
             return
 
         async with async_playwright() as playwright:
-            browser = await _launch_browser(playwright=playwright)
+            browser = await launch_browser(playwright=playwright, logger=logger)
             for store in stores:
                 await _run_store_discovery(
                     browser=browser,
@@ -337,10 +338,6 @@ async def _load_uc_order_stores(*, logger: JsonLogger) -> list[UcStore]:
         stores=[store.store_code for store in stores],
     )
     return stores
-
-
-async def _launch_browser(*, playwright: Any) -> Browser:
-    return await playwright.chromium.launch(headless=True)
 
 
 async def _run_store_discovery(

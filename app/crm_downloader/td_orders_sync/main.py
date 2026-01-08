@@ -19,6 +19,7 @@ from playwright.async_api import Browser, BrowserContext, FrameLocator, Locator,
 from app.common.db import session_scope
 from app.common.date_utils import get_timezone
 from app.config import config
+from app.crm_downloader.browser import launch_browser
 from app.crm_downloader.config import default_download_dir, default_profiles_dir
 from app.crm_downloader.td_orders_sync.ingest import TdOrdersIngestResult, ingest_td_orders_workbook
 from app.crm_downloader.td_orders_sync.sales_ingest import TdSalesIngestResult, ingest_td_sales_workbook
@@ -168,7 +169,7 @@ async def main(
             return
 
         async with async_playwright() as p:
-            browser = await _launch_browser(playwright=p, logger=logger)
+            browser = await launch_browser(playwright=p, logger=logger)
             for store in stores:
                 await _run_store_discovery(
                     browser=browser,
@@ -1201,63 +1202,6 @@ async def _persist_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonLog
             error=str(exc),
         )
         return False
-
-
-# ── Browser helpers ───────────────────────────────────────────────────────────
-
-
-async def _launch_browser(*, playwright: Any, logger: JsonLogger) -> Browser:
-    backend = (config.pdf_render_backend or "").lower()
-    chrome_exec = (config.pdf_render_chrome_executable or "").strip() or None
-    headless = config.etl_headless
-    launch_kwargs: Dict[str, Any] = {"headless": headless}
-
-    if backend == "local_chrome":
-        if chrome_exec and Path(chrome_exec).is_file():
-            launch_kwargs["executable_path"] = chrome_exec
-            log_event(
-                logger=logger,
-                phase="init",
-                message="Launching Playwright with local Chrome executable",
-                backend=backend,
-                executable_path=chrome_exec,
-                headless=headless,
-            )
-        else:
-            log_event(
-                logger=logger,
-                phase="init",
-                status="warn",
-                message="Configured local Chrome executable missing; falling back to bundled Chromium",
-                backend=backend,
-                executable_path=chrome_exec,
-                headless=headless,
-            )
-    else:
-        log_event(
-            logger=logger,
-            phase="init",
-            message="Launching Playwright with bundled Chromium",
-            backend=backend or "bundled_chromium",
-            headless=headless,
-        )
-
-    try:
-        return await playwright.chromium.launch(**launch_kwargs)
-    except Exception as exc:
-        if launch_kwargs.pop("executable_path", None) is not None:
-            log_event(
-                logger=logger,
-                phase="init",
-                status="warn",
-                message="Local Chrome launch failed; retrying with bundled Chromium",
-                backend=backend,
-                executable_path=chrome_exec,
-                headless=headless,
-                error=str(exc),
-            )
-            return await playwright.chromium.launch(**launch_kwargs)
-        raise
 
 
 # ── Playwright helpers ───────────────────────────────────────────────────────
