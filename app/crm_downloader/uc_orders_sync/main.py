@@ -720,8 +720,12 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
 
     username_locator = page.locator(selectors["username"]).first
     password_locator = page.locator(selectors["password"]).first
-    await username_locator.fill(store.username or "")
-    await password_locator.fill(store.password or "")
+    await username_locator.click()
+    await username_locator.type(store.username or "", delay=50)
+    await username_locator.press("Tab")
+    await password_locator.click()
+    await password_locator.type(store.password or "", delay=50)
+    await password_locator.press("Tab")
 
     username_value = (await username_locator.input_value()).strip()
     password_value = (await password_locator.input_value()).strip()
@@ -755,9 +759,25 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
         )
         return False
 
+    def _login_response_matches(url: str) -> bool:
+        url_lower = url.lower()
+        login_url = (store.login_url or "").lower()
+        if login_url and login_url in url_lower:
+            return True
+        return any(token in url_lower for token in ("/login", "auth", "signin", "session"))
+
+    response_task = asyncio.create_task(
+        page.wait_for_response(
+            lambda response: response.status in {200, 302} and _login_response_matches(response.url),
+            timeout=15_000,
+        )
+    )
     try:
         await page.click(selectors["submit"])
     except Exception as exc:
+        response_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await response_task
         log_event(
             logger=logger,
             phase="login",
@@ -777,6 +797,82 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
         store_code=store.store_code,
         selector=selectors["submit"],
     )
+    try:
+        response = await response_task
+    except TimeoutError:
+        log_event(
+            logger=logger,
+            phase="login",
+            status="warning",
+            message="Login response wait timed out",
+            store_code=store.store_code,
+        )
+    else:
+        log_event(
+            logger=logger,
+            phase="login",
+            status="debug",
+            message="Login response observed",
+            store_code=store.store_code,
+            response_url=response.url,
+            response_status=response.status,
+        )
+    with contextlib.suppress(TimeoutError):
+        await page.wait_for_url(lambda url: not _url_is_login(url, store), timeout=10_000)
+        log_event(
+            logger=logger,
+            phase="login",
+            status="debug",
+            message="Login URL changed away from /login",
+            store_code=store.store_code,
+            current_url=page.url,
+        )
+
+    nav_selector = ", ".join(store.home_selectors or HOME_READY_SELECTORS)
+    error_selector = ", ".join(
+        (
+            "[role='alert']",
+            ".alert",
+            ".toast",
+            ".toast-error",
+            ".notification",
+            ".error",
+            ".invalid-feedback",
+            ".message-error",
+        )
+    )
+    nav_locator = page.locator(nav_selector).first
+    error_locator = page.locator(error_selector).first
+    post_login_tasks = {
+        "nav": asyncio.create_task(nav_locator.wait_for(state="visible", timeout=10_000)),
+        "error": asyncio.create_task(error_locator.wait_for(state="visible", timeout=10_000)),
+    }
+    done, pending = await asyncio.wait(post_login_tasks.values(), timeout=10, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        task.cancel()
+    if done:
+        completed_label = next(label for label, task in post_login_tasks.items() if task in done)
+        if completed_label == "error":
+            banner_text = ""
+            with contextlib.suppress(Exception):
+                banner_text = (await error_locator.inner_text()).strip()
+            log_event(
+                logger=logger,
+                phase="login",
+                status="error",
+                message="Login error banner detected after submit; aborting login",
+                store_code=store.store_code,
+                banner_text=banner_text,
+            )
+            return False
+        log_event(
+            logger=logger,
+            phase="login",
+            status="debug",
+            message="Post-login navigation element detected",
+            store_code=store.store_code,
+            selector=nav_selector,
+        )
     if not await _wait_for_home_ready(page=page, store=store, logger=logger, source="login"):
         return False
     return True
