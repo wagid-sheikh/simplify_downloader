@@ -663,6 +663,43 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
     selectors = UC_LOGIN_SELECTORS
 
     await page.goto(store.login_url or "", wait_until="domcontentloaded")
+    element_locator = page.locator("input, button, select")
+    visible_elements: list[dict[str, str]] = []
+    try:
+        element_count = await element_locator.count()
+    except Exception:
+        element_count = 0
+    for idx in range(element_count):
+        element = element_locator.nth(idx)
+        try:
+            if not await element.is_visible():
+                continue
+            tag_name = await element.evaluate("el => el.tagName.toLowerCase()")
+            class_name = await element.get_attribute("class") or ""
+            visible_elements.append(
+                {
+                    "tag": tag_name,
+                    "type": await element.get_attribute("type") or "",
+                    "name": await element.get_attribute("name") or "",
+                    "id": await element.get_attribute("id") or "",
+                    "placeholder": await element.get_attribute("placeholder") or "",
+                    "aria_label": await element.get_attribute("aria-label") or "",
+                    "class": " ".join(class_name.split()),
+                }
+            )
+        except Exception:
+            continue
+    if visible_elements:
+        log_event(
+            logger=logger,
+            phase="login",
+            status="debug",
+            message="Login page form elements snapshot (remove once selectors confirmed)",
+            store_code=store.store_code,
+            current_url=page.url,
+            element_count=len(visible_elements),
+            elements=visible_elements[:20],
+        )
     for field in ("username", "password"):
         selector = selectors[field]
         try:
