@@ -415,7 +415,7 @@ async def _run_store_discovery(
             return
 
         await page.goto(store.orders_url, wait_until="domcontentloaded")
-        await _wait_for_gst_report_ready(page, logger=logger, store=store)
+        await _wait_for_gst_report_ready(page=page, logger=logger, store=store)
         selectors_payload = await _discover_selector_cues(page)
         spinner_payload = await _discover_spinner_cues(page)
         log_event(
