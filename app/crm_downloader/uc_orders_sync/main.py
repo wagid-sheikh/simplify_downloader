@@ -378,7 +378,7 @@ async def _run_store_discovery(
             login_used = False
         else:
             login_used = True
-            login_ok = await _perform_login(page, store=store, logger=logger)
+            login_ok = await _perform_login(page=page, store=store, logger=logger)
             if not login_ok:
                 outcome = StoreOutcome(
                     status="error",
