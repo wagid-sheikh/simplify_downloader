@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
+from urllib.parse import urlparse
 
 import sqlalchemy as sa
 from playwright.async_api import Browser, Locator, Page, TimeoutError, async_playwright
@@ -27,6 +28,30 @@ NAV_TIMEOUT_MS = 90_000
 SPINNER_CSS_SELECTORS = [".spinner", ".loading", ".loader", ".k-loading-mask"]
 SPINNER_TEXT_SELECTOR = "text=/loading/i"
 DOM_SNIPPET_MAX_CHARS = 600
+HOME_READY_SELECTORS = (
+    "nav",
+    "[role='navigation']",
+    "aside",
+    ".sidebar",
+    ".menu",
+    ".navbar",
+    "header",
+)
+NAV_CONTAINER_SELECTORS = (
+    "nav",
+    "[role='navigation']",
+    "aside",
+    ".sidebar",
+    ".menu",
+    ".navbar",
+)
+GST_MENU_LABELS = (
+    "GST Report",
+    "GST Reports",
+    "GST Summary",
+    "GST",
+)
+GST_PAGE_LABEL_SELECTOR = "text=/GST Report|GST Reports|GST Summary|GST/i"
 GST_CONTAINER_SELECTORS = (
     "form",
     "section",
@@ -62,6 +87,10 @@ class UcStore:
         return _get_nested_str(self.sync_config, ("urls", "orders_link"))
 
     @property
+    def home_url(self) -> str | None:
+        return _get_nested_str(self.sync_config, ("urls", "home"))
+
+    @property
     def username(self) -> str | None:
         return _get_nested_str(self.sync_config, ("username",))
 
@@ -73,6 +102,30 @@ class UcStore:
     def login_selectors(self) -> Dict[str, str]:
         selectors = _coerce_dict(self.sync_config.get("login_selector"))
         return {key: value for key, value in selectors.items() if isinstance(value, str) and value.strip()}
+
+    @property
+    def home_selectors(self) -> list[str]:
+        raw_selectors: list[str] = []
+        raw = self.sync_config.get("home_selectors") or self.sync_config.get("home_selector")
+        if isinstance(raw, str) and raw.strip():
+            raw_selectors.append(raw.strip())
+        elif isinstance(raw, Sequence):
+            raw_selectors.extend(
+                [str(value).strip() for value in raw if isinstance(value, str) and str(value).strip()]
+            )
+        return raw_selectors
+
+    @property
+    def gst_menu_labels(self) -> list[str]:
+        raw_labels: list[str] = []
+        raw = self.sync_config.get("gst_menu_label") or self.sync_config.get("orders_menu_label")
+        if isinstance(raw, str) and raw.strip():
+            raw_labels.append(raw.strip())
+        elif isinstance(raw, Sequence):
+            raw_labels.extend(
+                [str(value).strip() for value in raw if isinstance(value, str) and str(value).strip()]
+            )
+        return raw_labels
 
 
 @dataclass
@@ -407,6 +460,22 @@ async def _run_store_discovery(
                 storage_state=str(storage_state_path),
             )
 
+        if not store.home_url:
+            outcome = StoreOutcome(
+                status="error",
+                message="Missing home URL in sync_config",
+                login_used=login_used,
+            )
+            log_event(
+                logger=logger,
+                phase="navigation",
+                status="error",
+                message=outcome.message,
+                store_code=store.store_code,
+            )
+            summary.record_store(store.store_code, outcome)
+            return
+
         if not store.orders_url:
             outcome = StoreOutcome(
                 status="error",
@@ -423,7 +492,7 @@ async def _run_store_discovery(
             summary.record_store(store.store_code, outcome)
             return
 
-        await page.goto(store.orders_url, wait_until="domcontentloaded")
+        await page.goto(store.home_url, wait_until="domcontentloaded")
         if await _session_invalid(page=page, store=store):
             log_event(
                 logger=logger,
@@ -453,7 +522,43 @@ async def _run_store_discovery(
                 store_code=store.store_code,
                 storage_state=str(storage_state_path),
             )
-            await page.goto(store.orders_url, wait_until="domcontentloaded")
+            if not await _wait_for_home_ready(page=page, store=store, logger=logger, source="post-login"):
+                outcome = StoreOutcome(
+                    status="error",
+                    message="Home page not reached after login",
+                    final_url=page.url,
+                    storage_state=str(storage_state_path) if storage_state_path.exists() else None,
+                    login_used=login_used,
+                )
+                summary.record_store(store.store_code, outcome)
+                return
+        else:
+            if not await _wait_for_home_ready(page=page, store=store, logger=logger, source="session"):
+                on_login = _url_is_login(page.url or "", store)
+                outcome = StoreOutcome(
+                    status="error" if on_login else "warning",
+                    message="Home page not reached; skipping GST discovery"
+                    if on_login
+                    else "Home page not ready; skipping GST discovery",
+                    final_url=page.url,
+                    storage_state=str(storage_state_path) if storage_state_path.exists() else None,
+                    login_used=login_used,
+                )
+                summary.record_store(store.store_code, outcome)
+                return
+
+        gst_clicked = await _navigate_to_gst_reports(page=page, store=store, logger=logger)
+        if not gst_clicked:
+            outcome = StoreOutcome(
+                status="warning",
+                message="GST reports navigation failed",
+                final_url=page.url,
+                storage_state=str(storage_state_path) if storage_state_path.exists() else None,
+                login_used=login_used,
+            )
+            summary.record_store(store.store_code, outcome)
+            return
+
         ready, container = await _wait_for_gst_report_ready(page=page, logger=logger, store=store)
         if not ready or container is None:
             outcome = StoreOutcome(
@@ -607,6 +712,8 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
         store_code=store.store_code,
         selector=selectors["submit"],
     )
+    if not await _wait_for_home_ready(page=page, store=store, logger=logger, source="login"):
+        return False
     return True
 
 
@@ -634,6 +741,22 @@ async def _wait_for_gst_report_ready(
     *, page: Page, logger: JsonLogger, store: UcStore
 ) -> tuple[bool, Locator | None]:
     await page.wait_for_load_state("domcontentloaded")
+    try:
+        await page.locator(GST_PAGE_LABEL_SELECTOR).first.wait_for(timeout=NAV_TIMEOUT_MS)
+    except TimeoutError:
+        dom_snippet = await _get_dom_snippet(page)
+        log_event(
+            logger=logger,
+            phase="navigation",
+            status="warn",
+            message="GST page label not detected",
+            store_code=store.store_code,
+            selector=GST_PAGE_LABEL_SELECTOR,
+            current_url=page.url,
+            dom_snippet=dom_snippet,
+        )
+        return False, None
+
     readiness_selector = "text=/Start Date|End Date|Export Report|Apply/i"
     container = await _find_gst_report_container(page=page, readiness_selector=readiness_selector)
     if container is None:
@@ -678,6 +801,206 @@ async def _wait_for_gst_report_ready(
         store_code=store.store_code,
     )
     return True, container
+
+
+async def _wait_for_home_ready(
+    *, page: Page, store: UcStore, logger: JsonLogger, source: str
+) -> bool:
+    home_url = store.home_url
+    if not home_url:
+        log_event(
+            logger=logger,
+            phase="navigation",
+            status="error",
+            message="Home URL missing; cannot confirm home readiness",
+            store_code=store.store_code,
+            source=source,
+        )
+        return False
+
+    try:
+        await page.wait_for_url(lambda url: _url_matches_target(url, home_url), timeout=NAV_TIMEOUT_MS)
+    except TimeoutError:
+        log_event(
+            logger=logger,
+            phase="navigation",
+            status="warn",
+            message="Timed out waiting for home URL",
+            store_code=store.store_code,
+            home_url=home_url,
+            current_url=page.url,
+            source=source,
+        )
+
+    current_url = page.url or ""
+    if _url_is_login(current_url, store):
+        log_event(
+            logger=logger,
+            phase="navigation",
+            status="error",
+            message="Home page not reached; still on login",
+            store_code=store.store_code,
+            home_url=home_url,
+            current_url=current_url,
+            source=source,
+        )
+        return False
+
+    home_selectors = store.home_selectors or list(HOME_READY_SELECTORS)
+    for selector in home_selectors:
+        try:
+            if await page.locator(selector).first.is_visible():
+                log_event(
+                    logger=logger,
+                    phase="navigation",
+                    message="Home page ready",
+                    store_code=store.store_code,
+                    home_url=home_url,
+                    selector=selector,
+                    current_url=current_url,
+                    source=source,
+                )
+                return True
+        except Exception:
+            continue
+
+    dom_snippet = await _get_dom_snippet(page)
+    log_event(
+        logger=logger,
+        phase="navigation",
+        status="warn",
+        message="Home page marker not detected",
+        store_code=store.store_code,
+        home_url=home_url,
+        current_url=current_url,
+        selectors=home_selectors,
+        dom_snippet=dom_snippet,
+        source=source,
+    )
+    return False
+
+
+async def _navigate_to_gst_reports(*, page: Page, store: UcStore, logger: JsonLogger) -> bool:
+    orders_url = store.orders_url or ""
+    nav_root = await _find_nav_root(page)
+    link_locator: Locator | None = None
+    url_candidates = _build_url_candidates(orders_url)
+    for candidate in url_candidates:
+        locator = nav_root.locator(f"a[href*=\"{candidate}\"]")
+        try:
+            if await locator.count():
+                link_locator = locator.first
+                break
+        except Exception:
+            continue
+
+    if link_locator is None:
+        label_candidates = store.gst_menu_labels or list(GST_MENU_LABELS)
+        for label in label_candidates:
+            locator = nav_root.locator("a, button, [role='menuitem']").filter(has_text=re.compile(label, re.I))
+            try:
+                if await locator.count():
+                    link_locator = locator.first
+                    break
+            except Exception:
+                continue
+
+    if link_locator is None:
+        dom_snippet = await _get_dom_snippet(page)
+        log_event(
+            logger=logger,
+            phase="navigation",
+            status="warn",
+            message="GST reports navigation item not found",
+            store_code=store.store_code,
+            orders_url=orders_url,
+            current_url=page.url,
+            dom_snippet=dom_snippet,
+        )
+        return False
+
+    try:
+        await link_locator.click()
+    except Exception as exc:
+        log_event(
+            logger=logger,
+            phase="navigation",
+            status="warn",
+            message="GST reports navigation click failed",
+            store_code=store.store_code,
+            orders_url=orders_url,
+            current_url=page.url,
+            error=str(exc),
+        )
+        return False
+
+    log_event(
+        logger=logger,
+        phase="navigation",
+        message="GST reports navigation clicked",
+        store_code=store.store_code,
+        orders_url=orders_url,
+        current_url=page.url,
+    )
+    return True
+
+
+async def _find_nav_root(page: Page) -> Locator:
+    for selector in NAV_CONTAINER_SELECTORS:
+        locator = page.locator(selector)
+        try:
+            if await locator.count():
+                return locator.first
+        except Exception:
+            continue
+    return page.locator("body")
+
+
+def _build_url_candidates(url: str) -> list[str]:
+    if not url:
+        return []
+    candidates: list[str] = [url]
+    parsed = urlparse(url)
+    if parsed.path:
+        candidates.append(parsed.path)
+        candidates.append(parsed.path.strip("/"))
+    unique: list[str] = []
+    for candidate in candidates:
+        candidate = candidate.strip()
+        if candidate and candidate not in unique:
+            unique.append(candidate)
+    return unique
+
+
+def _url_matches_target(current_url: str, target_url: str) -> bool:
+    if not current_url or not target_url:
+        return False
+    if current_url.startswith(target_url) or target_url in current_url:
+        return True
+    current = urlparse(current_url)
+    target = urlparse(target_url)
+    if target.netloc and current.netloc and target.netloc != current.netloc:
+        return False
+    if target.path:
+        return target.path.rstrip("/") in current.path.rstrip("/")
+    return False
+
+
+def _url_is_login(current_url: str, store: UcStore) -> bool:
+    if not current_url:
+        return False
+    parsed_current = urlparse(current_url)
+    if parsed_current.path.rstrip("/").endswith("/login"):
+        return True
+    login_url = store.login_url or ""
+    if not login_url:
+        return False
+    parsed_login = urlparse(login_url)
+    if parsed_login.netloc and parsed_current.netloc and parsed_login.netloc != parsed_current.netloc:
+        return False
+    if parsed_login.path and parsed_current.path.rstrip("/") == parsed_login.path.rstrip("/"):
+        return True
+    return False
 
 
 async def _find_gst_report_container(*, page: Page, readiness_selector: str) -> Locator | None:
