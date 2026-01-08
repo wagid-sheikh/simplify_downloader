@@ -702,14 +702,15 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
         )
     for field in ("username", "password"):
         selector = selectors[field]
+        locator = page.locator(selector).first
         try:
-            await page.wait_for_selector(selector, timeout=NAV_TIMEOUT_MS)
+            await locator.wait_for(state="visible", timeout=NAV_TIMEOUT_MS)
         except TimeoutError:
             log_event(
                 logger=logger,
                 phase="login",
                 status="error",
-                message="Login selector not found within timeout",
+                message="Login selector not visible within timeout",
                 store_code=store.store_code,
                 selector=selector,
                 field=field,
@@ -724,8 +725,18 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
 
     username_value = (await username_locator.input_value()).strip()
     password_value = (await password_locator.input_value()).strip()
+    log_event(
+        logger=logger,
+        phase="login",
+        status="debug",
+        message="Login inputs populated",
+        store_code=store.store_code,
+        username_length=len(username_value),
+        password_length=len(password_value),
+    )
     empty_fields = [name for name, value in (("username", username_value), ("password", password_value)) if not value]
     if empty_fields:
+        dom_snippet = await _get_dom_snippet(page)
         log_event(
             logger=logger,
             phase="login",
@@ -733,6 +744,7 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
             message="Login input empty after fill",
             store_code=store.store_code,
             empty_fields=empty_fields,
+            dom_snippet=dom_snippet,
         )
         log_event(
             logger=logger,
