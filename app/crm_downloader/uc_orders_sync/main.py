@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import contextlib
 import json
@@ -256,6 +257,13 @@ def _coerce_dict(value: Any) -> Dict[str, Any]:
         except json.JSONDecodeError:
             return {}
     return {}
+
+
+def _parse_date(value: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:  # pragma: no cover - exercised via CLI parsing
+        raise argparse.ArgumentTypeError(f"Invalid date {value!r}; expected YYYY-MM-DD") from exc
 
 
 def _get_nested_str(mapping: Mapping[str, Any], path: Sequence[str]) -> str | None:
@@ -704,3 +712,34 @@ async def _persist_summary(*, summary: UcOrdersDiscoverySummary, logger: JsonLog
             error=str(exc),
         )
         return False
+
+
+# ── CLI entrypoint ───────────────────────────────────────────────────────────
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run the UC Orders discovery flow")
+    parser.add_argument("--run-env", dest="run_env", type=str, default=None, help="Override run environment label")
+    parser.add_argument("--run-id", dest="run_id", type=str, default=None, help="Override generated run id")
+    parser.add_argument("--from-date", dest="from_date", type=_parse_date, default=None, help="Start date (YYYY-MM-DD)")
+    parser.add_argument("--to-date", dest="to_date", type=_parse_date, default=None, help="End date (YYYY-MM-DD)")
+    return parser
+
+
+async def _async_entrypoint(argv: Sequence[str] | None = None) -> None:
+    parser = _build_parser()
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    await main(
+        run_env=args.run_env,
+        run_id=args.run_id,
+        from_date=args.from_date,
+        to_date=args.to_date,
+    )
+
+
+def run(argv: Sequence[str] | None = None) -> None:
+    asyncio.run(_async_entrypoint(argv))
+
+
+if __name__ == "__main__":  # pragma: no cover
+    run()
