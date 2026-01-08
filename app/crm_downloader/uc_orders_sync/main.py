@@ -28,6 +28,11 @@ NAV_TIMEOUT_MS = 90_000
 SPINNER_CSS_SELECTORS = [".spinner", ".loading", ".loader", ".k-loading-mask"]
 SPINNER_TEXT_SELECTOR = "text=/loading/i"
 DOM_SNIPPET_MAX_CHARS = 600
+UC_LOGIN_SELECTORS = {
+    "username": "input[placeholder='Email'][type='email']",
+    "password": "input[placeholder='Password'][type='password']",
+    "submit": "button.btn-primary[type='submit']",
+}
 HOME_READY_SELECTORS = (
     "nav",
     "[role='navigation']",
@@ -655,40 +660,51 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
         )
         return False
 
-    selectors = {
-        "username": _normalize_id_selector(store.login_selectors.get("username", "")),
-        "password": _normalize_id_selector(store.login_selectors.get("password", "")),
-        "submit": _normalize_id_selector(store.login_selectors.get("submit", "")),
-    }
-    missing_selectors = [key for key, value in selectors.items() if not value]
-    if missing_selectors:
-        log_event(
-            logger=logger,
-            phase="login",
-            status="error",
-            message="Login selectors missing",
-            store_code=store.store_code,
-            missing_selectors=missing_selectors,
-        )
-        return False
+    selectors = UC_LOGIN_SELECTORS
 
     await page.goto(store.login_url or "", wait_until="domcontentloaded")
-    try:
-        await page.wait_for_selector(selectors["username"], timeout=NAV_TIMEOUT_MS)
-    except TimeoutError:
+    for field in ("username", "password"):
+        selector = selectors[field]
+        try:
+            await page.wait_for_selector(selector, timeout=NAV_TIMEOUT_MS)
+        except TimeoutError:
+            log_event(
+                logger=logger,
+                phase="login",
+                status="error",
+                message="Login selector not found within timeout",
+                store_code=store.store_code,
+                selector=selector,
+                field=field,
+                timeout_ms=NAV_TIMEOUT_MS,
+            )
+            return False
+
+    username_locator = page.locator(selectors["username"]).first
+    password_locator = page.locator(selectors["password"]).first
+    await username_locator.fill(store.username or "")
+    await password_locator.fill(store.password or "")
+
+    username_value = (await username_locator.input_value()).strip()
+    password_value = (await password_locator.input_value()).strip()
+    empty_fields = [name for name, value in (("username", username_value), ("password", password_value)) if not value]
+    if empty_fields:
+        log_event(
+            logger=logger,
+            phase="login",
+            status="warn",
+            message="Login input empty after fill",
+            store_code=store.store_code,
+            empty_fields=empty_fields,
+        )
         log_event(
             logger=logger,
             phase="login",
             status="error",
-            message="Username selector not found within timeout",
+            message="Login aborted due to empty credential fields",
             store_code=store.store_code,
-            selector=selectors["username"],
-            timeout_ms=NAV_TIMEOUT_MS,
         )
         return False
-
-    await page.fill(selectors["username"], store.username or "")
-    await page.fill(selectors["password"], store.password or "")
 
     try:
         await page.click(selectors["submit"])
@@ -724,8 +740,8 @@ async def _session_invalid(*, page: Page, store: UcStore) -> bool:
         return True
 
     selectors = {
-        "username": _normalize_id_selector(store.login_selectors.get("username", "")),
-        "password": _normalize_id_selector(store.login_selectors.get("password", "")),
+        "username": UC_LOGIN_SELECTORS["username"],
+        "password": UC_LOGIN_SELECTORS["password"],
     }
     markers = [selector for selector in selectors.values() if selector]
     for marker in markers:
@@ -834,6 +850,7 @@ async def _wait_for_home_ready(
 
     current_url = page.url or ""
     if _url_is_login(current_url, store):
+        dom_snippet = await _get_dom_snippet(page)
         log_event(
             logger=logger,
             phase="navigation",
@@ -843,26 +860,30 @@ async def _wait_for_home_ready(
             home_url=home_url,
             current_url=current_url,
             source=source,
+            dom_snippet=dom_snippet,
         )
         return False
 
     home_selectors = store.home_selectors or list(HOME_READY_SELECTORS)
+    per_selector_timeout = max(2_000, NAV_TIMEOUT_MS // max(len(home_selectors), 1))
     for selector in home_selectors:
         try:
-            if await page.locator(selector).first.is_visible():
-                log_event(
-                    logger=logger,
-                    phase="navigation",
-                    message="Home page ready",
-                    store_code=store.store_code,
-                    home_url=home_url,
-                    selector=selector,
-                    current_url=current_url,
-                    source=source,
-                )
-                return True
+            await page.locator(selector).first.wait_for(state="visible", timeout=per_selector_timeout)
+        except TimeoutError:
+            continue
         except Exception:
             continue
+        log_event(
+            logger=logger,
+            phase="navigation",
+            message="Home page ready",
+            store_code=store.store_code,
+            home_url=home_url,
+            selector=selector,
+            current_url=current_url,
+            source=source,
+        )
+        return True
 
     dom_snippet = await _get_dom_snippet(page)
     log_event(
