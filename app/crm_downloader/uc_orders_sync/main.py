@@ -1562,8 +1562,8 @@ async def _apply_date_range(
             store_code=store.store_code,
         )
 
-    overlay_apply_button = None
     overlay_apply_selector = ".calendar-body.show .apply .buttons button.btn.primary"
+    applied = False
     for attempt in range(2):
         overlay_count = 0
         apply_count = 0
@@ -1581,9 +1581,75 @@ async def _apply_date_range(
             apply_count=apply_count,
         )
         overlay_apply_button = page.locator(overlay_apply_selector).first
-        if await overlay_apply_button.count():
+        if not await overlay_apply_button.count():
+            if attempt == 0:
+                with contextlib.suppress(Exception):
+                    await date_input.click()
+                popup = await _wait_for_date_picker_popup(page=page, logger=logger, store=store)
+                if popup is not None:
+                    with contextlib.suppress(Exception):
+                        await page.wait_for_selector(overlay_selector, state="visible", timeout=5_000)
+                continue
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="Apply button not found after date selection",
+                store_code=store.store_code,
+                selectors=[overlay_apply_selector],
+            )
+            return False
+
+        with contextlib.suppress(Exception):
+            await overlay_apply_button.scroll_into_view_if_needed()
+        try:
+            await overlay_apply_button.wait_for(state="visible", timeout=5_000)
+        except Exception:
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="Apply button not ready after date selection",
+                store_code=store.store_code,
+            )
+            return False
+
+        apply_enabled = False
+        for _ in range(10):
+            with contextlib.suppress(Exception):
+                apply_enabled = await overlay_apply_button.is_enabled()
+            if apply_enabled:
+                break
+            await asyncio.sleep(0.2)
+        if not apply_enabled:
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="Apply button not enabled after date selection",
+                store_code=store.store_code,
+            )
+            return False
+
+        await overlay_apply_button.click()
+        input_ready, overlay_open = await _confirm_main_date_range_input(
+            page=page,
+            date_input=date_input,
+            logger=logger,
+            store=store,
+            overlay_selector=overlay_selector,
+        )
+        if input_ready:
+            applied = True
             break
-        if attempt == 0:
+        if overlay_open and attempt == 0:
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="Main date range input empty after apply; retrying",
+                store_code=store.store_code,
+            )
             with contextlib.suppress(Exception):
                 await date_input.click()
             popup = await _wait_for_date_picker_popup(page=page, logger=logger, store=store)
@@ -1591,47 +1657,16 @@ async def _apply_date_range(
                 with contextlib.suppress(Exception):
                     await page.wait_for_selector(overlay_selector, state="visible", timeout=5_000)
             continue
-        overlay_apply_button = None
-
-    if overlay_apply_button is None or not await overlay_apply_button.count():
         log_event(
             logger=logger,
             phase="filters",
             status="warn",
-            message="Apply button not found after date selection",
-            store_code=store.store_code,
-            selectors=[overlay_apply_selector],
-        )
-        return False
-
-    apply_ready = False
-    for _ in range(10):
-        visible = False
-        enabled = False
-        with contextlib.suppress(Exception):
-            visible = await overlay_apply_button.is_visible()
-        with contextlib.suppress(Exception):
-            enabled = await overlay_apply_button.is_enabled()
-        if visible and enabled:
-            apply_ready = True
-            break
-        await asyncio.sleep(0.2)
-    if not apply_ready:
-        log_event(
-            logger=logger,
-            phase="filters",
-            status="warn",
-            message="Apply button not ready after date selection",
+            message="Main date range input empty after apply",
             store_code=store.store_code,
         )
         return False
 
-    await overlay_apply_button.click()
-    if not await _confirm_overlay_apply_inputs(
-        page=page,
-        logger=logger,
-        store=store,
-    ):
+    if not applied:
         return False
     if apply_section_found:
         if not await _confirm_apply_dates(
@@ -2179,61 +2214,46 @@ async def _confirm_apply_dates(
     return False
 
 
-async def _confirm_overlay_apply_inputs(
-    *, page: Page, logger: JsonLogger, store: UcStore
-) -> bool:
-    overlay_section = page.locator(".calendar-body.show .apply").first
-    if not await overlay_section.count():
-        log_event(
-            logger=logger,
-            phase="filters",
-            status="warn",
-            message="Overlay apply section not visible after clicking apply",
-            store_code=store.store_code,
-        )
-        return False
-
-    start_input = overlay_section.locator("input[readonly][placeholder='Start Date']").first
-    end_input = overlay_section.locator("input[readonly][placeholder='End Date']").first
-    if not await start_input.count() or not await end_input.count():
-        log_event(
-            logger=logger,
-            phase="filters",
-            status="warn",
-            message="Overlay apply inputs not found after clicking apply",
-            store_code=store.store_code,
-        )
-        return False
-
-    start_value = ""
-    end_value = ""
+async def _confirm_main_date_range_input(
+    *,
+    page: Page,
+    date_input: Locator,
+    logger: JsonLogger,
+    store: UcStore,
+    overlay_selector: str,
+) -> tuple[bool, bool]:
+    input_value = ""
     for _ in range(10):
         with contextlib.suppress(Exception):
-            start_value = await start_input.input_value()
-        with contextlib.suppress(Exception):
-            end_value = await end_input.input_value()
-        if start_value and end_value:
-            log_event(
-                logger=logger,
-                phase="filters",
-                message="Overlay apply inputs populated after clicking apply",
-                store_code=store.store_code,
-                start_value=start_value,
-                end_value=end_value,
-            )
-            return True
+            input_value = await date_input.input_value()
+        if input_value:
+            break
         await asyncio.sleep(0.2)
+
+    overlay_open = False
+    with contextlib.suppress(Exception):
+        overlay_open = await page.locator(overlay_selector).first.is_visible()
+
+    if input_value:
+        log_event(
+            logger=logger,
+            phase="filters",
+            message="Main date range input populated after clicking apply",
+            store_code=store.store_code,
+            input_value=input_value,
+            overlay_open=overlay_open,
+        )
+        return True, overlay_open
 
     log_event(
         logger=logger,
         phase="filters",
         status="warn",
-        message="Overlay apply inputs missing values after clicking apply",
+        message="Main date range input empty after clicking apply",
         store_code=store.store_code,
-        start_value=start_value,
-        end_value=end_value,
+        overlay_open=overlay_open,
     )
-    return False
+    return False, overlay_open
 
 
 async def _wait_for_report_refresh(
