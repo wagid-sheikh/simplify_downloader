@@ -6,7 +6,7 @@ import contextlib
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 from urllib.parse import urlparse
@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 import sqlalchemy as sa
 from playwright.async_api import Browser, ElementHandle, Locator, Page, TimeoutError, async_playwright
 
-from app.common.date_utils import get_daily_report_date
+from app.common.date_utils import aware_now
 from app.common.db import session_scope
 from app.config import config
 from app.crm_downloader.browser import launch_browser
@@ -91,6 +91,32 @@ CONTROL_CUES = {
     "end_date": ["End Date", "To Date", "To"],
     "apply": ["Apply", "Search", "Submit", "Go"],
     "export_report": ["Export Report", "Export", "Download", "Export GST"],
+}
+MONTH_LOOKUP = {
+    "JAN": 1,
+    "JANUARY": 1,
+    "FEB": 2,
+    "FEBRUARY": 2,
+    "MAR": 3,
+    "MARCH": 3,
+    "APR": 4,
+    "APRIL": 4,
+    "MAY": 5,
+    "JUN": 6,
+    "JUNE": 6,
+    "JUL": 7,
+    "JULY": 7,
+    "AUG": 8,
+    "AUGUST": 8,
+    "SEP": 9,
+    "SEPT": 9,
+    "SEPTEMBER": 9,
+    "OCT": 10,
+    "OCTOBER": 10,
+    "NOV": 11,
+    "NOVEMBER": 11,
+    "DEC": 12,
+    "DECEMBER": 12,
 }
 
 
@@ -242,8 +268,7 @@ async def main(
 
     resolved_run_id = run_id or new_run_id()
     resolved_env = run_env or config.run_env
-    run_start_date = from_date or get_daily_report_date()
-    run_end_date = to_date or run_start_date
+    run_start_date, run_end_date = _resolve_date_range(from_date=from_date, to_date=to_date)
     logger = get_logger(run_id=resolved_run_id)
     summary = UcOrdersDiscoverySummary(
         run_id=resolved_run_id,
@@ -290,6 +315,8 @@ async def main(
                     run_env=resolved_env,
                     run_id=resolved_run_id,
                     summary=summary,
+                    from_date=run_start_date,
+                    to_date=run_end_date,
                 )
             await browser.close()
 
@@ -353,6 +380,26 @@ def _parse_date(value: str) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:  # pragma: no cover - exercised via CLI parsing
         raise argparse.ArgumentTypeError(f"Invalid date {value!r}; expected YYYY-MM-DD") from exc
+
+
+def _resolve_date_range(*, from_date: date | None, to_date: date | None) -> tuple[date, date]:
+    if from_date and to_date:
+        resolved_from = from_date
+        resolved_to = to_date
+    elif from_date:
+        resolved_from = from_date
+        resolved_to = from_date
+    elif to_date:
+        resolved_from = to_date
+        resolved_to = to_date
+    else:
+        today = aware_now().date()
+        resolved_from = today - timedelta(days=90)
+        resolved_to = today
+
+    if resolved_from > resolved_to:
+        resolved_from, resolved_to = resolved_to, resolved_from
+    return resolved_from, resolved_to
 
 
 def _get_nested_str(mapping: Mapping[str, Any], path: Sequence[str]) -> str | None:
@@ -436,6 +483,8 @@ async def _run_store_discovery(
     run_env: str,
     run_id: str,
     summary: UcOrdersDiscoverySummary,
+    from_date: date,
+    to_date: date,
 ) -> None:
     log_event(
         logger=logger,
@@ -616,6 +665,14 @@ async def _run_store_discovery(
             )
             summary.record_store(store.store_code, outcome)
             return
+        await _apply_date_range(
+            page=page,
+            container=container,
+            logger=logger,
+            store=store,
+            from_date=from_date,
+            to_date=to_date,
+        )
         selectors_payload = await _discover_selector_cues(container=container, page=page)
         spinner_payload = await _discover_spinner_cues(page)
         log_event(
@@ -1147,6 +1204,407 @@ async def _wait_for_home_ready(
         selectors=home_selectors,
         dom_snippet=dom_snippet,
         source=source,
+    )
+    return False
+
+
+async def _apply_date_range(
+    *,
+    page: Page,
+    container: Locator,
+    logger: JsonLogger,
+    store: UcStore,
+    from_date: date,
+    to_date: date,
+) -> bool:
+    input_selectors = [
+        "input.search-user[placeholder='Choose Start Date - End Date']",
+        *GST_CONTROL_SELECTORS["date_range_input"],
+    ]
+    date_input = None
+    for selector in input_selectors:
+        try:
+            if await container.locator(selector).count():
+                date_input = container.locator(selector).first
+                break
+        except Exception:
+            continue
+    if date_input is None:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Date range input not found; skipping range selection",
+            store_code=store.store_code,
+            selectors=input_selectors,
+        )
+        return False
+
+    with contextlib.suppress(Exception):
+        await date_input.scroll_into_view_if_needed()
+    await date_input.click()
+    popup = await _wait_for_date_picker_popup(page=page, logger=logger, store=store)
+    if popup is None:
+        return False
+
+    calendars = await _get_calendar_locators(popup=popup)
+    start_calendar = calendars[0]
+    end_calendar = calendars[1] if len(calendars) > 1 else calendars[0]
+
+    try:
+        start_ok = await _select_calendar_date(
+            calendar=start_calendar,
+            target_date=from_date,
+            logger=logger,
+            store=store,
+            label="start",
+        )
+        end_ok = await _select_calendar_date(
+            calendar=end_calendar,
+            target_date=to_date,
+            logger=logger,
+            store=store,
+            label="end",
+        )
+    except Exception as exc:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Date range selection failed while navigating calendars",
+            store_code=store.store_code,
+            start_date=from_date,
+            end_date=to_date,
+            error=str(exc),
+        )
+        return False
+    if not start_ok or not end_ok:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Date range selection incomplete",
+            store_code=store.store_code,
+            start_date=from_date,
+            end_date=to_date,
+            start_ok=start_ok,
+            end_ok=end_ok,
+        )
+        return False
+
+    apply_selectors = GST_CONTROL_SELECTORS["apply_button"]
+    apply_button = None
+    for selector in apply_selectors:
+        try:
+            if await popup.locator(selector).count():
+                apply_button = popup.locator(selector).first
+                break
+            if await container.locator(selector).count():
+                apply_button = container.locator(selector).first
+                break
+        except Exception:
+            continue
+    if apply_button is None:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Apply button not found after date selection",
+            store_code=store.store_code,
+            selectors=apply_selectors,
+        )
+        return False
+
+    await apply_button.click()
+    await _wait_for_report_refresh(page=page, container=container, logger=logger, store=store)
+    return True
+
+
+async def _wait_for_date_picker_popup(
+    *, page: Page, logger: JsonLogger, store: UcStore
+) -> Locator | None:
+    popup_selector = ", ".join(DATE_PICKER_POPUP_SELECTORS)
+    popup = page.locator(popup_selector).first
+    try:
+        await popup.wait_for(state="visible", timeout=NAV_TIMEOUT_MS)
+        return popup
+    except TimeoutError:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Date picker popup not visible after clicking input",
+            store_code=store.store_code,
+            selector=popup_selector,
+        )
+    return None
+
+
+async def _get_calendar_locators(*, popup: Locator) -> list[Locator]:
+    calendars: list[Locator] = []
+    for selector in (".drp-calendar.left", ".drp-calendar.right"):
+        locator = popup.locator(selector)
+        count = await locator.count()
+        for idx in range(count):
+            calendars.append(locator.nth(idx))
+    if calendars:
+        return calendars
+
+    for selector in (
+        ".drp-calendar",
+        ".react-datepicker__month-container",
+        ".flatpickr-calendar",
+        ".datepicker",
+        ".mat-calendar",
+    ):
+        locator = popup.locator(selector)
+        count = await locator.count()
+        for idx in range(count):
+            calendars.append(locator.nth(idx))
+
+    return calendars or [popup]
+
+
+async def _select_calendar_date(
+    *,
+    calendar: Locator,
+    target_date: date,
+    logger: JsonLogger,
+    store: UcStore,
+    label: str,
+) -> bool:
+    target_label = target_date.strftime("%b %Y").upper()
+    current_label = await _navigate_calendar_to_month(
+        calendar=calendar,
+        target_date=target_date,
+        logger=logger,
+        store=store,
+        label=label,
+    )
+    if current_label is None:
+        return False
+
+    clicked = await _click_day_in_calendar(calendar=calendar, target_date=target_date)
+    if not clicked:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Target day not found in calendar",
+            store_code=store.store_code,
+            calendar_label=label,
+            target_day=target_date.day,
+            target_month=target_label,
+        )
+        return False
+    log_event(
+        logger=logger,
+        phase="filters",
+        message="Selected calendar date",
+        store_code=store.store_code,
+        calendar_label=label,
+        selected_date=target_date.isoformat(),
+        displayed_month=current_label,
+    )
+    return True
+
+
+async def _navigate_calendar_to_month(
+    *,
+    calendar: Locator,
+    target_date: date,
+    logger: JsonLogger,
+    store: UcStore,
+    label: str,
+) -> str | None:
+    target_key = (target_date.year, target_date.month)
+    clicks_prev = 0
+    clicks_next = 0
+    max_steps = 48
+    current_label = None
+    reached = False
+    for _ in range(max_steps):
+        header_text = await _get_calendar_header_text(calendar=calendar)
+        parsed = _parse_month_year(header_text or "")
+        if not parsed:
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="Unable to parse calendar header",
+                store_code=store.store_code,
+                calendar_label=label,
+                header_text=header_text,
+            )
+            return None
+        current_key = (parsed[0], parsed[1])
+        current_label = header_text
+        if current_key == target_key:
+            reached = True
+            break
+        if current_key < target_key:
+            await _click_calendar_nav(calendar=calendar, direction="next")
+            clicks_next += 1
+        else:
+            await _click_calendar_nav(calendar=calendar, direction="prev")
+            clicks_prev += 1
+        await asyncio.sleep(0.2)
+    if not reached:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Calendar navigation exceeded maximum steps",
+            store_code=store.store_code,
+            calendar_label=label,
+            target_month=target_date.strftime("%b %Y").upper(),
+            displayed_month=current_label,
+            prev_clicks=clicks_prev,
+            next_clicks=clicks_next,
+        )
+        return None
+    log_event(
+        logger=logger,
+        phase="filters",
+        message="Navigated calendar month",
+        store_code=store.store_code,
+        calendar_label=label,
+        target_month=target_date.strftime("%b %Y").upper(),
+        displayed_month=current_label,
+        prev_clicks=clicks_prev,
+        next_clicks=clicks_next,
+    )
+    return current_label
+
+
+async def _get_calendar_header_text(*, calendar: Locator) -> str | None:
+    selectors = (
+        ".month",
+        ".month-name",
+        ".datepicker-switch",
+        ".flatpickr-current-month",
+        ".react-datepicker__current-month",
+        ".mat-calendar-period-button",
+    )
+    for selector in selectors:
+        locator = calendar.locator(selector).first
+        try:
+            if await locator.count():
+                text = (await locator.inner_text()).strip()
+                if text:
+                    return text
+        except Exception:
+            continue
+    return None
+
+
+def _parse_month_year(label: str) -> tuple[int, int] | None:
+    if not label:
+        return None
+    normalized = re.sub(r"\s+", " ", label).strip().upper()
+    match = re.search(r"([A-Z]{3,9})\s+(\d{4})", normalized)
+    if not match:
+        return None
+    month_text = match.group(1).upper()
+    month = MONTH_LOOKUP.get(month_text) or MONTH_LOOKUP.get(month_text[:3])
+    if not month:
+        return None
+    return int(match.group(2)), month
+
+
+async def _click_calendar_nav(*, calendar: Locator, direction: str) -> None:
+    if direction == "prev":
+        selectors = [
+            "button:has-text('<<')",
+            "th:has-text('<<')",
+            "span:has-text('<<')",
+            "button.prev",
+            "th.prev",
+            ".prev",
+        ]
+    else:
+        selectors = [
+            "button:has-text('>>')",
+            "th:has-text('>>')",
+            "span:has-text('>>')",
+            "button.next",
+            "th.next",
+            ".next",
+        ]
+    for selector in selectors:
+        locator = calendar.locator(selector).first
+        try:
+            if await locator.count():
+                await locator.click()
+                return
+        except Exception:
+            continue
+    raise TimeoutError(f"Calendar navigation button not found for direction={direction}")
+
+
+async def _click_day_in_calendar(*, calendar: Locator, target_date: date) -> bool:
+    day_text = str(target_date.day)
+    candidates = calendar.locator("td, button, span").filter(has_text=re.compile(rf"^{day_text}$"))
+    count = await candidates.count()
+    for idx in range(count):
+        candidate = candidates.nth(idx)
+        try:
+            if not await candidate.is_visible():
+                continue
+            class_name = (await candidate.get_attribute("class")) or ""
+            aria_disabled = (await candidate.get_attribute("aria-disabled")) or ""
+            if "off" in class_name.split() or "disabled" in class_name.split() or aria_disabled == "true":
+                continue
+            await candidate.click()
+            return True
+        except Exception:
+            continue
+    return False
+
+
+async def _wait_for_report_refresh(
+    *, page: Page, container: Locator, logger: JsonLogger, store: UcStore
+) -> bool:
+    row_locator = container.locator("table tbody tr")
+    try:
+        initial_count = await row_locator.count()
+    except Exception:
+        initial_count = 0
+
+    spinner_selector = ", ".join(SPINNER_CSS_SELECTORS)
+    timeout_s = NAV_TIMEOUT_MS / 1000
+    start = asyncio.get_event_loop().time()
+    spinner_locator = page.locator(spinner_selector).first if spinner_selector else None
+    while (asyncio.get_event_loop().time() - start) < timeout_s:
+        try:
+            if spinner_locator is not None and await spinner_locator.is_visible():
+                with contextlib.suppress(TimeoutError):
+                    await page.wait_for_selector(spinner_selector, state="hidden", timeout=10_000)
+        except Exception:
+            pass
+        try:
+            current_count = await row_locator.count()
+        except Exception:
+            current_count = initial_count
+        if current_count != initial_count:
+            log_event(
+                logger=logger,
+                phase="filters",
+                message="Report refreshed after date range apply",
+                store_code=store.store_code,
+                previous_row_count=initial_count,
+                current_row_count=current_count,
+            )
+            return True
+        await asyncio.sleep(0.5)
+
+    log_event(
+        logger=logger,
+        phase="filters",
+        status="warn",
+        message="Report did not refresh within timeout after applying date range",
+        store_code=store.store_code,
+        previous_row_count=initial_count,
     )
     return False
 
