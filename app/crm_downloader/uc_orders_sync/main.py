@@ -745,7 +745,7 @@ async def _run_store_discovery(
             )
             summary.record_store(store.store_code, outcome)
             return
-        apply_ok = await _apply_date_range(
+        apply_ok, row_count = await _apply_date_range(
             page=page,
             container=container,
             logger=logger,
@@ -781,6 +781,7 @@ async def _run_store_discovery(
             from_date=from_date,
             to_date=to_date,
             download_timeout_ms=download_timeout_ms,
+            row_count=row_count,
         )
         ingest_result: UcOrdersIngestResult | None = None
         status_label = "ok" if downloaded else "warning"
@@ -1421,7 +1422,7 @@ async def _apply_date_range(
     store: UcStore,
     from_date: date,
     to_date: date,
-) -> bool:
+) -> tuple[bool, int]:
     input_selectors = [
         "input.search-user[placeholder='Choose Start Date - End Date']",
         *GST_CONTROL_SELECTORS["date_range_input"],
@@ -1443,7 +1444,7 @@ async def _apply_date_range(
             store_code=store.store_code,
             selectors=input_selectors,
         )
-        return False
+        return False, 0
 
     with contextlib.suppress(Exception):
         await date_input.scroll_into_view_if_needed()
@@ -1456,7 +1457,7 @@ async def _apply_date_range(
         if attempt == 0:
             await asyncio.sleep(0.3)
     if popup is None:
-        return False
+        return False, 0
 
     calendars = await _get_calendar_locators(popup=popup)
     start_calendar = calendars[0]
@@ -1488,7 +1489,7 @@ async def _apply_date_range(
             end_date=to_date,
             error=str(exc),
         )
-        return False
+        return False, 0
     if not start_ok or not end_ok:
         log_event(
             logger=logger,
@@ -1501,7 +1502,7 @@ async def _apply_date_range(
             start_ok=start_ok,
             end_ok=end_ok,
         )
-        return False
+        return False, 0
 
     overlay_selector = ".calendar-body.show"
     try:
@@ -1598,7 +1599,7 @@ async def _apply_date_range(
                 store_code=store.store_code,
                 selectors=[overlay_apply_selector],
             )
-            return False
+            return False, 0
 
         with contextlib.suppress(Exception):
             await overlay_apply_button.scroll_into_view_if_needed()
@@ -1612,7 +1613,7 @@ async def _apply_date_range(
                 message="Apply button not ready after date selection",
                 store_code=store.store_code,
             )
-            return False
+            return False, 0
 
         apply_enabled = False
         for _ in range(10):
@@ -1629,7 +1630,7 @@ async def _apply_date_range(
                 message="Apply button not enabled after date selection",
                 store_code=store.store_code,
             )
-            return False
+            return False, 0
 
         await overlay_apply_button.click()
         input_ready, overlay_open = await _confirm_main_date_range_input(
@@ -1664,10 +1665,10 @@ async def _apply_date_range(
             message="Main date range input empty after apply",
             store_code=store.store_code,
         )
-        return False
+        return False, 0
 
     if not applied:
-        return False
+        return False, 0
     if apply_section_found:
         if not await _confirm_apply_dates(
             apply_section=apply_section,
@@ -1676,9 +1677,14 @@ async def _apply_date_range(
             logger=logger,
             store=store,
         ):
-            return False
-    refreshed = await _wait_for_report_refresh(page=page, container=container, logger=logger, store=store)
-    return refreshed
+            return False, 0
+    refreshed, row_count = await _wait_for_report_refresh(
+        page=page,
+        container=container,
+        logger=logger,
+        store=store,
+    )
+    return refreshed, row_count
 
 
 async def _download_gst_report(
@@ -1690,6 +1696,7 @@ async def _download_gst_report(
     from_date: date,
     to_date: date,
     download_timeout_ms: int,
+    row_count: int,
     max_attempts: int = 3,
 ) -> tuple[bool, str | None, str]:
     download_dir = default_download_dir()
@@ -1757,6 +1764,15 @@ async def _download_gst_report(
 
         try:
             async with page.expect_download(timeout=download_timeout_ms) as download_info:
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    message="Clicking Export Report button",
+                    store_code=store.store_code,
+                    export_selector=export_selector_used,
+                    row_count=row_count,
+                    attempt=attempt,
+                )
                 await export_button.click()
             download = await download_info.value
             await download.save_as(str(target_path))
@@ -1768,6 +1784,7 @@ async def _download_gst_report(
                 download_path=str(target_path),
                 suggested_filename=download.suggested_filename,
                 export_selector=export_selector_used,
+                row_count=row_count,
                 attempt=attempt,
             )
             return True, str(target_path), "GST report download saved"
@@ -2258,12 +2275,22 @@ async def _confirm_main_date_range_input(
 
 async def _wait_for_report_refresh(
     *, page: Page, container: Locator, logger: JsonLogger, store: UcStore
-) -> bool:
-    row_locator = container.locator("table tbody tr")
+) -> tuple[bool, int]:
+    row_locator = container.locator("table tbody tr.ng-star-inserted")
     try:
         initial_count = await row_locator.count()
     except Exception:
         initial_count = 0
+
+    if initial_count > 0:
+        log_event(
+            logger=logger,
+            phase="filters",
+            message="GST report rows already present after date range apply",
+            store_code=store.store_code,
+            row_count=initial_count,
+        )
+        return True, initial_count
 
     spinner_selector = ", ".join(SPINNER_CSS_SELECTORS)
     timeout_s = NAV_TIMEOUT_MS / 1000
@@ -2286,18 +2313,17 @@ async def _wait_for_report_refresh(
             current_count = await row_locator.count()
         except Exception:
             current_count = initial_count
-        if current_count != initial_count:
+        if current_count > 0:
             if not network_idle_task.done():
                 network_idle_task.cancel()
             log_event(
                 logger=logger,
                 phase="filters",
-                message="Report refreshed after date range apply",
+                message="GST report rows detected after date range apply",
                 store_code=store.store_code,
-                previous_row_count=initial_count,
-                current_row_count=current_count,
+                row_count=current_count,
             )
-            return True
+            return True, current_count
         if network_idle_reached:
             break
         await asyncio.sleep(0.5)
@@ -2311,11 +2337,11 @@ async def _wait_for_report_refresh(
         logger=logger,
         phase="filters",
         status="warn",
-        message="Report did not refresh within timeout after applying date range",
+        message="GST report rows not detected after applying date range",
         store_code=store.store_code,
-        previous_row_count=initial_count,
+        row_count=initial_count,
     )
-    return False
+    return False, initial_count
 
 
 async def _is_on_home_dashboard(*, page: Page, store: UcStore) -> bool:
