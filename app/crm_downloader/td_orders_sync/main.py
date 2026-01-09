@@ -126,6 +126,7 @@ async def main(
         run_id=resolved_run_id,
         run_env=resolved_env,
         report_date=run_start_date,
+        report_end_date=run_end_date,
     )
 
     interrupted = False
@@ -485,6 +486,7 @@ class TdOrdersDiscoverySummary:
     run_id: str
     run_env: str
     report_date: date
+    report_end_date: date
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     store_codes: list[str] = field(default_factory=list)
     store_outcomes: Dict[str, StoreOutcome] = field(default_factory=dict)
@@ -569,19 +571,14 @@ class TdOrdersDiscoverySummary:
         )
 
     def overall_status(self) -> str:
-        if not self.store_outcomes:
-            return "error"
-
         statuses = [outcome.status for outcome in self.store_outcomes.values()]
-        all_success = statuses and all(status == "ok" for status in statuses)
-        all_error = statuses and all(status == "error" for status in statuses)
-        has_success_like = any(status in {"ok", "warning"} for status in statuses)
-        data_warnings = self._has_any_data_warnings()
-        if all_success and not data_warnings:
-            return "ok"
-        if all_error or not has_success_like:
+        if any(status == "error" for status in statuses):
             return "error"
-        return "warning"
+        if any(status == "warning" for status in statuses):
+            return "warning"
+        if not statuses and not self.store_codes:
+            return "warning"
+        return "ok" if statuses else "error"
 
     def orders_overall_status(self) -> str:
         return self._overall_status_for_reports(self.orders_results)
@@ -743,8 +740,10 @@ class TdOrdersDiscoverySummary:
                 report.warning_count if report.warning_count is not None else len(report.warning_rows) or len(report.warnings)
             )
             dropped_count = _coerce_count(report.dropped_rows_count if report.dropped_rows_count is not None else len(report.dropped_rows))
+            filenames = ", ".join(report.filenames) if report.filenames else "none"
             base_lines = [
                 f"- {code} — {report.status.upper()}",
+                f"  filenames: {filenames}",
                 f"  rows_downloaded: {rows_downloaded}",
                 f"  rows_ingested: {_rows_ingested(report)}",
                 f"  warning_count: {warning_count}",
@@ -964,12 +963,82 @@ class TdOrdersDiscoverySummary:
             prepared.append(data)
         return prepared
 
+    def _store_status_counts(self) -> Dict[str, int]:
+        counts = {"ok": 0, "warning": 0, "error": 0}
+        for outcome in self.store_outcomes.values():
+            if outcome.status in counts:
+                counts[outcome.status] += 1
+        return counts
+
+    def _expected_orders_filename(self, store_code: str) -> str:
+        return _format_orders_filename(store_code, self.report_date, self.report_end_date)
+
+    def _expected_sales_filename(self, store_code: str) -> str:
+        return _format_sales_filename(store_code, self.report_date, self.report_end_date)
+
+    def _build_store_summary(self) -> Dict[str, Dict[str, Any]]:
+        summary: Dict[str, Dict[str, Any]] = {}
+        for code in self._store_codes_for_payload():
+            outcome = self.store_outcomes.get(code)
+            orders_report = self.orders_results.get(code)
+            sales_report = self.sales_results.get(code)
+            summary[code] = {
+                "status": outcome.status if outcome else "error",
+                "message": outcome.message if outcome else "No outcome recorded",
+                "error_message": outcome.message if outcome and outcome.status in {"warning", "error"} else None,
+                "orders": self._build_report_summary(
+                    code, orders_report, expected_filename=self._expected_orders_filename(code)
+                ),
+                "sales": self._build_report_summary(
+                    code, sales_report, expected_filename=self._expected_sales_filename(code)
+                ),
+            }
+        return summary
+
+    def _build_report_summary(
+        self,
+        store_code: str,
+        report: StoreReport | None,
+        *,
+        expected_filename: str,
+    ) -> Dict[str, Any]:
+        if report is None:
+            return {
+                "status": "skipped",
+                "filenames": [expected_filename],
+                "rows_downloaded": None,
+                "rows_ingested": None,
+                "staging_rows": None,
+                "final_rows": None,
+                "warning_count": None,
+                "message": "No report recorded",
+                "error_message": None,
+            }
+        filenames = list(report.filenames) if report.filenames else [expected_filename]
+        return {
+            "status": report.status,
+            "filenames": filenames,
+            "rows_downloaded": report.rows_downloaded,
+            "rows_ingested": report.rows_ingested,
+            "staging_rows": report.staging_rows,
+            "final_rows": report.final_rows,
+            "warning_count": report.warning_count if report.warning_count is not None else len(report.warnings),
+            "message": report.message,
+            "error_message": report.error_message,
+        }
+
     def _build_store_reports_snapshot(self) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
         orders_snapshot: dict[str, dict[str, Any]] = {}
         sales_snapshot: dict[str, dict[str, Any]] = {}
         for code in self._store_codes_for_payload():
-            orders_snapshot[code] = (self.orders_results.get(code) or StoreReport(status="skipped")).as_dict()
-            sales_snapshot[code] = (self.sales_results.get(code) or StoreReport(status="skipped")).as_dict()
+            orders_report = self.orders_results.get(code) or StoreReport(status="skipped")
+            sales_report = self.sales_results.get(code) or StoreReport(status="skipped")
+            if not orders_report.filenames:
+                orders_report.filenames = [self._expected_orders_filename(code)]
+            if not sales_report.filenames:
+                sales_report.filenames = [self._expected_sales_filename(code)]
+            orders_snapshot[code] = orders_report.as_dict()
+            sales_snapshot[code] = sales_report.as_dict()
         return orders_snapshot, sales_snapshot
 
     def _build_notification_payload(
@@ -1032,9 +1101,16 @@ class TdOrdersDiscoverySummary:
 
     def build_record(self, *, finished_at: datetime) -> Dict[str, Any]:
         orders_snapshot, sales_snapshot = self._build_store_reports_snapshot()
+        store_summary = self._build_store_summary()
         metrics = {
             "stores": {code: asdict(outcome) for code, outcome in self.store_outcomes.items()},
             "store_order": self.store_codes,
+            "stores_summary": {
+                "counts": self._store_status_counts(),
+                "stores": store_summary,
+                "store_order": self.store_codes,
+                "report_range": {"from": self.report_date.isoformat(), "to": self.report_end_date.isoformat()},
+            },
             "ingest_remarks": {
                 "rows": list(self.ingest_remarks),
                 "total": len(self.ingest_remarks),

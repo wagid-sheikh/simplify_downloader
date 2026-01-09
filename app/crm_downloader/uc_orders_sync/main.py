@@ -203,6 +203,7 @@ class UcOrdersDiscoverySummary:
     run_id: str
     run_env: str
     report_date: date
+    report_end_date: date
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     store_codes: list[str] = field(default_factory=list)
     store_outcomes: Dict[str, StoreOutcome] = field(default_factory=dict)
@@ -223,13 +224,14 @@ class UcOrdersDiscoverySummary:
         self.mark_phase("store", outcome.status)
 
     def overall_status(self) -> str:
-        for counters in self.phases.values():
-            if counters.get("error"):
-                return "error"
-        for counters in self.phases.values():
-            if counters.get("warning"):
-                return "warning"
-        return "ok"
+        statuses = [outcome.status for outcome in self.store_outcomes.values()]
+        if any(status == "error" for status in statuses):
+            return "error"
+        if any(status == "warning" for status in statuses):
+            return "warning"
+        if not statuses and not self.store_codes:
+            return "warning"
+        return "ok" if statuses else "error"
 
     def summary_text(self) -> str:
         total = len(self.store_codes)
@@ -238,16 +240,54 @@ class UcOrdersDiscoverySummary:
         error = sum(1 for outcome in self.store_outcomes.values() if outcome.status == "error")
         return f"UC orders discovery: {ok} ok, {warn} warnings, {error} errors across {total} stores"
 
+    def _store_status_counts(self) -> Dict[str, int]:
+        counts = {"ok": 0, "warning": 0, "error": 0}
+        for outcome in self.store_outcomes.values():
+            if outcome.status in counts:
+                counts[outcome.status] += 1
+        return counts
+
+    def _build_store_summary(self) -> Dict[str, Dict[str, Any]]:
+        summary: Dict[str, Dict[str, Any]] = {}
+        to_date = self.report_end_date or self.report_date
+        for store_code in self.store_codes:
+            code = store_code.upper()
+            outcome = self.store_outcomes.get(code)
+            filename = _format_gst_filename(code, self.report_date, to_date)
+            summary[code] = {
+                "status": outcome.status if outcome else "error",
+                "message": outcome.message if outcome else "No outcome recorded",
+                "error_message": outcome.message if outcome and outcome.status in {"warning", "error"} else None,
+                "filename": filename,
+                "download_path": outcome.download_path if outcome else None,
+                "row_counts": {
+                    "staging_rows": outcome.staging_rows if outcome else None,
+                    "final_rows": outcome.final_rows if outcome else None,
+                    "staging_inserted": outcome.staging_inserted if outcome else None,
+                    "staging_updated": outcome.staging_updated if outcome else None,
+                    "final_inserted": outcome.final_inserted if outcome else None,
+                    "final_updated": outcome.final_updated if outcome else None,
+                },
+            }
+        return summary
+
     def build_record(self, *, finished_at: datetime) -> Dict[str, Any]:
         total_seconds = max(0, int((finished_at - self.started_at).total_seconds()))
         hh = total_seconds // 3600
         mm = (total_seconds % 3600) // 60
         ss = total_seconds % 60
         total_time_taken = f"{hh:02d}:{mm:02d}:{ss:02d}"
+        store_summary = self._build_store_summary()
         metrics = {
             "stores": {
                 "configured": list(self.store_codes),
                 "outcomes": {code: outcome.__dict__ for code, outcome in self.store_outcomes.items()},
+            },
+            "stores_summary": {
+                "counts": self._store_status_counts(),
+                "stores": store_summary,
+                "store_order": list(self.store_codes),
+                "report_range": {"from": self.report_date.isoformat(), "to": self.report_end_date.isoformat()},
             },
             "notes": list(self.notes),
         }
@@ -284,6 +324,7 @@ async def main(
         run_id=resolved_run_id,
         run_env=resolved_env,
         report_date=run_start_date,
+        report_end_date=run_end_date,
     )
 
     persist_attempted = False
@@ -434,6 +475,10 @@ def _normalize_id_selector(selector: str) -> str:
     if re.fullmatch(r"[A-Za-z0-9_-]+", selector):
         return f"#{selector}"
     return selector
+
+
+def _format_gst_filename(store_code: str, from_date: date, to_date: date) -> str:
+    return f"{store_code}_uc_gst_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
 
 
 async def _load_uc_order_stores(*, logger: JsonLogger) -> list[UcStore]:
@@ -1488,7 +1533,7 @@ async def _download_gst_report(
 ) -> tuple[bool, str | None, str]:
     download_dir = default_download_dir()
     download_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{store.store_code}_uc_gst_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
+    filename = _format_gst_filename(store.store_code, from_date, to_date)
     target_path = (download_dir / filename).resolve()
 
     export_button = None
