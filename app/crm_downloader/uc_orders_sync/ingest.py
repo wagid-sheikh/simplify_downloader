@@ -140,7 +140,7 @@ def _stg_uc_orders_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("run_date", sa.DateTime(timezone=True)),
         sa.Column("cost_center", sa.String(length=8)),
         sa.Column("store_code", sa.String(length=8)),
-        sa.Column("s_no", sa.String(length=16)),
+        sa.Column("s_no", sa.Integer()),
         sa.Column("order_number", sa.String(length=24)),
         sa.Column("invoice_number", sa.String(length=24)),
         sa.Column("invoice_date", sa.DateTime(timezone=True)),
@@ -250,6 +250,35 @@ def _parse_numeric(value: Any, *, warnings: list[str], field: str, row_remarks: 
         return Decimal("0")
 
 
+def _parse_s_no(value: Any, *, warnings: list[str], row_remarks: list[str]) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return None
+    try:
+        if isinstance(value, bool):
+            raise ValueError
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            if value.is_integer():
+                return int(value)
+            raise ValueError
+        cleaned = str(value).replace(",", "").strip()
+        if not cleaned:
+            return None
+        parsed = Decimal(cleaned)
+        if parsed != parsed.to_integral_value():
+            raise InvalidOperation
+        return int(parsed)
+    except (InvalidOperation, ValueError):
+        warnings.append(f"Non-numeric S.No. value dropped: {value}")
+        row_remarks.append(f"S.No. value '{value}' could not be parsed and was cleared")
+        return None
+
+
 def _parse_datetime(value: Any, *, field: str, warnings: list[str], row_remarks: list[str]) -> datetime | None:
     if value in (None, ""):
         return None
@@ -312,6 +341,7 @@ def _coerce_row(
     for header, field in HEADER_MAP.items():
         row[field] = raw.get(header)
 
+    row["s_no"] = _parse_s_no(row.get("s_no"), warnings=warnings, row_remarks=row_remarks)
     row["order_number"] = _normalize_order_number(
         row.get("order_number"), warnings=warnings, row_remarks=row_remarks
     )
