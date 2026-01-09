@@ -1503,6 +1503,19 @@ async def _apply_date_range(
         )
         return False
 
+    overlay_selector = ".calendar-body.show"
+    try:
+        await page.wait_for_selector(overlay_selector, state="visible", timeout=5_000)
+    except Exception:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Calendar overlay not visible after date selection",
+            store_code=store.store_code,
+            selector=overlay_selector,
+        )
+
     apply_section = container.locator(".apply").first
     start_value = ""
     end_value = ""
@@ -1549,19 +1562,72 @@ async def _apply_date_range(
             store_code=store.store_code,
         )
 
-    apply_button = container.locator(".apply .buttons button.btn.primary").first
-    if not await apply_button.count():
+    overlay_apply_button = None
+    for attempt in range(2):
+        overlay_count = 0
+        apply_count = 0
+        with contextlib.suppress(Exception):
+            overlay_count = await page.locator(overlay_selector).count()
+        with contextlib.suppress(Exception):
+            apply_count = await page.locator(f"{overlay_selector} .apply").count()
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="debug",
+            message="Calendar overlay visibility counts",
+            store_code=store.store_code,
+            overlay_count=overlay_count,
+            apply_count=apply_count,
+        )
+        overlay_apply_button = page.locator(
+            ".calendar-body.show .apply .buttons button.btn.primary"
+        ).first
+        if await overlay_apply_button.count():
+            break
+        if attempt == 0:
+            with contextlib.suppress(Exception):
+                await date_input.click()
+            popup = await _wait_for_date_picker_popup(page=page, logger=logger, store=store)
+            if popup is not None:
+                with contextlib.suppress(Exception):
+                    await page.wait_for_selector(overlay_selector, state="visible", timeout=5_000)
+            continue
+        overlay_apply_button = None
+
+    if overlay_apply_button is None or not await overlay_apply_button.count():
         log_event(
             logger=logger,
             phase="filters",
             status="warn",
             message="Apply button not found after date selection",
             store_code=store.store_code,
-            selectors=[".apply .buttons button.btn.primary"],
+            selectors=[".calendar-body.show .apply .buttons button.btn.primary"],
         )
         return False
 
-    await apply_button.click()
+    apply_ready = False
+    for _ in range(10):
+        visible = False
+        enabled = False
+        with contextlib.suppress(Exception):
+            visible = await overlay_apply_button.is_visible()
+        with contextlib.suppress(Exception):
+            enabled = await overlay_apply_button.is_enabled()
+        if visible and enabled:
+            apply_ready = True
+            break
+        await asyncio.sleep(0.2)
+    if not apply_ready:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Apply button not ready after date selection",
+            store_code=store.store_code,
+        )
+        return False
+
+    await overlay_apply_button.click()
     if apply_section_found:
         if not await _confirm_apply_dates(
             apply_section=apply_section,
