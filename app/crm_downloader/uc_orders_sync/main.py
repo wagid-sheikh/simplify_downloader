@@ -552,19 +552,39 @@ async def _run_store_discovery(
                 summary.record_store(store.store_code, outcome)
                 return
 
-        gst_clicked = await _navigate_to_gst_reports(page=page, store=store, logger=logger)
-        if not gst_clicked:
-            outcome = StoreOutcome(
-                status="warning",
-                message="GST reports navigation failed",
-                final_url=page.url,
-                storage_state=str(storage_state_path) if storage_state_path.exists() else None,
-                login_used=login_used,
+        direct_ready, container = await _try_direct_gst_reports(page=page, store=store, logger=logger)
+        if direct_ready and container is not None:
+            log_event(
+                logger=logger,
+                phase="navigation",
+                message="GST reports navigation path selected",
+                store_code=store.store_code,
+                path="direct URL",
+                current_url=page.url,
             )
-            summary.record_store(store.store_code, outcome)
-            return
+            ready = True
+        else:
+            log_event(
+                logger=logger,
+                phase="navigation",
+                message="GST reports navigation path selected",
+                store_code=store.store_code,
+                path="menu fallback",
+                current_url=page.url,
+            )
+            gst_clicked = await _navigate_to_gst_reports(page=page, store=store, logger=logger)
+            if not gst_clicked:
+                outcome = StoreOutcome(
+                    status="warning",
+                    message="GST reports navigation failed",
+                    final_url=page.url,
+                    storage_state=str(storage_state_path) if storage_state_path.exists() else None,
+                    login_used=login_used,
+                )
+                summary.record_store(store.store_code, outcome)
+                return
 
-        ready, container = await _wait_for_gst_report_ready(page=page, logger=logger, store=store)
+            ready, container = await _wait_for_gst_report_ready(page=page, logger=logger, store=store)
         if not ready or container is None:
             outcome = StoreOutcome(
                 status="warning",
@@ -980,6 +1000,40 @@ async def _wait_for_gst_report_ready(
     return True, container
 
 
+async def _try_direct_gst_reports(*, page: Page, store: UcStore, logger: JsonLogger) -> tuple[bool, Locator | None]:
+    orders_url = store.orders_url or ""
+    try:
+        await page.goto(orders_url, wait_until="domcontentloaded")
+    except TimeoutError:
+        log_event(
+            logger=logger,
+            phase="navigation",
+            status="warn",
+            message="Direct GST report navigation timed out",
+            store_code=store.store_code,
+            orders_url=orders_url,
+            current_url=page.url,
+        )
+        return False, None
+
+    ready, container = await _wait_for_gst_report_ready(page=page, logger=logger, store=store)
+    if ready and container is not None:
+        return True, container
+
+    on_dashboard = await _is_on_home_dashboard(page=page, store=store)
+    log_event(
+        logger=logger,
+        phase="navigation",
+        status="warn",
+        message="Direct GST report navigation did not reach report page",
+        store_code=store.store_code,
+        orders_url=orders_url,
+        current_url=page.url,
+        on_dashboard=on_dashboard,
+    )
+    return False, container
+
+
 async def _wait_for_home_ready(
     *, page: Page, store: UcStore, logger: JsonLogger, source: str
 ) -> bool:
@@ -1059,6 +1113,21 @@ async def _wait_for_home_ready(
         dom_snippet=dom_snippet,
         source=source,
     )
+    return False
+
+
+async def _is_on_home_dashboard(*, page: Page, store: UcStore) -> bool:
+    current_url = page.url or ""
+    if store.home_url and _url_matches_target(current_url, store.home_url):
+        return True
+    selectors = store.home_selectors or list(HOME_READY_SELECTORS)
+    for selector in selectors:
+        locator = page.locator(selector).first
+        try:
+            if await locator.is_visible():
+                return True
+        except Exception:
+            continue
     return False
 
 
