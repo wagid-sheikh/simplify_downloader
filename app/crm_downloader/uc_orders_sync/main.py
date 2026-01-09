@@ -77,7 +77,7 @@ GST_CONTROL_SELECTORS = {
         "input[placeholder='Choose Start Date - End Date']",
     ],
     "apply_button": ["button:has-text('Apply')"],
-    "export_button": ["button:has-text('Export Report')"],
+    "export_button": ["button.btn.primary.export", "button:has-text('Export Report')"],
 }
 DATE_PICKER_POPUP_SELECTORS = (
     ".calendar-body.show",
@@ -1563,6 +1563,7 @@ async def _apply_date_range(
         )
 
     overlay_apply_button = None
+    overlay_apply_selector = ".calendar-body.show .apply .buttons button.btn.primary"
     for attempt in range(2):
         overlay_count = 0
         apply_count = 0
@@ -1579,9 +1580,7 @@ async def _apply_date_range(
             overlay_count=overlay_count,
             apply_count=apply_count,
         )
-        overlay_apply_button = page.locator(
-            ".calendar-body.show .apply .buttons button.btn.primary"
-        ).first
+        overlay_apply_button = page.locator(overlay_apply_selector).first
         if await overlay_apply_button.count():
             break
         if attempt == 0:
@@ -1601,7 +1600,7 @@ async def _apply_date_range(
             status="warn",
             message="Apply button not found after date selection",
             store_code=store.store_code,
-            selectors=[".calendar-body.show .apply .buttons button.btn.primary"],
+            selectors=[overlay_apply_selector],
         )
         return False
 
@@ -1628,6 +1627,12 @@ async def _apply_date_range(
         return False
 
     await overlay_apply_button.click()
+    if not await _confirm_overlay_apply_inputs(
+        page=page,
+        logger=logger,
+        store=store,
+    ):
+        return False
     if apply_section_found:
         if not await _confirm_apply_dates(
             apply_section=apply_section,
@@ -1658,11 +1663,13 @@ async def _download_gst_report(
     target_path = (download_dir / filename).resolve()
 
     export_button = None
+    export_selector_used = None
     for selector in GST_CONTROL_SELECTORS["export_button"]:
         try:
             locator = container.locator(selector)
             if await locator.count():
                 export_button = locator.first
+                export_selector_used = selector
                 break
         except Exception:
             continue
@@ -1725,6 +1732,7 @@ async def _download_gst_report(
                 store_code=store.store_code,
                 download_path=str(target_path),
                 suggested_filename=download.suggested_filename,
+                export_selector=export_selector_used,
                 attempt=attempt,
             )
             return True, str(target_path), "GST report download saved"
@@ -2167,6 +2175,63 @@ async def _confirm_apply_dates(
         end_value=end_value,
         expected_start=from_date.isoformat(),
         expected_end=to_date.isoformat(),
+    )
+    return False
+
+
+async def _confirm_overlay_apply_inputs(
+    *, page: Page, logger: JsonLogger, store: UcStore
+) -> bool:
+    overlay_section = page.locator(".calendar-body.show .apply").first
+    if not await overlay_section.count():
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Overlay apply section not visible after clicking apply",
+            store_code=store.store_code,
+        )
+        return False
+
+    start_input = overlay_section.locator("input[readonly][placeholder='Start Date']").first
+    end_input = overlay_section.locator("input[readonly][placeholder='End Date']").first
+    if not await start_input.count() or not await end_input.count():
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Overlay apply inputs not found after clicking apply",
+            store_code=store.store_code,
+        )
+        return False
+
+    start_value = ""
+    end_value = ""
+    for _ in range(10):
+        with contextlib.suppress(Exception):
+            start_value = await start_input.input_value()
+        with contextlib.suppress(Exception):
+            end_value = await end_input.input_value()
+        if start_value and end_value:
+            log_event(
+                logger=logger,
+                phase="filters",
+                message="Overlay apply inputs populated after clicking apply",
+                store_code=store.store_code,
+                start_value=start_value,
+                end_value=end_value,
+            )
+            return True
+        await asyncio.sleep(0.2)
+
+    log_event(
+        logger=logger,
+        phase="filters",
+        status="warn",
+        message="Overlay apply inputs missing values after clicking apply",
+        store_code=store.store_code,
+        start_value=start_value,
+        end_value=end_value,
     )
     return False
 
