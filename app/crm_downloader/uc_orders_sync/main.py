@@ -14,11 +14,12 @@ from urllib.parse import urlparse
 import sqlalchemy as sa
 from playwright.async_api import Browser, ElementHandle, Locator, Page, TimeoutError, async_playwright
 
-from app.common.date_utils import aware_now
+from app.common.date_utils import aware_now, get_timezone
 from app.common.db import session_scope
 from app.config import config
 from app.crm_downloader.browser import launch_browser
 from app.crm_downloader.config import default_download_dir, default_profiles_dir
+from app.crm_downloader.uc_orders_sync.ingest import UcOrdersIngestResult, ingest_uc_orders_workbook
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from app.dashboard_downloader.notifications import send_notifications_for_run
 from app.dashboard_downloader.run_summary import fetch_summary_for_run, insert_run_summary, update_run_summary
@@ -124,6 +125,7 @@ MONTH_LOOKUP = {
 class UcStore:
     store_code: str
     store_name: str | None
+    cost_center: str | None
     sync_config: Dict[str, Any]
 
     @property
@@ -188,6 +190,12 @@ class StoreOutcome:
     storage_state: str | None = None
     login_used: bool | None = None
     download_path: str | None = None
+    staging_rows: int | None = None
+    final_rows: int | None = None
+    staging_inserted: int | None = None
+    staging_updated: int | None = None
+    final_inserted: int | None = None
+    final_updated: int | None = None
 
 
 @dataclass
@@ -268,6 +276,7 @@ async def main(
     """Run the UC GST report discovery flow (login + selector identification)."""
 
     resolved_run_id = run_id or new_run_id()
+    resolved_run_date = datetime.now(get_timezone())
     resolved_env = run_env or config.run_env
     run_start_date, run_end_date = _resolve_date_range(from_date=from_date, to_date=to_date)
     logger = get_logger(run_id=resolved_run_id)
@@ -316,6 +325,7 @@ async def main(
                     logger=logger,
                     run_env=resolved_env,
                     run_id=resolved_run_id,
+                    run_date=resolved_run_date,
                     summary=summary,
                     from_date=run_start_date,
                     to_date=run_end_date,
@@ -438,7 +448,7 @@ async def _load_uc_order_stores(*, logger: JsonLogger) -> list[UcStore]:
 
     query = sa.text(
         """
-        SELECT store_code, store_name, sync_config
+        SELECT store_code, store_name, cost_center, sync_config
         FROM store_master
         WHERE sync_group = :sync_group
           AND sync_orders_flag = TRUE
@@ -464,6 +474,7 @@ async def _load_uc_order_stores(*, logger: JsonLogger) -> list[UcStore]:
                 UcStore(
                     store_code=raw_code.upper(),
                     store_name=row.get("store_name"),
+                    cost_center=row.get("cost_center"),
                     sync_config=_coerce_dict(row.get("sync_config")),
                 )
             )
@@ -508,6 +519,7 @@ async def _run_store_discovery(
     logger: JsonLogger,
     run_env: str,
     run_id: str,
+    run_date: datetime,
     summary: UcOrdersDiscoverySummary,
     from_date: date,
     to_date: date,
@@ -720,6 +732,95 @@ async def _run_store_discovery(
             to_date=to_date,
             download_timeout_ms=download_timeout_ms,
         )
+        ingest_result: UcOrdersIngestResult | None = None
+        status_label = "ok" if downloaded else "warning"
+        if downloaded and download_path:
+            if config.database_url:
+                if not store.cost_center:
+                    log_event(
+                        logger=logger,
+                        phase="ingest",
+                        status="error",
+                        message="Missing cost_center for UC store; cannot ingest GST report",
+                        store_code=store.store_code,
+                    )
+                    outcome = StoreOutcome(
+                        status="error",
+                        message="Missing cost_center for UC store; cannot ingest GST report",
+                        final_url=page.url,
+                        storage_state=str(storage_state_path) if storage_state_path.exists() else None,
+                        login_used=login_used,
+                        download_path=download_path,
+                    )
+                    summary.record_store(store.store_code, outcome)
+                    return
+                try:
+                    ingest_result = await ingest_uc_orders_workbook(
+                        workbook_path=Path(download_path),
+                        store_code=store.store_code,
+                        cost_center=store.cost_center or "",
+                        run_id=run_id,
+                        run_date=run_date,
+                        database_url=config.database_url,
+                        logger=logger,
+                    )
+                    if ingest_result.warnings:
+                        status_label = "warning"
+                        log_event(
+                            logger=logger,
+                            phase="ingest",
+                            status="warn",
+                            message="UC GST workbook ingested with warnings",
+                            store_code=store.store_code,
+                            warning_count=len(ingest_result.warnings),
+                            staging_rows=ingest_result.staging_rows,
+                            final_rows=ingest_result.final_rows,
+                            staging_inserted=ingest_result.staging_inserted,
+                            staging_updated=ingest_result.staging_updated,
+                            final_inserted=ingest_result.final_inserted,
+                            final_updated=ingest_result.final_updated,
+                        )
+                    else:
+                        log_event(
+                            logger=logger,
+                            phase="ingest",
+                            message="UC GST workbook ingested",
+                            store_code=store.store_code,
+                            staging_rows=ingest_result.staging_rows,
+                            final_rows=ingest_result.final_rows,
+                            staging_inserted=ingest_result.staging_inserted,
+                            staging_updated=ingest_result.staging_updated,
+                            final_inserted=ingest_result.final_inserted,
+                            final_updated=ingest_result.final_updated,
+                        )
+                except Exception as exc:
+                    log_event(
+                        logger=logger,
+                        phase="ingest",
+                        status="error",
+                        message="UC GST ingestion failed",
+                        store_code=store.store_code,
+                        error=str(exc),
+                    )
+                    outcome = StoreOutcome(
+                        status="error",
+                        message=f"GST ingestion failed: {exc}",
+                        final_url=page.url,
+                        storage_state=str(storage_state_path) if storage_state_path.exists() else None,
+                        login_used=login_used,
+                        download_path=download_path,
+                    )
+                    summary.record_store(store.store_code, outcome)
+                    return
+            else:
+                status_label = "warning"
+                log_event(
+                    logger=logger,
+                    phase="ingest",
+                    status="warn",
+                    message="Skipping UC GST ingestion because database_url is missing",
+                    store_code=store.store_code,
+                )
         selectors_payload = await _discover_selector_cues(container=container, page=page)
         spinner_payload = await _discover_spinner_cues(page)
         log_event(
@@ -732,12 +833,18 @@ async def _run_store_discovery(
         )
 
         outcome = StoreOutcome(
-            status="ok" if downloaded else "warning",
+            status=status_label,
             message=download_message if download_message else "GST report download complete",
             final_url=page.url,
             storage_state=str(storage_state_path) if storage_state_path.exists() else None,
             login_used=login_used,
             download_path=download_path,
+            staging_rows=ingest_result.staging_rows if ingest_result else None,
+            final_rows=ingest_result.final_rows if ingest_result else None,
+            staging_inserted=ingest_result.staging_inserted if ingest_result else None,
+            staging_updated=ingest_result.staging_updated if ingest_result else None,
+            final_inserted=ingest_result.final_inserted if ingest_result else None,
+            final_updated=ingest_result.final_updated if ingest_result else None,
         )
         summary.record_store(store.store_code, outcome)
         log_event(
