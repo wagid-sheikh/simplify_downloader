@@ -1492,31 +1492,80 @@ async def _apply_date_range(
         )
         return False
 
-    apply_selectors = GST_CONTROL_SELECTORS["apply_button"]
-    apply_button = None
-    for selector in apply_selectors:
-        try:
-            if await popup.locator(selector).count():
-                apply_button = popup.locator(selector).first
-                break
-            if await container.locator(selector).count():
-                apply_button = container.locator(selector).first
-                break
-        except Exception:
-            continue
-    if apply_button is None:
+    apply_section = container.locator(".apply").first
+    start_value = ""
+    end_value = ""
+    if await apply_section.count():
+        start_input = apply_section.locator("input[readonly][placeholder='Start Date']").first
+        end_input = apply_section.locator("input[readonly][placeholder='End Date']").first
+        if await start_input.count() and await end_input.count():
+            for _ in range(10):
+                with contextlib.suppress(Exception):
+                    start_value = await start_input.input_value()
+                with contextlib.suppress(Exception):
+                    end_value = await end_input.input_value()
+                if start_value and end_value:
+                    break
+                await asyncio.sleep(0.3)
+            status = "info" if start_value and end_value else "warn"
+            log_event(
+                logger=logger,
+                phase="filters",
+                status=None if status == "info" else "warn",
+                message="Apply inputs populated after date selection"
+                if status == "info"
+                else "Apply inputs missing values after date selection",
+                store_code=store.store_code,
+                start_value=start_value,
+                end_value=end_value,
+            )
+        else:
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="Apply inputs not found after date selection",
+                store_code=store.store_code,
+            )
+    else:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Apply section not found after date selection",
+            store_code=store.store_code,
+        )
+
+    apply_button = container.locator(".apply .buttons button.btn.primary").first
+    if not await apply_button.count():
         log_event(
             logger=logger,
             phase="filters",
             status="warn",
             message="Apply button not found after date selection",
             store_code=store.store_code,
-            selectors=apply_selectors,
+            selectors=[".apply .buttons button.btn.primary"],
         )
         return False
 
     await apply_button.click()
-    await _wait_for_report_refresh(page=page, container=container, logger=logger, store=store)
+    refreshed = await _wait_for_report_refresh(page=page, container=container, logger=logger, store=store)
+    if not refreshed:
+        apply_snapshot = None
+        with contextlib.suppress(Exception):
+            if await apply_section.count():
+                apply_snapshot = await apply_section.evaluate("node => node.outerHTML")
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Apply did not change report rows; captured apply section",
+            store_code=store.store_code,
+            start_value=start_value,
+            end_value=end_value,
+            apply_html=apply_snapshot,
+        )
+        return False
     return True
 
 
@@ -1904,7 +1953,13 @@ async def _wait_for_report_refresh(
     timeout_s = NAV_TIMEOUT_MS / 1000
     start = asyncio.get_event_loop().time()
     spinner_locator = page.locator(spinner_selector).first if spinner_selector else None
+    network_idle_task = asyncio.create_task(
+        page.wait_for_load_state("networkidle", timeout=round(timeout_s * 1000))
+    )
+    network_idle_reached = False
     while (asyncio.get_event_loop().time() - start) < timeout_s:
+        if not network_idle_reached and network_idle_task.done():
+            network_idle_reached = True
         try:
             if spinner_locator is not None and await spinner_locator.is_visible():
                 with contextlib.suppress(TimeoutError):
@@ -1916,6 +1971,8 @@ async def _wait_for_report_refresh(
         except Exception:
             current_count = initial_count
         if current_count != initial_count:
+            if not network_idle_task.done():
+                network_idle_task.cancel()
             log_event(
                 logger=logger,
                 phase="filters",
@@ -1925,7 +1982,14 @@ async def _wait_for_report_refresh(
                 current_row_count=current_count,
             )
             return True
+        if network_idle_reached:
+            break
         await asyncio.sleep(0.5)
+
+    if not network_idle_reached:
+        with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError):
+            await network_idle_task
+        network_idle_reached = True
 
     log_event(
         logger=logger,
