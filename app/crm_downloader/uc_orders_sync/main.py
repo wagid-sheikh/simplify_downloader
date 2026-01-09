@@ -766,18 +766,23 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
             return True
         return any(token in url_lower for token in ("/login", "auth", "signin", "session"))
 
-    response_task = asyncio.create_task(
-        page.wait_for_response(
+    try:
+        async with page.expect_response(
             lambda response: response.status in {200, 302} and _login_response_matches(response.url),
             timeout=15_000,
+        ) as response_info:
+            await page.click(selectors["submit"])
+    except TimeoutError:
+        log_event(
+            logger=logger,
+            phase="login",
+            status="error",
+            message="Login response not observed after submit; aborting login",
+            store_code=store.store_code,
+            current_url=page.url,
         )
-    )
-    try:
-        await page.click(selectors["submit"])
+        return False
     except Exception as exc:
-        response_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await response_task
         log_event(
             logger=logger,
             phase="login",
@@ -797,26 +802,16 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
         store_code=store.store_code,
         selector=selectors["submit"],
     )
-    try:
-        response = await response_task
-    except TimeoutError:
-        log_event(
-            logger=logger,
-            phase="login",
-            status="warning",
-            message="Login response wait timed out",
-            store_code=store.store_code,
-        )
-    else:
-        log_event(
-            logger=logger,
-            phase="login",
-            status="debug",
-            message="Login response observed",
-            store_code=store.store_code,
-            response_url=response.url,
-            response_status=response.status,
-        )
+    response = response_info.value
+    log_event(
+        logger=logger,
+        phase="login",
+        status="debug",
+        message="Login response observed",
+        store_code=store.store_code,
+        response_url=response.url,
+        response_status=response.status,
+    )
     with contextlib.suppress(TimeoutError):
         await page.wait_for_url(lambda url: not _url_is_login(url, store), timeout=10_000)
         log_event(
@@ -863,6 +858,7 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
                 message="Login error banner detected after submit; aborting login",
                 store_code=store.store_code,
                 banner_text=banner_text,
+                current_url=page.url,
             )
             return False
         log_event(
@@ -873,6 +869,17 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
             store_code=store.store_code,
             selector=nav_selector,
         )
+    else:
+        log_event(
+            logger=logger,
+            phase="login",
+            status="error",
+            message="Post-login navigation element not detected after submit; aborting login",
+            store_code=store.store_code,
+            selector=nav_selector,
+            current_url=page.url,
+        )
+        return False
     if not await _wait_for_home_ready(page=page, store=store, logger=logger, source="login"):
         return False
     return True
