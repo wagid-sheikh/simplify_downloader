@@ -775,7 +775,6 @@ async def _run_store_discovery(
 
         downloaded, download_path, download_message = await _download_gst_report(
             page=page,
-            container=container,
             logger=logger,
             store=store,
             from_date=from_date,
@@ -1693,7 +1692,6 @@ async def _apply_date_range(
 async def _download_gst_report(
     *,
     page: Page,
-    container: Locator,
     logger: JsonLogger,
     store: UcStore,
     from_date: date,
@@ -1707,18 +1705,15 @@ async def _download_gst_report(
     filename = _format_gst_filename(store.store_code, from_date, to_date)
     target_path = (download_dir / filename).resolve()
 
-    export_button = None
-    export_selector_used = None
-    for selector in GST_CONTROL_SELECTORS["export_button"]:
-        try:
-            locator = container.locator(selector)
-            if await locator.count():
-                export_button = locator.first
-                export_selector_used = selector
-                break
-        except Exception:
-            continue
-    if export_button is None:
+    export_locator = page.locator("button.btn.primary.export")
+    export_selector_used = "button.btn.primary.export"
+    await page.wait_for_timeout(500)
+    export_count = await export_locator.count()
+    if export_count == 0:
+        export_locator = page.get_by_role("button", name="Export Report")
+        export_selector_used = "button[role=button][name='Export Report']"
+        export_count = await export_locator.count()
+    if export_count == 0:
         message = "Export Report button not found; skipping download"
         log_event(
             logger=logger,
@@ -1727,13 +1722,33 @@ async def _download_gst_report(
             message=message,
             store_code=store.store_code,
             selectors=GST_CONTROL_SELECTORS["export_button"],
+            export_count=export_count,
         )
         return False, None, message
 
     disabled_retry_used = False
     for attempt in range(1, max_attempts + 1):
-        with contextlib.suppress(Exception):
-            await export_button.scroll_into_view_if_needed()
+        export_button = export_locator.first
+        export_count = await export_locator.count()
+        is_visible = False
+        if export_count > 0:
+            with contextlib.suppress(Exception):
+                is_visible = await export_button.is_visible()
+        log_event(
+            logger=logger,
+            phase="download",
+            message="Checked Export Report button visibility",
+            store_code=store.store_code,
+            export_selector=export_selector_used,
+            export_count=export_count,
+            export_is_visible=is_visible,
+            attempt=attempt,
+        )
+        if export_count > 0 and not is_visible:
+            with contextlib.suppress(Exception):
+                await export_button.scroll_into_view_if_needed()
+            await asyncio.sleep(0.5)
+            continue
 
         is_enabled = True
         with contextlib.suppress(Exception):
