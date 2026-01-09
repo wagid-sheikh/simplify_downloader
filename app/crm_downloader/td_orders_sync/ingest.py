@@ -280,7 +280,7 @@ def _orders_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("store_code", sa.String(length=8), nullable=False),
         sa.Column("source_system", sa.String(length=12), nullable=False),
         sa.Column("order_number", sa.String(length=12), nullable=False),
-        sa.Column("invoice_number", sa.String(length=12)),
+        sa.Column("invoice_number", sa.String(length=20)),
         sa.Column("order_date", sa.DateTime(timezone=True), nullable=False),
         sa.Column("customer_code", sa.String(length=12)),
         sa.Column("customer_name", sa.String(length=128), nullable=False),
