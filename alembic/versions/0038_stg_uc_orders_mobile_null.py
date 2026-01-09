@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0038_make_stg_uc_orders_mobile_nullable"
+revision = "0038_stg_uc_orders_mobile_null"
 down_revision = "0037_widen_orders_invoice_number"
 branch_labels = None
 depends_on = None
