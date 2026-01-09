@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -332,6 +333,16 @@ def _normalize_gstin(value: Any, *, warnings: list[str], row_remarks: list[str])
     return None
 
 
+def _build_ingest_remarks_payload(*, warnings: list[str], failures: list[str] | None = None) -> str | None:
+    if not warnings and not failures:
+        return None
+    payload = {
+        "warnings": list(warnings),
+        "failures": list(failures or []),
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def _coerce_row(
     raw: Mapping[str, Any], *, warnings: list[str], invalid_phone_numbers: set[str]
 ) -> tuple[Dict[str, Any], list[str], str | None]:
@@ -359,9 +370,10 @@ def _coerce_row(
         invalid_phone_numbers=invalid_phone_numbers,
         row_remarks=row_remarks,
     )
-    row["customer_gstin"] = _normalize_gstin(
-        row.get("customer_gstin"), warnings=warnings, row_remarks=row_remarks
-    )
+    raw_gstin = row.get("customer_gstin")
+    row["customer_gstin"] = _normalize_gstin(raw_gstin, warnings=warnings, row_remarks=row_remarks)
+    if raw_gstin in (None, ""):
+        row_remarks.append("Customer GSTIN missing")
 
     if not row.get("order_number"):
         warning = "Skipping row with blank order_number"
@@ -374,7 +386,7 @@ def _coerce_row(
         drop_reason = warning
         return {}, row_remarks, drop_reason
 
-    row["ingest_remarks"] = "; ".join(row_remarks) if row_remarks else None
+    row["ingest_remarks"] = _build_ingest_remarks_payload(warnings=row_remarks)
     return row, row_remarks, drop_reason
 
 
@@ -413,7 +425,7 @@ def _read_workbook_rows(
                         "order_number": order_number,
                         "headers": headers,
                         "values": {header: _stringify_value(raw_row.get(header)) for header in headers},
-                        "remarks": normalized.get("ingest_remarks"),
+                        "remarks": "; ".join(row_remarks) if row_remarks else None,
                         "ingest_remarks": normalized.get("ingest_remarks"),
                     }
                 )
@@ -426,7 +438,11 @@ def _read_workbook_rows(
                     "headers": headers,
                     "values": {header: _stringify_value(raw_row.get(header)) for header in headers},
                     "remarks": drop_reason or "; ".join(row_remarks) or "Row dropped due to missing required values",
-                    "ingest_remarks": drop_reason
+                    "ingest_remarks": _build_ingest_remarks_payload(
+                        warnings=row_remarks,
+                        failures=[drop_reason] if drop_reason else None,
+                    )
+                    or drop_reason
                     or "; ".join(row_remarks)
                     or "Row dropped due to missing required values",
                 }
