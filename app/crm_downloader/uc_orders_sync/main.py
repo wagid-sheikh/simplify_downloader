@@ -1633,14 +1633,25 @@ async def _apply_date_range(
             return False, 0
 
         await overlay_apply_button.click()
-        input_ready, overlay_open = await _confirm_main_date_range_input(
+        refreshed, row_count = await _wait_for_report_refresh(
             page=page,
-            date_input=date_input,
+            container=container,
             logger=logger,
             store=store,
-            overlay_selector=overlay_selector,
         )
-        if input_ready:
+        overlay_open = False
+        with contextlib.suppress(Exception):
+            overlay_open = await page.locator(overlay_selector).first.is_visible()
+        log_event(
+            logger=logger,
+            phase="filters",
+            message="GST report row count after apply",
+            store_code=store.store_code,
+            row_count=row_count,
+            refreshed=refreshed,
+            overlay_open=overlay_open,
+        )
+        if row_count > 0:
             applied = True
             break
         if overlay_open and attempt == 0:
@@ -1648,43 +1659,35 @@ async def _apply_date_range(
                 logger=logger,
                 phase="filters",
                 status="warn",
-                message="Main date range input empty after apply; retrying",
+                message="GST report rows not detected and overlay still open; retrying apply",
                 store_code=store.store_code,
+                row_count=row_count,
             )
-            with contextlib.suppress(Exception):
-                await date_input.click()
-            popup = await _wait_for_date_picker_popup(page=page, logger=logger, store=store)
-            if popup is not None:
-                with contextlib.suppress(Exception):
-                    await page.wait_for_selector(overlay_selector, state="visible", timeout=5_000)
             continue
+        if not overlay_open:
+            applied = True
+            break
         log_event(
             logger=logger,
             phase="filters",
             status="warn",
-            message="Main date range input empty after apply",
+            message="GST report rows missing and overlay still open after apply",
             store_code=store.store_code,
+            row_count=row_count,
         )
-        return False, 0
+        return False, row_count
 
     if not applied:
         return False, 0
     if apply_section_found:
-        if not await _confirm_apply_dates(
+        await _confirm_apply_dates(
             apply_section=apply_section,
             from_date=from_date,
             to_date=to_date,
             logger=logger,
             store=store,
-        ):
-            return False, 0
-    refreshed, row_count = await _wait_for_report_refresh(
-        page=page,
-        container=container,
-        logger=logger,
-        store=store,
-    )
-    return refreshed, row_count
+        )
+    return True, row_count
 
 
 async def _download_gst_report(
@@ -1774,6 +1777,16 @@ async def _download_gst_report(
                     attempt=attempt,
                 )
                 await export_button.click()
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    message="Export Report button click completed",
+                    store_code=store.store_code,
+                    export_selector=export_selector_used,
+                    row_count=row_count,
+                    attempt=attempt,
+                    click_outcome="success",
+                )
             download = await download_info.value
             await download.save_as(str(target_path))
             log_event(
@@ -1798,6 +1811,7 @@ async def _download_gst_report(
                 attempt=attempt,
                 max_attempts=max_attempts,
                 timeout_ms=download_timeout_ms,
+                click_outcome="timeout",
             )
         except Exception as exc:
             log_event(
@@ -1809,6 +1823,7 @@ async def _download_gst_report(
                 attempt=attempt,
                 max_attempts=max_attempts,
                 error=str(exc),
+                click_outcome="error",
             )
         await asyncio.sleep(1)
 
@@ -2229,48 +2244,6 @@ async def _confirm_apply_dates(
         expected_end=to_date.isoformat(),
     )
     return False
-
-
-async def _confirm_main_date_range_input(
-    *,
-    page: Page,
-    date_input: Locator,
-    logger: JsonLogger,
-    store: UcStore,
-    overlay_selector: str,
-) -> tuple[bool, bool]:
-    input_value = ""
-    for _ in range(10):
-        with contextlib.suppress(Exception):
-            input_value = await date_input.input_value()
-        if input_value:
-            break
-        await asyncio.sleep(0.2)
-
-    overlay_open = False
-    with contextlib.suppress(Exception):
-        overlay_open = await page.locator(overlay_selector).first.is_visible()
-
-    if input_value:
-        log_event(
-            logger=logger,
-            phase="filters",
-            message="Main date range input populated after clicking apply",
-            store_code=store.store_code,
-            input_value=input_value,
-            overlay_open=overlay_open,
-        )
-        return True, overlay_open
-
-    log_event(
-        logger=logger,
-        phase="filters",
-        status="warn",
-        message="Main date range input empty after clicking apply",
-        store_code=store.store_code,
-        overlay_open=overlay_open,
-    )
-    return False, overlay_open
 
 
 async def _wait_for_report_refresh(
