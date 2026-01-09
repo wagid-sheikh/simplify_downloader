@@ -1732,7 +1732,7 @@ async def _navigate_calendar_to_month(
     current_label = None
     reached = False
     for _ in range(max_steps):
-        header_text = await _get_calendar_header_text(calendar=calendar)
+        header_text = await _get_calendar_header_text(calendar=calendar, label=label)
         parsed = _parse_month_year(header_text or "")
         if not parsed:
             log_event(
@@ -1785,15 +1785,26 @@ async def _navigate_calendar_to_month(
     return current_label
 
 
-async def _get_calendar_header_text(*, calendar: Locator) -> str | None:
-    selectors = (
-        ".month",
-        ".month-name",
-        ".datepicker-switch",
-        ".flatpickr-current-month",
-        ".react-datepicker__current-month",
-        ".mat-calendar-period-button",
-    )
+async def _get_calendar_header_text(*, calendar: Locator, label: str) -> str | None:
+    id_selector = None
+    if label == "start":
+        id_selector = "#mat-calendar-button-0"
+    elif label == "end":
+        id_selector = "#mat-calendar-button-1"
+
+    selectors = [
+        selector
+        for selector in (
+            id_selector,
+            ".month",
+            ".month-name",
+            ".datepicker-switch",
+            ".flatpickr-current-month",
+            ".react-datepicker__current-month",
+            ".mat-calendar-period-button",
+        )
+        if selector
+    ]
     for selector in selectors:
         locator = calendar.locator(selector).first
         try:
@@ -1823,6 +1834,7 @@ def _parse_month_year(label: str) -> tuple[int, int] | None:
 async def _click_calendar_nav(*, calendar: Locator, direction: str) -> None:
     if direction == "prev":
         selectors = [
+            ".mat-calendar-previous-button",
             "button:has-text('<<')",
             "th:has-text('<<')",
             "span:has-text('<<')",
@@ -1832,6 +1844,7 @@ async def _click_calendar_nav(*, calendar: Locator, direction: str) -> None:
         ]
     else:
         selectors = [
+            ".mat-calendar-next-button",
             "button:has-text('>>')",
             "th:has-text('>>')",
             "span:has-text('>>')",
@@ -1851,22 +1864,30 @@ async def _click_calendar_nav(*, calendar: Locator, direction: str) -> None:
 
 
 async def _click_day_in_calendar(*, calendar: Locator, target_date: date) -> bool:
-    day_text = str(target_date.day)
-    candidates = calendar.locator("td, button, span").filter(has_text=re.compile(rf"^{day_text}$"))
-    count = await candidates.count()
-    for idx in range(count):
-        candidate = candidates.nth(idx)
-        try:
-            if not await candidate.is_visible():
-                continue
-            class_name = (await candidate.get_attribute("class")) or ""
-            aria_disabled = (await candidate.get_attribute("aria-disabled")) or ""
-            if "off" in class_name.split() or "disabled" in class_name.split() or aria_disabled == "true":
-                continue
-            await candidate.click()
-            return True
-        except Exception:
-            continue
+    aria_label = target_date.strftime("%B %d, %Y")
+    body_locator = calendar.locator(".calendar-body.show")
+    try:
+        scope = body_locator.first if await body_locator.count() else calendar
+    except Exception:
+        scope = calendar
+    day_cell = scope.locator(f"td[aria-label='{aria_label}']").first
+    try:
+        if not await day_cell.count():
+            return False
+        await day_cell.scroll_into_view_if_needed()
+        await day_cell.click()
+        button_locator = day_cell.locator("[aria-selected]").first
+        for _ in range(5):
+            aria_selected = (await day_cell.get_attribute("aria-selected")) or ""
+            if aria_selected == "true":
+                return True
+            if await button_locator.count():
+                button_selected = (await button_locator.get_attribute("aria-selected")) or ""
+                if button_selected == "true":
+                    return True
+            await asyncio.sleep(0.1)
+    except Exception:
+        return False
     return False
 
 
