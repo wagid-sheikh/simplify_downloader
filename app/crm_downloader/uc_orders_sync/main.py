@@ -1925,34 +1925,59 @@ async def _click_day_in_calendar(
     store: UcStore,
     label: str,
 ) -> bool:
+    month_name = target_date.strftime("%B")
     aria_label = target_date.strftime("%B %d, %Y")
     scope = calendar
     day_cells = None
     if label == "end":
-        end_container = calendar.locator(":scope.end-date, .end-date").first
-        try:
-            if await end_container.count():
-                scope = end_container
-        except Exception:
-            scope = calendar
+        end_container = calendar.locator(".end-date").first
+        scope = end_container
         mat_calendar = scope.locator("mat-calendar").first
         try:
             if await mat_calendar.count():
                 scope = mat_calendar
         except Exception:
             pass
-        day_cells = scope.locator(f"td[aria-label='{aria_label}']")
+        day_label = str(target_date.day)
+        aria_label_unpadded = f"{month_name} {day_label}, {target_date.year}"
+        aria_label_padded = aria_label
+        matched_label = None
+        matched_type = None
+        day_cells = scope.locator(f"td[aria-label='{aria_label_unpadded}']")
         try:
             match_count = await day_cells.count()
         except Exception:
             match_count = 0
+        if match_count:
+            matched_label = aria_label_unpadded
+            matched_type = "non_padded"
+        else:
+            day_cells = scope.locator(f"td[aria-label='{aria_label_padded}']")
+            try:
+                match_count = await day_cells.count()
+            except Exception:
+                match_count = 0
+            if match_count:
+                matched_label = aria_label_padded
+                matched_type = "padded"
+            else:
+                day_cells = (
+                    scope.locator(f"td[aria-label^='{month_name} ']")
+                    .filter(has_text=re.compile(rf"^{day_label}$"))
+                )
+                matched_type = "fallback_regex"
+                try:
+                    match_count = await day_cells.count()
+                except Exception:
+                    match_count = 0
         log_event(
             logger=logger,
             phase="filters",
             status="debug",
             message="End-date calendar day cell matches before click",
             store_code=store.store_code,
-            aria_label=aria_label,
+            aria_label=matched_label or aria_label_unpadded,
+            matched_type=matched_type,
             match_count=match_count,
         )
     else:
@@ -1973,10 +1998,28 @@ async def _click_day_in_calendar(
         for _ in range(5):
             aria_selected = (await day_cell.get_attribute("aria-selected")) or ""
             if aria_selected == "true":
+                if label == "end":
+                    log_event(
+                        logger=logger,
+                        phase="filters",
+                        status="debug",
+                        message="End-date calendar day cell selected",
+                        store_code=store.store_code,
+                        aria_selected=aria_selected,
+                    )
                 return True
             if await button_locator.count():
                 button_selected = (await button_locator.get_attribute("aria-selected")) or ""
                 if button_selected == "true":
+                    if label == "end":
+                        log_event(
+                            logger=logger,
+                            phase="filters",
+                            status="debug",
+                            message="End-date calendar day cell selected",
+                            store_code=store.store_code,
+                            aria_selected=button_selected,
+                        )
                     return True
             await asyncio.sleep(0.1)
     except Exception:
