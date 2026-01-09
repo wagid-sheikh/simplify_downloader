@@ -80,12 +80,8 @@ GST_CONTROL_SELECTORS = {
     "export_button": ["button:has-text('Export Report')"],
 }
 DATE_PICKER_POPUP_SELECTORS = (
-    ".daterangepicker",
-    ".datepicker",
-    ".flatpickr-calendar",
-    ".react-datepicker",
-    ".mat-datepicker-content",
-    "[class*=date-picker]",
+    ".calendar-body.show",
+    ".calendar-body .calendar",
 )
 CONTROL_CUES = {
     "start_date": ["Start Date", "From Date", "From"],
@@ -1451,8 +1447,14 @@ async def _apply_date_range(
 
     with contextlib.suppress(Exception):
         await date_input.scroll_into_view_if_needed()
-    await date_input.click()
-    popup = await _wait_for_date_picker_popup(page=page, logger=logger, store=store)
+    popup = None
+    for attempt in range(2):
+        await date_input.click()
+        popup = await _wait_for_date_picker_popup(page=page, logger=logger, store=store)
+        if popup is not None:
+            break
+        if attempt == 0:
+            await asyncio.sleep(0.3)
     if popup is None:
         return False
 
@@ -1504,7 +1506,9 @@ async def _apply_date_range(
     apply_section = container.locator(".apply").first
     start_value = ""
     end_value = ""
+    apply_section_found = False
     if await apply_section.count():
+        apply_section_found = True
         start_input = apply_section.locator("input[readonly][placeholder='Start Date']").first
         end_input = apply_section.locator("input[readonly][placeholder='End Date']").first
         if await start_input.count() and await end_input.count():
@@ -1558,6 +1562,15 @@ async def _apply_date_range(
         return False
 
     await apply_button.click()
+    if apply_section_found:
+        if not await _confirm_apply_dates(
+            apply_section=apply_section,
+            from_date=from_date,
+            to_date=to_date,
+            logger=logger,
+            store=store,
+        ):
+            return False
     refreshed = await _wait_for_report_refresh(page=page, container=container, logger=logger, store=store)
     return refreshed
 
@@ -1707,7 +1720,7 @@ async def _wait_for_date_picker_popup(
 
 async def _get_calendar_locators(*, popup: Locator) -> list[Locator]:
     calendars: list[Locator] = []
-    for selector in (".drp-calendar.left", ".drp-calendar.right"):
+    for selector in (".start-date", ".end-date"):
         locator = popup.locator(selector)
         count = await locator.count()
         for idx in range(count):
@@ -1715,13 +1728,7 @@ async def _get_calendar_locators(*, popup: Locator) -> list[Locator]:
     if calendars:
         return calendars
 
-    for selector in (
-        ".drp-calendar",
-        ".react-datepicker__month-container",
-        ".flatpickr-calendar",
-        ".datepicker",
-        ".mat-calendar",
-    ):
+    for selector in (".calendar-body.show", ".calendar-body .calendar"):
         locator = popup.locator(selector)
         count = await locator.count()
         for idx in range(count):
@@ -1890,25 +1897,9 @@ def _parse_month_year(label: str) -> tuple[int, int] | None:
 
 async def _click_calendar_nav(*, calendar: Locator, direction: str) -> None:
     if direction == "prev":
-        selectors = [
-            ".mat-calendar-previous-button",
-            "button:has-text('<<')",
-            "th:has-text('<<')",
-            "span:has-text('<<')",
-            "button.prev",
-            "th.prev",
-            ".prev",
-        ]
+        selectors = [".mat-calendar-previous-button"]
     else:
-        selectors = [
-            ".mat-calendar-next-button",
-            "button:has-text('>>')",
-            "th:has-text('>>')",
-            "span:has-text('>>')",
-            "button.next",
-            "th.next",
-            ".next",
-        ]
+        selectors = [".mat-calendar-next-button"]
     for selector in selectors:
         locator = calendar.locator(selector).first
         try:
@@ -1922,7 +1913,7 @@ async def _click_calendar_nav(*, calendar: Locator, direction: str) -> None:
 
 async def _click_day_in_calendar(*, calendar: Locator, target_date: date) -> bool:
     aria_label = target_date.strftime("%B %d, %Y")
-    body_locator = calendar.locator(".calendar-body.show")
+    body_locator = calendar.locator(".calendar")
     try:
         scope = body_locator.first if await body_locator.count() else calendar
     except Exception:
@@ -1945,6 +1936,61 @@ async def _click_day_in_calendar(*, calendar: Locator, target_date: date) -> boo
             await asyncio.sleep(0.1)
     except Exception:
         return False
+    return False
+
+
+def _matches_date_value(value: str, target_date: date) -> bool:
+    if not value:
+        return False
+    normalized = value.strip()
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y", "%b %d, %Y", "%B %d, %Y"):
+        if target_date.strftime(fmt) in normalized:
+            return True
+    return False
+
+
+async def _confirm_apply_dates(
+    *,
+    apply_section: Locator,
+    from_date: date,
+    to_date: date,
+    logger: JsonLogger,
+    store: UcStore,
+) -> bool:
+    start_input = apply_section.locator("input[readonly][placeholder='Start Date']").first
+    end_input = apply_section.locator("input[readonly][placeholder='End Date']").first
+    if not await start_input.count() or not await end_input.count():
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Apply inputs missing before export",
+            store_code=store.store_code,
+        )
+        return False
+
+    start_value = ""
+    end_value = ""
+    for _ in range(10):
+        with contextlib.suppress(Exception):
+            start_value = await start_input.input_value()
+        with contextlib.suppress(Exception):
+            end_value = await end_input.input_value()
+        if _matches_date_value(start_value, from_date) and _matches_date_value(end_value, to_date):
+            return True
+        await asyncio.sleep(0.3)
+
+    log_event(
+        logger=logger,
+        phase="filters",
+        status="warn",
+        message="Apply inputs did not reflect selected dates",
+        store_code=store.store_code,
+        start_value=start_value,
+        end_value=end_value,
+        expected_start=from_date.isoformat(),
+        expected_end=to_date.isoformat(),
+    )
     return False
 
 
