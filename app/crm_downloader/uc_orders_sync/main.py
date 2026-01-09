@@ -65,6 +65,27 @@ GST_CONTAINER_SELECTORS = (
     "div[class*=gst]",
     "div[id*=gst]",
 )
+GST_DATE_RANGE_READY_SELECTORS = (
+    "input.search-user[placeholder*='Choose Start Date']",
+    "input[placeholder='Choose Start Date - End Date']",
+)
+GST_CONTROL_SELECTORS = {
+    "date_range_input": [
+        "input.search-user[readonly][placeholder='Choose Start Date - End Date']",
+        "input.search-user[placeholder*='Choose Start Date']",
+        "input[placeholder='Choose Start Date - End Date']",
+    ],
+    "apply_button": ["button:has-text('Apply')"],
+    "export_button": ["button:has-text('Export Report')"],
+}
+DATE_PICKER_POPUP_SELECTORS = (
+    ".daterangepicker",
+    ".datepicker",
+    ".flatpickr-calendar",
+    ".react-datepicker",
+    ".mat-datepicker-content",
+    "[class*=date-picker]",
+)
 CONTROL_CUES = {
     "start_date": ["Start Date", "From Date", "From"],
     "end_date": ["End Date", "To Date", "To"],
@@ -595,7 +616,7 @@ async def _run_store_discovery(
             )
             summary.record_store(store.store_code, outcome)
             return
-        selectors_payload = await _discover_selector_cues(container)
+        selectors_payload = await _discover_selector_cues(container=container, page=page)
         spinner_payload = await _discover_spinner_cues(page)
         log_event(
             logger=logger,
@@ -954,8 +975,20 @@ async def _wait_for_gst_report_ready(
         )
         return False, None
 
-    readiness_selector = "text=/Start Date|End Date|Export Report|Apply/i"
-    container = await _find_gst_report_container(page=page, readiness_selector=readiness_selector)
+    readiness_selector = ", ".join(GST_DATE_RANGE_READY_SELECTORS)
+    fallback_selector = "text=/Start Date|End Date|Export Report|Apply/i"
+    primary_count = 0
+    try:
+        primary_count = await page.locator(readiness_selector).count()
+    except Exception:
+        primary_count = 0
+    if primary_count:
+        container = await _find_gst_report_container(page=page, readiness_selector=readiness_selector)
+    else:
+        container = await _find_gst_report_container(page=page, readiness_selector=fallback_selector)
+        if container is not None:
+            readiness_selector = fallback_selector
+
     if container is None:
         dom_snippet = await _get_dom_snippet(page)
         log_event(
@@ -965,6 +998,7 @@ async def _wait_for_gst_report_ready(
             message="GST report container not detected",
             store_code=store.store_code,
             selector=readiness_selector,
+            fallback_selector=fallback_selector,
             current_url=page.url,
             dom_snippet=dom_snippet,
         )
@@ -981,6 +1015,7 @@ async def _wait_for_gst_report_ready(
             message="GST report readiness signal missing",
             store_code=store.store_code,
             selector=readiness_selector,
+            fallback_selector=fallback_selector,
             current_url=page.url,
             dom_snippet=dom_snippet,
         )
@@ -1397,8 +1432,11 @@ async def _get_dom_snippet(page: Page) -> str:
     return cleaned[: DOM_SNIPPET_MAX_CHARS - 1] + "…"
 
 
-async def _discover_selector_cues(container: Locator) -> Dict[str, Any]:
-    results: Dict[str, Any] = {}
+async def _discover_selector_cues(*, container: Locator, page: Page) -> Dict[str, Any]:
+    results: Dict[str, Any] = {
+        "selector_matches": await _probe_gst_control_selectors(container=container),
+        "date_picker_popup": await _probe_date_picker_popup(page=page),
+    }
     for label, cues in CONTROL_CUES.items():
         matches: list[Dict[str, Any]] = []
         for cue in cues:
@@ -1431,6 +1469,55 @@ async def _discover_selector_cues(container: Locator) -> Dict[str, Any]:
                 matches.append({"cue": cue, "selector": selector, "truncated": True, "count": count})
         results[label] = {"cues": cues, "matches": matches}
     return results
+
+
+async def _probe_gst_control_selectors(*, container: Locator) -> Dict[str, Any]:
+    results: Dict[str, Any] = {}
+    for label, selectors in GST_CONTROL_SELECTORS.items():
+        matches: list[Dict[str, Any]] = []
+        for selector in selectors:
+            locator = container.locator(selector)
+            try:
+                count = await locator.count()
+            except Exception:
+                continue
+            if not count:
+                continue
+            sample_count = min(count, 3)
+            samples: list[Dict[str, Any]] = []
+            for idx in range(sample_count):
+                entry = locator.nth(idx)
+                text = (await entry.text_content()) or ""
+                samples.append({"text": text.strip()})
+            matches.append(
+                {
+                    "selector": selector,
+                    "count": count,
+                    "samples": samples,
+                }
+            )
+        results[label] = {"selectors": selectors, "matches": matches}
+    return results
+
+
+async def _probe_date_picker_popup(*, page: Page) -> Dict[str, Any]:
+    matches: list[Dict[str, Any]] = []
+    popup_present = False
+    for selector in DATE_PICKER_POPUP_SELECTORS:
+        locator = page.locator(selector)
+        try:
+            count = await locator.count()
+        except Exception:
+            continue
+        if not count:
+            continue
+        visible = False
+        with contextlib.suppress(Exception):
+            visible = await locator.first.is_visible()
+        matches.append({"selector": selector, "count": count, "visible": visible})
+        if visible or count:
+            popup_present = True
+    return {"present": popup_present, "matches": matches}
 
 
 async def _discover_spinner_cues(page: Page) -> list[Dict[str, Any]]:
