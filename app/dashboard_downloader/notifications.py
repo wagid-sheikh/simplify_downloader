@@ -626,6 +626,44 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
+    metrics = run_data.get("metrics_json") or {}
+    payload = metrics.get("notification_payload") or {}
+    stores_payload = payload.get("stores") or []
+
+    stores: list[dict[str, Any]] = []
+    for store in stores_payload:
+        stores.append(
+            {
+                "store_code": store.get("store_code"),
+                "status": store.get("status"),
+                "message": store.get("message"),
+                "error_message": store.get("error_message"),
+                "warning_count": store.get("warning_count"),
+                "filename": store.get("filename"),
+                "staging_rows": store.get("staging_rows"),
+                "final_rows": store.get("final_rows"),
+                "staging_inserted": store.get("staging_inserted"),
+                "staging_updated": store.get("staging_updated"),
+                "final_inserted": store.get("final_inserted"),
+                "final_updated": store.get("final_updated"),
+            }
+        )
+
+    started_at = payload.get("started_at") or run_data.get("started_at")
+    finished_at = payload.get("finished_at") or run_data.get("finished_at")
+
+    return {
+        "started_at": _normalize_datetime(started_at),
+        "finished_at": _normalize_datetime(finished_at),
+        "total_time_taken": payload.get("total_time_taken") or run_data.get("total_time_taken"),
+        "overall_status": payload.get("overall_status") or run_data.get("overall_status"),
+        "stores": stores,
+        "uc_all_stores_failed": _uc_all_stores_failed(stores_payload),
+        "notification_payload": payload,
+    }
+
+
 def _td_all_stores_failed(stores_payload: list[Mapping[str, Any]]) -> bool:
     if not stores_payload:
         return True
@@ -640,6 +678,22 @@ def _td_all_stores_failed(stores_payload: list[Mapping[str, Any]]) -> bool:
         orders_failed = _failed(store.get("orders") or {})
         sales_failed = _failed(store.get("sales") or {})
         if not (orders_failed and sales_failed):
+            return False
+    return True
+
+
+def _uc_all_stores_failed(stores_payload: list[Mapping[str, Any]]) -> bool:
+    if not stores_payload:
+        return True
+
+    def _failed(report: Mapping[str, Any]) -> bool:
+        status = str(report.get("status") or "").lower()
+        if status in {"ok", "warning", "skipped"}:
+            return False
+        return True
+
+    for store in stores_payload:
+        if not _failed(store):
             return False
     return True
 
@@ -778,6 +832,8 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
     }
     if pipeline_name == "td_orders_sync":
         context.update(_build_td_orders_context(run_data))
+    elif pipeline_name == "uc_orders_sync":
+        context.update(_build_uc_orders_context(run_data))
     else:
         context["started_at"] = _normalize_datetime(run_data.get("started_at"))
         context["finished_at"] = _normalize_datetime(run_data.get("finished_at"))
@@ -852,6 +908,8 @@ async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str
     }
     if pipeline_name == "td_orders_sync":
         context.update(_build_td_orders_context(run_data))
+    elif pipeline_name == "uc_orders_sync":
+        context.update(_build_uc_orders_context(run_data))
     else:
         context["started_at"] = _normalize_datetime(run_data.get("started_at"))
         context["finished_at"] = _normalize_datetime(run_data.get("finished_at"))

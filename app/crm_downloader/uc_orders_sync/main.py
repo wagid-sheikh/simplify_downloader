@@ -186,6 +186,7 @@ class StoreOutcome:
     storage_state: str | None = None
     login_used: bool | None = None
     download_path: str | None = None
+    warning_count: int | None = None
     staging_rows: int | None = None
     final_rows: int | None = None
     staging_inserted: int | None = None
@@ -256,6 +257,7 @@ class UcOrdersDiscoverySummary:
                 "error_message": outcome.message if outcome and outcome.status in {"warning", "error"} else None,
                 "filename": filename,
                 "download_path": outcome.download_path if outcome else None,
+                "warning_count": outcome.warning_count if outcome else None,
                 "row_counts": {
                     "staging_rows": outcome.staging_rows if outcome else None,
                     "final_rows": outcome.final_rows if outcome else None,
@@ -266,6 +268,37 @@ class UcOrdersDiscoverySummary:
                 },
             }
         return summary
+
+    def _build_notification_payload(self, *, finished_at: datetime, total_time_taken: str) -> Dict[str, Any]:
+        stores: list[dict[str, Any]] = []
+        to_date = self.report_end_date or self.report_date
+        for store_code in self.store_codes:
+            code = store_code.upper()
+            outcome = self.store_outcomes.get(code)
+            filename = _format_gst_filename(code, self.report_date, to_date)
+            stores.append(
+                {
+                    "store_code": code,
+                    "status": outcome.status if outcome else "error",
+                    "message": outcome.message if outcome else "No outcome recorded",
+                    "error_message": outcome.message if outcome and outcome.status in {"warning", "error"} else None,
+                    "warning_count": outcome.warning_count if outcome else None,
+                    "filename": filename,
+                    "staging_rows": outcome.staging_rows if outcome else None,
+                    "final_rows": outcome.final_rows if outcome else None,
+                    "staging_inserted": outcome.staging_inserted if outcome else None,
+                    "staging_updated": outcome.staging_updated if outcome else None,
+                    "final_inserted": outcome.final_inserted if outcome else None,
+                    "final_updated": outcome.final_updated if outcome else None,
+                }
+            )
+        return {
+            "overall_status": self.overall_status(),
+            "stores": stores,
+            "started_at": self.started_at.isoformat(),
+            "finished_at": finished_at.isoformat(),
+            "total_time_taken": total_time_taken,
+        }
 
     def build_record(self, *, finished_at: datetime) -> Dict[str, Any]:
         total_seconds = max(0, int((finished_at - self.started_at).total_seconds()))
@@ -287,6 +320,9 @@ class UcOrdersDiscoverySummary:
             },
             "notes": list(self.notes),
         }
+        metrics["notification_payload"] = self._build_notification_payload(
+            finished_at=finished_at, total_time_taken=total_time_taken
+        )
         return {
             "pipeline_name": PIPELINE_NAME,
             "run_id": self.run_id,
@@ -889,6 +925,7 @@ async def _run_store_discovery(
             storage_state=str(storage_state_path) if storage_state_path.exists() else None,
             login_used=login_used,
             download_path=download_path,
+            warning_count=len(ingest_result.warnings) if ingest_result and ingest_result.warnings else None,
             staging_rows=ingest_result.staging_rows if ingest_result else None,
             final_rows=ingest_result.final_rows if ingest_result else None,
             staging_inserted=ingest_result.staging_inserted if ingest_result else None,
