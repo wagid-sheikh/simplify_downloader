@@ -762,11 +762,20 @@ async def _run_store_discovery(
                 logger=logger,
                 phase="filters",
                 status="warn",
-                message="Date range apply incomplete; attempting export anyway",
+                message="Date range apply incomplete; skipping export",
                 store_code=store.store_code,
                 from_date=from_date,
                 to_date=to_date,
             )
+            outcome = StoreOutcome(
+                status="warning",
+                message="Date range apply incomplete; export skipped",
+                final_url=page.url,
+                storage_state=str(storage_state_path) if storage_state_path.exists() else None,
+                login_used=login_used,
+            )
+            summary.record_store(store.store_code, outcome)
+            return
 
         downloaded, download_path, download_message = await _download_gst_report(
             page=page,
@@ -1516,8 +1525,8 @@ async def _apply_date_range(
         return False
 
     await apply_button.click()
-    await _wait_for_report_refresh(page=page, container=container, logger=logger, store=store)
-    return True
+    refreshed = await _wait_for_report_refresh(page=page, container=container, logger=logger, store=store)
+    return refreshed
 
 
 async def _download_gst_report(
@@ -1557,6 +1566,7 @@ async def _download_gst_report(
         )
         return False, None, message
 
+    disabled_retry_used = False
     for attempt in range(1, max_attempts + 1):
         with contextlib.suppress(Exception):
             await export_button.scroll_into_view_if_needed()
@@ -1565,17 +1575,31 @@ async def _download_gst_report(
         with contextlib.suppress(Exception):
             is_enabled = await export_button.is_enabled()
         if not is_enabled:
+            if not disabled_retry_used:
+                disabled_retry_used = True
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    status="warn",
+                    message="Export Report button disabled; waiting before retry",
+                    store_code=store.store_code,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                )
+                with contextlib.suppress(Exception):
+                    await export_button.wait_for(state="enabled", timeout=5_000)
+                await asyncio.sleep(1)
+                continue
             log_event(
                 logger=logger,
                 phase="download",
                 status="warn",
-                message="Export Report button disabled; retrying",
+                message="Export Report button disabled after retry; giving up",
                 store_code=store.store_code,
                 attempt=attempt,
                 max_attempts=max_attempts,
             )
-            await asyncio.sleep(1)
-            continue
+            return False, None, "Export Report button disabled after retry"
 
         try:
             async with page.expect_download(timeout=download_timeout_ms) as download_info:
