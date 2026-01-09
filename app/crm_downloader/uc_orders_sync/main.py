@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Mapping, Sequence
+from typing import Any, Dict, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
 
 import sqlalchemy as sa
@@ -208,6 +208,7 @@ class UcOrdersDiscoverySummary:
         default_factory=lambda: {"init": {"ok": 0, "warning": 0, "error": 0}, "store": {"ok": 0, "warning": 0, "error": 0}}
     )
     notes: list[str] = field(default_factory=list)
+    ingest_remarks: list[dict[str, str]] = field(default_factory=list)
 
     def mark_phase(self, phase: str, status: str) -> None:
         counters = self.phases.setdefault(phase, {"ok": 0, "warning": 0, "error": 0})
@@ -235,7 +236,32 @@ class UcOrdersDiscoverySummary:
         ok = sum(1 for outcome in self.store_outcomes.values() if outcome.status == "ok")
         warn = sum(1 for outcome in self.store_outcomes.values() if outcome.status == "warning")
         error = sum(1 for outcome in self.store_outcomes.values() if outcome.status == "error")
-        return f"UC orders discovery: {ok} ok, {warn} warnings, {error} errors across {total} stores"
+        overall_status = self.overall_status()
+        status_explanation = {
+            "ok": "run completed with no issues recorded",
+            "warning": "run completed but row-level issues were recorded",
+            "error": "run failed or data could not be ingested",
+        }.get(overall_status, "run completed with mixed results")
+        return (
+            "UC GST Run Summary\n"
+            f"Overall Status: {overall_status} ({status_explanation})\n"
+            f"Stores: {ok} ok, {warn} warnings, {error} errors across {total} stores"
+        )
+
+    def add_ingest_remarks(self, remarks: Iterable[dict[str, str]]) -> None:
+        for entry in remarks:
+            store_code = entry.get("store_code")
+            order_number = entry.get("order_number")
+            remark_text = entry.get("ingest_remarks")
+            if not remark_text:
+                continue
+            self.ingest_remarks.append(
+                {
+                    "store_code": (store_code or "").upper(),
+                    "order_number": str(order_number) if order_number is not None else "",
+                    "ingest_remarks": str(remark_text),
+                }
+            )
 
     def _store_status_counts(self) -> Dict[str, int]:
         counts = {"ok": 0, "warning": 0, "error": 0}
@@ -254,7 +280,8 @@ class UcOrdersDiscoverySummary:
             summary[code] = {
                 "status": outcome.status if outcome else "error",
                 "message": outcome.message if outcome else "No outcome recorded",
-                "error_message": outcome.message if outcome and outcome.status in {"warning", "error"} else None,
+                "error_message": outcome.message if outcome and outcome.status == "error" else None,
+                "info_message": outcome.message if outcome and outcome.status != "error" else None,
                 "filename": filename,
                 "download_path": outcome.download_path if outcome else None,
                 "warning_count": outcome.warning_count if outcome else None,
@@ -281,7 +308,8 @@ class UcOrdersDiscoverySummary:
                     "store_code": code,
                     "status": outcome.status if outcome else "error",
                     "message": outcome.message if outcome else "No outcome recorded",
-                    "error_message": outcome.message if outcome and outcome.status in {"warning", "error"} else None,
+                    "error_message": outcome.message if outcome and outcome.status == "error" else None,
+                    "info_message": outcome.message if outcome and outcome.status != "error" else None,
                     "warning_count": outcome.warning_count if outcome else None,
                     "filename": filename,
                     "staging_rows": outcome.staging_rows if outcome else None,
@@ -319,6 +347,7 @@ class UcOrdersDiscoverySummary:
                 "report_range": {"from": self.report_date.isoformat(), "to": self.report_end_date.isoformat()},
             },
             "notes": list(self.notes),
+            "ingest_remarks": {"rows": list(self.ingest_remarks), "total": len(self.ingest_remarks)},
         }
         metrics["notification_payload"] = self._build_notification_payload(
             finished_at=finished_at, total_time_taken=total_time_taken
@@ -917,6 +946,8 @@ async def _run_store_discovery(
             controls=selectors_payload,
             spinners=spinner_payload,
         )
+        if ingest_result and ingest_result.ingest_remarks:
+            summary.add_ingest_remarks(ingest_result.ingest_remarks)
 
         outcome = StoreOutcome(
             status=status_label,
