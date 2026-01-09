@@ -18,7 +18,7 @@ from app.common.date_utils import aware_now
 from app.common.db import session_scope
 from app.config import config
 from app.crm_downloader.browser import launch_browser
-from app.crm_downloader.config import default_profiles_dir
+from app.crm_downloader.config import default_download_dir, default_profiles_dir
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from app.dashboard_downloader.notifications import send_notifications_for_run
 from app.dashboard_downloader.run_summary import fetch_summary_for_run, insert_run_summary, update_run_summary
@@ -187,6 +187,7 @@ class StoreOutcome:
     final_url: str | None = None
     storage_state: str | None = None
     login_used: bool | None = None
+    download_path: str | None = None
 
 
 @dataclass
@@ -305,6 +306,7 @@ async def main(
                 await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
             return
 
+        download_timeout_ms = await _fetch_dashboard_nav_timeout_ms(config.database_url)
         async with async_playwright() as playwright:
             browser = await launch_browser(playwright=playwright, logger=logger)
             for store in stores:
@@ -317,6 +319,7 @@ async def main(
                     summary=summary,
                     from_date=run_start_date,
                     to_date=run_end_date,
+                    download_timeout_ms=download_timeout_ms,
                 )
             await browser.close()
 
@@ -475,6 +478,29 @@ async def _load_uc_order_stores(*, logger: JsonLogger) -> list[UcStore]:
     return stores
 
 
+async def _fetch_dashboard_nav_timeout_ms(database_url: str | None) -> int:
+    if not database_url:
+        return NAV_TIMEOUT_MS
+
+    try:
+        async with session_scope(database_url) as session:
+            result = await session.execute(
+                sa.text(
+                    "SELECT value FROM system_config WHERE key = :key AND is_active = TRUE LIMIT 1"
+                ),
+                {"key": "DASHBOARD_DOWNLOAD_NAV_TIMEOUT"},
+            )
+            row = result.first()
+    except Exception:
+        return NAV_TIMEOUT_MS
+
+    raw_value = row[0] if row else None
+    try:
+        return int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        return NAV_TIMEOUT_MS
+
+
 async def _run_store_discovery(
     *,
     browser: Browser,
@@ -485,6 +511,7 @@ async def _run_store_discovery(
     summary: UcOrdersDiscoverySummary,
     from_date: date,
     to_date: date,
+    download_timeout_ms: int,
 ) -> None:
     log_event(
         logger=logger,
@@ -665,13 +692,33 @@ async def _run_store_discovery(
             )
             summary.record_store(store.store_code, outcome)
             return
-        await _apply_date_range(
+        apply_ok = await _apply_date_range(
             page=page,
             container=container,
             logger=logger,
             store=store,
             from_date=from_date,
             to_date=to_date,
+        )
+        if not apply_ok:
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="Date range apply incomplete; attempting export anyway",
+                store_code=store.store_code,
+                from_date=from_date,
+                to_date=to_date,
+            )
+
+        downloaded, download_path, download_message = await _download_gst_report(
+            page=page,
+            container=container,
+            logger=logger,
+            store=store,
+            from_date=from_date,
+            to_date=to_date,
+            download_timeout_ms=download_timeout_ms,
         )
         selectors_payload = await _discover_selector_cues(container=container, page=page)
         spinner_payload = await _discover_spinner_cues(page)
@@ -685,11 +732,12 @@ async def _run_store_discovery(
         )
 
         outcome = StoreOutcome(
-            status="ok",
-            message="GST report page loaded",
+            status="ok" if downloaded else "warning",
+            message=download_message if download_message else "GST report download complete",
             final_url=page.url,
             storage_state=str(storage_state_path) if storage_state_path.exists() else None,
             login_used=login_used,
+            download_path=download_path,
         )
         summary.record_store(store.store_code, outcome)
         log_event(
@@ -1318,6 +1366,114 @@ async def _apply_date_range(
     await apply_button.click()
     await _wait_for_report_refresh(page=page, container=container, logger=logger, store=store)
     return True
+
+
+async def _download_gst_report(
+    *,
+    page: Page,
+    container: Locator,
+    logger: JsonLogger,
+    store: UcStore,
+    from_date: date,
+    to_date: date,
+    download_timeout_ms: int,
+    max_attempts: int = 3,
+) -> tuple[bool, str | None, str]:
+    download_dir = default_download_dir()
+    download_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{store.store_code}_uc_gst_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
+    target_path = (download_dir / filename).resolve()
+
+    export_button = None
+    for selector in GST_CONTROL_SELECTORS["export_button"]:
+        try:
+            locator = container.locator(selector)
+            if await locator.count():
+                export_button = locator.first
+                break
+        except Exception:
+            continue
+    if export_button is None:
+        message = "Export Report button not found; skipping download"
+        log_event(
+            logger=logger,
+            phase="download",
+            status="warn",
+            message=message,
+            store_code=store.store_code,
+            selectors=GST_CONTROL_SELECTORS["export_button"],
+        )
+        return False, None, message
+
+    for attempt in range(1, max_attempts + 1):
+        with contextlib.suppress(Exception):
+            await export_button.scroll_into_view_if_needed()
+
+        is_enabled = True
+        with contextlib.suppress(Exception):
+            is_enabled = await export_button.is_enabled()
+        if not is_enabled:
+            log_event(
+                logger=logger,
+                phase="download",
+                status="warn",
+                message="Export Report button disabled; retrying",
+                store_code=store.store_code,
+                attempt=attempt,
+                max_attempts=max_attempts,
+            )
+            await asyncio.sleep(1)
+            continue
+
+        try:
+            async with page.expect_download(timeout=download_timeout_ms) as download_info:
+                await export_button.click()
+            download = await download_info.value
+            await download.save_as(str(target_path))
+            log_event(
+                logger=logger,
+                phase="download",
+                message="GST report download saved",
+                store_code=store.store_code,
+                download_path=str(target_path),
+                suggested_filename=download.suggested_filename,
+                attempt=attempt,
+            )
+            return True, str(target_path), "GST report download saved"
+        except TimeoutError:
+            log_event(
+                logger=logger,
+                phase="download",
+                status="warn",
+                message="GST report download did not start before timeout; retrying",
+                store_code=store.store_code,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                timeout_ms=download_timeout_ms,
+            )
+        except Exception as exc:
+            log_event(
+                logger=logger,
+                phase="download",
+                status="warn",
+                message="GST report download attempt failed",
+                store_code=store.store_code,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                error=str(exc),
+            )
+        await asyncio.sleep(1)
+
+    message = "GST report download failed after retries"
+    log_event(
+        logger=logger,
+        phase="download",
+        status="error",
+        message=message,
+        store_code=store.store_code,
+        download_path=str(target_path),
+    )
+    return False, None, message
 
 
 async def _wait_for_date_picker_popup(
