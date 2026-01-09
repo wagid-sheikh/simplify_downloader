@@ -12,7 +12,7 @@ from typing import Any, Dict, Mapping, Sequence
 from urllib.parse import urlparse
 
 import sqlalchemy as sa
-from playwright.async_api import Browser, Locator, Page, TimeoutError, async_playwright
+from playwright.async_api import Browser, ElementHandle, Locator, Page, TimeoutError, async_playwright
 
 from app.common.date_utils import get_daily_report_date
 from app.common.db import session_scope
@@ -1064,30 +1064,55 @@ async def _wait_for_home_ready(
 
 async def _navigate_to_gst_reports(*, page: Page, store: UcStore, logger: JsonLogger) -> bool:
     orders_url = store.orders_url or ""
+    try:
+        await page.wait_for_load_state("networkidle", timeout=15_000)
+    except Exception:
+        pass
     nav_root = await _find_nav_root(page)
     link_locator: Locator | None = None
-    url_candidates = _build_url_candidates(orders_url)
-    for candidate in url_candidates:
-        locator = nav_root.locator(f"a[href*=\"{candidate}\"]")
-        try:
-            if await locator.count():
-                link_locator = locator.first
-                break
-        except Exception:
-            continue
+    matched_selector: str | None = None
+    gst_href_candidate = "/gst-report"
+    link_locator = await _locate_nav_link_by_href(nav_root, gst_href_candidate)
+    if link_locator is not None:
+        matched_selector = f"a[href*='{gst_href_candidate}']"
+    else:
+        await _expand_nav_groups(page=page, nav_root=nav_root, logger=logger, store=store)
+        link_locator = await _locate_nav_link_by_href(nav_root, gst_href_candidate)
+        if link_locator is not None:
+            matched_selector = f"a[href*='{gst_href_candidate}']"
 
+    url_candidates = _build_url_candidates(orders_url)
+    if link_locator is None:
+        for candidate in url_candidates:
+            locator = nav_root.locator(f"a[href*=\"{candidate}\"]")
+            try:
+                if await locator.count():
+                    link_locator = locator.first
+                    matched_selector = f"a[href*='{candidate}']"
+                    break
+            except Exception:
+                continue
+
+    fallback_handle = None
     if link_locator is None:
         label_candidates = store.gst_menu_labels or list(GST_MENU_LABELS)
+        label_candidates = list(dict.fromkeys([*label_candidates, "Reports"]))
         for label in label_candidates:
             locator = nav_root.locator("a, button, [role='menuitem']").filter(has_text=re.compile(label, re.I))
             try:
                 if await locator.count():
                     link_locator = locator.first
+                    matched_selector = f"nav text '{label}'"
                     break
             except Exception:
                 continue
+        if link_locator is None:
+            fallback_handle = await _locate_nav_ancestor_by_text(nav_root, label_candidates)
+            if fallback_handle is not None:
+                matched_selector = "nav ancestor by text"
 
-    if link_locator is None:
+    if link_locator is None and fallback_handle is None:
+        nav_links = await _summarize_nav_links(nav_root)
         dom_snippet = await _get_dom_snippet(page)
         log_event(
             logger=logger,
@@ -1097,12 +1122,16 @@ async def _navigate_to_gst_reports(*, page: Page, store: UcStore, logger: JsonLo
             store_code=store.store_code,
             orders_url=orders_url,
             current_url=page.url,
+            nav_links=nav_links,
             dom_snippet=dom_snippet,
         )
         return False
 
     try:
-        await link_locator.click()
+        if link_locator is not None:
+            await link_locator.click()
+        else:
+            await fallback_handle.click()
     except Exception as exc:
         log_event(
             logger=logger,
@@ -1123,8 +1152,99 @@ async def _navigate_to_gst_reports(*, page: Page, store: UcStore, logger: JsonLo
         store_code=store.store_code,
         orders_url=orders_url,
         current_url=page.url,
+        selector=matched_selector,
     )
     return True
+
+
+async def _locate_nav_link_by_href(nav_root: Locator, href_fragment: str) -> Locator | None:
+    locator = nav_root.locator(f"a[href*='{href_fragment}']")
+    try:
+        if await locator.count():
+            return locator.first
+    except Exception:
+        return None
+    return None
+
+
+async def _expand_nav_groups(*, page: Page, nav_root: Locator, logger: JsonLogger, store: UcStore) -> None:
+    toggle_selectors = [
+        "button[aria-expanded='false']",
+        "[role='button'][aria-expanded='false']",
+        ".collapsed",
+        ".menu-toggle",
+        ".sidebar-toggle",
+        "[data-toggle='collapse']",
+        "[aria-controls]",
+    ]
+    for selector in toggle_selectors:
+        toggles = nav_root.locator(selector)
+        try:
+            count = await toggles.count()
+        except Exception:
+            continue
+        for idx in range(count):
+            toggle = toggles.nth(idx)
+            try:
+                if not await toggle.is_visible():
+                    continue
+                expanded = await toggle.get_attribute("aria-expanded")
+                if expanded and expanded.lower() == "true":
+                    continue
+                await toggle.click()
+                await page.wait_for_timeout(250)
+                log_event(
+                    logger=logger,
+                    phase="navigation",
+                    message="Expanded navigation group",
+                    store_code=store.store_code,
+                    selector=selector,
+                )
+            except Exception:
+                continue
+
+
+async def _locate_nav_ancestor_by_text(nav_root: Locator, labels: Sequence[str]) -> ElementHandle | None:
+    for label in labels:
+        locator = nav_root.locator(":scope *").filter(has_text=re.compile(label, re.I))
+        try:
+            handles = await locator.element_handles()
+        except Exception:
+            continue
+        for handle in handles:
+            try:
+                ancestor = await handle.evaluate_handle(
+                    """
+                    (node) => node.closest('a, button, [role="menuitem"]')
+                    """
+                )
+                element = ancestor.as_element()
+                if element is not None:
+                    return element
+            except Exception:
+                continue
+    return None
+
+
+async def _summarize_nav_links(nav_root: Locator) -> list[dict[str, str]]:
+    links = nav_root.locator("a[href]")
+    summary: list[dict[str, str]] = []
+    try:
+        count = await links.count()
+    except Exception:
+        return summary
+    for idx in range(count):
+        link = links.nth(idx)
+        try:
+            if not await link.is_visible():
+                continue
+            text = (await link.inner_text()).strip()
+            href = (await link.get_attribute("href")) or ""
+            if text or href:
+                summary.append({"text": text, "href": href})
+        except Exception:
+            continue
+    return summary
 
 
 async def _find_nav_root(page: Page) -> Locator:
