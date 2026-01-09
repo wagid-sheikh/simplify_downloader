@@ -33,6 +33,11 @@ STORE_PROFILE_DOC_TYPES: dict[tuple[str, str], str] = {
 }
 INGEST_REMARKS_MAX_ROWS = 50
 INGEST_REMARKS_MAX_CHARS = 200
+STATUS_EXPLANATIONS = {
+    "ok": "run completed with no issues recorded",
+    "warning": "run completed but row-level issues were recorded",
+    "error": "run failed or data could not be ingested",
+}
 
 
 @dataclass
@@ -105,6 +110,45 @@ def _normalize_store_code(value: str | None) -> str | None:
     if not value:
         return None
     return value.upper()
+
+
+def _status_explanation(status: str | None) -> str:
+    return STATUS_EXPLANATIONS.get(str(status or "").lower(), "run completed with mixed results")
+
+
+def _status_counts(stores_payload: list[Mapping[str, Any]]) -> dict[str, int]:
+    counts = {"ok": 0, "warning": 0, "error": 0}
+    for store in stores_payload:
+        status = str(store.get("status") or "").lower()
+        if status in counts:
+            counts[status] += 1
+    return counts
+
+
+def _summarize_ingest_remarks_by_store(
+    rows: list[Mapping[str, Any]], *, max_entries: int = 3, max_chars: int = 160
+) -> dict[str, dict[str, Any]]:
+    per_store: dict[str, list[str]] = {}
+    for entry in rows:
+        store_code = _normalize_store_code(entry.get("store_code"))
+        if not store_code:
+            continue
+        remark_text = str(entry.get("ingest_remarks") or "").strip()
+        if not remark_text:
+            continue
+        order_number = str(entry.get("order_number") or "").strip()
+        prefix = f"{order_number}: " if order_number else ""
+        per_store.setdefault(store_code, []).append(f"{prefix}{remark_text}")
+    summarized: dict[str, dict[str, Any]] = {}
+    for store_code, remarks in per_store.items():
+        entries = remarks[:max_entries]
+        summary = "; ".join(entries)
+        if len(remarks) > max_entries:
+            summary = f"{summary}; …"
+        if len(summary) > max_chars:
+            summary = summary[: max_chars - 1] + "…"
+        summarized[store_code] = {"count": len(remarks), "summary": summary}
+    return summarized
 
 
 def _recipient_matches(row_store: str | None, store_code: str | None) -> bool:
@@ -630,16 +674,29 @@ def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
     metrics = run_data.get("metrics_json") or {}
     payload = metrics.get("notification_payload") or {}
     stores_payload = payload.get("stores") or []
+    ingest_rows = (metrics.get("ingest_remarks") or {}).get("rows") or []
+    warning_summaries = _summarize_ingest_remarks_by_store(ingest_rows)
+    status_counts = _status_counts(stores_payload)
 
     stores: list[dict[str, Any]] = []
     for store in stores_payload:
+        store_code = _normalize_store_code(store.get("store_code")) or store.get("store_code")
+        status = str(store.get("status") or "").lower()
+        warning_data = warning_summaries.get(_normalize_store_code(store.get("store_code")) or "", {})
+        warning_summary = warning_data.get("summary")
+        warning_count = store.get("warning_count")
+        if warning_count is None and warning_data:
+            warning_count = warning_data.get("count")
         stores.append(
             {
-                "store_code": store.get("store_code"),
+                "store_code": store_code,
                 "status": store.get("status"),
                 "message": store.get("message"),
-                "error_message": store.get("error_message"),
-                "warning_count": store.get("warning_count"),
+                "error_message": store.get("error_message") if status == "error" else None,
+                "info_message": store.get("info_message")
+                or (store.get("message") if status != "error" else None),
+                "warning_count": warning_count,
+                "warnings_summary": warning_summary,
                 "filename": store.get("filename"),
                 "staging_rows": store.get("staging_rows"),
                 "final_rows": store.get("final_rows"),
@@ -658,6 +715,11 @@ def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
         "finished_at": _normalize_datetime(finished_at),
         "total_time_taken": payload.get("total_time_taken") or run_data.get("total_time_taken"),
         "overall_status": payload.get("overall_status") or run_data.get("overall_status"),
+        "overall_status_explanation": _status_explanation(payload.get("overall_status") or run_data.get("overall_status")),
+        "store_status_counts": status_counts,
+        "stores_succeeded": status_counts.get("ok", 0),
+        "stores_warned": status_counts.get("warning", 0),
+        "stores_failed": status_counts.get("error", 0),
         "stores": stores,
         "uc_all_stores_failed": _uc_all_stores_failed(stores_payload),
         "notification_payload": payload,
