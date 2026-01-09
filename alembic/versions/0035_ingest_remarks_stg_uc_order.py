@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0035_ingest_remarks_stg_uc_orders"
+revision = "0035_ingest_remarks_stg_uc_order"
 down_revision = "0034_add_leads_assignment"
 branch_labels = None
 depends_on = None
