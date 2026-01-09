@@ -1756,7 +1756,13 @@ async def _select_calendar_date(
     if current_label is None:
         return False
 
-    clicked = await _click_day_in_calendar(calendar=calendar, target_date=target_date)
+    clicked = await _click_day_in_calendar(
+        calendar=calendar,
+        target_date=target_date,
+        logger=logger,
+        store=store,
+        label=label,
+    )
     if not clicked:
         log_event(
             logger=logger,
@@ -1911,14 +1917,53 @@ async def _click_calendar_nav(*, calendar: Locator, direction: str) -> None:
     raise TimeoutError(f"Calendar navigation button not found for direction={direction}")
 
 
-async def _click_day_in_calendar(*, calendar: Locator, target_date: date) -> bool:
+async def _click_day_in_calendar(
+    *,
+    calendar: Locator,
+    target_date: date,
+    logger: JsonLogger,
+    store: UcStore,
+    label: str,
+) -> bool:
     aria_label = target_date.strftime("%B %d, %Y")
-    body_locator = calendar.locator(".calendar")
-    try:
-        scope = body_locator.first if await body_locator.count() else calendar
-    except Exception:
-        scope = calendar
-    day_cell = scope.locator(f"td[aria-label='{aria_label}']").first
+    scope = calendar
+    day_cells = None
+    if label == "end":
+        end_container = calendar.locator(":scope.end-date, .end-date").first
+        try:
+            if await end_container.count():
+                scope = end_container
+        except Exception:
+            scope = calendar
+        mat_calendar = scope.locator("mat-calendar").first
+        try:
+            if await mat_calendar.count():
+                scope = mat_calendar
+        except Exception:
+            pass
+        day_cells = scope.locator(f"td[aria-label='{aria_label}']")
+        try:
+            match_count = await day_cells.count()
+        except Exception:
+            match_count = 0
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="debug",
+            message="End-date calendar day cell matches before click",
+            store_code=store.store_code,
+            aria_label=aria_label,
+            match_count=match_count,
+        )
+    else:
+        body_locator = calendar.locator(".calendar")
+        try:
+            scope = body_locator.first if await body_locator.count() else calendar
+        except Exception:
+            scope = calendar
+        day_cells = scope.locator(f"td[aria-label='{aria_label}']")
+
+    day_cell = day_cells.first
     try:
         if not await day_cell.count():
             return False
