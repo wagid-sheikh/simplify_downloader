@@ -45,3 +45,6 @@ git push origin v2.05
 
 git tag -a v2.06 -m "Stable after development of UC Orders Sync"
 git push origin v2.06
+
+git tag -a v2.07 -m "Before Starting Development of orders_sync_run_profiler_requirement"
+git push origin v2.07
