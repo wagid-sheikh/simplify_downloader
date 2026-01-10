@@ -149,29 +149,38 @@ async def _run_async(args: argparse.Namespace) -> int:
                 extras=extras,
             )
             return 1
-        try:
-            log_event(
-                logger=logger,
-                phase="orchestrator",
-                message="starting leads assignment tail step",
-                extras={"run_env": run_env},
-            )
-            await run_leads_assignment_pipeline(env=run_env, run_id=run_id)
+        if runtime_config.skip_lead_assignment:
             log_event(
                 logger=logger,
                 phase="orchestrator",
                 status="info",
-                message="leads assignment pipeline completed",
+                message="skipping leads assignment tail step",
                 extras={"run_env": run_env},
             )
-        except Exception as exc:
-            log_event(
-                logger=logger,
-                phase="orchestrator",
-                status="error",
-                message="leads assignment pipeline failed",
-                extras={"error": str(exc)},
-            )
+        else:
+            try:
+                log_event(
+                    logger=logger,
+                    phase="orchestrator",
+                    message="starting leads assignment tail step",
+                    extras={"run_env": run_env},
+                )
+                await run_leads_assignment_pipeline(env=run_env, run_id=run_id)
+                log_event(
+                    logger=logger,
+                    phase="orchestrator",
+                    status="info",
+                    message="leads assignment pipeline completed",
+                    extras={"run_env": run_env},
+                )
+            except Exception as exc:
+                log_event(
+                    logger=logger,
+                    phase="orchestrator",
+                    status="error",
+                    message="leads assignment pipeline failed",
+                    extras={"error": str(exc)},
+                )
         return 0
     finally:
         logger.close()

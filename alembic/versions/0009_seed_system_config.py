@@ -40,6 +40,7 @@ PLAINTEXT_VALUES = [
     ("REPORT_EMAIL_USE_TLS", "true", "Whether to enable TLS for SMTP"),
     ("PDF_RENDER_BACKEND", "bundled_chromium", "PDF rendering backend"),
     ("PDF_RENDER_HEADLESS", "true", "Whether headless rendering is enabled"),
+    ("skip_lead_assignment", "false", "Skip the lead assignment tail step"),
 ]
 
 ENCRYPTED_VALUES = [
