@@ -53,6 +53,25 @@ ROW_SAMPLE_LIMIT = 3
 SNAPSHOT_TEXT_MAX_CHARS = 120
 
 
+def _dom_logging_enabled() -> bool:
+    return not config.pipeline_skip_dom_logging
+
+
+DOM_LOGGING_FIELDS = {
+    "links",
+    "reports_links",
+    "nav_samples",
+    "row_samples",
+    "observed_controls",
+    "observed_spinners",
+    "matched_range_examples",
+}
+
+
+def _scrub_dom_logging_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if key not in DOM_LOGGING_FIELDS}
+
+
 def _truncate_text(value: str | None, *, max_chars: int = SNAPSHOT_TEXT_MAX_CHARS) -> str | None:
     if not value:
         return value
@@ -1594,6 +1613,14 @@ async def _wait_for_home(
 
 
 async def _log_home_nav_diagnostics(page: Page, *, logger: JsonLogger, store: TdStore) -> None:
+    if not _dom_logging_enabled():
+        log_event(
+            logger=logger,
+            phase="home",
+            message="Navigation controls snapshot skipped because DOM logging is disabled",
+            store_code=store.store_code,
+        )
+        return
     try:
         links = page.locator("a.padding6, a#achrOrderReport, a[href*='Reports']")
         link_count = await links.count()
@@ -1635,6 +1662,17 @@ async def _capture_orders_left_nav_snapshot(
     nav_timeout_ms: int,
     sales_only_mode: bool = False,
 ) -> None:
+    if not _dom_logging_enabled():
+        log_event(
+            logger=logger,
+            phase="orders",
+            message="Orders left-nav snapshot skipped because DOM logging is disabled",
+            store_code=store.store_code,
+            context=context,
+            sales_only_mode=sales_only_mode,
+            nav_url=page.url,
+        )
+        return
     try:
         nav_root = page.locator("ul.nav.nav-sidebar")
         await nav_root.wait_for(state="visible", timeout=nav_timeout_ms)
@@ -1799,6 +1837,17 @@ async def _navigate_to_orders_container(
 
     async def _log_left_nav(context_label: str) -> None:
         if not capture_left_nav:
+            return
+        if not _dom_logging_enabled():
+            log_event(
+                logger=logger,
+                phase="orders",
+                message="Orders left-nav snapshot skipped because DOM logging is disabled",
+                store_code=store.store_code,
+                context=context_label,
+                sales_only_mode=sales_only_mode,
+                nav_url=page.url,
+            )
             return
         await _capture_orders_left_nav_snapshot(
             page,
@@ -2128,12 +2177,13 @@ def _build_sales_report_url(store: TdStore, current_url: str | None = None) -> s
 def _log_sales_navigation_attempt_event(
     *, logger: JsonLogger, store_code: str, attempt: dict[str, Any]
 ) -> None:
+    payload = attempt if _dom_logging_enabled() else _scrub_dom_logging_fields(attempt)
     log_event(
         logger=logger,
         phase="sales",
         message="Sales navigation attempt",
         store_code=store_code,
-        **attempt,
+        **payload,
     )
 
 
@@ -2217,6 +2267,9 @@ async def _navigate_to_sales_report(
             "nav_samples": nav_samples,
             "page_title": page_title,
         }
+        if not _dom_logging_enabled():
+            attempt["nav_samples"] = None
+            attempt["sales_nav_selector"] = None
         attempts.append(attempt)
         _log_sales_navigation_attempt_event(logger=logger, store_code=store.store_code, attempt=attempt)
         return attempt
@@ -2243,7 +2296,7 @@ async def _navigate_to_sales_report(
             final_url=final_url,
             reason=reason,
             page_title=page_title,
-            attempts=attempts,
+            attempts=attempts if _dom_logging_enabled() else None,
         )
 
     async def _refresh_sales_session_with_guard(*, retry_label: str) -> tuple[bool, str | None]:
@@ -2346,14 +2399,25 @@ async def _navigate_to_sales_report(
     ) -> tuple[bool, str, list[dict[str, str]], str]:
         transitions: list[dict[str, str]] = [{"label": "start", "url": page.url or ""}]
         if orders_target_pattern.search(page.url or ""):
-            await _capture_orders_left_nav_snapshot(
-                page,
-                logger=logger,
-                store=store,
-                context=f"sales_left_nav:{retry_label}:already_on_orders",
-                nav_timeout_ms=nav_timeout_ms,
-                sales_only_mode=sales_only_mode,
-            )
+            if _dom_logging_enabled():
+                await _capture_orders_left_nav_snapshot(
+                    page,
+                    logger=logger,
+                    store=store,
+                    context=f"sales_left_nav:{retry_label}:already_on_orders",
+                    nav_timeout_ms=nav_timeout_ms,
+                    sales_only_mode=sales_only_mode,
+                )
+            else:
+                log_event(
+                    logger=logger,
+                    phase="orders",
+                    message="Orders left-nav snapshot skipped because DOM logging is disabled",
+                    store_code=store.store_code,
+                    context=f"sales_left_nav:{retry_label}:already_on_orders",
+                    sales_only_mode=sales_only_mode,
+                    nav_url=page.url,
+                )
             transitions.append({"label": "already_on_orders", "url": page.url or ""})
             return True, page.url or "", transitions, "ok"
 
@@ -2427,6 +2491,23 @@ async def _navigate_to_sales_report(
             submenu_visible = True
         except TimeoutError as exc:
             hover_error = hover_error or str(exc)
+
+        if not _dom_logging_enabled():
+            candidate_locators = [
+                submenu_root.get_by_role("link", name=re.compile("sales", re.I)),
+                submenu_root.locator("a:has-text(\"Sales\")"),
+            ]
+            selected_locator = await _first_visible_locator(candidate_locators, timeout_ms=nav_timeout_ms)
+            log_event(
+                logger=logger,
+                phase="sales",
+                message="Sales left-nav submenu snapshot skipped because DOM logging is disabled",
+                store_code=store.store_code,
+                submenu_visible=submenu_visible,
+                hover_attempted=hover_attempted,
+                hover_error=hover_error,
+            )
+            return selected_locator, None, [], submenu_visible
 
         links = submenu_root.locator("a")
         count = await links.count()
@@ -2861,6 +2942,14 @@ async def _wait_for_iframe(
 async def _observe_iframe_hydration(
     frame: FrameLocator, *, store: TdStore, logger: JsonLogger, timeout_ms: int = 20_000
 ) -> None:
+    if not _dom_logging_enabled():
+        log_event(
+            logger=logger,
+            phase="iframe",
+            message="Iframe hydration observations skipped because DOM logging is disabled",
+            store_code=store.store_code,
+        )
+        return
     spinner_candidates = [
         {"label": "kendo_loading_mask", "selector": ".k-loading-mask"},
         {"label": "progress_loader", "selector": "img[alt*='loading' i]"},
@@ -3932,33 +4021,42 @@ async def _wait_for_report_requests_container(
                     strategies_logged = True
                 with contextlib.suppress(Exception):
                     await container.scroll_into_view_if_needed()
-                rows = await _collect_report_request_rows(
-                    container,
-                    max_rows=12,
-                )
-                sample: list[str] = []
-                for row in rows:
-                    with contextlib.suppress(Exception):
-                        sample_text = await row.inner_text()
-                        if sample_text:
-                            sample.append(" ".join(sample_text.split()))
-                if sample:
-                    summary = _summarize_row_texts(sample[:10])
-                    last_seen_summary = summary
+                if _dom_logging_enabled():
+                    rows = await _collect_report_request_rows(
+                        container,
+                        max_rows=12,
+                    )
+                    sample: list[str] = []
+                    for row in rows:
+                        with contextlib.suppress(Exception):
+                            sample_text = await row.inner_text()
+                            if sample_text:
+                                sample.append(" ".join(sample_text.split()))
+                    if sample:
+                        summary = _summarize_row_texts(sample[:10])
+                        last_seen_summary = summary
+                        log_event(
+                            logger=logger,
+                            phase="iframe",
+                            message="Observed Report Requests rows",
+                            store_code=store.store_code,
+                            row_count=summary["row_count"],
+                            first_row_text=summary["first_row_text"],
+                            matched_range_examples=summary["matched_range_examples"],
+                            container_locator_strategy=container_strategy,
+                        )
+                else:
                     log_event(
                         logger=logger,
                         phase="iframe",
-                        message="Observed Report Requests rows",
+                        message="Observed Report Requests rows (DOM logging disabled)",
                         store_code=store.store_code,
-                        row_count=summary["row_count"],
-                        first_row_text=summary["first_row_text"],
-                        matched_range_examples=summary["matched_range_examples"],
                         container_locator_strategy=container_strategy,
                     )
                 diagnostics = {
                     "header_seen": header_seen,
                     "heading_texts": heading_texts or None,
-                    "last_seen_rows_summary": last_seen_summary,
+                    "last_seen_rows_summary": last_seen_summary if _dom_logging_enabled() else None,
                     "container_locator_strategy": container_strategy,
                 }
                 return container, diagnostics
@@ -3979,7 +4077,7 @@ async def _wait_for_report_requests_container(
         message="Report Requests container not visible after request",
         store_code=store.store_code,
         timeout_ms=timeout_ms,
-        last_seen_rows_summary=last_seen_summary,
+        last_seen_rows_summary=last_seen_summary if _dom_logging_enabled() else None,
         header_seen=header_seen,
         heading_texts=heading_texts or None,
         container_locator_strategy=container_strategy_seen,
@@ -4056,6 +4154,7 @@ async def _wait_for_report_request_download_link(
     selection_source: str | None = None
     last_matched_range_text: str | None = None
     last_download_locator_strategy: str | None = None
+    dom_logging_enabled = _dom_logging_enabled()
 
     while asyncio.get_event_loop().time() < deadline:
         try:
@@ -4119,25 +4218,32 @@ async def _wait_for_report_request_download_link(
                 selected_row_state = matched_row_state
                 last_matched_range_text = matched_text or last_matched_range_text
                 last_download_locator_strategy = download_strategy or last_download_locator_strategy
-                last_seen_summary = _summarize_text_samples(visible_rows) if visible_rows else None
+                if dom_logging_enabled:
+                    last_seen_summary = _summarize_text_samples(visible_rows) if visible_rows else None
 
-                log_event(
-                    logger=logger,
-                    phase="iframe",
-                    message="Selected Report Requests row for follow-up",
-                    store_code=store.store_code,
-                    matched_range_text=matched_text,
-                    status_text=matched_status,
-                    expected_range_texts=list(expected_range_texts),
-                    row_count=last_seen_summary["count"] if last_seen_summary else None,
-                    row_samples=last_seen_summary["samples"] if last_seen_summary else None,
-                    rows_truncated=last_seen_summary["truncated"] if last_seen_summary else None,
-                    range_match_strategy=last_range_match_strategy,
-                    download_locator_strategy=download_strategy,
-                    container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
-                    selected_row_state=matched_row_state,
-                    selection_source=selection_source,
-                )
+                followup_payload = {
+                    "logger": logger,
+                    "phase": "iframe",
+                    "message": "Selected Report Requests row for follow-up",
+                    "store_code": store.store_code,
+                    "status_text": matched_status,
+                    "expected_range_texts": list(expected_range_texts),
+                    "range_match_strategy": last_range_match_strategy,
+                    "download_locator_strategy": download_strategy,
+                    "container_locator_strategy": STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+                    "selected_row_state": matched_row_state,
+                    "selection_source": selection_source,
+                }
+                if dom_logging_enabled:
+                    followup_payload.update(
+                        {
+                            "matched_range_text": matched_text,
+                            "row_count": last_seen_summary["count"] if last_seen_summary else None,
+                            "row_samples": last_seen_summary["samples"] if last_seen_summary else None,
+                            "rows_truncated": last_seen_summary["truncated"] if last_seen_summary else None,
+                        }
+                    )
+                log_event(**followup_payload)
 
                 if matched_status:
                     eta_seconds = _parse_eta_seconds(matched_status)
@@ -4150,102 +4256,122 @@ async def _wait_for_report_request_download_link(
                     if desired_deadline and desired_deadline > deadline:
                         deadline = desired_deadline
                         poll_timeout_ms = int((deadline - start_time) * 1000)
-                        log_event(
-                            logger=logger,
-                            phase="iframe",
-                            message="Extended report request poll window to ETA",
-                            store_code=store.store_code,
-                            matched_range_text=matched_text,
-                            eta_seconds=eta_seconds,
-                            pending_eta_seconds=pending_eta_seconds,
-                            new_timeout_ms=poll_timeout_ms,
-                            range_match_strategy=last_range_match_strategy,
-                        )
+                        eta_payload = {
+                            "logger": logger,
+                            "phase": "iframe",
+                            "message": "Extended report request poll window to ETA",
+                            "store_code": store.store_code,
+                            "eta_seconds": eta_seconds,
+                            "pending_eta_seconds": pending_eta_seconds,
+                            "new_timeout_ms": poll_timeout_ms,
+                            "range_match_strategy": last_range_match_strategy,
+                        }
+                        if dom_logging_enabled:
+                            eta_payload["matched_range_text"] = matched_text
+                        log_event(**eta_payload)
 
                 if download_locator:
-                    log_event(
-                        logger=logger,
-                        phase="iframe",
-                        message="Report Requests row ready for download",
-                        store_code=store.store_code,
-                        matched_range_text=matched_text,
-                        status_text=matched_status,
-                        expected_range_texts=list(expected_range_texts),
-                        row_count=last_seen_summary["count"] if last_seen_summary else None,
-                        row_samples=last_seen_summary["samples"] if last_seen_summary else None,
-                        rows_truncated=last_seen_summary["truncated"] if last_seen_summary else None,
-                        download_control_visible=True,
-                        matched_row_text_full=matched_text,
-                        range_match_strategy=last_range_match_strategy,
-                        download_locator_strategy=download_strategy,
-                        container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
-                        selected_row_state=matched_row_state,
-                        selection_source=selection_source,
-                    )
+                    ready_payload = {
+                        "logger": logger,
+                        "phase": "iframe",
+                        "message": "Report Requests row ready for download",
+                        "store_code": store.store_code,
+                        "status_text": matched_status,
+                        "expected_range_texts": list(expected_range_texts),
+                        "download_control_visible": True,
+                        "range_match_strategy": last_range_match_strategy,
+                        "download_locator_strategy": download_strategy,
+                        "container_locator_strategy": STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+                        "selected_row_state": matched_row_state,
+                        "selection_source": selection_source,
+                    }
+                    if dom_logging_enabled:
+                        ready_payload.update(
+                            {
+                                "matched_range_text": matched_text,
+                                "row_count": last_seen_summary["count"] if last_seen_summary else None,
+                                "row_samples": last_seen_summary["samples"] if last_seen_summary else None,
+                                "rows_truncated": last_seen_summary["truncated"] if last_seen_summary else None,
+                                "matched_row_text_full": matched_text,
+                            }
+                        )
+                    log_event(**ready_payload)
                     try:
                         async with page.expect_download(timeout=download_wait_timeout_ms) as download_info:
                             await download_locator.click()
                             download = await download_info.value
                             await download.save_as(str(download_path))
-                            log_event(
-                                logger=logger,
-                                phase="iframe",
-                                message=f"{report_label.title()} report download saved",
-                                store_code=store.store_code,
-                                download_path=str(download_path),
-                                suggested_filename=download.suggested_filename,
-                                matched_range_text=matched_text,
-                                expected_range_texts=list(expected_range_texts),
-                                download_locator_strategy=download_strategy,
-                                range_match_strategy=last_range_match_strategy,
-                                container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
-                                selected_row_state=matched_row_state,
-                                selection_source=selection_source,
-                            )
+                            saved_payload = {
+                                "logger": logger,
+                                "phase": "iframe",
+                                "message": f"{report_label.title()} report download saved",
+                                "store_code": store.store_code,
+                                "download_path": str(download_path),
+                                "suggested_filename": download.suggested_filename,
+                                "expected_range_texts": list(expected_range_texts),
+                                "download_locator_strategy": download_strategy,
+                                "range_match_strategy": last_range_match_strategy,
+                                "container_locator_strategy": STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+                                "selected_row_state": matched_row_state,
+                                "selection_source": selection_source,
+                            }
+                            if dom_logging_enabled:
+                                saved_payload["matched_range_text"] = matched_text
+                            log_event(**saved_payload)
                         return True, str(download_path), matched_text, matched_status
                     except Exception as exc:
                         last_status = str(exc)
-                        log_event(
-                            logger=logger,
-                            phase="iframe",
-                            status="warn",
-                            message="Failed to download report after locating link",
-                            store_code=store.store_code,
-                            matched_range_text=matched_text,
-                            error=str(exc),
-                            range_match_strategy=last_range_match_strategy,
-                            download_locator_strategy=download_strategy,
-                            selected_row_state=matched_row_state,
-                            selection_source=selection_source,
-                        )
+                        failure_payload = {
+                            "logger": logger,
+                            "phase": "iframe",
+                            "status": "warn",
+                            "message": "Failed to download report after locating link",
+                            "store_code": store.store_code,
+                            "error": str(exc),
+                            "range_match_strategy": last_range_match_strategy,
+                            "download_locator_strategy": download_strategy,
+                            "selected_row_state": matched_row_state,
+                            "selection_source": selection_source,
+                        }
+                        if dom_logging_enabled:
+                            failure_payload["matched_range_text"] = matched_text
+                        log_event(**failure_payload)
                         return False, None, matched_text, last_status
 
                 if matched_status and "pending" in matched_status.lower():
                     pending_attempts += 1
                     now = asyncio.get_event_loop().time()
                     if now - last_pending_log_at >= REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS or pending_attempts == 1:
-                        pending_summary = last_seen_summary or (
-                            _summarize_text_samples(visible_rows) if visible_rows else None
-                        )
-                        log_event(
-                            logger=logger,
-                            phase="iframe",
-                            message="Report Requests row pending; retrying download poll",
-                            store_code=store.store_code,
-                            matched_range_text=matched_text,
-                            status_text=matched_status,
-                            expected_range_texts=list(expected_range_texts),
-                            backoff_seconds=backoff,
-                            timeout_ms=poll_timeout_ms,
-                            last_seen_rows_count=pending_summary["count"] if pending_summary else None,
-                            last_seen_rows_samples=pending_summary["samples"] if pending_summary else None,
-                            last_seen_rows_truncated=pending_summary["truncated"] if pending_summary else None,
-                            range_match_strategy=last_range_match_strategy,
-                            container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
-                            download_locator_strategy=download_strategy,
-                            selected_row_state=matched_row_state,
-                            selection_source=selection_source,
-                        )
+                        pending_summary = None
+                        if dom_logging_enabled:
+                            pending_summary = last_seen_summary or (
+                                _summarize_text_samples(visible_rows) if visible_rows else None
+                            )
+                        pending_payload = {
+                            "logger": logger,
+                            "phase": "iframe",
+                            "message": "Report Requests row pending; retrying download poll",
+                            "store_code": store.store_code,
+                            "status_text": matched_status,
+                            "expected_range_texts": list(expected_range_texts),
+                            "backoff_seconds": backoff,
+                            "timeout_ms": poll_timeout_ms,
+                            "range_match_strategy": last_range_match_strategy,
+                            "container_locator_strategy": STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+                            "download_locator_strategy": download_strategy,
+                            "selected_row_state": matched_row_state,
+                            "selection_source": selection_source,
+                        }
+                        if dom_logging_enabled:
+                            pending_payload.update(
+                                {
+                                    "matched_range_text": matched_text,
+                                    "last_seen_rows_count": pending_summary["count"] if pending_summary else None,
+                                    "last_seen_rows_samples": pending_summary["samples"] if pending_summary else None,
+                                    "last_seen_rows_truncated": pending_summary["truncated"] if pending_summary else None,
+                                }
+                            )
+                        log_event(**pending_payload)
                         last_pending_log_at = now
 
                     if now - last_refresh_attempt_at >= REPORT_REQUEST_REFRESH_INTERVAL_SECONDS:
@@ -4261,80 +4387,93 @@ async def _wait_for_report_request_download_link(
                         if refresh_locator:
                             try:
                                 await refresh_locator.click()
-                                log_event(
-                                    logger=logger,
-                                    phase="iframe",
-                                    message="Triggered Report Requests refresh during pending state",
-                                    store_code=store.store_code,
-                                    matched_range_text=matched_text,
-                                    status_text=matched_status,
-                                    refresh_timestamp=refresh_timestamp,
-                                    range_match_strategy=last_range_match_strategy,
-                                    container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
-                                    selected_row_state=matched_row_state,
-                                    selection_source=selection_source,
-                                )
+                                refresh_payload = {
+                                    "logger": logger,
+                                    "phase": "iframe",
+                                    "message": "Triggered Report Requests refresh during pending state",
+                                    "store_code": store.store_code,
+                                    "status_text": matched_status,
+                                    "refresh_timestamp": refresh_timestamp,
+                                    "range_match_strategy": last_range_match_strategy,
+                                    "container_locator_strategy": STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+                                    "selected_row_state": matched_row_state,
+                                    "selection_source": selection_source,
+                                }
+                                if dom_logging_enabled:
+                                    refresh_payload["matched_range_text"] = matched_text
+                                log_event(**refresh_payload)
                             except Exception as exc:
-                                log_event(
-                                    logger=logger,
-                                    phase="iframe",
-                                    status="warn",
-                                    message="Failed to click Refresh during pending state",
-                                    store_code=store.store_code,
-                                    matched_range_text=matched_text,
-                                    status_text=matched_status,
-                                    refresh_timestamp=refresh_timestamp,
-                                    error=str(exc),
-                                    range_match_strategy=last_range_match_strategy,
-                                    container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
-                                    selected_row_state=matched_row_state,
-                                    selection_source=selection_source,
-                                )
+                                refresh_error_payload = {
+                                    "logger": logger,
+                                    "phase": "iframe",
+                                    "status": "warn",
+                                    "message": "Failed to click Refresh during pending state",
+                                    "store_code": store.store_code,
+                                    "status_text": matched_status,
+                                    "refresh_timestamp": refresh_timestamp,
+                                    "error": str(exc),
+                                    "range_match_strategy": last_range_match_strategy,
+                                    "container_locator_strategy": STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+                                    "selected_row_state": matched_row_state,
+                                    "selection_source": selection_source,
+                                }
+                                if dom_logging_enabled:
+                                    refresh_error_payload["matched_range_text"] = matched_text
+                                log_event(**refresh_error_payload)
                         else:
-                            log_event(
-                                logger=logger,
-                                phase="iframe",
-                                status="warn",
-                                message="Refresh control not visible during pending state",
-                                store_code=store.store_code,
-                                matched_range_text=matched_text,
-                                status_text=matched_status,
-                                refresh_timestamp=refresh_timestamp,
-                                range_match_strategy=last_range_match_strategy,
-                                container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
-                                selected_row_state=matched_row_state,
-                                selection_source=selection_source,
-                            )
+                            refresh_missing_payload = {
+                                "logger": logger,
+                                "phase": "iframe",
+                                "status": "warn",
+                                "message": "Refresh control not visible during pending state",
+                                "store_code": store.store_code,
+                                "status_text": matched_status,
+                                "refresh_timestamp": refresh_timestamp,
+                                "range_match_strategy": last_range_match_strategy,
+                                "container_locator_strategy": STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+                                "selected_row_state": matched_row_state,
+                                "selection_source": selection_source,
+                            }
+                            if dom_logging_enabled:
+                                refresh_missing_payload["matched_range_text"] = matched_text
+                            log_event(**refresh_missing_payload)
                         last_refresh_attempt_at = now
                 else:
                     break
             if visible_rows:
                 last_seen_texts = visible_rows
-                last_seen_summary = _summarize_text_samples(visible_rows)
+                if dom_logging_enabled:
+                    last_seen_summary = _summarize_text_samples(visible_rows)
         except Exception as exc:
             last_status = last_status or str(exc)
 
         await asyncio.sleep(backoff)
 
-    log_event(
-        logger=logger,
-        phase="iframe",
-        status="warn",
-        message="Report Requests download link not available before timeout",
-        store_code=store.store_code,
-        expected_range_texts=list(expected_range_texts),
-        last_seen_rows_count=last_seen_summary["count"] if last_seen_summary else None,
-        last_seen_rows_samples=last_seen_summary["samples"] if last_seen_summary else None,
-        last_seen_rows_truncated=last_seen_summary["truncated"] if last_seen_summary else None,
-        last_status=last_status,
-        row_seen=matched_row_seen,
-        timeout_ms=poll_timeout_ms,
-        range_match_strategy=last_range_match_strategy,
-        download_locator_strategy=last_download_locator_strategy or download_strategy,
-        container_locator_strategy=STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
-        selected_row_state=selected_row_state or ("pending" if matched_row_seen else None),
-        matched_range_text=last_matched_range_text,
-    )
+    timeout_payload = {
+        "logger": logger,
+        "phase": "iframe",
+        "status": "warn",
+        "message": "Report Requests download link not available before timeout",
+        "store_code": store.store_code,
+        "expected_range_texts": list(expected_range_texts),
+        "last_status": last_status,
+        "row_seen": matched_row_seen,
+        "timeout_ms": poll_timeout_ms,
+        "range_match_strategy": last_range_match_strategy,
+        "download_locator_strategy": last_download_locator_strategy or download_strategy,
+        "container_locator_strategy": STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+        "selected_row_state": selected_row_state or ("pending" if matched_row_seen else None),
+    }
+    if dom_logging_enabled:
+        timeout_payload.update(
+            {
+                "last_seen_rows_count": last_seen_summary["count"] if last_seen_summary else None,
+                "last_seen_rows_samples": last_seen_summary["samples"] if last_seen_summary else None,
+                "last_seen_rows_truncated": last_seen_summary["truncated"] if last_seen_summary else None,
+                "matched_range_text": last_matched_range_text,
+            }
+        )
+    log_event(**timeout_payload)
     return False, None, last_matched_range_text, last_status
 
 
@@ -4561,7 +4700,15 @@ async def _execute_sales_flow(
     if sales_nav_ready:
         sales_iframe = await _wait_for_iframe(page, store=store, logger=logger, require_src=True, phase="sales")
         if sales_iframe is not None:
-            await _observe_iframe_hydration(sales_iframe, store=store, logger=logger, timeout_ms=nav_timeout_ms)
+            if _dom_logging_enabled():
+                await _observe_iframe_hydration(sales_iframe, store=store, logger=logger, timeout_ms=nav_timeout_ms)
+            else:
+                log_event(
+                    logger=logger,
+                    phase="iframe",
+                    message="Iframe hydration observations skipped because DOM logging is disabled",
+                    store_code=store.store_code,
+                )
             sales_success, sales_detail = await _run_sales_iframe_flow(
                 page,
                 sales_iframe,
@@ -5033,7 +5180,15 @@ async def _run_store_discovery(
             )
             return
 
-        await _log_home_nav_diagnostics(page, logger=store_logger, store=store)
+        if _dom_logging_enabled():
+            await _log_home_nav_diagnostics(page, logger=store_logger, store=store)
+        else:
+            log_event(
+                logger=store_logger,
+                phase="home",
+                message="Navigation controls snapshot skipped because DOM logging is disabled",
+                store_code=store.store_code,
+            )
 
         store.storage_state_path.parent.mkdir(parents=True, exist_ok=True)
         await context.storage_state(path=str(store.storage_state_path))
@@ -5089,7 +5244,15 @@ async def _run_store_discovery(
 
             iframe_locator = await _wait_for_iframe(page, store=store, logger=store_logger)
             if iframe_locator is not None:
-                await _observe_iframe_hydration(iframe_locator, store=store, logger=store_logger)
+                if _dom_logging_enabled():
+                    await _observe_iframe_hydration(iframe_locator, store=store, logger=store_logger)
+                else:
+                    log_event(
+                        logger=store_logger,
+                        phase="iframe",
+                        message="Iframe hydration observations skipped because DOM logging is disabled",
+                        store_code=store.store_code,
+                    )
                 success, detail = await _run_orders_iframe_flow(
                     page,
                     iframe_locator,
