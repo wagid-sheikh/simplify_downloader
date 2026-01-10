@@ -62,6 +62,8 @@ ON orders_sync_log (pipeline_id, created_at DESC);
 
 `updated_at` must be maintained on every update.
 
+`pipeline_id` must reference the existing `pipelines` table row for `td_orders_sync` or `uc_orders_sync`, and every `orders_sync_log` insert/update must include that resolved `pipeline_id`.
+
 ---
 
 # **B) Pipeline parameterization**
@@ -106,6 +108,8 @@ Pipeline ID resolution:
 SELECT id FROM pipelines WHERE code='td_orders_sync';
 SELECT id FROM pipelines WHERE code='uc_orders_sync';
 ```
+
+TD must use `config.pipeline_timezone` for all date calculations (no UTC/default `current_date` behavior).
 
 ---
 
@@ -206,9 +210,10 @@ SELECT *
 FROM store_master
 WHERE is_active = true
 AND start_date IS NOT NULL
+AND store_code IS NOT NULL
 ```
 
-Filtered by `--sync-group` and optional `--store-code`.
+Filtered by `--sync-group` and `store_master.store_code`, with support for explicit `--store-code` selection (exact match on `store_master.store_code`).
 
 ---
 
@@ -217,7 +222,7 @@ Filtered by `--sync-group` and optional `--store-code`.
 Definitions:
 
 ```
-today = current_date
+today = current_date (computed in config.pipeline_timezone)
 window_days = N
 overlap_days = K
 ```
