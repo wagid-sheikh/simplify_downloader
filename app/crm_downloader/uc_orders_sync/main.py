@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 import sqlalchemy as sa
 from playwright.async_api import Browser, ElementHandle, Locator, Page, TimeoutError, async_playwright
 
-from app.common.date_utils import aware_now, get_timezone
+from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
 from app.common.db import session_scope
 from app.config import config
 from app.crm_downloader.browser import launch_browser
@@ -374,6 +374,7 @@ async def main(
     run_id: str | None = None,
     from_date: date | None = None,
     to_date: date | None = None,
+    store_codes: Sequence[str] | None = None,
 ) -> None:
     """Run the UC GST report discovery flow (login + selector identification)."""
 
@@ -408,7 +409,7 @@ async def main(
             pipeline_skip_dom_logging=config.pipeline_skip_dom_logging,
         )
 
-        stores = await _load_uc_order_stores(logger=logger)
+        stores = await _load_uc_order_stores(logger=logger, store_codes=store_codes)
         summary.store_codes = [store.store_code for store in stores]
         if not stores:
             log_event(
@@ -539,7 +540,9 @@ def _format_gst_filename(store_code: str, from_date: date, to_date: date) -> str
     return f"{store_code}_uc_gst_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
 
 
-async def _load_uc_order_stores(*, logger: JsonLogger) -> list[UcStore]:
+async def _load_uc_order_stores(
+    *, logger: JsonLogger, store_codes: Sequence[str] | None = None
+) -> list[UcStore]:
     if not config.database_url:
         log_event(
             logger=logger,
@@ -549,18 +552,25 @@ async def _load_uc_order_stores(*, logger: JsonLogger) -> list[UcStore]:
         )
         return []
 
-    query = sa.text(
-        """
+    normalized_codes = normalize_store_codes(store_codes or [])
+    query_text = """
         SELECT store_code, store_name, cost_center, sync_config
         FROM store_master
         WHERE sync_group = :sync_group
           AND sync_orders_flag = TRUE
           AND (is_active IS NULL OR is_active = TRUE)
-        """
-    )
+    """
+    if normalized_codes:
+        query_text += " AND UPPER(store_code) IN :store_codes"
+    query = sa.text(query_text)
+    if normalized_codes:
+        query = query.bindparams(sa.bindparam("store_codes", expanding=True))
 
     async with session_scope(config.database_url) as session:
-        result = await session.execute(query, {"sync_group": "UC"})
+        params = {"sync_group": "UC"}
+        if normalized_codes:
+            params["store_codes"] = normalized_codes
+        result = await session.execute(query, params)
         stores: list[UcStore] = []
         for row in result.mappings():
             raw_code = (row.get("store_code") or "").strip()
