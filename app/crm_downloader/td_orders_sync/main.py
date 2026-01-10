@@ -17,7 +17,7 @@ import sqlalchemy as sa
 from playwright.async_api import Browser, BrowserContext, FrameLocator, Locator, Page, TimeoutError, async_playwright
 
 from app.common.db import session_scope
-from app.common.date_utils import get_timezone
+from app.common.date_utils import aware_now, get_timezone
 from app.config import config
 from app.crm_downloader.browser import launch_browser
 from app.crm_downloader.config import default_download_dir, default_profiles_dir
@@ -135,9 +135,9 @@ async def main(
     """Run the TD Orders sync flow (login + iframe historical orders download)."""
 
     resolved_run_id = run_id or new_run_id()
-    resolved_run_date = datetime.now(get_timezone())
+    resolved_run_date = aware_now()
     resolved_env = run_env or config.run_env
-    today = datetime.now(timezone.utc).date()
+    today = aware_now().date()
     run_start_date = from_date or today - timedelta(days=30)
     run_end_date = to_date or today
     logger = get_logger(run_id=resolved_run_id)
