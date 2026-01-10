@@ -1,0 +1,551 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+import fcntl
+import json
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Iterable, Mapping, Sequence
+
+import sqlalchemy as sa
+
+from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
+from app.common.db import session_scope
+from app.config import config
+from app.crm_downloader.config import default_download_dir
+from app.crm_downloader.td_orders_sync import main as td_orders_sync_main
+from app.crm_downloader.uc_orders_sync import main as uc_orders_sync_main
+from app.dashboard_downloader.db_tables import orders_sync_log, pipelines
+from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
+from app.dashboard_downloader.run_summary import insert_run_summary
+
+PIPELINE_BY_GROUP = {
+    "TD": ("td_orders_sync", td_orders_sync_main),
+    "UC": ("uc_orders_sync", uc_orders_sync_main),
+}
+
+DEFAULT_BACKFILL_DAYS = 90
+DEFAULT_WINDOW_DAYS = 7
+DEFAULT_OVERLAP_DAYS = 2
+DEFAULT_MAX_WORKERS = 4
+
+
+@dataclass(frozen=True)
+class StoreProfile:
+    store_code: str
+    store_name: str | None
+    cost_center: str | None
+    sync_config: Mapping[str, Any]
+
+
+@asynccontextmanager
+async def store_lock(store_code: str) -> Iterable[None]:
+    lock_dir = default_download_dir() / "orders_sync_run_profiler_locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / f"{store_code}.lock"
+    handle = open(lock_path, "w", encoding="utf-8")
+    try:
+        await asyncio.to_thread(fcntl.flock, handle, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            await asyncio.to_thread(fcntl.flock, handle, fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+def _coerce_dict(raw: Any) -> Mapping[str, Any]:
+    if isinstance(raw, Mapping):
+        return raw
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        if not stripped:
+            return {}
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, Mapping) else {}
+    return {}
+
+
+def _parse_date(value: str) -> date:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"Invalid date {value!r}; expected YYYY-MM-DD") from exc
+
+
+def _normalize_sync_group(value: str) -> str:
+    normalized = value.strip().upper()
+    if normalized not in PIPELINE_BY_GROUP:
+        raise argparse.ArgumentTypeError("sync_group must be TD or UC")
+    return normalized
+
+
+async def _load_store_profiles(
+    *, logger: JsonLogger, sync_group: str, store_codes: Sequence[str] | None
+) -> list[StoreProfile]:
+    if not config.database_url:
+        log_event(
+            logger=logger,
+            phase="init",
+            status="error",
+            message="database_url missing; cannot load store rows",
+        )
+        return []
+    normalized_codes = normalize_store_codes(store_codes or [])
+    query_text = """
+        SELECT store_code, store_name, cost_center, sync_config
+        FROM store_master
+        WHERE sync_group = :sync_group
+          AND sync_orders_flag = TRUE
+          AND (is_active IS NULL OR is_active = TRUE)
+    """
+    if normalized_codes:
+        query_text += " AND UPPER(store_code) IN :store_codes"
+    query = sa.text(query_text)
+    if normalized_codes:
+        query = query.bindparams(sa.bindparam("store_codes", expanding=True))
+    async with session_scope(config.database_url) as session:
+        params = {"sync_group": sync_group}
+        if normalized_codes:
+            params["store_codes"] = normalized_codes
+        result = await session.execute(query, params)
+        stores: list[StoreProfile] = []
+        for row in result.mappings():
+            raw_code = (row.get("store_code") or "").strip()
+            if not raw_code:
+                log_event(
+                    logger=logger,
+                    phase="init",
+                    status="warn",
+                    message="Skipping store with missing store_code",
+                    raw_row=dict(row),
+                )
+                continue
+            stores.append(
+                StoreProfile(
+                    store_code=raw_code.upper(),
+                    store_name=row.get("store_name"),
+                    cost_center=row.get("cost_center"),
+                    sync_config=_coerce_dict(row.get("sync_config")),
+                )
+            )
+    log_event(
+        logger=logger,
+        phase="init",
+        message="Loaded store rows",
+        sync_group=sync_group,
+        store_count=len(stores),
+        stores=[store.store_code for store in stores],
+    )
+    return stores
+
+
+async def _fetch_pipeline_id(
+    *, logger: JsonLogger, database_url: str, pipeline_name: str
+) -> int | None:
+    try:
+        async with session_scope(database_url) as session:
+            pipeline_id = (
+                await session.execute(sa.select(pipelines.c.id).where(pipelines.c.code == pipeline_name))
+            ).scalar_one_or_none()
+    except Exception as exc:  # pragma: no cover - defensive
+        log_event(
+            logger=logger,
+            phase="pipeline",
+            status="warn",
+            message="Failed to fetch pipeline id",
+            pipeline_name=pipeline_name,
+            error=str(exc),
+        )
+        return None
+    if not pipeline_id:
+        log_event(
+            logger=logger,
+            phase="pipeline",
+            status="warn",
+            message="Pipeline id not found",
+            pipeline_name=pipeline_name,
+        )
+    return pipeline_id
+
+
+async def _fetch_last_success_date(
+    *, database_url: str, pipeline_id: int, store_code: str
+) -> date | None:
+    async with session_scope(database_url) as session:
+        stmt = (
+            sa.select(sa.func.max(orders_sync_log.c.to_date))
+            .where(orders_sync_log.c.pipeline_id == pipeline_id)
+            .where(orders_sync_log.c.store_code == store_code)
+            .where(orders_sync_log.c.status == "success")
+        )
+        return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def _fetch_latest_log_status(
+    *, database_url: str, pipeline_id: int, store_code: str, run_id: str
+) -> str | None:
+    async with session_scope(database_url) as session:
+        stmt = (
+            sa.select(orders_sync_log.c.status, orders_sync_log.c.error_message)
+            .where(orders_sync_log.c.pipeline_id == pipeline_id)
+            .where(orders_sync_log.c.store_code == store_code)
+            .where(orders_sync_log.c.run_id == run_id)
+            .order_by(orders_sync_log.c.id.desc())
+            .limit(1)
+        )
+        row = (await session.execute(stmt)).first()
+    if not row:
+        return None
+    status = row[0]
+    if status:
+        return str(status)
+    return None
+
+
+def _window_settings(
+    *, store: StoreProfile, backfill_days: int | None, window_days: int | None, overlap_days: int | None
+) -> tuple[int, int, int]:
+    sync_config = store.sync_config
+    resolved_backfill = int(
+        backfill_days
+        or sync_config.get("orders_sync_backfill_days")
+        or sync_config.get("sync_backfill_days")
+        or DEFAULT_BACKFILL_DAYS
+    )
+    resolved_window = int(
+        window_days
+        or sync_config.get("orders_sync_window_days")
+        or sync_config.get("sync_window_days")
+        or DEFAULT_WINDOW_DAYS
+    )
+    resolved_overlap = int(
+        overlap_days
+        or sync_config.get("orders_sync_overlap_days")
+        or sync_config.get("sync_overlap_days")
+        or DEFAULT_OVERLAP_DAYS
+    )
+    resolved_backfill = max(1, resolved_backfill)
+    resolved_window = max(1, resolved_window)
+    resolved_overlap = max(0, min(resolved_overlap, resolved_window - 1))
+    return resolved_backfill, resolved_window, resolved_overlap
+
+
+def _build_windows(
+    *, start_date: date, end_date: date, window_days: int, overlap_days: int
+) -> list[tuple[date, date]]:
+    if start_date > end_date:
+        return []
+    step_days = max(1, window_days - overlap_days)
+    windows: list[tuple[date, date]] = []
+    current = start_date
+    while current <= end_date:
+        window_end = min(current + timedelta(days=window_days - 1), end_date)
+        windows.append((current, window_end))
+        current = current + timedelta(days=step_days)
+    return windows
+
+
+def _resolve_start_date(
+    *, end_date: date, last_success: date | None, overlap_days: int, backfill_days: int, from_date: date | None
+) -> date:
+    if from_date:
+        return from_date
+    if last_success:
+        overlap_offset = max(0, overlap_days - 1)
+        return last_success - timedelta(days=overlap_offset)
+    return end_date - timedelta(days=backfill_days - 1)
+
+
+def _summary_text(
+    *, store_code: str, status: str, windows: Sequence[tuple[date, date]], detail_lines: Sequence[str]
+) -> str:
+    window_lines = [f"- {start.isoformat()} → {end.isoformat()}" for start, end in windows]
+    lines = [
+        f"Store: {store_code}",
+        f"Overall Status: {status}",
+        f"Window Count: {len(windows)}",
+        "Windows:",
+    ]
+    lines.extend(window_lines or ["- none"])
+    if detail_lines:
+        lines.append("")
+        lines.append("Details:")
+        lines.extend(f"- {line}" for line in detail_lines)
+    return "\n".join(lines)
+
+
+async def _run_store_windows(
+    *,
+    logger: JsonLogger,
+    store: StoreProfile,
+    pipeline_name: str,
+    pipeline_id: int,
+    pipeline_fn: Any,
+    run_env: str,
+    run_id: str,
+    backfill_days: int | None,
+    window_days: int | None,
+    overlap_days: int | None,
+    from_date: date | None,
+    to_date: date | None,
+) -> tuple[str, list[tuple[date, date]], list[str]]:
+    started_at = datetime.now(timezone.utc)
+    detail_lines: list[str] = []
+    backfill, window_size, overlap = _window_settings(
+        store=store,
+        backfill_days=backfill_days,
+        window_days=window_days,
+        overlap_days=overlap_days,
+    )
+    end_date = to_date or aware_now(get_timezone()).date()
+    last_success = await _fetch_last_success_date(
+        database_url=config.database_url, pipeline_id=pipeline_id, store_code=store.store_code
+    )
+    start_date = _resolve_start_date(
+        end_date=end_date,
+        last_success=last_success,
+        overlap_days=overlap,
+        backfill_days=backfill,
+        from_date=from_date,
+    )
+    windows = _build_windows(
+        start_date=start_date,
+        end_date=end_date,
+        window_days=window_size,
+        overlap_days=overlap,
+    )
+    if not windows:
+        detail_lines.append("No windows to process (start_date after end_date).")
+        return "success", windows, detail_lines
+    log_event(
+        logger=logger,
+        phase="store",
+        message="Computed window plan",
+        store_code=store.store_code,
+        start_date=start_date,
+        end_date=end_date,
+        window_days=window_size,
+        overlap_days=overlap,
+        window_count=len(windows),
+    )
+    overall_status = "success"
+    for index, (window_start, window_end) in enumerate(windows, start=1):
+        window_run_id = f"{run_id}_{store.store_code}_{index:03d}"
+        log_event(
+            logger=logger,
+            phase="window",
+            message="Running orders sync window",
+            store_code=store.store_code,
+            from_date=window_start,
+            to_date=window_end,
+            window_index=index,
+        )
+        await pipeline_fn(
+            run_env=run_env,
+            run_id=window_run_id,
+            from_date=window_start,
+            to_date=window_end,
+            store_codes=[store.store_code],
+        )
+        status = await _fetch_latest_log_status(
+            database_url=config.database_url,
+            pipeline_id=pipeline_id,
+            store_code=store.store_code,
+            run_id=window_run_id,
+        )
+        status = (status or "failed").lower()
+        if status not in {"success", "partial", "failed", "skipped"}:
+            status = "failed"
+        detail_lines.append(
+            f"{window_start.isoformat()} → {window_end.isoformat()}: {status}"
+        )
+        if status in {"failed", "partial"}:
+            overall_status = status
+            log_event(
+                logger=logger,
+                phase="window",
+                status="warn" if status == "partial" else "error",
+                message="Stopping further windows after non-success status",
+                store_code=store.store_code,
+                window_index=index,
+                window_status=status,
+            )
+            break
+    finished_at = datetime.now(timezone.utc)
+    total_seconds = int((finished_at - started_at).total_seconds())
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    metrics = {
+        "store_code": store.store_code,
+        "window_count": len(windows),
+        "window_days": window_size,
+        "overlap_days": overlap,
+        "backfill_days": backfill,
+        "elapsed_seconds": total_seconds,
+        "windows": [{"from": s.isoformat(), "to": e.isoformat()} for s, e in windows],
+    }
+    phases = {
+        "window": {
+            "ok": sum("success" in line for line in detail_lines),
+            "warning": sum("partial" in line for line in detail_lines),
+            "error": sum("failed" in line for line in detail_lines),
+        }
+    }
+    summary_record = {
+        "pipeline_name": pipeline_name,
+        "run_id": f"{run_id}_{store.store_code}",
+        "run_env": run_env,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "total_time_taken": f"{hours:02d}:{minutes:02d}:{seconds:02d}",
+        "report_date": windows[0][0] if windows else None,
+        "overall_status": overall_status,
+        "summary_text": _summary_text(
+            store_code=store.store_code, status=overall_status, windows=windows, detail_lines=detail_lines
+        ),
+        "phases_json": phases,
+        "metrics_json": metrics,
+    }
+    await insert_run_summary(config.database_url, summary_record)
+    return overall_status, windows, detail_lines
+
+
+async def _process_store(
+    *,
+    logger: JsonLogger,
+    store: StoreProfile,
+    pipeline_name: str,
+    pipeline_id: int,
+    pipeline_fn: Any,
+    run_env: str,
+    run_id: str,
+    backfill_days: int | None,
+    window_days: int | None,
+    overlap_days: int | None,
+    from_date: date | None,
+    to_date: date | None,
+) -> None:
+    async with store_lock(store.store_code):
+        await _run_store_windows(
+            logger=logger,
+            store=store,
+            pipeline_name=pipeline_name,
+            pipeline_id=pipeline_id,
+            pipeline_fn=pipeline_fn,
+            run_env=run_env,
+            run_id=run_id,
+            backfill_days=backfill_days,
+            window_days=window_days,
+            overlap_days=overlap_days,
+            from_date=from_date,
+            to_date=to_date,
+        )
+
+
+async def main(
+    *,
+    sync_group: str,
+    store_codes: Sequence[str] | None = None,
+    from_date: date | None = None,
+    to_date: date | None = None,
+    max_workers: int = DEFAULT_MAX_WORKERS,
+    backfill_days: int | None = None,
+    window_days: int | None = None,
+    overlap_days: int | None = None,
+    run_env: str | None = None,
+    run_id: str | None = None,
+) -> None:
+    resolved_env = run_env or config.run_env
+    resolved_run_id = run_id or new_run_id()
+    logger = get_logger(run_id=resolved_run_id)
+    resolved_sync_group = _normalize_sync_group(sync_group)
+    pipeline_name, pipeline_fn = PIPELINE_BY_GROUP[resolved_sync_group]
+    if not config.database_url:
+        log_event(
+            logger=logger,
+            phase="init",
+            status="error",
+            message="database_url missing; exiting",
+        )
+        return
+    pipeline_id = await _fetch_pipeline_id(
+        logger=logger, database_url=config.database_url, pipeline_name=pipeline_name
+    )
+    if not pipeline_id:
+        return
+    stores = await _load_store_profiles(
+        logger=logger, sync_group=resolved_sync_group, store_codes=store_codes
+    )
+    if not stores:
+        log_event(
+            logger=logger,
+            phase="init",
+            status="warn",
+            message="No stores found for sync_group",
+            sync_group=resolved_sync_group,
+        )
+        return
+    semaphore = asyncio.Semaphore(max(1, max_workers))
+
+    async def _guarded(store: StoreProfile) -> None:
+        async with semaphore:
+            await _process_store(
+                logger=logger,
+                store=store,
+                pipeline_name=pipeline_name,
+                pipeline_id=pipeline_id,
+                pipeline_fn=pipeline_fn,
+                run_env=resolved_env,
+                run_id=resolved_run_id,
+                backfill_days=backfill_days,
+                window_days=window_days,
+                overlap_days=overlap_days,
+                from_date=from_date,
+                to_date=to_date,
+            )
+
+    await asyncio.gather(*[_guarded(store) for store in stores])
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run orders sync profiler with windowed backfill.")
+    parser.add_argument("--sync-group", required=True, type=_normalize_sync_group)
+    parser.add_argument("--store-code", action="append", dest="store_codes")
+    parser.add_argument("--from-date", type=_parse_date)
+    parser.add_argument("--to-date", type=_parse_date)
+    parser.add_argument("--max-workers", type=int, default=DEFAULT_MAX_WORKERS)
+    parser.add_argument("--backfill-days", type=int)
+    parser.add_argument("--window-days", type=int)
+    parser.add_argument("--overlap-days", type=int)
+    parser.add_argument("--run-env")
+    parser.add_argument("--run-id")
+    return parser
+
+
+def _main() -> None:
+    args = _build_parser().parse_args()
+    asyncio.run(
+        main(
+            sync_group=args.sync_group,
+            store_codes=args.store_codes,
+            from_date=args.from_date,
+            to_date=args.to_date,
+            max_workers=args.max_workers,
+            backfill_days=args.backfill_days,
+            window_days=args.window_days,
+            overlap_days=args.overlap_days,
+            run_env=args.run_env,
+            run_id=args.run_id,
+        )
+    )
+
+
+if __name__ == "__main__":
+    _main()

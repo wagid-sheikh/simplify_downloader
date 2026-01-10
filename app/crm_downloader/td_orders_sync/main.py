@@ -17,7 +17,7 @@ import sqlalchemy as sa
 from playwright.async_api import Browser, BrowserContext, FrameLocator, Locator, Page, TimeoutError, async_playwright
 
 from app.common.db import session_scope
-from app.common.date_utils import aware_now, get_timezone
+from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
 from app.config import config
 from app.crm_downloader.browser import launch_browser
 from app.crm_downloader.config import default_download_dir, default_profiles_dir
@@ -130,6 +130,7 @@ async def main(
     run_id: str | None = None,
     from_date: date | None = None,
     to_date: date | None = None,
+    store_codes: Sequence[str] | None = None,
     run_orders: bool = True,
     run_sales: bool = True,
 ) -> None:
@@ -173,7 +174,7 @@ async def main(
 
         nav_timeout_ms = await _fetch_dashboard_nav_timeout_ms(config.database_url)
 
-        stores = await _load_td_order_stores(logger=logger)
+        stores = await _load_td_order_stores(logger=logger, store_codes=store_codes)
         summary.store_codes = [store.store_code for store in stores]
         if not stores:
             log_event(
@@ -1185,19 +1186,28 @@ class SessionProbeResult:
     home_card_visible: bool | None = None
 
 
-async def _load_td_order_stores(*, logger: JsonLogger) -> List[TdStore]:
-    query = sa.text(
-        """
+async def _load_td_order_stores(
+    *, logger: JsonLogger, store_codes: Sequence[str] | None = None
+) -> List[TdStore]:
+    normalized_codes = normalize_store_codes(store_codes or [])
+    query_text = """
         SELECT store_code, store_name, sync_config, cost_center
         FROM store_master
         WHERE sync_group = :sync_group
           AND sync_orders_flag = TRUE
           AND (is_active IS NULL OR is_active = TRUE)
-        """
-    )
+    """
+    if normalized_codes:
+        query_text += " AND UPPER(store_code) IN :store_codes"
+    query = sa.text(query_text)
+    if normalized_codes:
+        query = query.bindparams(sa.bindparam("store_codes", expanding=True))
 
     async with session_scope(config.database_url) as session:
-        result = await session.execute(query, {"sync_group": "TD"})
+        params = {"sync_group": "TD"}
+        if normalized_codes:
+            params["store_codes"] = normalized_codes
+        result = await session.execute(query, params)
         stores: List[TdStore] = []
         for row in result.mappings():
             raw_code = (row.get("store_code") or "").strip()
