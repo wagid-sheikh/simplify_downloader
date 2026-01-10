@@ -100,3 +100,28 @@ notification_recipients = sa.Table(
     sa.Column("is_active", sa.Boolean()),
     sa.Column("created_at", sa.DateTime(timezone=True)),
 )
+
+
+orders_sync_log = sa.Table(
+    "orders_sync_log",
+    metadata,
+    sa.Column("id", sa.BigInteger()),
+    sa.Column("pipeline_id", sa.BigInteger(), nullable=False),
+    sa.Column("run_id", sa.String(length=64), nullable=False),
+    sa.Column("run_env", sa.String(length=32), nullable=False),
+    sa.Column("cost_center", sa.String(length=8)),
+    sa.Column("store_code", sa.String(length=8), nullable=False),
+    sa.Column("from_date", sa.Date(), nullable=False),
+    sa.Column("to_date", sa.Date(), nullable=False),
+    sa.Column("orders_pulled_at", sa.DateTime(timezone=True)),
+    sa.Column("sales_pulled_at", sa.DateTime(timezone=True)),
+    sa.Column("status", sa.String(length=16), nullable=False),
+    sa.Column("attempt_no", sa.Integer(), nullable=False, server_default=sa.text("1")),
+    sa.Column("error_message", sa.Text()),
+    sa.Column(
+        "created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")
+    ),
+    sa.Column(
+        "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")
+    ),
+)
