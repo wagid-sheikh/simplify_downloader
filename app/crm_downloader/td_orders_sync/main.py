@@ -137,9 +137,11 @@ async def main(
     resolved_run_id = run_id or new_run_id()
     resolved_run_date = aware_now()
     resolved_env = run_env or config.run_env
-    today = aware_now().date()
-    run_start_date = from_date or today - timedelta(days=30)
-    run_end_date = to_date or today
+    current_date = aware_now(get_timezone()).date()
+    run_start_date = from_date or current_date - timedelta(days=89)
+    run_end_date = to_date or current_date
+    if run_start_date > run_end_date:
+        raise ValueError(f"from_date ({run_start_date}) must be on or before to_date ({run_end_date})")
     logger = get_logger(run_id=resolved_run_id)
     summary = TdOrdersDiscoverySummary(
         run_id=resolved_run_id,

@@ -504,22 +504,12 @@ def _parse_date(value: str) -> date:
 
 
 def _resolve_date_range(*, from_date: date | None, to_date: date | None) -> tuple[date, date]:
-    if from_date and to_date:
-        resolved_from = from_date
-        resolved_to = to_date
-    elif from_date:
-        resolved_from = from_date
-        resolved_to = from_date
-    elif to_date:
-        resolved_from = to_date
-        resolved_to = to_date
-    else:
-        today = aware_now().date()
-        resolved_from = today - timedelta(days=90)
-        resolved_to = today
+    current_date = aware_now(get_timezone()).date()
+    resolved_from = from_date or current_date - timedelta(days=89)
+    resolved_to = to_date or current_date
 
     if resolved_from > resolved_to:
-        resolved_from, resolved_to = resolved_to, resolved_from
+        raise ValueError(f"from_date ({resolved_from}) must be on or before to_date ({resolved_to})")
     return resolved_from, resolved_to
 
 
