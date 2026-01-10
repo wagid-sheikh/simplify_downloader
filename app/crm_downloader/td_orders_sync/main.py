@@ -57,6 +57,21 @@ def _dom_logging_enabled() -> bool:
     return not config.pipeline_skip_dom_logging
 
 
+DOM_LOGGING_FIELDS = {
+    "links",
+    "reports_links",
+    "nav_samples",
+    "row_samples",
+    "observed_controls",
+    "observed_spinners",
+    "matched_range_examples",
+}
+
+
+def _scrub_dom_logging_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if key not in DOM_LOGGING_FIELDS}
+
+
 def _truncate_text(value: str | None, *, max_chars: int = SNAPSHOT_TEXT_MAX_CHARS) -> str | None:
     if not value:
         return value
@@ -2162,12 +2177,13 @@ def _build_sales_report_url(store: TdStore, current_url: str | None = None) -> s
 def _log_sales_navigation_attempt_event(
     *, logger: JsonLogger, store_code: str, attempt: dict[str, Any]
 ) -> None:
+    payload = attempt if _dom_logging_enabled() else _scrub_dom_logging_fields(attempt)
     log_event(
         logger=logger,
         phase="sales",
         message="Sales navigation attempt",
         store_code=store_code,
-        **attempt,
+        **payload,
     )
 
 
