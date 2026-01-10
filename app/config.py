@@ -96,6 +96,7 @@ PLAINTEXT_DB_KEYS = [
     "PDF_RENDER_BACKEND",
     "PDF_RENDER_HEADLESS",
     "ETL_HEADLESS",
+    "pipeline_skip_dom_logging",
 ]
 
 ENCRYPTED_DB_KEYS = [
@@ -302,6 +303,7 @@ class Config:
     pdf_render_backend: str
     pdf_render_headless: bool
     etl_headless: bool
+    pipeline_skip_dom_logging: bool
 
     @classmethod
     def load_from_env_and_db(cls) -> Config:
@@ -335,6 +337,9 @@ class Config:
             db_values["PDF_RENDER_HEADLESS"], key="PDF_RENDER_HEADLESS"
         )
         etl_headless = _parse_bool(db_values["ETL_HEADLESS"], key="ETL_HEADLESS")
+        pipeline_skip_dom_logging = _parse_bool(
+            db_values["pipeline_skip_dom_logging"], key="pipeline_skip_dom_logging"
+        )
 
         td_store_dashboard_path = _clean_text(
             db_values["TD_STORE_DASHBOARD_PATH"], key="TD_STORE_DASHBOARD_PATH"
@@ -405,6 +410,7 @@ class Config:
             pdf_render_backend=pdf_render_backend,
             pdf_render_headless=pdf_render_headless,
             etl_headless=etl_headless,
+            pipeline_skip_dom_logging=pipeline_skip_dom_logging,
         )
 
 

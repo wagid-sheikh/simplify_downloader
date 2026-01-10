@@ -516,6 +516,7 @@ async def _capture_bootstrap_artifacts(
     *,
     store_code: str | None,
     prefix: str,
+    skip_dom_logging: bool,
 ) -> Dict[str, str]:
     timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     normalized_store = (store_code or "unknown").replace("/", "_")
@@ -533,12 +534,13 @@ async def _capture_bootstrap_artifacts(
     except Exception as exc:  # pragma: no cover - depends on browser state
         extras["screenshot_error"] = str(exc)
 
-    try:
-        html_content = await page.content()
-        html_path.write_text(html_content, encoding="utf-8")
-        extras["html_dump"] = str(html_path)
-    except Exception as exc:  # pragma: no cover - depends on browser state
-        extras["html_error"] = str(exc)
+    if not skip_dom_logging:
+        try:
+            html_content = await page.content()
+            html_path.write_text(html_content, encoding="utf-8")
+            extras["html_dump"] = str(html_path)
+        except Exception as exc:  # pragma: no cover - depends on browser state
+            extras["html_error"] = str(exc)
 
     return extras
 
@@ -1189,6 +1191,7 @@ async def _bootstrap_session_via_home_and_tracker(
                 page,
                 store_code=store_code,
                 prefix="post_login_probe",
+                skip_dom_logging=config.pipeline_skip_dom_logging,
             )
             failure_extras: Dict[str, Any] = {
                 "probe_url": probe_url,
@@ -1274,6 +1277,7 @@ async def _bootstrap_session_via_home_and_tracker(
                     page,
                     store_code=store_code,
                     prefix="home_login_after_auth",
+                    skip_dom_logging=config.pipeline_skip_dom_logging,
                 )
                 failure_extras = {
                     "home_url": home_url,
@@ -2350,4 +2354,3 @@ async def run_all_stores_single_session(
     _finalize_merges(merged_buckets, download_counts, logger=logger)
 
     return download_counts
-
