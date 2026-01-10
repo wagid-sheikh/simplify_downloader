@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0040_add_pipeline_skip_dom_logging_config"
+revision = "0040_pipeline_skip_dom_logging"
 down_revision = "0039_uc_orders_pipe_notitempl"
 branch_labels = None
 depends_on = None
