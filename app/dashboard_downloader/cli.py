@@ -62,6 +62,12 @@ async def _run_async(args: argparse.Namespace) -> int:
     run_id = args.run_id or new_run_id()
     logger = get_logger(run_id=run_id)
     configure_logging(logger)
+    log_event(
+        logger=logger,
+        phase="init",
+        message="Pipeline DOM logging configuration",
+        pipeline_skip_dom_logging=runtime_config.pipeline_skip_dom_logging,
+    )
     try:
         settings = await load_settings(
             dry_run=args.dry_run,

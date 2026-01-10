@@ -142,6 +142,12 @@ async def main(
             from_date=run_start_date,
             to_date=run_end_date,
         )
+        log_event(
+            logger=logger,
+            phase="init",
+            message="Pipeline DOM logging configuration",
+            pipeline_skip_dom_logging=config.pipeline_skip_dom_logging,
+        )
 
         nav_timeout_ms = await _fetch_dashboard_nav_timeout_ms(config.database_url)
 
@@ -3988,6 +3994,8 @@ async def _log_report_requests_dom(
     store: TdStore,
     label: str = "report_requests_container_dom",
 ) -> None:
+    if config.pipeline_skip_dom_logging:
+        return None
     row_count: int | None = None
     try:
         rows = await _collect_report_request_rows(container, max_rows=20)

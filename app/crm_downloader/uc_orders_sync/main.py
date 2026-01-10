@@ -400,6 +400,12 @@ async def main(
             from_date=run_start_date,
             to_date=run_end_date,
         )
+        log_event(
+            logger=logger,
+            phase="init",
+            message="Pipeline DOM logging configuration",
+            pipeline_skip_dom_logging=config.pipeline_skip_dom_logging,
+        )
 
         stores = await _load_uc_order_stores(logger=logger)
         summary.store_codes = [store.store_code for store in stores]
@@ -1111,7 +1117,7 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
     )
     empty_fields = [name for name, value in (("username", username_value), ("password", password_value)) if not value]
     if empty_fields:
-        dom_snippet = await _get_dom_snippet(page)
+        dom_snippet = await _maybe_get_dom_snippet(page)
         log_event(
             logger=logger,
             phase="login",
@@ -1119,7 +1125,7 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
             message="Login input empty after fill",
             store_code=store.store_code,
             empty_fields=empty_fields,
-            dom_snippet=dom_snippet,
+            **_dom_snippet_fields(dom_snippet),
         )
         log_event(
             logger=logger,
@@ -1292,7 +1298,7 @@ async def _wait_for_gst_report_ready(
     try:
         await page.locator(GST_PAGE_LABEL_SELECTOR).first.wait_for(timeout=NAV_TIMEOUT_MS)
     except TimeoutError:
-        dom_snippet = await _get_dom_snippet(page)
+        dom_snippet = await _maybe_get_dom_snippet(page)
         log_event(
             logger=logger,
             phase="navigation",
@@ -1301,7 +1307,7 @@ async def _wait_for_gst_report_ready(
             store_code=store.store_code,
             selector=GST_PAGE_LABEL_SELECTOR,
             current_url=page.url,
-            dom_snippet=dom_snippet,
+            **_dom_snippet_fields(dom_snippet),
         )
         return False, None
 
@@ -1320,7 +1326,7 @@ async def _wait_for_gst_report_ready(
             readiness_selector = fallback_selector
 
     if container is None:
-        dom_snippet = await _get_dom_snippet(page)
+        dom_snippet = await _maybe_get_dom_snippet(page)
         log_event(
             logger=logger,
             phase="navigation",
@@ -1330,14 +1336,14 @@ async def _wait_for_gst_report_ready(
             selector=readiness_selector,
             fallback_selector=fallback_selector,
             current_url=page.url,
-            dom_snippet=dom_snippet,
+            **_dom_snippet_fields(dom_snippet),
         )
         return False, None
 
     try:
         await container.locator(readiness_selector).first.wait_for(timeout=NAV_TIMEOUT_MS)
     except TimeoutError:
-        dom_snippet = await _get_dom_snippet(page)
+        dom_snippet = await _maybe_get_dom_snippet(page)
         log_event(
             logger=logger,
             phase="navigation",
@@ -1347,7 +1353,7 @@ async def _wait_for_gst_report_ready(
             selector=readiness_selector,
             fallback_selector=fallback_selector,
             current_url=page.url,
-            dom_snippet=dom_snippet,
+            **_dom_snippet_fields(dom_snippet),
         )
         return False, container
 
@@ -1430,7 +1436,7 @@ async def _wait_for_home_ready(
 
     current_url = page.url or ""
     if _url_is_login(current_url, store):
-        dom_snippet = await _get_dom_snippet(page)
+        dom_snippet = await _maybe_get_dom_snippet(page)
         log_event(
             logger=logger,
             phase="navigation",
@@ -1440,7 +1446,7 @@ async def _wait_for_home_ready(
             home_url=home_url,
             current_url=current_url,
             source=source,
-            dom_snippet=dom_snippet,
+            **_dom_snippet_fields(dom_snippet),
         )
         return False
 
@@ -1465,7 +1471,7 @@ async def _wait_for_home_ready(
         )
         return True
 
-    dom_snippet = await _get_dom_snippet(page)
+    dom_snippet = await _maybe_get_dom_snippet(page)
     log_event(
         logger=logger,
         phase="navigation",
@@ -1475,7 +1481,7 @@ async def _wait_for_home_ready(
         home_url=home_url,
         current_url=current_url,
         selectors=home_selectors,
-        dom_snippet=dom_snippet,
+        **_dom_snippet_fields(dom_snippet),
         source=source,
     )
     return False
@@ -2466,7 +2472,7 @@ async def _navigate_to_gst_reports(*, page: Page, store: UcStore, logger: JsonLo
 
     if link_locator is None and fallback_handle is None:
         nav_links = await _summarize_nav_links(nav_root)
-        dom_snippet = await _get_dom_snippet(page)
+        dom_snippet = await _maybe_get_dom_snippet(page)
         log_event(
             logger=logger,
             phase="navigation",
@@ -2476,7 +2482,7 @@ async def _navigate_to_gst_reports(*, page: Page, store: UcStore, logger: JsonLo
             orders_url=orders_url,
             current_url=page.url,
             nav_links=nav_links,
-            dom_snippet=dom_snippet,
+            **_dom_snippet_fields(dom_snippet),
         )
         return False
 
@@ -2656,6 +2662,18 @@ def _url_is_login(current_url: str, store: UcStore) -> bool:
     if parsed_login.path and parsed_current.path.rstrip("/") == parsed_login.path.rstrip("/"):
         return True
     return False
+
+
+def _dom_snippet_fields(dom_snippet: str | None) -> Dict[str, str]:
+    if dom_snippet is None:
+        return {}
+    return {"dom_snippet": dom_snippet}
+
+
+async def _maybe_get_dom_snippet(page: Page) -> str | None:
+    if config.pipeline_skip_dom_logging:
+        return None
+    return await _get_dom_snippet(page)
 
 
 async def _find_gst_report_container(*, page: Page, readiness_selector: str) -> Locator | None:

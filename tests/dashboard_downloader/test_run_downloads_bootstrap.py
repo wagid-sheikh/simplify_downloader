@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+from pathlib import Path
 
 from app.dashboard_downloader import run_downloads
 from app.dashboard_downloader.json_logger import JsonLogger
@@ -39,6 +40,20 @@ class FakePage:
 
     async def close(self):  # pragma: no cover - interface parity
         return None
+
+
+class FakeArtifactPage:
+    def __init__(self):
+        self.content_called = False
+        self.screenshot_called = False
+
+    async def screenshot(self, *, path: str, full_page: bool = True):
+        self.screenshot_called = True
+        Path(path).write_text("screenshot", encoding="utf-8")
+
+    async def content(self):
+        self.content_called = True
+        return "<html><body>content</body></html>"
 
 
 def run(coro):
@@ -151,3 +166,21 @@ def test_bootstrap_switches_to_insecure_context_after_probe(monkeypatch, tmp_pat
     assert result_page.context.ignore_https_errors is True
     assert navigation_contexts == [True]
 
+
+def test_capture_bootstrap_artifacts_skips_dom_logging(monkeypatch, tmp_path):
+    artifacts_dir = tmp_path / "artifacts"
+    monkeypatch.setattr(run_downloads, "BOOTSTRAP_ARTIFACTS_DIR", artifacts_dir)
+    page = FakeArtifactPage()
+
+    extras = run(
+        run_downloads._capture_bootstrap_artifacts(
+            page,
+            store_code="001",
+            prefix="unit_test",
+            skip_dom_logging=True,
+        )
+    )
+
+    assert "html_dump" not in extras
+    assert page.content_called is False
+    assert not list(artifacts_dir.glob("*.html"))
