@@ -42,3 +42,6 @@ git push origin v2.04
 
 git tag -a v2.05 -m "Stable after development of TD Orders Sync (Sales Done)"
 git push origin v2.05
+
+git tag -a v2.06 -m "Stable after development of UC Orders Sync"
+git push origin v2.06
