@@ -942,16 +942,7 @@ async def _run_store_discovery(
                     message="Skipping UC GST ingestion because database_url is missing",
                     store_code=store.store_code,
                 )
-        selectors_payload = await _discover_selector_cues(container=container, page=page)
-        spinner_payload = await _discover_spinner_cues(page)
-        log_event(
-            logger=logger,
-            phase="selectors",
-            message="Captured GST report selector cues",
-            store_code=store.store_code,
-            controls=selectors_payload,
-            spinners=spinner_payload,
-        )
+        await _log_selector_cues(logger=logger, store_code=store.store_code, container=container, page=page)
         if ingest_result and ingest_result.ingest_remarks:
             summary.add_ingest_remarks(ingest_result.ingest_remarks)
 
@@ -2697,6 +2688,33 @@ async def _get_dom_snippet(page: Page) -> str:
     if len(cleaned) <= DOM_SNIPPET_MAX_CHARS:
         return cleaned
     return cleaned[: DOM_SNIPPET_MAX_CHARS - 1] + "…"
+
+
+async def _log_selector_cues(
+    *,
+    logger: JsonLogger,
+    store_code: str,
+    container: Locator,
+    page: Page,
+) -> None:
+    if config.pipeline_skip_dom_logging:
+        log_event(
+            logger=logger,
+            phase="selectors",
+            message="Skipped GST report selector cue capture because DOM logging is disabled",
+            store_code=store_code,
+        )
+        return
+    selectors_payload = await _discover_selector_cues(container=container, page=page)
+    spinner_payload = await _discover_spinner_cues(page)
+    log_event(
+        logger=logger,
+        phase="selectors",
+        message="Captured GST report selector cues",
+        store_code=store_code,
+        controls=selectors_payload,
+        spinners=spinner_payload,
+    )
 
 
 async def _discover_selector_cues(*, container: Locator, page: Page) -> Dict[str, Any]:
