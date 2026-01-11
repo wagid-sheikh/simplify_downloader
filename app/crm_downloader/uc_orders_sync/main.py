@@ -209,6 +209,7 @@ class StoreOutcome:
 @dataclass
 class DeferredOrdersSyncLog:
     store: "UcStore"
+    run_id: str
     run_start_date: date
     run_end_date: date
 
@@ -713,7 +714,7 @@ async def _insert_orders_sync_log(
         summary_started = await _start_run_summary(summary=summary, logger=logger)
         if not summary_started:
             if allow_defer:
-                _defer_orders_sync_log(summary, store, run_start_date, run_end_date)
+                _defer_orders_sync_log(summary, store, run_id, run_start_date, run_end_date)
             logger.error(
                 phase="orders_sync_log",
                 message=(
@@ -730,13 +731,13 @@ async def _insert_orders_sync_log(
                 logger=logger,
                 phase="orders_sync_log",
                 status="error",
-                message="Run summary row still missing; deferring orders sync log insert until final summary persistence",
-                run_id=run_id,
-                store_code=store.store_code,
-            )
-            if allow_defer:
-                _defer_orders_sync_log(summary, store, run_start_date, run_end_date)
-            return None
+            message="Run summary row still missing; deferring orders sync log insert until final summary persistence",
+            run_id=run_id,
+            store_code=store.store_code,
+        )
+        if allow_defer:
+            _defer_orders_sync_log(summary, store, run_id, run_start_date, run_end_date)
+        return None
 
     try:
         async with session_scope(config.database_url) as session:
@@ -784,12 +785,24 @@ async def _insert_orders_sync_log(
 
 
 def _defer_orders_sync_log(
-    summary: UcOrdersDiscoverySummary, store: UcStore, run_start_date: date, run_end_date: date
+    summary: UcOrdersDiscoverySummary,
+    store: UcStore,
+    run_id: str,
+    run_start_date: date,
+    run_end_date: date,
 ) -> None:
-    if any(entry.store.store_code == store.store_code for entry in summary.deferred_orders_sync_logs):
+    if any(
+        entry.store.store_code == store.store_code
+        and entry.run_start_date == run_start_date
+        and entry.run_end_date == run_end_date
+        and entry.run_id == run_id
+        for entry in summary.deferred_orders_sync_logs
+    ):
         return
     summary.deferred_orders_sync_logs.append(
-        DeferredOrdersSyncLog(store=store, run_start_date=run_start_date, run_end_date=run_end_date)
+        DeferredOrdersSyncLog(
+            store=store, run_id=run_id, run_start_date=run_start_date, run_end_date=run_end_date
+        )
     )
 
 
