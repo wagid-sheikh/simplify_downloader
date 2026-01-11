@@ -3884,6 +3884,7 @@ async def _persist_summary(*, summary: UcOrdersDiscoverySummary, logger: JsonLog
         else:
             try:
                 await insert_run_summary(config.database_url, record)
+                action = "inserted"
             except Exception:
                 missing_columns = missing_required_run_summary_columns(record)
                 if missing_columns:
@@ -3895,8 +3896,8 @@ async def _persist_summary(*, summary: UcOrdersDiscoverySummary, logger: JsonLog
                         run_id=summary.run_id,
                         missing_columns=missing_columns,
                     )
-                raise
-            action = "inserted"
+                await update_run_summary(config.database_url, summary.run_id, record)
+                action = "updated"
         log_event(
             logger=logger,
             phase="run_summary",
@@ -3950,6 +3951,7 @@ async def _start_run_summary(*, summary: UcOrdersDiscoverySummary, logger: JsonL
         else:
             try:
                 await insert_run_summary(config.database_url, record)
+                action = "inserted"
             except Exception:
                 missing_columns = missing_required_run_summary_columns(record)
                 if missing_columns:
@@ -3961,8 +3963,8 @@ async def _start_run_summary(*, summary: UcOrdersDiscoverySummary, logger: JsonL
                         run_id=summary.run_id,
                         missing_columns=missing_columns,
                     )
-                raise
-            action = "inserted"
+                await update_run_summary(config.database_url, summary.run_id, record)
+                action = "updated"
         log_event(
             logger=logger,
             phase="run_summary",
