@@ -19,7 +19,7 @@ from app.crm_downloader.td_orders_sync.main import main as td_orders_sync_main
 from app.crm_downloader.uc_orders_sync.main import main as uc_orders_sync_main
 from app.dashboard_downloader.db_tables import orders_sync_log, pipelines
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
-from app.dashboard_downloader.run_summary import insert_run_summary
+from app.dashboard_downloader.run_summary import fetch_summary_for_run, insert_run_summary
 
 PIPELINE_BY_GROUP = {
     "TD": ("td_orders_sync", td_orders_sync_main),
@@ -223,6 +223,20 @@ async def _fetch_latest_log_status(
     return None
 
 
+async def _fetch_run_summary_status(*, database_url: str, run_id: str) -> str | None:
+    summary = await fetch_summary_for_run(database_url, run_id)
+    if not summary:
+        return None
+    raw_status = str(summary.get("overall_status") or "").lower()
+    if raw_status in {"ok", "success"}:
+        return "success"
+    if raw_status in {"warning", "warn", "partial"}:
+        return "partial"
+    if raw_status in {"error", "failed", "fail"}:
+        return "failed"
+    return None
+
+
 def _window_settings(
     *, store: StoreProfile, backfill_days: int | None, window_days: int | None, overlap_days: int | None
 ) -> tuple[int, int, int]:
@@ -391,11 +405,42 @@ async def _run_store_windows(
             store_code=store.store_code,
             run_id=window_run_id,
         )
-        status = (status or "failed").lower()
+        status_note = ""
+        if not status:
+            summary_status = await _fetch_run_summary_status(
+                database_url=config.database_url,
+                run_id=window_run_id,
+            )
+            if summary_status:
+                status = summary_status
+                status_note = " (from pipeline run summary)"
+                log_event(
+                    logger=logger,
+                    phase="window",
+                    status="warn",
+                    message="orders_sync_log row missing; using pipeline run summary status",
+                    store_code=store.store_code,
+                    run_id=window_run_id,
+                    window_index=index,
+                    window_status=summary_status,
+                )
+            else:
+                status = "skipped"
+                status_note = " (missing orders_sync_log row)"
+                log_event(
+                    logger=logger,
+                    phase="window",
+                    status="warn",
+                    message="orders_sync_log row missing; continuing without status",
+                    store_code=store.store_code,
+                    run_id=window_run_id,
+                    window_index=index,
+                )
+        status = (status or "skipped").lower()
         if status not in {"success", "partial", "failed", "skipped"}:
             status = "failed"
         detail_lines.append(
-            f"{window_start.isoformat()} → {window_end.isoformat()}: {status}"
+            f"{window_start.isoformat()} → {window_end.isoformat()}: {status}{status_note}"
         )
         if status in {"failed", "partial"}:
             overall_status = status
