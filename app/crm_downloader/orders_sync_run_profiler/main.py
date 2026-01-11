@@ -41,6 +41,16 @@ class StoreProfile:
     start_date: date | None
 
 
+@dataclass(frozen=True)
+class StoreRunResult:
+    store_code: str
+    pipeline_group: str
+    pipeline_name: str
+    overall_status: str
+    window_count: int
+    status_counts: dict[str, int]
+
+
 @asynccontextmanager
 async def store_lock(store_code: str) -> Iterable[None]:
     lock_dir = default_download_dir() / "orders_sync_run_profiler_locks"
@@ -410,6 +420,27 @@ def _summary_text(
     return "\n".join(lines)
 
 
+def _init_status_counts() -> dict[str, int]:
+    return {status: 0 for status in ("success", "partial", "failed", "skipped")}
+
+
+def _merge_status_counts(target: dict[str, int], source: Mapping[str, int]) -> None:
+    for status, count in source.items():
+        target[status] = target.get(status, 0) + int(count)
+
+
+def _rollup_overall_status(status_counts: Mapping[str, int]) -> str:
+    if status_counts.get("failed", 0) > 0:
+        return "failed"
+    if status_counts.get("partial", 0) > 0:
+        return "partial"
+    if status_counts.get("success", 0) > 0:
+        return "success"
+    if status_counts.get("skipped", 0) > 0:
+        return "skipped"
+    return "success"
+
+
 async def _run_store_windows(
     *,
     logger: JsonLogger,
@@ -424,9 +455,10 @@ async def _run_store_windows(
     overlap_days: int | None,
     from_date: date | None,
     to_date: date | None,
-) -> tuple[str, list[tuple[date, date]], list[str]]:
+) -> tuple[str, list[tuple[date, date]], list[str], dict[str, int]]:
     started_at = datetime.now(timezone.utc)
     detail_lines: list[str] = []
+    status_counts = _init_status_counts()
     backfill, window_size, overlap = _window_settings(
         store=store,
         backfill_days=backfill_days,
@@ -454,7 +486,7 @@ async def _run_store_windows(
     )
     if not windows:
         detail_lines.append("No windows to process (start_date after end_date).")
-        return "success", windows, detail_lines
+        return "success", windows, detail_lines, status_counts
     log_event(
         logger=logger,
         phase="store",
@@ -576,6 +608,7 @@ async def _run_store_windows(
         detail_lines.append(
             f"{window_start.isoformat()} → {window_end.isoformat()}: {status}{status_note}"
         )
+        status_counts[status] = status_counts.get(status, 0) + 1
         if status in {"failed", "partial"}:
             overall_status = status
             log_event(
@@ -626,13 +659,14 @@ async def _run_store_windows(
         "metrics_json": metrics,
     }
     await insert_run_summary(config.database_url, summary_record)
-    return overall_status, windows, detail_lines
+    return overall_status, windows, detail_lines, status_counts
 
 
 async def _process_store(
     *,
     logger: JsonLogger,
     store: StoreProfile,
+    pipeline_group: str,
     pipeline_name: str,
     pipeline_id: int,
     pipeline_fn: Any,
@@ -643,9 +677,9 @@ async def _process_store(
     overlap_days: int | None,
     from_date: date | None,
     to_date: date | None,
-) -> None:
+) -> StoreRunResult:
     async with store_lock(store.store_code):
-        await _run_store_windows(
+        overall_status, windows, _detail_lines, status_counts = await _run_store_windows(
             logger=logger,
             store=store,
             pipeline_name=pipeline_name,
@@ -659,6 +693,14 @@ async def _process_store(
             from_date=from_date,
             to_date=to_date,
         )
+    return StoreRunResult(
+        store_code=store.store_code,
+        pipeline_group=pipeline_group,
+        pipeline_name=pipeline_name,
+        overall_status=overall_status,
+        window_count=len(windows),
+        status_counts=status_counts,
+    )
 
 
 async def main(
@@ -694,12 +736,12 @@ async def main(
 
     async def _process_group(
         group: str, pipeline_name: str, pipeline_fn: Any
-    ) -> None:
+    ) -> list[StoreRunResult]:
         pipeline_id = await _fetch_pipeline_id(
             logger=logger, database_url=config.database_url, pipeline_name=pipeline_name
         )
         if not pipeline_id:
-            return
+            return []
         stores = await _load_store_profiles(
             logger=logger, sync_group=group, store_codes=store_codes
         )
@@ -711,15 +753,16 @@ async def main(
                 message="No stores found for sync_group",
                 sync_group=group,
             )
-            return
+            return []
         group_max_workers = 1 if group == "UC" else max_workers
         semaphore = asyncio.Semaphore(max(1, group_max_workers))
 
-        async def _guarded(store: StoreProfile) -> None:
+        async def _guarded(store: StoreProfile) -> StoreRunResult:
             async with semaphore:
-                await _process_store(
+                return await _process_store(
                     logger=logger,
                     store=store,
+                    pipeline_group=group,
                     pipeline_name=pipeline_name,
                     pipeline_id=pipeline_id,
                     pipeline_fn=pipeline_fn,
@@ -732,13 +775,47 @@ async def main(
                     to_date=to_date,
                 )
 
-        await asyncio.gather(*[_guarded(store) for store in stores])
+        return await asyncio.gather(*[_guarded(store) for store in stores])
 
-    await asyncio.gather(
+    group_results = await asyncio.gather(
         *[
             _process_group(group, pipeline_name, pipeline_fn)
             for group, (pipeline_name, pipeline_fn) in group_items
         ]
+    )
+    all_results = [result for group in group_results for result in group]
+    total_status_counts = _init_status_counts()
+    pipeline_totals: dict[str, dict[str, Any]] = {}
+    store_totals: dict[str, dict[str, Any]] = {}
+    total_windows = 0
+    for result in all_results:
+        total_windows += result.window_count
+        _merge_status_counts(total_status_counts, result.status_counts)
+        pipeline_entry = pipeline_totals.setdefault(
+            result.pipeline_group,
+            {"window_count": 0, "status_counts": _init_status_counts()},
+        )
+        pipeline_entry["window_count"] += result.window_count
+        _merge_status_counts(pipeline_entry["status_counts"], result.status_counts)
+        store_totals[result.store_code] = {
+            "pipeline_group": result.pipeline_group,
+            "pipeline_name": result.pipeline_name,
+            "overall_status": result.overall_status,
+            "window_count": result.window_count,
+            "status_counts": result.status_counts,
+        }
+    overall_status = _rollup_overall_status(total_status_counts)
+    log_event(
+        logger=logger,
+        phase="summary",
+        message="Orders sync profiler summary",
+        run_id=resolved_run_id,
+        run_env=resolved_env,
+        total_windows=total_windows,
+        status_counts=total_status_counts,
+        pipeline_totals=pipeline_totals,
+        store_totals=store_totals,
+        overall_status=overall_status,
     )
 
 
