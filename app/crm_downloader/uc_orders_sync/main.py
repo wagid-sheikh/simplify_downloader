@@ -2167,13 +2167,62 @@ async def _select_calendar_date(
             logger=logger,
             phase="filters",
             status="warn",
-            message="Target day not found in calendar",
+            message="Target day not found in calendar; retrying selection",
             store_code=store.store_code,
             calendar_label=label,
             target_day=target_date.day,
             target_month=target_label,
         )
-        return False
+        retry_calendar = await _reopen_calendar_for_retry(
+            page=calendar.page, logger=logger, store=store, label=label
+        )
+        if retry_calendar is not None:
+            current_label = await _navigate_calendar_to_month(
+                calendar=retry_calendar,
+                target_date=target_date,
+                logger=logger,
+                store=store,
+                label=label,
+            )
+            if current_label is not None:
+                clicked = await _click_day_in_calendar(
+                    calendar=retry_calendar,
+                    target_date=target_date,
+                    logger=logger,
+                    store=store,
+                    label=label,
+                )
+        if not clicked:
+            typed = await _try_fill_date_input(
+                page=calendar.page,
+                target_date=target_date,
+                logger=logger,
+                store=store,
+                label=label,
+            )
+            if typed:
+                return True
+            fallback_calendar = retry_calendar or calendar
+            closest_date = await _select_closest_available_day(
+                calendar=fallback_calendar,
+                target_date=target_date,
+                logger=logger,
+                store=store,
+                label=label,
+            )
+            if closest_date is not None:
+                return True
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="Target day not found after retry and fallbacks",
+                store_code=store.store_code,
+                calendar_label=label,
+                target_day=target_date.day,
+                target_month=target_label,
+            )
+            return False
     log_event(
         logger=logger,
         phase="filters",
@@ -2252,6 +2301,192 @@ async def _navigate_calendar_to_month(
         next_clicks=clicks_next,
     )
     return current_label
+
+
+async def _reopen_calendar_for_retry(
+    *, page: Page, logger: JsonLogger, store: UcStore, label: str
+) -> Locator | None:
+    reopened = False
+    for selector in GST_CONTROL_SELECTORS["date_range_input"]:
+        input_locator = page.locator(selector).first
+        try:
+            if await input_locator.count():
+                await input_locator.click()
+                reopened = True
+                break
+        except Exception:
+            continue
+    if not reopened:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Unable to reopen date picker for retry",
+            store_code=store.store_code,
+            calendar_label=label,
+        )
+        return None
+    popup = await _wait_for_date_picker_popup(page=page, logger=logger, store=store)
+    if popup is None:
+        return None
+    calendars = await _get_calendar_locators(popup=popup)
+    if not calendars:
+        return None
+    if label == "start":
+        return calendars[0]
+    return calendars[1] if len(calendars) > 1 else calendars[0]
+
+
+async def _try_fill_date_input(
+    *,
+    page: Page,
+    target_date: date,
+    logger: JsonLogger,
+    store: UcStore,
+    label: str,
+) -> bool:
+    selectors: list[str] = []
+    if label == "start":
+        selectors = [
+            "input[placeholder*='Start'][type='text']:not([readonly])",
+            "input[placeholder*='From'][type='text']:not([readonly])",
+            "input[name*='start']:not([readonly])",
+            "input[name*='from']:not([readonly])",
+        ]
+    else:
+        selectors = [
+            "input[placeholder*='End'][type='text']:not([readonly])",
+            "input[placeholder*='To'][type='text']:not([readonly])",
+            "input[name*='end']:not([readonly])",
+            "input[name*='to']:not([readonly])",
+        ]
+    date_value = target_date.strftime("%Y-%m-%d")
+    for selector in selectors:
+        input_locator = page.locator(selector).first
+        try:
+            if await input_locator.count():
+                readonly = await input_locator.get_attribute("readonly")
+                disabled = await input_locator.get_attribute("disabled")
+                if readonly is None and disabled is None:
+                    await input_locator.fill(date_value)
+                    log_event(
+                        logger=logger,
+                        phase="filters",
+                        status="warn",
+                        message="Fallback to typed date input",
+                        store_code=store.store_code,
+                        calendar_label=label,
+                        selector=selector,
+                        typed_value=date_value,
+                    )
+                    return True
+        except Exception:
+            continue
+    return False
+
+
+def _select_fallback_date(target_date: date, candidates: list[date], label: str) -> date | None:
+    if not candidates:
+        return None
+    before = sorted([candidate for candidate in candidates if candidate <= target_date])
+    after = sorted([candidate for candidate in candidates if candidate >= target_date])
+    if label == "start":
+        if after:
+            return after[0]
+        return before[-1] if before else None
+    if before:
+        return before[-1]
+    return after[0] if after else None
+
+
+async def _select_closest_available_day(
+    *,
+    calendar: Locator,
+    target_date: date,
+    logger: JsonLogger,
+    store: UcStore,
+    label: str,
+) -> date | None:
+    day_cells = calendar.locator("td[aria-label]")
+    try:
+        total = await day_cells.count()
+    except Exception:
+        total = 0
+    candidates: list[tuple[date, Locator]] = []
+    for idx in range(total):
+        cell = day_cells.nth(idx)
+        try:
+            aria_label = await cell.get_attribute("aria-label")
+            if not aria_label:
+                continue
+            parsed = _parse_aria_date_label(aria_label)
+            if parsed is None:
+                continue
+            if parsed.year != target_date.year or parsed.month != target_date.month:
+                continue
+            aria_disabled = (await cell.get_attribute("aria-disabled")) or ""
+            class_name = (await cell.get_attribute("class")) or ""
+            if aria_disabled.lower() == "true":
+                continue
+            if any(token in class_name.lower() for token in ("disabled", "off")):
+                continue
+            candidates.append((parsed, cell))
+        except Exception:
+            continue
+    fallback_date = _select_fallback_date(target_date, [candidate[0] for candidate in candidates], label)
+    if fallback_date is None:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="No fallback calendar days available",
+            store_code=store.store_code,
+            calendar_label=label,
+            target_date=target_date.isoformat(),
+        )
+        return None
+    for candidate_date, candidate_cell in candidates:
+        if candidate_date == fallback_date:
+            try:
+                await candidate_cell.scroll_into_view_if_needed()
+                await candidate_cell.click()
+            except Exception:
+                pass
+            clicked = await _click_day_in_calendar(
+                calendar=calendar,
+                target_date=fallback_date,
+                logger=logger,
+                store=store,
+                label=label,
+            )
+            if clicked:
+                log_event(
+                    logger=logger,
+                    phase="filters",
+                    status="warn",
+                    message="Fallback to closest available calendar day",
+                    store_code=store.store_code,
+                    calendar_label=label,
+                    target_date=target_date.isoformat(),
+                    fallback_date=fallback_date.isoformat(),
+                )
+                return fallback_date
+            break
+    return None
+
+
+def _parse_aria_date_label(aria_label: str) -> date | None:
+    match = re.search(r"([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})", aria_label)
+    if not match:
+        return None
+    month_text = match.group(1).upper()
+    month = MONTH_LOOKUP.get(month_text) or MONTH_LOOKUP.get(month_text[:3])
+    if not month:
+        return None
+    try:
+        return date(int(match.group(3)), month, int(match.group(2)))
+    except ValueError:
+        return None
 
 
 async def _get_calendar_header_text(*, calendar: Locator, label: str) -> str | None:
