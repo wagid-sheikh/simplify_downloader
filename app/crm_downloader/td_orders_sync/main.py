@@ -1527,13 +1527,7 @@ async def _insert_orders_sync_log(
                         status="running",
                     )
                     .on_conflict_do_update(
-                        index_elements=[
-                            orders_sync_log.c.pipeline_id,
-                            orders_sync_log.c.store_code,
-                            orders_sync_log.c.from_date,
-                            orders_sync_log.c.to_date,
-                            orders_sync_log.c.run_id,
-                        ],
+                        constraint="uq_orders_sync_log_window",
                         set_={
                             "attempt_no": orders_sync_log.c.attempt_no + 1,
                             "status": "running",
