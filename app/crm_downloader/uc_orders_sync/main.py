@@ -1951,7 +1951,9 @@ async def _download_gst_report(
         )
         return False, None, message
 
-    disabled_retry_used = False
+    disabled_retry_count = 0
+    max_disabled_retries = 3
+    disabled_retry_delay_s = 1
     for attempt in range(1, max_attempts + 1):
         export_button = export_locator.first
         export_count = await export_locator.count()
@@ -1979,8 +1981,8 @@ async def _download_gst_report(
         with contextlib.suppress(Exception):
             is_enabled = await export_button.is_enabled()
         if not is_enabled:
-            if not disabled_retry_used:
-                disabled_retry_used = True
+            if disabled_retry_count < max_disabled_retries:
+                disabled_retry_count += 1
                 log_event(
                     logger=logger,
                     phase="download",
@@ -1989,10 +1991,12 @@ async def _download_gst_report(
                     store_code=store.store_code,
                     attempt=attempt,
                     max_attempts=max_attempts,
+                    disabled_retry=disabled_retry_count,
+                    max_disabled_retries=max_disabled_retries,
                 )
                 with contextlib.suppress(Exception):
-                    await export_button.wait_for(state="enabled", timeout=5_000)
-                await asyncio.sleep(1)
+                    await export_button.wait_for(state="enabled", timeout=10_000)
+                await asyncio.sleep(disabled_retry_delay_s)
                 continue
             log_event(
                 logger=logger,
@@ -2002,7 +2006,10 @@ async def _download_gst_report(
                 store_code=store.store_code,
                 attempt=attempt,
                 max_attempts=max_attempts,
+                disabled_retry=disabled_retry_count,
+                max_disabled_retries=max_disabled_retries,
             )
+            await asyncio.sleep(disabled_retry_delay_s)
             return False, None, "Export Report button disabled after retry"
 
         try:
