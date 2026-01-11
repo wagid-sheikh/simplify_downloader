@@ -13,6 +13,17 @@ from .db_tables import documents, pipeline_run_summaries
 
 
 PIPELINE_NAME = "dashboard_daily"
+REQUIRED_RUN_SUMMARY_COLUMNS = (
+    "pipeline_name",
+    "run_id",
+    "run_env",
+    "started_at",
+    "finished_at",
+    "total_time_taken",
+    "overall_status",
+    "summary_text",
+    "created_at",
+)
 
 
 def _utc_now() -> datetime:
@@ -40,6 +51,11 @@ def _normalize_status(raw: str | None) -> str:
     if normalized == "error":
         return "error"
     return "ok"
+
+
+def missing_required_run_summary_columns(record: Mapping[str, Any]) -> List[str]:
+    missing = [column for column in REQUIRED_RUN_SUMMARY_COLUMNS if column not in record]
+    return missing
 
 
 def _phase_overall(counters: Mapping[str, int]) -> str:
@@ -297,6 +313,5 @@ async def fetch_summary_for_run(database_url: str, run_id: str) -> Mapping[str, 
             sa.select(pipeline_run_summaries).where(pipeline_run_summaries.c.run_id == run_id).limit(1)
         )
         return result.mappings().first()
-
 
 
