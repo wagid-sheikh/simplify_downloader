@@ -486,12 +486,15 @@ async def main(
         if resolved_sync_group == "ALL"
         else [(resolved_sync_group, PIPELINE_BY_GROUP[resolved_sync_group])]
     )
-    for group, (pipeline_name, pipeline_fn) in group_items:
+
+    async def _process_group(
+        group: str, pipeline_name: str, pipeline_fn: Any
+    ) -> None:
         pipeline_id = await _fetch_pipeline_id(
             logger=logger, database_url=config.database_url, pipeline_name=pipeline_name
         )
         if not pipeline_id:
-            continue
+            return
         stores = await _load_store_profiles(
             logger=logger, sync_group=group, store_codes=store_codes
         )
@@ -503,7 +506,7 @@ async def main(
                 message="No stores found for sync_group",
                 sync_group=group,
             )
-            continue
+            return
         semaphore = asyncio.Semaphore(max(1, max_workers))
 
         async def _guarded(store: StoreProfile) -> None:
@@ -524,6 +527,13 @@ async def main(
                 )
 
         await asyncio.gather(*[_guarded(store) for store in stores])
+
+    await asyncio.gather(
+        *[
+            _process_group(group, pipeline_name, pipeline_fn)
+            for group, (pipeline_name, pipeline_fn) in group_items
+        ]
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
