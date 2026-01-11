@@ -1453,16 +1453,17 @@ async def _insert_orders_sync_log(
         )
         summary_started = await _start_run_summary(summary=summary, logger=logger)
         if not summary_started:
-            log_event(
-                logger=logger,
+            if allow_defer:
+                _defer_orders_sync_log(summary, store, run_start_date, run_end_date)
+            logger.error(
                 phase="orders_sync_log",
-                status="error",
-                message="Run summary start failed; deferring orders sync log insert until final summary persistence",
+                message=(
+                    "Hard error: run summary start failed; deferred orders sync log insert queued "
+                    "for final retry"
+                ),
                 run_id=run_id,
                 store_code=store.store_code,
             )
-            if allow_defer:
-                _defer_orders_sync_log(summary, store, run_start_date, run_end_date)
             return None
         existing_summary = await fetch_summary_for_run(config.database_url, run_id)
         if not existing_summary:
