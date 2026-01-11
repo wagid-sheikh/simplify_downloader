@@ -224,8 +224,7 @@ async def _fetch_latest_log_status(
     return status_value, error_value
 
 
-async def _fetch_run_summary_status(*, database_url: str, run_id: str) -> str | None:
-    summary = await fetch_summary_for_run(database_url, run_id)
+def _normalize_run_summary_status(summary: Mapping[str, Any] | None) -> str | None:
     if not summary:
         return None
     raw_status = str(summary.get("overall_status") or "").lower()
@@ -236,6 +235,69 @@ async def _fetch_run_summary_status(*, database_url: str, run_id: str) -> str | 
     if raw_status in {"error", "failed", "fail"}:
         return "failed"
     return None
+
+
+def _extract_window_outcome_metadata(
+    summary: Mapping[str, Any] | None, *, store_code: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not summary:
+        return {}, {}
+    metrics = _coerce_dict(summary.get("metrics_json"))
+    if not metrics:
+        return {}, {}
+    normalized_code = store_code.upper()
+    download_paths: dict[str, Any] = {}
+    ingestion_counts: dict[str, Any] = {}
+
+    def _record_counts(label: str, payload: Mapping[str, Any]) -> None:
+        counts = {
+            "rows_downloaded": payload.get("rows_downloaded"),
+            "rows_ingested": payload.get("rows_ingested"),
+            "staging_rows": payload.get("staging_rows"),
+            "final_rows": payload.get("final_rows"),
+        }
+        if any(value is not None for value in counts.values()):
+            ingestion_counts[label] = counts
+
+    def _record_paths(label: str, payload: Mapping[str, Any]) -> None:
+        download_path = payload.get("downloaded_path") or payload.get("download_path")
+        filenames = payload.get("filenames") or payload.get("filename")
+        if download_path or filenames:
+            download_paths[label] = {
+                "download_path": download_path,
+                "filenames": filenames,
+            }
+
+    orders_snapshot = _coerce_dict(metrics.get("orders"))
+    orders_store = _coerce_dict(_coerce_dict(orders_snapshot.get("stores")).get(normalized_code))
+    if orders_store:
+        _record_paths("orders", orders_store)
+        _record_counts("orders", orders_store)
+
+    sales_snapshot = _coerce_dict(metrics.get("sales"))
+    sales_store = _coerce_dict(_coerce_dict(sales_snapshot.get("stores")).get(normalized_code))
+    if sales_store:
+        _record_paths("sales", sales_store)
+        _record_counts("sales", sales_store)
+
+    stores_summary = _coerce_dict(metrics.get("stores_summary"))
+    summary_store = _coerce_dict(_coerce_dict(stores_summary.get("stores")).get(normalized_code))
+    if summary_store:
+        _record_paths("gst", summary_store)
+        row_counts = _coerce_dict(summary_store.get("row_counts"))
+        if row_counts:
+            uc_counts = {
+                "staging_rows": row_counts.get("staging_rows"),
+                "final_rows": row_counts.get("final_rows"),
+                "staging_inserted": row_counts.get("staging_inserted"),
+                "staging_updated": row_counts.get("staging_updated"),
+                "final_inserted": row_counts.get("final_inserted"),
+                "final_updated": row_counts.get("final_updated"),
+            }
+            if any(value is not None for value in uc_counts.values()):
+                ingestion_counts["gst"] = uc_counts
+
+    return download_paths, ingestion_counts
 
 
 def _is_uc_date_picker_failure(error_message: str | None) -> bool:
@@ -431,6 +493,8 @@ async def _run_store_windows(
                 run_orders=True,
                 run_sales=True,
             )
+            summary = await fetch_summary_for_run(config.database_url, window_run_id)
+            summary_status = _normalize_run_summary_status(summary)
             fetched_status, error_message = await _fetch_latest_log_status(
                 database_url=config.database_url,
                 pipeline_id=pipeline_id,
@@ -439,10 +503,6 @@ async def _run_store_windows(
             )
             status_note = ""
             if not fetched_status:
-                summary_status = await _fetch_run_summary_status(
-                    database_url=config.database_url,
-                    run_id=window_run_id,
-                )
                 if summary_status:
                     fetched_status = summary_status
                     status_note = " (from pipeline run summary)"
@@ -475,6 +535,25 @@ async def _run_store_windows(
                 pipeline_name=pipeline_name, status=status, error_message=error_message
             )
             status_note += mapped_note
+            download_paths, ingestion_counts = _extract_window_outcome_metadata(
+                summary, store_code=store.store_code
+            )
+            log_event(
+                logger=logger,
+                phase="window_outcome",
+                message="Recorded window outcome",
+                store_code=store.store_code,
+                pipeline_name=pipeline_name,
+                from_date=window_start,
+                to_date=window_end,
+                window_index=index,
+                window_attempt=attempts,
+                window_run_id=window_run_id,
+                continuation_status=status,
+                status_note=status_note or None,
+                download_paths=download_paths or None,
+                ingestion_counts=ingestion_counts or None,
+            )
             if status in {"failed", "partial"} and attempt == 0:
                 log_event(
                     logger=logger,
