@@ -653,6 +653,7 @@ async def _run_store_windows(
         error_message: str | None = None
         download_paths: dict[str, Any] = {}
         ingestion_counts: dict[str, Any] = {}
+        uc_payload: dict[str, Any] | None = None
         attempts = 0
         for attempt in range(2):
             attempts = attempt + 1
@@ -740,6 +741,16 @@ async def _run_store_windows(
             download_paths, ingestion_counts = _extract_window_outcome_metadata(
                 summary, store_code=store.store_code
             )
+            if pipeline_name == "uc_orders_sync":
+                uc_payload = _build_uc_window_log(
+                    download_paths=download_paths,
+                    ingestion_counts=ingestion_counts,
+                    error_message=error_message,
+                )
+                if uc_payload["download_path"] and uc_payload["ingest_success"]:
+                    if status in {"failed", "partial"}:
+                        status = "success"
+                        status_note += " (from uc window outcome)"
             if status in {"failed", "partial"} and attempt == 0:
                 log_event(
                     logger=logger,
@@ -787,7 +798,7 @@ async def _run_store_windows(
             }
         )
         if pipeline_name == "uc_orders_sync":
-            uc_payload = _build_uc_window_log(
+            uc_payload = uc_payload or _build_uc_window_log(
                 download_paths=download_paths,
                 ingestion_counts=ingestion_counts,
                 error_message=error_message,
