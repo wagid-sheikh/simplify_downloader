@@ -15,8 +15,8 @@ from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
 from app.common.db import session_scope
 from app.config import config
 from app.crm_downloader.config import default_download_dir
-from app.crm_downloader.td_orders_sync import main as td_orders_sync_main
-from app.crm_downloader.uc_orders_sync import main as uc_orders_sync_main
+from app.crm_downloader.td_orders_sync.main import main as td_orders_sync_main
+from app.crm_downloader.uc_orders_sync.main import main as uc_orders_sync_main
 from app.dashboard_downloader.db_tables import orders_sync_log, pipelines
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from app.dashboard_downloader.run_summary import insert_run_summary
@@ -357,6 +357,8 @@ async def _run_store_windows(
             from_date=window_start,
             to_date=window_end,
             store_codes=[store.store_code],
+            run_orders=True,
+            run_sales=True,
         )
         status = await _fetch_latest_log_status(
             database_url=config.database_url,
