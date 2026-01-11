@@ -1790,7 +1790,24 @@ async def _apply_date_range(
         if popup is not None:
             break
         if attempt == 0:
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="Date picker popup missing; retrying click",
+                store_code=store.store_code,
+                attempt=attempt + 1,
+            )
             await asyncio.sleep(0.3)
+    if popup is None:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Date picker popup missing; reopening input",
+            store_code=store.store_code,
+        )
+        popup = await _reopen_date_picker_popup(page=page, logger=logger, store=store)
     if popup is None:
         return False, 0
 
@@ -2197,6 +2214,48 @@ async def _download_gst_report(
     return False, None, message
 
 
+async def _reopen_date_picker_popup(
+    *, page: Page, logger: JsonLogger, store: UcStore
+) -> Locator | None:
+    reopened = False
+    for selector in GST_CONTROL_SELECTORS["date_range_input"]:
+        input_locator = page.locator(selector).first
+        try:
+            if await input_locator.count():
+                await input_locator.click()
+                reopened = True
+                log_event(
+                    logger=logger,
+                    phase="filters",
+                    status="warn",
+                    message="Reopened date picker input to restore popup",
+                    store_code=store.store_code,
+                    selector=selector,
+                )
+                break
+        except Exception:
+            continue
+    if not reopened:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Unable to reopen date picker input",
+            store_code=store.store_code,
+        )
+        return None
+    popup = await _wait_for_date_picker_popup(page=page, logger=logger, store=store)
+    if popup is None:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Date picker popup still missing after reopen",
+            store_code=store.store_code,
+        )
+    return popup
+
+
 async def _wait_for_date_picker_popup(
     *, page: Page, logger: JsonLogger, store: UcStore
 ) -> Locator | None:
@@ -2277,6 +2336,14 @@ async def _select_calendar_date(
             page=calendar.page, logger=logger, store=store, label=label
         )
         if retry_calendar is not None:
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="Reopened date picker; retrying calendar selection",
+                store_code=store.store_code,
+                calendar_label=label,
+            )
             current_label = await _navigate_calendar_to_month(
                 calendar=retry_calendar,
                 target_date=target_date,
@@ -2293,6 +2360,15 @@ async def _select_calendar_date(
                     label=label,
                 )
         if not clicked:
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="Attempting typed date fallback after missing target day",
+                store_code=store.store_code,
+                calendar_label=label,
+                target_date=target_date.isoformat(),
+            )
             typed = await _try_fill_date_input(
                 page=calendar.page,
                 target_date=target_date,
@@ -2302,6 +2378,15 @@ async def _select_calendar_date(
             )
             if typed:
                 return True
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="Attempting closest available day fallback",
+                store_code=store.store_code,
+                calendar_label=label,
+                target_date=target_date.isoformat(),
+            )
             fallback_calendar = retry_calendar or calendar
             closest_date = await _select_closest_available_day(
                 calendar=fallback_calendar,
@@ -2351,7 +2436,33 @@ async def _navigate_calendar_to_month(
     reached = False
     for _ in range(max_steps):
         header_text = await _get_calendar_header_text(calendar=calendar, label=label)
+        if not header_text:
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="Calendar header missing; retrying with fallback selectors",
+                store_code=store.store_code,
+                calendar_label=label,
+            )
+            header_text = await _get_calendar_header_text(
+                calendar=calendar, label=label, allow_fallback=True
+            )
         parsed = _parse_month_year(header_text or "")
+        if not parsed:
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="Calendar header parsing failed; retrying lookup",
+                store_code=store.store_code,
+                calendar_label=label,
+                header_text=header_text,
+            )
+            header_text = await _get_calendar_header_text(
+                calendar=calendar, label=label, allow_fallback=True
+            )
+            parsed = _parse_month_year(header_text or "")
         if not parsed:
             log_event(
                 logger=logger,
@@ -2589,7 +2700,9 @@ def _parse_aria_date_label(aria_label: str) -> date | None:
         return None
 
 
-async def _get_calendar_header_text(*, calendar: Locator, label: str) -> str | None:
+async def _get_calendar_header_text(
+    *, calendar: Locator, label: str, allow_fallback: bool = False
+) -> str | None:
     id_selector = None
     if label == "start":
         id_selector = "#mat-calendar-button-0"
@@ -2609,6 +2722,18 @@ async def _get_calendar_header_text(*, calendar: Locator, label: str) -> str | N
         )
         if selector
     ]
+    if allow_fallback:
+        selectors.extend(
+            [
+                ".calendar-header",
+                ".calendar-title",
+                ".mat-calendar-header",
+                ".react-datepicker__header",
+                ".flatpickr-month",
+                ".flatpickr-current-month .cur-month",
+                ".pika-label",
+            ]
+        )
     for selector in selectors:
         locator = calendar.locator(selector).first
         try:
@@ -2618,6 +2743,24 @@ async def _get_calendar_header_text(*, calendar: Locator, label: str) -> str | N
                     return text
         except Exception:
             continue
+    if allow_fallback:
+        try:
+            text = await calendar.evaluate(
+                """(node) => {
+                    const candidates = node.querySelectorAll('*');
+                    for (const el of candidates) {
+                        const value = (el.textContent || '').trim();
+                        if (/^[A-Za-z]{3,9}\\s+\\d{4}$/.test(value)) {
+                            return value;
+                        }
+                    }
+                    return null;
+                }"""
+            )
+            if text:
+                return str(text).strip()
+        except Exception:
+            return None
     return None
 
 
