@@ -776,12 +776,33 @@ async def _insert_orders_sync_log(
                     .returning(orders_sync_log.c.id)
                 )
             ).scalar_one()
+            log_event(
+                logger=logger,
+                phase="orders_sync_log",
+                status="info",
+                message="Inserted orders sync log row",
+                log_id=log_id,
+                store_code=store.store_code,
+            )
+            exists = (
+                await session.execute(
+                    sa.select(orders_sync_log.c.id).where(orders_sync_log.c.id == log_id)
+                )
+            ).scalar_one_or_none()
+            log_event(
+                logger=logger,
+                phase="orders_sync_log",
+                status="info" if exists else "error",
+                message="Verified orders sync log row exists" if exists else "Orders sync log row missing after insert",
+                log_id=log_id,
+                store_code=store.store_code,
+            )
     except Exception as exc:  # pragma: no cover - defensive
         log_event(
             logger=logger,
             phase="orders_sync_log",
-            status="warn",
-            message="Failed to insert orders sync log row",
+            status="error",
+            message="Failed to insert orders sync log row (DB error)",
             store_code=store.store_code,
             error=str(exc),
         )
