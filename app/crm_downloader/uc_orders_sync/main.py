@@ -744,23 +744,33 @@ async def _insert_orders_sync_log(
             _defer_orders_sync_log(summary, store, run_id, run_start_date, run_end_date)
         return None
 
+    insert_values = {
+        "pipeline_id": pipeline_id,
+        "run_id": run_id,
+        "run_env": run_env,
+        "cost_center": store.cost_center,
+        "store_code": store.store_code,
+        "from_date": run_start_date,
+        "to_date": run_end_date,
+        "status": "running",
+        "attempt_no": 1,
+        "created_at": sa.func.now(),
+        "updated_at": sa.func.now(),
+    }
     try:
         async with session_scope(config.database_url) as session:
             log_id = (
                 await session.execute(
                     pg_insert(orders_sync_log)
-                    .values(
-                        pipeline_id=pipeline_id,
-                        run_id=run_id,
-                        run_env=run_env,
-                        cost_center=store.cost_center,
-                        store_code=store.store_code,
-                        from_date=run_start_date,
-                        to_date=run_end_date,
-                        status="running",
-                    )
+                    .values(**insert_values)
                     .on_conflict_do_update(
-                        constraint="uq_orders_sync_log_window",
+                        index_elements=[
+                            orders_sync_log.c.pipeline_id,
+                            orders_sync_log.c.store_code,
+                            orders_sync_log.c.from_date,
+                            orders_sync_log.c.to_date,
+                            orders_sync_log.c.run_id,
+                        ],
                         set_={
                             "attempt_no": orders_sync_log.c.attempt_no + 1,
                             "status": "running",
@@ -799,6 +809,7 @@ async def _insert_orders_sync_log(
             message="Failed to insert orders sync log row (DB error)",
             store_code=store.store_code,
             error=str(exc),
+            insert_values=insert_values,
         )
         return None
     return log_id
