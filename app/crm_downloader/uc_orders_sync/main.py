@@ -24,7 +24,12 @@ from app.crm_downloader.uc_orders_sync.ingest import UcOrdersIngestResult, inges
 from app.dashboard_downloader.db_tables import orders_sync_log, pipelines
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from app.dashboard_downloader.notifications import send_notifications_for_run
-from app.dashboard_downloader.run_summary import fetch_summary_for_run, insert_run_summary, update_run_summary
+from app.dashboard_downloader.run_summary import (
+    fetch_summary_for_run,
+    insert_run_summary,
+    missing_required_run_summary_columns,
+    update_run_summary,
+)
 
 PIPELINE_NAME = "uc_orders_sync"
 NAV_TIMEOUT_MS = 90_000
@@ -3840,7 +3845,20 @@ async def _persist_summary(*, summary: UcOrdersDiscoverySummary, logger: JsonLog
             await update_run_summary(config.database_url, summary.run_id, record)
             action = "updated"
         else:
-            await insert_run_summary(config.database_url, record)
+            try:
+                await insert_run_summary(config.database_url, record)
+            except Exception:
+                missing_columns = missing_required_run_summary_columns(record)
+                if missing_columns:
+                    log_event(
+                        logger=logger,
+                        phase="run_summary",
+                        status="error",
+                        message="Run summary insert missing required columns",
+                        run_id=summary.run_id,
+                        missing_columns=missing_columns,
+                    )
+                raise
             action = "inserted"
         log_event(
             logger=logger,
@@ -3893,7 +3911,20 @@ async def _start_run_summary(*, summary: UcOrdersDiscoverySummary, logger: JsonL
             await update_run_summary(config.database_url, summary.run_id, record)
             action = "updated"
         else:
-            await insert_run_summary(config.database_url, record)
+            try:
+                await insert_run_summary(config.database_url, record)
+            except Exception:
+                missing_columns = missing_required_run_summary_columns(record)
+                if missing_columns:
+                    log_event(
+                        logger=logger,
+                        phase="run_summary",
+                        status="error",
+                        message="Run summary insert missing required columns",
+                        run_id=summary.run_id,
+                        missing_columns=missing_columns,
+                    )
+                raise
             action = "inserted"
         log_event(
             logger=logger,
