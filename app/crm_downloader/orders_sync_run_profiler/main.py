@@ -48,6 +48,7 @@ class StoreRunResult:
     pipeline_name: str
     overall_status: str
     window_count: int
+    windows: list[tuple[date, date]]
     status_counts: dict[str, int]
     window_audit: list[dict[str, Any]]
     ingestion_totals: dict[str, int]
@@ -924,6 +925,7 @@ async def _process_store(
         pipeline_name=pipeline_name,
         overall_status=overall_status,
         window_count=len(windows),
+        windows=windows,
         status_counts=status_counts,
         window_audit=window_audit,
         ingestion_totals=ingestion_totals,
@@ -1014,10 +1016,19 @@ async def main(
     total_status_counts = _init_status_counts()
     pipeline_totals: dict[str, dict[str, Any]] = {}
     store_totals: dict[str, dict[str, Any]] = {}
+    store_window_counts: dict[str, int] = {}
+    missing_windows: dict[str, list[dict[str, str]]] = {}
     total_windows = 0
     grand_ingestion_totals = _init_ingestion_totals()
     for result in all_results:
         total_windows += result.window_count
+        store_window_counts[result.store_code] = result.window_count
+        missing = result.windows[len(result.window_audit) :]
+        if missing:
+            missing_windows[result.store_code] = [
+                {"from_date": window_start.isoformat(), "to_date": window_end.isoformat()}
+                for window_start, window_end in missing
+            ]
         _merge_status_counts(total_status_counts, result.status_counts)
         pipeline_entry = pipeline_totals.setdefault(
             result.pipeline_group,
@@ -1051,6 +1062,8 @@ async def main(
         status_counts=total_status_counts,
         pipeline_totals=pipeline_totals,
         store_totals=store_totals,
+        store_window_counts=store_window_counts,
+        missing_windows=missing_windows or None,
         ingestion_grand_totals=grand_ingestion_totals,
         overall_status=overall_status,
     )
