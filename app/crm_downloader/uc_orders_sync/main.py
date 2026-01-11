@@ -2016,6 +2016,40 @@ async def _apply_date_range(
             store_code=store.store_code,
         )
 
+    overlay_apply_container_selector = ".calendar-body.show .apply"
+    try:
+        await page.wait_for_selector(overlay_apply_container_selector, state="visible", timeout=2_500)
+    except TimeoutError:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Apply section missing after date selection; reopening date picker",
+            store_code=store.store_code,
+            selector=overlay_apply_container_selector,
+        )
+        await _reopen_date_picker_popup(page=page, logger=logger, store=store)
+        try:
+            await page.wait_for_selector(overlay_apply_container_selector, state="visible", timeout=2_500)
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="info",
+                message="Apply section found after reopening date picker",
+                store_code=store.store_code,
+                selector=overlay_apply_container_selector,
+            )
+        except TimeoutError:
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="Apply section still missing after reopening date picker",
+                store_code=store.store_code,
+                selector=overlay_apply_container_selector,
+            )
+            return False, 0
+
     overlay_apply_selector = ".calendar-body.show .apply .buttons button.btn.primary"
     applied = False
     for attempt in range(2):
