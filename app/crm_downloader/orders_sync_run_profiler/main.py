@@ -38,6 +38,7 @@ class StoreProfile:
     store_name: str | None
     cost_center: str | None
     sync_config: Mapping[str, Any]
+    start_date: date | None
 
 
 @asynccontextmanager
@@ -71,6 +72,14 @@ def _coerce_dict(raw: Any) -> Mapping[str, Any]:
     return {}
 
 
+def _coerce_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return None
+
+
 def _parse_date(value: str) -> date:
     try:
         return datetime.strptime(value, "%Y-%m-%d").date()
@@ -100,7 +109,7 @@ async def _load_store_profiles(
         return []
     normalized_codes = normalize_store_codes(store_codes or [])
     query_text = """
-        SELECT store_code, store_name, cost_center, sync_config
+        SELECT store_code, store_name, cost_center, sync_config, start_date
         FROM store_master
         WHERE sync_orders_flag = TRUE
           AND (is_active IS NULL OR is_active = TRUE)
@@ -137,6 +146,7 @@ async def _load_store_profiles(
                     store_name=row.get("store_name"),
                     cost_center=row.get("cost_center"),
                     sync_config=_coerce_dict(row.get("sync_config")),
+                    start_date=_coerce_date(row.get("start_date")),
                 )
             )
     log_event(
@@ -264,12 +274,18 @@ def _resolve_start_date(
     backfill_days: int,
     window_days: int,
     from_date: date | None,
+    store_start_date: date | None,
 ) -> date:
     if from_date:
         return from_date
     if last_success:
         overlap_offset = max(0, overlap_days - 1)
-        return last_success - timedelta(days=overlap_offset)
+        candidate = last_success - timedelta(days=overlap_offset)
+        if store_start_date:
+            return max(store_start_date, candidate)
+        return candidate
+    if store_start_date:
+        return store_start_date
     desired_window = max(backfill_days, window_days)
     return end_date - timedelta(days=desired_window - 1)
 
@@ -326,6 +342,7 @@ async def _run_store_windows(
         backfill_days=backfill,
         window_days=window_size,
         from_date=from_date,
+        store_start_date=store.start_date,
     )
     windows = _build_windows(
         start_date=start_date,
