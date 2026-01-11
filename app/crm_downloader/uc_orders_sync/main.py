@@ -2063,12 +2063,29 @@ async def _apply_date_range(
             selector=overlay_selector,
         )
 
+    async def _is_export_button_missing() -> bool:
+        for selector in GST_CONTROL_SELECTORS["export_button"]:
+            try:
+                if await container.locator(selector).count():
+                    return False
+            except Exception:
+                continue
+        return True
+
     apply_section = container.locator(".apply").first
     start_value = ""
     end_value = ""
     apply_section_found = False
-    if await apply_section.count():
-        apply_section_found = True
+    apply_section_visible = False
+    for _ in range(3):
+        if await apply_section.count():
+            apply_section_found = True
+            with contextlib.suppress(Exception):
+                apply_section_visible = await apply_section.is_visible()
+            if apply_section_visible:
+                break
+        await asyncio.sleep(0.2)
+    if apply_section_found and apply_section_visible:
         start_input = apply_section.locator("input[readonly][placeholder='Start Date']").first
         end_input = apply_section.locator("input[readonly][placeholder='End Date']").first
         if await start_input.count() and await end_input.count():
@@ -2096,15 +2113,16 @@ async def _apply_date_range(
             log_event(
                 logger=logger,
                 phase="filters",
-                status="warn",
+                status="warn" if await _is_export_button_missing() else "info",
                 message="Apply inputs not found after date selection",
                 store_code=store.store_code,
             )
     else:
+        apply_warn = await _is_export_button_missing()
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warn" if apply_warn else "info",
             message="Apply section not found after date selection",
             store_code=store.store_code,
         )
@@ -2113,10 +2131,11 @@ async def _apply_date_range(
     try:
         await page.wait_for_selector(overlay_apply_container_selector, state="visible", timeout=2_500)
     except TimeoutError:
+        overlay_apply_warn = await _is_export_button_missing()
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warn" if overlay_apply_warn else "info",
             message="Apply section missing after date selection; reopening date picker",
             store_code=store.store_code,
             selector=overlay_apply_container_selector,
@@ -2133,10 +2152,11 @@ async def _apply_date_range(
                 selector=overlay_apply_container_selector,
             )
         except TimeoutError:
+            overlay_apply_warn = await _is_export_button_missing()
             log_event(
                 logger=logger,
                 phase="filters",
-                status="warn",
+                status="warn" if overlay_apply_warn else "info",
                 message="Apply section still missing after reopening date picker",
                 store_code=store.store_code,
                 selector=overlay_apply_container_selector,
