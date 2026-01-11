@@ -2405,14 +2405,16 @@ async def _reopen_date_picker_popup(
 async def _wait_for_date_picker_popup(
     *, page: Page, logger: JsonLogger, store: UcStore, input_locator: Locator | None = None
 ) -> Locator | None:
-    popup_selector = ", ".join(DATE_PICKER_POPUP_SELECTORS)
+    fallback_selectors = ("mat-calendar", "[class*='mat-calendar']", "[role='dialog']")
+    popup_selectors = list(dict.fromkeys((*DATE_PICKER_POPUP_SELECTORS, *fallback_selectors)))
+    popup_selector = ", ".join(popup_selectors)
     for attempt in range(3):
         if attempt > 0 and input_locator is not None:
             with contextlib.suppress(Exception):
                 await input_locator.click()
             await asyncio.sleep(0.4)
         detected_selectors: dict[str, int] = {}
-        for selector in DATE_PICKER_POPUP_SELECTORS:
+        for selector in popup_selectors:
             try:
                 count = await page.locator(selector).count()
             except Exception:
