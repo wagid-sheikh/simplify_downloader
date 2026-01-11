@@ -1515,10 +1515,12 @@ def _resolve_sync_log_status(
     sales_intentionally_skipped = sales_skipped and not run_sales
     has_warning = orders_status == "warning" or sales_status == "warning"
 
+    if sales_status == "error" and orders_success:
+        return "partial"
     if orders_status == "error":
         return "failed"
     if sales_status == "error":
-        return "partial" if orders_success else "failed"
+        return "failed"
     if orders_skipped and sales_skipped:
         return "skipped"
     if orders_success and (sales_success or sales_intentionally_skipped):
