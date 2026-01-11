@@ -83,6 +83,15 @@ GST_CONTROL_SELECTORS = {
 DATE_PICKER_POPUP_SELECTORS = (
     ".calendar-body.show",
     ".calendar-body .calendar",
+    "mat-calendar",
+    "[class*='mat-calendar']",
+    ".mat-calendar-content",
+    ".cdk-overlay-pane:has(mat-calendar)",
+    ".cdk-overlay-pane:has(.calendar)",
+    ".mat-datepicker-content:has(mat-calendar)",
+    ".mat-datepicker-content:has(.calendar)",
+    ".mat-date-range-picker-content:has(mat-calendar)",
+    ".mat-date-range-picker-content:has(.calendar)",
 )
 CONTROL_CUES = {
     "start_date": ["Start Date", "From Date", "From"],
@@ -1786,7 +1795,12 @@ async def _apply_date_range(
     popup = None
     for attempt in range(2):
         await date_input.click()
-        popup = await _wait_for_date_picker_popup(page=page, logger=logger, store=store)
+        popup = await _wait_for_date_picker_popup(
+            page=page,
+            logger=logger,
+            store=store,
+            input_locator=date_input,
+        )
         if popup is not None:
             break
         if attempt == 0:
@@ -1938,7 +1952,12 @@ async def _apply_date_range(
             if attempt == 0:
                 with contextlib.suppress(Exception):
                     await date_input.click()
-                popup = await _wait_for_date_picker_popup(page=page, logger=logger, store=store)
+                popup = await _wait_for_date_picker_popup(
+                    page=page,
+                    logger=logger,
+                    store=store,
+                    input_locator=date_input,
+                )
                 if popup is not None:
                     with contextlib.suppress(Exception):
                         await page.wait_for_selector(overlay_selector, state="visible", timeout=5_000)
@@ -2218,6 +2237,7 @@ async def _reopen_date_picker_popup(
     *, page: Page, logger: JsonLogger, store: UcStore
 ) -> Locator | None:
     reopened = False
+    input_locator: Locator | None = None
     for selector in GST_CONTROL_SELECTORS["date_range_input"]:
         input_locator = page.locator(selector).first
         try:
@@ -2244,7 +2264,12 @@ async def _reopen_date_picker_popup(
             store_code=store.store_code,
         )
         return None
-    popup = await _wait_for_date_picker_popup(page=page, logger=logger, store=store)
+    popup = await _wait_for_date_picker_popup(
+        page=page,
+        logger=logger,
+        store=store,
+        input_locator=input_locator,
+    )
     if popup is None:
         log_event(
             logger=logger,
@@ -2257,14 +2282,38 @@ async def _reopen_date_picker_popup(
 
 
 async def _wait_for_date_picker_popup(
-    *, page: Page, logger: JsonLogger, store: UcStore
+    *, page: Page, logger: JsonLogger, store: UcStore, input_locator: Locator | None = None
 ) -> Locator | None:
     popup_selector = ", ".join(DATE_PICKER_POPUP_SELECTORS)
-    popup = page.locator(popup_selector).first
-    try:
-        await popup.wait_for(state="visible", timeout=NAV_TIMEOUT_MS)
-        return popup
-    except TimeoutError:
+    for attempt in range(3):
+        if attempt > 0 and input_locator is not None:
+            with contextlib.suppress(Exception):
+                await input_locator.click()
+            await asyncio.sleep(0.4)
+        detected_selectors: dict[str, int] = {}
+        for selector in DATE_PICKER_POPUP_SELECTORS:
+            try:
+                count = await page.locator(selector).count()
+            except Exception:
+                continue
+            if count:
+                detected_selectors[selector] = count
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="debug",
+            message="Date picker popup selector detection results",
+            store_code=store.store_code,
+            attempt=attempt + 1,
+            detected_selectors=detected_selectors or None,
+        )
+        popup = page.locator(popup_selector).first
+        try:
+            await popup.wait_for(state="visible", timeout=2_000)
+            return popup
+        except TimeoutError:
+            if attempt < 2:
+                continue
         log_event(
             logger=logger,
             phase="filters",
@@ -2272,6 +2321,8 @@ async def _wait_for_date_picker_popup(
             message="Date picker popup not visible after clicking input",
             store_code=store.store_code,
             selector=popup_selector,
+            detected_selectors=detected_selectors or None,
+            attempts=attempt + 1,
         )
     return None
 
@@ -2518,6 +2569,7 @@ async def _reopen_calendar_for_retry(
     *, page: Page, logger: JsonLogger, store: UcStore, label: str
 ) -> Locator | None:
     reopened = False
+    input_locator: Locator | None = None
     for selector in GST_CONTROL_SELECTORS["date_range_input"]:
         input_locator = page.locator(selector).first
         try:
@@ -2537,7 +2589,12 @@ async def _reopen_calendar_for_retry(
             calendar_label=label,
         )
         return None
-    popup = await _wait_for_date_picker_popup(page=page, logger=logger, store=store)
+    popup = await _wait_for_date_picker_popup(
+        page=page,
+        logger=logger,
+        store=store,
+        input_locator=input_locator,
+    )
     if popup is None:
         return None
     calendars = await _get_calendar_locators(popup=popup)
@@ -2856,7 +2913,10 @@ async def _click_day_in_calendar(
                         continue
                 if reopened:
                     await _wait_for_date_picker_popup(
-                        page=calendar.page, logger=logger, store=store
+                        page=calendar.page,
+                        logger=logger,
+                        store=store,
+                        input_locator=input_locator,
                     )
                     continue
             break
