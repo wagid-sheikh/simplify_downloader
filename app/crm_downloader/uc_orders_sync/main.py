@@ -3305,6 +3305,41 @@ async def _wait_for_report_refresh(
             await network_idle_task
         network_idle_reached = True
 
+    export_ready = False
+    export_selector_used: str | None = None
+    export_button: Locator | None = None
+    for selector in GST_CONTROL_SELECTORS["export_button"]:
+        export_locator = container.locator(selector)
+        try:
+            export_count = await export_locator.count()
+        except Exception:
+            export_count = 0
+        if export_count > 0:
+            export_button = export_locator.first
+            export_selector_used = selector
+            break
+
+    if export_button is not None:
+        is_visible = False
+        is_enabled = False
+        with contextlib.suppress(Exception):
+            is_visible = await export_button.is_visible()
+        if is_visible:
+            with contextlib.suppress(Exception):
+                is_enabled = await export_button.is_enabled()
+        export_ready = is_visible and is_enabled
+        if export_ready:
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="GST report rows missing but export button is ready; proceeding",
+                store_code=store.store_code,
+                row_count=initial_count,
+                export_selector=export_selector_used,
+            )
+            return True, initial_count
+
     log_event(
         logger=logger,
         phase="filters",
