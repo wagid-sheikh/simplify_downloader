@@ -4524,27 +4524,57 @@ async def _wait_for_report_request_download_link(
                         )
                     log_event(**ready_payload)
                     try:
+                        await page.wait_for_timeout(200)
                         async with page.expect_download(timeout=download_wait_timeout_ms) as download_info:
                             await download_locator.click()
-                            download = await download_info.value
-                            await download.save_as(str(download_path))
-                            saved_payload = {
-                                "logger": logger,
-                                "phase": "iframe",
-                                "message": f"{report_label.title()} report download saved",
-                                "store_code": store.store_code,
-                                "download_path": str(download_path),
-                                "suggested_filename": download.suggested_filename,
-                                "expected_range_texts": list(expected_range_texts),
-                                "download_locator_strategy": download_strategy,
-                                "range_match_strategy": last_range_match_strategy,
-                                "container_locator_strategy": STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
-                                "selected_row_state": matched_row_state,
-                                "selection_source": selection_source,
-                            }
-                            if dom_logging_enabled:
-                                saved_payload["matched_range_text"] = matched_text
-                            log_event(**saved_payload)
+                        download = await download_info.value
+                    except TimeoutError:
+                        retry_payload = {
+                            "logger": logger,
+                            "phase": "iframe",
+                            "status": "warn",
+                            "message": "Download event missed; retrying download click",
+                            "store_code": store.store_code,
+                            "expected_range_texts": list(expected_range_texts),
+                            "range_match_strategy": last_range_match_strategy,
+                            "download_locator_strategy": download_strategy,
+                            "container_locator_strategy": STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+                            "selected_row_state": matched_row_state,
+                            "selection_source": selection_source,
+                        }
+                        if dom_logging_enabled:
+                            retry_payload["matched_range_text"] = matched_text
+                        log_event(**retry_payload)
+                        refreshed_locator, refreshed_strategy = await _locate_report_request_download(
+                            selected_candidate["row"]
+                        )
+                        if not refreshed_locator:
+                            raise
+                        if refreshed_strategy:
+                            download_strategy = refreshed_strategy
+                        await page.wait_for_timeout(200)
+                        async with page.expect_download(timeout=download_wait_timeout_ms) as download_info:
+                            await refreshed_locator.click()
+                        download = await download_info.value
+                    try:
+                        await download.save_as(str(download_path))
+                        saved_payload = {
+                            "logger": logger,
+                            "phase": "iframe",
+                            "message": f"{report_label.title()} report download saved",
+                            "store_code": store.store_code,
+                            "download_path": str(download_path),
+                            "suggested_filename": download.suggested_filename,
+                            "expected_range_texts": list(expected_range_texts),
+                            "download_locator_strategy": download_strategy,
+                            "range_match_strategy": last_range_match_strategy,
+                            "container_locator_strategy": STABLE_LOCATOR_STRATEGIES["container_locator_strategy"],
+                            "selected_row_state": matched_row_state,
+                            "selection_source": selection_source,
+                        }
+                        if dom_logging_enabled:
+                            saved_payload["matched_range_text"] = matched_text
+                        log_event(**saved_payload)
                         return True, str(download_path), matched_text, matched_status
                     except Exception as exc:
                         last_status = str(exc)
