@@ -27,7 +27,7 @@ PIPELINE_BY_GROUP = {
 }
 
 DEFAULT_BACKFILL_DAYS = 90
-DEFAULT_WINDOW_DAYS = 7
+DEFAULT_WINDOW_DAYS = 90
 DEFAULT_OVERLAP_DAYS = 2
 DEFAULT_MAX_WORKERS = 4
 
@@ -257,14 +257,21 @@ def _build_windows(
 
 
 def _resolve_start_date(
-    *, end_date: date, last_success: date | None, overlap_days: int, backfill_days: int, from_date: date | None
+    *,
+    end_date: date,
+    last_success: date | None,
+    overlap_days: int,
+    backfill_days: int,
+    window_days: int,
+    from_date: date | None,
 ) -> date:
     if from_date:
         return from_date
     if last_success:
         overlap_offset = max(0, overlap_days - 1)
         return last_success - timedelta(days=overlap_offset)
-    return end_date - timedelta(days=backfill_days - 1)
+    desired_window = max(backfill_days, window_days)
+    return end_date - timedelta(days=desired_window - 1)
 
 
 def _summary_text(
@@ -317,6 +324,7 @@ async def _run_store_windows(
         last_success=last_success,
         overlap_days=overlap,
         backfill_days=backfill,
+        window_days=window_size,
         from_date=from_date,
     )
     windows = _build_windows(
