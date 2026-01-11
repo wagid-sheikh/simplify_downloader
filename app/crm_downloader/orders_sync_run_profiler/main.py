@@ -49,6 +49,8 @@ class StoreRunResult:
     overall_status: str
     window_count: int
     status_counts: dict[str, int]
+    window_audit: list[dict[str, Any]]
+    ingestion_totals: dict[str, int]
 
 
 @asynccontextmanager
@@ -528,6 +530,48 @@ def _merge_status_counts(target: dict[str, int], source: Mapping[str, int]) -> N
         target[status] = target.get(status, 0) + int(count)
 
 
+def _init_ingestion_totals() -> dict[str, int]:
+    return {
+        "rows_downloaded": 0,
+        "rows_ingested": 0,
+        "staging_rows": 0,
+        "final_rows": 0,
+        "staging_inserted": 0,
+        "staging_updated": 0,
+        "final_inserted": 0,
+        "final_updated": 0,
+    }
+
+
+def _coerce_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _accumulate_ingestion_totals(
+    target: dict[str, int], ingestion_counts: Mapping[str, Any]
+) -> dict[str, int]:
+    totals = _init_ingestion_totals()
+    for payload in ingestion_counts.values():
+        if not isinstance(payload, Mapping):
+            continue
+        for key in totals:
+            value = _coerce_int(payload.get(key))
+            if value is not None:
+                totals[key] += value
+    for key, value in totals.items():
+        target[key] = target.get(key, 0) + value
+    return totals
+
+
 def _rollup_overall_status(status_counts: Mapping[str, int]) -> str:
     if status_counts.get("failed", 0) > 0:
         return "failed"
@@ -554,10 +598,14 @@ async def _run_store_windows(
     overlap_days: int | None,
     from_date: date | None,
     to_date: date | None,
-) -> tuple[str, list[tuple[date, date]], list[str], dict[str, int]]:
+) -> tuple[
+    str, list[tuple[date, date]], list[str], dict[str, int], list[dict[str, Any]], dict[str, int]
+]:
     started_at = datetime.now(timezone.utc)
     detail_lines: list[str] = []
     status_counts = _init_status_counts()
+    window_audit: list[dict[str, Any]] = []
+    ingestion_totals = _init_ingestion_totals()
     backfill, window_size, overlap = _window_settings(
         store=store,
         backfill_days=backfill_days,
@@ -585,7 +633,7 @@ async def _run_store_windows(
     )
     if not windows:
         detail_lines.append("No windows to process (start_date after end_date).")
-        return "success", windows, detail_lines, status_counts
+        return "success", windows, detail_lines, status_counts, window_audit, ingestion_totals
     log_event(
         logger=logger,
         phase="store",
@@ -724,6 +772,20 @@ async def _run_store_windows(
             download_paths=download_paths or None,
             ingestion_counts=ingestion_counts or None,
         )
+        window_totals = _accumulate_ingestion_totals(ingestion_totals, ingestion_counts)
+        window_audit.append(
+            {
+                "window_index": index,
+                "from_date": window_start.isoformat(),
+                "to_date": window_end.isoformat(),
+                "status": status,
+                "status_note": status_note or None,
+                "error_message": error_message,
+                "download_paths": download_paths,
+                "ingestion_counts": ingestion_counts,
+                "ingestion_totals": window_totals,
+            }
+        )
         if pipeline_name == "uc_orders_sync":
             uc_payload = _build_uc_window_log(
                 download_paths=download_paths,
@@ -804,7 +866,7 @@ async def _run_store_windows(
         "metrics_json": metrics,
     }
     await insert_run_summary(config.database_url, summary_record)
-    return overall_status, windows, detail_lines, status_counts
+    return overall_status, windows, detail_lines, status_counts, window_audit, ingestion_totals
 
 
 async def _process_store(
@@ -824,7 +886,14 @@ async def _process_store(
     to_date: date | None,
 ) -> StoreRunResult:
     async with store_lock(store.store_code):
-        overall_status, windows, _detail_lines, status_counts = await _run_store_windows(
+        (
+            overall_status,
+            windows,
+            _detail_lines,
+            status_counts,
+            window_audit,
+            ingestion_totals,
+        ) = await _run_store_windows(
             logger=logger,
             store=store,
             pipeline_name=pipeline_name,
@@ -845,6 +914,8 @@ async def _process_store(
         overall_status=overall_status,
         window_count=len(windows),
         status_counts=status_counts,
+        window_audit=window_audit,
+        ingestion_totals=ingestion_totals,
     )
 
 
@@ -933,22 +1004,31 @@ async def main(
     pipeline_totals: dict[str, dict[str, Any]] = {}
     store_totals: dict[str, dict[str, Any]] = {}
     total_windows = 0
+    grand_ingestion_totals = _init_ingestion_totals()
     for result in all_results:
         total_windows += result.window_count
         _merge_status_counts(total_status_counts, result.status_counts)
         pipeline_entry = pipeline_totals.setdefault(
             result.pipeline_group,
-            {"window_count": 0, "status_counts": _init_status_counts()},
+            {
+                "window_count": 0,
+                "status_counts": _init_status_counts(),
+                "ingestion_totals": _init_ingestion_totals(),
+            },
         )
         pipeline_entry["window_count"] += result.window_count
         _merge_status_counts(pipeline_entry["status_counts"], result.status_counts)
+        _accumulate_ingestion_totals(pipeline_entry["ingestion_totals"], {"total": result.ingestion_totals})
         store_totals[result.store_code] = {
             "pipeline_group": result.pipeline_group,
             "pipeline_name": result.pipeline_name,
             "overall_status": result.overall_status,
             "window_count": result.window_count,
             "status_counts": result.status_counts,
+            "window_audit": result.window_audit,
+            "ingestion_totals": result.ingestion_totals,
         }
+        _accumulate_ingestion_totals(grand_ingestion_totals, {"total": result.ingestion_totals})
     overall_status = _rollup_overall_status(total_status_counts)
     log_event(
         logger=logger,
@@ -960,6 +1040,7 @@ async def main(
         status_counts=total_status_counts,
         pipeline_totals=pipeline_totals,
         store_totals=store_totals,
+        ingestion_grand_totals=grand_ingestion_totals,
         overall_status=overall_status,
     )
 
