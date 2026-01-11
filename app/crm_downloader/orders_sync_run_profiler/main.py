@@ -102,17 +102,20 @@ async def _load_store_profiles(
     query_text = """
         SELECT store_code, store_name, cost_center, sync_config
         FROM store_master
-        WHERE sync_group = :sync_group
-          AND sync_orders_flag = TRUE
+        WHERE sync_orders_flag = TRUE
           AND (is_active IS NULL OR is_active = TRUE)
     """
+    if sync_group != "ALL":
+        query_text += " AND sync_group = :sync_group"
     if normalized_codes:
         query_text += " AND UPPER(store_code) IN :store_codes"
     query = sa.text(query_text)
     if normalized_codes:
         query = query.bindparams(sa.bindparam("store_codes", expanding=True))
     async with session_scope(config.database_url) as session:
-        params = {"sync_group": sync_group}
+        params: dict[str, Any] = {}
+        if sync_group != "ALL":
+            params["sync_group"] = sync_group
         if normalized_codes:
             params["store_codes"] = normalized_codes
         result = await session.execute(query, params)
