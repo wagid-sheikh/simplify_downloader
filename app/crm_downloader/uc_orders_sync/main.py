@@ -1150,7 +1150,7 @@ async def _run_store_discovery(
             )
             summary.record_store(store.store_code, outcome)
             return
-        apply_ok, row_count = await _apply_date_range(
+        apply_ok, row_count, row_visibility_issue = await _apply_date_range(
             page=page,
             container=container,
             logger=logger,
@@ -1187,6 +1187,16 @@ async def _run_store_discovery(
             download_timeout_ms=download_timeout_ms,
             row_count=row_count,
         )
+        if row_visibility_issue:
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="info" if downloaded else "warn",
+                message="GST report rows missing but export button was ready",
+                store_code=store.store_code,
+                row_count=row_count,
+                download_succeeded=downloaded,
+            )
         ingest_result: UcOrdersIngestResult | None = None
         status_label = "ok" if downloaded else "warning"
         if downloaded and download_path:
@@ -1848,12 +1858,13 @@ async def _apply_date_range(
     store: UcStore,
     from_date: date,
     to_date: date,
-) -> tuple[bool, int]:
+) -> tuple[bool, int, bool]:
     input_selectors = [
         "input.search-user[placeholder='Choose Start Date - End Date']",
         *GST_CONTROL_SELECTORS["date_range_input"],
     ]
     date_input = None
+    row_visibility_issue = False
     for selector in input_selectors:
         try:
             if await container.locator(selector).count():
@@ -1870,9 +1881,9 @@ async def _apply_date_range(
             store_code=store.store_code,
             selectors=input_selectors,
         )
-        return False, 0
+        return False, 0, row_visibility_issue
 
-    async def _fallback_set_date_range_input(reason: str) -> tuple[bool, int]:
+    async def _fallback_set_date_range_input(reason: str) -> tuple[bool, int, bool]:
         date_range_value = f"{from_date:%Y-%m-%d} - {to_date:%Y-%m-%d}"
         try:
             await date_input.evaluate(
@@ -1899,7 +1910,7 @@ async def _apply_date_range(
                 date_range_value=date_range_value,
                 error=str(exc),
             )
-            return False, 0
+            return False, 0, row_visibility_issue
         log_event(
             logger=logger,
             phase="filters",
@@ -1909,13 +1920,13 @@ async def _apply_date_range(
             reason=reason,
             date_range_value=date_range_value,
         )
-        refreshed, row_count = await _wait_for_report_refresh(
+        refreshed, row_count, refreshed_row_issue = await _wait_for_report_refresh(
             page=page,
             container=container,
             logger=logger,
             store=store,
         )
-        return refreshed, row_count
+        return refreshed, row_count, refreshed_row_issue
 
     with contextlib.suppress(Exception):
         await date_input.scroll_into_view_if_needed()
@@ -2130,7 +2141,7 @@ async def _apply_date_range(
                 store_code=store.store_code,
                 selector=overlay_apply_container_selector,
             )
-            return False, 0
+            return False, 0, row_visibility_issue
 
     overlay_apply_selector = ".calendar-body.show .apply .buttons button.btn.primary"
     applied = False
@@ -2173,7 +2184,7 @@ async def _apply_date_range(
                 store_code=store.store_code,
                 selectors=[overlay_apply_selector],
             )
-            return False, 0
+            return False, 0, row_visibility_issue
 
         with contextlib.suppress(Exception):
             await overlay_apply_button.scroll_into_view_if_needed()
@@ -2187,7 +2198,7 @@ async def _apply_date_range(
                 message="Apply button not ready after date selection",
                 store_code=store.store_code,
             )
-            return False, 0
+            return False, 0, row_visibility_issue
 
         apply_enabled = False
         for _ in range(10):
@@ -2204,15 +2215,16 @@ async def _apply_date_range(
                 message="Apply button not enabled after date selection",
                 store_code=store.store_code,
             )
-            return False, 0
+            return False, 0, row_visibility_issue
 
         await overlay_apply_button.click()
-        refreshed, row_count = await _wait_for_report_refresh(
+        refreshed, row_count, refreshed_row_issue = await _wait_for_report_refresh(
             page=page,
             container=container,
             logger=logger,
             store=store,
         )
+        row_visibility_issue = row_visibility_issue or refreshed_row_issue
         overlay_open = False
         with contextlib.suppress(Exception):
             overlay_open = await page.locator(overlay_selector).first.is_visible()
@@ -2249,10 +2261,10 @@ async def _apply_date_range(
             store_code=store.store_code,
             row_count=row_count,
         )
-        return False, row_count
+        return False, row_count, row_visibility_issue
 
     if not applied:
-        return False, 0
+        return False, 0, row_visibility_issue
     if apply_section_found:
         await _confirm_apply_dates(
             apply_section=apply_section,
@@ -2261,7 +2273,7 @@ async def _apply_date_range(
             logger=logger,
             store=store,
         )
-    return True, row_count
+    return True, row_count, row_visibility_issue
 
 
 async def _download_gst_report(
@@ -3348,8 +3360,9 @@ async def _confirm_apply_dates(
 
 async def _wait_for_report_refresh(
     *, page: Page, container: Locator, logger: JsonLogger, store: UcStore
-) -> tuple[bool, int]:
+) -> tuple[bool, int, bool]:
     row_locator = container.locator("table tbody tr.ng-star-inserted")
+    row_visibility_issue = False
     try:
         initial_count = await row_locator.count()
     except Exception:
@@ -3363,7 +3376,7 @@ async def _wait_for_report_refresh(
             store_code=store.store_code,
             row_count=initial_count,
         )
-        return True, initial_count
+        return True, initial_count, row_visibility_issue
 
     spinner_selector = ", ".join(SPINNER_CSS_SELECTORS)
     timeout_s = NAV_TIMEOUT_MS / 1000
@@ -3396,7 +3409,7 @@ async def _wait_for_report_refresh(
                 store_code=store.store_code,
                 row_count=current_count,
             )
-            return True, current_count
+            return True, current_count, row_visibility_issue
         if network_idle_reached:
             break
         await asyncio.sleep(0.5)
@@ -3430,16 +3443,8 @@ async def _wait_for_report_refresh(
                 is_enabled = await export_button.is_enabled()
         export_ready = is_visible and is_enabled
         if export_ready:
-            log_event(
-                logger=logger,
-                phase="filters",
-                status="warn",
-                message="GST report rows missing but export button is ready; proceeding",
-                store_code=store.store_code,
-                row_count=initial_count,
-                export_selector=export_selector_used,
-            )
-            return True, initial_count
+            row_visibility_issue = True
+            return True, initial_count, row_visibility_issue
 
     log_event(
         logger=logger,
@@ -3449,7 +3454,7 @@ async def _wait_for_report_refresh(
         store_code=store.store_code,
         row_count=initial_count,
     )
-    return False, initial_count
+    return False, initial_count, row_visibility_issue
 
 
 async def _is_on_home_dashboard(*, page: Page, store: UcStore) -> bool:
