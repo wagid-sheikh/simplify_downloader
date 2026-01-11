@@ -150,6 +150,8 @@ async def main(
         run_env=resolved_env,
         report_date=run_start_date,
         report_end_date=run_end_date,
+        run_orders=run_orders,
+        run_sales=run_sales,
     )
 
     interrupted = False
@@ -470,6 +472,13 @@ class StoreOutcome:
 
 
 @dataclass
+class DeferredOrdersSyncLog:
+    store: "TdStore"
+    run_start_date: date
+    run_end_date: date
+
+
+@dataclass
 class StoreReport:
     status: str
     filenames: list[str] = field(default_factory=list)
@@ -517,6 +526,8 @@ class TdOrdersDiscoverySummary:
     run_env: str
     report_date: date
     report_end_date: date
+    run_orders: bool = True
+    run_sales: bool = True
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     store_codes: list[str] = field(default_factory=list)
     store_outcomes: Dict[str, StoreOutcome] = field(default_factory=dict)
@@ -527,6 +538,7 @@ class TdOrdersDiscoverySummary:
     ingest_remarks: list[dict[str, str]] = field(default_factory=list)
     orders_results: Dict[str, StoreReport] = field(default_factory=dict)
     sales_results: Dict[str, StoreReport] = field(default_factory=dict)
+    deferred_orders_sync_logs: list[DeferredOrdersSyncLog] = field(default_factory=list)
 
     def mark_phase(self, phase: str, status: str) -> None:
         counters = self.phases.setdefault(phase, {"ok": 0, "warning": 0, "error": 0})
@@ -1292,6 +1304,9 @@ async def _persist_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonLog
         return False
 
     try:
+        await _flush_deferred_orders_sync_logs(
+            summary=summary, logger=logger, run_id=summary.run_id, run_env=summary.run_env
+        )
         existing = await fetch_summary_for_run(config.database_url, summary.run_id)
         if existing:
             await update_run_summary(config.database_url, summary.run_id, record)
@@ -1401,11 +1416,13 @@ async def _fetch_pipeline_id(*, database_url: str, pipeline_name: str, logger: J
 async def _insert_orders_sync_log(
     *,
     logger: JsonLogger,
+    summary: TdOrdersDiscoverySummary,
     store: TdStore,
     run_id: str,
     run_env: str,
     run_start_date: date,
     run_end_date: date,
+    allow_defer: bool = True,
 ) -> int | None:
     if not config.database_url:
         log_event(
@@ -1432,7 +1449,32 @@ async def _insert_orders_sync_log(
             run_id=run_id,
             store_code=store.store_code,
         )
-        return None
+        summary_started = await _start_run_summary(summary=summary, logger=logger)
+        if not summary_started:
+            log_event(
+                logger=logger,
+                phase="orders_sync_log",
+                status="error",
+                message="Run summary start failed; deferring orders sync log insert until final summary persistence",
+                run_id=run_id,
+                store_code=store.store_code,
+            )
+            if allow_defer:
+                _defer_orders_sync_log(summary, store, run_start_date, run_end_date)
+            return None
+        existing_summary = await fetch_summary_for_run(config.database_url, run_id)
+        if not existing_summary:
+            log_event(
+                logger=logger,
+                phase="orders_sync_log",
+                status="error",
+                message="Run summary row still missing; deferring orders sync log insert until final summary persistence",
+                run_id=run_id,
+                store_code=store.store_code,
+            )
+            if allow_defer:
+                _defer_orders_sync_log(summary, store, run_start_date, run_end_date)
+            return None
 
     try:
         async with session_scope(config.database_url) as session:
@@ -1463,6 +1505,74 @@ async def _insert_orders_sync_log(
         )
         return None
     return log_id
+
+
+def _defer_orders_sync_log(
+    summary: TdOrdersDiscoverySummary, store: TdStore, run_start_date: date, run_end_date: date
+) -> None:
+    if any(entry.store.store_code == store.store_code for entry in summary.deferred_orders_sync_logs):
+        return
+    summary.deferred_orders_sync_logs.append(
+        DeferredOrdersSyncLog(store=store, run_start_date=run_start_date, run_end_date=run_end_date)
+    )
+
+
+async def _flush_deferred_orders_sync_logs(
+    *, summary: TdOrdersDiscoverySummary, logger: JsonLogger, run_id: str, run_env: str
+) -> None:
+    if not summary.deferred_orders_sync_logs or not config.database_url:
+        return
+    existing_summary = await fetch_summary_for_run(config.database_url, run_id)
+    if not existing_summary:
+        summary_started = await _start_run_summary(summary=summary, logger=logger)
+        if not summary_started:
+            log_event(
+                logger=logger,
+                phase="orders_sync_log",
+                status="error",
+                message="Unable to start run summary; skipping deferred orders sync log inserts",
+                run_id=run_id,
+            )
+            return
+        existing_summary = await fetch_summary_for_run(config.database_url, run_id)
+        if not existing_summary:
+            log_event(
+                logger=logger,
+                phase="orders_sync_log",
+                status="error",
+                message="Run summary row still missing; skipping deferred orders sync log inserts",
+                run_id=run_id,
+            )
+            return
+
+    pending = list(summary.deferred_orders_sync_logs)
+    summary.deferred_orders_sync_logs.clear()
+    for entry in pending:
+        log_id = await _insert_orders_sync_log(
+            logger=logger,
+            summary=summary,
+            store=entry.store,
+            run_id=run_id,
+            run_env=run_env,
+            run_start_date=entry.run_start_date,
+            run_end_date=entry.run_end_date,
+            allow_defer=False,
+        )
+        if log_id is None:
+            continue
+        orders_report = summary.orders_results.get(entry.store.store_code)
+        sales_report = summary.sales_results.get(entry.store.store_code)
+        status = _resolve_sync_log_status(
+            orders_report=orders_report,
+            sales_report=sales_report,
+            run_orders=summary.run_orders,
+            run_sales=summary.run_sales,
+        )
+        outcome = summary.store_outcomes.get(entry.store.store_code)
+        error_message = outcome.message if outcome and outcome.status == "error" else None
+        await _update_orders_sync_log(
+            logger=logger, log_id=log_id, status=status, error_message=error_message
+        )
 
 
 async def _update_orders_sync_log(
@@ -5274,6 +5384,7 @@ async def _run_store_discovery(
 
     sync_log_id = await _insert_orders_sync_log(
         logger=store_logger,
+        summary=summary,
         store=store,
         run_id=run_id,
         run_env=run_env,
