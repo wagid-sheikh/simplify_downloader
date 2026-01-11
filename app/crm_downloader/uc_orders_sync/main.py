@@ -1901,6 +1901,48 @@ async def _apply_date_range(
             error=str(exc),
         )
         return await _fallback_set_date_range_input("calendar-navigation-error")
+    if not start_ok and end_ok:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Start date selection failed; reopening date picker to retry start date",
+            store_code=store.store_code,
+            start_date=from_date,
+        )
+        retry_popup = await _reopen_date_picker_popup(page=page, logger=logger, store=store)
+        if retry_popup is not None:
+            retry_calendars = await _get_calendar_locators(popup=retry_popup)
+            retry_start_calendar = retry_calendars[0]
+            retry_clicked = False
+            try:
+                retry_label = await _navigate_calendar_to_month(
+                    calendar=retry_start_calendar,
+                    target_date=from_date,
+                    logger=logger,
+                    store=store,
+                    label="start",
+                )
+                if retry_label is not None:
+                    retry_clicked = await _click_day_in_calendar(
+                        calendar=retry_start_calendar,
+                        target_date=from_date,
+                        logger=logger,
+                        store=store,
+                        label="start",
+                    )
+            except Exception as exc:
+                log_event(
+                    logger=logger,
+                    phase="filters",
+                    status="warn",
+                    message="Start date retry failed after reopening date picker",
+                    store_code=store.store_code,
+                    start_date=from_date,
+                    error=str(exc),
+                )
+            if retry_clicked:
+                start_ok = True
     if not start_ok or not end_ok:
         log_event(
             logger=logger,
