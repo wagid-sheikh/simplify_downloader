@@ -471,6 +471,9 @@ async def _run_store_windows(
         window_run_id = f"{run_id}_{store.store_code}_{index:03d}"
         status = "skipped"
         status_note = ""
+        error_message: str | None = None
+        download_paths: dict[str, Any] = {}
+        ingestion_counts: dict[str, Any] = {}
         attempts = 0
         for attempt in range(2):
             attempts = attempt + 1
@@ -538,22 +541,6 @@ async def _run_store_windows(
             download_paths, ingestion_counts = _extract_window_outcome_metadata(
                 summary, store_code=store.store_code
             )
-            log_event(
-                logger=logger,
-                phase="window_outcome",
-                message="Recorded window outcome",
-                store_code=store.store_code,
-                pipeline_name=pipeline_name,
-                from_date=window_start,
-                to_date=window_end,
-                window_index=index,
-                window_attempt=attempts,
-                window_run_id=window_run_id,
-                continuation_status=status,
-                status_note=status_note or None,
-                download_paths=download_paths or None,
-                ingestion_counts=ingestion_counts or None,
-            )
             if status in {"failed", "partial"} and attempt == 0:
                 log_event(
                     logger=logger,
@@ -569,6 +556,23 @@ async def _run_store_windows(
             if attempt > 0:
                 status_note += " (after retry)"
             break
+        log_event(
+            logger=logger,
+            phase="window_result",
+            message="Window completed",
+            store_code=store.store_code,
+            pipeline_name=pipeline_name,
+            run_id=run_id,
+            window_run_id=window_run_id,
+            window_index=index,
+            from_date=window_start,
+            to_date=window_end,
+            window_status=status,
+            status_note=status_note or None,
+            error_message=error_message,
+            download_paths=download_paths or None,
+            ingestion_counts=ingestion_counts or None,
+        )
         detail_lines.append(
             f"{window_start.isoformat()} → {window_end.isoformat()}: {status}{status_note}"
         )
