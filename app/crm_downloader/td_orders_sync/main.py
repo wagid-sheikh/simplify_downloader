@@ -1755,6 +1755,16 @@ def _resolve_ingested_rows(report: StoreReport | None) -> int | None:
     return None
 
 
+def _resolve_ingest_status(report: StoreReport | None, *, run_report: bool) -> str:
+    if report is None or not report.status:
+        return "skipped" if not run_report else "error"
+    if report.status in {"ok", "warning"}:
+        return "success"
+    if report.status == "skipped":
+        return "skipped"
+    return "error"
+
+
 def _log_td_window_summary(
     *,
     logger: JsonLogger,
@@ -1781,6 +1791,12 @@ def _log_td_window_summary(
         to_date=to_date,
         orders_downloaded_path=orders_report.downloaded_path if orders_report else None,
         sales_downloaded_path=sales_report.downloaded_path if sales_report else None,
+        orders_staging_rows=orders_report.staging_rows if orders_report else None,
+        orders_final_rows=orders_report.final_rows if orders_report else None,
+        sales_staging_rows=sales_report.staging_rows if sales_report else None,
+        sales_final_rows=sales_report.final_rows if sales_report else None,
+        orders_ingest_status=_resolve_ingest_status(orders_report, run_report=run_orders),
+        sales_ingest_status=_resolve_ingest_status(sales_report, run_report=run_sales),
         orders_ingested_rows=_resolve_ingested_rows(orders_report),
         sales_ingested_rows=_resolve_ingested_rows(sales_report),
         final_status=final_status,
