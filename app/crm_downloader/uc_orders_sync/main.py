@@ -2859,13 +2859,52 @@ async def _click_day_in_calendar(
     store: UcStore,
     label: str,
 ) -> bool:
+    async def _is_disabled(cell: Locator) -> bool:
+        try:
+            aria_disabled = (await cell.get_attribute("aria-disabled")) or ""
+            if aria_disabled.lower() == "true":
+                return True
+            class_name = (await cell.get_attribute("class")) or ""
+            return "disabled" in class_name.lower()
+        except Exception:
+            return False
+
+    async def _count_candidates(candidates: list[Locator]) -> int:
+        total = 0
+        for candidate in candidates:
+            try:
+                total += await candidate.count()
+            except Exception:
+                continue
+        return total
+
+    async def _first_enabled_day_cell(candidates: list[Locator]) -> Locator | None:
+        for candidate in candidates:
+            try:
+                count = await candidate.count()
+            except Exception:
+                continue
+            for index in range(count):
+                cell = candidate.nth(index)
+                if not await _is_disabled(cell):
+                    return cell
+        return None
+
     month_name = target_date.strftime("%B")
-    aria_label = target_date.strftime("%B %d, %Y")
+    month_name_abbrev = target_date.strftime("%b")
+    day_label = str(target_date.day)
+    day_label_padded = target_date.strftime("%d")
+    aria_labels = [
+        f"{month_name} {day_label_padded}, {target_date.year}",
+        f"{month_name} {day_label}, {target_date.year}",
+        f"{month_name_abbrev} {day_label_padded}, {target_date.year}",
+        f"{month_name_abbrev} {day_label}, {target_date.year}",
+    ]
+    partial_aria_label = f"{month_name} {day_label}"
+    aria_label_unpadded = f"{month_name} {day_label}, {target_date.year}"
     scope = calendar
-    day_cells = None
+    day_cell_candidates: list[Locator] = []
     if label == "end":
-        day_label = str(target_date.day)
-        aria_label_unpadded = f"{month_name} {day_label}, {target_date.year}"
         match_count = 0
         end_container_selector = ".calendar-body.show .end-date"
         for attempt in range(2):
@@ -2877,11 +2916,24 @@ async def _click_day_in_calendar(
                     scope = mat_body
             except Exception:
                 pass
-            day_cells = scope.locator(f"td[aria-label='{aria_label_unpadded}']")
-            try:
-                match_count = await day_cells.count()
-            except Exception:
-                match_count = 0
+            day_cell_candidates = [
+                scope.locator(f"[aria-label='{label_value}']")
+                for label_value in aria_labels
+            ]
+            day_cell_candidates.extend(
+                [
+                    scope.locator(f"[aria-label*='{partial_aria_label}']"),
+                    scope.locator(
+                        "[role='gridcell']",
+                        has_text=re.compile(rf"^{day_label}$"),
+                    ),
+                    scope.locator(
+                        "button",
+                        has_text=re.compile(rf"^{day_label}$"),
+                    ),
+                ]
+            )
+            match_count = await _count_candidates(day_cell_candidates)
             if match_count:
                 break
             january_count = 0
@@ -2926,11 +2978,26 @@ async def _click_day_in_calendar(
             scope = body_locator.first if await body_locator.count() else calendar
         except Exception:
             scope = calendar
-        day_cells = scope.locator(f"td[aria-label='{aria_label}']")
+        day_cell_candidates = [
+            scope.locator(f"[aria-label='{label_value}']") for label_value in aria_labels
+        ]
+        day_cell_candidates.extend(
+            [
+                scope.locator(f"[aria-label*='{partial_aria_label}']"),
+                scope.locator(
+                    "[role='gridcell']",
+                    has_text=re.compile(rf"^{day_label}$"),
+                ),
+                scope.locator(
+                    "button",
+                    has_text=re.compile(rf"^{day_label}$"),
+                ),
+            ]
+        )
 
-    day_cell = day_cells.first
+    day_cell = await _first_enabled_day_cell(day_cell_candidates)
     try:
-        if not await day_cell.count():
+        if not day_cell:
             return False
         await day_cell.scroll_into_view_if_needed()
         await day_cell.click()
