@@ -2161,7 +2161,7 @@ async def _apply_date_range(
                 store_code=store.store_code,
                 selector=overlay_apply_container_selector,
             )
-            return False, 0, row_visibility_issue
+            return await _fallback_set_date_range_input("apply-section-missing")
 
     overlay_apply_selector = ".calendar-body.show .apply .buttons button.btn.primary"
     applied = False
@@ -2204,7 +2204,7 @@ async def _apply_date_range(
                 store_code=store.store_code,
                 selectors=[overlay_apply_selector],
             )
-            return False, 0, row_visibility_issue
+            return await _fallback_set_date_range_input("apply-button-missing")
 
         with contextlib.suppress(Exception):
             await overlay_apply_button.scroll_into_view_if_needed()
@@ -2218,7 +2218,7 @@ async def _apply_date_range(
                 message="Apply button not ready after date selection",
                 store_code=store.store_code,
             )
-            return False, 0, row_visibility_issue
+            return await _fallback_set_date_range_input("apply-button-not-ready")
 
         apply_enabled = False
         for _ in range(10):
@@ -2235,7 +2235,7 @@ async def _apply_date_range(
                 message="Apply button not enabled after date selection",
                 store_code=store.store_code,
             )
-            return False, 0, row_visibility_issue
+            return await _fallback_set_date_range_input("apply-button-disabled")
 
         await overlay_apply_button.click()
         refreshed, row_count, refreshed_row_issue = await _wait_for_report_refresh(
