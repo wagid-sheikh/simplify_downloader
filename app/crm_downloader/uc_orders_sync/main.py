@@ -99,6 +99,17 @@ DATE_PICKER_POPUP_SELECTORS = (
     ".mat-date-range-picker-content:has(mat-calendar)",
     ".mat-date-range-picker-content:has(.calendar)",
 )
+DATE_PICKER_POPUP_FALLBACK_SELECTORS = (
+    ".mat-datepicker-content",
+    ".mat-date-range-picker-content",
+    ".cdk-overlay-pane",
+    ".mat-datepicker-popup",
+    ".react-datepicker",
+    ".react-datepicker__month-container",
+    ".flatpickr-calendar",
+    ".pika-single",
+    "[role='dialog']",
+)
 CONTROL_CUES = {
     "start_date": ["Start Date", "From Date", "From"],
     "end_date": ["End Date", "To Date", "To"],
@@ -2477,9 +2488,17 @@ async def _wait_for_date_picker_popup(
     *, page: Page, logger: JsonLogger, store: UcStore, input_locator: Locator | None = None
 ) -> Locator | None:
     fallback_selectors = ("mat-calendar", "[class*='mat-calendar']", "[role='dialog']")
-    popup_selectors = list(dict.fromkeys((*DATE_PICKER_POPUP_SELECTORS, *fallback_selectors)))
-    popup_selector = ", ".join(popup_selectors)
     for attempt in range(3):
+        popup_selectors = list(
+            dict.fromkeys(
+                (
+                    *DATE_PICKER_POPUP_SELECTORS,
+                    *fallback_selectors,
+                    *(DATE_PICKER_POPUP_FALLBACK_SELECTORS if attempt > 0 else ()),
+                )
+            )
+        )
+        popup_selector = ", ".join(popup_selectors)
         if attempt > 0 and input_locator is not None:
             with contextlib.suppress(Exception):
                 await input_locator.click()
@@ -3093,10 +3112,19 @@ async def _click_day_in_calendar(
         f"{month_name} {day_label}, {target_date.year}",
         f"{month_name_abbrev} {day_label_padded}, {target_date.year}",
         f"{month_name_abbrev} {day_label}, {target_date.year}",
+        f"{month_name} {day_label_padded} {target_date.year}",
+        f"{month_name} {day_label} {target_date.year}",
+        f"{month_name_abbrev} {day_label_padded} {target_date.year}",
+        f"{month_name_abbrev} {day_label} {target_date.year}",
+        f"{day_label_padded} {month_name} {target_date.year}",
+        f"{day_label} {month_name} {target_date.year}",
+        f"{day_label_padded} {month_name_abbrev} {target_date.year}",
+        f"{day_label} {month_name_abbrev} {target_date.year}",
     ]
     partial_aria_label = f"{month_name} {day_label}"
     partial_aria_label_with_year = f"{month_name} {day_label}, {target_date.year}"
     aria_label_unpadded = f"{month_name} {day_label}, {target_date.year}"
+    day_cell_text_regex = re.compile(rf"^0?{day_label}$")
     scope = calendar
     day_cell_candidates: list[Locator] = []
     if label == "end":
@@ -3121,16 +3149,17 @@ async def _click_day_in_calendar(
                     scope.locator(f"[aria-label*='{partial_aria_label}']"),
                     scope.locator(
                         "[role='gridcell']",
-                        has_text=re.compile(rf"^{day_label}$"),
+                        has_text=day_cell_text_regex,
                     ),
                     scope.get_by_role("gridcell", name=day_label),
+                    scope.get_by_role("gridcell", name=day_label_padded),
                     scope.locator(
                         "button",
-                        has_text=re.compile(rf"^{day_label}$"),
+                        has_text=day_cell_text_regex,
                     ),
                     scope.locator(
                         "td",
-                        has_text=re.compile(rf"^{day_label}$"),
+                        has_text=day_cell_text_regex,
                     ),
                 ]
             )
@@ -3188,16 +3217,17 @@ async def _click_day_in_calendar(
                 scope.locator(f"[aria-label*='{partial_aria_label}']"),
                 scope.locator(
                     "[role='gridcell']",
-                    has_text=re.compile(rf"^{day_label}$"),
+                    has_text=day_cell_text_regex,
                 ),
                 scope.get_by_role("gridcell", name=day_label),
+                scope.get_by_role("gridcell", name=day_label_padded),
                 scope.locator(
                     "button",
-                    has_text=re.compile(rf"^{day_label}$"),
+                    has_text=day_cell_text_regex,
                 ),
                 scope.locator(
                     "td",
-                    has_text=re.compile(rf"^{day_label}$"),
+                    has_text=day_cell_text_regex,
                 ),
             ]
         )
