@@ -1332,6 +1332,17 @@ async def _run_store_discovery(
             status=sync_status,
             error_message=sync_error_value,
         )
+        log_event(
+            logger=logger,
+            phase="uc_window",
+            message="UC GST window complete",
+            store_code=store.store_code,
+            from_date=from_date,
+            to_date=to_date,
+            gst_downloaded_path=outcome.download_path,
+            gst_ingested_rows=outcome.final_rows,
+            final_status=sync_status,
+        )
         with contextlib.suppress(Exception):
             await context.close()
 
