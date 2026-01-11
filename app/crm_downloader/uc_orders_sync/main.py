@@ -375,9 +375,12 @@ async def main(
     from_date: date | None = None,
     to_date: date | None = None,
     store_codes: Sequence[str] | None = None,
+    run_orders: bool = True,
+    run_sales: bool = True,
 ) -> None:
     """Run the UC GST report discovery flow (login + selector identification)."""
 
+    _ = run_orders, run_sales
     resolved_run_id = run_id or new_run_id()
     resolved_run_date = datetime.now(get_timezone())
     resolved_env = run_env or config.run_env
