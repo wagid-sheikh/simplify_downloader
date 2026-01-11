@@ -489,6 +489,7 @@ class DeferredOrdersSyncLog:
 class StoreReport:
     status: str
     filenames: list[str] = field(default_factory=list)
+    downloaded_path: str | None = None
     staging_rows: int | None = None
     final_rows: int | None = None
     rows_downloaded: int | None = None
@@ -509,6 +510,7 @@ class StoreReport:
         return {
             "status": self.status,
             "filenames": list(self.filenames),
+            "downloaded_path": self.downloaded_path,
             "staging_rows": self.staging_rows,
             "final_rows": self.final_rows,
             "rows_downloaded": self.rows_downloaded,
@@ -1729,6 +1731,47 @@ def _resolve_sync_log_status(
     if orders_skipped or sales_skipped:
         return "skipped"
     return "failed"
+
+
+def _resolve_ingested_rows(report: StoreReport | None) -> int | None:
+    if report is None:
+        return None
+    for candidate in (report.rows_ingested, report.final_rows, report.staging_rows):
+        if candidate is not None:
+            return int(candidate)
+    return None
+
+
+def _log_td_window_summary(
+    *,
+    logger: JsonLogger,
+    store_code: str,
+    from_date: date,
+    to_date: date,
+    orders_report: StoreReport | None,
+    sales_report: StoreReport | None,
+    run_orders: bool,
+    run_sales: bool,
+) -> None:
+    final_status = _resolve_sync_log_status(
+        orders_report=orders_report,
+        sales_report=sales_report,
+        run_orders=run_orders,
+        run_sales=run_sales,
+    )
+    log_event(
+        logger=logger,
+        phase="window_summary",
+        message="TD window summary",
+        store_code=store_code,
+        from_date=from_date,
+        to_date=to_date,
+        orders_downloaded_path=orders_report.downloaded_path if orders_report else None,
+        sales_downloaded_path=sales_report.downloaded_path if sales_report else None,
+        orders_ingested_rows=_resolve_ingested_rows(orders_report),
+        sales_ingested_rows=_resolve_ingested_rows(sales_report),
+        final_status=final_status,
+    )
 
 
 # ── Playwright helpers ───────────────────────────────────────────────────────
@@ -5328,6 +5371,7 @@ async def _execute_sales_flow(
     return StoreReport(
         status=sales_status or "error",
         filenames=[Path(sales_download_path).name] if sales_download_path else [],
+        downloaded_path=sales_download_path,
         staging_rows=sales_ingest_result.staging_rows if sales_ingest_result else None,
         final_rows=sales_ingest_result.final_rows if sales_ingest_result else None,
         rows_downloaded=sales_ingest_result.rows_downloaded if sales_ingest_result else None,
@@ -5479,6 +5523,7 @@ async def _run_store_discovery(
     outcome: StoreOutcome | None = None
     orders_report: StoreReport | None = None
     sales_report: StoreReport | None = None
+    orders_download_path: str | None = None
     stored_state_path: str | None = None
     probe_reason: str | None = None
     probe_result: SessionProbeResult | None = None
@@ -5737,6 +5782,7 @@ async def _run_store_discovery(
                     download_dir=download_dir,
                 )
                 if success:
+                    orders_download_path = detail
                     await _update_orders_sync_log(
                         logger=store_logger,
                         log_id=sync_log_id,
@@ -5757,6 +5803,7 @@ async def _run_store_discovery(
                             orders_report = StoreReport(
                                 status="error",
                                 filenames=[Path(detail).name],
+                                downloaded_path=orders_download_path,
                                 message="Orders downloaded but could not ingest",
                                 error_message="Missing cost_center for TD store; cannot ingest orders",
                             )
@@ -5815,6 +5862,7 @@ async def _run_store_discovery(
                             orders_report = StoreReport(
                                 status="error",
                                 filenames=[Path(detail).name],
+                                downloaded_path=orders_download_path,
                                 message="Orders ingestion failed",
                                 error_message=str(exc),
                             )
@@ -5852,6 +5900,7 @@ async def _run_store_discovery(
                     orders_report = StoreReport(
                         status=status_label,
                         filenames=[Path(detail).name],
+                        downloaded_path=orders_download_path,
                         staging_rows=ingest_result.staging_rows if ingest_result else None,
                         final_rows=ingest_result.final_rows if ingest_result else None,
                         rows_downloaded=ingest_result.rows_downloaded if ingest_result else None,
@@ -6074,6 +6123,16 @@ async def _run_store_discovery(
             outcome,
             orders_result=orders_report,
             sales_result=sales_report,
+        )
+        _log_td_window_summary(
+            logger=store_logger,
+            store_code=store.store_code,
+            from_date=run_start_date,
+            to_date=run_end_date,
+            orders_report=orders_report,
+            sales_report=sales_report,
+            run_orders=run_orders,
+            run_sales=run_sales,
         )
         await _close_context(context)
 
