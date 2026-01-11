@@ -157,6 +157,7 @@ async def main(
     browser: Browser | None = None
 
     try:
+        await _start_run_summary(summary=summary, logger=logger)
         log_event(
             logger=logger,
             phase="init",
@@ -1312,6 +1313,56 @@ async def _persist_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonLog
             phase="run_summary",
             status="error",
             message="Failed to persist run summary",
+            run_id=summary.run_id,
+            error=str(exc),
+        )
+        return False
+
+
+async def _start_run_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonLogger) -> bool:
+    if not config.database_url:
+        log_event(
+            logger=logger,
+            phase="run_summary",
+            status="warn",
+            message="Skipping run summary start because database_url is missing",
+            run_id=summary.run_id,
+        )
+        return False
+
+    record = {
+        "pipeline_name": PIPELINE_NAME,
+        "run_id": summary.run_id,
+        "run_env": summary.run_env,
+        "started_at": summary.started_at,
+        "report_date": summary.report_date,
+        "overall_status": "running",
+        "summary_text": "Run started.",
+        "phases_json": {},
+        "metrics_json": {},
+    }
+    try:
+        existing = await fetch_summary_for_run(config.database_url, summary.run_id)
+        if existing:
+            await update_run_summary(config.database_url, summary.run_id, record)
+            action = "updated"
+        else:
+            await insert_run_summary(config.database_url, record)
+            action = "inserted"
+        log_event(
+            logger=logger,
+            phase="run_summary",
+            message=f"Run summary {action} at start",
+            run_id=summary.run_id,
+            overall_status="running",
+        )
+        return True
+    except Exception as exc:  # pragma: no cover - defensive persistence
+        log_event(
+            logger=logger,
+            phase="run_summary",
+            status="error",
+            message="Failed to start run summary",
             run_id=summary.run_id,
             error=str(exc),
         )
