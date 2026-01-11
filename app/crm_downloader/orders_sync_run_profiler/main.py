@@ -629,7 +629,8 @@ async def main(
                 sync_group=group,
             )
             return
-        semaphore = asyncio.Semaphore(max(1, max_workers))
+        group_max_workers = 1 if group == "UC" else max_workers
+        semaphore = asyncio.Semaphore(max(1, group_max_workers))
 
         async def _guarded(store: StoreProfile) -> None:
             async with semaphore:
