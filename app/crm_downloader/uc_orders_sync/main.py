@@ -3856,6 +3856,7 @@ async def _start_run_summary(*, summary: UcOrdersDiscoverySummary, logger: JsonL
         "summary_text": "Run started.",
         "phases_json": {},
         "metrics_json": {},
+        "created_at": summary.started_at,
     }
     try:
         existing = await fetch_summary_for_run(config.database_url, summary.run_id)
