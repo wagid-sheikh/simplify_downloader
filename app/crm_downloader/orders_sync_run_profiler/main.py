@@ -204,7 +204,7 @@ async def _fetch_last_success_date(
 
 async def _fetch_latest_log_status(
     *, database_url: str, pipeline_id: int, store_code: str, run_id: str
-) -> str | None:
+) -> tuple[str | None, str | None]:
     async with session_scope(database_url) as session:
         stmt = (
             sa.select(orders_sync_log.c.status, orders_sync_log.c.error_message)
@@ -216,11 +216,12 @@ async def _fetch_latest_log_status(
         )
         row = (await session.execute(stmt)).first()
     if not row:
-        return None
+        return None, None
     status = row[0]
-    if status:
-        return str(status)
-    return None
+    error_message = row[1]
+    status_value = str(status) if status else None
+    error_value = str(error_message) if error_message else None
+    return status_value, error_value
 
 
 async def _fetch_run_summary_status(*, database_url: str, run_id: str) -> str | None:
@@ -235,6 +236,31 @@ async def _fetch_run_summary_status(*, database_url: str, run_id: str) -> str | 
     if raw_status in {"error", "failed", "fail"}:
         return "failed"
     return None
+
+
+def _is_uc_date_picker_failure(error_message: str | None) -> bool:
+    if not error_message:
+        return False
+    normalized = error_message.lower()
+    return any(
+        token in normalized
+        for token in (
+            "date picker",
+            "date-picker",
+            "date range",
+            "calendar",
+        )
+    )
+
+
+def _normalize_window_status(
+    *, pipeline_name: str, status: str, error_message: str | None
+) -> tuple[str, str]:
+    if pipeline_name != "uc_orders_sync":
+        return status, ""
+    if status == "failed" and _is_uc_date_picker_failure(error_message):
+        return "partial", " (date picker failure mapped to partial)"
+    return status, ""
 
 
 def _window_settings(
@@ -381,64 +407,89 @@ async def _run_store_windows(
     overall_status = "success"
     for index, (window_start, window_end) in enumerate(windows, start=1):
         window_run_id = f"{run_id}_{store.store_code}_{index:03d}"
-        log_event(
-            logger=logger,
-            phase="window",
-            message="Running orders sync window",
-            store_code=store.store_code,
-            from_date=window_start,
-            to_date=window_end,
-            window_index=index,
-        )
-        await pipeline_fn(
-            run_env=run_env,
-            run_id=window_run_id,
-            from_date=window_start,
-            to_date=window_end,
-            store_codes=[store.store_code],
-            run_orders=True,
-            run_sales=True,
-        )
-        status = await _fetch_latest_log_status(
-            database_url=config.database_url,
-            pipeline_id=pipeline_id,
-            store_code=store.store_code,
-            run_id=window_run_id,
-        )
+        status = "skipped"
         status_note = ""
-        if not status:
-            summary_status = await _fetch_run_summary_status(
+        attempts = 0
+        for attempt in range(2):
+            attempts = attempt + 1
+            log_event(
+                logger=logger,
+                phase="window",
+                message="Running orders sync window",
+                store_code=store.store_code,
+                from_date=window_start,
+                to_date=window_end,
+                window_index=index,
+                window_attempt=attempts,
+            )
+            await pipeline_fn(
+                run_env=run_env,
+                run_id=window_run_id,
+                from_date=window_start,
+                to_date=window_end,
+                store_codes=[store.store_code],
+                run_orders=True,
+                run_sales=True,
+            )
+            fetched_status, error_message = await _fetch_latest_log_status(
                 database_url=config.database_url,
+                pipeline_id=pipeline_id,
+                store_code=store.store_code,
                 run_id=window_run_id,
             )
-            if summary_status:
-                status = summary_status
-                status_note = " (from pipeline run summary)"
+            status_note = ""
+            if not fetched_status:
+                summary_status = await _fetch_run_summary_status(
+                    database_url=config.database_url,
+                    run_id=window_run_id,
+                )
+                if summary_status:
+                    fetched_status = summary_status
+                    status_note = " (from pipeline run summary)"
+                    log_event(
+                        logger=logger,
+                        phase="window",
+                        status="warn",
+                        message="orders_sync_log row missing; using pipeline run summary status",
+                        store_code=store.store_code,
+                        run_id=window_run_id,
+                        window_index=index,
+                        window_status=summary_status,
+                    )
+                else:
+                    fetched_status = "skipped"
+                    status_note = " (missing orders_sync_log row)"
+                    log_event(
+                        logger=logger,
+                        phase="window",
+                        status="warn",
+                        message="orders_sync_log row missing; continuing without status",
+                        store_code=store.store_code,
+                        run_id=window_run_id,
+                        window_index=index,
+                    )
+            status = (fetched_status or "skipped").lower()
+            if status not in {"success", "partial", "failed", "skipped"}:
+                status = "failed"
+            status, mapped_note = _normalize_window_status(
+                pipeline_name=pipeline_name, status=status, error_message=error_message
+            )
+            status_note += mapped_note
+            if status in {"failed", "partial"} and attempt == 0:
                 log_event(
                     logger=logger,
                     phase="window",
                     status="warn",
-                    message="orders_sync_log row missing; using pipeline run summary status",
+                    message="Retrying window after non-success status",
                     store_code=store.store_code,
-                    run_id=window_run_id,
                     window_index=index,
-                    window_status=summary_status,
+                    window_status=status,
+                    window_attempt=attempts,
                 )
-            else:
-                status = "skipped"
-                status_note = " (missing orders_sync_log row)"
-                log_event(
-                    logger=logger,
-                    phase="window",
-                    status="warn",
-                    message="orders_sync_log row missing; continuing without status",
-                    store_code=store.store_code,
-                    run_id=window_run_id,
-                    window_index=index,
-                )
-        status = (status or "skipped").lower()
-        if status not in {"success", "partial", "failed", "skipped"}:
-            status = "failed"
+                continue
+            if attempt > 0:
+                status_note += " (after retry)"
+            break
         detail_lines.append(
             f"{window_start.isoformat()} → {window_end.isoformat()}: {status}{status_note}"
         )
@@ -452,6 +503,7 @@ async def _run_store_windows(
                 store_code=store.store_code,
                 window_index=index,
                 window_status=status,
+                window_attempts=attempts,
             )
             break
     finished_at = datetime.now(timezone.utc)
