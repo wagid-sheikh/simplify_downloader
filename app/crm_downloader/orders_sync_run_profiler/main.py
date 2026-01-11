@@ -648,7 +648,7 @@ async def _run_store_windows(
                     error_message=error_message,
                 )
                 if fetched_status and uc_payload["download_path"] and uc_payload["ingest_success"]:
-                    if status in {"failed", "partial"}:
+                    if status != "success":
                         status = "success"
                         status_note += " (from uc window outcome)"
             if not fetched_status:
