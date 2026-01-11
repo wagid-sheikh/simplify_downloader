@@ -989,6 +989,16 @@ async def _run_store_discovery(
         run_start_date=from_date,
         run_end_date=to_date,
     )
+    if sync_log_id is None:
+        log_event(
+            logger=logger,
+            phase="orders_sync_log",
+            status="error",
+            message="Hard error: orders sync log row missing; aborting store discovery",
+            store_code=store.store_code,
+            run_id=run_id,
+        )
+        return
     download_succeeded = False
     sync_error_message: str | None = None
 
