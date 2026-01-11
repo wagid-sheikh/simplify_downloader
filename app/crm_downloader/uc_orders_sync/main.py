@@ -680,6 +680,17 @@ async def _insert_orders_sync_log(
     )
     if not pipeline_id:
         return None
+    existing_summary = await fetch_summary_for_run(config.database_url, run_id)
+    if not existing_summary:
+        log_event(
+            logger=logger,
+            phase="orders_sync_log",
+            status="warn",
+            message="Skipping orders sync log insert because run summary row is missing",
+            run_id=run_id,
+            store_code=store.store_code,
+        )
+        return None
 
     try:
         async with session_scope(config.database_url) as session:
@@ -3059,6 +3070,7 @@ async def _start_run_summary(*, summary: UcOrdersDiscoverySummary, logger: JsonL
         "run_id": summary.run_id,
         "run_env": summary.run_env,
         "started_at": summary.started_at,
+        "finished_at": summary.started_at,
         "report_date": summary.report_date,
         "overall_status": "running",
         "summary_text": "Run started.",
