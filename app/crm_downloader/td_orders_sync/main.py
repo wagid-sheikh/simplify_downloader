@@ -4871,7 +4871,7 @@ async def _run_report_iframe_flow(
         )
     filename = filename_builder(store.store_code, from_date, to_date)
     target_path = download_dir / filename
-    download_wait_timeout_ms = min(nav_timeout_ms, 8_000)
+    download_wait_timeout_ms = nav_timeout_ms
 
     downloaded, downloaded_path, matched_range_text, last_status = await _wait_for_report_request_download_link(
         frame,
