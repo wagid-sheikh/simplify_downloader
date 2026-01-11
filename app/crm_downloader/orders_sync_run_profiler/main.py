@@ -80,8 +80,10 @@ def _parse_date(value: str) -> date:
 
 def _normalize_sync_group(value: str) -> str:
     normalized = value.strip().upper()
+    if normalized == "ALL":
+        return normalized
     if normalized not in PIPELINE_BY_GROUP:
-        raise argparse.ArgumentTypeError("sync_group must be TD or UC")
+        raise argparse.ArgumentTypeError("sync_group must be TD, UC, or ALL")
     return normalized
 
 
@@ -451,7 +453,7 @@ async def _process_store(
 
 async def main(
     *,
-    sync_group: str,
+    sync_group: str | None,
     store_codes: Sequence[str] | None = None,
     from_date: date | None = None,
     to_date: date | None = None,
@@ -465,8 +467,7 @@ async def main(
     resolved_env = run_env or config.run_env
     resolved_run_id = run_id or new_run_id()
     logger = get_logger(run_id=resolved_run_id)
-    resolved_sync_group = _normalize_sync_group(sync_group)
-    pipeline_name, pipeline_fn = PIPELINE_BY_GROUP[resolved_sync_group]
+    resolved_sync_group = _normalize_sync_group(sync_group or "ALL")
     if not config.database_url:
         log_event(
             logger=logger,
@@ -475,48 +476,54 @@ async def main(
             message="database_url missing; exiting",
         )
         return
-    pipeline_id = await _fetch_pipeline_id(
-        logger=logger, database_url=config.database_url, pipeline_name=pipeline_name
+    group_items = (
+        PIPELINE_BY_GROUP.items()
+        if resolved_sync_group == "ALL"
+        else [(resolved_sync_group, PIPELINE_BY_GROUP[resolved_sync_group])]
     )
-    if not pipeline_id:
-        return
-    stores = await _load_store_profiles(
-        logger=logger, sync_group=resolved_sync_group, store_codes=store_codes
-    )
-    if not stores:
-        log_event(
-            logger=logger,
-            phase="init",
-            status="warn",
-            message="No stores found for sync_group",
-            sync_group=resolved_sync_group,
+    for group, (pipeline_name, pipeline_fn) in group_items:
+        pipeline_id = await _fetch_pipeline_id(
+            logger=logger, database_url=config.database_url, pipeline_name=pipeline_name
         )
-        return
-    semaphore = asyncio.Semaphore(max(1, max_workers))
-
-    async def _guarded(store: StoreProfile) -> None:
-        async with semaphore:
-            await _process_store(
+        if not pipeline_id:
+            continue
+        stores = await _load_store_profiles(
+            logger=logger, sync_group=group, store_codes=store_codes
+        )
+        if not stores:
+            log_event(
                 logger=logger,
-                store=store,
-                pipeline_name=pipeline_name,
-                pipeline_id=pipeline_id,
-                pipeline_fn=pipeline_fn,
-                run_env=resolved_env,
-                run_id=resolved_run_id,
-                backfill_days=backfill_days,
-                window_days=window_days,
-                overlap_days=overlap_days,
-                from_date=from_date,
-                to_date=to_date,
+                phase="init",
+                status="warn",
+                message="No stores found for sync_group",
+                sync_group=group,
             )
+            continue
+        semaphore = asyncio.Semaphore(max(1, max_workers))
 
-    await asyncio.gather(*[_guarded(store) for store in stores])
+        async def _guarded(store: StoreProfile) -> None:
+            async with semaphore:
+                await _process_store(
+                    logger=logger,
+                    store=store,
+                    pipeline_name=pipeline_name,
+                    pipeline_id=pipeline_id,
+                    pipeline_fn=pipeline_fn,
+                    run_env=resolved_env,
+                    run_id=resolved_run_id,
+                    backfill_days=backfill_days,
+                    window_days=window_days,
+                    overlap_days=overlap_days,
+                    from_date=from_date,
+                    to_date=to_date,
+                )
+
+        await asyncio.gather(*[_guarded(store) for store in stores])
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run orders sync profiler with windowed backfill.")
-    parser.add_argument("--sync-group", required=True, type=_normalize_sync_group)
+    parser.add_argument("--sync-group", default="ALL", type=_normalize_sync_group)
     parser.add_argument("--store-code", action="append", dest="store_codes")
     parser.add_argument("--from-date", type=_parse_date)
     parser.add_argument("--to-date", type=_parse_date)
