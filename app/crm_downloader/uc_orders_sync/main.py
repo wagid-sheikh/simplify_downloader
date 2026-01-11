@@ -3024,6 +3024,7 @@ async def _click_day_in_calendar(
         f"{month_name_abbrev} {day_label}, {target_date.year}",
     ]
     partial_aria_label = f"{month_name} {day_label}"
+    partial_aria_label_with_year = f"{month_name} {day_label}, {target_date.year}"
     aria_label_unpadded = f"{month_name} {day_label}, {target_date.year}"
     scope = calendar
     day_cell_candidates: list[Locator] = []
@@ -3045,13 +3046,19 @@ async def _click_day_in_calendar(
             ]
             day_cell_candidates.extend(
                 [
+                    scope.locator(f"td[aria-label*='{partial_aria_label_with_year}']"),
                     scope.locator(f"[aria-label*='{partial_aria_label}']"),
                     scope.locator(
                         "[role='gridcell']",
                         has_text=re.compile(rf"^{day_label}$"),
                     ),
+                    scope.get_by_role("gridcell", name=day_label),
                     scope.locator(
                         "button",
+                        has_text=re.compile(rf"^{day_label}$"),
+                    ),
+                    scope.locator(
+                        "td",
                         has_text=re.compile(rf"^{day_label}$"),
                     ),
                 ]
@@ -3106,13 +3113,19 @@ async def _click_day_in_calendar(
         ]
         day_cell_candidates.extend(
             [
+                scope.locator(f"td[aria-label*='{partial_aria_label_with_year}']"),
                 scope.locator(f"[aria-label*='{partial_aria_label}']"),
                 scope.locator(
                     "[role='gridcell']",
                     has_text=re.compile(rf"^{day_label}$"),
                 ),
+                scope.get_by_role("gridcell", name=day_label),
                 scope.locator(
                     "button",
+                    has_text=re.compile(rf"^{day_label}$"),
+                ),
+                scope.locator(
+                    "td",
                     has_text=re.compile(rf"^{day_label}$"),
                 ),
             ]
