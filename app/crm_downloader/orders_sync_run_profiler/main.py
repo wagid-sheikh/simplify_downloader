@@ -367,6 +367,48 @@ def _extract_window_outcome_metadata(
     return download_paths, ingestion_counts
 
 
+def _first_mapping(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    for value in payload.values():
+        if isinstance(value, Mapping):
+            return value
+    return {}
+
+
+def _build_uc_window_log(
+    *,
+    download_paths: Mapping[str, Any],
+    ingestion_counts: Mapping[str, Any],
+    error_message: str | None,
+) -> dict[str, Any]:
+    path_payload = _coerce_dict(download_paths.get("gst"))
+    if not path_payload:
+        path_payload = _first_mapping(download_paths)
+    download_path = path_payload.get("download_path")
+
+    counts_payload = _coerce_dict(ingestion_counts.get("gst"))
+    if not counts_payload:
+        counts_payload = _first_mapping(ingestion_counts)
+    staging_rows = counts_payload.get("staging_rows")
+    final_rows = counts_payload.get("final_rows")
+
+    ingest_occurred = staging_rows is not None or final_rows is not None
+    ingest_success = bool(ingest_occurred)
+    failure_reason = None
+    if not ingest_occurred:
+        if not download_path:
+            failure_reason = error_message or "Download did not complete"
+        else:
+            failure_reason = error_message or "Ingestion did not run"
+
+    return {
+        "download_path": download_path,
+        "staging_rows": staging_rows,
+        "final_rows": final_rows,
+        "ingest_success": ingest_success,
+        "ingest_failure_reason": failure_reason,
+    }
+
+
 def _is_uc_date_picker_failure(error_message: str | None) -> bool:
     if not error_message:
         return False
@@ -682,6 +724,32 @@ async def _run_store_windows(
             download_paths=download_paths or None,
             ingestion_counts=ingestion_counts or None,
         )
+        if pipeline_name == "uc_orders_sync":
+            uc_payload = _build_uc_window_log(
+                download_paths=download_paths,
+                ingestion_counts=ingestion_counts,
+                error_message=error_message,
+            )
+            uc_status = "ok" if uc_payload["ingest_success"] else ("error" if status == "failed" else "warn")
+            log_event(
+                logger=logger,
+                phase="uc_window_log",
+                status=uc_status,
+                message="UC window ingestion snapshot",
+                store_code=store.store_code,
+                pipeline_name=pipeline_name,
+                run_id=run_id,
+                window_run_id=window_run_id,
+                window_index=index,
+                from_date=window_start,
+                to_date=window_end,
+                window_status=status,
+                download_path=uc_payload["download_path"],
+                staging_rows=uc_payload["staging_rows"],
+                final_rows=uc_payload["final_rows"],
+                ingest_success=uc_payload["ingest_success"],
+                ingest_failure_reason=uc_payload["ingest_failure_reason"],
+            )
         detail_lines.append(
             f"{window_start.isoformat()} → {window_end.isoformat()}: {status}{status_note}"
         )
