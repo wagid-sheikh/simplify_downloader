@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, Mapping, Sequence
 from urllib.parse import urlparse
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from playwright.async_api import Browser, ElementHandle, Locator, Page, TimeoutError, async_playwright
 
 from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
@@ -740,7 +741,7 @@ async def _insert_orders_sync_log(
         async with session_scope(config.database_url) as session:
             log_id = (
                 await session.execute(
-                    sa.insert(orders_sync_log)
+                    pg_insert(orders_sync_log)
                     .values(
                         pipeline_id=pipeline_id,
                         run_id=run_id,
@@ -750,6 +751,20 @@ async def _insert_orders_sync_log(
                         from_date=run_start_date,
                         to_date=run_end_date,
                         status="running",
+                    )
+                    .on_conflict_do_update(
+                        index_elements=[
+                            orders_sync_log.c.pipeline_id,
+                            orders_sync_log.c.store_code,
+                            orders_sync_log.c.from_date,
+                            orders_sync_log.c.to_date,
+                            orders_sync_log.c.run_id,
+                        ],
+                        set_={
+                            "attempt_no": orders_sync_log.c.attempt_no + 1,
+                            "status": "running",
+                            "updated_at": sa.func.now(),
+                        },
                     )
                     .returning(orders_sync_log.c.id)
                 )
