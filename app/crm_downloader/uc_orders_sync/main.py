@@ -1790,6 +1790,51 @@ async def _apply_date_range(
         )
         return False, 0
 
+    async def _fallback_set_date_range_input(reason: str) -> tuple[bool, int]:
+        date_range_value = f"{from_date:%Y-%m-%d} - {to_date:%Y-%m-%d}"
+        try:
+            await date_input.evaluate(
+                """
+                (input, value) => {
+                    if (input.hasAttribute("readonly")) {
+                        input.removeAttribute("readonly");
+                    }
+                    input.value = value;
+                    input.dispatchEvent(new Event("input", { bubbles: true }));
+                    input.dispatchEvent(new Event("change", { bubbles: true }));
+                }
+                """,
+                date_range_value,
+            )
+        except Exception as exc:
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="Date range fallback failed to update input",
+                store_code=store.store_code,
+                reason=reason,
+                date_range_value=date_range_value,
+                error=str(exc),
+            )
+            return False, 0
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Date range selection fallback used",
+            store_code=store.store_code,
+            reason=reason,
+            date_range_value=date_range_value,
+        )
+        refreshed, row_count = await _wait_for_report_refresh(
+            page=page,
+            container=container,
+            logger=logger,
+            store=store,
+        )
+        return refreshed, row_count
+
     with contextlib.suppress(Exception):
         await date_input.scroll_into_view_if_needed()
     popup = None
@@ -1823,7 +1868,7 @@ async def _apply_date_range(
         )
         popup = await _reopen_date_picker_popup(page=page, logger=logger, store=store)
     if popup is None:
-        return False, 0
+        return await _fallback_set_date_range_input("popup-missing")
 
     calendars = await _get_calendar_locators(popup=popup)
     start_calendar = calendars[0]
@@ -1855,7 +1900,7 @@ async def _apply_date_range(
             end_date=to_date,
             error=str(exc),
         )
-        return False, 0
+        return await _fallback_set_date_range_input("calendar-navigation-error")
     if not start_ok or not end_ok:
         log_event(
             logger=logger,
@@ -1868,7 +1913,7 @@ async def _apply_date_range(
             start_ok=start_ok,
             end_ok=end_ok,
         )
-        return False, 0
+        return await _fallback_set_date_range_input("calendar-selection-incomplete")
 
     overlay_selector = ".calendar-body.show"
     try:
