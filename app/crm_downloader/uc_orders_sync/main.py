@@ -775,7 +775,13 @@ async def _insert_orders_sync_log(
                     pg_insert(orders_sync_log)
                     .values(**insert_values)
                     .on_conflict_do_update(
-                        constraint="uq_orders_sync_log_window",
+                        index_elements=(
+                            "pipeline_id",
+                            "store_code",
+                            "from_date",
+                            "to_date",
+                            "run_id",
+                        ),
                         set_={
                             "attempt_no": orders_sync_log.c.attempt_no + 1,
                             "status": "running",
