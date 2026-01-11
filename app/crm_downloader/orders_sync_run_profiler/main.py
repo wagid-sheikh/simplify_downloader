@@ -247,6 +247,63 @@ def _normalize_run_summary_status(summary: Mapping[str, Any] | None) -> str | No
     return None
 
 
+def _normalize_pipeline_status(raw_status: str | None) -> str | None:
+    if not raw_status:
+        return None
+    normalized = str(raw_status).strip().lower()
+    if normalized in {"ok", "success"}:
+        return "success"
+    if normalized in {"warning", "warn", "partial"}:
+        return "partial"
+    if normalized in {"error", "failed", "fail"}:
+        return "failed"
+    if normalized in {"skipped", "skip"}:
+        return "skipped"
+    return None
+
+
+def _extract_summary_store_status(
+    summary: Mapping[str, Any] | None, *, pipeline_name: str, store_code: str
+) -> tuple[str | None, str | None]:
+    if not summary:
+        return None, None
+    metrics = _coerce_dict(summary.get("metrics_json"))
+    if not metrics:
+        return None, None
+    normalized_code = store_code.upper()
+    candidates: list[tuple[str | None, str | None]] = []
+
+    stores_summary = _coerce_dict(_coerce_dict(metrics.get("stores_summary")).get("stores"))
+    summary_store = _coerce_dict(stores_summary.get(normalized_code))
+    if summary_store:
+        candidates.append((summary_store.get("status"), summary_store.get("error_message") or summary_store.get("message")))
+
+    if pipeline_name == "td_orders_sync":
+        stores = _coerce_dict(metrics.get("stores"))
+        store_outcome = _coerce_dict(stores.get(normalized_code))
+        if store_outcome:
+            candidates.append((store_outcome.get("status"), store_outcome.get("message")))
+    elif pipeline_name == "uc_orders_sync":
+        stores = _coerce_dict(_coerce_dict(metrics.get("stores")).get("outcomes"))
+        store_outcome = _coerce_dict(stores.get(normalized_code))
+        if store_outcome:
+            candidates.append((store_outcome.get("status"), store_outcome.get("message")))
+
+    notification = _coerce_dict(metrics.get("notification_payload"))
+    for entry in notification.get("stores") or []:
+        if not isinstance(entry, Mapping):
+            continue
+        if str(entry.get("store_code", "")).upper() == normalized_code:
+            candidates.append((entry.get("status"), entry.get("message")))
+
+    for status_value, message in candidates:
+        normalized_status = _normalize_pipeline_status(status_value)
+        if normalized_status:
+            message_value = str(message) if message else None
+            return normalized_status, message_value
+    return None, None
+
+
 def _extract_window_outcome_metadata(
     summary: Mapping[str, Any] | None, *, store_code: str
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -530,6 +587,9 @@ async def _run_store_windows(
             )
             summary = await fetch_summary_for_run(config.database_url, window_run_id)
             summary_status = _normalize_run_summary_status(summary)
+            summary_store_status, summary_store_message = _extract_summary_store_status(
+                summary, pipeline_name=pipeline_name, store_code=store.store_code
+            )
             fetched_status, error_message = await _fetch_latest_log_status(
                 database_url=config.database_url,
                 pipeline_id=pipeline_id,
@@ -538,9 +598,26 @@ async def _run_store_windows(
             )
             status_note = ""
             if not fetched_status:
-                if summary_status:
+                if summary_store_status:
+                    fetched_status = summary_store_status
+                    status_note = " (from pipeline store summary)"
+                    if not error_message and summary_store_message:
+                        error_message = summary_store_message
+                    log_event(
+                        logger=logger,
+                        phase="window",
+                        status="warn",
+                        message="orders_sync_log row missing; using pipeline store summary status",
+                        store_code=store.store_code,
+                        run_id=window_run_id,
+                        window_index=index,
+                        window_status=summary_store_status,
+                    )
+                elif summary_status:
                     fetched_status = summary_status
                     status_note = " (from pipeline run summary)"
+                    if not error_message and summary_store_message:
+                        error_message = summary_store_message
                     log_event(
                         logger=logger,
                         phase="window",
