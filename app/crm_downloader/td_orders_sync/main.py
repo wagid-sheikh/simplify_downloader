@@ -1336,6 +1336,7 @@ async def _start_run_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonL
         "run_env": summary.run_env,
         "started_at": summary.started_at,
         "finished_at": summary.started_at,
+        "total_time_taken": "00:00:00",
         "report_date": summary.report_date,
         "overall_status": "running",
         "summary_text": "Run started.",
