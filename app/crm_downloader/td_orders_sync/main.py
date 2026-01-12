@@ -1776,6 +1776,38 @@ def _resolve_ingest_status(report: StoreReport | None, *, run_report: bool) -> s
     return "error"
 
 
+def _merge_outcome_status(current: str, incoming: str | None) -> str:
+    if incoming == "error":
+        return "error"
+    if incoming == "warning" and current != "error":
+        return "warning"
+    return current
+
+
+def _build_store_outcome_details(
+    *,
+    orders_report: StoreReport | None,
+    sales_report: StoreReport | None,
+    error_context: str | None = None,
+) -> tuple[str, str]:
+    outcome_status = "ok"
+    outcome_messages: list[str] = []
+    if orders_report:
+        outcome_status = _merge_outcome_status(outcome_status, orders_report.status)
+        if orders_report.message:
+            outcome_messages.append(f"Orders: {orders_report.message}")
+    if sales_report:
+        outcome_status = _merge_outcome_status(outcome_status, sales_report.status)
+        if sales_report.message:
+            outcome_messages.append(f"Sales: {sales_report.message}")
+    if error_context:
+        if outcome_status == "ok":
+            outcome_status = "warning"
+        outcome_messages.append(f"Error context: {error_context}")
+    outcome_message = "; ".join(outcome_messages) if outcome_messages else "Store run completed"
+    return outcome_status, outcome_message
+
+
 def _log_td_window_summary(
     *,
     logger: JsonLogger,
@@ -1793,6 +1825,8 @@ def _log_td_window_summary(
         run_orders=run_orders,
         run_sales=run_sales,
     )
+    orders_error_context = orders_report.error_message if orders_report else None
+    sales_error_context = sales_report.error_message if sales_report else None
     log_event(
         logger=logger,
         phase="window_summary",
@@ -1812,6 +1846,28 @@ def _log_td_window_summary(
         sales_ingested_rows=_resolve_ingested_rows(sales_report),
         final_status=final_status,
     )
+    has_downloads_or_ingest = any(
+        [
+            orders_report and orders_report.downloaded_path,
+            sales_report and sales_report.downloaded_path,
+            _resolve_ingested_rows(orders_report),
+            _resolve_ingested_rows(sales_report),
+        ]
+    )
+    if final_status == "failed" and has_downloads_or_ingest:
+        log_event(
+            logger=logger,
+            phase="window_summary",
+            status="warn",
+            message="Window marked failed despite downloads/ingest activity",
+            store_code=store_code,
+            from_date=from_date,
+            to_date=to_date,
+            orders_status=orders_report.status if orders_report else None,
+            sales_status=sales_report.status if sales_report else None,
+            orders_error_context=orders_error_context,
+            sales_error_context=sales_error_context,
+        )
 
 
 # ── Playwright helpers ───────────────────────────────────────────────────────
@@ -6076,27 +6132,13 @@ async def _run_store_discovery(
             sales_report = StoreReport(status="skipped", message="Sales sync skipped by flag")
 
         if outcome is None:
-
-            def _merge_status(current: str, incoming: str | None) -> str:
-                if incoming == "error":
-                    return "error"
-                if incoming == "warning" and current != "error":
-                    return "warning"
-                return current
-
-            outcome_status = "ok"
-            outcome_messages: list[str] = []
-            if orders_report:
-                outcome_status = _merge_status(outcome_status, orders_report.status)
-                if orders_report.message:
-                    outcome_messages.append(f"Orders: {orders_report.message}")
-            if sales_report:
-                outcome_status = _merge_status(outcome_status, sales_report.status)
-                if sales_report.message:
-                    outcome_messages.append(f"Sales: {sales_report.message}")
+            outcome_status, outcome_message = _build_store_outcome_details(
+                orders_report=orders_report,
+                sales_report=sales_report,
+            )
             outcome = StoreOutcome(
                 status=outcome_status,
-                message="; ".join(outcome_messages) if outcome_messages else "Store run completed",
+                message=outcome_message,
                 final_url=page.url,
                 verification_seen=verification_seen,
                 storage_state=stored_state_path,
@@ -6142,11 +6184,23 @@ async def _run_store_discovery(
         raise exc
     except Exception as exc:  # pragma: no cover - runtime safeguard
         sync_error_message = str(exc)
-        outcome = StoreOutcome(
-            status="error",
-            message=f"TD orders discovery failed: {exc}",
-            final_url=page.url,
-        )
+        if orders_report or sales_report:
+            outcome_status, outcome_message = _build_store_outcome_details(
+                orders_report=orders_report,
+                sales_report=sales_report,
+                error_context=sync_error_message,
+            )
+            outcome = StoreOutcome(
+                status=outcome_status,
+                message=outcome_message,
+                final_url=page.url,
+            )
+        else:
+            outcome = StoreOutcome(
+                status="error",
+                message=f"TD orders discovery failed: {exc}",
+                final_url=page.url,
+            )
         log_event(
             logger=store_logger,
             phase="store",
