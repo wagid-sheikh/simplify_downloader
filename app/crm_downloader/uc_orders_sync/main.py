@@ -20,6 +20,11 @@ from app.common.db import session_scope
 from app.config import config
 from app.crm_downloader.browser import launch_browser
 from app.crm_downloader.config import default_download_dir, default_profiles_dir
+from app.crm_downloader.orders_sync_window import (
+    fetch_last_success_window_end,
+    resolve_orders_sync_start_date,
+    resolve_window_settings,
+)
 from app.crm_downloader.uc_orders_sync.ingest import UcOrdersIngestResult, ingest_uc_orders_workbook
 from app.dashboard_downloader.db_tables import orders_sync_log, pipelines
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
@@ -419,12 +424,41 @@ async def main(
     resolved_run_id = run_id or new_run_id()
     resolved_run_date = datetime.now(get_timezone())
     resolved_env = run_env or config.run_env
-    run_start_date, run_end_date = _resolve_date_range(from_date=from_date, to_date=to_date)
+    current_date = aware_now(get_timezone()).date()
+    run_end_date = to_date or current_date
+    if from_date and from_date > run_end_date:
+        raise ValueError(f"from_date ({from_date}) must be on or before to_date ({run_end_date})")
     logger = get_logger(run_id=resolved_run_id)
+    stores = await _load_uc_order_stores(logger=logger, store_codes=store_codes)
+    store_start_dates: dict[str, date] = {}
+    pipeline_id: int | None = None
+    if stores and from_date is None and config.database_url:
+        pipeline_id = await _fetch_pipeline_id(
+            database_url=config.database_url, pipeline_name=PIPELINE_NAME, logger=logger
+        )
+    for store in stores:
+        backfill, window_size, overlap = resolve_window_settings(sync_config=store.sync_config)
+        last_success = None
+        if from_date is None and pipeline_id and config.database_url:
+            last_success = await fetch_last_success_window_end(
+                database_url=config.database_url,
+                pipeline_id=pipeline_id,
+                store_code=store.store_code,
+            )
+        store_start_dates[store.store_code] = resolve_orders_sync_start_date(
+            end_date=run_end_date,
+            last_success=last_success,
+            overlap_days=overlap,
+            backfill_days=backfill,
+            window_days=window_size,
+            from_date=from_date,
+            store_start_date=None,
+        )
+    report_start_date = from_date or (min(store_start_dates.values()) if store_start_dates else run_end_date)
     summary = UcOrdersDiscoverySummary(
         run_id=resolved_run_id,
         run_env=resolved_env,
-        report_date=run_start_date,
+        report_date=report_start_date,
         report_end_date=run_end_date,
     )
 
@@ -438,8 +472,8 @@ async def main(
             phase="init",
             message="Starting UC orders sync discovery flow",
             run_env=resolved_env,
-            from_date=run_start_date,
-            to_date=run_end_date,
+            from_date=summary.report_date,
+            to_date=summary.report_end_date,
         )
         log_event(
             logger=logger,
@@ -448,7 +482,6 @@ async def main(
             pipeline_skip_dom_logging=config.pipeline_skip_dom_logging,
         )
 
-        stores = await _load_uc_order_stores(logger=logger, store_codes=store_codes)
         summary.store_codes = [store.store_code for store in stores]
         if not stores:
             log_event(
@@ -468,6 +501,7 @@ async def main(
         async with async_playwright() as playwright:
             browser = await launch_browser(playwright=playwright, logger=logger)
             for store in stores:
+                store_start_date = store_start_dates.get(store.store_code, summary.report_date)
                 await _run_store_discovery(
                     browser=browser,
                     store=store,
@@ -476,7 +510,7 @@ async def main(
                     run_id=resolved_run_id,
                     run_date=resolved_run_date,
                     summary=summary,
-                    from_date=run_start_date,
+                    from_date=store_start_date,
                     to_date=run_end_date,
                     download_timeout_ms=download_timeout_ms,
                 )
@@ -542,16 +576,6 @@ def _parse_date(value: str) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:  # pragma: no cover - exercised via CLI parsing
         raise argparse.ArgumentTypeError(f"Invalid date {value!r}; expected YYYY-MM-DD") from exc
-
-
-def _resolve_date_range(*, from_date: date | None, to_date: date | None) -> tuple[date, date]:
-    current_date = aware_now(get_timezone()).date()
-    resolved_from = from_date or current_date - timedelta(days=89)
-    resolved_to = to_date or current_date
-
-    if resolved_from > resolved_to:
-        raise ValueError(f"from_date ({resolved_from}) must be on or before to_date ({resolved_to})")
-    return resolved_from, resolved_to
 
 
 def _get_nested_str(mapping: Mapping[str, Any], path: Sequence[str]) -> str | None:

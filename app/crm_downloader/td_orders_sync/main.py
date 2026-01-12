@@ -22,6 +22,11 @@ from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
 from app.config import config
 from app.crm_downloader.browser import launch_browser
 from app.crm_downloader.config import default_download_dir, default_profiles_dir
+from app.crm_downloader.orders_sync_window import (
+    fetch_last_success_window_end,
+    resolve_orders_sync_start_date,
+    resolve_window_settings,
+)
 from app.crm_downloader.td_orders_sync.ingest import TdOrdersIngestResult, ingest_td_orders_workbook
 from app.crm_downloader.td_orders_sync.sales_ingest import TdSalesIngestResult, ingest_td_sales_workbook
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
@@ -146,15 +151,40 @@ async def main(
     resolved_run_date = aware_now()
     resolved_env = run_env or config.run_env
     current_date = aware_now(get_timezone()).date()
-    run_start_date = from_date or current_date - timedelta(days=89)
     run_end_date = to_date or current_date
-    if run_start_date > run_end_date:
-        raise ValueError(f"from_date ({run_start_date}) must be on or before to_date ({run_end_date})")
+    if from_date and from_date > run_end_date:
+        raise ValueError(f"from_date ({from_date}) must be on or before to_date ({run_end_date})")
     logger = get_logger(run_id=resolved_run_id)
+    stores = await _load_td_order_stores(logger=logger, store_codes=store_codes)
+    store_start_dates: dict[str, date] = {}
+    pipeline_id: int | None = None
+    if stores and from_date is None and config.database_url:
+        pipeline_id = await _fetch_pipeline_id(
+            database_url=config.database_url, pipeline_name=PIPELINE_NAME, logger=logger
+        )
+    for store in stores:
+        backfill, window_size, overlap = resolve_window_settings(sync_config=store.sync_config)
+        last_success = None
+        if from_date is None and pipeline_id and config.database_url:
+            last_success = await fetch_last_success_window_end(
+                database_url=config.database_url,
+                pipeline_id=pipeline_id,
+                store_code=store.store_code,
+            )
+        store_start_dates[store.store_code] = resolve_orders_sync_start_date(
+            end_date=run_end_date,
+            last_success=last_success,
+            overlap_days=overlap,
+            backfill_days=backfill,
+            window_days=window_size,
+            from_date=from_date,
+            store_start_date=None,
+        )
+    report_start_date = from_date or (min(store_start_dates.values()) if store_start_dates else run_end_date)
     summary = TdOrdersDiscoverySummary(
         run_id=resolved_run_id,
         run_env=resolved_env,
-        report_date=run_start_date,
+        report_date=report_start_date,
         report_end_date=run_end_date,
         run_orders=run_orders,
         run_sales=run_sales,
@@ -171,8 +201,8 @@ async def main(
             phase="init",
             message="Starting TD orders sync discovery flow",
             run_env=resolved_env,
-            from_date=run_start_date,
-            to_date=run_end_date,
+            from_date=summary.report_date,
+            to_date=summary.report_end_date,
         )
         log_event(
             logger=logger,
@@ -183,7 +213,6 @@ async def main(
 
         nav_timeout_ms = await _fetch_dashboard_nav_timeout_ms(config.database_url)
 
-        stores = await _load_td_order_stores(logger=logger, store_codes=store_codes)
         summary.store_codes = [store.store_code for store in stores]
         if not stores:
             log_event(
@@ -210,6 +239,7 @@ async def main(
         async with async_playwright() as p:
             browser = await launch_browser(playwright=p, logger=logger)
             for store in stores:
+                store_start_date = store_start_dates.get(store.store_code, summary.report_date)
                 await _run_store_discovery(
                     browser=browser,
                     store=store,
@@ -217,7 +247,7 @@ async def main(
                     run_env=resolved_env,
                     run_id=resolved_run_id,
                     run_date=resolved_run_date,
-                    run_start_date=run_start_date,
+                    run_start_date=store_start_date,
                     run_end_date=run_end_date,
                     nav_timeout_ms=nav_timeout_ms,
                     summary=summary,
