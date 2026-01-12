@@ -15,6 +15,11 @@ from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
 from app.common.db import session_scope
 from app.config import config
 from app.crm_downloader.config import default_download_dir
+from app.crm_downloader.orders_sync_window import (
+    fetch_last_success_window_end,
+    resolve_orders_sync_start_date,
+    resolve_window_settings,
+)
 from app.crm_downloader.td_orders_sync.main import main as td_orders_sync_main
 from app.crm_downloader.uc_orders_sync.main import main as uc_orders_sync_main
 from app.dashboard_downloader.db_tables import orders_sync_log, pipelines
@@ -26,9 +31,6 @@ PIPELINE_BY_GROUP = {
     "UC": ("uc_orders_sync", uc_orders_sync_main),
 }
 
-DEFAULT_BACKFILL_DAYS = 90
-DEFAULT_WINDOW_DAYS = 90
-DEFAULT_OVERLAP_DAYS = 2
 DEFAULT_MAX_WORKERS = 4
 
 
@@ -202,19 +204,6 @@ async def _fetch_pipeline_id(
     return pipeline_id
 
 
-async def _fetch_last_success_date(
-    *, database_url: str, pipeline_id: int, store_code: str
-) -> date | None:
-    async with session_scope(database_url) as session:
-        stmt = (
-            sa.select(sa.func.max(orders_sync_log.c.to_date))
-            .where(orders_sync_log.c.pipeline_id == pipeline_id)
-            .where(orders_sync_log.c.store_code == store_code)
-            .where(orders_sync_log.c.status == "success")
-        )
-        return (await session.execute(stmt)).scalar_one_or_none()
-
-
 async def _fetch_latest_log_status(
     *, database_url: str, pipeline_id: int, store_code: str, run_id: str
 ) -> tuple[str | None, str | None]:
@@ -367,34 +356,6 @@ def _normalize_window_status(
     return status, ""
 
 
-def _window_settings(
-    *, store: StoreProfile, backfill_days: int | None, window_days: int | None, overlap_days: int | None
-) -> tuple[int, int, int]:
-    sync_config = store.sync_config
-    resolved_backfill = int(
-        backfill_days
-        or sync_config.get("orders_sync_backfill_days")
-        or sync_config.get("sync_backfill_days")
-        or DEFAULT_BACKFILL_DAYS
-    )
-    resolved_window = int(
-        window_days
-        or sync_config.get("orders_sync_window_days")
-        or sync_config.get("sync_window_days")
-        or DEFAULT_WINDOW_DAYS
-    )
-    resolved_overlap = int(
-        overlap_days
-        or sync_config.get("orders_sync_overlap_days")
-        or sync_config.get("sync_overlap_days")
-        or DEFAULT_OVERLAP_DAYS
-    )
-    resolved_backfill = max(1, resolved_backfill)
-    resolved_window = max(1, resolved_window)
-    resolved_overlap = max(0, min(resolved_overlap, resolved_window - 1))
-    return resolved_backfill, resolved_window, resolved_overlap
-
-
 def _build_windows(
     *, start_date: date, end_date: date, window_days: int, overlap_days: int
 ) -> list[tuple[date, date]]:
@@ -408,30 +369,6 @@ def _build_windows(
         windows.append((current, window_end))
         current = current + timedelta(days=step_days)
     return windows
-
-
-def _resolve_start_date(
-    *,
-    end_date: date,
-    last_success: date | None,
-    overlap_days: int,
-    backfill_days: int,
-    window_days: int,
-    from_date: date | None,
-    store_start_date: date | None,
-) -> date:
-    if from_date:
-        return from_date
-    if last_success:
-        overlap_offset = max(0, overlap_days - 1)
-        candidate = last_success - timedelta(days=overlap_offset)
-        if store_start_date:
-            return max(store_start_date, candidate)
-        return candidate
-    if store_start_date:
-        return store_start_date
-    desired_window = max(backfill_days, window_days)
-    return end_date - timedelta(days=desired_window - 1)
 
 
 def _summary_text(
@@ -537,17 +474,17 @@ async def _run_store_windows(
     status_counts = _init_status_counts()
     window_audit: list[dict[str, Any]] = []
     ingestion_totals = _init_ingestion_totals()
-    backfill, window_size, overlap = _window_settings(
-        store=store,
+    backfill, window_size, overlap = resolve_window_settings(
+        sync_config=store.sync_config,
         backfill_days=backfill_days,
         window_days=window_days,
         overlap_days=overlap_days,
     )
     end_date = to_date or aware_now(get_timezone()).date()
-    last_success = await _fetch_last_success_date(
+    last_success = await fetch_last_success_window_end(
         database_url=config.database_url, pipeline_id=pipeline_id, store_code=store.store_code
     )
-    start_date = _resolve_start_date(
+    start_date = resolve_orders_sync_start_date(
         end_date=end_date,
         last_success=last_success,
         overlap_days=overlap,
