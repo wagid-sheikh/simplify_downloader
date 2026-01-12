@@ -747,13 +747,13 @@ async def _insert_orders_sync_log(
                 logger=logger,
                 phase="orders_sync_log",
                 status="error",
-            message="Run summary row still missing; deferring orders sync log insert until final summary persistence",
-            run_id=run_id,
-            store_code=store.store_code,
-        )
-        if allow_defer:
-            _defer_orders_sync_log(summary, store, run_id, run_start_date, run_end_date)
-        return None
+                message="Run summary row still missing; deferring orders sync log insert until final summary persistence",
+                run_id=run_id,
+                store_code=store.store_code,
+            )
+            if allow_defer:
+                _defer_orders_sync_log(summary, store, run_id, run_start_date, run_end_date)
+            return None
 
     insert_values = {
         "pipeline_id": pipeline_id,
@@ -935,9 +935,19 @@ async def _update_orders_sync_log(
     values["updated_at"] = sa.func.now()
     try:
         async with session_scope(config.database_url) as session:
-            await session.execute(
+            result = await session.execute(
                 sa.update(orders_sync_log).where(orders_sync_log.c.id == log_id).values(**values)
             )
+            await session.commit()
+            if not result.rowcount:
+                log_event(
+                    logger=logger,
+                    phase="orders_sync_log",
+                    status="warn",
+                    message="Orders sync log update matched no rows",
+                    log_id=log_id,
+                    update_values=values,
+                )
     except Exception as exc:  # pragma: no cover - defensive
         log_event(
             logger=logger,
@@ -946,6 +956,7 @@ async def _update_orders_sync_log(
             message="Failed to update orders sync log row",
             log_id=log_id,
             error=str(exc),
+            update_values=values,
         )
 
 

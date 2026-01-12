@@ -1702,9 +1702,19 @@ async def _update_orders_sync_log(
     values["updated_at"] = sa.func.now()
     try:
         async with session_scope(config.database_url) as session:
-            await session.execute(
+            result = await session.execute(
                 sa.update(orders_sync_log).where(orders_sync_log.c.id == log_id).values(**values)
             )
+            await session.commit()
+            if not result.rowcount:
+                log_event(
+                    logger=logger,
+                    phase="orders_sync_log",
+                    status="warn",
+                    message="Orders sync log update matched no rows",
+                    log_id=log_id,
+                    update_values=values,
+                )
     except Exception as exc:  # pragma: no cover - defensive
         log_event(
             logger=logger,
@@ -1713,6 +1723,7 @@ async def _update_orders_sync_log(
             message="Failed to update orders sync log row",
             log_id=log_id,
             error=str(exc),
+            update_values=values,
         )
 
 
@@ -1755,6 +1766,30 @@ def _resolve_sync_log_status(
     if orders_skipped or sales_skipped:
         return "skipped"
     return "failed"
+
+
+def _resolve_sync_log_error_message(
+    *,
+    status: str,
+    orders_report: StoreReport | None,
+    sales_report: StoreReport | None,
+    outcome: StoreOutcome | None,
+    sync_error_message: str | None,
+) -> str | None:
+    if sync_error_message:
+        return sync_error_message
+    if status not in {"failed", "partial"}:
+        return None
+    messages: list[str] = []
+    for report in (orders_report, sales_report):
+        if report and report.error_message:
+            messages.append(report.error_message)
+    if outcome and outcome.status in {"error", "warning"} and outcome.message:
+        messages.append(outcome.message)
+    deduped = [message for index, message in enumerate(messages) if message and message not in messages[:index]]
+    if not deduped:
+        return None
+    return "; ".join(deduped)
 
 
 def _resolve_ingested_rows(report: StoreReport | None) -> int | None:
@@ -6210,16 +6245,24 @@ async def _run_store_discovery(
             error=str(exc),
         )
     finally:
+        final_status = _resolve_sync_log_status(
+            orders_report=orders_report,
+            sales_report=sales_report,
+            run_orders=run_orders,
+            run_sales=run_sales,
+        )
+        final_error_message = _resolve_sync_log_error_message(
+            status=final_status,
+            orders_report=orders_report,
+            sales_report=sales_report,
+            outcome=outcome,
+            sync_error_message=sync_error_message,
+        )
         await _update_orders_sync_log(
             logger=store_logger,
             log_id=sync_log_id,
-            status=_resolve_sync_log_status(
-                orders_report=orders_report,
-                sales_report=sales_report,
-                run_orders=run_orders,
-                run_sales=run_sales,
-            ),
-            error_message=sync_error_message,
+            status=final_status,
+            error_message=final_error_message,
         )
         summary.record_store(
             store.store_code,
