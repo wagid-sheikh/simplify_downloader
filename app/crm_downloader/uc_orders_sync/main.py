@@ -272,6 +272,20 @@ class UcOrdersDiscoverySummary:
             return "warning"
         return "ok" if statuses else "error"
 
+    def _window_summary(self) -> Dict[str, Any]:
+        expected_windows = len(self.store_codes)
+        completed_store_codes = [code for code in self.store_codes if code in self.store_outcomes]
+        missing_store_codes = [code for code in self.store_codes if code not in self.store_outcomes]
+        completed_windows = len(completed_store_codes)
+        missing_windows = max(0, expected_windows - completed_windows)
+        return {
+            "expected_windows": expected_windows,
+            "completed_windows": completed_windows,
+            "missing_windows": missing_windows,
+            "completed_store_codes": completed_store_codes,
+            "missing_store_codes": missing_store_codes,
+        }
+
     def summary_text(self) -> str:
         total = len(self.store_codes)
         ok = sum(1 for outcome in self.store_outcomes.values() if outcome.status == "ok")
@@ -283,10 +297,16 @@ class UcOrdersDiscoverySummary:
             "warning": "run completed but row-level issues were recorded",
             "error": "run failed or data could not be ingested",
         }.get(overall_status, "run completed with mixed results")
+        window_summary = self._window_summary()
+        missing_windows_line = f"Missing Windows: {window_summary['missing_windows']}"
+        if window_summary["missing_store_codes"]:
+            missing_windows_line += f" ({', '.join(window_summary['missing_store_codes'])})"
         return (
             "UC GST Run Summary\n"
             f"Overall Status: {overall_status} ({status_explanation})\n"
-            f"Stores: {ok} ok, {warn} warnings, {error} errors across {total} stores"
+            f"Stores: {ok} ok, {warn} warnings, {error} errors across {total} stores\n"
+            f"Windows Completed: {window_summary['completed_windows']} / {window_summary['expected_windows']}\n"
+            f"{missing_windows_line}"
         )
 
     def add_ingest_remarks(self, remarks: Iterable[dict[str, str]]) -> None:
@@ -381,6 +401,7 @@ class UcOrdersDiscoverySummary:
                 "configured": list(self.store_codes),
                 "outcomes": {code: outcome.__dict__ for code, outcome in self.store_outcomes.items()},
             },
+            "window_summary": self._window_summary(),
             "stores_summary": {
                 "counts": self._store_status_counts(),
                 "stores": store_summary,

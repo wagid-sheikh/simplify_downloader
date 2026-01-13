@@ -648,9 +648,10 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    summary_text = run_data.get("summary_text") or _td_summary_text_from_payload(run_data)
+    summary_text = _td_summary_text_from_payload(run_data) or run_data.get("summary_text") or ""
     started_at_formatted = _format_td_timestamp(payload.get("started_at") or run_data.get("started_at"))
     finished_at_formatted = _format_td_timestamp(payload.get("finished_at") or run_data.get("finished_at"))
+    window_summary = metrics.get("window_summary") or {}
 
     return {
         "summary_text": summary_text,
@@ -667,6 +668,11 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
         "stores": stores,
         "td_all_stores_failed": _td_all_stores_failed(stores_payload),
         "notification_payload": payload,
+        "window_summary": window_summary,
+        "expected_windows": window_summary.get("expected_windows"),
+        "completed_windows": window_summary.get("completed_windows"),
+        "missing_windows": window_summary.get("missing_windows"),
+        "missing_window_stores": window_summary.get("missing_store_codes") or [],
     }
 
 
@@ -709,8 +715,11 @@ def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
 
     started_at = payload.get("started_at") or run_data.get("started_at")
     finished_at = payload.get("finished_at") or run_data.get("finished_at")
+    window_summary = metrics.get("window_summary") or {}
+    summary_text = _uc_summary_text_from_payload(run_data) or run_data.get("summary_text") or ""
 
     return {
+        "summary_text": summary_text,
         "started_at": _normalize_datetime(started_at),
         "finished_at": _normalize_datetime(finished_at),
         "total_time_taken": payload.get("total_time_taken") or run_data.get("total_time_taken"),
@@ -723,6 +732,11 @@ def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
         "stores": stores,
         "uc_all_stores_failed": _uc_all_stores_failed(stores_payload),
         "notification_payload": payload,
+        "window_summary": window_summary,
+        "expected_windows": window_summary.get("expected_windows"),
+        "completed_windows": window_summary.get("completed_windows"),
+        "missing_windows": window_summary.get("missing_windows"),
+        "missing_window_stores": window_summary.get("missing_store_codes") or [],
     }
 
 
@@ -839,7 +853,17 @@ def _td_summary_text_from_payload(run_data: Mapping[str, Any]) -> str:
     duration = payload.get("total_time_taken") or run_data.get("total_time_taken") or ""
     orders_status = payload.get("orders_status") or (metrics.get("orders") or {}).get("overall_status")
     sales_status = payload.get("sales_status") or (metrics.get("sales") or {}).get("overall_status")
+    window_summary = metrics.get("window_summary") or {}
     status_line = f"Overall Status: {payload.get('overall_status') or run_data.get('overall_status')} (Orders: {orders_status}, Sales: {sales_status})"
+    window_lines = []
+    if window_summary:
+        window_lines = [
+            f"Windows Completed: {window_summary.get('completed_windows', 0)} / {window_summary.get('expected_windows', 0)}",
+            f"Missing Windows: {window_summary.get('missing_windows', 0)}",
+        ]
+        missing_stores = window_summary.get("missing_store_codes") or []
+        if missing_stores:
+            window_lines.append(f"Missing Window Stores: {', '.join(missing_stores)}")
 
     lines = [
         "TD Orders & Sales Run Summary",
@@ -850,9 +874,9 @@ def _td_summary_text_from_payload(run_data: Mapping[str, Any]) -> str:
     ]
     if duration:
         lines.append(f"Total Duration: {duration}")
+    lines.extend([status_line, *window_lines])
     lines.extend(
         [
-            status_line,
             "",
             "**Per Store Orders Metrics:**",
             *_format_store_section(sales=False),
@@ -864,6 +888,32 @@ def _td_summary_text_from_payload(run_data: Mapping[str, Any]) -> str:
     if _td_all_stores_failed(stores_payload):
         lines.append("All TD stores failed for Orders and Sales.")
     return "\n".join(lines)
+
+
+def _uc_summary_text_from_payload(run_data: Mapping[str, Any]) -> str:
+    metrics = run_data.get("metrics_json") or {}
+    payload = metrics.get("notification_payload") or {}
+    stores_payload = payload.get("stores") or []
+    if not payload:
+        return ""
+    status_counts = _status_counts(stores_payload)
+    total = sum(status_counts.values())
+    overall_status = payload.get("overall_status") or run_data.get("overall_status")
+    status_explanation = _status_explanation(overall_status)
+    window_summary = metrics.get("window_summary") or {}
+    missing_windows = window_summary.get("missing_windows")
+    missing_stores = window_summary.get("missing_store_codes") or []
+    missing_line = f"Missing Windows: {missing_windows if missing_windows is not None else 0}"
+    if missing_stores:
+        missing_line += f" ({', '.join(missing_stores)})"
+    return (
+        "UC GST Run Summary\n"
+        f"Overall Status: {overall_status} ({status_explanation})\n"
+        f"Stores: {status_counts.get('ok', 0)} ok, {status_counts.get('warning', 0)} warnings, "
+        f"{status_counts.get('error', 0)} errors across {total} stores\n"
+        f"Windows Completed: {window_summary.get('completed_windows', 0)} / {window_summary.get('expected_windows', 0)}\n"
+        f"{missing_line}"
+    )
 
 
 async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
