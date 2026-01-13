@@ -651,6 +651,20 @@ class TdOrdersDiscoverySummary:
             self._report_has_data_warnings(report, include_sales_fields=True) for report in self.sales_results.values()
         )
 
+    def _window_summary(self) -> Dict[str, Any]:
+        expected_windows = len(self.store_codes)
+        completed_store_codes = [code for code in self.store_codes if code in self.store_outcomes]
+        missing_store_codes = [code for code in self.store_codes if code not in self.store_outcomes]
+        completed_windows = len(completed_store_codes)
+        missing_windows = max(0, expected_windows - completed_windows)
+        return {
+            "expected_windows": expected_windows,
+            "completed_windows": completed_windows,
+            "missing_windows": missing_windows,
+            "completed_store_codes": completed_store_codes,
+            "missing_store_codes": missing_store_codes,
+        }
+
     def overall_status(self) -> str:
         statuses = [outcome.status for outcome in self.store_outcomes.values()]
         if any(status == "error" for status in statuses):
@@ -912,6 +926,13 @@ class TdOrdersDiscoverySummary:
             return True
 
         notes_lines = [f"- {note}" for note in self.notes] if self.notes else ["- (none)"]
+        window_summary = self._window_summary()
+        window_lines = [
+            f"Windows Completed: {window_summary['completed_windows']} / {window_summary['expected_windows']}",
+            f"Missing Windows: {window_summary['missing_windows']}",
+        ]
+        if window_summary["missing_store_codes"]:
+            window_lines.append(f"Missing Window Stores: {', '.join(window_summary['missing_store_codes'])}")
         status_line = (
             f"Overall Status: {self.overall_status()} (Orders: {self.orders_overall_status()}, Sales: {self.sales_overall_status()})"
         )
@@ -924,6 +945,7 @@ class TdOrdersDiscoverySummary:
             f"Finished ({tz_label}): {finished_local.strftime('%d-%m-%Y %H:%M:%S')}",
             f"Total Duration: {self._format_duration(resolved_finished_at)}",
             status_line,
+            *window_lines,
             "",
             "**Per Store Orders Metrics:**",
         ]
@@ -1186,6 +1208,7 @@ class TdOrdersDiscoverySummary:
         metrics = {
             "stores": {code: asdict(outcome) for code, outcome in self.store_outcomes.items()},
             "store_order": self.store_codes,
+            "window_summary": self._window_summary(),
             "stores_summary": {
                 "counts": self._store_status_counts(),
                 "stores": store_summary,
