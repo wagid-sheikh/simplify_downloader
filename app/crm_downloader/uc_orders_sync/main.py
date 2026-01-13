@@ -1333,52 +1333,38 @@ async def _run_store_discovery(
                             status="warn",
                             message="UC GST workbook ingested with warnings",
                             store_code=store.store_code,
-                            cost_center=store.cost_center or "",
-                            run_id=run_id,
-                            run_date=run_date,
-                            database_url=config.database_url,
-                            logger=logger,
+                            warning_count=len(ingest_result.warnings),
+                            staging_rows=ingest_result.staging_rows,
+                            final_rows=ingest_result.final_rows,
+                            staging_inserted=ingest_result.staging_inserted,
+                            staging_updated=ingest_result.staging_updated,
+                            final_inserted=ingest_result.final_inserted,
+                            final_updated=ingest_result.final_updated,
                         )
-                        if ingest_result.warnings:
-                            status_label = "warning"
-                            log_event(
-                                logger=logger,
-                                phase="ingest",
-                                status="warn",
-                                message="UC GST workbook ingested with warnings",
-                                store_code=store.store_code,
-                                warning_count=len(ingest_result.warnings),
-                                staging_rows=ingest_result.staging_rows,
-                                final_rows=ingest_result.final_rows,
-                                staging_inserted=ingest_result.staging_inserted,
-                                staging_updated=ingest_result.staging_updated,
-                                final_inserted=ingest_result.final_inserted,
-                                final_updated=ingest_result.final_updated,
-                            )
-                        else:
-                            log_event(
-                                logger=logger,
-                                phase="ingest",
-                                message="UC GST workbook ingested",
-                                store_code=store.store_code,
-                                staging_rows=ingest_result.staging_rows,
-                                final_rows=ingest_result.final_rows,
-                                staging_inserted=ingest_result.staging_inserted,
-                                staging_updated=ingest_result.staging_updated,
-                                final_inserted=ingest_result.final_inserted,
-                                final_updated=ingest_result.final_updated,
-                            )
-                    except Exception as exc:
-                        status_label = "warning"
+                    else:
                         log_event(
                             logger=logger,
                             phase="ingest",
-                            status="error",
-                            message="UC GST ingestion failed",
+                            message="UC GST workbook ingested",
                             store_code=store.store_code,
-                            error=str(exc),
+                            staging_rows=ingest_result.staging_rows,
+                            final_rows=ingest_result.final_rows,
+                            staging_inserted=ingest_result.staging_inserted,
+                            staging_updated=ingest_result.staging_updated,
+                            final_inserted=ingest_result.final_inserted,
+                            final_updated=ingest_result.final_updated,
                         )
-                        download_message = f"GST ingestion failed: {exc}"
+                except Exception as exc:
+                    status_label = "warning"
+                    log_event(
+                        logger=logger,
+                        phase="ingest",
+                        status="error",
+                        message="UC GST ingestion failed",
+                        store_code=store.store_code,
+                        error=str(exc),
+                    )
+                    download_message = f"GST ingestion failed: {exc}"
             else:
                 status_label = "warning"
                 log_event(
