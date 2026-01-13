@@ -932,8 +932,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _main() -> None:
     args = _build_parser().parse_args()
-    asyncio.run(
-        main(
+    resolved_run_id = args.run_id or new_run_id()
+    logger = get_logger(run_id=resolved_run_id)
+
+    async def _runner() -> None:
+        await main(
             sync_group=args.sync_group,
             store_codes=args.store_codes,
             from_date=args.from_date,
@@ -943,9 +946,47 @@ def _main() -> None:
             window_days=args.window_days,
             overlap_days=args.overlap_days,
             run_env=args.run_env,
-            run_id=args.run_id,
+            run_id=resolved_run_id,
         )
-    )
+
+    loop = asyncio.new_event_loop()
+    exit_code = 0
+    try:
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(_runner())
+    except KeyboardInterrupt:
+        exit_code = 130
+        log_event(
+            logger=logger,
+            phase="shutdown",
+            status="warn",
+            message="Orders sync profiler interrupted",
+        )
+    except Exception as exc:
+        exit_code = 1
+        log_event(
+            logger=logger,
+            phase="fatal",
+            status="error",
+            message="Unhandled exception in orders sync profiler",
+            error=str(exc),
+            error_type=type(exc).__name__,
+        )
+    finally:
+        try:
+            pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+            if pending:
+                for task in pending:
+                    task.cancel()
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.run_until_complete(loop.shutdown_default_executor())
+        finally:
+            asyncio.set_event_loop(None)
+            loop.close()
+            logger.close()
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":
