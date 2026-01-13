@@ -15,6 +15,11 @@ from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
 from app.common.db import session_scope
 from app.config import config
 from app.crm_downloader.config import default_download_dir
+from app.crm_downloader.orders_sync_window import (
+    fetch_last_success_window_end,
+    resolve_orders_sync_start_date,
+    resolve_window_settings,
+)
 from app.crm_downloader.td_orders_sync.main import main as td_orders_sync_main
 from app.crm_downloader.uc_orders_sync.main import main as uc_orders_sync_main
 from app.dashboard_downloader.db_tables import orders_sync_log, pipelines
@@ -26,9 +31,6 @@ PIPELINE_BY_GROUP = {
     "UC": ("uc_orders_sync", uc_orders_sync_main),
 }
 
-DEFAULT_BACKFILL_DAYS = 90
-DEFAULT_WINDOW_DAYS = 90
-DEFAULT_OVERLAP_DAYS = 2
 DEFAULT_MAX_WORKERS = 4
 
 
@@ -202,19 +204,6 @@ async def _fetch_pipeline_id(
     return pipeline_id
 
 
-async def _fetch_last_success_date(
-    *, database_url: str, pipeline_id: int, store_code: str
-) -> date | None:
-    async with session_scope(database_url) as session:
-        stmt = (
-            sa.select(sa.func.max(orders_sync_log.c.to_date))
-            .where(orders_sync_log.c.pipeline_id == pipeline_id)
-            .where(orders_sync_log.c.store_code == store_code)
-            .where(orders_sync_log.c.status == "success")
-        )
-        return (await session.execute(stmt)).scalar_one_or_none()
-
-
 async def _fetch_latest_log_status(
     *, database_url: str, pipeline_id: int, store_code: str, run_id: str
 ) -> tuple[str | None, str | None]:
@@ -235,76 +224,6 @@ async def _fetch_latest_log_status(
     status_value = str(status) if status else None
     error_value = str(error_message) if error_message else None
     return status_value, error_value
-
-
-def _normalize_run_summary_status(summary: Mapping[str, Any] | None) -> str | None:
-    if not summary:
-        return None
-    raw_status = str(summary.get("overall_status") or "").lower()
-    if raw_status in {"ok", "success"}:
-        return "success"
-    if raw_status in {"warning", "warn", "partial"}:
-        return "partial"
-    if raw_status in {"error", "failed", "fail"}:
-        return "failed"
-    return None
-
-
-def _normalize_pipeline_status(raw_status: str | None) -> str | None:
-    if not raw_status:
-        return None
-    normalized = str(raw_status).strip().lower()
-    if normalized in {"ok", "success"}:
-        return "success"
-    if normalized in {"warning", "warn", "partial"}:
-        return "partial"
-    if normalized in {"error", "failed", "fail"}:
-        return "failed"
-    if normalized in {"skipped", "skip"}:
-        return "skipped"
-    return None
-
-
-def _extract_summary_store_status(
-    summary: Mapping[str, Any] | None, *, pipeline_name: str, store_code: str
-) -> tuple[str | None, str | None]:
-    if not summary:
-        return None, None
-    metrics = _coerce_dict(summary.get("metrics_json"))
-    if not metrics:
-        return None, None
-    normalized_code = store_code.upper()
-    candidates: list[tuple[str | None, str | None]] = []
-
-    stores_summary = _coerce_dict(_coerce_dict(metrics.get("stores_summary")).get("stores"))
-    summary_store = _coerce_dict(stores_summary.get(normalized_code))
-    if summary_store:
-        candidates.append((summary_store.get("status"), summary_store.get("error_message") or summary_store.get("message")))
-
-    if pipeline_name == "td_orders_sync":
-        stores = _coerce_dict(metrics.get("stores"))
-        store_outcome = _coerce_dict(stores.get(normalized_code))
-        if store_outcome:
-            candidates.append((store_outcome.get("status"), store_outcome.get("message")))
-    elif pipeline_name == "uc_orders_sync":
-        stores = _coerce_dict(_coerce_dict(metrics.get("stores")).get("outcomes"))
-        store_outcome = _coerce_dict(stores.get(normalized_code))
-        if store_outcome:
-            candidates.append((store_outcome.get("status"), store_outcome.get("message")))
-
-    notification = _coerce_dict(metrics.get("notification_payload"))
-    for entry in notification.get("stores") or []:
-        if not isinstance(entry, Mapping):
-            continue
-        if str(entry.get("store_code", "")).upper() == normalized_code:
-            candidates.append((entry.get("status"), entry.get("message")))
-
-    for status_value, message in candidates:
-        normalized_status = _normalize_pipeline_status(status_value)
-        if normalized_status:
-            message_value = str(message) if message else None
-            return normalized_status, message_value
-    return None, None
 
 
 def _extract_window_outcome_metadata(
@@ -437,34 +356,6 @@ def _normalize_window_status(
     return status, ""
 
 
-def _window_settings(
-    *, store: StoreProfile, backfill_days: int | None, window_days: int | None, overlap_days: int | None
-) -> tuple[int, int, int]:
-    sync_config = store.sync_config
-    resolved_backfill = int(
-        backfill_days
-        or sync_config.get("orders_sync_backfill_days")
-        or sync_config.get("sync_backfill_days")
-        or DEFAULT_BACKFILL_DAYS
-    )
-    resolved_window = int(
-        window_days
-        or sync_config.get("orders_sync_window_days")
-        or sync_config.get("sync_window_days")
-        or DEFAULT_WINDOW_DAYS
-    )
-    resolved_overlap = int(
-        overlap_days
-        or sync_config.get("orders_sync_overlap_days")
-        or sync_config.get("sync_overlap_days")
-        or DEFAULT_OVERLAP_DAYS
-    )
-    resolved_backfill = max(1, resolved_backfill)
-    resolved_window = max(1, resolved_window)
-    resolved_overlap = max(0, min(resolved_overlap, resolved_window - 1))
-    return resolved_backfill, resolved_window, resolved_overlap
-
-
 def _build_windows(
     *, start_date: date, end_date: date, window_days: int, overlap_days: int
 ) -> list[tuple[date, date]]:
@@ -478,30 +369,6 @@ def _build_windows(
         windows.append((current, window_end))
         current = current + timedelta(days=step_days)
     return windows
-
-
-def _resolve_start_date(
-    *,
-    end_date: date,
-    last_success: date | None,
-    overlap_days: int,
-    backfill_days: int,
-    window_days: int,
-    from_date: date | None,
-    store_start_date: date | None,
-) -> date:
-    if from_date:
-        return from_date
-    if last_success:
-        overlap_offset = max(0, overlap_days - 1)
-        candidate = last_success - timedelta(days=overlap_offset)
-        if store_start_date:
-            return max(store_start_date, candidate)
-        return candidate
-    if store_start_date:
-        return store_start_date
-    desired_window = max(backfill_days, window_days)
-    return end_date - timedelta(days=desired_window - 1)
 
 
 def _summary_text(
@@ -607,17 +474,17 @@ async def _run_store_windows(
     status_counts = _init_status_counts()
     window_audit: list[dict[str, Any]] = []
     ingestion_totals = _init_ingestion_totals()
-    backfill, window_size, overlap = _window_settings(
-        store=store,
+    backfill, window_size, overlap = resolve_window_settings(
+        sync_config=store.sync_config,
         backfill_days=backfill_days,
         window_days=window_days,
         overlap_days=overlap_days,
     )
     end_date = to_date or aware_now(get_timezone()).date()
-    last_success = await _fetch_last_success_date(
+    last_success = await fetch_last_success_window_end(
         database_url=config.database_url, pipeline_id=pipeline_id, store_code=store.store_code
     )
-    start_date = _resolve_start_date(
+    start_date = resolve_orders_sync_start_date(
         end_date=end_date,
         last_success=last_success,
         overlap_days=overlap,
@@ -678,10 +545,6 @@ async def _run_store_windows(
                 run_sales=True,
             )
             summary = await fetch_summary_for_run(config.database_url, window_run_id)
-            summary_status = _normalize_run_summary_status(summary)
-            summary_store_status, summary_store_message = _extract_summary_store_status(
-                summary, pipeline_name=pipeline_name, store_code=store.store_code
-            )
             fetched_status, error_message = await _fetch_latest_log_status(
                 database_url=config.database_url,
                 pipeline_id=pipeline_id,
@@ -690,55 +553,28 @@ async def _run_store_windows(
             )
             status_note = ""
             if not fetched_status:
-                if summary_store_status:
-                    fetched_status = summary_store_status
-                    status_note = " (from pipeline store summary)"
-                    if not error_message and summary_store_message:
-                        error_message = summary_store_message
-                    log_event(
-                        logger=logger,
-                        phase="window",
-                        status="warn",
-                        message="orders_sync_log row missing; using pipeline store summary status",
-                        store_code=store.store_code,
-                        run_id=window_run_id,
-                        window_index=index,
-                        window_status=summary_store_status,
-                    )
-                elif summary_status:
-                    fetched_status = summary_status
-                    status_note = " (from pipeline run summary)"
-                    if not error_message and summary_store_message:
-                        error_message = summary_store_message
-                    log_event(
-                        logger=logger,
-                        phase="window",
-                        status="warn",
-                        message="orders_sync_log row missing; using pipeline run summary status",
-                        store_code=store.store_code,
-                        run_id=window_run_id,
-                        window_index=index,
-                        window_status=summary_status,
-                    )
-                else:
-                    fetched_status = "skipped"
-                    status_note = " (missing orders_sync_log row)"
-                    log_event(
-                        logger=logger,
-                        phase="window",
-                        status="warn",
-                        message="orders_sync_log row missing; continuing without status",
-                        store_code=store.store_code,
-                        run_id=window_run_id,
-                        window_index=index,
-                    )
-            status = (fetched_status or "skipped").lower()
+                status = "failed"
+                status_note = " (missing orders_sync_log row)"
+                if not error_message:
+                    error_message = "orders_sync_log row missing for window"
+                log_event(
+                    logger=logger,
+                    phase="window",
+                    status="error",
+                    message="orders_sync_log row missing; marking window failed",
+                    store_code=store.store_code,
+                    run_id=window_run_id,
+                    window_index=index,
+                )
+            else:
+                status = fetched_status.lower()
             if status not in {"success", "partial", "failed", "skipped"}:
                 status = "failed"
-            status, mapped_note = _normalize_window_status(
-                pipeline_name=pipeline_name, status=status, error_message=error_message
-            )
-            status_note += mapped_note
+            if fetched_status:
+                status, mapped_note = _normalize_window_status(
+                    pipeline_name=pipeline_name, status=status, error_message=error_message
+                )
+                status_note += mapped_note
             download_paths, ingestion_counts = _extract_window_outcome_metadata(
                 summary, store_code=store.store_code
             )
@@ -748,10 +584,12 @@ async def _run_store_windows(
                     ingestion_counts=ingestion_counts,
                     error_message=error_message,
                 )
-                if uc_payload["download_path"] and uc_payload["ingest_success"]:
-                    if status in {"failed", "partial"}:
+                if fetched_status and uc_payload["download_path"] and uc_payload["ingest_success"]:
+                    if status != "success":
                         status = "success"
                         status_note += " (from uc window outcome)"
+            if not fetched_status:
+                break
             if status in {"failed", "partial"} and attempt == 0:
                 log_event(
                     logger=logger,

@@ -22,6 +22,11 @@ from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
 from app.config import config
 from app.crm_downloader.browser import launch_browser
 from app.crm_downloader.config import default_download_dir, default_profiles_dir
+from app.crm_downloader.orders_sync_window import (
+    fetch_last_success_window_end,
+    resolve_orders_sync_start_date,
+    resolve_window_settings,
+)
 from app.crm_downloader.td_orders_sync.ingest import TdOrdersIngestResult, ingest_td_orders_workbook
 from app.crm_downloader.td_orders_sync.sales_ingest import TdSalesIngestResult, ingest_td_sales_workbook
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
@@ -146,15 +151,40 @@ async def main(
     resolved_run_date = aware_now()
     resolved_env = run_env or config.run_env
     current_date = aware_now(get_timezone()).date()
-    run_start_date = from_date or current_date - timedelta(days=89)
     run_end_date = to_date or current_date
-    if run_start_date > run_end_date:
-        raise ValueError(f"from_date ({run_start_date}) must be on or before to_date ({run_end_date})")
+    if from_date and from_date > run_end_date:
+        raise ValueError(f"from_date ({from_date}) must be on or before to_date ({run_end_date})")
     logger = get_logger(run_id=resolved_run_id)
+    stores = await _load_td_order_stores(logger=logger, store_codes=store_codes)
+    store_start_dates: dict[str, date] = {}
+    pipeline_id: int | None = None
+    if stores and from_date is None and config.database_url:
+        pipeline_id = await _fetch_pipeline_id(
+            database_url=config.database_url, pipeline_name=PIPELINE_NAME, logger=logger
+        )
+    for store in stores:
+        backfill, window_size, overlap = resolve_window_settings(sync_config=store.sync_config)
+        last_success = None
+        if from_date is None and pipeline_id and config.database_url:
+            last_success = await fetch_last_success_window_end(
+                database_url=config.database_url,
+                pipeline_id=pipeline_id,
+                store_code=store.store_code,
+            )
+        store_start_dates[store.store_code] = resolve_orders_sync_start_date(
+            end_date=run_end_date,
+            last_success=last_success,
+            overlap_days=overlap,
+            backfill_days=backfill,
+            window_days=window_size,
+            from_date=from_date,
+            store_start_date=None,
+        )
+    report_start_date = from_date or (min(store_start_dates.values()) if store_start_dates else run_end_date)
     summary = TdOrdersDiscoverySummary(
         run_id=resolved_run_id,
         run_env=resolved_env,
-        report_date=run_start_date,
+        report_date=report_start_date,
         report_end_date=run_end_date,
         run_orders=run_orders,
         run_sales=run_sales,
@@ -171,8 +201,8 @@ async def main(
             phase="init",
             message="Starting TD orders sync discovery flow",
             run_env=resolved_env,
-            from_date=run_start_date,
-            to_date=run_end_date,
+            from_date=summary.report_date,
+            to_date=summary.report_end_date,
         )
         log_event(
             logger=logger,
@@ -183,7 +213,6 @@ async def main(
 
         nav_timeout_ms = await _fetch_dashboard_nav_timeout_ms(config.database_url)
 
-        stores = await _load_td_order_stores(logger=logger, store_codes=store_codes)
         summary.store_codes = [store.store_code for store in stores]
         if not stores:
             log_event(
@@ -210,6 +239,7 @@ async def main(
         async with async_playwright() as p:
             browser = await launch_browser(playwright=p, logger=logger)
             for store in stores:
+                store_start_date = store_start_dates.get(store.store_code, summary.report_date)
                 await _run_store_discovery(
                     browser=browser,
                     store=store,
@@ -217,7 +247,7 @@ async def main(
                     run_env=resolved_env,
                     run_id=resolved_run_id,
                     run_date=resolved_run_date,
-                    run_start_date=run_start_date,
+                    run_start_date=store_start_date,
                     run_end_date=run_end_date,
                     nav_timeout_ms=nav_timeout_ms,
                     summary=summary,
@@ -1535,13 +1565,13 @@ async def _insert_orders_sync_log(
                     pg_insert(orders_sync_log)
                     .values(**insert_values)
                     .on_conflict_do_update(
-                        index_elements=[
-                            orders_sync_log.c.pipeline_id,
-                            orders_sync_log.c.store_code,
-                            orders_sync_log.c.from_date,
-                            orders_sync_log.c.to_date,
-                            orders_sync_log.c.run_id,
-                        ],
+                        index_elements=(
+                            "pipeline_id",
+                            "store_code",
+                            "from_date",
+                            "to_date",
+                            "run_id",
+                        ),
                         set_={
                             "attempt_no": orders_sync_log.c.attempt_no + 1,
                             "status": "running",
@@ -1551,6 +1581,22 @@ async def _insert_orders_sync_log(
                     .returning(orders_sync_log.c.id)
                 )
             ).scalar_one()
+            await session.commit()
+            exists = (
+                await session.execute(
+                    sa.select(orders_sync_log.c.id).where(orders_sync_log.c.id == log_id)
+                )
+            ).scalar_one_or_none()
+            if not exists:
+                log_event(
+                    logger=logger,
+                    phase="orders_sync_log",
+                    status="error",
+                    message="Hard error: orders sync log row missing after insert",
+                    log_id=log_id,
+                    store_code=store.store_code,
+                )
+                return None
             log_event(
                 logger=logger,
                 phase="orders_sync_log",
@@ -1559,16 +1605,11 @@ async def _insert_orders_sync_log(
                 log_id=log_id,
                 store_code=store.store_code,
             )
-            exists = (
-                await session.execute(
-                    sa.select(orders_sync_log.c.id).where(orders_sync_log.c.id == log_id)
-                )
-            ).scalar_one_or_none()
             log_event(
                 logger=logger,
                 phase="orders_sync_log",
-                status="info" if exists else "error",
-                message="Verified orders sync log row exists" if exists else "Orders sync log row missing after insert",
+                status="info",
+                message="Verified orders sync log row exists",
                 log_id=log_id,
                 store_code=store.store_code,
             )
@@ -1691,9 +1732,19 @@ async def _update_orders_sync_log(
     values["updated_at"] = sa.func.now()
     try:
         async with session_scope(config.database_url) as session:
-            await session.execute(
+            result = await session.execute(
                 sa.update(orders_sync_log).where(orders_sync_log.c.id == log_id).values(**values)
             )
+            await session.commit()
+            if not result.rowcount:
+                log_event(
+                    logger=logger,
+                    phase="orders_sync_log",
+                    status="warn",
+                    message="Orders sync log update matched no rows",
+                    log_id=log_id,
+                    update_values=values,
+                )
     except Exception as exc:  # pragma: no cover - defensive
         log_event(
             logger=logger,
@@ -1702,6 +1753,7 @@ async def _update_orders_sync_log(
             message="Failed to update orders sync log row",
             log_id=log_id,
             error=str(exc),
+            update_values=values,
         )
 
 
@@ -1746,6 +1798,30 @@ def _resolve_sync_log_status(
     return "failed"
 
 
+def _resolve_sync_log_error_message(
+    *,
+    status: str,
+    orders_report: StoreReport | None,
+    sales_report: StoreReport | None,
+    outcome: StoreOutcome | None,
+    sync_error_message: str | None,
+) -> str | None:
+    if sync_error_message:
+        return sync_error_message
+    if status not in {"failed", "partial"}:
+        return None
+    messages: list[str] = []
+    for report in (orders_report, sales_report):
+        if report and report.error_message:
+            messages.append(report.error_message)
+    if outcome and outcome.status in {"error", "warning"} and outcome.message:
+        messages.append(outcome.message)
+    deduped = [message for index, message in enumerate(messages) if message and message not in messages[:index]]
+    if not deduped:
+        return None
+    return "; ".join(deduped)
+
+
 def _resolve_ingested_rows(report: StoreReport | None) -> int | None:
     if report is None:
         return None
@@ -1765,6 +1841,38 @@ def _resolve_ingest_status(report: StoreReport | None, *, run_report: bool) -> s
     return "error"
 
 
+def _merge_outcome_status(current: str, incoming: str | None) -> str:
+    if incoming == "error":
+        return "error"
+    if incoming == "warning" and current != "error":
+        return "warning"
+    return current
+
+
+def _build_store_outcome_details(
+    *,
+    orders_report: StoreReport | None,
+    sales_report: StoreReport | None,
+    error_context: str | None = None,
+) -> tuple[str, str]:
+    outcome_status = "ok"
+    outcome_messages: list[str] = []
+    if orders_report:
+        outcome_status = _merge_outcome_status(outcome_status, orders_report.status)
+        if orders_report.message:
+            outcome_messages.append(f"Orders: {orders_report.message}")
+    if sales_report:
+        outcome_status = _merge_outcome_status(outcome_status, sales_report.status)
+        if sales_report.message:
+            outcome_messages.append(f"Sales: {sales_report.message}")
+    if error_context:
+        if outcome_status == "ok":
+            outcome_status = "warning"
+        outcome_messages.append(f"Error context: {error_context}")
+    outcome_message = "; ".join(outcome_messages) if outcome_messages else "Store run completed"
+    return outcome_status, outcome_message
+
+
 def _log_td_window_summary(
     *,
     logger: JsonLogger,
@@ -1782,6 +1890,8 @@ def _log_td_window_summary(
         run_orders=run_orders,
         run_sales=run_sales,
     )
+    orders_error_context = orders_report.error_message if orders_report else None
+    sales_error_context = sales_report.error_message if sales_report else None
     log_event(
         logger=logger,
         phase="window_summary",
@@ -1801,6 +1911,28 @@ def _log_td_window_summary(
         sales_ingested_rows=_resolve_ingested_rows(sales_report),
         final_status=final_status,
     )
+    has_downloads_or_ingest = any(
+        [
+            orders_report and orders_report.downloaded_path,
+            sales_report and sales_report.downloaded_path,
+            _resolve_ingested_rows(orders_report),
+            _resolve_ingested_rows(sales_report),
+        ]
+    )
+    if final_status == "failed" and has_downloads_or_ingest:
+        log_event(
+            logger=logger,
+            phase="window_summary",
+            status="warn",
+            message="Window marked failed despite downloads/ingest activity",
+            store_code=store_code,
+            from_date=from_date,
+            to_date=to_date,
+            orders_status=orders_report.status if orders_report else None,
+            sales_status=sales_report.status if sales_report else None,
+            orders_error_context=orders_error_context,
+            sales_error_context=sales_error_context,
+        )
 
 
 # ── Playwright helpers ───────────────────────────────────────────────────────
@@ -5540,6 +5672,15 @@ async def _run_store_discovery(
         run_start_date=run_start_date,
         run_end_date=run_end_date,
     )
+    if sync_log_id is None:
+        log_event(
+            logger=store_logger,
+            phase="orders_sync_log",
+            status="error",
+            message="Hard error: orders sync log row missing; aborting store discovery",
+            run_id=run_id,
+        )
+        return
 
     storage_state_exists = store.storage_state_path.exists()
     download_dir = default_download_dir()
@@ -6056,27 +6197,13 @@ async def _run_store_discovery(
             sales_report = StoreReport(status="skipped", message="Sales sync skipped by flag")
 
         if outcome is None:
-
-            def _merge_status(current: str, incoming: str | None) -> str:
-                if incoming == "error":
-                    return "error"
-                if incoming == "warning" and current != "error":
-                    return "warning"
-                return current
-
-            outcome_status = "ok"
-            outcome_messages: list[str] = []
-            if orders_report:
-                outcome_status = _merge_status(outcome_status, orders_report.status)
-                if orders_report.message:
-                    outcome_messages.append(f"Orders: {orders_report.message}")
-            if sales_report:
-                outcome_status = _merge_status(outcome_status, sales_report.status)
-                if sales_report.message:
-                    outcome_messages.append(f"Sales: {sales_report.message}")
+            outcome_status, outcome_message = _build_store_outcome_details(
+                orders_report=orders_report,
+                sales_report=sales_report,
+            )
             outcome = StoreOutcome(
                 status=outcome_status,
-                message="; ".join(outcome_messages) if outcome_messages else "Store run completed",
+                message=outcome_message,
                 final_url=page.url,
                 verification_seen=verification_seen,
                 storage_state=stored_state_path,
@@ -6122,11 +6249,23 @@ async def _run_store_discovery(
         raise exc
     except Exception as exc:  # pragma: no cover - runtime safeguard
         sync_error_message = str(exc)
-        outcome = StoreOutcome(
-            status="error",
-            message=f"TD orders discovery failed: {exc}",
-            final_url=page.url,
-        )
+        if orders_report or sales_report:
+            outcome_status, outcome_message = _build_store_outcome_details(
+                orders_report=orders_report,
+                sales_report=sales_report,
+                error_context=sync_error_message,
+            )
+            outcome = StoreOutcome(
+                status=outcome_status,
+                message=outcome_message,
+                final_url=page.url,
+            )
+        else:
+            outcome = StoreOutcome(
+                status="error",
+                message=f"TD orders discovery failed: {exc}",
+                final_url=page.url,
+            )
         log_event(
             logger=store_logger,
             phase="store",
@@ -6136,16 +6275,24 @@ async def _run_store_discovery(
             error=str(exc),
         )
     finally:
+        final_status = _resolve_sync_log_status(
+            orders_report=orders_report,
+            sales_report=sales_report,
+            run_orders=run_orders,
+            run_sales=run_sales,
+        )
+        final_error_message = _resolve_sync_log_error_message(
+            status=final_status,
+            orders_report=orders_report,
+            sales_report=sales_report,
+            outcome=outcome,
+            sync_error_message=sync_error_message,
+        )
         await _update_orders_sync_log(
             logger=store_logger,
             log_id=sync_log_id,
-            status=_resolve_sync_log_status(
-                orders_report=orders_report,
-                sales_report=sales_report,
-                run_orders=run_orders,
-                run_sales=run_sales,
-            ),
-            error_message=sync_error_message,
+            status=final_status,
+            error_message=final_error_message,
         )
         summary.record_store(
             store.store_code,

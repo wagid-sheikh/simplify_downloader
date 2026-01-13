@@ -20,6 +20,11 @@ from app.common.db import session_scope
 from app.config import config
 from app.crm_downloader.browser import launch_browser
 from app.crm_downloader.config import default_download_dir, default_profiles_dir
+from app.crm_downloader.orders_sync_window import (
+    fetch_last_success_window_end,
+    resolve_orders_sync_start_date,
+    resolve_window_settings,
+)
 from app.crm_downloader.uc_orders_sync.ingest import UcOrdersIngestResult, ingest_uc_orders_workbook
 from app.dashboard_downloader.db_tables import orders_sync_log, pipelines
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
@@ -419,12 +424,41 @@ async def main(
     resolved_run_id = run_id or new_run_id()
     resolved_run_date = datetime.now(get_timezone())
     resolved_env = run_env or config.run_env
-    run_start_date, run_end_date = _resolve_date_range(from_date=from_date, to_date=to_date)
+    current_date = aware_now(get_timezone()).date()
+    run_end_date = to_date or current_date
+    if from_date and from_date > run_end_date:
+        raise ValueError(f"from_date ({from_date}) must be on or before to_date ({run_end_date})")
     logger = get_logger(run_id=resolved_run_id)
+    stores = await _load_uc_order_stores(logger=logger, store_codes=store_codes)
+    store_start_dates: dict[str, date] = {}
+    pipeline_id: int | None = None
+    if stores and from_date is None and config.database_url:
+        pipeline_id = await _fetch_pipeline_id(
+            database_url=config.database_url, pipeline_name=PIPELINE_NAME, logger=logger
+        )
+    for store in stores:
+        backfill, window_size, overlap = resolve_window_settings(sync_config=store.sync_config)
+        last_success = None
+        if from_date is None and pipeline_id and config.database_url:
+            last_success = await fetch_last_success_window_end(
+                database_url=config.database_url,
+                pipeline_id=pipeline_id,
+                store_code=store.store_code,
+            )
+        store_start_dates[store.store_code] = resolve_orders_sync_start_date(
+            end_date=run_end_date,
+            last_success=last_success,
+            overlap_days=overlap,
+            backfill_days=backfill,
+            window_days=window_size,
+            from_date=from_date,
+            store_start_date=None,
+        )
+    report_start_date = from_date or (min(store_start_dates.values()) if store_start_dates else run_end_date)
     summary = UcOrdersDiscoverySummary(
         run_id=resolved_run_id,
         run_env=resolved_env,
-        report_date=run_start_date,
+        report_date=report_start_date,
         report_end_date=run_end_date,
     )
 
@@ -438,8 +472,8 @@ async def main(
             phase="init",
             message="Starting UC orders sync discovery flow",
             run_env=resolved_env,
-            from_date=run_start_date,
-            to_date=run_end_date,
+            from_date=summary.report_date,
+            to_date=summary.report_end_date,
         )
         log_event(
             logger=logger,
@@ -448,7 +482,6 @@ async def main(
             pipeline_skip_dom_logging=config.pipeline_skip_dom_logging,
         )
 
-        stores = await _load_uc_order_stores(logger=logger, store_codes=store_codes)
         summary.store_codes = [store.store_code for store in stores]
         if not stores:
             log_event(
@@ -468,6 +501,7 @@ async def main(
         async with async_playwright() as playwright:
             browser = await launch_browser(playwright=playwright, logger=logger)
             for store in stores:
+                store_start_date = store_start_dates.get(store.store_code, summary.report_date)
                 await _run_store_discovery(
                     browser=browser,
                     store=store,
@@ -476,7 +510,7 @@ async def main(
                     run_id=resolved_run_id,
                     run_date=resolved_run_date,
                     summary=summary,
-                    from_date=run_start_date,
+                    from_date=store_start_date,
                     to_date=run_end_date,
                     download_timeout_ms=download_timeout_ms,
                 )
@@ -542,16 +576,6 @@ def _parse_date(value: str) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:  # pragma: no cover - exercised via CLI parsing
         raise argparse.ArgumentTypeError(f"Invalid date {value!r}; expected YYYY-MM-DD") from exc
-
-
-def _resolve_date_range(*, from_date: date | None, to_date: date | None) -> tuple[date, date]:
-    current_date = aware_now(get_timezone()).date()
-    resolved_from = from_date or current_date - timedelta(days=89)
-    resolved_to = to_date or current_date
-
-    if resolved_from > resolved_to:
-        raise ValueError(f"from_date ({resolved_from}) must be on or before to_date ({resolved_to})")
-    return resolved_from, resolved_to
 
 
 def _get_nested_str(mapping: Mapping[str, Any], path: Sequence[str]) -> str | None:
@@ -747,13 +771,13 @@ async def _insert_orders_sync_log(
                 logger=logger,
                 phase="orders_sync_log",
                 status="error",
-            message="Run summary row still missing; deferring orders sync log insert until final summary persistence",
-            run_id=run_id,
-            store_code=store.store_code,
-        )
-        if allow_defer:
-            _defer_orders_sync_log(summary, store, run_id, run_start_date, run_end_date)
-        return None
+                message="Run summary row still missing; deferring orders sync log insert until final summary persistence",
+                run_id=run_id,
+                store_code=store.store_code,
+            )
+            if allow_defer:
+                _defer_orders_sync_log(summary, store, run_id, run_start_date, run_end_date)
+            return None
 
     insert_values = {
         "pipeline_id": pipeline_id,
@@ -775,13 +799,13 @@ async def _insert_orders_sync_log(
                     pg_insert(orders_sync_log)
                     .values(**insert_values)
                     .on_conflict_do_update(
-                        index_elements=[
-                            orders_sync_log.c.pipeline_id,
-                            orders_sync_log.c.store_code,
-                            orders_sync_log.c.from_date,
-                            orders_sync_log.c.to_date,
-                            orders_sync_log.c.run_id,
-                        ],
+                        index_elements=(
+                            "pipeline_id",
+                            "store_code",
+                            "from_date",
+                            "to_date",
+                            "run_id",
+                        ),
                         set_={
                             "attempt_no": orders_sync_log.c.attempt_no + 1,
                             "status": "running",
@@ -791,6 +815,22 @@ async def _insert_orders_sync_log(
                     .returning(orders_sync_log.c.id)
                 )
             ).scalar_one()
+            await session.commit()
+            exists = (
+                await session.execute(
+                    sa.select(orders_sync_log.c.id).where(orders_sync_log.c.id == log_id)
+                )
+            ).scalar_one_or_none()
+            if not exists:
+                log_event(
+                    logger=logger,
+                    phase="orders_sync_log",
+                    status="error",
+                    message="Hard error: orders sync log row missing after insert",
+                    log_id=log_id,
+                    store_code=store.store_code,
+                )
+                return None
             log_event(
                 logger=logger,
                 phase="orders_sync_log",
@@ -799,16 +839,11 @@ async def _insert_orders_sync_log(
                 log_id=log_id,
                 store_code=store.store_code,
             )
-            exists = (
-                await session.execute(
-                    sa.select(orders_sync_log.c.id).where(orders_sync_log.c.id == log_id)
-                )
-            ).scalar_one_or_none()
             log_event(
                 logger=logger,
                 phase="orders_sync_log",
-                status="info" if exists else "error",
-                message="Verified orders sync log row exists" if exists else "Orders sync log row missing after insert",
+                status="info",
+                message="Verified orders sync log row exists",
                 log_id=log_id,
                 store_code=store.store_code,
             )
@@ -924,9 +959,19 @@ async def _update_orders_sync_log(
     values["updated_at"] = sa.func.now()
     try:
         async with session_scope(config.database_url) as session:
-            await session.execute(
+            result = await session.execute(
                 sa.update(orders_sync_log).where(orders_sync_log.c.id == log_id).values(**values)
             )
+            await session.commit()
+            if not result.rowcount:
+                log_event(
+                    logger=logger,
+                    phase="orders_sync_log",
+                    status="warn",
+                    message="Orders sync log update matched no rows",
+                    log_id=log_id,
+                    update_values=values,
+                )
     except Exception as exc:  # pragma: no cover - defensive
         log_event(
             logger=logger,
@@ -935,6 +980,7 @@ async def _update_orders_sync_log(
             message="Failed to update orders sync log row",
             log_id=log_id,
             error=str(exc),
+            update_values=values,
         )
 
 
@@ -998,6 +1044,16 @@ async def _run_store_discovery(
         run_start_date=from_date,
         run_end_date=to_date,
     )
+    if sync_log_id is None:
+        log_event(
+            logger=logger,
+            phase="orders_sync_log",
+            status="error",
+            message="Hard error: orders sync log row missing; aborting store discovery",
+            store_code=store.store_code,
+            run_id=run_id,
+        )
+        return
     download_succeeded = False
     sync_error_message: str | None = None
 
@@ -1256,46 +1312,52 @@ async def _run_store_discovery(
                             status="warn",
                             message="UC GST workbook ingested with warnings",
                             store_code=store.store_code,
-                            warning_count=len(ingest_result.warnings),
-                            staging_rows=ingest_result.staging_rows,
-                            final_rows=ingest_result.final_rows,
-                            staging_inserted=ingest_result.staging_inserted,
-                            staging_updated=ingest_result.staging_updated,
-                            final_inserted=ingest_result.final_inserted,
-                            final_updated=ingest_result.final_updated,
+                            cost_center=store.cost_center or "",
+                            run_id=run_id,
+                            run_date=run_date,
+                            database_url=config.database_url,
+                            logger=logger,
                         )
-                    else:
+                        if ingest_result.warnings:
+                            status_label = "warning"
+                            log_event(
+                                logger=logger,
+                                phase="ingest",
+                                status="warn",
+                                message="UC GST workbook ingested with warnings",
+                                store_code=store.store_code,
+                                warning_count=len(ingest_result.warnings),
+                                staging_rows=ingest_result.staging_rows,
+                                final_rows=ingest_result.final_rows,
+                                staging_inserted=ingest_result.staging_inserted,
+                                staging_updated=ingest_result.staging_updated,
+                                final_inserted=ingest_result.final_inserted,
+                                final_updated=ingest_result.final_updated,
+                            )
+                        else:
+                            log_event(
+                                logger=logger,
+                                phase="ingest",
+                                message="UC GST workbook ingested",
+                                store_code=store.store_code,
+                                staging_rows=ingest_result.staging_rows,
+                                final_rows=ingest_result.final_rows,
+                                staging_inserted=ingest_result.staging_inserted,
+                                staging_updated=ingest_result.staging_updated,
+                                final_inserted=ingest_result.final_inserted,
+                                final_updated=ingest_result.final_updated,
+                            )
+                    except Exception as exc:
+                        status_label = "warning"
                         log_event(
                             logger=logger,
                             phase="ingest",
-                            message="UC GST workbook ingested",
+                            status="error",
+                            message="UC GST ingestion failed",
                             store_code=store.store_code,
-                            staging_rows=ingest_result.staging_rows,
-                            final_rows=ingest_result.final_rows,
-                            staging_inserted=ingest_result.staging_inserted,
-                            staging_updated=ingest_result.staging_updated,
-                            final_inserted=ingest_result.final_inserted,
-                            final_updated=ingest_result.final_updated,
+                            error=str(exc),
                         )
-                except Exception as exc:
-                    log_event(
-                        logger=logger,
-                        phase="ingest",
-                        status="error",
-                        message="UC GST ingestion failed",
-                        store_code=store.store_code,
-                        error=str(exc),
-                    )
-                    outcome = StoreOutcome(
-                        status="error",
-                        message=f"GST ingestion failed: {exc}",
-                        final_url=page.url,
-                        storage_state=str(storage_state_path) if storage_state_path.exists() else None,
-                        login_used=login_used,
-                        download_path=download_path,
-                    )
-                    summary.record_store(store.store_code, outcome)
-                    return
+                        download_message = f"GST ingestion failed: {exc}"
             else:
                 status_label = "warning"
                 log_event(
