@@ -522,6 +522,8 @@ class StoreReport:
     downloaded_path: str | None = None
     staging_rows: int | None = None
     final_rows: int | None = None
+    final_inserted: int | None = None
+    final_updated: int | None = None
     rows_downloaded: int | None = None
     rows_ingested: int | None = None
     warning_count: int | None = None
@@ -543,6 +545,10 @@ class StoreReport:
             "downloaded_path": self.downloaded_path,
             "staging_rows": self.staging_rows,
             "final_rows": self.final_rows,
+            "final_inserted": self.final_inserted,
+            "final_updated": self.final_updated,
+            "rows_inserted": self.final_inserted,
+            "rows_updated": self.final_updated,
             "rows_downloaded": self.rows_downloaded,
             "rows_ingested": self.rows_ingested,
             "warning_count": self.warning_count,
@@ -1113,6 +1119,10 @@ class TdOrdersDiscoverySummary:
                 "rows_ingested": None,
                 "staging_rows": None,
                 "final_rows": None,
+                "final_inserted": None,
+                "final_updated": None,
+                "rows_inserted": None,
+                "rows_updated": None,
                 "warning_count": None,
                 "message": "No report recorded",
                 "error_message": None,
@@ -1125,6 +1135,10 @@ class TdOrdersDiscoverySummary:
             "rows_ingested": report.rows_ingested,
             "staging_rows": report.staging_rows,
             "final_rows": report.final_rows,
+            "final_inserted": report.final_inserted,
+            "final_updated": report.final_updated,
+            "rows_inserted": report.final_inserted,
+            "rows_updated": report.final_updated,
             "warning_count": report.warning_count if report.warning_count is not None else len(report.warnings),
             "message": report.message,
             "error_message": report.error_message,
