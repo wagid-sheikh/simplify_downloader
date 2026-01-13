@@ -239,11 +239,19 @@ def _extract_window_outcome_metadata(
     ingestion_counts: dict[str, Any] = {}
 
     def _record_counts(label: str, payload: Mapping[str, Any]) -> None:
+        def _first_present(*keys: str) -> Any:
+            for key in keys:
+                if key in payload and payload.get(key) is not None:
+                    return payload.get(key)
+            return None
+
         counts = {
             "rows_downloaded": payload.get("rows_downloaded"),
             "rows_ingested": payload.get("rows_ingested"),
             "staging_rows": payload.get("staging_rows"),
             "final_rows": payload.get("final_rows"),
+            "final_inserted": _first_present("final_inserted", "rows_inserted"),
+            "final_updated": _first_present("final_updated", "rows_updated"),
         }
         if any(value is not None for value in counts.values()):
             ingestion_counts[label] = counts
