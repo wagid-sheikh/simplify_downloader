@@ -218,6 +218,7 @@ class StoreOutcome:
     storage_state: str | None = None
     login_used: bool | None = None
     download_path: str | None = None
+    skip_reason: str | None = None
     warning_count: int | None = None
     staging_rows: int | None = None
     final_rows: int | None = None
@@ -250,6 +251,7 @@ class UcOrdersDiscoverySummary:
     notes: list[str] = field(default_factory=list)
     ingest_remarks: list[dict[str, str]] = field(default_factory=list)
     deferred_orders_sync_logs: list[DeferredOrdersSyncLog] = field(default_factory=list)
+    window_audit: list[dict[str, Any]] = field(default_factory=list)
 
     def mark_phase(self, phase: str, status: str) -> None:
         counters = self.phases.setdefault(phase, {"ok": 0, "warning": 0, "error": 0})
@@ -343,6 +345,7 @@ class UcOrdersDiscoverySummary:
                 "message": outcome.message if outcome else "No outcome recorded",
                 "error_message": outcome.message if outcome and outcome.status == "error" else None,
                 "info_message": outcome.message if outcome and outcome.status != "error" else None,
+                "skip_reason": outcome.skip_reason if outcome else None,
                 "filename": filename,
                 "download_path": outcome.download_path if outcome else None,
                 "warning_count": outcome.warning_count if outcome else None,
@@ -371,6 +374,7 @@ class UcOrdersDiscoverySummary:
                     "message": outcome.message if outcome else "No outcome recorded",
                     "error_message": outcome.message if outcome and outcome.status == "error" else None,
                     "info_message": outcome.message if outcome and outcome.status != "error" else None,
+                    "skip_reason": outcome.skip_reason if outcome else None,
                     "warning_count": outcome.warning_count if outcome else None,
                     "filename": filename,
                     "staging_rows": outcome.staging_rows if outcome else None,
@@ -402,6 +406,7 @@ class UcOrdersDiscoverySummary:
                 "outcomes": {code: outcome.__dict__ for code, outcome in self.store_outcomes.items()},
             },
             "window_summary": self._window_summary(),
+            "window_audit": list(self.window_audit),
             "stores_summary": {
                 "counts": self._store_status_counts(),
                 "stores": store_summary,
@@ -1077,6 +1082,7 @@ async def _run_store_discovery(
         return
     download_succeeded = False
     sync_error_message: str | None = None
+    row_count: int | None = None
 
     storage_state_path = store.storage_state_path
     storage_state_exists = storage_state_path.exists()
@@ -1086,6 +1092,26 @@ async def _run_store_discovery(
     outcome = StoreOutcome(status="error", message="uninitialized")
 
     try:
+        if from_date > to_date:
+            outcome = StoreOutcome(
+                status="warning",
+                message="Invalid date range; skipping GST discovery",
+                login_used=False,
+                skip_reason="date range invalid",
+            )
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message=outcome.message,
+                store_code=store.store_code,
+                from_date=from_date,
+                to_date=to_date,
+                skip_reason=outcome.skip_reason,
+            )
+            summary.record_store(store.store_code, outcome)
+            return
+
         if storage_state_exists:
             log_event(
                 logger=logger,
@@ -1200,6 +1226,7 @@ async def _run_store_discovery(
                     final_url=page.url,
                     storage_state=str(storage_state_path) if storage_state_path.exists() else None,
                     login_used=login_used,
+                    skip_reason=None if on_login else "home page not ready",
                 )
                 summary.record_store(store.store_code, outcome)
                 return
@@ -1232,6 +1259,7 @@ async def _run_store_discovery(
                     final_url=page.url,
                     storage_state=str(storage_state_path) if storage_state_path.exists() else None,
                     login_used=login_used,
+                    skip_reason="navigation failed",
                 )
                 summary.record_store(store.store_code, outcome)
                 return
@@ -1244,6 +1272,7 @@ async def _run_store_discovery(
                 final_url=page.url,
                 storage_state=str(storage_state_path) if storage_state_path.exists() else None,
                 login_used=login_used,
+                skip_reason="report not ready",
             )
             summary.record_store(store.store_code, outcome)
             return
@@ -1272,6 +1301,7 @@ async def _run_store_discovery(
                 final_url=page.url,
                 storage_state=str(storage_state_path) if storage_state_path.exists() else None,
                 login_used=login_used,
+                skip_reason="date range invalid",
             )
             summary.record_store(store.store_code, outcome)
             return
@@ -1427,6 +1457,7 @@ async def _run_store_discovery(
             final_url=page.url,
             storage_state=str(storage_state_path) if storage_state_path.exists() else None,
             login_used=login_used,
+            skip_reason="timeout",
         )
         summary.record_store(store.store_code, outcome)
         log_event(
@@ -1456,6 +1487,14 @@ async def _run_store_discovery(
         )
     finally:
         sync_status = _resolve_sync_log_status(outcome=outcome, download_succeeded=download_succeeded)
+        skip_reason: str | None = None
+        if sync_status == "skipped":
+            skip_reason = outcome.skip_reason
+            if skip_reason is None and row_count == 0:
+                skip_reason = "no data"
+            if skip_reason is None and outcome.message:
+                skip_reason = outcome.message
+            outcome.skip_reason = skip_reason
         sync_error_value = None
         if sync_status == "failed":
             sync_error_value = sync_error_message or outcome.message
@@ -1467,6 +1506,20 @@ async def _run_store_discovery(
         )
         log_event(
             logger=logger,
+            phase="window_result",
+            message="UC GST window completed",
+            store_code=store.store_code,
+            run_id=run_id,
+            from_date=from_date,
+            to_date=to_date,
+            window_status=sync_status,
+            status_note=skip_reason,
+            error_message=sync_error_value,
+            download_path=outcome.download_path,
+            final_rows=outcome.final_rows,
+        )
+        log_event(
+            logger=logger,
             phase="uc_window",
             message="UC GST window complete",
             store_code=store.store_code,
@@ -1475,6 +1528,19 @@ async def _run_store_discovery(
             gst_downloaded_path=outcome.download_path,
             gst_ingested_rows=outcome.final_rows,
             final_status=sync_status,
+            skip_reason=skip_reason,
+        )
+        summary.window_audit.append(
+            {
+                "store_code": store.store_code,
+                "from_date": from_date.isoformat(),
+                "to_date": to_date.isoformat(),
+                "status": sync_status,
+                "status_note": skip_reason,
+                "error_message": sync_error_value,
+                "download_path": outcome.download_path,
+                "final_rows": outcome.final_rows,
+            }
         )
         with contextlib.suppress(Exception):
             await context.close()
