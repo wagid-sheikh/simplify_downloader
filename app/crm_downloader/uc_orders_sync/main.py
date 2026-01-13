@@ -946,6 +946,26 @@ def _resolve_sync_log_status(*, outcome: StoreOutcome, download_succeeded: bool)
     return "skipped"
 
 
+def _log_ui_issues(
+    *,
+    logger: JsonLogger,
+    store: UcStore,
+    ui_issues: Sequence[dict[str, Any]],
+    status: str,
+) -> None:
+    for issue in ui_issues:
+        payload = dict(issue)
+        message = payload.pop("message", "GST UI issue observed")
+        log_event(
+            logger=logger,
+            phase="filters",
+            status=status,
+            message=message,
+            store_code=store.store_code,
+            **payload,
+        )
+
+
 async def _run_store_discovery(
     *,
     browser: Browser,
@@ -1150,7 +1170,7 @@ async def _run_store_discovery(
             )
             summary.record_store(store.store_code, outcome)
             return
-        apply_ok, row_count, row_visibility_issue = await _apply_date_range(
+        apply_ok, row_count, row_visibility_issue, ui_issues = await _apply_date_range(
             page=page,
             container=container,
             logger=logger,
@@ -1159,6 +1179,7 @@ async def _run_store_discovery(
             to_date=to_date,
         )
         if not apply_ok:
+            _log_ui_issues(logger=logger, store=store, ui_issues=ui_issues, status="warn")
             log_event(
                 logger=logger,
                 phase="filters",
@@ -1187,17 +1208,8 @@ async def _run_store_discovery(
             download_timeout_ms=download_timeout_ms,
             row_count=row_count,
         )
-        if row_visibility_issue:
-            log_event(
-                logger=logger,
-                phase="filters",
-                status="info" if downloaded else "warn",
-                message="GST report rows missing but export button was ready",
-                store_code=store.store_code,
-                row_count=row_count,
-                download_succeeded=downloaded,
-            )
         ingest_result: UcOrdersIngestResult | None = None
+        ingest_succeeded = False
         status_label = "ok" if downloaded else "warning"
         if downloaded and download_path:
             download_succeeded = True
@@ -1235,6 +1247,7 @@ async def _run_store_discovery(
                         database_url=config.database_url,
                         logger=logger,
                     )
+                    ingest_succeeded = True
                     if ingest_result.warnings:
                         status_label = "warning"
                         log_event(
@@ -1292,6 +1305,25 @@ async def _run_store_discovery(
                     message="Skipping UC GST ingestion because database_url is missing",
                     store_code=store.store_code,
                 )
+        final_success = downloaded and ingest_succeeded
+        if ui_issues:
+            _log_ui_issues(
+                logger=logger,
+                store=store,
+                ui_issues=ui_issues,
+                status="info" if final_success else "warn",
+            )
+        if row_visibility_issue:
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="info" if final_success else "warn",
+                message="GST report rows missing but export button was ready",
+                store_code=store.store_code,
+                row_count=row_count,
+                download_succeeded=downloaded,
+                ingest_succeeded=ingest_succeeded,
+            )
         await _log_selector_cues(logger=logger, store_code=store.store_code, container=container, page=page)
         if ingest_result and ingest_result.ingest_remarks:
             summary.add_ingest_remarks(ingest_result.ingest_remarks)
@@ -1858,13 +1890,14 @@ async def _apply_date_range(
     store: UcStore,
     from_date: date,
     to_date: date,
-) -> tuple[bool, int, bool]:
+) -> tuple[bool, int, bool, list[dict[str, Any]]]:
     input_selectors = [
         "input.search-user[placeholder='Choose Start Date - End Date']",
         *GST_CONTROL_SELECTORS["date_range_input"],
     ]
     date_input = None
     row_visibility_issue = False
+    ui_issues: list[dict[str, Any]] = []
     for selector in input_selectors:
         try:
             if await container.locator(selector).count():
@@ -1881,7 +1914,7 @@ async def _apply_date_range(
             store_code=store.store_code,
             selectors=input_selectors,
         )
-        return False, 0, row_visibility_issue
+        return False, 0, row_visibility_issue, ui_issues
 
     async def _fallback_set_date_range_input(reason: str) -> tuple[bool, int, bool]:
         date_range_value = f"{from_date:%Y-%m-%d} - {to_date:%Y-%m-%d}"
@@ -1910,7 +1943,7 @@ async def _apply_date_range(
                 date_range_value=date_range_value,
                 error=str(exc),
             )
-            return False, 0, row_visibility_issue
+            return False, 0, row_visibility_issue, ui_issues
         log_event(
             logger=logger,
             phase="filters",
@@ -1926,7 +1959,7 @@ async def _apply_date_range(
             logger=logger,
             store=store,
         )
-        return refreshed, row_count, refreshed_row_issue
+        return refreshed, row_count, refreshed_row_issue, ui_issues
 
     with contextlib.suppress(Exception):
         await date_input.scroll_into_view_if_needed()
@@ -1961,7 +1994,8 @@ async def _apply_date_range(
         )
         popup = await _reopen_date_picker_popup(page=page, logger=logger, store=store)
     if popup is None:
-        return await _fallback_set_date_range_input("popup-missing")
+        refreshed, row_count, refreshed_row_issue = await _fallback_set_date_range_input("popup-missing")
+        return refreshed, row_count, refreshed_row_issue, ui_issues
 
     calendars = await _get_calendar_locators(popup=popup)
     start_calendar = calendars[0]
@@ -1993,7 +2027,10 @@ async def _apply_date_range(
             end_date=to_date,
             error=str(exc),
         )
-        return await _fallback_set_date_range_input("calendar-navigation-error")
+        refreshed, row_count, refreshed_row_issue = await _fallback_set_date_range_input(
+            "calendar-navigation-error"
+        )
+        return refreshed, row_count, refreshed_row_issue, ui_issues
     if not start_ok and end_ok:
         log_event(
             logger=logger,
@@ -2048,7 +2085,10 @@ async def _apply_date_range(
             start_ok=start_ok,
             end_ok=end_ok,
         )
-        return await _fallback_set_date_range_input("calendar-selection-incomplete")
+        refreshed, row_count, refreshed_row_issue = await _fallback_set_date_range_input(
+            "calendar-selection-incomplete"
+        )
+        return refreshed, row_count, refreshed_row_issue, ui_issues
 
     overlay_selector = ".calendar-body.show"
     try:
@@ -2119,12 +2159,11 @@ async def _apply_date_range(
             )
     else:
         apply_warn = await _is_export_button_missing()
-        log_event(
-            logger=logger,
-            phase="filters",
-            status="warn" if apply_warn else "info",
-            message="Apply section not found after date selection",
-            store_code=store.store_code,
+        ui_issues.append(
+            {
+                "message": "Apply section not found after date selection",
+                "apply_warn": apply_warn,
+            }
         )
 
     overlay_apply_container_selector = ".calendar-body.show .apply"
@@ -2132,13 +2171,12 @@ async def _apply_date_range(
         await page.wait_for_selector(overlay_apply_container_selector, state="visible", timeout=2_500)
     except TimeoutError:
         overlay_apply_warn = await _is_export_button_missing()
-        log_event(
-            logger=logger,
-            phase="filters",
-            status="warn" if overlay_apply_warn else "info",
-            message="Apply section missing after date selection; reopening date picker",
-            store_code=store.store_code,
-            selector=overlay_apply_container_selector,
+        ui_issues.append(
+            {
+                "message": "Apply section missing after date selection; reopening date picker",
+                "selector": overlay_apply_container_selector,
+                "apply_warn": overlay_apply_warn,
+            }
         )
         await _reopen_date_picker_popup(page=page, logger=logger, store=store)
         try:
@@ -2153,15 +2191,14 @@ async def _apply_date_range(
             )
         except TimeoutError:
             overlay_apply_warn = await _is_export_button_missing()
-            log_event(
-                logger=logger,
-                phase="filters",
-                status="warn" if overlay_apply_warn else "info",
-                message="Apply section still missing after reopening date picker",
-                store_code=store.store_code,
-                selector=overlay_apply_container_selector,
+            ui_issues.append(
+                {
+                    "message": "Apply section still missing after reopening date picker",
+                    "selector": overlay_apply_container_selector,
+                    "apply_warn": overlay_apply_warn,
+                }
             )
-            return False, 0, row_visibility_issue
+            return False, 0, row_visibility_issue, ui_issues
 
     overlay_apply_selector = ".calendar-body.show .apply .buttons button.btn.primary"
     applied = False
@@ -2204,7 +2241,7 @@ async def _apply_date_range(
                 store_code=store.store_code,
                 selectors=[overlay_apply_selector],
             )
-            return False, 0, row_visibility_issue
+            return False, 0, row_visibility_issue, ui_issues
 
         with contextlib.suppress(Exception):
             await overlay_apply_button.scroll_into_view_if_needed()
@@ -2218,7 +2255,7 @@ async def _apply_date_range(
                 message="Apply button not ready after date selection",
                 store_code=store.store_code,
             )
-            return False, 0, row_visibility_issue
+            return False, 0, row_visibility_issue, ui_issues
 
         apply_enabled = False
         for _ in range(10):
@@ -2235,7 +2272,7 @@ async def _apply_date_range(
                 message="Apply button not enabled after date selection",
                 store_code=store.store_code,
             )
-            return False, 0, row_visibility_issue
+            return False, 0, row_visibility_issue, ui_issues
 
         await overlay_apply_button.click()
         refreshed, row_count, refreshed_row_issue = await _wait_for_report_refresh(
@@ -2281,10 +2318,10 @@ async def _apply_date_range(
             store_code=store.store_code,
             row_count=row_count,
         )
-        return False, row_count, row_visibility_issue
+        return False, row_count, row_visibility_issue, ui_issues
 
     if not applied:
-        return False, 0, row_visibility_issue
+        return False, 0, row_visibility_issue, ui_issues
     if apply_section_found:
         await _confirm_apply_dates(
             apply_section=apply_section,
@@ -2293,7 +2330,7 @@ async def _apply_date_range(
             logger=logger,
             store=store,
         )
-    return True, row_count, row_visibility_issue
+    return True, row_count, row_visibility_issue, ui_issues
 
 
 async def _download_gst_report(
