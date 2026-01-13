@@ -524,6 +524,8 @@ class StoreReport:
     final_rows: int | None = None
     final_inserted: int | None = None
     final_updated: int | None = None
+    rows_inserted: int | None = None
+    rows_updated: int | None = None
     rows_downloaded: int | None = None
     rows_ingested: int | None = None
     warning_count: int | None = None
@@ -547,8 +549,8 @@ class StoreReport:
             "final_rows": self.final_rows,
             "final_inserted": self.final_inserted,
             "final_updated": self.final_updated,
-            "rows_inserted": self.final_inserted,
-            "rows_updated": self.final_updated,
+            "rows_inserted": self.rows_inserted if self.rows_inserted is not None else self.final_inserted,
+            "rows_updated": self.rows_updated if self.rows_updated is not None else self.final_updated,
             "rows_downloaded": self.rows_downloaded,
             "rows_ingested": self.rows_ingested,
             "warning_count": self.warning_count,
@@ -1137,8 +1139,8 @@ class TdOrdersDiscoverySummary:
             "final_rows": report.final_rows,
             "final_inserted": report.final_inserted,
             "final_updated": report.final_updated,
-            "rows_inserted": report.final_inserted,
-            "rows_updated": report.final_updated,
+            "rows_inserted": report.rows_inserted if report.rows_inserted is not None else report.final_inserted,
+            "rows_updated": report.rows_updated if report.rows_updated is not None else report.final_updated,
             "warning_count": report.warning_count if report.warning_count is not None else len(report.warnings),
             "message": report.message,
             "error_message": report.error_message,
