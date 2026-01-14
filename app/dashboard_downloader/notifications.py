@@ -158,6 +158,14 @@ def _build_unified_metrics(report: Mapping[str, Any] | None) -> dict[str, int | 
     }
 
 
+def _has_positive_unified_metrics(metrics: Mapping[str, Any]) -> bool:
+    for field in UNIFIED_METRIC_FIELDS:
+        value = _coerce_int(metrics.get(field))
+        if value is not None and value > 0:
+            return True
+    return False
+
+
 def _not_applicable_metrics() -> dict[str, Any]:
     payload = {field: None for field in UNIFIED_METRIC_FIELDS}
     payload["label"] = "not applicable"
@@ -675,12 +683,27 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
         secondary_metrics = _build_unified_metrics(sales)
         _sum_unified_metrics(primary_totals, primary_metrics)
         _sum_unified_metrics(secondary_totals, secondary_metrics)
+        orders_status = str(orders.get("status") or "").lower()
+        sales_status = str(sales.get("status") or "").lower()
+        orders_status_conflict = orders_status == "skipped" and _has_positive_unified_metrics(primary_metrics)
+        sales_status_conflict = sales_status == "skipped" and _has_positive_unified_metrics(secondary_metrics)
+        if orders_status_conflict:
+            logger.warning(
+                "orders report status skipped but rows present",
+                extra={"store_code": store.get("store_code"), "report": "orders"},
+            )
+        if sales_status_conflict:
+            logger.warning(
+                "sales report status skipped but rows present",
+                extra={"store_code": store.get("store_code"), "report": "sales"},
+            )
         stores.append(
             {
                 "store_code": store.get("store_code"),
                 "status": store.get("status"),
                 "message": store.get("message"),
                 "orders_status": orders.get("status"),
+                "orders_status_conflict": orders_status_conflict,
                 "orders_filenames": orders.get("filenames") or [],
                 "orders_staging_rows": orders.get("staging_rows"),
                 "orders_final_rows": orders.get("final_rows"),
@@ -693,6 +716,7 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
                 "orders_warnings": orders.get("warnings") or [],
                 "orders_error": orders.get("error_message"),
                 "sales_status": sales.get("status"),
+                "sales_status_conflict": sales_status_conflict,
                 "sales_filenames": sales.get("filenames") or [],
                 "sales_staging_rows": sales.get("staging_rows"),
                 "sales_final_rows": sales.get("final_rows"),
@@ -760,7 +784,18 @@ def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
     window_warning_counts: dict[str, int] = {}
     for entry in metrics.get("window_audit") or []:
         status = str(entry.get("status") or "").lower()
-        if status not in {"warning", "warn"}:
+        final_rows = _coerce_int(entry.get("final_rows"))
+        if status == "skipped" and final_rows is not None and final_rows > 0:
+            logger.warning(
+                "UC window status skipped but rows present",
+                extra={
+                    "store_code": entry.get("store_code"),
+                    "from_date": entry.get("from_date"),
+                    "to_date": entry.get("to_date"),
+                    "final_rows": final_rows,
+                },
+            )
+        if status not in {"partial", "warning", "warn"}:
             continue
         store_code = _normalize_store_code(entry.get("store_code")) or entry.get("store_code")
         if not store_code:

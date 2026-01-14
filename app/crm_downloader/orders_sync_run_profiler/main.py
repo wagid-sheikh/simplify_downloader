@@ -344,28 +344,33 @@ def _prefix_metrics(prefix: str, metrics: Mapping[str, Any]) -> dict[str, Any]:
     return {f"{prefix}{key}": value for key, value in metrics.items()}
 
 
-def _is_uc_date_picker_failure(error_message: str | None) -> bool:
-    if not error_message:
-        return False
-    normalized = error_message.lower()
-    return any(
-        token in normalized
-        for token in (
-            "date picker",
-            "date-picker",
-            "date range",
-            "calendar",
-        )
-    )
+def _has_positive_metric(metrics: Mapping[str, Any]) -> bool:
+    for key in (
+        "rows_downloaded",
+        "rows_ingested",
+        "staging_rows",
+        "staging_inserted",
+        "staging_updated",
+        "final_inserted",
+        "final_updated",
+    ):
+        value = _coerce_int(metrics.get(key))
+        if value is not None and value > 0:
+            return True
+    return False
+
+
+def _has_positive_ingestion_rows(ingestion_counts: Mapping[str, Any]) -> bool:
+    for key in ("primary", "secondary"):
+        payload = _coerce_dict(ingestion_counts.get(key))
+        if payload and _has_positive_metric(payload):
+            return True
+    return False
 
 
 def _normalize_window_status(
     *, pipeline_name: str, status: str, error_message: str | None
 ) -> tuple[str, str]:
-    if pipeline_name != "uc_orders_sync":
-        return status, ""
-    if status == "failed" and _is_uc_date_picker_failure(error_message):
-        return "partial", " (date picker failure mapped to partial)"
     return status, ""
 
 
@@ -602,16 +607,25 @@ async def _run_store_windows(
                 )
             else:
                 ingestion_counts = {}
+            if status == "skipped" and _has_positive_ingestion_rows(ingestion_counts):
+                status_note += " (status skipped but rows present)"
+                log_event(
+                    logger=logger,
+                    phase="window",
+                    status="warn",
+                    message="orders_sync_log status skipped but ingestion rows present",
+                    store_code=store.store_code,
+                    pipeline_name=pipeline_name,
+                    run_id=window_run_id,
+                    window_index=index,
+                    ingestion_counts=ingestion_counts,
+                )
             if pipeline_name == "uc_orders_sync":
                 uc_payload = _build_uc_window_log(
                     download_paths=download_paths,
                     ingestion_counts=ingestion_counts,
                     error_message=error_message,
                 )
-                if fetched_status and uc_payload["download_path"] and uc_payload["ingest_success"]:
-                    if status != "success":
-                        status = "success"
-                        status_note += " (from uc window outcome)"
             if not fetched_status:
                 break
             if status in {"failed", "partial"} and attempt == 0:
