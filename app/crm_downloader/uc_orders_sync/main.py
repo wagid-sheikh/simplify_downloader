@@ -1462,16 +1462,35 @@ async def _run_store_discovery(
             row_count=row_count,
         )
         if not report_visible:
-            outcome = StoreOutcome(
-                status="warning",
-                message="filter_validation_failed",
-                final_url=page.url,
-                storage_state=str(storage_state_path) if storage_state_path.exists() else None,
-                login_used=login_used,
-                skip_reason="report table missing",
+            export_ready, export_selector = await _is_gst_export_ready(
+                container=container,
+                logger=logger,
+                store=store,
             )
-            summary.record_store(store.store_code, outcome)
-            return
+            if not export_ready:
+                outcome = StoreOutcome(
+                    status="warning",
+                    message="filter_validation_failed",
+                    final_url=page.url,
+                    storage_state=str(storage_state_path) if storage_state_path.exists() else None,
+                    login_used=login_used,
+                    skip_reason="report table missing",
+                )
+                summary.record_store(store.store_code, outcome)
+                return
+            download_warning_reason = "table_not_detected_exported_anyway"
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="GST report table missing but export button ready; proceeding to export",
+                store_code=store.store_code,
+                row_count=row_count,
+                export_selector=export_selector,
+                warning_reason=download_warning_reason,
+            )
+        else:
+            download_warning_reason = None
 
         downloaded, download_path, download_message = await _download_gst_report(
             page=page,
@@ -1485,6 +1504,14 @@ async def _run_store_discovery(
         ingest_result: UcOrdersIngestResult | None = None
         ingest_succeeded = False
         status_label = "ok" if downloaded else "warning"
+        if download_warning_reason and downloaded:
+            status_label = "warning"
+        if download_warning_reason:
+            if download_message:
+                if download_warning_reason not in download_message:
+                    download_message = f"{download_message}; {download_warning_reason}"
+            else:
+                download_message = download_warning_reason
         if downloaded and download_path:
             download_succeeded = True
             await _update_orders_sync_log(
@@ -3906,13 +3933,51 @@ async def _validate_gst_report_visible(
         logger=logger,
         phase="filters",
         status="warn",
-        message="GST report table not visible after apply; skipping export",
+        message="GST report table not visible after apply",
         store_code=store.store_code,
         selectors=list(GST_REPORT_TABLE_SELECTORS),
         row_count=row_count,
         waited_seconds=round(asyncio.get_event_loop().time() - start, 2),
     )
     return False
+
+
+async def _is_gst_export_ready(
+    *, container: Locator, logger: JsonLogger, store: UcStore
+) -> tuple[bool, str | None]:
+    export_button: Locator | None = None
+    selector_used: str | None = None
+    for selector in GST_CONTROL_SELECTORS["export_button"]:
+        locator = container.locator(selector)
+        try:
+            if await locator.count():
+                export_button = locator.first
+                selector_used = selector
+                break
+        except Exception:
+            continue
+    if export_button is None:
+        return False, None
+    is_visible = False
+    is_enabled = False
+    with contextlib.suppress(Exception):
+        is_visible = await export_button.is_visible()
+    if is_visible:
+        with contextlib.suppress(Exception):
+            is_enabled = await export_button.is_enabled()
+    export_ready = is_visible and is_enabled
+    log_event(
+        logger=logger,
+        phase="filters",
+        status=None if export_ready else "warn",
+        message="Checked GST export button readiness after table visibility check",
+        store_code=store.store_code,
+        export_selector=selector_used,
+        export_ready=export_ready,
+        export_visible=is_visible,
+        export_enabled=is_enabled,
+    )
+    return export_ready, selector_used
 
 
 async def _is_on_home_dashboard(*, page: Page, store: UcStore) -> bool:
