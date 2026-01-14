@@ -817,8 +817,14 @@ async def _run_store_windows(
         uc_payload: dict[str, Any] | None = None
         status_conflict = False
         attempts = 0
+        attempt_run_id = window_run_id
         for attempt in range(2):
             attempts = attempt + 1
+            attempt_run_id = (
+                f"{window_run_id}_attempt{attempts}"
+                if pipeline_name == "uc_orders_sync"
+                else window_run_id
+            )
             log_event(
                 logger=logger,
                 phase="window",
@@ -828,22 +834,23 @@ async def _run_store_windows(
                 to_date=window_end,
                 window_index=index,
                 window_attempt=attempts,
+                window_run_id=attempt_run_id,
             )
             await pipeline_fn(
                 run_env=run_env,
-                run_id=window_run_id,
+                run_id=attempt_run_id,
                 from_date=window_start,
                 to_date=window_end,
                 store_codes=[store.store_code],
                 run_orders=True,
                 run_sales=True,
             )
-            summary = await fetch_summary_for_run(config.database_url, window_run_id)
+            summary = await fetch_summary_for_run(config.database_url, attempt_run_id)
             log_row = await _fetch_latest_log_row(
                 database_url=config.database_url,
                 pipeline_id=pipeline_id,
                 store_code=store.store_code,
-                run_id=window_run_id,
+                run_id=attempt_run_id,
             )
             fetched_status = None
             error_message = None
@@ -864,8 +871,9 @@ async def _run_store_windows(
                     status="error",
                     message="orders_sync_log row missing; marking window failed",
                     store_code=store.store_code,
-                    run_id=window_run_id,
+                    run_id=attempt_run_id,
                     window_index=index,
+                    window_attempt=attempts,
                 )
             else:
                 status = fetched_status.lower()
@@ -893,8 +901,9 @@ async def _run_store_windows(
                     message="orders_sync_log status skipped but ingestion rows present",
                     store_code=store.store_code,
                     pipeline_name=pipeline_name,
-                    run_id=window_run_id,
+                    run_id=attempt_run_id,
                     window_index=index,
+                    window_attempt=attempts,
                     ingestion_counts=ingestion_counts,
                 )
             if pipeline_name == "uc_orders_sync":
@@ -915,6 +924,7 @@ async def _run_store_windows(
                     window_index=index,
                     window_status=status,
                     window_attempt=attempts,
+                    window_run_id=attempt_run_id,
                 )
                 continue
             if attempt > 0:
@@ -958,6 +968,9 @@ async def _run_store_windows(
                 "download_paths": download_paths,
                 "ingestion_counts": ingestion_counts,
                 "ingestion_totals": window_totals,
+                "attempt_no": attempts,
+                "attempt_run_id": attempt_run_id,
+                "orders_sync_log_id": log_row.get("id") if log_row else None,
             }
         )
         if pipeline_name == "uc_orders_sync":
@@ -985,6 +998,8 @@ async def _run_store_windows(
                 final_rows=uc_payload["final_rows"],
                 ingest_success=uc_payload["ingest_success"],
                 ingest_failure_reason=uc_payload["ingest_failure_reason"],
+                attempt_no=attempts,
+                orders_sync_log_id=log_row.get("id") if log_row else None,
             )
         detail_lines.append(
             f"{window_start.isoformat()} → {window_end.isoformat()}: {status}{status_note}"
