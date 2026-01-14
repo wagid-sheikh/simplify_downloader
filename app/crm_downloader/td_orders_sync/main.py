@@ -1741,8 +1741,19 @@ async def _flush_deferred_orders_sync_logs(
         )
         outcome = summary.store_outcomes.get(entry.store.store_code)
         error_message = outcome.message if outcome and outcome.status == "error" else None
+        primary_metrics, secondary_metrics = _build_unified_metrics(
+            orders_report=orders_report,
+            sales_report=sales_report,
+            run_orders=summary.run_orders,
+            run_sales=summary.run_sales,
+        )
         await _update_orders_sync_log(
-            logger=logger, log_id=log_id, status=status, error_message=error_message
+            logger=logger,
+            log_id=log_id,
+            status=status,
+            error_message=error_message,
+            primary_metrics=primary_metrics,
+            secondary_metrics=secondary_metrics,
         )
 
 
@@ -1754,6 +1765,8 @@ async def _update_orders_sync_log(
     orders_pulled_at: datetime | None = None,
     sales_pulled_at: datetime | None = None,
     error_message: str | None = None,
+    primary_metrics: Mapping[str, Any] | None = None,
+    secondary_metrics: Mapping[str, Any] | None = None,
 ) -> None:
     if not log_id or not config.database_url:
         return
@@ -1766,6 +1779,10 @@ async def _update_orders_sync_log(
         values["sales_pulled_at"] = sales_pulled_at
     if error_message is not None:
         values["error_message"] = error_message
+    if primary_metrics is not None:
+        values.update(primary_metrics)
+    if secondary_metrics is not None:
+        values.update(secondary_metrics)
     if not values:
         return
     values["updated_at"] = sa.func.now()
@@ -1794,6 +1811,34 @@ async def _update_orders_sync_log(
             error=str(exc),
             update_values=values,
         )
+
+
+def _build_report_metrics(report: StoreReport | None) -> dict[str, int | None]:
+    return {
+        "rows_downloaded": report.rows_downloaded if report else None,
+        "rows_ingested": report.rows_ingested if report else None,
+        "staging_rows": report.staging_rows if report else None,
+        "staging_inserted": None,
+        "staging_updated": None,
+        "final_inserted": report.final_inserted if report else None,
+        "final_updated": report.final_updated if report else None,
+    }
+
+
+def _prefix_metrics(prefix: str, metrics: Mapping[str, int | None]) -> dict[str, int | None]:
+    return {f"{prefix}{key}": value for key, value in metrics.items()}
+
+
+def _build_unified_metrics(
+    *,
+    orders_report: StoreReport | None,
+    sales_report: StoreReport | None,
+    run_orders: bool,
+    run_sales: bool,
+) -> tuple[dict[str, int | None], dict[str, int | None]]:
+    primary_metrics = _build_report_metrics(orders_report if run_orders else None)
+    secondary_metrics = _build_report_metrics(sales_report if run_sales else None)
+    return _prefix_metrics("primary_", primary_metrics), _prefix_metrics("secondary_", secondary_metrics)
 
 
 def _resolve_sync_log_status(
@@ -6327,11 +6372,19 @@ async def _run_store_discovery(
             outcome=outcome,
             sync_error_message=sync_error_message,
         )
+        primary_metrics, secondary_metrics = _build_unified_metrics(
+            orders_report=orders_report,
+            sales_report=sales_report,
+            run_orders=run_orders,
+            run_sales=run_sales,
+        )
         await _update_orders_sync_log(
             logger=store_logger,
             log_id=sync_log_id,
             status=final_status,
             error_message=final_error_message,
+            primary_metrics=primary_metrics,
+            secondary_metrics=secondary_metrics,
         )
         summary.record_store(
             store.store_code,

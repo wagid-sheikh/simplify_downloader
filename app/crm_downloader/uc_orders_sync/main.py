@@ -220,6 +220,7 @@ class StoreOutcome:
     download_path: str | None = None
     skip_reason: str | None = None
     warning_count: int | None = None
+    rows_downloaded: int | None = None
     staging_rows: int | None = None
     final_rows: int | None = None
     staging_inserted: int | None = None
@@ -958,8 +959,14 @@ async def _flush_deferred_orders_sync_logs(
                 outcome=outcome, download_succeeded=bool(outcome.download_path)
             )
             error_message = outcome.message if outcome.status == "error" else None
+            primary_metrics, secondary_metrics = _build_unified_metrics(outcome)
             await _update_orders_sync_log(
-                logger=logger, log_id=log_id, status=status, error_message=error_message
+                logger=logger,
+                log_id=log_id,
+                status=status,
+                error_message=error_message,
+                primary_metrics=primary_metrics,
+                secondary_metrics=secondary_metrics,
             )
 
 
@@ -970,6 +977,8 @@ async def _update_orders_sync_log(
     status: str | None = None,
     orders_pulled_at: datetime | None = None,
     error_message: str | None = None,
+    primary_metrics: Mapping[str, Any] | None = None,
+    secondary_metrics: Mapping[str, Any] | None = None,
 ) -> None:
     if not log_id or not config.database_url:
         return
@@ -980,6 +989,10 @@ async def _update_orders_sync_log(
         values["orders_pulled_at"] = orders_pulled_at
     if error_message is not None:
         values["error_message"] = error_message
+    if primary_metrics is not None:
+        values.update(primary_metrics)
+    if secondary_metrics is not None:
+        values.update(secondary_metrics)
     if not values:
         return
     values["updated_at"] = sa.func.now()
@@ -1008,6 +1021,28 @@ async def _update_orders_sync_log(
             error=str(exc),
             update_values=values,
         )
+
+
+def _build_unified_metrics(outcome: StoreOutcome | None) -> tuple[dict[str, int | None], dict[str, int | None]]:
+    primary_metrics = {
+        "primary_rows_downloaded": outcome.rows_downloaded if outcome else None,
+        "primary_rows_ingested": outcome.final_rows if outcome else None,
+        "primary_staging_rows": outcome.staging_rows if outcome else None,
+        "primary_staging_inserted": outcome.staging_inserted if outcome else None,
+        "primary_staging_updated": outcome.staging_updated if outcome else None,
+        "primary_final_inserted": outcome.final_inserted if outcome else None,
+        "primary_final_updated": outcome.final_updated if outcome else None,
+    }
+    secondary_metrics = {
+        "secondary_rows_downloaded": None,
+        "secondary_rows_ingested": None,
+        "secondary_staging_rows": None,
+        "secondary_staging_inserted": None,
+        "secondary_staging_updated": None,
+        "secondary_final_inserted": None,
+        "secondary_final_updated": None,
+    }
+    return primary_metrics, secondary_metrics
 
 
 def _resolve_sync_log_status(*, outcome: StoreOutcome, download_succeeded: bool) -> str:
@@ -1435,6 +1470,7 @@ async def _run_store_discovery(
             login_used=login_used,
             download_path=download_path,
             warning_count=len(ingest_result.warnings) if ingest_result and ingest_result.warnings else None,
+            rows_downloaded=ingest_result.rows_downloaded if ingest_result else row_count,
             staging_rows=ingest_result.staging_rows if ingest_result else None,
             final_rows=ingest_result.final_rows if ingest_result else None,
             staging_inserted=ingest_result.staging_inserted if ingest_result else None,
@@ -1498,11 +1534,14 @@ async def _run_store_discovery(
         sync_error_value = None
         if sync_status == "failed":
             sync_error_value = sync_error_message or outcome.message
+        primary_metrics, secondary_metrics = _build_unified_metrics(outcome)
         await _update_orders_sync_log(
             logger=logger,
             log_id=sync_log_id,
             status=sync_status,
             error_message=sync_error_value,
+            primary_metrics=primary_metrics,
+            secondary_metrics=secondary_metrics,
         )
         log_event(
             logger=logger,
