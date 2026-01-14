@@ -87,10 +87,31 @@ GST_CONTROL_SELECTORS = {
         "input.search-user[readonly][placeholder='Choose Start Date - End Date']",
         "input.search-user[placeholder*='Choose Start Date']",
         "input[placeholder='Choose Start Date - End Date']",
+        "input[placeholder*='Start Date - End Date']",
+        "input[placeholder*='Start Date'][placeholder*='End Date']",
+        "input[placeholder*='Date Range']",
+        "input[name*='date'][name*='range']",
     ],
-    "apply_button": ["button:has-text('Apply')"],
+    "apply_button": [
+        ".calendar-body.show .apply .buttons button.btn.primary",
+        ".calendar-body.show .apply button.btn.primary",
+        ".apply .buttons button.btn.primary",
+        ".apply button.btn.primary",
+        "button.btn.primary:has-text('Apply')",
+        "button:has-text('Apply')",
+        "input[type='button'][value*='Apply']",
+    ],
     "export_button": ["button.btn.primary.export", "button:has-text('Export Report')"],
 }
+GST_REPORT_TABLE_SELECTORS = (
+    "table",
+    "table tbody",
+    "table tbody tr.ng-star-inserted",
+    "table tbody tr",
+    ".mat-table",
+    ".datatable",
+    ".ag-center-cols-container",
+)
 DATE_PICKER_POPUP_SELECTORS = (
     ".calendar-body.show",
     ".calendar-body .calendar",
@@ -1401,6 +1422,23 @@ async def _run_store_discovery(
             )
             summary.record_store(store.store_code, outcome)
             return
+        report_visible = await _validate_gst_report_visible(
+            container=container,
+            logger=logger,
+            store=store,
+            row_count=row_count,
+        )
+        if not report_visible:
+            outcome = StoreOutcome(
+                status="warning",
+                message="GST report table not visible; export skipped",
+                final_url=page.url,
+                storage_state=str(storage_state_path) if storage_state_path.exists() else None,
+                login_used=login_used,
+                skip_reason="report table missing",
+            )
+            summary.record_store(store.store_code, outcome)
+            return
 
         downloaded, download_path, download_message = await _download_gst_report(
             page=page,
@@ -2459,7 +2497,6 @@ async def _apply_date_range(
             )
             return False, 0, row_visibility_issue, ui_issues
 
-    overlay_apply_selector = ".calendar-body.show .apply .buttons button.btn.primary"
     applied = False
     for attempt in range(2):
         overlay_count = 0
@@ -2477,8 +2514,18 @@ async def _apply_date_range(
             overlay_count=overlay_count,
             apply_count=apply_count,
         )
-        overlay_apply_button = page.locator(overlay_apply_selector).first
-        if not await overlay_apply_button.count():
+        overlay_apply_button: Locator | None = None
+        overlay_apply_selector_used: str | None = None
+        for selector in GST_CONTROL_SELECTORS["apply_button"]:
+            candidate = page.locator(selector)
+            try:
+                if await candidate.count():
+                    overlay_apply_button = candidate.first
+                    overlay_apply_selector_used = selector
+                    break
+            except Exception:
+                continue
+        if overlay_apply_button is None:
             if attempt == 0:
                 with contextlib.suppress(Exception):
                     await date_input.click()
@@ -2496,9 +2543,17 @@ async def _apply_date_range(
                 logger=logger,
                 phase="filters",
                 status="warn",
-                message="Apply button not found after date selection",
+                message="Apply control not found after date selection; skipping export",
                 store_code=store.store_code,
-                selectors=[overlay_apply_selector],
+                selectors=GST_CONTROL_SELECTORS["apply_button"],
+                reason="apply_control_missing",
+            )
+            ui_issues.append(
+                {
+                    "message": "Apply control missing after date selection",
+                    "reason": "apply_control_missing",
+                    "selectors": GST_CONTROL_SELECTORS["apply_button"],
+                }
             )
             return False, 0, row_visibility_issue, ui_issues
 
@@ -2513,6 +2568,7 @@ async def _apply_date_range(
                 status="warn",
                 message="Apply button not ready after date selection",
                 store_code=store.store_code,
+                selector=overlay_apply_selector_used,
             )
             return False, 0, row_visibility_issue, ui_issues
 
@@ -2530,6 +2586,7 @@ async def _apply_date_range(
                 status="warn",
                 message="Apply button not enabled after date selection",
                 store_code=store.store_code,
+                selector=overlay_apply_selector_used,
             )
             return False, 0, row_visibility_issue, ui_issues
 
@@ -3771,6 +3828,36 @@ async def _wait_for_report_refresh(
         row_count=initial_count,
     )
     return False, initial_count, row_visibility_issue
+
+
+async def _validate_gst_report_visible(
+    *, container: Locator, logger: JsonLogger, store: UcStore, row_count: int
+) -> bool:
+    for selector in GST_REPORT_TABLE_SELECTORS:
+        locator = container.locator(selector).first
+        try:
+            if await locator.count() and await locator.is_visible():
+                log_event(
+                    logger=logger,
+                    phase="filters",
+                    message="GST report table visibility confirmed after apply",
+                    store_code=store.store_code,
+                    selector=selector,
+                    row_count=row_count,
+                )
+                return True
+        except Exception:
+            continue
+    log_event(
+        logger=logger,
+        phase="filters",
+        status="warn",
+        message="GST report table not visible after apply; skipping export",
+        store_code=store.store_code,
+        selectors=list(GST_REPORT_TABLE_SELECTORS),
+        row_count=row_count,
+    )
+    return False
 
 
 async def _is_on_home_dashboard(*, page: Page, store: UcStore) -> bool:
