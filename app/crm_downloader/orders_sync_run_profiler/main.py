@@ -204,57 +204,32 @@ async def _fetch_pipeline_id(
     return pipeline_id
 
 
-async def _fetch_latest_log_status(
+async def _fetch_latest_log_row(
     *, database_url: str, pipeline_id: int, store_code: str, run_id: str
-) -> tuple[str | None, str | None]:
+) -> Mapping[str, Any] | None:
     async with session_scope(database_url) as session:
         stmt = (
-            sa.select(orders_sync_log.c.status, orders_sync_log.c.error_message)
+            sa.select(orders_sync_log)
             .where(orders_sync_log.c.pipeline_id == pipeline_id)
             .where(orders_sync_log.c.store_code == store_code)
             .where(orders_sync_log.c.run_id == run_id)
             .order_by(orders_sync_log.c.id.desc())
             .limit(1)
         )
-        row = (await session.execute(stmt)).first()
-    if not row:
-        return None, None
-    status = row[0]
-    error_message = row[1]
-    status_value = str(status) if status else None
-    error_value = str(error_message) if error_message else None
-    return status_value, error_value
+        row = (await session.execute(stmt)).mappings().first()
+    return dict(row) if row else None
 
 
-def _extract_window_outcome_metadata(
+def _extract_window_download_paths(
     summary: Mapping[str, Any] | None, *, store_code: str
-) -> tuple[dict[str, Any], dict[str, Any]]:
+) -> dict[str, Any]:
     if not summary:
-        return {}, {}
+        return {}
     metrics = _coerce_dict(summary.get("metrics_json"))
     if not metrics:
-        return {}, {}
+        return {}
     normalized_code = store_code.upper()
     download_paths: dict[str, Any] = {}
-    ingestion_counts: dict[str, Any] = {}
-
-    def _record_counts(label: str, payload: Mapping[str, Any]) -> None:
-        def _first_present(*keys: str) -> Any:
-            for key in keys:
-                if key in payload and payload.get(key) is not None:
-                    return payload.get(key)
-            return None
-
-        counts = {
-            "rows_downloaded": payload.get("rows_downloaded"),
-            "rows_ingested": payload.get("rows_ingested"),
-            "staging_rows": payload.get("staging_rows"),
-            "final_rows": payload.get("final_rows"),
-            "final_inserted": _first_present("final_inserted", "rows_inserted"),
-            "final_updated": _first_present("final_updated", "rows_updated"),
-        }
-        if any(value is not None for value in counts.values()):
-            ingestion_counts[label] = counts
 
     def _record_paths(label: str, payload: Mapping[str, Any]) -> None:
         download_path = payload.get("downloaded_path") or payload.get("download_path")
@@ -269,32 +244,18 @@ def _extract_window_outcome_metadata(
     orders_store = _coerce_dict(_coerce_dict(orders_snapshot.get("stores")).get(normalized_code))
     if orders_store:
         _record_paths("orders", orders_store)
-        _record_counts("orders", orders_store)
 
     sales_snapshot = _coerce_dict(metrics.get("sales"))
     sales_store = _coerce_dict(_coerce_dict(sales_snapshot.get("stores")).get(normalized_code))
     if sales_store:
         _record_paths("sales", sales_store)
-        _record_counts("sales", sales_store)
 
     stores_summary = _coerce_dict(metrics.get("stores_summary"))
     summary_store = _coerce_dict(_coerce_dict(stores_summary.get("stores")).get(normalized_code))
     if summary_store:
         _record_paths("gst", summary_store)
-        row_counts = _coerce_dict(summary_store.get("row_counts"))
-        if row_counts:
-            uc_counts = {
-                "staging_rows": row_counts.get("staging_rows"),
-                "final_rows": row_counts.get("final_rows"),
-                "staging_inserted": row_counts.get("staging_inserted"),
-                "staging_updated": row_counts.get("staging_updated"),
-                "final_inserted": row_counts.get("final_inserted"),
-                "final_updated": row_counts.get("final_updated"),
-            }
-            if any(value is not None for value in uc_counts.values()):
-                ingestion_counts["gst"] = uc_counts
 
-    return download_paths, ingestion_counts
+    return download_paths
 
 
 def _first_mapping(payload: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -315,11 +276,15 @@ def _build_uc_window_log(
         path_payload = _first_mapping(download_paths)
     download_path = path_payload.get("download_path")
 
-    counts_payload = _coerce_dict(ingestion_counts.get("gst"))
+    counts_payload = _coerce_dict(ingestion_counts.get("primary"))
+    if not counts_payload:
+        counts_payload = _coerce_dict(ingestion_counts.get("gst"))
     if not counts_payload:
         counts_payload = _first_mapping(ingestion_counts)
     staging_rows = counts_payload.get("staging_rows")
     final_rows = counts_payload.get("final_rows")
+    if final_rows is None:
+        final_rows = counts_payload.get("rows_ingested")
 
     ingest_occurred = staging_rows is not None or final_rows is not None
     ingest_success = bool(ingest_occurred)
@@ -337,6 +302,27 @@ def _build_uc_window_log(
         "ingest_success": ingest_success,
         "ingest_failure_reason": failure_reason,
     }
+
+
+def _extract_ingestion_counts_from_log(
+    log_row: Mapping[str, Any], *, pipeline_name: str
+) -> dict[str, Any]:
+    def _extract_metrics(prefix: str) -> dict[str, Any]:
+        return {
+            "rows_downloaded": log_row.get(f"{prefix}_rows_downloaded"),
+            "rows_ingested": log_row.get(f"{prefix}_rows_ingested"),
+            "staging_rows": log_row.get(f"{prefix}_staging_rows"),
+            "staging_inserted": log_row.get(f"{prefix}_staging_inserted"),
+            "staging_updated": log_row.get(f"{prefix}_staging_updated"),
+            "final_inserted": log_row.get(f"{prefix}_final_inserted"),
+            "final_updated": log_row.get(f"{prefix}_final_updated"),
+        }
+
+    primary = _extract_metrics("primary")
+    secondary = _extract_metrics("secondary")
+    if pipeline_name == "uc_orders_sync":
+        secondary = {**{key: None for key in primary}, "label": "not applicable"}
+    return {"primary": primary, "secondary": secondary}
 
 
 def _is_uc_date_picker_failure(error_message: str | None) -> bool:
@@ -553,12 +539,19 @@ async def _run_store_windows(
                 run_sales=True,
             )
             summary = await fetch_summary_for_run(config.database_url, window_run_id)
-            fetched_status, error_message = await _fetch_latest_log_status(
+            log_row = await _fetch_latest_log_row(
                 database_url=config.database_url,
                 pipeline_id=pipeline_id,
                 store_code=store.store_code,
                 run_id=window_run_id,
             )
+            fetched_status = None
+            error_message = None
+            if log_row:
+                status_value = log_row.get("status")
+                error_value = log_row.get("error_message")
+                fetched_status = str(status_value) if status_value else None
+                error_message = str(error_value) if error_value else None
             status_note = ""
             if not fetched_status:
                 status = "failed"
@@ -583,9 +576,13 @@ async def _run_store_windows(
                     pipeline_name=pipeline_name, status=status, error_message=error_message
                 )
                 status_note += mapped_note
-            download_paths, ingestion_counts = _extract_window_outcome_metadata(
-                summary, store_code=store.store_code
-            )
+            download_paths = _extract_window_download_paths(summary, store_code=store.store_code)
+            if log_row:
+                ingestion_counts = _extract_ingestion_counts_from_log(
+                    log_row, pipeline_name=pipeline_name
+                )
+            else:
+                ingestion_counts = {}
             if pipeline_name == "uc_orders_sync":
                 uc_payload = _build_uc_window_log(
                     download_paths=download_paths,
