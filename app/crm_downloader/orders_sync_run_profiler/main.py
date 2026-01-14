@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import fcntl
 import json
+import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -128,6 +129,13 @@ def _normalize_sync_group(value: str) -> str:
     if normalized not in PIPELINE_BY_GROUP:
         raise argparse.ArgumentTypeError("sync_group must be TD, UC, or ALL")
     return normalized
+
+
+def _env_flag(name: str) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return False
+    return str(raw).strip().lower() not in {"", "0", "false", "no"}
 
 
 async def _load_store_profiles(
@@ -1245,12 +1253,16 @@ async def main(
     overlap_days: int | None = None,
     run_env: str | None = None,
     run_id: str | None = None,
+    uc_only: bool = False,
 ) -> None:
     resolved_env = run_env or config.run_env
     resolved_run_id = run_id or new_run_id()
     logger = get_logger(run_id=resolved_run_id)
     started_at = datetime.now(timezone.utc)
     resolved_sync_group = _normalize_sync_group(sync_group or "ALL")
+    if uc_only:
+        # Temporary UC-stabilization switch: ensure TD pipelines are excluded before planning windows.
+        resolved_sync_group = "UC"
     if not config.database_url:
         log_event(
             logger=logger,
@@ -1496,6 +1508,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--overlap-days", type=int)
     parser.add_argument("--run-env")
     parser.add_argument("--run-id")
+    parser.add_argument(
+        "--uc-only",
+        action="store_true",
+        default=_env_flag("UC_ONLY"),
+        help="Temporary UC-stabilization switch to skip TD pipelines.",
+    )
     return parser
 
 
@@ -1516,6 +1534,7 @@ def _main() -> None:
             overlap_days=args.overlap_days,
             run_env=args.run_env,
             run_id=resolved_run_id,
+            uc_only=args.uc_only,
         )
 
     loop = asyncio.new_event_loop()
