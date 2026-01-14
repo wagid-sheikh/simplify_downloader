@@ -21,6 +21,8 @@ from app.dashboard_downloader.pipelines.base import resolve_run_env
 from .assigner import run_leads_assignment
 from .pdf_generator import generate_pdfs_for_batch
 
+DEFAULT_RUN_SUMMARY_RECIPIENT = "wagid.sheikh@gmail.com"
+
 
 async def _count_assignments(db_session, batch_id: int) -> int:
     result = await db_session.execute(
@@ -133,7 +135,7 @@ async def _load_store_diagnostics(db_session, batch_id: int) -> list[dict[str, o
                 "assigned_leads_count": assigned_count,
                 "reasons": reasons,
             }
-        )
+)
 
     return diagnostics
 
@@ -385,14 +387,14 @@ def _send_run_summary(
     if not to and cc:
         to, cc = cc, []
     if not to and not cc:
+        to = [DEFAULT_RUN_SUMMARY_RECIPIENT]
         log_event(
             logger=logger,
             phase="notify",
             status="warn",
-            message="no recipients available for run summary",
-            extras=context,
+            message="no recipients available for run summary; using default",
+            extras={**context, "default_recipient": DEFAULT_RUN_SUMMARY_RECIPIENT},
         )
-        return 0, 0
 
     subject = _render_template(summary_template["subject_template"], context)
     body = _render_template(summary_template["body_template"], context)
