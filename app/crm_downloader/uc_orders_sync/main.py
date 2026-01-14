@@ -98,8 +98,21 @@ GST_CONTROL_SELECTORS = {
         ".apply .buttons button.btn.primary",
         ".apply button.btn.primary",
         "button.btn.primary:has-text('Apply')",
+        "button.btn.primary:has-text('Search')",
+        "button.btn.primary:has-text('Submit')",
+        "button.btn.primary:has-text('Go')",
         "button:has-text('Apply')",
+        "button:has-text('Search')",
+        "button:has-text('Submit')",
+        "button:has-text('Go')",
         "input[type='button'][value*='Apply']",
+        "input[type='button'][value*='Search']",
+        "input[type='button'][value*='Submit']",
+        "input[type='button'][value*='Go']",
+        "input[type='submit'][value*='Apply']",
+        "input[type='submit'][value*='Search']",
+        "input[type='submit'][value*='Submit']",
+        "input[type='submit'][value*='Go']",
     ],
     "export_button": ["button.btn.primary.export", "button:has-text('Export Report')"],
 }
@@ -2583,17 +2596,13 @@ async def _apply_date_range(
             overlay_count=overlay_count,
             apply_count=apply_count,
         )
-        overlay_apply_button: Locator | None = None
-        overlay_apply_selector_used: str | None = None
-        for selector in GST_CONTROL_SELECTORS["apply_button"]:
-            candidate = page.locator(selector)
-            try:
-                if await candidate.count():
-                    overlay_apply_button = candidate.first
-                    overlay_apply_selector_used = selector
-                    break
-            except Exception:
-                continue
+        overlay_apply_button, overlay_apply_selector_used = await _find_apply_button(
+            page=page,
+            container=container,
+            apply_section=apply_section if apply_section_found else None,
+            logger=logger,
+            store=store,
+        )
         if overlay_apply_button is None:
             if attempt == 0:
                 with contextlib.suppress(Exception):
@@ -2663,6 +2672,28 @@ async def _apply_date_range(
             return False, 0, row_visibility_issue, ui_issues, failure_reason
 
         await overlay_apply_button.click()
+        date_filter_updated = await _confirm_date_filter_update(
+            page=page,
+            container=container,
+            apply_section=apply_section if apply_section_found else None,
+            from_date=from_date,
+            to_date=to_date,
+            logger=logger,
+            store=store,
+        )
+        if not date_filter_updated:
+            if attempt == 0:
+                log_event(
+                    logger=logger,
+                    phase="filters",
+                    status="warn",
+                    message="Apply click did not update date filter UI; retrying apply",
+                    store_code=store.store_code,
+                )
+                continue
+            failure_reason = "apply_click_unconfirmed"
+            return False, 0, row_visibility_issue, ui_issues, failure_reason
+
         refreshed, row_count, refreshed_row_issue = await _wait_for_report_refresh(
             page=page,
             container=container,
@@ -3034,6 +3065,80 @@ async def _wait_for_date_picker_popup(
             attempts=attempt + 1,
         )
     return None
+
+
+async def _find_apply_button(
+    *,
+    page: Page,
+    container: Locator,
+    apply_section: Locator | None,
+    logger: JsonLogger,
+    store: UcStore,
+) -> tuple[Locator | None, str | None]:
+    cue_regex = re.compile("|".join(re.escape(cue) for cue in CONTROL_CUES["apply"]), re.I)
+    search_scopes: list[tuple[str, Locator]] = []
+
+    overlay_apply = page.locator(".calendar-body.show .apply").first
+    if await overlay_apply.count():
+        search_scopes.append(("overlay_apply", overlay_apply))
+
+    if apply_section is not None and await apply_section.count():
+        search_scopes.append(("apply_section", apply_section))
+
+    apply_container = container.locator(".apply").first
+    if await apply_container.count():
+        search_scopes.append(("container_apply", apply_container))
+
+    for scope_name, scope in search_scopes:
+        for child_selector in (".buttons", ""):
+            scope_locator = scope.locator(child_selector) if child_selector else scope
+            try:
+                button_candidate = scope_locator.get_by_role("button", name=cue_regex).first
+                if await button_candidate.count():
+                    return button_candidate, f"{scope_name} >> role=button"
+            except Exception:
+                pass
+            try:
+                text_button = scope_locator.locator("button").filter(has_text=cue_regex).first
+                if await text_button.count():
+                    return text_button, f"{scope_name} >> button text"
+            except Exception:
+                pass
+            try:
+                input_buttons = scope_locator.locator("input[type='button'], input[type='submit']")
+                input_count = await input_buttons.count()
+                for idx in range(input_count):
+                    candidate = input_buttons.nth(idx)
+                    value = await candidate.get_attribute("value")
+                    if value and cue_regex.search(value):
+                        return candidate, f"{scope_name} >> input[value='{value}']"
+            except Exception:
+                pass
+
+    for selector in GST_CONTROL_SELECTORS["apply_button"]:
+        candidate = page.locator(selector)
+        try:
+            if await candidate.count():
+                return candidate.first, selector
+        except Exception:
+            continue
+
+    try:
+        role_candidate = page.get_by_role("button", name=cue_regex).first
+        if await role_candidate.count():
+            return role_candidate, "role=button[name~apply]"
+    except Exception:
+        pass
+
+    log_event(
+        logger=logger,
+        phase="filters",
+        status="warn",
+        message="Apply button not located using expanded cues",
+        store_code=store.store_code,
+        cues=CONTROL_CUES["apply"],
+    )
+    return None, None
 
 
 async def _get_calendar_locators(*, popup: Locator) -> list[Locator]:
@@ -3794,6 +3899,77 @@ def _matches_date_value(value: str, target_date: date) -> bool:
     for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y", "%b %d, %Y", "%B %d, %Y"):
         if target_date.strftime(fmt) in normalized:
             return True
+    return False
+
+
+def _matches_date_range_value(value: str, from_date: date, to_date: date) -> bool:
+    if not value:
+        return False
+    return _matches_date_value(value, from_date) and _matches_date_value(value, to_date)
+
+
+async def _confirm_date_filter_update(
+    *,
+    page: Page,
+    container: Locator,
+    apply_section: Locator | None,
+    from_date: date,
+    to_date: date,
+    logger: JsonLogger,
+    store: UcStore,
+) -> bool:
+    date_range_value = ""
+    start_value = ""
+    end_value = ""
+    for _ in range(12):
+        for selector in GST_CONTROL_SELECTORS["date_range_input"]:
+            input_locator = container.locator(selector).first
+            try:
+                if await input_locator.count():
+                    with contextlib.suppress(Exception):
+                        date_range_value = await input_locator.input_value()
+                    if date_range_value:
+                        break
+            except Exception:
+                continue
+
+        if apply_section is not None and await apply_section.count():
+            start_input = apply_section.locator("input[readonly][placeholder='Start Date']").first
+            end_input = apply_section.locator("input[readonly][placeholder='End Date']").first
+            with contextlib.suppress(Exception):
+                if await start_input.count():
+                    start_value = await start_input.input_value()
+            with contextlib.suppress(Exception):
+                if await end_input.count():
+                    end_value = await end_input.input_value()
+
+        if _matches_date_range_value(date_range_value, from_date, to_date) or (
+            _matches_date_value(start_value, from_date) and _matches_date_value(end_value, to_date)
+        ):
+            log_event(
+                logger=logger,
+                phase="filters",
+                message="Date filter UI updated after apply click",
+                store_code=store.store_code,
+                date_range_value=date_range_value,
+                start_value=start_value,
+                end_value=end_value,
+            )
+            return True
+        await asyncio.sleep(0.3)
+
+    log_event(
+        logger=logger,
+        phase="filters",
+        status="warn",
+        message="Date filter UI did not update after apply click",
+        store_code=store.store_code,
+        date_range_value=date_range_value,
+        start_value=start_value,
+        end_value=end_value,
+        expected_start=from_date.isoformat(),
+        expected_end=to_date.isoformat(),
+    )
     return False
 
 
