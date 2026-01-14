@@ -24,7 +24,10 @@ from app.crm_downloader.td_orders_sync.main import main as td_orders_sync_main
 from app.crm_downloader.uc_orders_sync.main import main as uc_orders_sync_main
 from app.dashboard_downloader.db_tables import orders_sync_log, pipelines
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
+from app.dashboard_downloader.notifications import send_notifications_for_run
 from app.dashboard_downloader.run_summary import fetch_summary_for_run, insert_run_summary
+
+PIPELINE_NAME = "orders_sync_run_profiler"
 
 PIPELINE_BY_GROUP = {
     "TD": ("td_orders_sync", td_orders_sync_main),
@@ -470,6 +473,140 @@ def _rollup_overall_status(status_counts: Mapping[str, int]) -> str:
     return "success"
 
 
+UNIFIED_METRIC_FIELDS = (
+    "rows_downloaded",
+    "rows_ingested",
+    "staging_rows",
+    "staging_inserted",
+    "staging_updated",
+    "final_inserted",
+    "final_updated",
+)
+
+
+def _build_unified_metrics(metrics: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not metrics:
+        return {field: None for field in UNIFIED_METRIC_FIELDS}
+    payload = {field: _coerce_int(metrics.get(field)) for field in UNIFIED_METRIC_FIELDS}
+    if "label" in metrics:
+        payload["label"] = metrics.get("label")
+    if payload.get("rows_ingested") is None:
+        for candidate in ("final_rows", "staging_rows"):
+            fallback = _coerce_int(metrics.get(candidate))
+            if fallback is not None:
+                payload["rows_ingested"] = fallback
+                break
+    return payload
+
+
+def _sum_unified_metrics(totals: dict[str, int], metrics: Mapping[str, Any]) -> None:
+    for field in UNIFIED_METRIC_FIELDS:
+        value = _coerce_int(metrics.get(field))
+        if value is not None:
+            totals[field] = totals.get(field, 0) + value
+
+
+def _build_window_summary(
+    total_windows: int, missing_windows: Mapping[str, Sequence[Mapping[str, str]]]
+) -> dict[str, Any]:
+    missing_count = sum(len(entries) for entries in missing_windows.values())
+    return {
+        "expected_windows": total_windows,
+        "completed_windows": max(0, total_windows - missing_count),
+        "missing_windows": missing_count,
+        "missing_store_codes": sorted(missing_windows.keys()),
+    }
+
+
+def _format_unified_metrics(metrics: Mapping[str, Any]) -> str:
+    parts = [f"{field}={metrics.get(field)}" for field in UNIFIED_METRIC_FIELDS]
+    label = metrics.get("label")
+    if label:
+        parts.append(f"label={label}")
+    return ", ".join(parts)
+
+
+def _build_profiler_summary_text(
+    *,
+    run_id: str,
+    run_env: str,
+    started_at: datetime,
+    finished_at: datetime,
+    overall_status: str,
+    store_entries: Sequence[Mapping[str, Any]],
+    window_summary: Mapping[str, Any],
+    warnings: Sequence[str],
+) -> str:
+    total_seconds = max(0, int((finished_at - started_at).total_seconds()))
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    lines = [
+        "Orders Sync Profiler Run Summary",
+        f"Run ID: {run_id}",
+        f"Env: {run_env}",
+        f"Started: {started_at.isoformat()}",
+        f"Finished: {finished_at.isoformat()}",
+        f"Total Duration: {hours:02d}:{minutes:02d}:{seconds:02d}",
+        f"Overall Status: {overall_status}",
+        (
+            "Windows Completed: "
+            f"{window_summary.get('completed_windows', 0)} / {window_summary.get('expected_windows', 0)}"
+        ),
+        f"Missing Windows: {window_summary.get('missing_windows', 0)}",
+        "",
+        "Per Store Summary:",
+    ]
+    if not store_entries:
+        lines.append("- (none)")
+    for entry in store_entries:
+        store_code = entry.get("store_code") or "UNKNOWN"
+        status = entry.get("status") or "unknown"
+        window_count = entry.get("window_count") or 0
+        primary_metrics = entry.get("primary_metrics") or {}
+        secondary_metrics = entry.get("secondary_metrics") or {}
+        lines.append(f"- {store_code} ({entry.get('pipeline_name')}) — {status}")
+        lines.append(f"  window_count: {window_count}")
+        lines.append(f"  primary_metrics: {_format_unified_metrics(primary_metrics)}")
+        lines.append(f"  secondary_metrics: {_format_unified_metrics(secondary_metrics)}")
+        if entry.get("status_conflict_count"):
+            lines.append(
+                f"  warning: {entry['status_conflict_count']} window(s) skipped but rows present"
+            )
+    lines.append("")
+    lines.append("Warnings:")
+    if warnings:
+        lines.extend(f"- {warning}" for warning in warnings)
+    else:
+        lines.append("- None.")
+    return "\n".join(lines)
+
+
+def _build_profiler_notification_payload(
+    *,
+    run_id: str,
+    run_env: str,
+    started_at: datetime,
+    finished_at: datetime,
+    overall_status: str,
+    store_entries: Sequence[Mapping[str, Any]],
+    window_summary: Mapping[str, Any],
+    warnings: Sequence[str],
+    total_time_taken: str,
+) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "run_env": run_env,
+        "overall_status": overall_status,
+        "stores": list(store_entries),
+        "window_summary": dict(window_summary),
+        "warnings": list(warnings),
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "total_time_taken": total_time_taken,
+    }
+
+
 async def _run_store_windows(
     *,
     logger: JsonLogger,
@@ -540,6 +677,7 @@ async def _run_store_windows(
         download_paths: dict[str, Any] = {}
         ingestion_counts: dict[str, Any] = {}
         uc_payload: dict[str, Any] | None = None
+        status_conflict = False
         attempts = 0
         for attempt in range(2):
             attempts = attempt + 1
@@ -607,7 +745,8 @@ async def _run_store_windows(
                 )
             else:
                 ingestion_counts = {}
-            if status == "skipped" and _has_positive_ingestion_rows(ingestion_counts):
+            status_conflict = status == "skipped" and _has_positive_ingestion_rows(ingestion_counts)
+            if status_conflict:
                 status_note += " (status skipped but rows present)"
                 log_event(
                     logger=logger,
@@ -676,6 +815,7 @@ async def _run_store_windows(
                 "to_date": window_end.isoformat(),
                 "status": status,
                 "status_note": status_note or None,
+                "status_conflict": status_conflict,
                 "error_message": error_message,
                 "download_paths": download_paths,
                 "ingestion_counts": ingestion_counts,
@@ -832,6 +972,7 @@ async def main(
     resolved_env = run_env or config.run_env
     resolved_run_id = run_id or new_run_id()
     logger = get_logger(run_id=resolved_run_id)
+    started_at = datetime.now(timezone.utc)
     resolved_sync_group = _normalize_sync_group(sync_group or "ALL")
     if not config.database_url:
         log_event(
@@ -904,6 +1045,10 @@ async def main(
     missing_windows: dict[str, list[dict[str, str]]] = {}
     total_windows = 0
     grand_ingestion_totals = _init_ingestion_totals()
+    store_entries: list[dict[str, Any]] = []
+    primary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
+    secondary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
+    warning_messages: list[str] = []
     for result in all_results:
         total_windows += result.window_count
         store_window_counts[result.store_code] = result.window_count
@@ -934,8 +1079,107 @@ async def main(
             "window_audit": result.window_audit,
             "ingestion_totals": result.ingestion_totals,
         }
+        status_conflicts = [
+            window
+            for window in result.window_audit
+            if window.get("status_conflict")
+        ]
+        if status_conflicts:
+            warning_messages.append(
+                f"{result.store_code}: {len(status_conflicts)} window(s) skipped but rows present"
+            )
+        primary_metrics = {field: 0 for field in UNIFIED_METRIC_FIELDS}
+        secondary_metrics = {field: 0 for field in UNIFIED_METRIC_FIELDS}
+        secondary_label = None
+        for window in result.window_audit:
+            ingestion_counts = _coerce_dict(window.get("ingestion_counts"))
+            primary = _build_unified_metrics(_coerce_dict(ingestion_counts.get("primary")))
+            secondary = _build_unified_metrics(_coerce_dict(ingestion_counts.get("secondary")))
+            if secondary.get("label"):
+                secondary_label = secondary.get("label")
+            _sum_unified_metrics(primary_metrics, primary)
+            _sum_unified_metrics(secondary_metrics, secondary)
+        if secondary_label:
+            secondary_metrics["label"] = secondary_label
+        store_status = _rollup_overall_status(result.status_counts)
+        store_entries.append(
+            {
+                "store_code": result.store_code,
+                "pipeline_group": result.pipeline_group,
+                "pipeline_name": result.pipeline_name,
+                "status": store_status,
+                "window_count": result.window_count,
+                "status_counts": result.status_counts,
+                "window_audit": result.window_audit,
+                "status_conflict_count": len(status_conflicts),
+                "primary_metrics": primary_metrics,
+                "secondary_metrics": secondary_metrics,
+            }
+        )
+        _sum_unified_metrics(primary_totals, primary_metrics)
+        _sum_unified_metrics(secondary_totals, secondary_metrics)
         _accumulate_ingestion_totals(grand_ingestion_totals, {"total": result.ingestion_totals})
     overall_status = _rollup_overall_status(total_status_counts)
+    finished_at = datetime.now(timezone.utc)
+    window_summary = _build_window_summary(total_windows, missing_windows)
+    total_seconds = max(0, int((finished_at - started_at).total_seconds()))
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    total_time_taken = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    summary_text = _build_profiler_summary_text(
+        run_id=resolved_run_id,
+        run_env=resolved_env,
+        started_at=started_at,
+        finished_at=finished_at,
+        overall_status=overall_status,
+        store_entries=store_entries,
+        window_summary=window_summary,
+        warnings=warning_messages,
+    )
+    summary_record = {
+        "pipeline_name": PIPELINE_NAME,
+        "run_id": resolved_run_id,
+        "run_env": resolved_env,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "total_time_taken": total_time_taken,
+        "report_date": started_at.date(),
+        "overall_status": overall_status,
+        "summary_text": summary_text,
+        "phases_json": {
+            "window": {
+                "ok": total_status_counts.get("success", 0)
+                + total_status_counts.get("skipped", 0),
+                "warning": total_status_counts.get("partial", 0),
+                "error": total_status_counts.get("failed", 0),
+            }
+        },
+        "metrics_json": {
+            "status_counts": total_status_counts,
+            "pipeline_totals": pipeline_totals,
+            "store_totals": store_totals,
+            "store_window_counts": store_window_counts,
+            "missing_windows": missing_windows or None,
+            "window_summary": window_summary,
+            "ingestion_grand_totals": grand_ingestion_totals,
+            "primary_totals": primary_totals,
+            "secondary_totals": secondary_totals,
+            "notification_payload": _build_profiler_notification_payload(
+                run_id=resolved_run_id,
+                run_env=resolved_env,
+                started_at=started_at,
+                finished_at=finished_at,
+                overall_status=overall_status,
+                store_entries=store_entries,
+                window_summary=window_summary,
+                warnings=warning_messages,
+                total_time_taken=total_time_taken,
+            ),
+        },
+    }
+    await insert_run_summary(config.database_url, summary_record)
+    await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
     log_event(
         logger=logger,
         phase="summary",
