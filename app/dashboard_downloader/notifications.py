@@ -271,6 +271,51 @@ def _status_counts(stores_payload: list[Mapping[str, Any]]) -> dict[str, int]:
     return counts
 
 
+def _normalize_uc_status(status: str | None) -> str:
+    normalized = str(status or "").lower()
+    mapping = {
+        "ok": "success",
+        "warning": "partial",
+        "warn": "partial",
+        "error": "failed",
+        "failed": "failed",
+        "success": "success",
+        "partial": "partial",
+        "skipped": "skipped",
+    }
+    return mapping.get(normalized, normalized or "unknown")
+
+
+def _uc_window_status_by_store(window_audit: Iterable[Mapping[str, Any]]) -> dict[str, str]:
+    status_by_store: dict[str, str] = {}
+    for entry in window_audit:
+        store_code = _normalize_store_code(entry.get("store_code")) or entry.get("store_code")
+        if not store_code:
+            continue
+        status_by_store[store_code] = _normalize_uc_status(entry.get("status"))
+    return status_by_store
+
+
+def _uc_store_status(
+    store: Mapping[str, Any], status_by_store: Mapping[str, str]
+) -> str:
+    store_code = _normalize_store_code(store.get("store_code")) or store.get("store_code")
+    if store_code and store_code in status_by_store:
+        return status_by_store[store_code]
+    return _normalize_uc_status(store.get("status"))
+
+
+def _uc_status_counts(
+    stores_payload: list[Mapping[str, Any]], status_by_store: Mapping[str, str]
+) -> dict[str, int]:
+    counts = {"success": 0, "partial": 0, "failed": 0, "skipped": 0}
+    for store in stores_payload:
+        status = _uc_store_status(store, status_by_store)
+        if status in counts:
+            counts[status] += 1
+    return counts
+
+
 def _summarize_ingest_remarks_by_store(
     rows: list[Mapping[str, Any]], *, max_entries: int = 3, max_chars: int = 160
 ) -> dict[str, dict[str, Any]]:
@@ -1008,6 +1053,9 @@ def _build_uc_orders_context(
             continue
         window_warning_counts[store_code] = window_warning_counts.get(store_code, 0) + 1
     status_counts = _status_counts(stores_payload)
+    window_audit = metrics.get("window_audit") or []
+    uc_status_by_store = _uc_window_status_by_store(window_audit)
+    uc_status_counts = _uc_status_counts(stores_payload, uc_status_by_store)
 
     stores: list[dict[str, Any]] = []
     resolved_missing_windows = _normalize_missing_windows(missing_windows_by_store)
@@ -1036,14 +1084,17 @@ def _build_uc_orders_context(
                 resolved_warning_count += window_warning_count
         primary_metrics = _build_unified_metrics(store)
         _sum_unified_metrics(primary_totals, primary_metrics)
+        store_status = _uc_store_status(store, uc_status_by_store)
         stores.append(
             {
                 "store_code": store_code,
-                "status": store.get("status"),
+                "status": store_status,
                 "message": store.get("message"),
-                "error_message": store.get("error_message") if status == "error" else None,
+                "error_message": store.get("error_message")
+                if status == "error" or store_status == "failed"
+                else None,
                 "info_message": store.get("info_message")
-                or (store.get("message") if status != "error" else None),
+                or (store.get("message") if status != "error" and store_status != "failed" else None),
                 "warning_count": resolved_warning_count,
                 "warnings_summary": warning_summary,
                 "filename": store.get("filename"),
@@ -1079,6 +1130,7 @@ def _build_uc_orders_context(
         "stores_succeeded": status_counts.get("ok", 0),
         "stores_warned": status_counts.get("warning", 0),
         "stores_failed": status_counts.get("error", 0),
+        "uc_store_status_counts": uc_status_counts,
         "stores": stores,
         "uc_all_stores_failed": _uc_all_stores_failed(stores_payload),
         "notification_payload": payload,
@@ -1115,7 +1167,7 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
                 "store_code": store_code,
                 "pipeline_group": store.get("pipeline_group"),
                 "pipeline_name": store.get("pipeline_name"),
-                "status": store.get("status"),
+                "status": _normalize_uc_status(store.get("status")),
                 "window_count": store.get("window_count"),
                 "status_conflict_count": store.get("status_conflict_count"),
                 "primary_metrics": primary_metrics,
@@ -1301,9 +1353,13 @@ def _uc_summary_text_from_payload(run_data: Mapping[str, Any]) -> str:
     stores_payload = payload.get("stores") or []
     if not payload:
         return ""
-    status_counts = _status_counts(stores_payload)
-    total = sum(status_counts.values())
+    window_audit = metrics.get("window_audit") or []
+    uc_status_by_store = _uc_window_status_by_store(window_audit)
+    uc_status_counts = _uc_status_counts(stores_payload, uc_status_by_store)
+    total = sum(uc_status_counts.values())
     overall_status = payload.get("overall_status") or run_data.get("overall_status")
+    skipped = uc_status_counts.get("skipped", 0)
+    skipped_suffix = f", {skipped} skipped" if skipped else ""
     status_explanation = _status_explanation(overall_status)
     window_summary = metrics.get("window_summary") or {}
     missing_windows = window_summary.get("missing_windows")
@@ -1314,8 +1370,8 @@ def _uc_summary_text_from_payload(run_data: Mapping[str, Any]) -> str:
     return (
         "UC GST Run Summary\n"
         f"Overall Status: {overall_status} ({status_explanation})\n"
-        f"Stores: {status_counts.get('ok', 0)} ok, {status_counts.get('warning', 0)} warnings, "
-        f"{status_counts.get('error', 0)} errors across {total} stores\n"
+        f"Stores: {uc_status_counts.get('success', 0)} success, {uc_status_counts.get('partial', 0)} partial, "
+        f"{uc_status_counts.get('failed', 0)} failed{skipped_suffix} across {total} stores\n"
         f"Windows Completed: {window_summary.get('completed_windows', 0)} / {window_summary.get('expected_windows', 0)}\n"
         f"{missing_line}"
     )
