@@ -81,10 +81,15 @@ GST_CONTAINER_SELECTORS = (
 GST_DATE_RANGE_READY_SELECTORS = (
     "input.search-user[placeholder*='Choose Start Date']",
     "input[placeholder='Choose Start Date - End Date']",
+    "input.search-user[readonly]",
+    "input.search-user",
 )
 GST_CONTROL_SELECTORS = {
     "date_range_input": [
         "input.search-user[readonly][placeholder='Choose Start Date - End Date']",
+        "input.search-user[readonly]",
+        "input.search-user",
+        "input[placeholder*=' - '][readonly]",
         "input.search-user[placeholder*='Choose Start Date']",
         "input[placeholder='Choose Start Date - End Date']",
         "input[placeholder*='Start Date - End Date']",
