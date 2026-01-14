@@ -177,6 +177,49 @@ def _format_missing_window_lines(entries: Iterable[Mapping[str, Any]] | None) ->
     return lines
 
 
+def _merge_missing_windows(*entries: Iterable[Mapping[str, Any]] | None) -> list[dict[str, str]]:
+    seen: set[tuple[str, str]] = set()
+    merged: list[dict[str, str]] = []
+    for chunk in entries:
+        for entry in chunk or []:
+            if not isinstance(entry, Mapping):
+                continue
+            from_date = entry.get("from_date") or entry.get("from")
+            to_date = entry.get("to_date") or entry.get("to")
+            if not from_date and not to_date:
+                continue
+            key = (str(from_date), str(to_date))
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append({"from_date": str(from_date), "to_date": str(to_date)})
+    return merged
+
+
+def _missing_windows_from_audit(window_audit: Iterable[Mapping[str, Any]] | None) -> dict[str, list[dict[str, str]]]:
+    missing_by_store: dict[str, list[dict[str, str]]] = {}
+    for entry in window_audit or []:
+        if not isinstance(entry, Mapping):
+            continue
+        status = str(entry.get("status") or "").lower()
+        if status != "skipped":
+            continue
+        raw_store_code = entry.get("store_code")
+        store_code = _normalize_store_code(str(raw_store_code)) if raw_store_code is not None else None
+        if not store_code and raw_store_code is not None:
+            store_code = str(raw_store_code)
+        if not store_code:
+            continue
+        from_date = entry.get("from_date") or entry.get("from")
+        to_date = entry.get("to_date") or entry.get("to")
+        if not from_date and not to_date:
+            continue
+        missing_by_store.setdefault(store_code, []).append(
+            {"from_date": str(from_date), "to_date": str(to_date)}
+        )
+    return missing_by_store
+
+
 async def _load_profiler_missing_windows(run_id: str) -> dict[str, list[dict[str, str]]]:
     if not config.database_url or not run_id:
         return {}
@@ -1076,11 +1119,18 @@ def _build_uc_orders_context(
 
     stores: list[dict[str, Any]] = []
     resolved_missing_windows = _normalize_missing_windows(missing_windows_by_store)
+    audit_missing_windows = _missing_windows_from_audit(window_audit)
+    merged_missing_windows: dict[str, list[dict[str, str]]] = {}
+    for store_code in set(resolved_missing_windows) | set(audit_missing_windows):
+        merged_missing_windows[store_code] = _merge_missing_windows(
+            audit_missing_windows.get(store_code),
+            resolved_missing_windows.get(store_code),
+        )
     primary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
     secondary_metrics = _not_applicable_metrics()
     for store in stores_payload:
         store_code = _normalize_store_code(store.get("store_code")) or store.get("store_code")
-        missing_windows = resolved_missing_windows.get(store_code or "") or []
+        missing_windows = merged_missing_windows.get(store_code or "") or []
         missing_window_lines = _format_missing_window_lines(missing_windows)
         status = str(store.get("status") or "").lower()
         warning_data = warning_summaries.get(_normalize_store_code(store.get("store_code")) or "", {})
@@ -1138,7 +1188,11 @@ def _build_uc_orders_context(
     finished_at = payload.get("finished_at") or run_data.get("finished_at")
     window_summary = metrics.get("window_summary") or {}
     window_audit = metrics.get("window_audit") or []
-    summary_text = _uc_summary_text_from_payload(run_data) or run_data.get("summary_text") or ""
+    summary_text = (
+        _uc_summary_text_from_payload(run_data, missing_windows_by_store=merged_missing_windows)
+        or run_data.get("summary_text")
+        or ""
+    )
     overall_status = _uc_overall_status(
         stores_payload,
         uc_status_by_store,
@@ -1169,7 +1223,7 @@ def _build_uc_orders_context(
         "completed_windows": window_summary.get("completed_windows"),
         "missing_windows": window_summary.get("missing_windows"),
         "missing_window_stores": window_summary.get("missing_store_codes") or [],
-        "missing_windows_by_store": resolved_missing_windows,
+        "missing_windows_by_store": merged_missing_windows,
     }
 
 
@@ -1374,7 +1428,11 @@ def _td_summary_text_from_payload(run_data: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _uc_summary_text_from_payload(run_data: Mapping[str, Any]) -> str:
+def _uc_summary_text_from_payload(
+    run_data: Mapping[str, Any],
+    *,
+    missing_windows_by_store: dict[str, list[dict[str, str]]] | None = None,
+) -> str:
     metrics = run_data.get("metrics_json") or {}
     payload = metrics.get("notification_payload") or {}
     stores_payload = payload.get("stores") or []
@@ -1398,14 +1456,35 @@ def _uc_summary_text_from_payload(run_data: Mapping[str, Any]) -> str:
     missing_line = f"Missing Windows: {missing_windows if missing_windows is not None else 0}"
     if missing_stores:
         missing_line += f" ({', '.join(missing_stores)})"
-    return (
-        "UC GST Run Summary\n"
-        f"Overall Status: {overall_status} ({status_explanation})\n"
-        f"Stores: {uc_status_counts.get('success', 0)} success, {uc_status_counts.get('partial', 0)} partial, "
-        f"{uc_status_counts.get('failed', 0)} failed{skipped_suffix} across {total} stores\n"
-        f"Windows Completed: {window_summary.get('completed_windows', 0)} / {window_summary.get('expected_windows', 0)}\n"
-        f"{missing_line}"
-    )
+    resolved_missing_windows = _normalize_missing_windows(missing_windows_by_store)
+    audit_missing_windows = _missing_windows_from_audit(window_audit)
+    merged_missing_windows: dict[str, list[dict[str, str]]] = {}
+    for store_code in set(resolved_missing_windows) | set(audit_missing_windows):
+        merged_missing_windows[store_code] = _merge_missing_windows(
+            audit_missing_windows.get(store_code),
+            resolved_missing_windows.get(store_code),
+        )
+    missing_window_lines: list[str] = []
+    for store_code in sorted(merged_missing_windows):
+        window_lines = _format_missing_window_lines(merged_missing_windows.get(store_code))
+        if not window_lines:
+            continue
+        missing_window_lines.append(f"- {store_code}: {', '.join(window_lines)}")
+    missing_windows_detail = "\n".join(missing_window_lines) if missing_window_lines else ""
+    lines = [
+        "UC GST Run Summary",
+        f"Overall Status: {overall_status} ({status_explanation})",
+        (
+            f"Stores: {uc_status_counts.get('success', 0)} success, {uc_status_counts.get('partial', 0)} partial, "
+            f"{uc_status_counts.get('failed', 0)} failed{skipped_suffix} across {total} stores"
+        ),
+        f"Windows Completed: {window_summary.get('completed_windows', 0)} / {window_summary.get('expected_windows', 0)}",
+        missing_line,
+    ]
+    if missing_windows_detail:
+        lines.append("Missing Window Ranges:")
+        lines.append(missing_windows_detail)
+    return "\n".join(lines)
 
 
 async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
