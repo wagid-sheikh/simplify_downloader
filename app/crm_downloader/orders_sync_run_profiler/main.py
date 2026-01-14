@@ -601,6 +601,20 @@ def _normalize_window_status(
     return status, ""
 
 
+def _has_explicit_stop_condition(*messages: str | None) -> bool:
+    tokens = ("stop requested", "explicit stop", "stop signal")
+    combined = " ".join(message for message in messages if message).lower()
+    return any(token in combined for token in tokens)
+
+
+def _should_stop_after_window(
+    *, status: str, error_message: str | None, status_note: str
+) -> bool:
+    if status == "failed":
+        return True
+    return _has_explicit_stop_condition(error_message, status_note)
+
+
 def _build_windows(
     *, start_date: date, end_date: date, window_days: int, overlap_days: int
 ) -> list[tuple[date, date]]:
@@ -904,6 +918,7 @@ async def _run_store_windows(
         status_conflict = False
         attempts = 0
         attempt_run_id = window_run_id
+        attempt_audit: list[dict[str, Any]] = []
         for attempt in range(2):
             attempts = attempt + 1
             attempt_run_id = (
@@ -998,6 +1013,22 @@ async def _run_store_windows(
                     ingestion_counts=ingestion_counts,
                     error_message=error_message,
                 )
+            note_for_attempt = status_note
+            if attempt > 0:
+                note_for_attempt += " (after retry)"
+            attempt_audit.append(
+                {
+                    "attempt_no": attempts,
+                    "attempt_run_id": attempt_run_id,
+                    "status": status,
+                    "status_note": note_for_attempt or None,
+                    "status_conflict": status_conflict,
+                    "error_message": error_message,
+                    "download_paths": download_paths,
+                    "ingestion_counts": ingestion_counts,
+                    "orders_sync_log_id": log_row.get("id") if log_row else None,
+                }
+            )
             if not fetched_status:
                 break
             if status in {"failed", "partial"} and attempt == 0:
@@ -1057,6 +1088,7 @@ async def _run_store_windows(
                 "attempt_no": attempts,
                 "attempt_run_id": attempt_run_id,
                 "orders_sync_log_id": log_row.get("id") if log_row else None,
+                "attempts": attempt_audit,
             }
         )
         if pipeline_name == "uc_orders_sync":
@@ -1091,13 +1123,18 @@ async def _run_store_windows(
             f"{window_start.isoformat()} → {window_end.isoformat()}: {status}{status_note}"
         )
         status_counts[status] = status_counts.get(status, 0) + 1
-        if status in {"failed", "partial"}:
+        if status == "partial":
+            overall_status = "partial"
+        stop_after_window = _should_stop_after_window(
+            status=status, error_message=error_message, status_note=status_note
+        )
+        if stop_after_window:
             overall_status = status
             log_event(
                 logger=logger,
                 phase="window",
-                status="warn" if status == "partial" else "error",
-                message="Stopping further windows after non-success status",
+                status="error" if status == "failed" else "warn",
+                message="Stopping further windows after failure or explicit stop condition",
                 store_code=store.store_code,
                 window_index=index,
                 window_status=status,
