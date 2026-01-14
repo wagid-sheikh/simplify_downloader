@@ -1117,6 +1117,7 @@ def _build_uc_orders_context(
     started_at = payload.get("started_at") or run_data.get("started_at")
     finished_at = payload.get("finished_at") or run_data.get("finished_at")
     window_summary = metrics.get("window_summary") or {}
+    window_audit = metrics.get("window_audit") or []
     summary_text = _uc_summary_text_from_payload(run_data) or run_data.get("summary_text") or ""
 
     return {
@@ -1138,6 +1139,7 @@ def _build_uc_orders_context(
         "secondary_totals": secondary_metrics,
         "secondary_metrics_label": secondary_metrics.get("label"),
         "window_summary": window_summary,
+        "window_audit": window_audit,
         "expected_windows": window_summary.get("expected_windows"),
         "completed_windows": window_summary.get("completed_windows"),
         "missing_windows": window_summary.get("missing_windows"),

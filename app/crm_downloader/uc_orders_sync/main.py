@@ -598,6 +598,18 @@ def _coerce_dict(value: Any) -> Dict[str, Any]:
     return {}
 
 
+def _parse_attempt_no(run_id: str | None) -> int | None:
+    if not run_id:
+        return None
+    match = re.search(r"_attempt(\d+)$", run_id)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
 def _parse_date(value: str) -> date:
     try:
         return date.fromisoformat(value)
@@ -806,6 +818,7 @@ async def _insert_orders_sync_log(
                 _defer_orders_sync_log(summary, store, run_id, run_start_date, run_end_date)
             return None
 
+    attempt_no = _parse_attempt_no(run_id) or 1
     insert_values = {
         "pipeline_id": pipeline_id,
         "run_id": run_id,
@@ -815,7 +828,7 @@ async def _insert_orders_sync_log(
         "from_date": run_start_date,
         "to_date": run_end_date,
         "status": "running",
-        "attempt_no": 1,
+        "attempt_no": attempt_no,
         "created_at": sa.func.now(),
         "updated_at": sa.func.now(),
     }
@@ -1595,6 +1608,7 @@ async def _run_store_discovery(
         if resolved_message:
             outcome.message = resolved_message
         primary_metrics, secondary_metrics = _build_unified_metrics(outcome)
+        attempt_no = _parse_attempt_no(run_id) or 1
         await _update_orders_sync_log(
             logger=logger,
             log_id=sync_log_id,
@@ -1614,6 +1628,7 @@ async def _run_store_discovery(
             window_status=sync_status,
             status_note=status_note,
             error_message=resolved_message,
+            attempt_no=attempt_no,
             download_path=outcome.download_path,
             final_rows=outcome.final_rows,
             primary_metrics=primary_metrics,
@@ -1630,6 +1645,7 @@ async def _run_store_discovery(
             gst_ingested_rows=outcome.final_rows,
             final_status=sync_status,
             skip_reason=status_note,
+            attempt_no=attempt_no,
         )
         summary.window_audit.append(
             {
@@ -1641,6 +1657,8 @@ async def _run_store_discovery(
                 "error_message": resolved_message,
                 "download_path": outcome.download_path,
                 "final_rows": outcome.final_rows,
+                "attempt_no": attempt_no,
+                "orders_sync_log_id": sync_log_id,
             }
         )
         with contextlib.suppress(Exception):
