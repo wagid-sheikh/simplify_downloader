@@ -1602,6 +1602,8 @@ async def _run_store_discovery(
             error_message=resolved_message,
             download_path=outcome.download_path,
             final_rows=outcome.final_rows,
+            primary_metrics=primary_metrics,
+            secondary_metrics=secondary_metrics,
         )
         log_event(
             logger=logger,

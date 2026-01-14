@@ -325,6 +325,25 @@ def _extract_ingestion_counts_from_log(
     return {"primary": primary, "secondary": secondary}
 
 
+def _normalize_ingestion_metrics(metrics: Mapping[str, Any] | None) -> dict[str, Any]:
+    normalized = {
+        "rows_downloaded": None,
+        "rows_ingested": None,
+        "staging_rows": None,
+        "staging_inserted": None,
+        "staging_updated": None,
+        "final_inserted": None,
+        "final_updated": None,
+    }
+    if metrics:
+        normalized.update(metrics)
+    return normalized
+
+
+def _prefix_metrics(prefix: str, metrics: Mapping[str, Any]) -> dict[str, Any]:
+    return {f"{prefix}{key}": value for key, value in metrics.items()}
+
+
 def _is_uc_date_picker_failure(error_message: str | None) -> bool:
     if not error_message:
         return False
@@ -610,6 +629,12 @@ async def _run_store_windows(
             if attempt > 0:
                 status_note += " (after retry)"
             break
+        primary_metrics = _prefix_metrics(
+            "primary_", _normalize_ingestion_metrics(_coerce_dict(ingestion_counts.get("primary")))
+        )
+        secondary_metrics = _prefix_metrics(
+            "secondary_", _normalize_ingestion_metrics(_coerce_dict(ingestion_counts.get("secondary")))
+        )
         log_event(
             logger=logger,
             phase="window_result",
@@ -626,6 +651,8 @@ async def _run_store_windows(
             error_message=error_message,
             download_paths=download_paths or None,
             ingestion_counts=ingestion_counts or None,
+            primary_metrics=primary_metrics,
+            secondary_metrics=secondary_metrics,
         )
         window_totals = _accumulate_ingestion_totals(ingestion_totals, ingestion_counts)
         window_audit.append(
