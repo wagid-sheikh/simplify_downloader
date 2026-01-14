@@ -1074,14 +1074,11 @@ def _build_uc_orders_context(
         if warning_count is None and warning_data:
             warning_count = _coerce_int(warning_data.get("count"))
         window_warning_count = window_warning_counts.get(_normalize_store_code(store_code) or "")
-        if warning_count is None and window_warning_count is None:
-            resolved_warning_count = None
-        else:
-            resolved_warning_count = 0
-            if warning_count is not None:
-                resolved_warning_count += warning_count
-            if window_warning_count:
-                resolved_warning_count += window_warning_count
+        resolved_warning_count = 0
+        if warning_count is not None:
+            resolved_warning_count += warning_count
+        if window_warning_count:
+            resolved_warning_count += window_warning_count
         primary_metrics = _build_unified_metrics(store)
         _sum_unified_metrics(primary_totals, primary_metrics)
         store_status = _uc_store_status(store, uc_status_by_store)

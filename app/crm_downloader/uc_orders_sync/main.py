@@ -1523,6 +1523,11 @@ async def _run_store_discovery(
         if ingest_result and ingest_result.ingest_remarks:
             summary.add_ingest_remarks(ingest_result.ingest_remarks)
 
+        warning_count = (
+            len(ingest_result.warnings)
+            if ingest_result is not None and ingest_result.warnings is not None
+            else None
+        )
         outcome = StoreOutcome(
             status=status_label,
             message=download_message if download_message else "GST report download complete",
@@ -1530,7 +1535,7 @@ async def _run_store_discovery(
             storage_state=str(storage_state_path) if storage_state_path.exists() else None,
             login_used=login_used,
             download_path=download_path,
-            warning_count=len(ingest_result.warnings) if ingest_result and ingest_result.warnings else None,
+            warning_count=warning_count,
             rows_downloaded=ingest_result.rows_downloaded if ingest_result else row_count,
             staging_rows=ingest_result.staging_rows if ingest_result else None,
             final_rows=ingest_result.final_rows if ingest_result else None,
