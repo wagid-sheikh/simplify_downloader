@@ -7,7 +7,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision = "0045_orders_sync_profiler_notifications"
+revision = "0045_orders_sync_profiler_notif"
 down_revision = "0044_add_orders_sync_log_tracks"
 branch_labels = None
 depends_on = None
