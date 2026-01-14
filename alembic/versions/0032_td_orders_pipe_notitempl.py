@@ -51,7 +51,6 @@ Overall Status: {{ td_overall_status or overall_status }} (Orders: {{ orders_sta
   rows_ingested: {{ store.orders_rows_ingested or store.orders_final_rows or store.orders_staging_rows or 0 }}
   warning_count: {{ store.orders_warning_count or 0 }}
   dropped_count: {{ store.orders_dropped_rows_count or 0 }}
-  {% if store.missing_window_lines %}missing_windows: {{ store.missing_window_lines | join(', ') }}{% endif %}
 {% endfor %}
 
 **Per Store Sales Metrics:**
