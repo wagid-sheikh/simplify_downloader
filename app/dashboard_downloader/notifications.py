@@ -751,6 +751,21 @@ def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
     stores_payload = payload.get("stores") or []
     ingest_rows = (metrics.get("ingest_remarks") or {}).get("rows") or []
     warning_summaries = _summarize_ingest_remarks_by_store(ingest_rows)
+    summary_stores = (metrics.get("stores_summary") or {}).get("stores") or {}
+    summary_warning_counts = {
+        _normalize_store_code(store_code) or store_code: _coerce_int(store_data.get("warning_count"))
+        for store_code, store_data in summary_stores.items()
+        if store_code
+    }
+    window_warning_counts: dict[str, int] = {}
+    for entry in metrics.get("window_audit") or []:
+        status = str(entry.get("status") or "").lower()
+        if status not in {"warning", "warn"}:
+            continue
+        store_code = _normalize_store_code(entry.get("store_code")) or entry.get("store_code")
+        if not store_code:
+            continue
+        window_warning_counts[store_code] = window_warning_counts.get(store_code, 0) + 1
     status_counts = _status_counts(stores_payload)
 
     stores: list[dict[str, Any]] = []
@@ -761,9 +776,20 @@ def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
         status = str(store.get("status") or "").lower()
         warning_data = warning_summaries.get(_normalize_store_code(store.get("store_code")) or "", {})
         warning_summary = warning_data.get("summary")
-        warning_count = store.get("warning_count")
+        warning_count = _coerce_int(store.get("warning_count"))
+        if warning_count is None:
+            warning_count = summary_warning_counts.get(_normalize_store_code(store_code) or "")
         if warning_count is None and warning_data:
-            warning_count = warning_data.get("count")
+            warning_count = _coerce_int(warning_data.get("count"))
+        window_warning_count = window_warning_counts.get(_normalize_store_code(store_code) or "")
+        if warning_count is None and window_warning_count is None:
+            resolved_warning_count = None
+        else:
+            resolved_warning_count = 0
+            if warning_count is not None:
+                resolved_warning_count += warning_count
+            if window_warning_count:
+                resolved_warning_count += window_warning_count
         primary_metrics = _build_unified_metrics(store)
         _sum_unified_metrics(primary_totals, primary_metrics)
         stores.append(
@@ -774,7 +800,7 @@ def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
                 "error_message": store.get("error_message") if status == "error" else None,
                 "info_message": store.get("info_message")
                 or (store.get("message") if status != "error" else None),
-                "warning_count": warning_count,
+                "warning_count": resolved_warning_count,
                 "warnings_summary": warning_summary,
                 "filename": store.get("filename"),
                 "staging_rows": store.get("staging_rows"),
