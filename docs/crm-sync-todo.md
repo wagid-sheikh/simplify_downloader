@@ -102,6 +102,22 @@
 
 ---
 
+## Production readiness blockers (UC windows)
+
+13. **Fix missing UC windows in orders_sync_run_profiler**
+    * Reproduce a profiler run with UC567/UC610 and **capture the generated window plan** (from/to ranges) in logs plus a persisted artifact (JSON or CSV) for comparison against expected coverage.
+    * Trace where the UC window list is trimmed or skipped (planner, retry loop, exit conditions). Add logging that explicitly states **why** any UC window is skipped or dropped.
+    * Validate date-boundary math: inclusive/exclusive edges, overlap behavior, and “end_date” alignment so the **final window always reaches the run’s end date**.
+    * Add a regression test (or deterministic dry-run harness) that asserts **no missing windows** for UC567/UC610 across a full-range run.
+    * Update the profiler summary to fail loudly (status=failed) if any UC window is missing, so this cannot silently ship.
+
+14. **Eliminate UC partial status (GST export shows row_count=0)**
+    * Capture DOM snapshots and logging when GST rows are missing after Apply (selectors, timing, network idle vs spinner waits, visible row count).
+    * Compare against a manual run to confirm whether **Apply is required** or if the export button is decoupled from row rendering; ensure row detection matches the DOM structure used by the GST table.
+    * Implement a resilient readiness check: wait for a **positive data signal** (row count > 0 or “no data” banner) before exporting, and treat “no data” as a distinct success case with explicit status/notes.
+    * If export succeeds but rows are 0, confirm the downloaded file contents (row counts in workbook) and align status with file reality.
+    * Add targeted retries for the Apply + table refresh sequence and log a structured “row-detection failure” reason when attempts are exhausted.
+
 ### How we’ll execute
 
 * Start with Phase 0 scaffolding PR (tiny, no behavior change).
