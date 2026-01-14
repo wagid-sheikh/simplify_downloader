@@ -991,6 +991,57 @@ def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
+    metrics = run_data.get("metrics_json") or {}
+    payload = metrics.get("notification_payload") or {}
+    stores_payload = payload.get("stores") or []
+    window_summary = payload.get("window_summary") or metrics.get("window_summary") or {}
+    warnings = payload.get("warnings") or []
+
+    stores: list[dict[str, Any]] = []
+    primary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
+    secondary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
+    for store in stores_payload:
+        store_code = _normalize_store_code(store.get("store_code")) or store.get("store_code")
+        primary_metrics = _build_unified_metrics(store.get("primary_metrics") or {})
+        secondary_metrics = _build_unified_metrics(store.get("secondary_metrics") or {})
+        _sum_unified_metrics(primary_totals, primary_metrics)
+        _sum_unified_metrics(secondary_totals, secondary_metrics)
+        stores.append(
+            {
+                "store_code": store_code,
+                "pipeline_group": store.get("pipeline_group"),
+                "pipeline_name": store.get("pipeline_name"),
+                "status": store.get("status"),
+                "window_count": store.get("window_count"),
+                "status_conflict_count": store.get("status_conflict_count"),
+                "primary_metrics": primary_metrics,
+                "secondary_metrics": secondary_metrics,
+            }
+        )
+
+    summary_text = run_data.get("summary_text") or ""
+    return {
+        "summary_text": summary_text,
+        "profiler_summary_text": summary_text,
+        "started_at": _normalize_datetime(payload.get("started_at") or run_data.get("started_at")),
+        "finished_at": _normalize_datetime(payload.get("finished_at") or run_data.get("finished_at")),
+        "total_time_taken": payload.get("total_time_taken") or run_data.get("total_time_taken"),
+        "overall_status": payload.get("overall_status") or run_data.get("overall_status"),
+        "stores": stores,
+        "primary_totals": primary_totals,
+        "secondary_totals": secondary_totals,
+        "window_summary": window_summary,
+        "expected_windows": window_summary.get("expected_windows"),
+        "completed_windows": window_summary.get("completed_windows"),
+        "missing_windows": window_summary.get("missing_windows"),
+        "missing_window_stores": window_summary.get("missing_store_codes") or [],
+        "warnings": warnings,
+        "warnings_text": "\n".join(str(entry) for entry in warnings) if warnings else "",
+        "notification_payload": payload,
+    }
+
+
 def _td_all_stores_failed(stores_payload: list[Mapping[str, Any]]) -> bool:
     if not stores_payload:
         return True
@@ -1197,6 +1248,8 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
         context.update(_build_td_orders_context(run_data))
     elif pipeline_name == "uc_orders_sync":
         context.update(_build_uc_orders_context(run_data))
+    elif pipeline_name == "orders_sync_run_profiler":
+        context.update(_build_profiler_context(run_data))
     else:
         context["started_at"] = _normalize_datetime(run_data.get("started_at"))
         context["finished_at"] = _normalize_datetime(run_data.get("finished_at"))
@@ -1273,6 +1326,8 @@ async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str
         context.update(_build_td_orders_context(run_data))
     elif pipeline_name == "uc_orders_sync":
         context.update(_build_uc_orders_context(run_data))
+    elif pipeline_name == "orders_sync_run_profiler":
+        context.update(_build_profiler_context(run_data))
     else:
         context["started_at"] = _normalize_datetime(run_data.get("started_at"))
         context["finished_at"] = _normalize_datetime(run_data.get("finished_at"))
