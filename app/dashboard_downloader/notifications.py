@@ -38,6 +38,15 @@ STATUS_EXPLANATIONS = {
     "warning": "run completed but row-level issues were recorded",
     "error": "run failed or data could not be ingested",
 }
+UNIFIED_METRIC_FIELDS = (
+    "rows_downloaded",
+    "rows_ingested",
+    "staging_rows",
+    "staging_inserted",
+    "staging_updated",
+    "final_inserted",
+    "final_updated",
+)
 
 
 @dataclass
@@ -110,6 +119,60 @@ def _normalize_store_code(value: str | None) -> str | None:
     if not value:
         return None
     return value.upper()
+
+
+def _coerce_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    try:
+        return int(str(value))
+    except Exception:
+        return None
+
+
+def _coalesce_int(payload: Mapping[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = _coerce_int(payload.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _build_unified_metrics(report: Mapping[str, Any] | None) -> dict[str, int | None]:
+    if not report:
+        return {field: None for field in UNIFIED_METRIC_FIELDS}
+    return {
+        "rows_downloaded": _coerce_int(report.get("rows_downloaded")),
+        "rows_ingested": _coalesce_int(report, "rows_ingested", "final_rows", "staging_rows"),
+        "staging_rows": _coerce_int(report.get("staging_rows")),
+        "staging_inserted": _coerce_int(report.get("staging_inserted")),
+        "staging_updated": _coerce_int(report.get("staging_updated")),
+        "final_inserted": _coalesce_int(report, "final_inserted", "rows_inserted"),
+        "final_updated": _coalesce_int(report, "final_updated", "rows_updated"),
+    }
+
+
+def _not_applicable_metrics() -> dict[str, Any]:
+    payload = {field: None for field in UNIFIED_METRIC_FIELDS}
+    payload["label"] = "not applicable"
+    return payload
+
+
+def _sum_unified_metrics(totals: dict[str, int], metrics: Mapping[str, Any]) -> None:
+    for field in UNIFIED_METRIC_FIELDS:
+        value = _coerce_int(metrics.get(field))
+        if value is not None:
+            totals[field] = totals.get(field, 0) + value
+
+
+def _prefix_unified_metrics(prefix: str, metrics: Mapping[str, Any]) -> dict[str, Any]:
+    return {f"{prefix}{field}": metrics.get(field) for field in UNIFIED_METRIC_FIELDS}
 
 
 def _status_explanation(status: str | None) -> str:
@@ -534,23 +597,17 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
     payload = metrics.get("notification_payload") or {}
     stores_payload = payload.get("stores") or []
 
-    def _coerce_int(value: Any) -> int:
-        try:
-            return int(value)
-        except Exception:
-            return 0
-
     def _rows_ingested(report: Mapping[str, Any]) -> int:
         for candidate in (report.get("rows_ingested"), report.get("final_rows"), report.get("staging_rows")):
             if candidate is not None:
-                return _coerce_int(candidate)
+                return _coerce_int(candidate) or 0
         return 0
 
     def _count_from_fields(report: Mapping[str, Any], *keys: str) -> int:
         for key in keys:
             value = report.get(key)
             if isinstance(value, int):
-                return _coerce_int(value)
+                return _coerce_int(value) or 0
             if isinstance(value, list):
                 return len(value)
         return 0
@@ -583,6 +640,8 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
         return prepared
 
     stores: list[dict[str, Any]] = []
+    primary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
+    secondary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
     for store in stores_payload:
         orders = store.get("orders") or {}
         sales = store.get("sales") or {}
@@ -612,6 +671,10 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
             "edited_rows": sales_edited_rows,
             "duplicate_rows": sales_duplicate_rows,
         }
+        primary_metrics = _build_unified_metrics(orders)
+        secondary_metrics = _build_unified_metrics(sales)
+        _sum_unified_metrics(primary_totals, primary_metrics)
+        _sum_unified_metrics(secondary_totals, secondary_metrics)
         stores.append(
             {
                 "store_code": store.get("store_code"),
@@ -645,6 +708,10 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
                 "sales_duplicate_rows": sales.get("duplicate_rows") or [],
                 "sales_warnings": sales.get("warnings") or [],
                 "sales_error": sales.get("error_message"),
+                "primary_metrics": primary_metrics,
+                "secondary_metrics": secondary_metrics,
+                **_prefix_unified_metrics("primary_", primary_metrics),
+                **_prefix_unified_metrics("secondary_", secondary_metrics),
             }
         )
 
@@ -668,6 +735,8 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
         "stores": stores,
         "td_all_stores_failed": _td_all_stores_failed(stores_payload),
         "notification_payload": payload,
+        "primary_totals": primary_totals,
+        "secondary_totals": secondary_totals,
         "window_summary": window_summary,
         "expected_windows": window_summary.get("expected_windows"),
         "completed_windows": window_summary.get("completed_windows"),
@@ -685,6 +754,8 @@ def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
     status_counts = _status_counts(stores_payload)
 
     stores: list[dict[str, Any]] = []
+    primary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
+    secondary_metrics = _not_applicable_metrics()
     for store in stores_payload:
         store_code = _normalize_store_code(store.get("store_code")) or store.get("store_code")
         status = str(store.get("status") or "").lower()
@@ -693,6 +764,8 @@ def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
         warning_count = store.get("warning_count")
         if warning_count is None and warning_data:
             warning_count = warning_data.get("count")
+        primary_metrics = _build_unified_metrics(store)
+        _sum_unified_metrics(primary_totals, primary_metrics)
         stores.append(
             {
                 "store_code": store_code,
@@ -710,6 +783,10 @@ def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
                 "staging_updated": store.get("staging_updated"),
                 "final_inserted": store.get("final_inserted"),
                 "final_updated": store.get("final_updated"),
+                "primary_metrics": primary_metrics,
+                "secondary_metrics": secondary_metrics,
+                **_prefix_unified_metrics("primary_", primary_metrics),
+                **_prefix_unified_metrics("secondary_", secondary_metrics),
             }
         )
 
@@ -732,6 +809,9 @@ def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
         "stores": stores,
         "uc_all_stores_failed": _uc_all_stores_failed(stores_payload),
         "notification_payload": payload,
+        "primary_totals": primary_totals,
+        "secondary_totals": secondary_metrics,
+        "secondary_metrics_label": secondary_metrics.get("label"),
         "window_summary": window_summary,
         "expected_windows": window_summary.get("expected_windows"),
         "completed_windows": window_summary.get("completed_windows"),
