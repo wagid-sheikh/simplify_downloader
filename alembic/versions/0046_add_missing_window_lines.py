@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0046_add_missing_window_lines_templates"
+revision = "0046_add_missing_window_lines"
 down_revision = "0045_orders_sync_profiler_notif"
 branch_labels = None
 depends_on = None
