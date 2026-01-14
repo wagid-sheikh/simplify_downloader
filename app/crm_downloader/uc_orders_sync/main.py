@@ -3905,7 +3905,11 @@ async def _confirm_date_filter_update(
 ) -> bool:
     banner_values: list[str] = []
     banner_count = 0
-    for _ in range(12):
+    row_count = 0
+    row_locator = container.locator(", ".join(GST_REPORT_ROW_SELECTORS))
+    timeout_s = 10.0
+    start = asyncio.get_event_loop().time()
+    while (asyncio.get_event_loop().time() - start) < timeout_s:
         banner_values = []
         banner_locator = container.locator(".gst-banner .gst-banner-card .value")
         with contextlib.suppress(Exception):
@@ -3915,6 +3919,17 @@ async def _confirm_date_filter_update(
                 value_text = await banner_locator.nth(index).inner_text()
                 banner_values.append(value_text.strip())
 
+        with contextlib.suppress(Exception):
+            row_count = await row_locator.count()
+        if row_count > 0:
+            log_event(
+                logger=logger,
+                phase="filters",
+                message="GST report rows detected after apply click",
+                store_code=store.store_code,
+                row_count=row_count,
+            )
+            return True
         if banner_count >= 4 and any(value != "₹0" for value in banner_values):
             log_event(
                 logger=logger,
@@ -3931,10 +3946,11 @@ async def _confirm_date_filter_update(
         logger=logger,
         phase="filters",
         status="warn",
-        message="GST banner values remained zero after apply click",
+        message="GST banner values remained zero and no rows after apply click",
         store_code=store.store_code,
         banner_values=banner_values,
         banner_count=banner_count,
+        row_count=row_count,
     )
     return False
 
