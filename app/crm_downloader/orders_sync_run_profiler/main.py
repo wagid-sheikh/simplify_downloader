@@ -11,6 +11,7 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 
 from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
 from app.common.db import session_scope
@@ -245,10 +246,20 @@ def _resolve_missing_window_status(store_summary: Mapping[str, Any]) -> str:
     return "skipped"
 
 
+def _is_foreign_key_violation(exc: Exception) -> bool:
+    if not isinstance(exc, IntegrityError):
+        return False
+    orig = exc.orig
+    if getattr(orig, "pgcode", None) == "23503":
+        return True
+    return "foreign key" in str(exc).lower()
+
+
 async def _persist_missing_windows_log_rows(
     *,
     logger: JsonLogger,
     run_id: str,
+    fallback_run_id: str | None,
     run_env: str,
     missing_windows: Mapping[str, Sequence[Mapping[str, str]]],
     store_totals: Mapping[str, Mapping[str, Any]],
@@ -286,6 +297,7 @@ async def _persist_missing_windows_log_rows(
             else "Missing window detected by orders sync profiler"
         )
         cost_center = store_summary.get("cost_center")
+        window_run_id = store_summary.get("run_id") or run_id
         for window in windows:
             from_date = _parse_window_date(window.get("from_date"))
             to_date = _parse_window_date(window.get("to_date"))
@@ -303,7 +315,7 @@ async def _persist_missing_windows_log_rows(
             pending_rows.append(
                 {
                     "pipeline_id": pipeline_id,
-                    "run_id": run_id,
+                    "run_id": window_run_id,
                     "run_env": run_env,
                     "cost_center": cost_center,
                     "store_code": store_code,
@@ -349,6 +361,80 @@ async def _persist_missing_windows_log_rows(
             message="Inserted missing window log rows",
             run_id=run_id,
             total=len(pending_rows),
+        )
+    except IntegrityError as exc:
+        if fallback_run_id and _is_foreign_key_violation(exc):
+            should_retry = any(row.get("run_id") != fallback_run_id for row in pending_rows)
+            if not should_retry:
+                log_event(
+                    logger=logger,
+                    phase="summary",
+                    status="error",
+                    message="Foreign key violation inserting missing window log rows",
+                    run_id=run_id,
+                    error=str(exc),
+                )
+                return
+            fallback_rows = [{**row, "run_id": fallback_run_id} for row in pending_rows]
+            log_event(
+                logger=logger,
+                phase="summary",
+                status="warn",
+                message="Foreign key violation inserting missing windows; retrying with fallback run_id",
+                run_id=run_id,
+                fallback_run_id=fallback_run_id,
+                missing_windows=missing_windows,
+            )
+            try:
+                async with session_scope(config.database_url) as session:
+                    for row in fallback_rows:
+                        await session.execute(
+                            pg_insert(orders_sync_log)
+                            .values(**row)
+                            .on_conflict_do_update(
+                                index_elements=(
+                                    "pipeline_id",
+                                    "store_code",
+                                    "from_date",
+                                    "to_date",
+                                    "run_id",
+                                ),
+                                set_={
+                                    "status": row["status"],
+                                    "error_message": row.get("error_message"),
+                                    "updated_at": sa.func.now(),
+                                    "run_env": run_env,
+                                    "cost_center": row.get("cost_center"),
+                                },
+                            )
+                        )
+                    await session.commit()
+                log_event(
+                    logger=logger,
+                    phase="summary",
+                    status="info",
+                    message="Inserted missing window log rows with fallback run_id",
+                    run_id=fallback_run_id,
+                    total=len(fallback_rows),
+                )
+                return
+            except Exception as retry_exc:  # pragma: no cover - defensive
+                log_event(
+                    logger=logger,
+                    phase="summary",
+                    status="error",
+                    message="Failed to insert missing window log rows with fallback run_id",
+                    run_id=fallback_run_id,
+                    error=str(retry_exc),
+                )
+                return
+        log_event(
+            logger=logger,
+            phase="summary",
+            status="error",
+            message="Failed to insert missing window log rows",
+            run_id=run_id,
+            error=str(exc),
         )
     except Exception as exc:  # pragma: no cover - defensive
         log_event(
@@ -1229,6 +1315,7 @@ async def main(
             "pipeline_name": result.pipeline_name,
             "cost_center": result.cost_center,
             "overall_status": result.overall_status,
+            "run_id": f"{resolved_run_id}_{result.store_code}",
             "window_count": result.window_count,
             "status_counts": result.status_counts,
             "window_audit": result.window_audit,
@@ -1333,14 +1420,15 @@ async def main(
             ),
         },
     }
+    await insert_run_summary(config.database_url, summary_record)
     await _persist_missing_windows_log_rows(
         logger=logger,
         run_id=resolved_run_id,
+        fallback_run_id=resolved_run_id,
         run_env=resolved_env,
         missing_windows=missing_windows,
         store_totals=store_totals,
     )
-    await insert_run_summary(config.database_url, summary_record)
     await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
     log_event(
         logger=logger,
