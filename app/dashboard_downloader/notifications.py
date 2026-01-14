@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import smtplib
 from dataclasses import dataclass
@@ -121,6 +122,78 @@ def _normalize_store_code(value: str | None) -> str | None:
     if not value:
         return None
     return value.upper()
+
+
+def _coerce_mapping(raw: Any) -> Mapping[str, Any]:
+    if isinstance(raw, Mapping):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, Mapping) else {}
+    return {}
+
+
+def _normalize_missing_windows(
+    payload: Mapping[str, Any] | None,
+) -> dict[str, list[dict[str, str]]]:
+    if not payload:
+        return {}
+    normalized: dict[str, list[dict[str, str]]] = {}
+    for store_code, entries in payload.items():
+        if not store_code:
+            continue
+        normalized_code = _normalize_store_code(str(store_code)) or str(store_code)
+        if not isinstance(entries, list):
+            continue
+        prepared: list[dict[str, str]] = []
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            from_date = entry.get("from_date") or entry.get("from")
+            to_date = entry.get("to_date") or entry.get("to")
+            if not from_date and not to_date:
+                continue
+            prepared.append({"from_date": str(from_date), "to_date": str(to_date)})
+        if prepared:
+            normalized[normalized_code] = prepared
+    return normalized
+
+
+def _format_missing_window_lines(entries: Iterable[Mapping[str, Any]] | None) -> list[str]:
+    lines: list[str] = []
+    for entry in entries or []:
+        if not isinstance(entry, Mapping):
+            continue
+        from_date = entry.get("from_date") or entry.get("from") or "unknown"
+        to_date = entry.get("to_date") or entry.get("to") or "unknown"
+        lines.append(f"{from_date}→{to_date}")
+    return lines
+
+
+async def _load_profiler_missing_windows(run_id: str) -> dict[str, list[dict[str, str]]]:
+    if not config.database_url or not run_id:
+        return {}
+    async with session_scope(config.database_url) as session:
+        row = (
+            await session.execute(
+                sa.select(pipeline_run_summaries.c.metrics_json).where(
+                    pipeline_run_summaries.c.pipeline_name == "orders_sync_run_profiler",
+                    pipeline_run_summaries.c.run_id == run_id,
+                )
+            )
+        ).mappings().first()
+    if not row:
+        return {}
+    metrics = _coerce_mapping(row.get("metrics_json"))
+    missing_windows = metrics.get("missing_windows")
+    if isinstance(missing_windows, str):
+        missing_windows = _coerce_mapping(missing_windows)
+    if not isinstance(missing_windows, Mapping):
+        return {}
+    return _normalize_missing_windows(missing_windows)
 
 
 def _coerce_int(value: Any) -> int | None:
@@ -398,6 +471,11 @@ def _build_store_plans(
         store_context = dict(context)
         store_context["store_code"] = store_code
         store_context["store_name"] = store_names.get(store_code, store_code)
+        missing_windows_by_store = store_context.get("missing_windows_by_store") or {}
+        resolved_missing = _normalize_missing_windows(missing_windows_by_store).get(store_code) or []
+        store_context["missing_windows"] = resolved_missing
+        store_context["missing_window_lines"] = _format_missing_window_lines(resolved_missing)
+        store_context["missing_window_count"] = len(store_context["missing_window_lines"])
         subject = _render_template(template["subject_template"], store_context)
         body = _render_template(template["body_template"], store_context)
         plans.append(
@@ -583,6 +661,7 @@ async def _load_notification_resources(
         data = dict(row)
         recipients_by_profile.setdefault(data["profile_id"], []).append(data)
 
+    profiler_missing_windows = await _load_profiler_missing_windows(run_id)
     resources = {
         "pipeline": dict(pipeline_row),
         "run": dict(run_row),
@@ -591,6 +670,7 @@ async def _load_notification_resources(
         "templates": templates_by_profile,
         "recipients": recipients_by_profile,
         "store_names": store_names,
+        "profiler_missing_windows": profiler_missing_windows,
     }
     return resources, []
 
@@ -602,7 +682,11 @@ def _normalize_datetime(value: Any) -> str:
         return str(value) if value is not None else ""
 
 
-def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
+def _build_td_orders_context(
+    run_data: dict[str, Any],
+    *,
+    missing_windows_by_store: dict[str, list[dict[str, str]]] | None = None,
+) -> dict[str, Any]:
     metrics = run_data.get("metrics_json") or {}
     payload = metrics.get("notification_payload") or {}
     stores_payload = payload.get("stores") or []
@@ -707,9 +791,13 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
         return lines, truncated
 
     stores: list[dict[str, Any]] = []
+    resolved_missing_windows = _normalize_missing_windows(missing_windows_by_store)
     primary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
     secondary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
     for store in stores_payload:
+        store_code = _normalize_store_code(store.get("store_code")) or store.get("store_code")
+        missing_windows = resolved_missing_windows.get(store_code or "") or []
+        missing_window_lines = _format_missing_window_lines(missing_windows)
         orders = store.get("orders") or {}
         sales = store.get("sales") or {}
         orders_warning_rows = _with_store_metadata(
@@ -758,7 +846,7 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
             )
         stores.append(
             {
-                "store_code": store.get("store_code"),
+                "store_code": store_code,
                 "status": store.get("status"),
                 "message": store.get("message"),
                 "orders_status": orders.get("status"),
@@ -791,6 +879,9 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
                 "sales_duplicate_rows": sales.get("duplicate_rows") or [],
                 "sales_warnings": sales.get("warnings") or [],
                 "sales_error": sales.get("error_message"),
+                "missing_windows": missing_windows,
+                "missing_window_lines": missing_window_lines,
+                "missing_window_count": len(missing_window_lines),
                 "primary_metrics": primary_metrics,
                 "secondary_metrics": secondary_metrics,
                 **_prefix_unified_metrics("primary_", primary_metrics),
@@ -867,6 +958,7 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
         "completed_windows": window_summary.get("completed_windows"),
         "missing_windows": window_summary.get("missing_windows"),
         "missing_window_stores": window_summary.get("missing_store_codes") or [],
+        "missing_windows_by_store": resolved_missing_windows,
         "td_sales_warning_rows_text": "\n".join(sales_warning_lines),
         "td_sales_warning_rows_truncated": sales_warning_truncated,
         "td_sales_edited_rows_text": "\n".join(sales_edited_lines),
@@ -879,7 +971,11 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
+def _build_uc_orders_context(
+    run_data: dict[str, Any],
+    *,
+    missing_windows_by_store: dict[str, list[dict[str, str]]] | None = None,
+) -> dict[str, Any]:
     metrics = run_data.get("metrics_json") or {}
     payload = metrics.get("notification_payload") or {}
     stores_payload = payload.get("stores") or []
@@ -914,10 +1010,13 @@ def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
     status_counts = _status_counts(stores_payload)
 
     stores: list[dict[str, Any]] = []
+    resolved_missing_windows = _normalize_missing_windows(missing_windows_by_store)
     primary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
     secondary_metrics = _not_applicable_metrics()
     for store in stores_payload:
         store_code = _normalize_store_code(store.get("store_code")) or store.get("store_code")
+        missing_windows = resolved_missing_windows.get(store_code or "") or []
+        missing_window_lines = _format_missing_window_lines(missing_windows)
         status = str(store.get("status") or "").lower()
         warning_data = warning_summaries.get(_normalize_store_code(store.get("store_code")) or "", {})
         warning_summary = warning_data.get("summary")
@@ -954,6 +1053,9 @@ def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
                 "staging_updated": store.get("staging_updated"),
                 "final_inserted": store.get("final_inserted"),
                 "final_updated": store.get("final_updated"),
+                "missing_windows": missing_windows,
+                "missing_window_lines": missing_window_lines,
+                "missing_window_count": len(missing_window_lines),
                 "primary_metrics": primary_metrics,
                 "secondary_metrics": secondary_metrics,
                 **_prefix_unified_metrics("primary_", primary_metrics),
@@ -988,6 +1090,7 @@ def _build_uc_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
         "completed_windows": window_summary.get("completed_windows"),
         "missing_windows": window_summary.get("missing_windows"),
         "missing_window_stores": window_summary.get("missing_store_codes") or [],
+        "missing_windows_by_store": resolved_missing_windows,
     }
 
 
@@ -1232,6 +1335,7 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
     templates_map = resources["templates"]
     recipients_by_profile = resources["recipients"]
     store_names = resources["store_names"]
+    profiler_missing_windows = resources.get("profiler_missing_windows") or {}
 
     context: dict[str, Any] = {
         "pipeline_name": pipeline_name,
@@ -1243,11 +1347,12 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
         "total_time_taken": run_data.get("total_time_taken"),
         "summary_text": run_data.get("summary_text", ""),
         "metrics_json": run_data.get("metrics_json") or {},
+        "missing_windows_by_store": profiler_missing_windows,
     }
     if pipeline_name == "td_orders_sync":
-        context.update(_build_td_orders_context(run_data))
+        context.update(_build_td_orders_context(run_data, missing_windows_by_store=profiler_missing_windows))
     elif pipeline_name == "uc_orders_sync":
-        context.update(_build_uc_orders_context(run_data))
+        context.update(_build_uc_orders_context(run_data, missing_windows_by_store=profiler_missing_windows))
     elif pipeline_name == "orders_sync_run_profiler":
         context.update(_build_profiler_context(run_data))
     else:
