@@ -1504,8 +1504,6 @@ async def _run_store_discovery(
         ingest_result: UcOrdersIngestResult | None = None
         ingest_succeeded = False
         status_label = "ok" if downloaded else "warning"
-        if download_warning_reason and downloaded:
-            status_label = "warning"
         if download_warning_reason:
             if download_message:
                 if download_warning_reason not in download_message:
@@ -2846,7 +2844,28 @@ async def _download_gst_report(
                     click_outcome="success",
                 )
             download = await download_info.value
+            with contextlib.suppress(Exception):
+                await download.path()
             await download.save_as(str(target_path))
+            file_size = await _wait_for_non_empty_file(
+                target_path=target_path,
+                timeout_ms=download_timeout_ms,
+            )
+            if file_size <= 0:
+                message = "GST report download saved but file empty"
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    status="warn",
+                    message=message,
+                    store_code=store.store_code,
+                    download_path=str(target_path),
+                    export_selector=export_selector_used,
+                    row_count=row_count,
+                    attempt=attempt,
+                    file_size=file_size,
+                )
+                return False, None, message
             log_event(
                 logger=logger,
                 phase="download",
@@ -2857,6 +2876,7 @@ async def _download_gst_report(
                 export_selector=export_selector_used,
                 row_count=row_count,
                 attempt=attempt,
+                file_size=file_size,
             )
             return True, str(target_path), "GST report download saved"
         except TimeoutError:
@@ -2895,6 +2915,21 @@ async def _download_gst_report(
         download_path=str(target_path),
     )
     return False, None, message
+
+
+async def _wait_for_non_empty_file(*, target_path: Path, timeout_ms: int, poll_s: float = 0.5) -> int:
+    deadline = asyncio.get_running_loop().time() + (timeout_ms / 1000)
+    while asyncio.get_running_loop().time() < deadline:
+        if target_path.exists():
+            with contextlib.suppress(OSError):
+                size = target_path.stat().st_size
+                if size > 0:
+                    return size
+        await asyncio.sleep(poll_s)
+    if target_path.exists():
+        with contextlib.suppress(OSError):
+            return target_path.stat().st_size
+    return 0
 
 
 async def _reopen_date_picker_popup(
