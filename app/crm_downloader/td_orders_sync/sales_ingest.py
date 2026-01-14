@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Dict, Mapping, Sequence
+from typing import Any, Dict, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 import openpyxl
@@ -96,7 +96,11 @@ def _stringify_value(value: Any) -> str:
 @dataclass
 class TdSalesIngestResult:
     staging_rows: int
+    staging_inserted: int
+    staging_updated: int
     final_rows: int
+    final_inserted: int
+    final_updated: int
     warnings: list[str]
     ingest_remarks: list[dict[str, str]] = field(default_factory=list)
     rows_downloaded: int = 0
@@ -106,6 +110,27 @@ class TdSalesIngestResult:
     duplicate_rows: list[dict[str, Any]] = field(default_factory=list)
     rows_edited: int = 0
     rows_duplicate: int = 0
+
+
+def _chunked(values: Sequence[tuple[Any, ...]], chunk_size: int = 500) -> Iterable[list[tuple[Any, ...]]]:
+    for index in range(0, len(values), chunk_size):
+        yield list(values[index : index + chunk_size])
+
+
+async def _fetch_existing_keys(
+    session: sa.ext.asyncio.AsyncSession,
+    table: sa.Table,
+    key_columns: Sequence[sa.Column],
+    keys: Sequence[tuple[Any, ...]],
+) -> set[tuple[Any, ...]]:
+    if not keys:
+        return set()
+    existing: set[tuple[Any, ...]] = set()
+    for chunk in _chunked(list(keys)):
+        stmt = sa.select(*key_columns).where(sa.tuple_(*key_columns).in_(chunk))
+        result = await session.execute(stmt)
+        existing.update(tuple(row) for row in result.fetchall())
+    return existing
 
 
 def _stg_td_sales_table(metadata: sa.MetaData) -> sa.Table:
@@ -422,7 +447,11 @@ async def ingest_td_sales_workbook(
         )
         return TdSalesIngestResult(
             staging_rows=0,
+            staging_inserted=0,
+            staging_updated=0,
             final_rows=0,
+            final_inserted=0,
+            final_updated=0,
             warnings=warnings,
             ingest_remarks=[],
             rows_downloaded=rows_downloaded,
@@ -444,6 +473,31 @@ async def ingest_td_sales_workbook(
             await bind.run_sync(metadata.create_all)
         else:  # pragma: no cover - safety fallback
             raise TypeError(f"Unsupported SQLAlchemy bind for TD Sales ingest: {type(bind)!r}")
+
+        staging_keys = [
+            (store_code, row.get("order_number"), row.get("payment_date")) for row in rows
+        ]
+        final_keys = [
+            (cost_center, row.get("order_number"), row.get("payment_date")) for row in rows
+        ]
+        existing_staging = await _fetch_existing_keys(
+            session,
+            stg_table,
+            (stg_table.c.store_code, stg_table.c.order_number, stg_table.c.payment_date),
+            staging_keys,
+        )
+        existing_final = await _fetch_existing_keys(
+            session,
+            final_table,
+            (final_table.c.cost_center, final_table.c.order_number, final_table.c.payment_date),
+            final_keys,
+        )
+        staging_key_set = set(staging_keys)
+        final_key_set = set(final_keys)
+        staging_inserted = len(staging_key_set - existing_staging)
+        staging_updated = len(staging_key_set & existing_staging)
+        final_inserted = len(final_key_set - existing_final)
+        final_updated = len(final_key_set & existing_final)
 
         existing_keys = await _existing_sales_keys(
             session, stg_table=stg_table, final_table=final_table, store_code=store_code, tz=tz
@@ -542,7 +596,11 @@ async def ingest_td_sales_workbook(
 
     return TdSalesIngestResult(
         staging_rows=staging_count,
+        staging_inserted=staging_inserted,
+        staging_updated=staging_updated,
         final_rows=final_count,
+        final_inserted=final_inserted,
+        final_updated=final_updated,
         warnings=warnings,
         ingest_remarks=remark_entries,
         rows_downloaded=rows_downloaded,
