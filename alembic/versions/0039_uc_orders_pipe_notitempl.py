@@ -50,6 +50,7 @@ Overall Status: {{ overall_status }}
   final_inserted: {{ store.final_inserted or 0 }}
   final_updated: {{ store.final_updated or 0 }}
   warning_count: {{ store.warning_count or 0 }}
+  {% if store.missing_window_lines %}missing_windows: {{ store.missing_window_lines | join(', ') }}{% endif %}
   {% if store.error_message %}error: {{ store.error_message }}{% endif %}
 {% endfor %}
 

@@ -10,6 +10,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
 from app.common.db import session_scope
@@ -51,6 +52,7 @@ class StoreRunResult:
     store_code: str
     pipeline_group: str
     pipeline_name: str
+    cost_center: str | None
     overall_status: str
     window_count: int
     windows: list[tuple[date, date]]
@@ -95,6 +97,19 @@ def _coerce_date(value: Any) -> date | None:
         return value.date()
     if isinstance(value, date):
         return value
+    return None
+
+
+def _parse_window_date(value: Any) -> date | None:
+    if isinstance(value, date):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return None
     return None
 
 
@@ -221,6 +236,129 @@ async def _fetch_latest_log_row(
         )
         row = (await session.execute(stmt)).mappings().first()
     return dict(row) if row else None
+
+
+def _resolve_missing_window_status(store_summary: Mapping[str, Any]) -> str:
+    status = str(store_summary.get("overall_status") or "").lower()
+    if status in {"error", "failed", "failure"}:
+        return "failed"
+    return "skipped"
+
+
+async def _persist_missing_windows_log_rows(
+    *,
+    logger: JsonLogger,
+    run_id: str,
+    run_env: str,
+    missing_windows: Mapping[str, Sequence[Mapping[str, str]]],
+    store_totals: Mapping[str, Mapping[str, Any]],
+) -> None:
+    if not config.database_url or not missing_windows:
+        return
+    pipeline_ids: dict[str, int] = {}
+    pending_rows: list[dict[str, Any]] = []
+    for store_code, windows in missing_windows.items():
+        if not windows:
+            continue
+        store_summary = store_totals.get(store_code) or {}
+        pipeline_name = store_summary.get("pipeline_name")
+        if not pipeline_name:
+            log_event(
+                logger=logger,
+                phase="summary",
+                status="warn",
+                message="Missing pipeline name for missing window log insert",
+                store_code=store_code,
+            )
+            continue
+        pipeline_id = pipeline_ids.get(pipeline_name)
+        if pipeline_id is None:
+            pipeline_id = await _fetch_pipeline_id(
+                logger=logger, database_url=config.database_url, pipeline_name=pipeline_name
+            )
+            if not pipeline_id:
+                continue
+            pipeline_ids[pipeline_name] = pipeline_id
+        status = _resolve_missing_window_status(store_summary)
+        error_message = (
+            "Missing window detected by orders sync profiler (failed)"
+            if status == "failed"
+            else "Missing window detected by orders sync profiler"
+        )
+        cost_center = store_summary.get("cost_center")
+        for window in windows:
+            from_date = _parse_window_date(window.get("from_date"))
+            to_date = _parse_window_date(window.get("to_date"))
+            if not from_date or not to_date:
+                log_event(
+                    logger=logger,
+                    phase="summary",
+                    status="warn",
+                    message="Skipping missing window log insert due to invalid date range",
+                    store_code=store_code,
+                    from_date=window.get("from_date"),
+                    to_date=window.get("to_date"),
+                )
+                continue
+            pending_rows.append(
+                {
+                    "pipeline_id": pipeline_id,
+                    "run_id": run_id,
+                    "run_env": run_env,
+                    "cost_center": cost_center,
+                    "store_code": store_code,
+                    "from_date": from_date,
+                    "to_date": to_date,
+                    "status": status,
+                    "attempt_no": 1,
+                    "error_message": error_message,
+                    "created_at": sa.func.now(),
+                    "updated_at": sa.func.now(),
+                }
+            )
+    if not pending_rows:
+        return
+    try:
+        async with session_scope(config.database_url) as session:
+            for row in pending_rows:
+                await session.execute(
+                    pg_insert(orders_sync_log)
+                    .values(**row)
+                    .on_conflict_do_update(
+                        index_elements=(
+                            "pipeline_id",
+                            "store_code",
+                            "from_date",
+                            "to_date",
+                            "run_id",
+                        ),
+                        set_={
+                            "status": row["status"],
+                            "error_message": row.get("error_message"),
+                            "updated_at": sa.func.now(),
+                            "run_env": run_env,
+                            "cost_center": row.get("cost_center"),
+                        },
+                    )
+                )
+            await session.commit()
+        log_event(
+            logger=logger,
+            phase="summary",
+            status="info",
+            message="Inserted missing window log rows",
+            run_id=run_id,
+            total=len(pending_rows),
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        log_event(
+            logger=logger,
+            phase="summary",
+            status="error",
+            message="Failed to insert missing window log rows",
+            run_id=run_id,
+            error=str(exc),
+        )
 
 
 def _extract_window_download_paths(
@@ -947,6 +1085,7 @@ async def _process_store(
         store_code=store.store_code,
         pipeline_group=pipeline_group,
         pipeline_name=pipeline_name,
+        cost_center=store.cost_center,
         overall_status=overall_status,
         window_count=len(windows),
         windows=windows,
@@ -1073,6 +1212,7 @@ async def main(
         store_totals[result.store_code] = {
             "pipeline_group": result.pipeline_group,
             "pipeline_name": result.pipeline_name,
+            "cost_center": result.cost_center,
             "overall_status": result.overall_status,
             "window_count": result.window_count,
             "status_counts": result.status_counts,
@@ -1178,6 +1318,13 @@ async def main(
             ),
         },
     }
+    await _persist_missing_windows_log_rows(
+        logger=logger,
+        run_id=resolved_run_id,
+        run_env=resolved_env,
+        missing_windows=missing_windows,
+        store_totals=store_totals,
+    )
     await insert_run_summary(config.database_url, summary_record)
     await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
     log_event(
