@@ -1075,10 +1075,14 @@ def _resolve_sync_log_status_note(
     *, status: str, outcome: StoreOutcome, row_count: int | None
 ) -> str | None:
     if status == "skipped":
+        no_data = not outcome.download_path and outcome.staging_rows == 0
+        has_rows = _has_rows(row_count, outcome.staging_rows)
         if outcome.skip_reason:
             return outcome.skip_reason
-        if not outcome.download_path and not _has_rows(row_count, outcome.staging_rows):
+        if no_data:
             return "no data"
+        if has_rows:
+            return outcome.message or "low rows"
         return outcome.message
     if status == "partial":
         return outcome.message or "Completed with warnings"
@@ -1570,10 +1574,11 @@ async def _run_store_discovery(
             outcome=outcome, download_succeeded=download_succeeded, row_count=row_count
         )
         has_rows = _has_rows(row_count, outcome.staging_rows)
+        no_data = not outcome.download_path and outcome.staging_rows == 0
         skip_reason: str | None = None
         if sync_status == "skipped":
             skip_reason = outcome.skip_reason
-            if skip_reason is None and not outcome.download_path and not has_rows:
+            if skip_reason is None and no_data:
                 skip_reason = "no data"
             if skip_reason is None and outcome.message:
                 skip_reason = outcome.message
@@ -1587,6 +1592,8 @@ async def _run_store_discovery(
         resolved_message = _resolve_sync_log_message(
             status=sync_status, error_message=sync_error_value, status_note=status_note
         )
+        if resolved_message:
+            outcome.message = resolved_message
         primary_metrics, secondary_metrics = _build_unified_metrics(outcome)
         await _update_orders_sync_log(
             logger=logger,
