@@ -1053,16 +1053,22 @@ def _build_unified_metrics(outcome: StoreOutcome | None) -> tuple[dict[str, int 
     return primary_metrics, secondary_metrics
 
 
+def _has_rows(row_count: int | None, staging_rows: int | None) -> bool:
+    return any(count is not None and count > 0 for count in (row_count, staging_rows))
+
+
 def _resolve_sync_log_status(
     *, outcome: StoreOutcome, download_succeeded: bool, row_count: int | None
 ) -> str:
     if outcome.status == "error":
         return "failed"
-    if outcome.skip_reason or row_count == 0:
+    has_rows = _has_rows(row_count, outcome.staging_rows)
+    has_output = download_succeeded or has_rows
+    if not has_output:
         return "skipped"
     if outcome.status == "warning":
-        return "partial" if download_succeeded else "skipped"
-    return "success" if download_succeeded else "skipped"
+        return "partial"
+    return "success"
 
 
 def _resolve_sync_log_status_note(
@@ -1071,7 +1077,7 @@ def _resolve_sync_log_status_note(
     if status == "skipped":
         if outcome.skip_reason:
             return outcome.skip_reason
-        if row_count == 0:
+        if not outcome.download_path and not _has_rows(row_count, outcome.staging_rows):
             return "no data"
         return outcome.message
     if status == "partial":
@@ -1563,10 +1569,11 @@ async def _run_store_discovery(
         sync_status = _resolve_sync_log_status(
             outcome=outcome, download_succeeded=download_succeeded, row_count=row_count
         )
+        has_rows = _has_rows(row_count, outcome.staging_rows)
         skip_reason: str | None = None
         if sync_status == "skipped":
             skip_reason = outcome.skip_reason
-            if skip_reason is None and row_count == 0:
+            if skip_reason is None and not outcome.download_path and not has_rows:
                 skip_reason = "no data"
             if skip_reason is None and outcome.message:
                 skip_reason = outcome.message
