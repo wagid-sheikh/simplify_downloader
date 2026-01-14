@@ -104,13 +104,29 @@ GST_CONTROL_SELECTORS = {
     "export_button": ["button.btn.primary.export", "button:has-text('Export Report')"],
 }
 GST_REPORT_TABLE_SELECTORS = (
+    "#gst-report-grid",
+    "#gst-report-table",
+    "#gstReportGrid",
+    "#gstReportTable",
+    ".gst-report-grid",
+    ".gst-report-table",
+    ".gst-report-container",
+    "uc-gst-report-grid",
+    "uc-gst-report-table",
+    "uc-gst-report",
+    "gst-report-grid",
+    "gst-report-table",
+    ".ag-root-wrapper",
+    ".ag-body-viewport",
+    ".ag-center-cols-viewport",
+    ".ag-center-cols-container",
+    ".ag-center-cols-clipper",
     "table",
     "table tbody",
     "table tbody tr.ng-star-inserted",
     "table tbody tr",
     ".mat-table",
     ".datatable",
-    ".ag-center-cols-container",
 )
 DATE_PICKER_POPUP_SELECTORS = (
     ".calendar-body.show",
@@ -3864,21 +3880,26 @@ async def _wait_for_report_refresh(
 async def _validate_gst_report_visible(
     *, container: Locator, logger: JsonLogger, store: UcStore, row_count: int
 ) -> bool:
-    for selector in GST_REPORT_TABLE_SELECTORS:
-        locator = container.locator(selector).first
-        try:
-            if await locator.count() and await locator.is_visible():
-                log_event(
-                    logger=logger,
-                    phase="filters",
-                    message="GST report table visibility confirmed after apply",
-                    store_code=store.store_code,
-                    selector=selector,
-                    row_count=row_count,
-                )
-                return True
-        except Exception:
-            continue
+    start = asyncio.get_event_loop().time()
+    timeout_s = 8.0
+    while (asyncio.get_event_loop().time() - start) < timeout_s:
+        for selector in GST_REPORT_TABLE_SELECTORS:
+            locator = container.locator(selector).first
+            try:
+                if await locator.count() and await locator.is_visible():
+                    log_event(
+                        logger=logger,
+                        phase="filters",
+                        message="GST report table visibility confirmed after apply",
+                        store_code=store.store_code,
+                        selector=selector,
+                        row_count=row_count,
+                        waited_seconds=round(asyncio.get_event_loop().time() - start, 2),
+                    )
+                    return True
+            except Exception:
+                continue
+        await asyncio.sleep(0.5)
     log_event(
         logger=logger,
         phase="filters",
@@ -3887,6 +3908,7 @@ async def _validate_gst_report_visible(
         store_code=store.store_code,
         selectors=list(GST_REPORT_TABLE_SELECTORS),
         row_count=row_count,
+        waited_seconds=round(asyncio.get_event_loop().time() - start, 2),
     )
     return False
 
