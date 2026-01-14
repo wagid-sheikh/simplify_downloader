@@ -1132,6 +1132,14 @@ class TdOrdersDiscoverySummary:
                 "rows_inserted": None,
                 "rows_updated": None,
                 "warning_count": None,
+                "dropped_rows_count": None,
+                "edited_rows_count": None,
+                "duplicate_rows_count": None,
+                "warnings": [],
+                "warning_rows": [],
+                "dropped_rows": [],
+                "edited_rows": [],
+                "duplicate_rows": [],
                 "message": "No report recorded",
                 "error_message": None,
             }
@@ -1150,8 +1158,16 @@ class TdOrdersDiscoverySummary:
             "rows_inserted": report.rows_inserted if report.rows_inserted is not None else report.final_inserted,
             "rows_updated": report.rows_updated if report.rows_updated is not None else report.final_updated,
             "warning_count": report.warning_count if report.warning_count is not None else len(report.warnings),
+            "dropped_rows_count": report.dropped_rows_count,
+            "edited_rows_count": report.edited_rows_count,
+            "duplicate_rows_count": report.duplicate_rows_count,
             "message": report.message,
             "error_message": report.error_message,
+            "warnings": list(report.warnings),
+            "warning_rows": list(report.warning_rows),
+            "dropped_rows": list(report.dropped_rows),
+            "edited_rows": list(report.edited_rows),
+            "duplicate_rows": list(report.duplicate_rows),
         }
 
     def _build_store_reports_snapshot(self) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:

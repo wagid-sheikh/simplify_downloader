@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 import sqlalchemy as sa
 from jinja2 import Template
@@ -47,6 +47,8 @@ UNIFIED_METRIC_FIELDS = (
     "final_inserted",
     "final_updated",
 )
+TD_SALES_ROW_SAMPLE_LIMIT = 5
+TD_SALES_EDITED_LIMIT = 50
 
 
 @dataclass
@@ -604,6 +606,7 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
     metrics = run_data.get("metrics_json") or {}
     payload = metrics.get("notification_payload") or {}
     stores_payload = payload.get("stores") or []
+    ingest_rows = (metrics.get("ingest_remarks") or {}).get("rows") or []
 
     def _rows_ingested(report: Mapping[str, Any]) -> int:
         for candidate in (report.get("rows_ingested"), report.get("final_rows"), report.get("staging_rows")):
@@ -646,6 +649,62 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
                     data["ingest_remarks"] = str(remarks)
             prepared.append(data)
         return prepared
+
+    def _extract_row_value(row: Mapping[str, Any], key: str, *fallback_keys: str) -> Any:
+        values = row.get("values") or {}
+        for candidate in (key, *fallback_keys):
+            if candidate in row and row.get(candidate) not in (None, ""):
+                return row.get(candidate)
+            if isinstance(values, Mapping) and values.get(candidate) not in (None, ""):
+                return values.get(candidate)
+        return None
+
+    def _format_identifier(row: Mapping[str, Any], *, include_extras: bool = False) -> str:
+        store_code = _normalize_store_code(str(_extract_row_value(row, "store_code") or "").strip()) or ""
+        order_number = str(_extract_row_value(row, "order_number", "Order Number", "Order No.") or "").strip()
+        base = " ".join(part for part in (store_code, order_number) if part)
+        if not include_extras:
+            return base
+        extras: list[str] = []
+        customer_identifier = _extract_row_value(row, "customer_identifier", "Customer Identifier")
+        if customer_identifier:
+            extras.append(f"customer_identifier={customer_identifier}")
+        order_date = _extract_row_value(row, "order_date", "Order Date")
+        if order_date:
+            extras.append(f"order_date={order_date}")
+        payment_date = _extract_row_value(row, "payment_date", "Payment Date")
+        if payment_date:
+            extras.append(f"payment_date={payment_date}")
+        if extras:
+            return f"{base} ({', '.join(str(value) for value in extras)})" if base else ", ".join(extras)
+        return base
+
+    def _unique_rows(rows: Iterable[Mapping[str, Any]], formatter: Callable[[Mapping[str, Any]], str]) -> list[str]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for row in rows:
+            formatted = formatter(row).strip()
+            if not formatted or formatted in seen:
+                continue
+            seen.add(formatted)
+            ordered.append(formatted)
+        return ordered
+
+    def _format_row_block(
+        rows: Iterable[Mapping[str, Any]],
+        *,
+        formatter: Callable[[Mapping[str, Any]], str],
+        limit: int,
+    ) -> tuple[list[str], bool]:
+        entries = _unique_rows(rows, formatter)
+        truncated = len(entries) > limit
+        samples = entries[:limit]
+        if not samples:
+            return ["- (none)"], False
+        lines = [f"- {entry}" for entry in samples]
+        if truncated:
+            lines.append(f"... additional {len(entries) - limit} row(s) truncated")
+        return lines, truncated
 
     stores: list[dict[str, Any]] = []
     primary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
@@ -739,6 +798,48 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    sales_warning_rows = [row for store in stores for row in store.get("sales_warning_rows") or []]
+    sales_dropped_rows = [row for store in stores for row in store.get("sales_dropped_rows") or []]
+    sales_edited_rows = [row for store in stores for row in store.get("sales_edited_rows") or []]
+    sales_warning_lines, sales_warning_truncated = _format_row_block(
+        sales_warning_rows,
+        formatter=lambda row: " — ".join(
+            part
+            for part in (
+                _format_identifier(row, include_extras=True),
+                str(_extract_row_value(row, "ingest_remarks", "remarks") or "").strip() or "",
+            )
+            if part
+        ),
+        limit=TD_SALES_ROW_SAMPLE_LIMIT,
+    )
+    sales_edited_lines, sales_edited_truncated = _format_row_block(
+        sales_edited_rows,
+        formatter=lambda row: _format_identifier(row),
+        limit=TD_SALES_EDITED_LIMIT,
+    )
+    dropped_identifiers = _unique_rows(sales_dropped_rows, lambda row: _format_identifier(row))
+    dropped_samples = dropped_identifiers[:TD_SALES_ROW_SAMPLE_LIMIT]
+    dropped_truncated = len(dropped_identifiers) > TD_SALES_ROW_SAMPLE_LIMIT
+    if not dropped_samples:
+        dropped_samples = ["(none)"]
+    dropped_lines = [
+        f"Total dropped rows: {len(sales_dropped_rows)}",
+        f"Sample identifiers: {', '.join(dropped_samples)}",
+    ]
+    if dropped_truncated:
+        dropped_lines.append(
+            f"... additional {len(dropped_identifiers) - TD_SALES_ROW_SAMPLE_LIMIT} identifiers truncated"
+        )
+    filtered_ingest_rows = [
+        row
+        for row in ingest_rows
+        if (_normalize_store_code(row.get("store_code")) and str(row.get("order_number") or "").strip())
+    ]
+    _, td_ingest_truncated_rows, td_ingest_truncated_length, td_ingest_text = _prepare_ingest_remarks(
+        filtered_ingest_rows
+    )
+
     summary_text = _td_summary_text_from_payload(run_data) or run_data.get("summary_text") or ""
     started_at_formatted = _format_td_timestamp(payload.get("started_at") or run_data.get("started_at"))
     finished_at_formatted = _format_td_timestamp(payload.get("finished_at") or run_data.get("finished_at"))
@@ -766,6 +867,15 @@ def _build_td_orders_context(run_data: dict[str, Any]) -> dict[str, Any]:
         "completed_windows": window_summary.get("completed_windows"),
         "missing_windows": window_summary.get("missing_windows"),
         "missing_window_stores": window_summary.get("missing_store_codes") or [],
+        "td_sales_warning_rows_text": "\n".join(sales_warning_lines),
+        "td_sales_warning_rows_truncated": sales_warning_truncated,
+        "td_sales_edited_rows_text": "\n".join(sales_edited_lines),
+        "td_sales_edited_rows_truncated": sales_edited_truncated,
+        "td_sales_dropped_rows_text": "\n".join(dropped_lines),
+        "td_sales_dropped_rows_count": len(sales_dropped_rows),
+        "td_sales_dropped_rows_samples": dropped_samples,
+        "td_sales_ingest_remarks_text": td_ingest_text,
+        "td_sales_ingest_remarks_truncated": td_ingest_truncated_rows or td_ingest_truncated_length,
     }
 
 
