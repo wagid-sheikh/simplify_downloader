@@ -1741,6 +1741,17 @@ async def _flush_deferred_orders_sync_logs(
         )
         outcome = summary.store_outcomes.get(entry.store.store_code)
         error_message = outcome.message if outcome and outcome.status == "error" else None
+        status_note = _resolve_sync_log_status_note(
+            status=status,
+            orders_report=orders_report,
+            sales_report=sales_report,
+            outcome=outcome,
+            run_orders=summary.run_orders,
+            run_sales=summary.run_sales,
+        )
+        resolved_message = _resolve_sync_log_message(
+            status=status, error_message=error_message, status_note=status_note
+        )
         primary_metrics, secondary_metrics = _build_unified_metrics(
             orders_report=orders_report,
             sales_report=sales_report,
@@ -1751,7 +1762,7 @@ async def _flush_deferred_orders_sync_logs(
             logger=logger,
             log_id=log_id,
             status=status,
-            error_message=error_message,
+            error_message=resolved_message,
             primary_metrics=primary_metrics,
             secondary_metrics=secondary_metrics,
         )
@@ -1904,6 +1915,60 @@ def _resolve_sync_log_error_message(
     if not deduped:
         return None
     return "; ".join(deduped)
+
+
+def _resolve_sync_log_status_note(
+    *,
+    status: str,
+    orders_report: StoreReport | None,
+    sales_report: StoreReport | None,
+    outcome: StoreOutcome | None,
+    run_orders: bool,
+    run_sales: bool,
+) -> str | None:
+    if status not in {"skipped", "partial"}:
+        return None
+    notes: list[str] = []
+
+    def _add(note: str | None) -> None:
+        if note and note not in notes:
+            notes.append(note)
+
+    if orders_report:
+        if orders_report.status == "skipped":
+            _add(orders_report.message or "Orders skipped")
+        elif orders_report.status == "warning":
+            _add(orders_report.message or "Orders completed with warnings")
+    elif not run_orders:
+        _add("Orders sync skipped by flag")
+
+    if sales_report:
+        if sales_report.status == "skipped":
+            _add(sales_report.message or "Sales skipped")
+        elif sales_report.status == "warning":
+            _add(sales_report.message or "Sales completed with warnings")
+    elif not run_sales:
+        _add("Sales sync skipped by flag")
+
+    if outcome and outcome.status in {"warning", "error"} and outcome.message:
+        _add(outcome.message)
+
+    if not notes:
+        _add("Window skipped" if status == "skipped" else "Window completed with warnings or skips")
+
+    return "; ".join(notes)
+
+
+def _resolve_sync_log_message(
+    *, status: str, error_message: str | None, status_note: str | None
+) -> str | None:
+    if status == "failed":
+        return error_message
+    if status in {"skipped", "partial"}:
+        if error_message and status_note and status_note not in error_message:
+            return f"{error_message}; {status_note}"
+        return error_message or status_note
+    return None
 
 
 def _resolve_ingested_rows(report: StoreReport | None) -> int | None:
@@ -6372,6 +6437,17 @@ async def _run_store_discovery(
             outcome=outcome,
             sync_error_message=sync_error_message,
         )
+        status_note = _resolve_sync_log_status_note(
+            status=final_status,
+            orders_report=orders_report,
+            sales_report=sales_report,
+            outcome=outcome,
+            run_orders=run_orders,
+            run_sales=run_sales,
+        )
+        resolved_message = _resolve_sync_log_message(
+            status=final_status, error_message=final_error_message, status_note=status_note
+        )
         primary_metrics, secondary_metrics = _build_unified_metrics(
             orders_report=orders_report,
             sales_report=sales_report,
@@ -6382,7 +6458,7 @@ async def _run_store_discovery(
             logger=store_logger,
             log_id=sync_log_id,
             status=final_status,
-            error_message=final_error_message,
+            error_message=resolved_message,
             primary_metrics=primary_metrics,
             secondary_metrics=secondary_metrics,
         )

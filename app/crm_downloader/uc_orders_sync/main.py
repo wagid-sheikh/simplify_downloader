@@ -956,15 +956,23 @@ async def _flush_deferred_orders_sync_logs(
         outcome = summary.store_outcomes.get(entry.store.store_code)
         if outcome:
             status = _resolve_sync_log_status(
-                outcome=outcome, download_succeeded=bool(outcome.download_path)
+                outcome=outcome,
+                download_succeeded=bool(outcome.download_path),
+                row_count=outcome.rows_downloaded,
             )
             error_message = outcome.message if outcome.status == "error" else None
+            status_note = _resolve_sync_log_status_note(
+                status=status, outcome=outcome, row_count=outcome.rows_downloaded
+            )
+            resolved_message = _resolve_sync_log_message(
+                status=status, error_message=error_message, status_note=status_note
+            )
             primary_metrics, secondary_metrics = _build_unified_metrics(outcome)
             await _update_orders_sync_log(
                 logger=logger,
                 log_id=log_id,
                 status=status,
-                error_message=error_message,
+                error_message=resolved_message,
                 primary_metrics=primary_metrics,
                 secondary_metrics=secondary_metrics,
             )
@@ -1045,12 +1053,42 @@ def _build_unified_metrics(outcome: StoreOutcome | None) -> tuple[dict[str, int 
     return primary_metrics, secondary_metrics
 
 
-def _resolve_sync_log_status(*, outcome: StoreOutcome, download_succeeded: bool) -> str:
-    if download_succeeded:
-        return "failed" if outcome.status == "error" else "success"
+def _resolve_sync_log_status(
+    *, outcome: StoreOutcome, download_succeeded: bool, row_count: int | None
+) -> str:
     if outcome.status == "error":
         return "failed"
-    return "skipped"
+    if outcome.skip_reason or row_count == 0:
+        return "skipped"
+    if outcome.status == "warning":
+        return "partial" if download_succeeded else "skipped"
+    return "success" if download_succeeded else "skipped"
+
+
+def _resolve_sync_log_status_note(
+    *, status: str, outcome: StoreOutcome, row_count: int | None
+) -> str | None:
+    if status == "skipped":
+        if outcome.skip_reason:
+            return outcome.skip_reason
+        if row_count == 0:
+            return "no data"
+        return outcome.message
+    if status == "partial":
+        return outcome.message or "Completed with warnings"
+    return None
+
+
+def _resolve_sync_log_message(
+    *, status: str, error_message: str | None, status_note: str | None
+) -> str | None:
+    if status == "failed":
+        return error_message
+    if status in {"skipped", "partial"}:
+        if error_message and status_note and status_note not in error_message:
+            return f"{error_message}; {status_note}"
+        return error_message or status_note
+    return None
 
 
 def _log_ui_issues(
@@ -1522,7 +1560,9 @@ async def _run_store_discovery(
             error=str(exc),
         )
     finally:
-        sync_status = _resolve_sync_log_status(outcome=outcome, download_succeeded=download_succeeded)
+        sync_status = _resolve_sync_log_status(
+            outcome=outcome, download_succeeded=download_succeeded, row_count=row_count
+        )
         skip_reason: str | None = None
         if sync_status == "skipped":
             skip_reason = outcome.skip_reason
@@ -1534,12 +1574,18 @@ async def _run_store_discovery(
         sync_error_value = None
         if sync_status == "failed":
             sync_error_value = sync_error_message or outcome.message
+        status_note = _resolve_sync_log_status_note(
+            status=sync_status, outcome=outcome, row_count=row_count
+        )
+        resolved_message = _resolve_sync_log_message(
+            status=sync_status, error_message=sync_error_value, status_note=status_note
+        )
         primary_metrics, secondary_metrics = _build_unified_metrics(outcome)
         await _update_orders_sync_log(
             logger=logger,
             log_id=sync_log_id,
             status=sync_status,
-            error_message=sync_error_value,
+            error_message=resolved_message,
             primary_metrics=primary_metrics,
             secondary_metrics=secondary_metrics,
         )
@@ -1552,8 +1598,8 @@ async def _run_store_discovery(
             from_date=from_date,
             to_date=to_date,
             window_status=sync_status,
-            status_note=skip_reason,
-            error_message=sync_error_value,
+            status_note=status_note,
+            error_message=resolved_message,
             download_path=outcome.download_path,
             final_rows=outcome.final_rows,
         )
@@ -1567,7 +1613,7 @@ async def _run_store_discovery(
             gst_downloaded_path=outcome.download_path,
             gst_ingested_rows=outcome.final_rows,
             final_status=sync_status,
-            skip_reason=skip_reason,
+            skip_reason=status_note,
         )
         summary.window_audit.append(
             {
@@ -1575,8 +1621,8 @@ async def _run_store_discovery(
                 "from_date": from_date.isoformat(),
                 "to_date": to_date.isoformat(),
                 "status": sync_status,
-                "status_note": skip_reason,
-                "error_message": sync_error_value,
+                "status_note": status_note,
+                "error_message": resolved_message,
                 "download_path": outcome.download_path,
                 "final_rows": outcome.final_rows,
             }
