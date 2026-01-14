@@ -362,11 +362,18 @@ class UcOrdersDiscoverySummary:
             code = store_code.upper()
             outcome = self.store_outcomes.get(code)
             filename = _format_gst_filename(code, self.report_date, to_date)
+            error_message = None
+            info_message = None
+            if outcome:
+                if outcome.status in {"error", "warning"}:
+                    error_message = outcome.message
+                else:
+                    info_message = outcome.message
             summary[code] = {
                 "status": outcome.status if outcome else "error",
                 "message": outcome.message if outcome else "No outcome recorded",
-                "error_message": outcome.message if outcome and outcome.status == "error" else None,
-                "info_message": outcome.message if outcome and outcome.status != "error" else None,
+                "error_message": error_message,
+                "info_message": info_message,
                 "skip_reason": outcome.skip_reason if outcome else None,
                 "filename": filename,
                 "download_path": outcome.download_path if outcome else None,
@@ -389,13 +396,20 @@ class UcOrdersDiscoverySummary:
             code = store_code.upper()
             outcome = self.store_outcomes.get(code)
             filename = _format_gst_filename(code, self.report_date, to_date)
+            error_message = None
+            info_message = None
+            if outcome:
+                if outcome.status in {"error", "warning"}:
+                    error_message = outcome.message
+                else:
+                    info_message = outcome.message
             stores.append(
                 {
                     "store_code": code,
                     "status": outcome.status if outcome else "error",
                     "message": outcome.message if outcome else "No outcome recorded",
-                    "error_message": outcome.message if outcome and outcome.status == "error" else None,
-                    "info_message": outcome.message if outcome and outcome.status != "error" else None,
+                    "error_message": error_message,
+                    "info_message": info_message,
                     "skip_reason": outcome.skip_reason if outcome else None,
                     "warning_count": outcome.warning_count if outcome else None,
                     "filename": filename,
@@ -1393,7 +1407,7 @@ async def _run_store_discovery(
             )
             summary.record_store(store.store_code, outcome)
             return
-        apply_ok, row_count, row_visibility_issue, ui_issues = await _apply_date_range(
+        apply_ok, row_count, row_visibility_issue, ui_issues, apply_failure_reason = await _apply_date_range(
             page=page,
             container=container,
             logger=logger,
@@ -1412,9 +1426,10 @@ async def _run_store_discovery(
                 from_date=from_date,
                 to_date=to_date,
             )
+            failure_reason = apply_failure_reason or "filter_validation_failed"
             outcome = StoreOutcome(
                 status="warning",
-                message="Date range apply incomplete; export skipped",
+                message=failure_reason,
                 final_url=page.url,
                 storage_state=str(storage_state_path) if storage_state_path.exists() else None,
                 login_used=login_used,
@@ -1431,7 +1446,7 @@ async def _run_store_discovery(
         if not report_visible:
             outcome = StoreOutcome(
                 status="warning",
-                message="GST report table not visible; export skipped",
+                message="filter_validation_failed",
                 final_url=page.url,
                 storage_state=str(storage_state_path) if storage_state_path.exists() else None,
                 login_used=login_used,
@@ -2187,7 +2202,7 @@ async def _apply_date_range(
     store: UcStore,
     from_date: date,
     to_date: date,
-) -> tuple[bool, int, bool, list[dict[str, Any]]]:
+) -> tuple[bool, int, bool, list[dict[str, Any]], str | None]:
     input_selectors = [
         "input.search-user[placeholder='Choose Start Date - End Date']",
         *GST_CONTROL_SELECTORS["date_range_input"],
@@ -2195,6 +2210,7 @@ async def _apply_date_range(
     date_input = None
     row_visibility_issue = False
     ui_issues: list[dict[str, Any]] = []
+    failure_reason: str | None = None
     for selector in input_selectors:
         try:
             if await container.locator(selector).count():
@@ -2211,9 +2227,12 @@ async def _apply_date_range(
             store_code=store.store_code,
             selectors=input_selectors,
         )
-        return False, 0, row_visibility_issue, ui_issues
+        failure_reason = "filter_validation_failed"
+        return False, 0, row_visibility_issue, ui_issues, failure_reason
 
-    async def _fallback_set_date_range_input(reason: str) -> tuple[bool, int, bool]:
+    async def _fallback_set_date_range_input(
+        reason: str,
+    ) -> tuple[bool, int, bool, list[dict[str, Any]]]:
         date_range_value = f"{from_date:%Y-%m-%d} - {to_date:%Y-%m-%d}"
         try:
             await date_input.evaluate(
@@ -2292,7 +2311,9 @@ async def _apply_date_range(
         popup = await _reopen_date_picker_popup(page=page, logger=logger, store=store)
     if popup is None:
         refreshed, row_count, refreshed_row_issue = await _fallback_set_date_range_input("popup-missing")
-        return refreshed, row_count, refreshed_row_issue, ui_issues
+        if not refreshed:
+            failure_reason = "filter_validation_failed"
+        return refreshed, row_count, refreshed_row_issue, ui_issues, failure_reason
 
     calendars = await _get_calendar_locators(popup=popup)
     start_calendar = calendars[0]
@@ -2327,7 +2348,9 @@ async def _apply_date_range(
         refreshed, row_count, refreshed_row_issue = await _fallback_set_date_range_input(
             "calendar-navigation-error"
         )
-        return refreshed, row_count, refreshed_row_issue, ui_issues
+        if not refreshed:
+            failure_reason = "filter_validation_failed"
+        return refreshed, row_count, refreshed_row_issue, ui_issues, failure_reason
     if not start_ok and end_ok:
         log_event(
             logger=logger,
@@ -2385,7 +2408,9 @@ async def _apply_date_range(
         refreshed, row_count, refreshed_row_issue = await _fallback_set_date_range_input(
             "calendar-selection-incomplete"
         )
-        return refreshed, row_count, refreshed_row_issue, ui_issues
+        if not refreshed:
+            failure_reason = "filter_validation_failed"
+        return refreshed, row_count, refreshed_row_issue, ui_issues, failure_reason
 
     overlay_selector = ".calendar-body.show"
     try:
@@ -2495,7 +2520,8 @@ async def _apply_date_range(
                     "apply_warn": overlay_apply_warn,
                 }
             )
-            return False, 0, row_visibility_issue, ui_issues
+            failure_reason = "apply_button_not_found"
+            return False, 0, row_visibility_issue, ui_issues, failure_reason
 
     applied = False
     for attempt in range(2):
@@ -2551,11 +2577,12 @@ async def _apply_date_range(
             ui_issues.append(
                 {
                     "message": "Apply control missing after date selection",
-                    "reason": "apply_control_missing",
+                    "reason": "apply_button_not_found",
                     "selectors": GST_CONTROL_SELECTORS["apply_button"],
                 }
             )
-            return False, 0, row_visibility_issue, ui_issues
+            failure_reason = "apply_button_not_found"
+            return False, 0, row_visibility_issue, ui_issues, failure_reason
 
         with contextlib.suppress(Exception):
             await overlay_apply_button.scroll_into_view_if_needed()
@@ -2570,7 +2597,8 @@ async def _apply_date_range(
                 store_code=store.store_code,
                 selector=overlay_apply_selector_used,
             )
-            return False, 0, row_visibility_issue, ui_issues
+            failure_reason = "apply_button_not_found"
+            return False, 0, row_visibility_issue, ui_issues, failure_reason
 
         apply_enabled = False
         for _ in range(10):
@@ -2588,7 +2616,8 @@ async def _apply_date_range(
                 store_code=store.store_code,
                 selector=overlay_apply_selector_used,
             )
-            return False, 0, row_visibility_issue, ui_issues
+            failure_reason = "apply_button_not_found"
+            return False, 0, row_visibility_issue, ui_issues, failure_reason
 
         await overlay_apply_button.click()
         refreshed, row_count, refreshed_row_issue = await _wait_for_report_refresh(
@@ -2634,10 +2663,12 @@ async def _apply_date_range(
             store_code=store.store_code,
             row_count=row_count,
         )
-        return False, row_count, row_visibility_issue, ui_issues
+        failure_reason = "row_count_zero_after_apply"
+        return False, row_count, row_visibility_issue, ui_issues, failure_reason
 
     if not applied:
-        return False, 0, row_visibility_issue, ui_issues
+        failure_reason = failure_reason or "filter_validation_failed"
+        return False, 0, row_visibility_issue, ui_issues, failure_reason
     if apply_section_found:
         await _confirm_apply_dates(
             apply_section=apply_section,
@@ -2646,7 +2677,7 @@ async def _apply_date_range(
             logger=logger,
             store=store,
         )
-    return True, row_count, row_visibility_issue, ui_issues
+    return True, row_count, row_visibility_issue, ui_issues, failure_reason
 
 
 async def _download_gst_report(

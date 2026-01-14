@@ -1106,16 +1106,15 @@ def _build_uc_orders_context(
         primary_metrics = _build_unified_metrics(store)
         _sum_unified_metrics(primary_totals, primary_metrics)
         store_status = _uc_store_status(store, uc_status_by_store)
+        show_error_message = status in {"error", "warning"} or store_status in {"failed", "partial"}
         stores.append(
             {
                 "store_code": store_code,
                 "status": store_status,
                 "message": store.get("message"),
-                "error_message": store.get("error_message")
-                if status == "error" or store_status == "failed"
-                else None,
+                "error_message": store.get("error_message") if show_error_message else None,
                 "info_message": store.get("info_message")
-                or (store.get("message") if status != "error" and store_status != "failed" else None),
+                or (store.get("message") if not show_error_message else None),
                 "warning_count": resolved_warning_count,
                 "warnings_summary": warning_summary,
                 "filename": store.get("filename"),
