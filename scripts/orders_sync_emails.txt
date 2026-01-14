@@ -1,0 +1,353 @@
+Email 1:
+UC Orders Sync Run Summary
+Run ID: 20260114_080409704796_UC567_001 | Env: dev
+Report Date: 2025-02-09
+Started: 2026-01-14T08:04:09.879262+00:00 | Finished: 2026-01-14T08:05:46.485546+00:00
+Total Duration: 00:01:36
+Overall Status: ok
+
+**Per Store UC Metrics:**
+
+- UC567 — OK
+  filename: UC567_uc_gst_20250209_20250509.xlsx
+  staging_inserted: 277
+  staging_updated: 0
+  final_inserted: 277
+  final_updated: 0
+  warning_count: 277
+
+
+
+
+All UC stores completed successfully. Upsert using (cost_center, order_number, invoice_date) to keep reruns idempotent.
+---
+Email 2:
+UC Orders Sync Run Summary
+Run ID: 20260114_080409704796_UC567_002 | Env: dev
+Report Date: 2025-05-08
+Started: 2026-01-14T08:05:55.118034+00:00 | Finished: 2026-01-14T08:07:26.555318+00:00
+Total Duration: 00:01:31
+Overall Status: ok
+
+**Per Store UC Metrics:**
+
+- UC567 — OK
+  filename: UC567_uc_gst_20250508_20250805.xlsx
+  staging_inserted: 263
+  staging_updated: 7
+  final_inserted: 263
+  final_updated: 7
+  warning_count: 271
+
+
+
+
+All UC stores completed successfully. Upsert using (cost_center, order_number, invoice_date) to keep reruns idempotent.
+---
+Email 3:
+TD Orders & Sales Run Summary
+Run ID: 20260114_080409704796_A817_001 | Env: dev
+Report Date: 2025-05-10
+Started (Asia/Kolkata): 14-01-2026 13:34:09
+Finished (Asia/Kolkata): 14-01-2026 13:38:40
+Total Duration: 00:04:30
+Overall Status: ok (Orders: ok, Sales: warning)
+Windows Completed: 1 / 1
+Missing Windows: 0
+
+**Per Store Orders Metrics:**
+- A817 — OK
+  rows_downloaded: 413
+  rows_ingested: 413
+  warning_count: 0
+  dropped_count: 0
+
+**Per Store Sales Metrics:**
+- A817 — OK
+  rows_downloaded: 338
+  rows_ingested: 338
+  warning_count: 0
+  dropped_count: 0
+  edited_count: 55
+  duplicate_count: 55
+
+---
+Email 4:
+TD Orders & Sales Run Summary
+Run ID: 20260114_080409704796_A668_001 | Env: dev
+Report Date: 2025-02-28
+Started (Asia/Kolkata): 14-01-2026 13:34:09
+Finished (Asia/Kolkata): 14-01-2026 13:38:48
+Total Duration: 00:04:38
+Overall Status: ok (Orders: ok, Sales: warning)
+Windows Completed: 1 / 1
+Missing Windows: 0
+
+**Per Store Orders Metrics:**
+- A668 — OK
+  rows_downloaded: 450
+  rows_ingested: 450
+  warning_count: 0
+  dropped_count: 0
+
+**Per Store Sales Metrics:**
+- A668 — OK
+  rows_downloaded: 369
+  rows_ingested: 369
+  warning_count: 0
+  dropped_count: 0
+  edited_count: 56
+  duplicate_count: 56
+---
+Email 5:
+UC Orders Sync Run Summary
+Run ID: 20260114_080409704796_UC567_003 | Env: dev
+Report Date: 2025-08-04
+Started: 2026-01-14T08:07:35.172007+00:00 | Finished: 2026-01-14T08:09:11.158479+00:00
+Total Duration: 00:01:35
+Overall Status: warning
+
+**Per Store UC Metrics:**
+
+- UC567 — WARNING
+  filename: UC567_uc_gst_20250804_20251101.xlsx
+  staging_inserted: 305
+  staging_updated: 2
+  final_inserted: 305
+  final_updated: 2
+  warning_count: 1
+
+
+
+
+
+Mixed UC outcomes: review warning/error stores above, fix issues, and rerun; unique constraints prevent duplicate rows on retry.
+---
+Email 6:
+UC Orders Sync Run Summary
+Run ID: 20260114_080409704796_UC567_004 | Env: dev
+Report Date: 2025-10-31
+Started: 2026-01-14T08:09:19.568748+00:00 | Finished: 2026-01-14T08:10:47.682514+00:00
+Total Duration: 00:01:28
+Overall Status: warning
+
+**Per Store UC Metrics:**
+
+- UC567 — WARNING
+  filename: UC567_uc_gst_20251031_20260114.xlsx
+  staging_inserted: 294
+  staging_updated: 11
+  final_inserted: 294
+  final_updated: 11
+  warning_count: 1
+
+
+
+
+
+Mixed UC outcomes: review warning/error stores above, fix issues, and rerun; unique constraints prevent duplicate rows on retry.
+---
+Email 7:
+UC Orders Sync Run Summary
+Run ID: 20260114_080409704796_UC610_001 | Env: dev
+Report Date: 2025-05-11
+Started: 2026-01-14T08:10:56.170193+00:00 | Finished: 2026-01-14T08:12:26.573808+00:00
+Total Duration: 00:01:30
+Overall Status: ok
+
+**Per Store UC Metrics:**
+
+- UC610 — OK
+  filename: UC610_uc_gst_20250511_20250808.xlsx
+  staging_inserted: 188
+  staging_updated: 0
+  final_inserted: 188
+  final_updated: 0
+  warning_count: 188
+
+
+
+
+All UC stores completed successfully. Upsert using (cost_center, order_number, invoice_date) to keep reruns idempotent.
+---
+Email 8:
+TD Orders & Sales Run Summary
+Run ID: 20260114_080409704796_A817_002 | Env: dev
+Report Date: 2025-08-06
+Started (Asia/Kolkata): 14-01-2026 13:38:48
+Finished (Asia/Kolkata): 14-01-2026 13:43:25
+Total Duration: 00:04:36
+Overall Status: ok (Orders: ok, Sales: warning)
+Windows Completed: 1 / 1
+Missing Windows: 0
+
+**Per Store Orders Metrics:**
+- A817 — OK
+  rows_downloaded: 471
+  rows_ingested: 471
+  warning_count: 0
+  dropped_count: 0
+
+**Per Store Sales Metrics:**
+- A817 — OK
+  rows_downloaded: 420
+  rows_ingested: 420
+  warning_count: 0
+  dropped_count: 0
+  edited_count: 95
+  duplicate_count: 95
+---
+Email 9:
+TD Orders & Sales Run Summary
+Run ID: 20260114_080409704796_A668_002 | Env: dev
+Report Date: 2025-05-27
+Started (Asia/Kolkata): 14-01-2026 13:38:57
+Finished (Asia/Kolkata): 14-01-2026 13:43:35
+Total Duration: 00:04:37
+Overall Status: ok (Orders: ok, Sales: warning)
+Windows Completed: 1 / 1
+Missing Windows: 0
+
+**Per Store Orders Metrics:**
+- A668 — OK
+  rows_downloaded: 520
+  rows_ingested: 520
+  warning_count: 0
+  dropped_count: 0
+
+**Per Store Sales Metrics:**
+- A668 — OK
+  rows_downloaded: 564
+  rows_ingested: 564
+  warning_count: 0
+  dropped_count: 0
+  edited_count: 64
+  duplicate_count: 64
+
+Email 10:
+UC Orders Sync Run Summary
+Run ID: 20260114_080409704796_UC610_002 | Env: dev
+Report Date: 2025-08-07
+Started: 2026-01-14T08:12:34.993797+00:00 | Finished: 2026-01-14T08:14:07.208755+00:00
+Total Duration: 00:01:32
+Overall Status: warning
+
+**Per Store UC Metrics:**
+
+- UC610 — WARNING
+  filename: UC610_uc_gst_20250807_20251104.xlsx
+  staging_inserted: 246
+  staging_updated: 2
+  final_inserted: 246
+  final_updated: 2
+  warning_count: 1
+
+
+
+
+
+Mixed UC outcomes: review warning/error stores above, fix issues, and rerun; unique constraints prevent duplicate rows on retry.
+---
+Email 11:
+UC Orders Sync Run Summary
+Run ID: 20260114_080409704796_UC610_003 | Env: dev
+Report Date: 2025-11-03
+Started: 2026-01-14T08:14:15.511159+00:00 | Finished: 2026-01-14T08:15:42.172750+00:00
+Total Duration: 00:01:26
+Overall Status: ok
+
+**Per Store UC Metrics:**
+
+- UC610 — OK
+  filename: UC610_uc_gst_20251103_20260114.xlsx
+  staging_inserted: 244
+  staging_updated: 4
+  final_inserted: 244
+  final_updated: 4
+  warning_count: 248
+
+
+
+
+All UC stores completed successfully. Upsert using (cost_center, order_number, invoice_date) to keep reruns idempotent.
+---
+Email 12:
+TD Orders & Sales Run Summary
+Run ID: 20260114_080409704796_A817_003 | Env: dev
+Report Date: 2025-11-02
+Started (Asia/Kolkata): 14-01-2026 13:43:33
+Finished (Asia/Kolkata): 14-01-2026 13:47:59
+Total Duration: 00:04:25
+Overall Status: ok (Orders: warning, Sales: warning)
+Windows Completed: 1 / 1
+Missing Windows: 0
+
+**Per Store Orders Metrics:**
+- A817 — OK
+  rows_downloaded: 597
+  rows_ingested: 597
+  warning_count: 5
+  dropped_count: 0
+
+**Per Store Sales Metrics:**
+- A817 — OK
+  rows_downloaded: 761
+  rows_ingested: 761
+  warning_count: 5
+  dropped_count: 0
+  edited_count: 152
+  duplicate_count: 152
+---
+Email 14:
+TD Orders & Sales Run Summary
+Run ID: 20260114_080409704796_A668_003 | Env: dev
+Report Date: 2025-08-23
+Started (Asia/Kolkata): 14-01-2026 13:43:43
+Finished (Asia/Kolkata): 14-01-2026 13:48:45
+Total Duration: 00:05:01
+Overall Status: ok (Orders: warning, Sales: warning)
+Windows Completed: 1 / 1
+Missing Windows: 0
+
+**Per Store Orders Metrics:**
+- A668 — OK
+  rows_downloaded: 625
+  rows_ingested: 625
+  warning_count: 1
+  dropped_count: 0
+
+**Per Store Sales Metrics:**
+- A668 — OK
+  rows_downloaded: 649
+  rows_ingested: 649
+  warning_count: 0
+  dropped_count: 0
+  edited_count: 136
+  duplicate_count: 136
+---
+Email 15:
+TD Orders & Sales Run Summary
+Run ID: 20260114_080409704796_A668_004 | Env: dev
+Report Date: 2025-11-19
+Started (Asia/Kolkata): 14-01-2026 13:48:53
+Finished (Asia/Kolkata): 14-01-2026 13:53:16
+Total Duration: 00:04:22
+Overall Status: ok (Orders: warning, Sales: warning)
+Windows Completed: 1 / 1
+Missing Windows: 0
+
+**Per Store Orders Metrics:**
+- A668 — OK
+  rows_downloaded: 477
+  rows_ingested: 477
+  warning_count: 2
+  dropped_count: 0
+
+**Per Store Sales Metrics:**
+- A668 — OK
+  rows_downloaded: 544
+  rows_ingested: 544
+  warning_count: 2
+  dropped_count: 0
+  edited_count: 58
+  duplicate_count: 58
