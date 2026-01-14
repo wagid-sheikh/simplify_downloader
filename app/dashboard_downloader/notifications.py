@@ -1050,14 +1050,15 @@ def _build_uc_orders_context(
     stores_payload = payload.get("stores") or []
     ingest_rows = (metrics.get("ingest_remarks") or {}).get("rows") or []
     warning_summaries = _summarize_ingest_remarks_by_store(ingest_rows)
-    summary_stores = (metrics.get("stores_summary") or {}).get("stores") or {}
-    summary_warning_counts = {
-        _normalize_store_code(store_code) or store_code: _coerce_int(store_data.get("warning_count"))
-        for store_code, store_data in summary_stores.items()
+    store_outcomes = (metrics.get("stores") or {}).get("outcomes") or {}
+    ingest_warning_counts = {
+        _normalize_store_code(store_code) or store_code: _coerce_int(outcome.get("warning_count"))
+        for store_code, outcome in store_outcomes.items()
         if store_code
     }
-    window_warning_counts: dict[str, int] = {}
-    for entry in metrics.get("window_audit") or []:
+    status_counts = _status_counts(stores_payload)
+    window_audit = metrics.get("window_audit") or []
+    for entry in window_audit:
         status = str(entry.get("status") or "").lower()
         final_rows = _coerce_int(entry.get("final_rows"))
         if status == "skipped" and final_rows is not None and final_rows > 0:
@@ -1070,14 +1071,6 @@ def _build_uc_orders_context(
                     "final_rows": final_rows,
                 },
             )
-        if status not in {"partial", "warning", "warn"}:
-            continue
-        store_code = _normalize_store_code(entry.get("store_code")) or entry.get("store_code")
-        if not store_code:
-            continue
-        window_warning_counts[store_code] = window_warning_counts.get(store_code, 0) + 1
-    status_counts = _status_counts(stores_payload)
-    window_audit = metrics.get("window_audit") or []
     uc_status_by_store = _uc_window_status_by_store(window_audit)
     uc_status_counts = _uc_status_counts(stores_payload, uc_status_by_store)
 
@@ -1092,17 +1085,24 @@ def _build_uc_orders_context(
         status = str(store.get("status") or "").lower()
         warning_data = warning_summaries.get(_normalize_store_code(store.get("store_code")) or "", {})
         warning_summary = warning_data.get("summary")
-        warning_count = _coerce_int(store.get("warning_count"))
-        if warning_count is None:
-            warning_count = summary_warning_counts.get(_normalize_store_code(store_code) or "")
-        if warning_count is None and warning_data:
-            warning_count = _coerce_int(warning_data.get("count"))
-        window_warning_count = window_warning_counts.get(_normalize_store_code(store_code) or "")
-        resolved_warning_count = 0
-        if warning_count is not None:
-            resolved_warning_count += warning_count
-        if window_warning_count:
-            resolved_warning_count += window_warning_count
+        store_warning_count = _coerce_int(store.get("warning_count"))
+        ingest_warning_count = ingest_warning_counts.get(_normalize_store_code(store_code) or "")
+        if ingest_warning_count is None:
+            ingest_warning_count = store_warning_count
+        if (
+            ingest_warning_count is not None
+            and store_warning_count is not None
+            and ingest_warning_count != store_warning_count
+        ):
+            logger.warning(
+                "UC email warning count mismatch with ingest warning count",
+                extra={
+                    "store_code": store_code,
+                    "email_warning_count": store_warning_count,
+                    "ingest_warning_count": ingest_warning_count,
+                },
+            )
+        resolved_warning_count = ingest_warning_count or 0
         primary_metrics = _build_unified_metrics(store)
         _sum_unified_metrics(primary_totals, primary_metrics)
         store_status = _uc_store_status(store, uc_status_by_store)
