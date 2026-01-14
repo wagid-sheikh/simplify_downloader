@@ -36,8 +36,12 @@ INGEST_REMARKS_MAX_ROWS = 50
 INGEST_REMARKS_MAX_CHARS = 200
 STATUS_EXPLANATIONS = {
     "ok": "run completed with no issues recorded",
+    "success": "run completed with no issues recorded",
     "warning": "run completed but row-level issues were recorded",
+    "partial": "run completed but row-level issues were recorded",
     "error": "run failed or data could not be ingested",
+    "failed": "run failed or data could not be ingested",
+    "skipped": "run was skipped or produced no data",
 }
 UNIFIED_METRIC_FIELDS = (
     "rows_downloaded",
@@ -314,6 +318,26 @@ def _uc_status_counts(
         if status in counts:
             counts[status] += 1
     return counts
+
+
+def _uc_overall_status(
+    stores_payload: list[Mapping[str, Any]],
+    status_by_store: Mapping[str, str],
+    *,
+    fallback_status: str | None = None,
+) -> str:
+    statuses = [_uc_store_status(store, status_by_store) for store in stores_payload]
+    if not statuses and status_by_store:
+        statuses = list(status_by_store.values())
+    if any(status == "failed" for status in statuses):
+        return "failed"
+    if any(status == "partial" for status in statuses):
+        return "partial"
+    if any(status == "success" for status in statuses):
+        return "success"
+    if any(status == "skipped" for status in statuses):
+        return "skipped"
+    return _normalize_uc_status(fallback_status)
 
 
 def _summarize_ingest_remarks_by_store(
@@ -1116,14 +1140,19 @@ def _build_uc_orders_context(
     window_summary = metrics.get("window_summary") or {}
     window_audit = metrics.get("window_audit") or []
     summary_text = _uc_summary_text_from_payload(run_data) or run_data.get("summary_text") or ""
+    overall_status = _uc_overall_status(
+        stores_payload,
+        uc_status_by_store,
+        fallback_status=payload.get("overall_status") or run_data.get("overall_status"),
+    )
 
     return {
         "summary_text": summary_text,
         "started_at": _normalize_datetime(started_at),
         "finished_at": _normalize_datetime(finished_at),
         "total_time_taken": payload.get("total_time_taken") or run_data.get("total_time_taken"),
-        "overall_status": payload.get("overall_status") or run_data.get("overall_status"),
-        "overall_status_explanation": _status_explanation(payload.get("overall_status") or run_data.get("overall_status")),
+        "overall_status": overall_status,
+        "overall_status_explanation": _status_explanation(overall_status),
         "store_status_counts": status_counts,
         "stores_succeeded": status_counts.get("ok", 0),
         "stores_warned": status_counts.get("warning", 0),
@@ -1356,7 +1385,11 @@ def _uc_summary_text_from_payload(run_data: Mapping[str, Any]) -> str:
     uc_status_by_store = _uc_window_status_by_store(window_audit)
     uc_status_counts = _uc_status_counts(stores_payload, uc_status_by_store)
     total = sum(uc_status_counts.values())
-    overall_status = payload.get("overall_status") or run_data.get("overall_status")
+    overall_status = _uc_overall_status(
+        stores_payload,
+        uc_status_by_store,
+        fallback_status=payload.get("overall_status") or run_data.get("overall_status"),
+    )
     skipped = uc_status_counts.get("skipped", 0)
     skipped_suffix = f", {skipped} skipped" if skipped else ""
     status_explanation = _status_explanation(overall_status)

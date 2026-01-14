@@ -103,9 +103,9 @@ Overall Status: {{ overall_status }}
   {% if store.error_message %}error: {{ store.error_message }}{% endif %}
 {% endfor %}
 
-{% if overall_status == 'ok' %}
+{% if overall_status in ['ok', 'success'] %}
 All UC stores completed successfully. Upsert using (cost_center, order_number, invoice_date) to keep reruns idempotent.
-{% elif overall_status == 'warning' %}
+{% elif overall_status in ['warning', 'partial', 'skipped'] %}
 {% if uc_all_stores_failed %}
 All UC stores failed. Review the errors above before reattempting the sync.
 {% else %}
