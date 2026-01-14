@@ -121,6 +121,8 @@ GST_REPORT_TABLE_SELECTORS = (
     ".ag-center-cols-viewport",
     ".ag-center-cols-container",
     ".ag-center-cols-clipper",
+    "table:has(th:has-text('Invoice No.'))",
+    "table:has(th:has-text('Customer GSTIN'))",
     "table",
     "table tbody",
     "table tbody tr.ng-star-inserted",
