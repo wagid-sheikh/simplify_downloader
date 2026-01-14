@@ -1595,6 +1595,19 @@ async def _run_store_discovery(
                     store_code=store.store_code,
                 )
         final_success = downloaded and ingest_succeeded
+        ui_checks_failed = bool(ui_issues or row_visibility_issue or download_warning_reason)
+        if downloaded and ui_checks_failed:
+            log_event(
+                logger=logger,
+                phase="filters",
+                status="warn",
+                message="UI checks failed but export succeeded",
+                store_code=store.store_code,
+                row_count=row_count,
+                ui_issue_count=len(ui_issues) if ui_issues else 0,
+                row_visibility_issue=row_visibility_issue,
+                warning_reason=download_warning_reason,
+            )
         if ui_issues:
             _log_ui_issues(
                 logger=logger,
@@ -1606,7 +1619,7 @@ async def _run_store_discovery(
             log_event(
                 logger=logger,
                 phase="filters",
-                status="info" if final_success else "warn",
+                status="warn",
                 message="GST report rows missing but export button was ready",
                 store_code=store.store_code,
                 row_count=row_count,
