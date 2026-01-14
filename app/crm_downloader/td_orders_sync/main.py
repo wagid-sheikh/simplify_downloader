@@ -521,6 +521,8 @@ class StoreReport:
     filenames: list[str] = field(default_factory=list)
     downloaded_path: str | None = None
     staging_rows: int | None = None
+    staging_inserted: int | None = None
+    staging_updated: int | None = None
     final_rows: int | None = None
     final_inserted: int | None = None
     final_updated: int | None = None
@@ -546,6 +548,8 @@ class StoreReport:
             "filenames": list(self.filenames),
             "downloaded_path": self.downloaded_path,
             "staging_rows": self.staging_rows,
+            "staging_inserted": self.staging_inserted,
+            "staging_updated": self.staging_updated,
             "final_rows": self.final_rows,
             "final_inserted": self.final_inserted,
             "final_updated": self.final_updated,
@@ -1120,6 +1124,8 @@ class TdOrdersDiscoverySummary:
                 "rows_downloaded": None,
                 "rows_ingested": None,
                 "staging_rows": None,
+                "staging_inserted": None,
+                "staging_updated": None,
                 "final_rows": None,
                 "final_inserted": None,
                 "final_updated": None,
@@ -1136,6 +1142,8 @@ class TdOrdersDiscoverySummary:
             "rows_downloaded": report.rows_downloaded,
             "rows_ingested": report.rows_ingested,
             "staging_rows": report.staging_rows,
+            "staging_inserted": report.staging_inserted,
+            "staging_updated": report.staging_updated,
             "final_rows": report.final_rows,
             "final_inserted": report.final_inserted,
             "final_updated": report.final_updated,
@@ -1829,8 +1837,8 @@ def _build_report_metrics(report: StoreReport | None) -> dict[str, int | None]:
         "rows_downloaded": report.rows_downloaded if report else None,
         "rows_ingested": report.rows_ingested if report else None,
         "staging_rows": report.staging_rows if report else None,
-        "staging_inserted": None,
-        "staging_updated": None,
+        "staging_inserted": report.staging_inserted if report else None,
+        "staging_updated": report.staging_updated if report else None,
         "final_inserted": report.final_inserted if report else None,
         "final_updated": report.final_updated if report else None,
     }
@@ -5683,7 +5691,11 @@ async def _execute_sales_flow(
         filenames=[Path(sales_download_path).name] if sales_download_path else [],
         downloaded_path=sales_download_path,
         staging_rows=sales_ingest_result.staging_rows if sales_ingest_result else None,
+        staging_inserted=sales_ingest_result.staging_inserted if sales_ingest_result else None,
+        staging_updated=sales_ingest_result.staging_updated if sales_ingest_result else None,
         final_rows=sales_ingest_result.final_rows if sales_ingest_result else None,
+        final_inserted=sales_ingest_result.final_inserted if sales_ingest_result else None,
+        final_updated=sales_ingest_result.final_updated if sales_ingest_result else None,
         rows_downloaded=sales_ingest_result.rows_downloaded if sales_ingest_result else None,
         rows_ingested=sales_ingest_result.final_rows if sales_ingest_result else None,
         warning_count=(
@@ -6221,7 +6233,11 @@ async def _run_store_discovery(
                         filenames=[Path(detail).name],
                         downloaded_path=orders_download_path,
                         staging_rows=ingest_result.staging_rows if ingest_result else None,
+                        staging_inserted=ingest_result.staging_inserted if ingest_result else None,
+                        staging_updated=ingest_result.staging_updated if ingest_result else None,
                         final_rows=ingest_result.final_rows if ingest_result else None,
+                        final_inserted=ingest_result.final_inserted if ingest_result else None,
+                        final_updated=ingest_result.final_updated if ingest_result else None,
                         rows_downloaded=ingest_result.rows_downloaded if ingest_result else None,
                         rows_ingested=ingest_result.final_rows if ingest_result else None,
                         warning_count=(
