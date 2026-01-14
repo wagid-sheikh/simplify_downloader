@@ -2687,7 +2687,7 @@ async def _apply_date_range(
                     logger=logger,
                     phase="filters",
                     status="warn",
-                    message="Apply click did not update date filter UI; retrying apply",
+                    message="GST banner values remained zero after apply click; retrying apply",
                     store_code=store.store_code,
                 )
                 continue
@@ -3918,42 +3918,26 @@ async def _confirm_date_filter_update(
     logger: JsonLogger,
     store: UcStore,
 ) -> bool:
-    date_range_value = ""
-    start_value = ""
-    end_value = ""
+    banner_values: list[str] = []
+    banner_count = 0
     for _ in range(12):
-        for selector in GST_CONTROL_SELECTORS["date_range_input"]:
-            input_locator = container.locator(selector).first
-            try:
-                if await input_locator.count():
-                    with contextlib.suppress(Exception):
-                        date_range_value = await input_locator.input_value()
-                    if date_range_value:
-                        break
-            except Exception:
-                continue
-
-        if apply_section is not None and await apply_section.count():
-            start_input = apply_section.locator("input[readonly][placeholder='Start Date']").first
-            end_input = apply_section.locator("input[readonly][placeholder='End Date']").first
+        banner_values = []
+        banner_locator = container.locator(".gst-banner .gst-banner-card .value")
+        with contextlib.suppress(Exception):
+            banner_count = await banner_locator.count()
+        for index in range(banner_count):
             with contextlib.suppress(Exception):
-                if await start_input.count():
-                    start_value = await start_input.input_value()
-            with contextlib.suppress(Exception):
-                if await end_input.count():
-                    end_value = await end_input.input_value()
+                value_text = await banner_locator.nth(index).inner_text()
+                banner_values.append(value_text.strip())
 
-        if _matches_date_range_value(date_range_value, from_date, to_date) or (
-            _matches_date_value(start_value, from_date) and _matches_date_value(end_value, to_date)
-        ):
+        if banner_count >= 4 and any(value != "₹0" for value in banner_values):
             log_event(
                 logger=logger,
                 phase="filters",
-                message="Date filter UI updated after apply click",
+                message="GST banner values updated after apply click",
                 store_code=store.store_code,
-                date_range_value=date_range_value,
-                start_value=start_value,
-                end_value=end_value,
+                banner_values=banner_values,
+                banner_count=banner_count,
             )
             return True
         await asyncio.sleep(0.3)
@@ -3962,13 +3946,10 @@ async def _confirm_date_filter_update(
         logger=logger,
         phase="filters",
         status="warn",
-        message="Date filter UI did not update after apply click",
+        message="GST banner values remained zero after apply click",
         store_code=store.store_code,
-        date_range_value=date_range_value,
-        start_value=start_value,
-        end_value=end_value,
-        expected_start=from_date.isoformat(),
-        expected_end=to_date.isoformat(),
+        banner_values=banner_values,
+        banner_count=banner_count,
     )
     return False
 
