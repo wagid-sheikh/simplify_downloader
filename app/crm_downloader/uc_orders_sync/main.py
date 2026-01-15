@@ -263,6 +263,8 @@ class StoreOutcome:
     skip_reason: str | None = None
     warning_count: int | None = None
     rows_downloaded: int | None = None
+    rows_skipped_invalid: int | None = None
+    rows_skipped_invalid_reasons: dict[str, int] | None = None
     staging_rows: int | None = None
     final_rows: int | None = None
     staging_inserted: int | None = None
@@ -386,7 +388,7 @@ class UcOrdersDiscoverySummary:
             error_message = None
             info_message = None
             if outcome:
-                if outcome.status in {"error", "warning"}:
+                if outcome.status == "error":
                     error_message = outcome.message
                 else:
                     info_message = outcome.message
@@ -407,6 +409,9 @@ class UcOrdersDiscoverySummary:
                     "final_inserted": outcome.final_inserted if outcome else None,
                     "final_updated": outcome.final_updated if outcome else None,
                 },
+                "rows_downloaded": outcome.rows_downloaded if outcome else None,
+                "rows_skipped_invalid": outcome.rows_skipped_invalid if outcome else None,
+                "rows_skipped_invalid_reasons": outcome.rows_skipped_invalid_reasons if outcome else None,
             }
         return summary
 
@@ -420,7 +425,7 @@ class UcOrdersDiscoverySummary:
             error_message = None
             info_message = None
             if outcome:
-                if outcome.status in {"error", "warning"}:
+                if outcome.status == "error":
                     error_message = outcome.message
                 else:
                     info_message = outcome.message
@@ -440,6 +445,9 @@ class UcOrdersDiscoverySummary:
                     "staging_updated": outcome.staging_updated if outcome else None,
                     "final_inserted": outcome.final_inserted if outcome else None,
                     "final_updated": outcome.final_updated if outcome else None,
+                    "rows_downloaded": outcome.rows_downloaded if outcome else None,
+                    "rows_skipped_invalid": outcome.rows_skipped_invalid if outcome else None,
+                    "rows_skipped_invalid_reasons": outcome.rows_skipped_invalid_reasons if outcome else None,
                 }
             )
         return {
@@ -1136,7 +1144,7 @@ def _resolve_sync_log_status(
     if not has_output:
         return "skipped"
     if outcome.status == "warning":
-        return "partial"
+        return "success_with_warnings"
     return "success"
 
 
@@ -1155,6 +1163,8 @@ def _resolve_sync_log_status_note(
         return outcome.message
     if status == "partial":
         return outcome.message or "Completed with warnings"
+    if status == "success_with_warnings":
+        return "Completed with warnings"
     return None
 
 
@@ -1649,6 +1659,8 @@ async def _run_store_discovery(
             download_path=download_path,
             warning_count=warning_count,
             rows_downloaded=ingest_result.rows_downloaded if ingest_result else row_count,
+            rows_skipped_invalid=ingest_result.rows_skipped_invalid if ingest_result else None,
+            rows_skipped_invalid_reasons=ingest_result.rows_skipped_invalid_reasons if ingest_result else None,
             staging_rows=ingest_result.staging_rows if ingest_result else None,
             final_rows=ingest_result.final_rows if ingest_result else None,
             staging_inserted=ingest_result.staging_inserted if ingest_result else None,
@@ -1748,6 +1760,11 @@ async def _run_store_discovery(
             attempt_no=attempt_no,
             download_path=outcome.download_path,
             final_rows=outcome.final_rows,
+            rows_downloaded=outcome.rows_downloaded,
+            unique_inserted=outcome.final_inserted,
+            overlap_duplicates_updated=outcome.final_updated,
+            rows_skipped_invalid=outcome.rows_skipped_invalid,
+            rows_skipped_invalid_reasons=outcome.rows_skipped_invalid_reasons,
             primary_metrics=primary_metrics,
             secondary_metrics=secondary_metrics,
         )
@@ -1774,6 +1791,11 @@ async def _run_store_discovery(
                 "error_message": resolved_message,
                 "download_path": outcome.download_path,
                 "final_rows": outcome.final_rows,
+                "rows_downloaded": outcome.rows_downloaded,
+                "unique_inserted": outcome.final_inserted,
+                "overlap_duplicates_updated": outcome.final_updated,
+                "rows_skipped_invalid": outcome.rows_skipped_invalid,
+                "rows_skipped_invalid_reasons": outcome.rows_skipped_invalid_reasons,
                 "attempt_no": attempt_no,
                 "orders_sync_log_id": sync_log_id,
             }
