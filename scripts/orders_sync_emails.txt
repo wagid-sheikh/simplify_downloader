@@ -1,9 +1,9 @@
 Email 1:
 UC Orders Sync Run Summary
-Run ID: 20260115_143701561898_UC567_001_attempt1 | Env: dev
+Run ID: 20260115_154310285062_UC567_001_attempt1 | Env: dev
 Report Date: 2025-02-09
-Started: 2026-01-15T14:37:01.750726+00:00 | Finished: 2026-01-15T14:38:39.259157+00:00
-Total Duration: 00:01:37
+Started: 2026-01-15T15:43:10.540962+00:00 | Finished: 2026-01-15T15:44:49.205150+00:00
+Total Duration: 00:01:38
 Overall Status: success
 
 **Per Store UC Metrics:**
@@ -36,10 +36,10 @@ Filename format: {STORE_CODE}_uc_gst_YYYYMMDD_YYYYMMDD.xlsx
 ---
 Email 2:
 UC Orders Sync Run Summary
-Run ID: 20260115_143701561898_UC567_002_attempt1 | Env: dev
+Run ID: 20260115_154310285062_UC567_002_attempt1 | Env: dev
 Report Date: 2025-05-08
-Started: 2026-01-15T14:38:47.612773+00:00 | Finished: 2026-01-15T14:40:20.432700+00:00
-Total Duration: 00:01:32
+Started: 2026-01-15T15:44:58.123257+00:00 | Finished: 2026-01-15T15:46:31.774044+00:00
+Total Duration: 00:01:33
 Overall Status: success
 
 **Per Store UC Metrics:**
@@ -72,63 +72,323 @@ Filename format: {STORE_CODE}_uc_gst_YYYYMMDD_YYYYMMDD.xlsx
 ---
 Email 3:
 TD Orders & Sales Run Summary
-Run ID: 20260115_143701561898_A817_001 | Env: dev
-Report Date: 2025-05-10
-Started (Asia/Kolkata): 15-01-2026 20:07:01
-Finished (Asia/Kolkata): 15-01-2026 20:11:34
-Total Duration: 00:04:33
-Overall Status: ok (Orders: ok, Sales: warning)
+Run ID: 20260115_154310285062_A668_001 | Env: dev
+Report Date: 2025-02-28
+Started (Asia/Kolkata): 15-01-2026 21:13:10
+Finished (Asia/Kolkata): 15-01-2026 21:17:46
+Total Duration: 00:04:35
+Overall Status: success (Orders: success, Sales: success_with_warnings)
 Windows Completed: 1 / 1
 Missing Windows: 0
 
 **Per Store Orders Metrics:**
-- A817 — OK
-  rows_downloaded: 413
-  rows_ingested: 413
+- A668 — SUCCESS
+  filenames: A668_td_orders_20250228_20250528.xlsx
+  rows_downloaded: 450
+  rows_ingested: 450
+  inserted: 450
+  updated: 0
   warning_count: 0
+  warning rows:
+    - (none)
   dropped_count: 0
+  dropped rows:
+    - (none)
 
 **Per Store Sales Metrics:**
-- A817 — OK
-  rows_downloaded: 338
-  rows_ingested: 338
+- A668 — SUCCESS
+  filenames: A668_td_sales_20250228_20250528.xlsx
+  rows_downloaded: 369
+  rows_ingested: 369
+  inserted: 369
+  updated: 0
   warning_count: 0
+  warning rows:
+    - (none)
   dropped_count: 0
-  edited_count: 55
-  duplicate_count: 55
+  dropped rows:
+    - (none)
+  edited_count: 56
+  edited rows:
+    - store_code=A668 | order_number=4 | payment_date=2025-03-11T18:11:25+05:30
+    - store_code=A668 | order_number=4 | payment_date=2025-03-20T11:10:53+05:30
+    - store_code=A668 | order_number=T5 | payment_date=2025-03-05T12:01:03+05:30
+    - store_code=A668 | order_number=T5 | payment_date=2025-03-05T12:03:09+05:30
+    - store_code=A668 | order_number=T5 | payment_date=2025-03-15T19:12:17+05:30
+    - store_code=A668 | order_number=T22 | payment_date=2025-03-08T20:33:12+05:30
+    - store_code=A668 | order_number=T22 | payment_date=2025-03-08T20:33:25+05:30
+    - store_code=A668 | order_number=T35 | payment_date=2025-03-16T19:39:40+05:30
+    - store_code=A668 | order_number=T35 | payment_date=2025-03-16T19:39:49+05:30
+    - store_code=A668 | order_number=T38 | payment_date=2025-03-15T15:56:02+05:30
+    - store_code=A668 | order_number=T38 | payment_date=2025-03-15T15:56:17+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:08:54+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:09:06+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:09:20+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:09:27+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:09:35+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:09:42+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:09:48+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:09:56+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:10:02+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:10:09+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:10:15+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:10:22+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:10:29+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:10:34+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:10:39+05:30
+    - store_code=A668 | order_number=T54 | payment_date=2025-04-20T17:21:35+05:30
+    - store_code=A668 | order_number=T54 | payment_date=2025-04-20T17:21:42+05:30
+    - store_code=A668 | order_number=T54 | payment_date=2025-04-20T17:21:48+05:30
+    - store_code=A668 | order_number=T69 | payment_date=2025-03-30T12:13:26+05:30
+    - store_code=A668 | order_number=T69 | payment_date=2025-03-30T12:13:31+05:30
+    - store_code=A668 | order_number=T141 | payment_date=2025-04-06T18:22:38+05:30
+    - store_code=A668 | order_number=T141 | payment_date=2025-04-06T18:22:44+05:30
+    - store_code=A668 | order_number=T189 | payment_date=2025-04-13T15:31:09+05:30
+    - store_code=A668 | order_number=T189 | payment_date=2025-04-13T15:31:16+05:30
+    - store_code=A668 | order_number=T202 | payment_date=2025-04-11T20:45:29+05:30
+    - store_code=A668 | order_number=T202 | payment_date=2025-04-15T17:40:30+05:30
+    - store_code=A668 | order_number=T202 | payment_date=2025-04-20T17:16:55+05:30
+    - store_code=A668 | order_number=T217 | payment_date=2025-04-19T13:22:18+05:30
+    - store_code=A668 | order_number=T217 | payment_date=2025-04-20T10:24:53+05:30
+    - store_code=A668 | order_number=T331 | payment_date=2025-05-06T12:25:40+05:30
+    - store_code=A668 | order_number=T331 | payment_date=2025-05-06T12:25:55+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:43:22+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:43:43+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:44:06+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:44:20+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:44:36+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:44:59+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:45:10+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:45:56+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:46:08+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:46:20+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:46:42+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:46:55+05:30
+    - store_code=A668 | order_number=T410 | payment_date=2025-05-22T18:54:50+05:30
+    - store_code=A668 | order_number=T410 | payment_date=2025-05-22T18:55:54+05:30
+  duplicate_count: 56
+  duplicate rows:
+    - store_code=A668 | order_number=4 | payment_date=2025-03-11T18:11:25+05:30
+    - store_code=A668 | order_number=4 | payment_date=2025-03-20T11:10:53+05:30
+    - store_code=A668 | order_number=T5 | payment_date=2025-03-05T12:01:03+05:30
+    - store_code=A668 | order_number=T5 | payment_date=2025-03-05T12:03:09+05:30
+    - store_code=A668 | order_number=T5 | payment_date=2025-03-15T19:12:17+05:30
+    - store_code=A668 | order_number=T22 | payment_date=2025-03-08T20:33:12+05:30
+    - store_code=A668 | order_number=T22 | payment_date=2025-03-08T20:33:25+05:30
+    - store_code=A668 | order_number=T35 | payment_date=2025-03-16T19:39:40+05:30
+    - store_code=A668 | order_number=T35 | payment_date=2025-03-16T19:39:49+05:30
+    - store_code=A668 | order_number=T38 | payment_date=2025-03-15T15:56:02+05:30
+    - store_code=A668 | order_number=T38 | payment_date=2025-03-15T15:56:17+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:08:54+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:09:06+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:09:20+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:09:27+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:09:35+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:09:42+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:09:48+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:09:56+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:10:02+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:10:09+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:10:15+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:10:22+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:10:29+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:10:34+05:30
+    - store_code=A668 | order_number=T51 | payment_date=2025-03-30T12:10:39+05:30
+    - store_code=A668 | order_number=T54 | payment_date=2025-04-20T17:21:35+05:30
+    - store_code=A668 | order_number=T54 | payment_date=2025-04-20T17:21:42+05:30
+    - store_code=A668 | order_number=T54 | payment_date=2025-04-20T17:21:48+05:30
+    - store_code=A668 | order_number=T69 | payment_date=2025-03-30T12:13:26+05:30
+    - store_code=A668 | order_number=T69 | payment_date=2025-03-30T12:13:31+05:30
+    - store_code=A668 | order_number=T141 | payment_date=2025-04-06T18:22:38+05:30
+    - store_code=A668 | order_number=T141 | payment_date=2025-04-06T18:22:44+05:30
+    - store_code=A668 | order_number=T189 | payment_date=2025-04-13T15:31:09+05:30
+    - store_code=A668 | order_number=T189 | payment_date=2025-04-13T15:31:16+05:30
+    - store_code=A668 | order_number=T202 | payment_date=2025-04-11T20:45:29+05:30
+    - store_code=A668 | order_number=T202 | payment_date=2025-04-15T17:40:30+05:30
+    - store_code=A668 | order_number=T202 | payment_date=2025-04-20T17:16:55+05:30
+    - store_code=A668 | order_number=T217 | payment_date=2025-04-19T13:22:18+05:30
+    - store_code=A668 | order_number=T217 | payment_date=2025-04-20T10:24:53+05:30
+    - store_code=A668 | order_number=T331 | payment_date=2025-05-06T12:25:40+05:30
+    - store_code=A668 | order_number=T331 | payment_date=2025-05-06T12:25:55+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:43:22+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:43:43+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:44:06+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:44:20+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:44:36+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:44:59+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:45:10+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:45:56+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:46:08+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:46:20+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:46:42+05:30
+    - store_code=A668 | order_number=T367 | payment_date=2025-05-12T17:46:55+05:30
+    - store_code=A668 | order_number=T410 | payment_date=2025-05-22T18:54:50+05:30
+    - store_code=A668 | order_number=T410 | payment_date=2025-05-22T18:55:54+05:30
+
+Notes:
+- (none)
 ---
 Email 4:
 TD Orders & Sales Run Summary
-Run ID: 20260115_143701561898_A668_001 | Env: dev
-Report Date: 2025-02-28
-Started (Asia/Kolkata): 15-01-2026 20:07:01
-Finished (Asia/Kolkata): 15-01-2026 20:11:34
-Total Duration: 00:04:33
-Overall Status: ok (Orders: ok, Sales: warning)
+Run ID: 20260115_154310285062_A817_001 | Env: dev
+Report Date: 2025-05-10
+Started (Asia/Kolkata): 15-01-2026 21:13:10
+Finished (Asia/Kolkata): 15-01-2026 21:17:55
+Total Duration: 00:04:45
+Overall Status: success (Orders: success, Sales: success_with_warnings)
 Windows Completed: 1 / 1
 Missing Windows: 0
 
 **Per Store Orders Metrics:**
-- A668 — OK
-  rows_downloaded: 450
-  rows_ingested: 450
+- A817 — SUCCESS
+  filenames: A817_td_orders_20250510_20250807.xlsx
+  rows_downloaded: 413
+  rows_ingested: 413
+  inserted: 413
+  updated: 0
   warning_count: 0
+  warning rows:
+    - (none)
   dropped_count: 0
+  dropped rows:
+    - (none)
 
 **Per Store Sales Metrics:**
-- A668 — OK
-  rows_downloaded: 369
-  rows_ingested: 369
+- A817 — SUCCESS
+  filenames: A817_td_sales_20250510_20250807.xlsx
+  rows_downloaded: 338
+  rows_ingested: 338
+  inserted: 338
+  updated: 0
   warning_count: 0
+  warning rows:
+    - (none)
   dropped_count: 0
-  edited_count: 56
-  duplicate_count: 56
+  dropped rows:
+    - (none)
+  edited_count: 55
+  edited rows:
+    - store_code=A817 | order_number=A1 | payment_date=2025-05-10T18:55:58+05:30
+    - store_code=A817 | order_number=A1 | payment_date=2025-05-10T18:56:36+05:30
+    - store_code=A817 | order_number=A2 | payment_date=2025-05-11T12:09:24+05:30
+    - store_code=A817 | order_number=A2 | payment_date=2025-05-11T12:10:19+05:30
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-06T14:19:10+05:30
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-06T14:19:25+05:30
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-06T14:19:38+05:30
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-06T14:19:50+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:28:08+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:28:18+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:28:32+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:28:40+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:28:48+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:28:59+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:29:07+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:29:16+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:29:25+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:29:33+05:30
+    - store_code=A817 | order_number=T111 | payment_date=2025-06-26T19:52:38+05:30
+    - store_code=A817 | order_number=T111 | payment_date=2025-06-26T19:53:50+05:30
+    - store_code=A817 | order_number=T122 | payment_date=2025-06-25T11:22:50+05:30
+    - store_code=A817 | order_number=T122 | payment_date=2025-06-25T11:23:07+05:30
+    - store_code=A817 | order_number=T122 | payment_date=2025-06-25T11:24:06+05:30
+    - store_code=A817 | order_number=T159 | payment_date=2025-07-05T18:08:27+05:30
+    - store_code=A817 | order_number=T159 | payment_date=2025-07-05T18:10:26+05:30
+    - store_code=A817 | order_number=T168 | payment_date=2025-07-05T17:02:04+05:30
+    - store_code=A817 | order_number=T168 | payment_date=2025-07-05T17:03:27+05:30
+    - store_code=A817 | order_number=T174 | payment_date=2025-07-08T12:30:03+05:30
+    - store_code=A817 | order_number=T174 | payment_date=2025-07-08T12:31:00+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:27:54+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:28:07+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:28:19+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:28:33+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:28:47+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:29:01+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:29:14+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:29:26+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:29:40+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:29:52+05:30
+    - store_code=A817 | order_number=T205 | payment_date=2025-07-10T14:36:23+05:30
+    - store_code=A817 | order_number=T205 | payment_date=2025-07-10T14:36:42+05:30
+    - store_code=A817 | order_number=T226 | payment_date=2025-07-12T19:27:40+05:30
+    - store_code=A817 | order_number=T226 | payment_date=2025-07-12T19:29:12+05:30
+    - store_code=A817 | order_number=T244 | payment_date=2025-07-22T16:19:02+05:30
+    - store_code=A817 | order_number=T244 | payment_date=2025-07-22T16:19:21+05:30
+    - store_code=A817 | order_number=T246 | payment_date=2025-07-13T20:47:13+05:30
+    - store_code=A817 | order_number=T246 | payment_date=2025-07-14T11:22:50+05:30
+    - store_code=A817 | order_number=T274 | payment_date=2025-07-22T16:17:26+05:30
+    - store_code=A817 | order_number=T274 | payment_date=2025-07-22T16:17:44+05:30
+    - store_code=A817 | order_number=T275 | payment_date=2025-07-28T17:59:25+05:30
+    - store_code=A817 | order_number=T275 | payment_date=2025-08-06T18:09:06+05:30
+    - store_code=A817 | order_number=T295 | payment_date=2025-08-06T11:07:11+05:30
+    - store_code=A817 | order_number=T295 | payment_date=2025-08-06T11:07:25+05:30
+    - store_code=A817 | order_number=T358 | payment_date=2025-08-06T16:08:00+05:30
+    - store_code=A817 | order_number=T358 | payment_date=2025-08-06T16:08:52+05:30
+  duplicate_count: 55
+  duplicate rows:
+    - store_code=A817 | order_number=A1 | payment_date=2025-05-10T18:55:58+05:30
+    - store_code=A817 | order_number=A1 | payment_date=2025-05-10T18:56:36+05:30
+    - store_code=A817 | order_number=A2 | payment_date=2025-05-11T12:09:24+05:30
+    - store_code=A817 | order_number=A2 | payment_date=2025-05-11T12:10:19+05:30
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-06T14:19:10+05:30
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-06T14:19:25+05:30
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-06T14:19:38+05:30
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-06T14:19:50+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:28:08+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:28:18+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:28:32+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:28:40+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:28:48+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:28:59+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:29:07+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:29:16+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:29:25+05:30
+    - store_code=A817 | order_number=T76 | payment_date=2025-06-12T15:29:33+05:30
+    - store_code=A817 | order_number=T111 | payment_date=2025-06-26T19:52:38+05:30
+    - store_code=A817 | order_number=T111 | payment_date=2025-06-26T19:53:50+05:30
+    - store_code=A817 | order_number=T122 | payment_date=2025-06-25T11:22:50+05:30
+    - store_code=A817 | order_number=T122 | payment_date=2025-06-25T11:23:07+05:30
+    - store_code=A817 | order_number=T122 | payment_date=2025-06-25T11:24:06+05:30
+    - store_code=A817 | order_number=T159 | payment_date=2025-07-05T18:08:27+05:30
+    - store_code=A817 | order_number=T159 | payment_date=2025-07-05T18:10:26+05:30
+    - store_code=A817 | order_number=T168 | payment_date=2025-07-05T17:02:04+05:30
+    - store_code=A817 | order_number=T168 | payment_date=2025-07-05T17:03:27+05:30
+    - store_code=A817 | order_number=T174 | payment_date=2025-07-08T12:30:03+05:30
+    - store_code=A817 | order_number=T174 | payment_date=2025-07-08T12:31:00+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:27:54+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:28:07+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:28:19+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:28:33+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:28:47+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:29:01+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:29:14+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:29:26+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:29:40+05:30
+    - store_code=A817 | order_number=T206 | payment_date=2025-07-06T17:29:52+05:30
+    - store_code=A817 | order_number=T205 | payment_date=2025-07-10T14:36:23+05:30
+    - store_code=A817 | order_number=T205 | payment_date=2025-07-10T14:36:42+05:30
+    - store_code=A817 | order_number=T226 | payment_date=2025-07-12T19:27:40+05:30
+    - store_code=A817 | order_number=T226 | payment_date=2025-07-12T19:29:12+05:30
+    - store_code=A817 | order_number=T244 | payment_date=2025-07-22T16:19:02+05:30
+    - store_code=A817 | order_number=T244 | payment_date=2025-07-22T16:19:21+05:30
+    - store_code=A817 | order_number=T246 | payment_date=2025-07-13T20:47:13+05:30
+    - store_code=A817 | order_number=T246 | payment_date=2025-07-14T11:22:50+05:30
+    - store_code=A817 | order_number=T274 | payment_date=2025-07-22T16:17:26+05:30
+    - store_code=A817 | order_number=T274 | payment_date=2025-07-22T16:17:44+05:30
+    - store_code=A817 | order_number=T275 | payment_date=2025-07-28T17:59:25+05:30
+    - store_code=A817 | order_number=T275 | payment_date=2025-08-06T18:09:06+05:30
+    - store_code=A817 | order_number=T295 | payment_date=2025-08-06T11:07:11+05:30
+    - store_code=A817 | order_number=T295 | payment_date=2025-08-06T11:07:25+05:30
+    - store_code=A817 | order_number=T358 | payment_date=2025-08-06T16:08:00+05:30
+    - store_code=A817 | order_number=T358 | payment_date=2025-08-06T16:08:52+05:30
+
+Notes:
+- (none)
 ---
 Email 5:
 UC Orders Sync Run Summary
-Run ID: 20260115_143701561898_UC567_003_attempt1 | Env: dev
+Run ID: 20260115_154310285062_UC567_003_attempt1 | Env: dev
 Report Date: 2025-08-04
-Started: 2026-01-15T14:40:28.891718+00:00 | Finished: 2026-01-15T14:42:09.022689+00:00
+Started: 2026-01-15T15:46:40.112444+00:00 | Finished: 2026-01-15T15:48:20.819660+00:00
 Total Duration: 00:01:40
 Overall Status: success_with_warnings
 
@@ -164,9 +424,9 @@ Filename format: {STORE_CODE}_uc_gst_YYYYMMDD_YYYYMMDD.xlsx
 ---
 Email 6:
 UC Orders Sync Run Summary
-Run ID: 20260115_143701561898_UC567_004_attempt1 | Env: dev
+Run ID: 20260115_154310285062_UC567_004_attempt1 | Env: dev
 Report Date: 2025-10-31
-Started: 2026-01-15T14:42:17.220800+00:00 | Finished: 2026-01-15T14:43:47.250403+00:00
+Started: 2026-01-15T15:48:29.080496+00:00 | Finished: 2026-01-15T15:49:59.799305+00:00
 Total Duration: 00:01:30
 Overall Status: success_with_warnings
 
@@ -202,9 +462,9 @@ Filename format: {STORE_CODE}_uc_gst_YYYYMMDD_YYYYMMDD.xlsx
 ---
 Email 7:
 UC Orders Sync Run Summary
-Run ID: 20260115_143701561898_UC610_001_attempt1 | Env: dev
+Run ID: 20260115_154310285062_UC610_001_attempt1 | Env: dev
 Report Date: 2025-05-11
-Started: 2026-01-15T14:43:55.712594+00:00 | Finished: 2026-01-15T14:45:27.370923+00:00
+Started: 2026-01-15T15:50:08.192737+00:00 | Finished: 2026-01-15T15:51:39.618465+00:00
 Total Duration: 00:01:31
 Overall Status: success
 
@@ -238,65 +498,421 @@ Filename format: {STORE_CODE}_uc_gst_YYYYMMDD_YYYYMMDD.xlsx
 ---
 Email 8:
 TD Orders & Sales Run Summary
-Run ID: 20260115_143701561898_A817_002 | Env: dev
+Run ID: 20260115_154310285062_A817_002 | Env: dev
 Report Date: 2025-08-06
-Started (Asia/Kolkata): 15-01-2026 20:11:43
-Finished (Asia/Kolkata): 15-01-2026 20:16:29
-Total Duration: 00:04:46
-Overall Status: ok (Orders: ok, Sales: warning)
+Started (Asia/Kolkata): 15-01-2026 21:18:03
+Finished (Asia/Kolkata): 15-01-2026 21:22:40
+Total Duration: 00:04:36
+Overall Status: success (Orders: success, Sales: success_with_warnings)
 Windows Completed: 1 / 1
 Missing Windows: 0
 
 **Per Store Orders Metrics:**
-- A817 — OK
+- A817 — SUCCESS
+  filenames: A817_td_orders_20250806_20251103.xlsx
   rows_downloaded: 471
   rows_ingested: 471
+  inserted: 468
+  updated: 3
   warning_count: 0
+  warning rows:
+    - (none)
   dropped_count: 0
+  dropped rows:
+    - (none)
 
 **Per Store Sales Metrics:**
-- A817 — OK
+- A817 — SUCCESS
+  filenames: A817_td_sales_20250806_20251103.xlsx
   rows_downloaded: 420
   rows_ingested: 420
+  inserted: 396
+  updated: 24
   warning_count: 0
+  warning rows:
+    - (none)
   dropped_count: 0
+  dropped rows:
+    - (none)
   edited_count: 95
+  edited rows:
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-06T14:19:10+05:30
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-06T14:19:25+05:30
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-06T14:19:38+05:30
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-06T14:19:50+05:30
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-25T11:09:42+05:30
+    - store_code=A817 | order_number=T264 | payment_date=2025-08-16T13:10:11+05:30
+    - store_code=A817 | order_number=T264 | payment_date=2025-08-16T13:10:27+05:30
+    - store_code=A817 | order_number=T264 | payment_date=2025-08-24T18:53:15+05:30
+    - store_code=A817 | order_number=T295 | payment_date=2025-08-06T11:07:11+05:30
+    - store_code=A817 | order_number=T295 | payment_date=2025-08-06T11:07:25+05:30
+    - store_code=A817 | order_number=T296 | payment_date=2025-10-14T14:47:33+05:30
+    - store_code=A817 | order_number=T296 | payment_date=2025-10-14T14:47:57+05:30
+    - store_code=A817 | order_number=T296 | payment_date=2025-10-14T14:49:37+05:30
+    - store_code=A817 | order_number=T291 | payment_date=2025-10-14T15:09:16+05:30
+    - store_code=A817 | order_number=T291 | payment_date=2025-10-14T15:09:32+05:30
+    - store_code=A817 | order_number=T291 | payment_date=2025-10-14T15:09:45+05:30
+    - store_code=A817 | order_number=T291 | payment_date=2025-10-14T15:09:57+05:30
+    - store_code=A817 | order_number=T291 | payment_date=2025-10-14T15:10:51+05:30
+    - store_code=A817 | order_number=T336 | payment_date=2025-10-14T14:57:35+05:30
+    - store_code=A817 | order_number=T336 | payment_date=2025-10-14T14:58:01+05:30
+    - store_code=A817 | order_number=T336 | payment_date=2025-10-14T14:58:17+05:30
+    - store_code=A817 | order_number=T336 | payment_date=2025-10-14T14:58:50+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:11:29+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:11:44+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:11:58+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:12:10+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:12:20+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:12:33+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:12:43+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:13:01+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:13:14+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:13:30+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:13:41+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-10-14T15:12:33+05:30
+    - store_code=A817 | order_number=T345 | payment_date=2025-10-26T10:50:29+05:30
+    - store_code=A817 | order_number=T345 | payment_date=2025-10-26T10:50:59+05:30
+    - store_code=A817 | order_number=T358 | payment_date=2025-08-06T16:08:00+05:30
+    - store_code=A817 | order_number=T358 | payment_date=2025-08-06T16:08:52+05:30
+    - store_code=A817 | order_number=T370 | payment_date=2025-08-17T15:40:27+05:30
+    - store_code=A817 | order_number=T370 | payment_date=2025-08-17T15:43:03+05:30
+    - store_code=A817 | order_number=T403 | payment_date=2025-08-18T13:10:06+05:30
+    - store_code=A817 | order_number=T403 | payment_date=2025-08-18T13:25:41+05:30
+    - store_code=A817 | order_number=T405 | payment_date=2025-08-18T13:50:16+05:30
+    - store_code=A817 | order_number=T405 | payment_date=2025-08-18T13:54:19+05:30
+    - store_code=A817 | order_number=T415 | payment_date=2025-08-18T13:57:52+05:30
+    - store_code=A817 | order_number=T415 | payment_date=2025-08-18T13:58:12+05:30
+    - store_code=A817 | order_number=T415 | payment_date=2025-08-19T13:14:40+05:30
+    - store_code=A817 | order_number=T486 | payment_date=2025-08-26T17:53:02+05:30
+    - store_code=A817 | order_number=T486 | payment_date=2025-08-26T17:53:40+05:30
+    - store_code=A817 | order_number=T504 | payment_date=2025-08-28T14:21:16+05:30
+    - store_code=A817 | order_number=T504 | payment_date=2025-08-28T14:21:35+05:30
+    - store_code=A817 | order_number=T504 | payment_date=2025-08-28T14:22:32+05:30
+    - store_code=A817 | order_number=T526 | payment_date=2025-09-01T15:42:39+05:30
+    - store_code=A817 | order_number=T526 | payment_date=2025-09-01T15:43:02+05:30
+    - store_code=A817 | order_number=T538 | payment_date=2025-09-01T18:47:10+05:30
+    - store_code=A817 | order_number=T538 | payment_date=2025-09-01T18:47:24+05:30
+    - store_code=A817 | order_number=T538 | payment_date=2025-09-01T18:47:35+05:30
+    - store_code=A817 | order_number=T538 | payment_date=2025-09-01T18:47:48+05:30
+    - store_code=A817 | order_number=T538 | payment_date=2025-09-01T18:48:01+05:30
+    - store_code=A817 | order_number=T538 | payment_date=2025-09-01T18:48:13+05:30
+    - store_code=A817 | order_number=T552 | payment_date=2025-09-01T18:35:58+05:30
+    - store_code=A817 | order_number=T551 | payment_date=2025-09-13T12:07:49+05:30
+    - store_code=A817 | order_number=T551 | payment_date=2025-09-13T12:08:06+05:30
+    - store_code=A817 | order_number=T551 | payment_date=2025-09-13T12:09:15+05:30
+    - store_code=A817 | order_number=T551 | payment_date=2025-09-13T12:10:04+05:30
+    - store_code=A817 | order_number=T547 | payment_date=2025-10-04T22:12:23+05:30
+    - store_code=A817 | order_number=T547 | payment_date=2025-10-04T22:12:56+05:30
+    - store_code=A817 | order_number=T547 | payment_date=2025-10-04T22:15:58+05:30
+    - store_code=A817 | order_number=T552 | payment_date=2025-10-16T17:06:24+05:30
+    - store_code=A817 | order_number=T555 | payment_date=2025-09-11T18:08:15+05:30
+    - store_code=A817 | order_number=T555 | payment_date=2025-09-11T18:11:33+05:30
+    - store_code=A817 | order_number=T576 | payment_date=2025-09-07T15:51:13+05:30
+    - store_code=A817 | order_number=T576 | payment_date=2025-10-05T11:48:52+05:30
+    - store_code=A817 | order_number=T582 | payment_date=2025-09-27T13:21:41+05:30
+    - store_code=A817 | order_number=T582 | payment_date=2025-09-27T13:22:03+05:30
+    - store_code=A817 | order_number=T587 | payment_date=2025-09-06T15:08:39+05:30
+    - store_code=A817 | order_number=T587 | payment_date=2025-10-16T17:05:25+05:30
+    - store_code=A817 | order_number=T612 | payment_date=2025-10-04T16:38:30+05:30
+    - store_code=A817 | order_number=T612 | payment_date=2025-10-04T16:39:00+05:30
+    - store_code=A817 | order_number=T624 | payment_date=2025-10-04T17:14:45+05:30
+    - store_code=A817 | order_number=T624 | payment_date=2025-10-04T17:15:53+05:30
+    - store_code=A817 | order_number=T624 | payment_date=2025-10-04T17:16:13+05:30
+    - store_code=A817 | order_number=T624 | payment_date=2025-10-04T17:16:34+05:30
+    - store_code=A817 | order_number=T623 | payment_date=2025-10-15T17:18:27+05:30
+    - store_code=A817 | order_number=T623 | payment_date=2025-10-15T17:18:48+05:30
+    - store_code=A817 | order_number=T704 | payment_date=2025-10-27T15:52:37+05:30
+    - store_code=A817 | order_number=T704 | payment_date=2025-10-27T15:53:25+05:30
+    - store_code=A817 | order_number=T720 | payment_date=2025-10-14T16:36:29+05:30
+    - store_code=A817 | order_number=T720 | payment_date=2025-10-14T16:36:58+05:30
+    - store_code=A817 | order_number=T772 | payment_date=2025-10-17T12:59:51+05:30
+    - store_code=A817 | order_number=T772 | payment_date=2025-10-17T13:00:04+05:30
+    - store_code=A817 | order_number=T772 | payment_date=2025-10-17T13:00:50+05:30
+    - store_code=A817 | order_number=T787 | payment_date=2025-10-27T18:39:42+05:30
+    - store_code=A817 | order_number=T787 | payment_date=2025-10-27T18:40:09+05:30
+    - store_code=A817 | order_number=T787 | payment_date=2025-10-27T18:41:43+05:30
   duplicate_count: 95
+  duplicate rows:
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-06T14:19:10+05:30
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-06T14:19:25+05:30
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-06T14:19:38+05:30
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-06T14:19:50+05:30
+    - store_code=A817 | order_number=T27 | payment_date=2025-08-25T11:09:42+05:30
+    - store_code=A817 | order_number=T264 | payment_date=2025-08-16T13:10:11+05:30
+    - store_code=A817 | order_number=T264 | payment_date=2025-08-16T13:10:27+05:30
+    - store_code=A817 | order_number=T264 | payment_date=2025-08-24T18:53:15+05:30
+    - store_code=A817 | order_number=T295 | payment_date=2025-08-06T11:07:11+05:30
+    - store_code=A817 | order_number=T295 | payment_date=2025-08-06T11:07:25+05:30
+    - store_code=A817 | order_number=T296 | payment_date=2025-10-14T14:47:33+05:30
+    - store_code=A817 | order_number=T296 | payment_date=2025-10-14T14:47:57+05:30
+    - store_code=A817 | order_number=T296 | payment_date=2025-10-14T14:49:37+05:30
+    - store_code=A817 | order_number=T291 | payment_date=2025-10-14T15:09:16+05:30
+    - store_code=A817 | order_number=T291 | payment_date=2025-10-14T15:09:32+05:30
+    - store_code=A817 | order_number=T291 | payment_date=2025-10-14T15:09:45+05:30
+    - store_code=A817 | order_number=T291 | payment_date=2025-10-14T15:09:57+05:30
+    - store_code=A817 | order_number=T291 | payment_date=2025-10-14T15:10:51+05:30
+    - store_code=A817 | order_number=T336 | payment_date=2025-10-14T14:57:35+05:30
+    - store_code=A817 | order_number=T336 | payment_date=2025-10-14T14:58:01+05:30
+    - store_code=A817 | order_number=T336 | payment_date=2025-10-14T14:58:17+05:30
+    - store_code=A817 | order_number=T336 | payment_date=2025-10-14T14:58:50+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:11:29+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:11:44+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:11:58+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:12:10+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:12:20+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:12:33+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:12:43+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:13:01+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:13:14+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:13:30+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-08-16T13:13:41+05:30
+    - store_code=A817 | order_number=T340 | payment_date=2025-10-14T15:12:33+05:30
+    - store_code=A817 | order_number=T345 | payment_date=2025-10-26T10:50:29+05:30
+    - store_code=A817 | order_number=T345 | payment_date=2025-10-26T10:50:59+05:30
+    - store_code=A817 | order_number=T358 | payment_date=2025-08-06T16:08:00+05:30
+    - store_code=A817 | order_number=T358 | payment_date=2025-08-06T16:08:52+05:30
+    - store_code=A817 | order_number=T370 | payment_date=2025-08-17T15:40:27+05:30
+    - store_code=A817 | order_number=T370 | payment_date=2025-08-17T15:43:03+05:30
+    - store_code=A817 | order_number=T403 | payment_date=2025-08-18T13:10:06+05:30
+    - store_code=A817 | order_number=T403 | payment_date=2025-08-18T13:25:41+05:30
+    - store_code=A817 | order_number=T405 | payment_date=2025-08-18T13:50:16+05:30
+    - store_code=A817 | order_number=T405 | payment_date=2025-08-18T13:54:19+05:30
+    - store_code=A817 | order_number=T415 | payment_date=2025-08-18T13:57:52+05:30
+    - store_code=A817 | order_number=T415 | payment_date=2025-08-18T13:58:12+05:30
+    - store_code=A817 | order_number=T415 | payment_date=2025-08-19T13:14:40+05:30
+    - store_code=A817 | order_number=T486 | payment_date=2025-08-26T17:53:02+05:30
+    - store_code=A817 | order_number=T486 | payment_date=2025-08-26T17:53:40+05:30
+    - store_code=A817 | order_number=T504 | payment_date=2025-08-28T14:21:16+05:30
+    - store_code=A817 | order_number=T504 | payment_date=2025-08-28T14:21:35+05:30
+    - store_code=A817 | order_number=T504 | payment_date=2025-08-28T14:22:32+05:30
+    - store_code=A817 | order_number=T526 | payment_date=2025-09-01T15:42:39+05:30
+    - store_code=A817 | order_number=T526 | payment_date=2025-09-01T15:43:02+05:30
+    - store_code=A817 | order_number=T538 | payment_date=2025-09-01T18:47:10+05:30
+    - store_code=A817 | order_number=T538 | payment_date=2025-09-01T18:47:24+05:30
+    - store_code=A817 | order_number=T538 | payment_date=2025-09-01T18:47:35+05:30
+    - store_code=A817 | order_number=T538 | payment_date=2025-09-01T18:47:48+05:30
+    - store_code=A817 | order_number=T538 | payment_date=2025-09-01T18:48:01+05:30
+    - store_code=A817 | order_number=T538 | payment_date=2025-09-01T18:48:13+05:30
+    - store_code=A817 | order_number=T552 | payment_date=2025-09-01T18:35:58+05:30
+    - store_code=A817 | order_number=T551 | payment_date=2025-09-13T12:07:49+05:30
+    - store_code=A817 | order_number=T551 | payment_date=2025-09-13T12:08:06+05:30
+    - store_code=A817 | order_number=T551 | payment_date=2025-09-13T12:09:15+05:30
+    - store_code=A817 | order_number=T551 | payment_date=2025-09-13T12:10:04+05:30
+    - store_code=A817 | order_number=T547 | payment_date=2025-10-04T22:12:23+05:30
+    - store_code=A817 | order_number=T547 | payment_date=2025-10-04T22:12:56+05:30
+    - store_code=A817 | order_number=T547 | payment_date=2025-10-04T22:15:58+05:30
+    - store_code=A817 | order_number=T552 | payment_date=2025-10-16T17:06:24+05:30
+    - store_code=A817 | order_number=T555 | payment_date=2025-09-11T18:08:15+05:30
+    - store_code=A817 | order_number=T555 | payment_date=2025-09-11T18:11:33+05:30
+    - store_code=A817 | order_number=T576 | payment_date=2025-09-07T15:51:13+05:30
+    - store_code=A817 | order_number=T576 | payment_date=2025-10-05T11:48:52+05:30
+    - store_code=A817 | order_number=T582 | payment_date=2025-09-27T13:21:41+05:30
+    - store_code=A817 | order_number=T582 | payment_date=2025-09-27T13:22:03+05:30
+    - store_code=A817 | order_number=T587 | payment_date=2025-09-06T15:08:39+05:30
+    - store_code=A817 | order_number=T587 | payment_date=2025-10-16T17:05:25+05:30
+    - store_code=A817 | order_number=T612 | payment_date=2025-10-04T16:38:30+05:30
+    - store_code=A817 | order_number=T612 | payment_date=2025-10-04T16:39:00+05:30
+    - store_code=A817 | order_number=T624 | payment_date=2025-10-04T17:14:45+05:30
+    - store_code=A817 | order_number=T624 | payment_date=2025-10-04T17:15:53+05:30
+    - store_code=A817 | order_number=T624 | payment_date=2025-10-04T17:16:13+05:30
+    - store_code=A817 | order_number=T624 | payment_date=2025-10-04T17:16:34+05:30
+    - store_code=A817 | order_number=T623 | payment_date=2025-10-15T17:18:27+05:30
+    - store_code=A817 | order_number=T623 | payment_date=2025-10-15T17:18:48+05:30
+    - store_code=A817 | order_number=T704 | payment_date=2025-10-27T15:52:37+05:30
+    - store_code=A817 | order_number=T704 | payment_date=2025-10-27T15:53:25+05:30
+    - store_code=A817 | order_number=T720 | payment_date=2025-10-14T16:36:29+05:30
+    - store_code=A817 | order_number=T720 | payment_date=2025-10-14T16:36:58+05:30
+    - store_code=A817 | order_number=T772 | payment_date=2025-10-17T12:59:51+05:30
+    - store_code=A817 | order_number=T772 | payment_date=2025-10-17T13:00:04+05:30
+    - store_code=A817 | order_number=T772 | payment_date=2025-10-17T13:00:50+05:30
+    - store_code=A817 | order_number=T787 | payment_date=2025-10-27T18:39:42+05:30
+    - store_code=A817 | order_number=T787 | payment_date=2025-10-27T18:40:09+05:30
+    - store_code=A817 | order_number=T787 | payment_date=2025-10-27T18:41:43+05:30
+
+Notes:
+- (none)
 
 ---
 Email 9:
 TD Orders & Sales Run Summary
-Run ID: 20260115_143701561898_A668_002 | Env: dev
+Run ID: 20260115_154310285062_A668_002 | Env: dev
 Report Date: 2025-05-27
-Started (Asia/Kolkata): 15-01-2026 20:11:51
-Finished (Asia/Kolkata): 15-01-2026 20:16:40
-Total Duration: 00:04:49
-Overall Status: ok (Orders: ok, Sales: warning)
+Started (Asia/Kolkata): 15-01-2026 21:17:55
+Finished (Asia/Kolkata): 15-01-2026 21:22:50
+Total Duration: 00:04:55
+Overall Status: success (Orders: success, Sales: success_with_warnings)
 Windows Completed: 1 / 1
 Missing Windows: 0
 
 **Per Store Orders Metrics:**
-- A668 — OK
+- A668 — SUCCESS
+  filenames: A668_td_orders_20250527_20250824.xlsx
   rows_downloaded: 520
   rows_ingested: 520
+  inserted: 511
+  updated: 9
   warning_count: 0
+  warning rows:
+    - (none)
   dropped_count: 0
+  dropped rows:
+    - (none)
 
 **Per Store Sales Metrics:**
-- A668 — OK
+- A668 — SUCCESS
+  filenames: A668_td_sales_20250527_20250824.xlsx
   rows_downloaded: 564
   rows_ingested: 564
+  inserted: 561
+  updated: 3
   warning_count: 0
+  warning rows:
+    - (none)
   dropped_count: 0
+  dropped rows:
+    - (none)
   edited_count: 64
+  edited rows:
+    - store_code=A668 | order_number=T423 | payment_date=2025-06-09T13:46:34+05:30
+    - store_code=A668 | order_number=T423 | payment_date=2025-06-09T13:46:43+05:30
+    - store_code=A668 | order_number=T440 | payment_date=2025-05-30T17:52:55+05:30
+    - store_code=A668 | order_number=T440 | payment_date=2025-06-09T13:53:45+05:30
+    - store_code=A668 | order_number=T465 | payment_date=2025-06-05T18:12:09+05:30
+    - store_code=A668 | order_number=T465 | payment_date=2025-06-05T18:12:30+05:30
+    - store_code=A668 | order_number=T488 | payment_date=2025-06-12T17:09:27+05:30
+    - store_code=A668 | order_number=T488 | payment_date=2025-06-13T17:26:42+05:30
+    - store_code=A668 | order_number=T493 | payment_date=2025-06-18T13:44:00+05:30
+    - store_code=A668 | order_number=T493 | payment_date=2025-06-18T13:44:28+05:30
+    - store_code=A668 | order_number=T497 | payment_date=2025-06-12T19:48:39+05:30
+    - store_code=A668 | order_number=T497 | payment_date=2025-06-12T19:49:21+05:30
+    - store_code=A668 | order_number=T513 | payment_date=2025-06-25T13:56:34+05:30
+    - store_code=A668 | order_number=T513 | payment_date=2025-06-25T13:56:56+05:30
+    - store_code=A668 | order_number=T518 | payment_date=2025-06-17T14:03:35+05:30
+    - store_code=A668 | order_number=T518 | payment_date=2025-06-17T14:05:06+05:30
+    - store_code=A668 | order_number=T527 | payment_date=2025-06-15T19:25:44+05:30
+    - store_code=A668 | order_number=T527 | payment_date=2025-06-19T18:59:35+05:30
+    - store_code=A668 | order_number=T531 | payment_date=2025-06-19T19:07:19+05:30
+    - store_code=A668 | order_number=T531 | payment_date=2025-06-19T19:08:24+05:30
+    - store_code=A668 | order_number=T538 | payment_date=2025-06-27T19:20:17+05:30
+    - store_code=A668 | order_number=T538 | payment_date=2025-06-27T19:20:37+05:30
+    - store_code=A668 | order_number=T538 | payment_date=2025-06-27T19:21:07+05:30
+    - store_code=A668 | order_number=T538 | payment_date=2025-06-27T19:21:29+05:30
+    - store_code=A668 | order_number=T548 | payment_date=2025-06-21T10:18:49+05:30
+    - store_code=A668 | order_number=T548 | payment_date=2025-07-01T11:18:56+05:30
+    - store_code=A668 | order_number=T552 | payment_date=2025-06-22T18:09:12+05:30
+    - store_code=A668 | order_number=T552 | payment_date=2025-06-22T18:09:28+05:30
+    - store_code=A668 | order_number=T552 | payment_date=2025-06-22T18:10:06+05:30
+    - store_code=A668 | order_number=T552 | payment_date=2025-06-22T18:10:26+05:30
+    - store_code=A668 | order_number=T552 | payment_date=2025-07-01T11:22:58+05:30
+    - store_code=A668 | order_number=T567 | payment_date=2025-06-24T10:23:57+05:30
+    - store_code=A668 | order_number=T567 | payment_date=2025-06-24T10:24:24+05:30
+    - store_code=A668 | order_number=T576 | payment_date=2025-07-01T11:30:22+05:30
+    - store_code=A668 | order_number=T576 | payment_date=2025-07-01T11:30:36+05:30
+    - store_code=A668 | order_number=T648 | payment_date=2025-07-06T11:37:50+05:30
+    - store_code=A668 | order_number=T648 | payment_date=2025-07-14T16:22:12+05:30
+    - store_code=A668 | order_number=T691 | payment_date=2025-07-18T12:58:31+05:30
+    - store_code=A668 | order_number=T691 | payment_date=2025-07-18T12:58:48+05:30
+    - store_code=A668 | order_number=T691 | payment_date=2025-07-18T12:58:58+05:30
+    - store_code=A668 | order_number=T691 | payment_date=2025-07-18T12:59:05+05:30
+    - store_code=A668 | order_number=T747 | payment_date=2025-07-24T20:31:01+05:30
+    - store_code=A668 | order_number=T747 | payment_date=2025-07-26T13:23:34+05:30
+    - store_code=A668 | order_number=T828 | payment_date=2025-08-04T20:36:31+05:30
+    - store_code=A668 | order_number=T828 | payment_date=2025-08-04T20:38:40+05:30
+    - store_code=A668 | order_number=T831 | payment_date=2025-08-08T14:34:53+05:30
+    - store_code=A668 | order_number=T831 | payment_date=2025-08-08T14:35:45+05:30
+    - store_code=A668 | order_number=T849 | payment_date=2025-08-11T12:10:06+05:30
+    - store_code=A668 | order_number=T849 | payment_date=2025-08-11T12:14:28+05:30
+    - store_code=A668 | order_number=T852 | payment_date=2025-08-12T17:20:29+05:30
+    - store_code=A668 | order_number=T852 | payment_date=2025-08-12T17:20:53+05:30
+    - store_code=A668 | order_number=T872 | payment_date=2025-08-16T14:35:04+05:30
+    - store_code=A668 | order_number=T872 | payment_date=2025-08-16T14:35:30+05:30
+    - store_code=A668 | order_number=T879 | payment_date=2025-08-15T13:05:55+05:30
+    - store_code=A668 | order_number=T879 | payment_date=2025-08-15T13:06:11+05:30
+    - store_code=A668 | order_number=T879 | payment_date=2025-08-15T13:06:25+05:30
+    - store_code=A668 | order_number=T883 | payment_date=2025-08-20T15:16:47+05:30
+    - store_code=A668 | order_number=T883 | payment_date=2025-08-20T15:18:17+05:30
+    - store_code=A668 | order_number=T883 | payment_date=2025-08-20T15:20:30+05:30
+    - store_code=A668 | order_number=T883 | payment_date=2025-08-20T15:20:42+05:30
+    - store_code=A668 | order_number=T883 | payment_date=2025-08-20T15:20:56+05:30
+    - store_code=A668 | order_number=T883 | payment_date=2025-08-20T15:21:50+05:30
+    - store_code=A668 | order_number=T936 | payment_date=2025-08-22T09:58:23+05:30
+    - store_code=A668 | order_number=T936 | payment_date=2025-08-22T09:59:58+05:30
   duplicate_count: 64
+  duplicate rows:
+    - store_code=A668 | order_number=T423 | payment_date=2025-06-09T13:46:34+05:30
+    - store_code=A668 | order_number=T423 | payment_date=2025-06-09T13:46:43+05:30
+    - store_code=A668 | order_number=T440 | payment_date=2025-05-30T17:52:55+05:30
+    - store_code=A668 | order_number=T440 | payment_date=2025-06-09T13:53:45+05:30
+    - store_code=A668 | order_number=T465 | payment_date=2025-06-05T18:12:09+05:30
+    - store_code=A668 | order_number=T465 | payment_date=2025-06-05T18:12:30+05:30
+    - store_code=A668 | order_number=T488 | payment_date=2025-06-12T17:09:27+05:30
+    - store_code=A668 | order_number=T488 | payment_date=2025-06-13T17:26:42+05:30
+    - store_code=A668 | order_number=T493 | payment_date=2025-06-18T13:44:00+05:30
+    - store_code=A668 | order_number=T493 | payment_date=2025-06-18T13:44:28+05:30
+    - store_code=A668 | order_number=T497 | payment_date=2025-06-12T19:48:39+05:30
+    - store_code=A668 | order_number=T497 | payment_date=2025-06-12T19:49:21+05:30
+    - store_code=A668 | order_number=T513 | payment_date=2025-06-25T13:56:34+05:30
+    - store_code=A668 | order_number=T513 | payment_date=2025-06-25T13:56:56+05:30
+    - store_code=A668 | order_number=T518 | payment_date=2025-06-17T14:03:35+05:30
+    - store_code=A668 | order_number=T518 | payment_date=2025-06-17T14:05:06+05:30
+    - store_code=A668 | order_number=T527 | payment_date=2025-06-15T19:25:44+05:30
+    - store_code=A668 | order_number=T527 | payment_date=2025-06-19T18:59:35+05:30
+    - store_code=A668 | order_number=T531 | payment_date=2025-06-19T19:07:19+05:30
+    - store_code=A668 | order_number=T531 | payment_date=2025-06-19T19:08:24+05:30
+    - store_code=A668 | order_number=T538 | payment_date=2025-06-27T19:20:17+05:30
+    - store_code=A668 | order_number=T538 | payment_date=2025-06-27T19:20:37+05:30
+    - store_code=A668 | order_number=T538 | payment_date=2025-06-27T19:21:07+05:30
+    - store_code=A668 | order_number=T538 | payment_date=2025-06-27T19:21:29+05:30
+    - store_code=A668 | order_number=T548 | payment_date=2025-06-21T10:18:49+05:30
+    - store_code=A668 | order_number=T548 | payment_date=2025-07-01T11:18:56+05:30
+    - store_code=A668 | order_number=T552 | payment_date=2025-06-22T18:09:12+05:30
+    - store_code=A668 | order_number=T552 | payment_date=2025-06-22T18:09:28+05:30
+    - store_code=A668 | order_number=T552 | payment_date=2025-06-22T18:10:06+05:30
+    - store_code=A668 | order_number=T552 | payment_date=2025-06-22T18:10:26+05:30
+    - store_code=A668 | order_number=T552 | payment_date=2025-07-01T11:22:58+05:30
+    - store_code=A668 | order_number=T567 | payment_date=2025-06-24T10:23:57+05:30
+    - store_code=A668 | order_number=T567 | payment_date=2025-06-24T10:24:24+05:30
+    - store_code=A668 | order_number=T576 | payment_date=2025-07-01T11:30:22+05:30
+    - store_code=A668 | order_number=T576 | payment_date=2025-07-01T11:30:36+05:30
+    - store_code=A668 | order_number=T648 | payment_date=2025-07-06T11:37:50+05:30
+    - store_code=A668 | order_number=T648 | payment_date=2025-07-14T16:22:12+05:30
+    - store_code=A668 | order_number=T691 | payment_date=2025-07-18T12:58:31+05:30
+    - store_code=A668 | order_number=T691 | payment_date=2025-07-18T12:58:48+05:30
+    - store_code=A668 | order_number=T691 | payment_date=2025-07-18T12:58:58+05:30
+    - store_code=A668 | order_number=T691 | payment_date=2025-07-18T12:59:05+05:30
+    - store_code=A668 | order_number=T747 | payment_date=2025-07-24T20:31:01+05:30
+    - store_code=A668 | order_number=T747 | payment_date=2025-07-26T13:23:34+05:30
+    - store_code=A668 | order_number=T828 | payment_date=2025-08-04T20:36:31+05:30
+    - store_code=A668 | order_number=T828 | payment_date=2025-08-04T20:38:40+05:30
+    - store_code=A668 | order_number=T831 | payment_date=2025-08-08T14:34:53+05:30
+    - store_code=A668 | order_number=T831 | payment_date=2025-08-08T14:35:45+05:30
+    - store_code=A668 | order_number=T849 | payment_date=2025-08-11T12:10:06+05:30
+    - store_code=A668 | order_number=T849 | payment_date=2025-08-11T12:14:28+05:30
+    - store_code=A668 | order_number=T852 | payment_date=2025-08-12T17:20:29+05:30
+    - store_code=A668 | order_number=T852 | payment_date=2025-08-12T17:20:53+05:30
+    - store_code=A668 | order_number=T872 | payment_date=2025-08-16T14:35:04+05:30
+    - store_code=A668 | order_number=T872 | payment_date=2025-08-16T14:35:30+05:30
+    - store_code=A668 | order_number=T879 | payment_date=2025-08-15T13:05:55+05:30
+    - store_code=A668 | order_number=T879 | payment_date=2025-08-15T13:06:11+05:30
+    - store_code=A668 | order_number=T879 | payment_date=2025-08-15T13:06:25+05:30
+    - store_code=A668 | order_number=T883 | payment_date=2025-08-20T15:16:47+05:30
+    - store_code=A668 | order_number=T883 | payment_date=2025-08-20T15:18:17+05:30
+    - store_code=A668 | order_number=T883 | payment_date=2025-08-20T15:20:30+05:30
+    - store_code=A668 | order_number=T883 | payment_date=2025-08-20T15:20:42+05:30
+    - store_code=A668 | order_number=T883 | payment_date=2025-08-20T15:20:56+05:30
+    - store_code=A668 | order_number=T883 | payment_date=2025-08-20T15:21:50+05:30
+    - store_code=A668 | order_number=T936 | payment_date=2025-08-22T09:58:23+05:30
+    - store_code=A668 | order_number=T936 | payment_date=2025-08-22T09:59:58+05:30
+
+Notes:
+- (none)
 ---
 Email 10:
 UC Orders Sync Run Summary
-Run ID: 20260115_143701561898_UC610_002_attempt1 | Env: dev
+Run ID: 20260115_154310285062_UC610_002_attempt1 | Env: dev
 Report Date: 2025-08-07
-Started: 2026-01-15T14:45:35.748717+00:00 | Finished: 2026-01-15T14:47:14.240510+00:00
-Total Duration: 00:01:38
+Started: 2026-01-15T15:51:47.708377+00:00 | Finished: 2026-01-15T15:53:25.638332+00:00
+Total Duration: 00:01:37
 Overall Status: success_with_warnings
 
 **Per Store UC Metrics:**
@@ -331,9 +947,9 @@ Filename format: {STORE_CODE}_uc_gst_YYYYMMDD_YYYYMMDD.xlsx
 ---
 Email 11:
 UC Orders Sync Run Summary
-Run ID: 20260115_143701561898_UC610_003_attempt1 | Env: dev
+Run ID: 20260115_154310285062_UC610_003_attempt1 | Env: dev
 Report Date: 2025-11-03
-Started: 2026-01-15T14:47:22.476405+00:00 | Finished: 2026-01-15T14:48:51.813908+00:00
+Started: 2026-01-15T15:53:34.142630+00:00 | Finished: 2026-01-15T15:55:03.261290+00:00
 Total Duration: 00:01:29
 Overall Status: success
 
@@ -367,92 +983,852 @@ Filename format: {STORE_CODE}_uc_gst_YYYYMMDD_YYYYMMDD.xlsx
 ---
 Email 12:
 TD Orders & Sales Run Summary
-Run ID: 20260115_143701561898_A817_003 | Env: dev
+Run ID: 20260115_154310285062_A817_003 | Env: dev
 Report Date: 2025-11-02
-Started (Asia/Kolkata): 15-01-2026 20:16:38
-Finished (Asia/Kolkata): 15-01-2026 20:21:11
-Total Duration: 00:04:32
-Overall Status: ok (Orders: warning, Sales: warning)
+Started (Asia/Kolkata): 15-01-2026 21:22:48
+Finished (Asia/Kolkata): 15-01-2026 21:27:36
+Total Duration: 00:04:47
+Overall Status: success (Orders: success_with_warnings, Sales: success_with_warnings)
 Windows Completed: 1 / 1
 Missing Windows: 0
 
 **Per Store Orders Metrics:**
-- A817 — OK
+- A817 — SUCCESS
+  filenames: A817_td_orders_20251102_20260115.xlsx
   rows_downloaded: 604
   rows_ingested: 604
+  inserted: 590
+  updated: 14
   warning_count: 6
+  warning rows:
+    - store_code=A817 | order_number=T1018 | ingest_remarks=Phone value 'A817--7461' is invalid and was dropped
+    - store_code=A817 | order_number=T1187 | ingest_remarks=Phone value 'A817--7461' is invalid and was dropped
+    - store_code=A817 | order_number=T1217 | ingest_remarks=Phone value '18409065' is invalid and was dropped
+    - store_code=A817 | order_number=T1246 | ingest_remarks=Phone value 'A817--7461' is invalid and was dropped
+    - store_code=A817 | order_number=T1402 | ingest_remarks=Phone value 'A817--7461' is invalid and was dropped
+    - store_code=A817 | order_number=T1454 | ingest_remarks=Phone value 'A817--7461' is invalid and was dropped
   dropped_count: 0
+  dropped rows:
+    - (none)
 
 **Per Store Sales Metrics:**
-- A817 — OK
+- A817 — SUCCESS
+  filenames: A817_td_sales_20251102_20260115.xlsx
   rows_downloaded: 772
   rows_ingested: 772
+  inserted: 771
+  updated: 1
   warning_count: 5
+  warning rows:
+    - store_code=A817 | order_number=T1018 | ingest_remarks=Phone value 'A817--7461' is invalid and was dropped
+    - store_code=A817 | order_number=T1187 | ingest_remarks=Phone value 'A817--7461' is invalid and was dropped
+    - store_code=A817 | order_number=T1217 | ingest_remarks=Phone value '18409065' is invalid and was dropped
+    - store_code=A817 | order_number=T1246 | ingest_remarks=Phone value 'A817--7461' is invalid and was dropped
+    - store_code=A817 | order_number=T1246 | ingest_remarks=Phone value 'A817--7461' is invalid and was dropped
   dropped_count: 0
+  dropped rows:
+    - (none)
   edited_count: 152
+  edited rows:
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T15:36:22+05:30
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T15:36:47+05:30
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T15:37:13+05:30
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T15:37:29+05:30
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T15:37:58+05:30
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T15:38:10+05:30
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T15:38:20+05:30
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T15:38:38+05:30
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T16:07:52+05:30
+    - store_code=A817 | order_number=T759 | payment_date=2025-12-11T14:49:26+05:30
+    - store_code=A817 | order_number=T759 | payment_date=2026-01-06T14:11:57+05:30
+    - store_code=A817 | order_number=T777 | payment_date=2025-12-19T14:36:38+05:30
+    - store_code=A817 | order_number=T777 | payment_date=2025-12-19T14:37:22+05:30
+    - store_code=A817 | order_number=T799 | payment_date=2026-01-06T11:40:40+05:30
+    - store_code=A817 | order_number=T799 | payment_date=2026-01-06T14:11:57+05:30
+    - store_code=A817 | order_number=T799 | payment_date=2026-01-10T11:58:36+05:30
+    - store_code=A817 | order_number=T818 | payment_date=2025-11-22T15:55:42+05:30
+    - store_code=A817 | order_number=T818 | payment_date=2025-11-22T15:55:59+05:30
+    - store_code=A817 | order_number=T818 | payment_date=2025-11-22T15:57:38+05:30
+    - store_code=A817 | order_number=T821 | payment_date=2025-12-07T18:44:25+05:30
+    - store_code=A817 | order_number=T821 | payment_date=2026-01-06T11:40:40+05:30
+    - store_code=A817 | order_number=T840 | payment_date=2025-11-17T10:47:49+05:30
+    - store_code=A817 | order_number=T842 | payment_date=2025-11-17T10:52:41+05:30
+    - store_code=A817 | order_number=T840 | payment_date=2026-01-06T11:40:40+05:30
+    - store_code=A817 | order_number=T842 | payment_date=2026-01-06T11:40:40+05:30
+    - store_code=A817 | order_number=T845 | payment_date=2025-11-08T11:22:22+05:30
+    - store_code=A817 | order_number=T843 | payment_date=2025-11-17T10:53:50+05:30
+    - store_code=A817 | order_number=T844 | payment_date=2025-11-17T10:54:45+05:30
+    - store_code=A817 | order_number=T843 | payment_date=2026-01-06T11:40:40+05:30
+    - store_code=A817 | order_number=T844 | payment_date=2026-01-06T11:40:40+05:30
+    - store_code=A817 | order_number=T845 | payment_date=2026-01-06T11:40:40+05:30
+    - store_code=A817 | order_number=T849 | payment_date=2025-11-08T11:24:00+05:30
+    - store_code=A817 | order_number=T849 | payment_date=2026-01-06T11:40:40+05:30
+    - store_code=A817 | order_number=T849 | payment_date=2026-01-06T14:08:46+05:30
+    - store_code=A817 | order_number=T856 | payment_date=2025-11-16T22:56:50+05:30
+    - store_code=A817 | order_number=T855 | payment_date=2025-11-16T22:57:29+05:30
+    - store_code=A817 | order_number=T851 | payment_date=2025-11-20T12:44:53+05:30
+    - store_code=A817 | order_number=T851 | payment_date=2025-11-20T12:45:20+05:30
+    - store_code=A817 | order_number=T851 | payment_date=2025-11-20T12:46:11+05:30
+    - store_code=A817 | order_number=T852 | payment_date=2025-11-20T12:47:45+05:30
+    - store_code=A817 | order_number=T852 | payment_date=2025-11-20T12:49:09+05:30
+    - store_code=A817 | order_number=T855 | payment_date=2026-01-06T14:08:46+05:30
+    - store_code=A817 | order_number=T856 | payment_date=2026-01-06T14:08:46+05:30
+    - store_code=A817 | order_number=T858 | payment_date=2025-11-16T22:56:10+05:30
+    - store_code=A817 | order_number=T857 | payment_date=2025-11-16T22:56:25+05:30
+    - store_code=A817 | order_number=T857 | payment_date=2026-01-06T14:08:46+05:30
+    - store_code=A817 | order_number=T858 | payment_date=2026-01-06T14:08:46+05:30
+    - store_code=A817 | order_number=T869 | payment_date=2025-11-16T22:52:29+05:30
+    - store_code=A817 | order_number=T867 | payment_date=2025-11-16T22:52:58+05:30
+    - store_code=A817 | order_number=T867 | payment_date=2026-01-06T14:08:46+05:30
+    - store_code=A817 | order_number=T869 | payment_date=2026-01-10T11:58:36+05:30
+    - store_code=A817 | order_number=T873 | payment_date=2025-11-16T22:51:14+05:30
+    - store_code=A817 | order_number=T874 | payment_date=2025-11-22T15:52:48+05:30
+    - store_code=A817 | order_number=T874 | payment_date=2025-11-22T15:53:51+05:30
+    - store_code=A817 | order_number=T873 | payment_date=2026-01-10T11:58:36+05:30
+    - store_code=A817 | order_number=T881 | payment_date=2025-11-20T12:52:22+05:30
+    - store_code=A817 | order_number=T881 | payment_date=2025-11-20T12:52:34+05:30
+    - store_code=A817 | order_number=T881 | payment_date=2025-11-20T12:52:46+05:30
+    - store_code=A817 | order_number=T881 | payment_date=2025-11-20T12:52:59+05:30
+    - store_code=A817 | order_number=T887 | payment_date=2025-11-16T22:47:01+05:30
+    - store_code=A817 | order_number=T887 | payment_date=2026-01-10T11:58:36+05:30
+    - store_code=A817 | order_number=T910 | payment_date=2025-11-16T21:57:39+05:30
+    - store_code=A817 | order_number=T910 | payment_date=2025-11-16T21:58:09+05:30
+    - store_code=A817 | order_number=T949 | payment_date=2025-11-18T12:21:52+05:30
+    - store_code=A817 | order_number=T949 | payment_date=2025-11-19T15:46:41+05:30
+    - store_code=A817 | order_number=T966 | payment_date=2025-11-20T17:39:57+05:30
+    - store_code=A817 | order_number=T966 | payment_date=2025-12-11T12:43:09+05:30
+    - store_code=A817 | order_number=T972 | payment_date=2025-11-17T12:44:15+05:30
+    - store_code=A817 | order_number=T972 | payment_date=2025-11-22T19:36:16+05:30
+    - store_code=A817 | order_number=T978 | payment_date=2025-11-23T17:07:28+05:30
+    - store_code=A817 | order_number=T971 | payment_date=2025-11-23T17:31:13+05:30
+    - store_code=A817 | order_number=T971 | payment_date=2025-11-23T17:31:27+05:30
+    - store_code=A817 | order_number=T974 | payment_date=2025-11-23T17:34:19+05:30
+    - store_code=A817 | order_number=T974 | payment_date=2025-11-23T17:34:41+05:30
+    - store_code=A817 | order_number=T974 | payment_date=2025-11-23T17:34:54+05:30
+    - store_code=A817 | order_number=T978 | payment_date=2025-12-30T14:39:12+05:30
+    - store_code=A817 | order_number=T1010 | payment_date=2025-11-22T12:49:43+05:30
+    - store_code=A817 | order_number=T1010 | payment_date=2025-11-29T19:46:30+05:30
+    - store_code=A817 | order_number=T1029 | payment_date=2025-11-29T19:56:56+05:30
+    - store_code=A817 | order_number=T1029 | payment_date=2025-11-30T19:48:09+05:30
+    - store_code=A817 | order_number=T1062 | payment_date=2025-11-29T14:46:57+05:30
+    - store_code=A817 | order_number=T1062 | payment_date=2025-12-30T11:22:13+05:30
+    - store_code=A817 | order_number=T1120 | payment_date=2025-12-03T19:37:08+05:30
+    - store_code=A817 | order_number=T1120 | payment_date=2025-12-03T19:54:43+05:30
+    - store_code=A817 | order_number=T1123 | payment_date=2025-12-22T15:27:13+05:30
+    - store_code=A817 | order_number=T1123 | payment_date=2025-12-22T15:27:55+05:30
+    - store_code=A817 | order_number=T1123 | payment_date=2025-12-22T15:28:52+05:30
+    - store_code=A817 | order_number=T1123 | payment_date=2025-12-22T15:29:12+05:30
+    - store_code=A817 | order_number=T1123 | payment_date=2025-12-22T15:29:29+05:30
+    - store_code=A817 | order_number=T1123 | payment_date=2025-12-22T15:29:44+05:30
+    - store_code=A817 | order_number=T1123 | payment_date=2025-12-22T15:30:08+05:30
+    - store_code=A817 | order_number=T1141 | payment_date=2025-12-23T16:25:32+05:30
+    - store_code=A817 | order_number=T1142 | payment_date=2025-12-23T16:27:37+05:30
+    - store_code=A817 | order_number=T1141 | payment_date=2026-01-11T12:52:42+05:30
+    - store_code=A817 | order_number=T1142 | payment_date=2026-01-11T12:53:00+05:30
+    - store_code=A817 | order_number=T1152 | payment_date=2025-12-11T19:29:40+05:30
+    - store_code=A817 | order_number=T1152 | payment_date=2025-12-11T19:29:56+05:30
+    - store_code=A817 | order_number=T1147 | payment_date=2025-12-21T10:29:26+05:30
+    - store_code=A817 | order_number=T1147 | payment_date=2025-12-21T10:29:38+05:30
+    - store_code=A817 | order_number=T1175 | payment_date=2025-12-23T16:29:15+05:30
+    - store_code=A817 | order_number=T1175 | payment_date=2025-12-30T10:08:52+05:30
+    - store_code=A817 | order_number=T1209 | payment_date=2025-12-20T18:18:59+05:30
+    - store_code=A817 | order_number=T1209 | payment_date=2025-12-20T18:30:33+05:30
+    - store_code=A817 | order_number=T1233 | payment_date=2025-12-20T18:40:39+05:30
+    - store_code=A817 | order_number=T1230 | payment_date=2025-12-28T11:58:31+05:30
+    - store_code=A817 | order_number=T1230 | payment_date=2026-01-07T19:21:59+05:30
+    - store_code=A817 | order_number=T1233 | payment_date=2026-01-07T19:28:14+05:30
+    - store_code=A817 | order_number=T1246 | payment_date=2025-12-22T18:00:57+05:30
+    - store_code=A817 | order_number=T1246 | payment_date=2026-01-07T19:29:33+05:30
+    - store_code=A817 | order_number=T1256 | payment_date=2025-12-21T16:25:26+05:30
+    - store_code=A817 | order_number=T1252 | payment_date=2025-12-26T05:22:57+05:30
+    - store_code=A817 | order_number=T1254 | payment_date=2025-12-27T19:31:37+05:30
+    - store_code=A817 | order_number=T1256 | payment_date=2025-12-27T19:40:29+05:30
+    - store_code=A817 | order_number=T1252 | payment_date=2025-12-27T19:41:18+05:30
+    - store_code=A817 | order_number=T1254 | payment_date=2026-01-07T19:29:58+05:30
+    - store_code=A817 | order_number=T1266 | payment_date=2025-12-22T14:05:45+05:30
+    - store_code=A817 | order_number=T1266 | payment_date=2025-12-28T12:14:10+05:30
+    - store_code=A817 | order_number=T1288 | payment_date=2025-12-24T18:20:48+05:30
+    - store_code=A817 | order_number=T1288 | payment_date=2025-12-27T19:40:12+05:30
+    - store_code=A817 | order_number=T1292 | payment_date=2025-12-25T14:05:18+05:30
+    - store_code=A817 | order_number=T1297 | payment_date=2025-12-25T18:56:51+05:30
+    - store_code=A817 | order_number=T1292 | payment_date=2025-12-27T19:40:00+05:30
+    - store_code=A817 | order_number=T1297 | payment_date=2025-12-27T19:40:58+05:30
+    - store_code=A817 | order_number=T1300 | payment_date=2025-12-26T15:06:23+05:30
+    - store_code=A817 | order_number=T1300 | payment_date=2025-12-27T19:42:30+05:30
+    - store_code=A817 | order_number=T1315 | payment_date=2025-12-28T17:39:53+05:30
+    - store_code=A817 | order_number=T1314 | payment_date=2026-01-04T16:01:05+05:30
+    - store_code=A817 | order_number=T1314 | payment_date=2026-01-04T16:01:16+05:30
+    - store_code=A817 | order_number=T1315 | payment_date=2026-01-04T16:06:54+05:30
+    - store_code=A817 | order_number=T1326 | payment_date=2025-12-29T18:18:43+05:30
+    - store_code=A817 | order_number=T1326 | payment_date=2025-12-29T18:41:43+05:30
+    - store_code=A817 | order_number=T1320 | payment_date=2025-12-30T11:25:43+05:30
+    - store_code=A817 | order_number=T1320 | payment_date=2026-01-04T15:50:30+05:30
+    - store_code=A817 | order_number=T1326 | payment_date=2026-01-04T16:00:05+05:30
+    - store_code=A817 | order_number=T1330 | payment_date=2026-01-11T12:53:52+05:30
+    - store_code=A817 | order_number=T1330 | payment_date=2026-01-12T11:26:00+05:30
+    - store_code=A817 | order_number=T1339 | payment_date=2026-01-03T19:06:06+05:30
+    - store_code=A817 | order_number=T1339 | payment_date=2026-01-07T18:52:44+05:30
+    - store_code=A817 | order_number=T1350 | payment_date=2026-01-01T17:50:06+05:30
+    - store_code=A817 | order_number=T1350 | payment_date=2026-01-12T11:12:31+05:30
+    - store_code=A817 | order_number=T1364 | payment_date=2026-01-03T17:21:13+05:30
+    - store_code=A817 | order_number=T1367 | payment_date=2026-01-03T17:39:16+05:30
+    - store_code=A817 | order_number=T1370 | payment_date=2026-01-05T19:11:42+05:30
+    - store_code=A817 | order_number=T1367 | payment_date=2026-01-07T19:10:03+05:30
+    - store_code=A817 | order_number=T1364 | payment_date=2026-01-07T19:18:54+05:30
+    - store_code=A817 | order_number=T1370 | payment_date=2026-01-07T19:22:15+05:30
+    - store_code=A817 | order_number=T1389 | payment_date=2026-01-06T18:40:26+05:30
+    - store_code=A817 | order_number=T1390 | payment_date=2026-01-06T18:42:03+05:30
+    - store_code=A817 | order_number=T1389 | payment_date=2026-01-12T11:19:10+05:30
+    - store_code=A817 | order_number=T1390 | payment_date=2026-01-12T11:19:35+05:30
+    - store_code=A817 | order_number=T1412 | payment_date=2026-01-09T17:58:32+05:30
+    - store_code=A817 | order_number=T1412 | payment_date=2026-01-12T11:12:44+05:30
   duplicate_count: 152
+  duplicate rows:
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T15:36:22+05:30
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T15:36:47+05:30
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T15:37:13+05:30
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T15:37:29+05:30
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T15:37:58+05:30
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T15:38:10+05:30
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T15:38:20+05:30
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T15:38:38+05:30
+    - store_code=A817 | order_number=T509 | payment_date=2025-11-14T16:07:52+05:30
+    - store_code=A817 | order_number=T759 | payment_date=2025-12-11T14:49:26+05:30
+    - store_code=A817 | order_number=T759 | payment_date=2026-01-06T14:11:57+05:30
+    - store_code=A817 | order_number=T777 | payment_date=2025-12-19T14:36:38+05:30
+    - store_code=A817 | order_number=T777 | payment_date=2025-12-19T14:37:22+05:30
+    - store_code=A817 | order_number=T799 | payment_date=2026-01-06T11:40:40+05:30
+    - store_code=A817 | order_number=T799 | payment_date=2026-01-06T14:11:57+05:30
+    - store_code=A817 | order_number=T799 | payment_date=2026-01-10T11:58:36+05:30
+    - store_code=A817 | order_number=T818 | payment_date=2025-11-22T15:55:42+05:30
+    - store_code=A817 | order_number=T818 | payment_date=2025-11-22T15:55:59+05:30
+    - store_code=A817 | order_number=T818 | payment_date=2025-11-22T15:57:38+05:30
+    - store_code=A817 | order_number=T821 | payment_date=2025-12-07T18:44:25+05:30
+    - store_code=A817 | order_number=T821 | payment_date=2026-01-06T11:40:40+05:30
+    - store_code=A817 | order_number=T840 | payment_date=2025-11-17T10:47:49+05:30
+    - store_code=A817 | order_number=T842 | payment_date=2025-11-17T10:52:41+05:30
+    - store_code=A817 | order_number=T840 | payment_date=2026-01-06T11:40:40+05:30
+    - store_code=A817 | order_number=T842 | payment_date=2026-01-06T11:40:40+05:30
+    - store_code=A817 | order_number=T845 | payment_date=2025-11-08T11:22:22+05:30
+    - store_code=A817 | order_number=T843 | payment_date=2025-11-17T10:53:50+05:30
+    - store_code=A817 | order_number=T844 | payment_date=2025-11-17T10:54:45+05:30
+    - store_code=A817 | order_number=T843 | payment_date=2026-01-06T11:40:40+05:30
+    - store_code=A817 | order_number=T844 | payment_date=2026-01-06T11:40:40+05:30
+    - store_code=A817 | order_number=T845 | payment_date=2026-01-06T11:40:40+05:30
+    - store_code=A817 | order_number=T849 | payment_date=2025-11-08T11:24:00+05:30
+    - store_code=A817 | order_number=T849 | payment_date=2026-01-06T11:40:40+05:30
+    - store_code=A817 | order_number=T849 | payment_date=2026-01-06T14:08:46+05:30
+    - store_code=A817 | order_number=T856 | payment_date=2025-11-16T22:56:50+05:30
+    - store_code=A817 | order_number=T855 | payment_date=2025-11-16T22:57:29+05:30
+    - store_code=A817 | order_number=T851 | payment_date=2025-11-20T12:44:53+05:30
+    - store_code=A817 | order_number=T851 | payment_date=2025-11-20T12:45:20+05:30
+    - store_code=A817 | order_number=T851 | payment_date=2025-11-20T12:46:11+05:30
+    - store_code=A817 | order_number=T852 | payment_date=2025-11-20T12:47:45+05:30
+    - store_code=A817 | order_number=T852 | payment_date=2025-11-20T12:49:09+05:30
+    - store_code=A817 | order_number=T855 | payment_date=2026-01-06T14:08:46+05:30
+    - store_code=A817 | order_number=T856 | payment_date=2026-01-06T14:08:46+05:30
+    - store_code=A817 | order_number=T858 | payment_date=2025-11-16T22:56:10+05:30
+    - store_code=A817 | order_number=T857 | payment_date=2025-11-16T22:56:25+05:30
+    - store_code=A817 | order_number=T857 | payment_date=2026-01-06T14:08:46+05:30
+    - store_code=A817 | order_number=T858 | payment_date=2026-01-06T14:08:46+05:30
+    - store_code=A817 | order_number=T869 | payment_date=2025-11-16T22:52:29+05:30
+    - store_code=A817 | order_number=T867 | payment_date=2025-11-16T22:52:58+05:30
+    - store_code=A817 | order_number=T867 | payment_date=2026-01-06T14:08:46+05:30
+    - store_code=A817 | order_number=T869 | payment_date=2026-01-10T11:58:36+05:30
+    - store_code=A817 | order_number=T873 | payment_date=2025-11-16T22:51:14+05:30
+    - store_code=A817 | order_number=T874 | payment_date=2025-11-22T15:52:48+05:30
+    - store_code=A817 | order_number=T874 | payment_date=2025-11-22T15:53:51+05:30
+    - store_code=A817 | order_number=T873 | payment_date=2026-01-10T11:58:36+05:30
+    - store_code=A817 | order_number=T881 | payment_date=2025-11-20T12:52:22+05:30
+    - store_code=A817 | order_number=T881 | payment_date=2025-11-20T12:52:34+05:30
+    - store_code=A817 | order_number=T881 | payment_date=2025-11-20T12:52:46+05:30
+    - store_code=A817 | order_number=T881 | payment_date=2025-11-20T12:52:59+05:30
+    - store_code=A817 | order_number=T887 | payment_date=2025-11-16T22:47:01+05:30
+    - store_code=A817 | order_number=T887 | payment_date=2026-01-10T11:58:36+05:30
+    - store_code=A817 | order_number=T910 | payment_date=2025-11-16T21:57:39+05:30
+    - store_code=A817 | order_number=T910 | payment_date=2025-11-16T21:58:09+05:30
+    - store_code=A817 | order_number=T949 | payment_date=2025-11-18T12:21:52+05:30
+    - store_code=A817 | order_number=T949 | payment_date=2025-11-19T15:46:41+05:30
+    - store_code=A817 | order_number=T966 | payment_date=2025-11-20T17:39:57+05:30
+    - store_code=A817 | order_number=T966 | payment_date=2025-12-11T12:43:09+05:30
+    - store_code=A817 | order_number=T972 | payment_date=2025-11-17T12:44:15+05:30
+    - store_code=A817 | order_number=T972 | payment_date=2025-11-22T19:36:16+05:30
+    - store_code=A817 | order_number=T978 | payment_date=2025-11-23T17:07:28+05:30
+    - store_code=A817 | order_number=T971 | payment_date=2025-11-23T17:31:13+05:30
+    - store_code=A817 | order_number=T971 | payment_date=2025-11-23T17:31:27+05:30
+    - store_code=A817 | order_number=T974 | payment_date=2025-11-23T17:34:19+05:30
+    - store_code=A817 | order_number=T974 | payment_date=2025-11-23T17:34:41+05:30
+    - store_code=A817 | order_number=T974 | payment_date=2025-11-23T17:34:54+05:30
+    - store_code=A817 | order_number=T978 | payment_date=2025-12-30T14:39:12+05:30
+    - store_code=A817 | order_number=T1010 | payment_date=2025-11-22T12:49:43+05:30
+    - store_code=A817 | order_number=T1010 | payment_date=2025-11-29T19:46:30+05:30
+    - store_code=A817 | order_number=T1029 | payment_date=2025-11-29T19:56:56+05:30
+    - store_code=A817 | order_number=T1029 | payment_date=2025-11-30T19:48:09+05:30
+    - store_code=A817 | order_number=T1062 | payment_date=2025-11-29T14:46:57+05:30
+    - store_code=A817 | order_number=T1062 | payment_date=2025-12-30T11:22:13+05:30
+    - store_code=A817 | order_number=T1120 | payment_date=2025-12-03T19:37:08+05:30
+    - store_code=A817 | order_number=T1120 | payment_date=2025-12-03T19:54:43+05:30
+    - store_code=A817 | order_number=T1123 | payment_date=2025-12-22T15:27:13+05:30
+    - store_code=A817 | order_number=T1123 | payment_date=2025-12-22T15:27:55+05:30
+    - store_code=A817 | order_number=T1123 | payment_date=2025-12-22T15:28:52+05:30
+    - store_code=A817 | order_number=T1123 | payment_date=2025-12-22T15:29:12+05:30
+    - store_code=A817 | order_number=T1123 | payment_date=2025-12-22T15:29:29+05:30
+    - store_code=A817 | order_number=T1123 | payment_date=2025-12-22T15:29:44+05:30
+    - store_code=A817 | order_number=T1123 | payment_date=2025-12-22T15:30:08+05:30
+    - store_code=A817 | order_number=T1141 | payment_date=2025-12-23T16:25:32+05:30
+    - store_code=A817 | order_number=T1142 | payment_date=2025-12-23T16:27:37+05:30
+    - store_code=A817 | order_number=T1141 | payment_date=2026-01-11T12:52:42+05:30
+    - store_code=A817 | order_number=T1142 | payment_date=2026-01-11T12:53:00+05:30
+    - store_code=A817 | order_number=T1152 | payment_date=2025-12-11T19:29:40+05:30
+    - store_code=A817 | order_number=T1152 | payment_date=2025-12-11T19:29:56+05:30
+    - store_code=A817 | order_number=T1147 | payment_date=2025-12-21T10:29:26+05:30
+    - store_code=A817 | order_number=T1147 | payment_date=2025-12-21T10:29:38+05:30
+    - store_code=A817 | order_number=T1175 | payment_date=2025-12-23T16:29:15+05:30
+    - store_code=A817 | order_number=T1175 | payment_date=2025-12-30T10:08:52+05:30
+    - store_code=A817 | order_number=T1209 | payment_date=2025-12-20T18:18:59+05:30
+    - store_code=A817 | order_number=T1209 | payment_date=2025-12-20T18:30:33+05:30
+    - store_code=A817 | order_number=T1233 | payment_date=2025-12-20T18:40:39+05:30
+    - store_code=A817 | order_number=T1230 | payment_date=2025-12-28T11:58:31+05:30
+    - store_code=A817 | order_number=T1230 | payment_date=2026-01-07T19:21:59+05:30
+    - store_code=A817 | order_number=T1233 | payment_date=2026-01-07T19:28:14+05:30
+    - store_code=A817 | order_number=T1246 | payment_date=2025-12-22T18:00:57+05:30
+    - store_code=A817 | order_number=T1246 | payment_date=2026-01-07T19:29:33+05:30
+    - store_code=A817 | order_number=T1256 | payment_date=2025-12-21T16:25:26+05:30
+    - store_code=A817 | order_number=T1252 | payment_date=2025-12-26T05:22:57+05:30
+    - store_code=A817 | order_number=T1254 | payment_date=2025-12-27T19:31:37+05:30
+    - store_code=A817 | order_number=T1256 | payment_date=2025-12-27T19:40:29+05:30
+    - store_code=A817 | order_number=T1252 | payment_date=2025-12-27T19:41:18+05:30
+    - store_code=A817 | order_number=T1254 | payment_date=2026-01-07T19:29:58+05:30
+    - store_code=A817 | order_number=T1266 | payment_date=2025-12-22T14:05:45+05:30
+    - store_code=A817 | order_number=T1266 | payment_date=2025-12-28T12:14:10+05:30
+    - store_code=A817 | order_number=T1288 | payment_date=2025-12-24T18:20:48+05:30
+    - store_code=A817 | order_number=T1288 | payment_date=2025-12-27T19:40:12+05:30
+    - store_code=A817 | order_number=T1292 | payment_date=2025-12-25T14:05:18+05:30
+    - store_code=A817 | order_number=T1297 | payment_date=2025-12-25T18:56:51+05:30
+    - store_code=A817 | order_number=T1292 | payment_date=2025-12-27T19:40:00+05:30
+    - store_code=A817 | order_number=T1297 | payment_date=2025-12-27T19:40:58+05:30
+    - store_code=A817 | order_number=T1300 | payment_date=2025-12-26T15:06:23+05:30
+    - store_code=A817 | order_number=T1300 | payment_date=2025-12-27T19:42:30+05:30
+    - store_code=A817 | order_number=T1315 | payment_date=2025-12-28T17:39:53+05:30
+    - store_code=A817 | order_number=T1314 | payment_date=2026-01-04T16:01:05+05:30
+    - store_code=A817 | order_number=T1314 | payment_date=2026-01-04T16:01:16+05:30
+    - store_code=A817 | order_number=T1315 | payment_date=2026-01-04T16:06:54+05:30
+    - store_code=A817 | order_number=T1326 | payment_date=2025-12-29T18:18:43+05:30
+    - store_code=A817 | order_number=T1326 | payment_date=2025-12-29T18:41:43+05:30
+    - store_code=A817 | order_number=T1320 | payment_date=2025-12-30T11:25:43+05:30
+    - store_code=A817 | order_number=T1320 | payment_date=2026-01-04T15:50:30+05:30
+    - store_code=A817 | order_number=T1326 | payment_date=2026-01-04T16:00:05+05:30
+    - store_code=A817 | order_number=T1330 | payment_date=2026-01-11T12:53:52+05:30
+    - store_code=A817 | order_number=T1330 | payment_date=2026-01-12T11:26:00+05:30
+    - store_code=A817 | order_number=T1339 | payment_date=2026-01-03T19:06:06+05:30
+    - store_code=A817 | order_number=T1339 | payment_date=2026-01-07T18:52:44+05:30
+    - store_code=A817 | order_number=T1350 | payment_date=2026-01-01T17:50:06+05:30
+    - store_code=A817 | order_number=T1350 | payment_date=2026-01-12T11:12:31+05:30
+    - store_code=A817 | order_number=T1364 | payment_date=2026-01-03T17:21:13+05:30
+    - store_code=A817 | order_number=T1367 | payment_date=2026-01-03T17:39:16+05:30
+    - store_code=A817 | order_number=T1370 | payment_date=2026-01-05T19:11:42+05:30
+    - store_code=A817 | order_number=T1367 | payment_date=2026-01-07T19:10:03+05:30
+    - store_code=A817 | order_number=T1364 | payment_date=2026-01-07T19:18:54+05:30
+    - store_code=A817 | order_number=T1370 | payment_date=2026-01-07T19:22:15+05:30
+    - store_code=A817 | order_number=T1389 | payment_date=2026-01-06T18:40:26+05:30
+    - store_code=A817 | order_number=T1390 | payment_date=2026-01-06T18:42:03+05:30
+    - store_code=A817 | order_number=T1389 | payment_date=2026-01-12T11:19:10+05:30
+    - store_code=A817 | order_number=T1390 | payment_date=2026-01-12T11:19:35+05:30
+    - store_code=A817 | order_number=T1412 | payment_date=2026-01-09T17:58:32+05:30
+    - store_code=A817 | order_number=T1412 | payment_date=2026-01-12T11:12:44+05:30
+
+Notes:
+- (none)
 ---
 Email 13:
 TD Orders & Sales Run Summary
-Run ID: 20260115_143701561898_A668_003 | Env: dev
+Run ID: 20260115_154310285062_A668_003 | Env: dev
 Report Date: 2025-08-23
-Started (Asia/Kolkata): 15-01-2026 20:16:49
-Finished (Asia/Kolkata): 15-01-2026 20:21:29
-Total Duration: 00:04:40
-Overall Status: ok (Orders: warning, Sales: warning)
+Started (Asia/Kolkata): 15-01-2026 21:22:59
+Finished (Asia/Kolkata): 15-01-2026 21:27:44
+Total Duration: 00:04:45
+Overall Status: success (Orders: success_with_warnings, Sales: success_with_warnings)
 Windows Completed: 1 / 1
 Missing Windows: 0
 
 **Per Store Orders Metrics:**
-- A668 — OK
+- A668 — SUCCESS
+  filenames: A668_td_orders_20250823_20251120.xlsx
   rows_downloaded: 625
   rows_ingested: 625
+  inserted: 616
+  updated: 9
   warning_count: 1
+  warning rows:
+    - store_code=A668 | order_number=T1538 | ingest_remarks=Phone value 'A668--7051' is invalid and was dropped
   dropped_count: 0
+  dropped rows:
+    - (none)
 
 **Per Store Sales Metrics:**
-- A668 — OK
+- A668 — SUCCESS
+  filenames: A668_td_sales_20250823_20251120.xlsx
   rows_downloaded: 649
   rows_ingested: 649
+  inserted: 638
+  updated: 11
   warning_count: 0
+  warning rows:
+    - (none)
   dropped_count: 0
+  dropped rows:
+    - (none)
   edited_count: 136
+  edited rows:
+    - store_code=A668 | order_number=T499 | payment_date=2025-09-12T09:52:20+05:30
+    - store_code=A668 | order_number=T499 | payment_date=2025-09-12T09:52:48+05:30
+    - store_code=A668 | order_number=T892 | payment_date=2025-08-27T16:53:46+05:30
+    - store_code=A668 | order_number=T892 | payment_date=2025-08-27T16:54:34+05:30
+    - store_code=A668 | order_number=T973 | payment_date=2025-08-31T16:20:27+05:30
+    - store_code=A668 | order_number=T973 | payment_date=2025-08-31T16:20:37+05:30
+    - store_code=A668 | order_number=T973 | payment_date=2025-08-31T16:21:41+05:30
+    - store_code=A668 | order_number=T998 | payment_date=2025-08-31T17:50:21+05:30
+    - store_code=A668 | order_number=T998 | payment_date=2025-08-31T17:50:38+05:30
+    - store_code=A668 | order_number=T998 | payment_date=2025-08-31T17:50:48+05:30
+    - store_code=A668 | order_number=T998 | payment_date=2025-08-31T17:50:59+05:30
+    - store_code=A668 | order_number=T1021 | payment_date=2025-09-28T16:06:40+05:30
+    - store_code=A668 | order_number=T1021 | payment_date=2025-09-28T16:07:02+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:05:02+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:05:18+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:05:39+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:05:52+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:06:07+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:06:16+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:06:26+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:06:38+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:06:49+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:06:59+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:07:10+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:07:23+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:07:31+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:07:39+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:07:47+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:07:54+05:30
+    - store_code=A668 | order_number=T1029 | payment_date=2025-09-12T20:23:29+05:30
+    - store_code=A668 | order_number=T1029 | payment_date=2025-09-12T20:23:42+05:30
+    - store_code=A668 | order_number=T1042 | payment_date=2025-09-07T19:29:03+05:30
+    - store_code=A668 | order_number=T1042 | payment_date=2025-09-07T19:29:25+05:30
+    - store_code=A668 | order_number=T1059 | payment_date=2025-09-17T17:22:26+05:30
+    - store_code=A668 | order_number=T1059 | payment_date=2025-09-17T17:22:42+05:30
+    - store_code=A668 | order_number=T1067 | payment_date=2025-09-18T09:40:13+05:30
+    - store_code=A668 | order_number=T1067 | payment_date=2025-09-18T09:40:49+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:31:33+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:31:53+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:32:09+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:32:19+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:32:42+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:32:51+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:33:01+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:33:11+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:33:44+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:33:53+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:34:04+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:34:14+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:34:27+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:34:36+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:34:45+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:35:00+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:35:13+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:35:21+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:35:33+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:35:43+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:35:53+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:36:06+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:36:15+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:36:35+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:36:48+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:48:20+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:48:38+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:48:48+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:48:57+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:49:13+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:49:27+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:49:43+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:49:56+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:50:34+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:50:44+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:50:52+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:51:00+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:51:09+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:51:20+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:51:35+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:51:45+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:51:56+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:52:12+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:52:20+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:52:31+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:52:45+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:53:01+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:53:10+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:53:18+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:53:31+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:53:40+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:53:50+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:54:04+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:54:24+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:55:14+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:55:32+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:55:43+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:55:54+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:56:02+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:56:12+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:56:22+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:56:47+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:57:06+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:57:16+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T15:48:45+05:30
+    - store_code=A668 | order_number=T1094 | payment_date=2025-09-21T17:52:51+05:30
+    - store_code=A668 | order_number=T1094 | payment_date=2025-09-21T18:23:56+05:30
+    - store_code=A668 | order_number=T1100 | payment_date=2025-09-23T13:19:03+05:30
+    - store_code=A668 | order_number=T1100 | payment_date=2025-09-23T13:19:28+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:44:49+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:45:10+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:45:31+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:45:51+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:46:01+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:46:09+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:46:23+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:46:32+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:46:41+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:46:50+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:47:00+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:47:58+05:30
+    - store_code=A668 | order_number=T1107 | payment_date=2025-10-04T20:10:03+05:30
+    - store_code=A668 | order_number=T1107 | payment_date=2025-10-04T20:12:29+05:30
+    - store_code=A668 | order_number=T1110 | payment_date=2025-09-19T14:00:55+05:30
+    - store_code=A668 | order_number=T1110 | payment_date=2025-09-19T14:01:11+05:30
+    - store_code=A668 | order_number=T1110 | payment_date=2025-09-19T14:01:21+05:30
+    - store_code=A668 | order_number=T1110 | payment_date=2025-09-19T14:01:29+05:30
+    - store_code=A668 | order_number=T1159 | payment_date=2025-09-29T14:35:11+05:30
+    - store_code=A668 | order_number=T1159 | payment_date=2025-09-29T14:36:25+05:30
+    - store_code=A668 | order_number=T1159 | payment_date=2025-09-29T14:36:40+05:30
+    - store_code=A668 | order_number=T1290 | payment_date=2025-10-26T20:02:50+05:30
+    - store_code=A668 | order_number=T1290 | payment_date=2025-10-26T20:03:02+05:30
+    - store_code=A668 | order_number=T1300 | payment_date=2025-10-29T16:16:18+05:30
+    - store_code=A668 | order_number=T1300 | payment_date=2025-10-29T16:16:44+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:27:28+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:27:40+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:27:50+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:28:01+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:28:12+05:30
   duplicate_count: 136
+  duplicate rows:
+    - store_code=A668 | order_number=T499 | payment_date=2025-09-12T09:52:20+05:30
+    - store_code=A668 | order_number=T499 | payment_date=2025-09-12T09:52:48+05:30
+    - store_code=A668 | order_number=T892 | payment_date=2025-08-27T16:53:46+05:30
+    - store_code=A668 | order_number=T892 | payment_date=2025-08-27T16:54:34+05:30
+    - store_code=A668 | order_number=T973 | payment_date=2025-08-31T16:20:27+05:30
+    - store_code=A668 | order_number=T973 | payment_date=2025-08-31T16:20:37+05:30
+    - store_code=A668 | order_number=T973 | payment_date=2025-08-31T16:21:41+05:30
+    - store_code=A668 | order_number=T998 | payment_date=2025-08-31T17:50:21+05:30
+    - store_code=A668 | order_number=T998 | payment_date=2025-08-31T17:50:38+05:30
+    - store_code=A668 | order_number=T998 | payment_date=2025-08-31T17:50:48+05:30
+    - store_code=A668 | order_number=T998 | payment_date=2025-08-31T17:50:59+05:30
+    - store_code=A668 | order_number=T1021 | payment_date=2025-09-28T16:06:40+05:30
+    - store_code=A668 | order_number=T1021 | payment_date=2025-09-28T16:07:02+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:05:02+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:05:18+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:05:39+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:05:52+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:06:07+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:06:16+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:06:26+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:06:38+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:06:49+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:06:59+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:07:10+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:07:23+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:07:31+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:07:39+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:07:47+05:30
+    - store_code=A668 | order_number=T1027 | payment_date=2025-09-05T17:07:54+05:30
+    - store_code=A668 | order_number=T1029 | payment_date=2025-09-12T20:23:29+05:30
+    - store_code=A668 | order_number=T1029 | payment_date=2025-09-12T20:23:42+05:30
+    - store_code=A668 | order_number=T1042 | payment_date=2025-09-07T19:29:03+05:30
+    - store_code=A668 | order_number=T1042 | payment_date=2025-09-07T19:29:25+05:30
+    - store_code=A668 | order_number=T1059 | payment_date=2025-09-17T17:22:26+05:30
+    - store_code=A668 | order_number=T1059 | payment_date=2025-09-17T17:22:42+05:30
+    - store_code=A668 | order_number=T1067 | payment_date=2025-09-18T09:40:13+05:30
+    - store_code=A668 | order_number=T1067 | payment_date=2025-09-18T09:40:49+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:31:33+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:31:53+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:32:09+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:32:19+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:32:42+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:32:51+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:33:01+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:33:11+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:33:44+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:33:53+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:34:04+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:34:14+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:34:27+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:34:36+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:34:45+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:35:00+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:35:13+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:35:21+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:35:33+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:35:43+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:35:53+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:36:06+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:36:15+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:36:35+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:36:48+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:48:20+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:48:38+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:48:48+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:48:57+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:49:13+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:49:27+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:49:43+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:49:56+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:50:34+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:50:44+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:50:52+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:51:00+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:51:09+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:51:20+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:51:35+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:51:45+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:51:56+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:52:12+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:52:20+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:52:31+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:52:45+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:53:01+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:53:10+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:53:18+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:53:31+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:53:40+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:53:50+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:54:04+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:54:24+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:55:14+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:55:32+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:55:43+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:55:54+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:56:02+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:56:12+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:56:22+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:56:47+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:57:06+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T13:57:16+05:30
+    - store_code=A668 | order_number=T1069 | payment_date=2025-09-12T15:48:45+05:30
+    - store_code=A668 | order_number=T1094 | payment_date=2025-09-21T17:52:51+05:30
+    - store_code=A668 | order_number=T1094 | payment_date=2025-09-21T18:23:56+05:30
+    - store_code=A668 | order_number=T1100 | payment_date=2025-09-23T13:19:03+05:30
+    - store_code=A668 | order_number=T1100 | payment_date=2025-09-23T13:19:28+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:44:49+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:45:10+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:45:31+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:45:51+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:46:01+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:46:09+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:46:23+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:46:32+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:46:41+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:46:50+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:47:00+05:30
+    - store_code=A668 | order_number=T1101 | payment_date=2025-09-16T12:47:58+05:30
+    - store_code=A668 | order_number=T1107 | payment_date=2025-10-04T20:10:03+05:30
+    - store_code=A668 | order_number=T1107 | payment_date=2025-10-04T20:12:29+05:30
+    - store_code=A668 | order_number=T1110 | payment_date=2025-09-19T14:00:55+05:30
+    - store_code=A668 | order_number=T1110 | payment_date=2025-09-19T14:01:11+05:30
+    - store_code=A668 | order_number=T1110 | payment_date=2025-09-19T14:01:21+05:30
+    - store_code=A668 | order_number=T1110 | payment_date=2025-09-19T14:01:29+05:30
+    - store_code=A668 | order_number=T1159 | payment_date=2025-09-29T14:35:11+05:30
+    - store_code=A668 | order_number=T1159 | payment_date=2025-09-29T14:36:25+05:30
+    - store_code=A668 | order_number=T1159 | payment_date=2025-09-29T14:36:40+05:30
+    - store_code=A668 | order_number=T1290 | payment_date=2025-10-26T20:02:50+05:30
+    - store_code=A668 | order_number=T1290 | payment_date=2025-10-26T20:03:02+05:30
+    - store_code=A668 | order_number=T1300 | payment_date=2025-10-29T16:16:18+05:30
+    - store_code=A668 | order_number=T1300 | payment_date=2025-10-29T16:16:44+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:27:28+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:27:40+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:27:50+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:28:01+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:28:12+05:30
+
+Notes:
+- (none)
 ---
 Email 14:
 TD Orders & Sales Run Summary
-Run ID: 20260115_143701561898_A668_004 | Env: dev
+Run ID: 20260115_154310285062_A668_004 | Env: dev
 Report Date: 2025-11-19
-Started (Asia/Kolkata): 15-01-2026 20:21:38
-Finished (Asia/Kolkata): 15-01-2026 20:26:00
-Total Duration: 00:04:21
-Overall Status: ok (Orders: warning, Sales: warning)
+Started (Asia/Kolkata): 15-01-2026 21:27:53
+Finished (Asia/Kolkata): 15-01-2026 21:32:17
+Total Duration: 00:04:23
+Overall Status: success (Orders: success_with_warnings, Sales: success_with_warnings)
 Windows Completed: 1 / 1
 Missing Windows: 0
 
 **Per Store Orders Metrics:**
-- A668 — OK
+- A668 — SUCCESS
+  filenames: A668_td_orders_20251119_20260115.xlsx
   rows_downloaded: 496
   rows_ingested: 496
+  inserted: 473
+  updated: 23
   warning_count: 2
+  warning rows:
+    - store_code=A668 | order_number=T1798 | ingest_remarks=Phone value 'A668--7051' is invalid and was dropped
+    - store_code=A668 | order_number=T1842 | ingest_remarks=Phone value 'A668--7051' is invalid and was dropped
   dropped_count: 0
+  dropped rows:
+    - (none)
 
 **Per Store Sales Metrics:**
-- A668 — OK
-  rows_downloaded: 550
-  rows_ingested: 550
+- A668 — SUCCESS
+  filenames: A668_td_sales_20251119_20260115.xlsx
+  rows_downloaded: 551
+  rows_ingested: 551
+  inserted: 520
+  updated: 31
   warning_count: 2
+  warning rows:
+    - store_code=A668 | order_number=T1538 | ingest_remarks=Phone value 'A668--7051' is invalid and was dropped
+    - store_code=A668 | order_number=T1798 | ingest_remarks=Phone value 'A668--7051' is invalid and was dropped
   dropped_count: 0
+  dropped rows:
+    - (none)
   edited_count: 58
+  edited rows:
+    - store_code=A668 | order_number=T1210 | payment_date=2025-12-14T10:10:41+05:30
+    - store_code=A668 | order_number=T1210 | payment_date=2026-01-02T11:49:22+05:30
+    - store_code=A668 | order_number=T1233 | payment_date=2025-12-09T13:48:28+05:30
+    - store_code=A668 | order_number=T1233 | payment_date=2025-12-09T13:48:35+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:27:28+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:27:40+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:27:50+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:28:01+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:28:12+05:30
+    - store_code=A668 | order_number=T1560 | payment_date=2025-11-29T11:16:41+05:30
+    - store_code=A668 | order_number=T1560 | payment_date=2025-11-29T11:17:01+05:30
+    - store_code=A668 | order_number=T1560 | payment_date=2025-11-29T11:17:28+05:30
+    - store_code=A668 | order_number=T1560 | payment_date=2025-11-29T11:17:49+05:30
+    - store_code=A668 | order_number=T1572 | payment_date=2025-12-05T13:45:53+05:30
+    - store_code=A668 | order_number=T1572 | payment_date=2025-12-05T13:46:13+05:30
+    - store_code=A668 | order_number=T1572 | payment_date=2025-12-05T14:03:14+05:30
+    - store_code=A668 | order_number=T1607 | payment_date=2025-11-29T10:05:41+05:30
+    - store_code=A668 | order_number=T1607 | payment_date=2025-11-29T10:06:33+05:30
+    - store_code=A668 | order_number=T1625 | payment_date=2025-12-08T19:14:23+05:30
+    - store_code=A668 | order_number=T1625 | payment_date=2025-12-08T19:14:39+05:30
+    - store_code=A668 | order_number=T1647 | payment_date=2025-12-03T11:56:02+05:30
+    - store_code=A668 | order_number=T1647 | payment_date=2025-12-03T11:56:16+05:30
+    - store_code=A668 | order_number=T1774 | payment_date=2025-12-23T15:39:17+05:30
+    - store_code=A668 | order_number=T1774 | payment_date=2025-12-23T15:39:29+05:30
+    - store_code=A668 | order_number=T1808 | payment_date=2025-12-26T18:59:18+05:30
+    - store_code=A668 | order_number=T1808 | payment_date=2026-01-08T12:48:00+05:30
+    - store_code=A668 | order_number=T1829 | payment_date=2025-12-26T15:00:27+05:30
+    - store_code=A668 | order_number=T1829 | payment_date=2026-01-02T20:48:02+05:30
+    - store_code=A668 | order_number=T1872 | payment_date=2025-12-28T16:42:43+05:30
+    - store_code=A668 | order_number=T1867 | payment_date=2025-12-30T19:46:16+05:30
+    - store_code=A668 | order_number=T1872 | payment_date=2026-01-01T16:46:13+05:30
+    - store_code=A668 | order_number=T1869 | payment_date=2026-01-02T15:12:39+05:30
+    - store_code=A668 | order_number=T1869 | payment_date=2026-01-03T10:19:01+05:30
+    - store_code=A668 | order_number=T1867 | payment_date=2026-01-08T12:39:02+05:30
+    - store_code=A668 | order_number=T1878 | payment_date=2026-01-12T14:37:54+05:30
+    - store_code=A668 | order_number=T1878 | payment_date=2026-01-12T14:38:34+05:30
+    - store_code=A668 | order_number=T1883 | payment_date=2025-12-29T19:25:31+05:30
+    - store_code=A668 | order_number=T1883 | payment_date=2026-01-03T10:17:55+05:30
+    - store_code=A668 | order_number=T1888 | payment_date=2026-01-01T18:57:14+05:30
+    - store_code=A668 | order_number=T1888 | payment_date=2026-01-08T12:43:31+05:30
+    - store_code=A668 | order_number=T1904 | payment_date=2026-01-02T13:32:33+05:30
+    - store_code=A668 | order_number=T1904 | payment_date=2026-01-06T15:18:57+05:30
+    - store_code=A668 | order_number=T1912 | payment_date=2026-01-11T13:19:14+05:30
+    - store_code=A668 | order_number=T1912 | payment_date=2026-01-12T15:00:56+05:30
+    - store_code=A668 | order_number=T1916 | payment_date=2026-01-04T18:47:48+05:30
+    - store_code=A668 | order_number=T1916 | payment_date=2026-01-06T18:57:54+05:30
+    - store_code=A668 | order_number=T1929 | payment_date=2026-01-04T18:43:01+05:30
+    - store_code=A668 | order_number=T1938 | payment_date=2026-01-05T14:37:57+05:30
+    - store_code=A668 | order_number=T1930 | payment_date=2026-01-10T11:37:22+05:30
+    - store_code=A668 | order_number=T1929 | payment_date=2026-01-12T15:04:41+05:30
+    - store_code=A668 | order_number=T1930 | payment_date=2026-01-12T15:05:16+05:30
+    - store_code=A668 | order_number=T1938 | payment_date=2026-01-12T15:26:57+05:30
+    - store_code=A668 | order_number=T1955 | payment_date=2026-01-07T12:50:26+05:30
+    - store_code=A668 | order_number=T1955 | payment_date=2026-01-12T15:32:31+05:30
+    - store_code=A668 | order_number=T1952 | payment_date=2026-01-12T15:49:45+05:30
+    - store_code=A668 | order_number=T1952 | payment_date=2026-01-12T15:50:40+05:30
+    - store_code=A668 | order_number=T1961 | payment_date=2026-01-11T16:52:36+05:30
+    - store_code=A668 | order_number=T1961 | payment_date=2026-01-12T15:55:01+05:30
   duplicate_count: 58
+  duplicate rows:
+    - store_code=A668 | order_number=T1210 | payment_date=2025-12-14T10:10:41+05:30
+    - store_code=A668 | order_number=T1210 | payment_date=2026-01-02T11:49:22+05:30
+    - store_code=A668 | order_number=T1233 | payment_date=2025-12-09T13:48:28+05:30
+    - store_code=A668 | order_number=T1233 | payment_date=2025-12-09T13:48:35+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:27:28+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:27:40+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:27:50+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:28:01+05:30
+    - store_code=A668 | order_number=T1470 | payment_date=2025-11-19T16:28:12+05:30
+    - store_code=A668 | order_number=T1560 | payment_date=2025-11-29T11:16:41+05:30
+    - store_code=A668 | order_number=T1560 | payment_date=2025-11-29T11:17:01+05:30
+    - store_code=A668 | order_number=T1560 | payment_date=2025-11-29T11:17:28+05:30
+    - store_code=A668 | order_number=T1560 | payment_date=2025-11-29T11:17:49+05:30
+    - store_code=A668 | order_number=T1572 | payment_date=2025-12-05T13:45:53+05:30
+    - store_code=A668 | order_number=T1572 | payment_date=2025-12-05T13:46:13+05:30
+    - store_code=A668 | order_number=T1572 | payment_date=2025-12-05T14:03:14+05:30
+    - store_code=A668 | order_number=T1607 | payment_date=2025-11-29T10:05:41+05:30
+    - store_code=A668 | order_number=T1607 | payment_date=2025-11-29T10:06:33+05:30
+    - store_code=A668 | order_number=T1625 | payment_date=2025-12-08T19:14:23+05:30
+    - store_code=A668 | order_number=T1625 | payment_date=2025-12-08T19:14:39+05:30
+    - store_code=A668 | order_number=T1647 | payment_date=2025-12-03T11:56:02+05:30
+    - store_code=A668 | order_number=T1647 | payment_date=2025-12-03T11:56:16+05:30
+    - store_code=A668 | order_number=T1774 | payment_date=2025-12-23T15:39:17+05:30
+    - store_code=A668 | order_number=T1774 | payment_date=2025-12-23T15:39:29+05:30
+    - store_code=A668 | order_number=T1808 | payment_date=2025-12-26T18:59:18+05:30
+    - store_code=A668 | order_number=T1808 | payment_date=2026-01-08T12:48:00+05:30
+    - store_code=A668 | order_number=T1829 | payment_date=2025-12-26T15:00:27+05:30
+    - store_code=A668 | order_number=T1829 | payment_date=2026-01-02T20:48:02+05:30
+    - store_code=A668 | order_number=T1872 | payment_date=2025-12-28T16:42:43+05:30
+    - store_code=A668 | order_number=T1867 | payment_date=2025-12-30T19:46:16+05:30
+    - store_code=A668 | order_number=T1872 | payment_date=2026-01-01T16:46:13+05:30
+    - store_code=A668 | order_number=T1869 | payment_date=2026-01-02T15:12:39+05:30
+    - store_code=A668 | order_number=T1869 | payment_date=2026-01-03T10:19:01+05:30
+    - store_code=A668 | order_number=T1867 | payment_date=2026-01-08T12:39:02+05:30
+    - store_code=A668 | order_number=T1878 | payment_date=2026-01-12T14:37:54+05:30
+    - store_code=A668 | order_number=T1878 | payment_date=2026-01-12T14:38:34+05:30
+    - store_code=A668 | order_number=T1883 | payment_date=2025-12-29T19:25:31+05:30
+    - store_code=A668 | order_number=T1883 | payment_date=2026-01-03T10:17:55+05:30
+    - store_code=A668 | order_number=T1888 | payment_date=2026-01-01T18:57:14+05:30
+    - store_code=A668 | order_number=T1888 | payment_date=2026-01-08T12:43:31+05:30
+    - store_code=A668 | order_number=T1904 | payment_date=2026-01-02T13:32:33+05:30
+    - store_code=A668 | order_number=T1904 | payment_date=2026-01-06T15:18:57+05:30
+    - store_code=A668 | order_number=T1912 | payment_date=2026-01-11T13:19:14+05:30
+    - store_code=A668 | order_number=T1912 | payment_date=2026-01-12T15:00:56+05:30
+    - store_code=A668 | order_number=T1916 | payment_date=2026-01-04T18:47:48+05:30
+    - store_code=A668 | order_number=T1916 | payment_date=2026-01-06T18:57:54+05:30
+    - store_code=A668 | order_number=T1929 | payment_date=2026-01-04T18:43:01+05:30
+    - store_code=A668 | order_number=T1938 | payment_date=2026-01-05T14:37:57+05:30
+    - store_code=A668 | order_number=T1930 | payment_date=2026-01-10T11:37:22+05:30
+    - store_code=A668 | order_number=T1929 | payment_date=2026-01-12T15:04:41+05:30
+    - store_code=A668 | order_number=T1930 | payment_date=2026-01-12T15:05:16+05:30
+    - store_code=A668 | order_number=T1938 | payment_date=2026-01-12T15:26:57+05:30
+    - store_code=A668 | order_number=T1955 | payment_date=2026-01-07T12:50:26+05:30
+    - store_code=A668 | order_number=T1955 | payment_date=2026-01-12T15:32:31+05:30
+    - store_code=A668 | order_number=T1952 | payment_date=2026-01-12T15:49:45+05:30
+    - store_code=A668 | order_number=T1952 | payment_date=2026-01-12T15:50:40+05:30
+    - store_code=A668 | order_number=T1961 | payment_date=2026-01-11T16:52:36+05:30
+    - store_code=A668 | order_number=T1961 | payment_date=2026-01-12T15:55:01+05:30
+
+Notes:
+- (none)
 ---
 Email 15:
 Orders Sync Profiler Run Summary
-Run ID: 20260115_143701561898
+Run ID: 20260115_154310285062
 Env: dev
-Started: 2026-01-15T14:37:01.562828+00:00
-Finished: 2026-01-15T14:56:08.792112+00:00
-Total Duration: 00:19:07
+Started: 2026-01-15T15:43:10.286673+00:00
+Finished: 2026-01-15T16:02:27.179911+00:00
+Total Duration: 00:19:16
 Overall Status: success_with_warnings
 Windows Completed: 14 / 14
 Missing Windows: 0
@@ -460,20 +1836,20 @@ Missing Windows: 0
 Per Store Summary:
 - A817 (td_orders_sync) — success
   window_count: 3
-  primary_metrics: rows_downloaded=1488, rows_ingested=1488, staging_rows=1488, staging_inserted=1471, staging_updated=17, final_inserted=1471, final_updated=17
-  secondary_metrics: rows_downloaded=1530, rows_ingested=1530, staging_rows=1530, staging_inserted=1505, staging_updated=25, final_inserted=1505, final_updated=25
+  primary_metrics: rows_downloaded=1488, rows_ingested=1488, inserted=1471, updated=17
+  secondary_metrics: rows_downloaded=1530, rows_ingested=1530, inserted=1505, updated=25
 - A668 (td_orders_sync) — success
   window_count: 4
-  primary_metrics: rows_downloaded=2091, rows_ingested=2091, staging_rows=2091, staging_inserted=2050, staging_updated=41, final_inserted=2050, final_updated=41
-  secondary_metrics: rows_downloaded=2132, rows_ingested=2132, staging_rows=2132, staging_inserted=2087, staging_updated=45, final_inserted=2087, final_updated=45
+  primary_metrics: rows_downloaded=2091, rows_ingested=2091, inserted=2050, updated=41
+  secondary_metrics: rows_downloaded=2133, rows_ingested=2133, inserted=2088, updated=45
 - UC567 (uc_orders_sync) — success_with_warnings
   window_count: 4
-  primary_metrics: rows_downloaded=1163, rows_ingested=1163, staging_rows=1163, staging_inserted=1142, staging_updated=20, final_inserted=1142, final_updated=20
-  secondary_metrics: rows_downloaded=0, rows_ingested=0, staging_rows=0, staging_inserted=0, staging_updated=0, final_inserted=0, final_updated=0, label=not applicable
+  primary_metrics: rows_downloaded=1163, rows_ingested=1163, inserted=1142, updated=20
+  secondary_metrics: rows_downloaded=0, rows_ingested=0, inserted=0, updated=0, label=not applicable
 - UC610 (uc_orders_sync) — success_with_warnings
   window_count: 3
-  primary_metrics: rows_downloaded=688, rows_ingested=688, staging_rows=688, staging_inserted=682, staging_updated=6, final_inserted=682, final_updated=6
-  secondary_metrics: rows_downloaded=0, rows_ingested=0, staging_rows=0, staging_inserted=0, staging_updated=0, final_inserted=0, final_updated=0, label=not applicable
+  primary_metrics: rows_downloaded=688, rows_ingested=688, inserted=682, updated=6
+  secondary_metrics: rows_downloaded=0, rows_ingested=0, inserted=0, updated=0, label=not applicable
 
 Warnings:
 - WINDOW_WARNINGS: UC567 had 2 window(s) completed with warnings
