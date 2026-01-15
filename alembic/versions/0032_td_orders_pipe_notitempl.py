@@ -34,6 +34,8 @@ email_templates = sa.table(
 )
 
 NEW_BODY_TEMPLATE = """
+{{ (summary_text or td_summary_text) }}
+{% if not (summary_text or td_summary_text) %}
 TD Orders & Sales Run Summary
 Run ID: {{ run_id }} | Env: {{ run_env }}
 Report Date: {{ report_date }}
@@ -41,22 +43,14 @@ Started (Asia/Kolkata): {{ started_at_formatted }}
 Finished (Asia/Kolkata): {{ finished_at_formatted }}
 {% if total_time_taken %}Total Duration: {{ total_time_taken }}{% endif %}
 Overall Status: {{ td_overall_status or overall_status }} (Orders: {{ orders_status }}, Sales: {{ sales_status }})
-{% if expected_windows or completed_windows %}
-Windows Completed: {{ completed_windows or 0 }} / {{ expected_windows or 0 }}
-{% endif %}
-{% if missing_windows is not none %}Missing Windows: {{ missing_windows or 0 }}{% endif %}
-{% if missing_window_stores %}Missing Window Stores: {{ missing_window_stores | join(', ') }}{% endif %}
 
 **Per Store Orders Metrics:**
 {% for store in stores %}
 - {{ store.store_code or 'UNKNOWN' }} — {{ (store.orders_status or 'unknown')|upper }}
   rows_downloaded: {{ store.orders_rows_downloaded or 0 }}
   rows_ingested: {{ store.orders_rows_ingested or store.orders_final_rows or store.orders_staging_rows or 0 }}
-  inserted: {{ store.primary_final_inserted or store.primary_staging_inserted or 0 }}
-  updated: {{ store.primary_final_updated or store.primary_staging_updated or 0 }}
   warning_count: {{ store.orders_warning_count or 0 }}
   dropped_count: {{ store.orders_dropped_rows_count or 0 }}
-  {% if store.missing_window_lines %}missing_windows: {{ store.missing_window_lines | join(', ') }}{% endif %}
 {% endfor %}
 
 **Per Store Sales Metrics:**
@@ -64,8 +58,6 @@ Windows Completed: {{ completed_windows or 0 }} / {{ expected_windows or 0 }}
 - {{ store.store_code or 'UNKNOWN' }} — {{ (store.sales_status or 'unknown')|upper }}
   rows_downloaded: {{ store.sales_rows_downloaded or 0 }}
   rows_ingested: {{ store.sales_rows_ingested or store.sales_final_rows or store.sales_staging_rows or 0 }}
-  inserted: {{ store.secondary_final_inserted or store.secondary_staging_inserted or 0 }}
-  updated: {{ store.secondary_final_updated or store.secondary_staging_updated or 0 }}
   warning_count: {{ store.sales_warning_count or 0 }}
   dropped_count: {{ store.sales_dropped_rows_count or 0 }}
   edited_count: {{ store.sales_rows_edited or 0 }}
@@ -74,12 +66,6 @@ Windows Completed: {{ completed_windows or 0 }} / {{ expected_windows or 0 }}
 {% if td_all_stores_failed %}
 All TD stores failed for Orders and Sales.
 {% endif %}
-
-{% if fact_sections_text %}
-Row-level facts:
-{{ fact_sections_text }}
-{% elif summary_text %}
-{{ summary_text }}
 {% endif %}
 """
 
@@ -92,7 +78,7 @@ Started: {{ started_at }} | Finished: {{ finished_at }}
 {% if overall_status == 'ok' %}
 All TD stores completed successfully. Proceed with merge to production using (cost_center, order_number, order_date).
 {% elif overall_status == 'warning' %}
-Mixed TD outcomes: review failed stores above, re-run after fixing source data, and rely on the unique business key for idempotent merges.
+Mixed TD outcomes: review failed stores above, re-run after fixing source data, and rely on the unique business key to avoid duplicates.
 {% else %}
 All TD stores failed. Check error summaries and retry; no production rows were updated due to the enforced unique constraint.
 {% endif %}
