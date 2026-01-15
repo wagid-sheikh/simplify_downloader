@@ -163,8 +163,8 @@ def test_td_context_prefers_structured_summary_text() -> None:
     assert context["summary_text"] == summary_text
     assert context["td_all_stores_failed"] is False
     assert context["started_at_formatted"] == "05-01-2024 10:30:00"
-    assert context["orders_status"] == "warning"
-    assert context["sales_status"] == "warning"
+    assert context["orders_status"] == "success_with_warnings"
+    assert context["sales_status"] == "success_with_warnings"
 
 
 def test_td_template_renders_payload_without_false_failure_note() -> None:

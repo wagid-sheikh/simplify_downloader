@@ -53,6 +53,9 @@ UNIFIED_METRIC_FIELDS = (
     "final_inserted",
     "final_updated",
 )
+FACT_ROW_COLUMNS = ("store_code", "order_number", "order_date", "customer_name", "mobile_number")
+FACT_ROW_COLUMNS_WITH_REMARKS = (*FACT_ROW_COLUMNS, "ingestion_remarks")
+MISSING_ORDER_NUMBER_PLACEHOLDER = "<missing_order_number>"
 TD_SALES_ROW_SAMPLE_LIMIT = 5
 TD_SALES_EDITED_LIMIT = 50
 
@@ -306,6 +309,22 @@ def _prefix_unified_metrics(prefix: str, metrics: Mapping[str, Any]) -> dict[str
     return {f"{prefix}{field}": metrics.get(field) for field in UNIFIED_METRIC_FIELDS}
 
 
+def _normalize_output_status(status: str | None) -> str:
+    normalized = str(status or "").lower()
+    mapping = {
+        "ok": "success",
+        "success": "success",
+        "warning": "success_with_warnings",
+        "warn": "success_with_warnings",
+        "success_with_warnings": "success_with_warnings",
+        "partial": "partial",
+        "skipped": "partial",
+        "error": "failed",
+        "failed": "failed",
+    }
+    return mapping.get(normalized, normalized or "unknown")
+
+
 def _status_explanation(status: str | None) -> str:
     return STATUS_EXPLANATIONS.get(str(status or "").lower(), "run completed with mixed results")
 
@@ -329,15 +348,6 @@ def _build_outcome_summary(overall_status: str | None, *, store_count: int) -> d
     else:
         summary = _status_explanation(normalized)
     return {"outcome_label": label, "outcome_summary": summary}
-
-
-def _status_counts(stores_payload: list[Mapping[str, Any]]) -> dict[str, int]:
-    counts = {"ok": 0, "warning": 0, "error": 0}
-    for store in stores_payload:
-        status = str(store.get("status") or "").lower()
-        if status in counts:
-            counts[status] += 1
-    return counts
 
 
 def _normalize_uc_status(status: str | None) -> str:
@@ -378,6 +388,201 @@ def _normalize_warning_entries(entries: Iterable[Any] | None) -> list[str]:
         if text and text not in warnings:
             warnings.append(text)
     return warnings
+
+
+def _count_from_fields(report: Mapping[str, Any], *keys: str) -> int:
+    for key in keys:
+        value = report.get(key)
+        if isinstance(value, int):
+            return _coerce_int(value) or 0
+        if isinstance(value, list):
+            return len(value)
+    return 0
+
+
+def _with_store_metadata(
+    rows: Iterable[Mapping[str, Any]] | None,
+    *,
+    store_code: str,
+    include_order_number: bool = False,
+    include_remarks: bool = False,
+) -> list[dict[str, Any]]:
+    prepared: list[dict[str, Any]] = []
+    for row in rows or []:
+        data = dict(row)
+        data.setdefault("store_code", store_code)
+        if include_order_number:
+            order_number = data.get("order_number")
+            if not order_number:
+                values = data.get("values") or {}
+                for key in ("order_number", "Order Number", "Order No.", "Booking ID"):
+                    if values.get(key):
+                        order_number = values.get(key)
+                        break
+            data["order_number"] = "" if order_number in (None, "") else str(order_number)
+        if include_remarks:
+            remarks = data.get("ingest_remarks") or data.get("remarks")
+            if remarks is not None:
+                data["ingest_remarks"] = str(remarks)
+        prepared.append(data)
+    return prepared
+
+
+def _extract_row_value(row: Mapping[str, Any], key: str, *fallback_keys: str) -> Any:
+    values = row.get("values") or {}
+    for candidate in (key, *fallback_keys):
+        if candidate in row and row.get(candidate) not in (None, ""):
+            return row.get(candidate)
+        if isinstance(values, Mapping) and values.get(candidate) not in (None, ""):
+            return values.get(candidate)
+    return None
+
+
+def _format_identifier(row: Mapping[str, Any], *, include_extras: bool = False) -> str:
+    store_code = _normalize_store_code(str(_extract_row_value(row, "store_code") or "").strip()) or ""
+    order_number = str(_extract_row_value(row, "order_number", "Order Number", "Order No.") or "").strip()
+    base = " ".join(part for part in (store_code, order_number) if part)
+    if not include_extras:
+        return base
+    extras: list[str] = []
+    customer_identifier = _extract_row_value(row, "customer_identifier", "Customer Identifier")
+    if customer_identifier:
+        extras.append(f"customer_identifier={customer_identifier}")
+    order_date = _extract_row_value(row, "order_date", "Order Date", "invoice_date", "Invoice Date")
+    if order_date:
+        extras.append(f"order_date={order_date}")
+    payment_date = _extract_row_value(row, "payment_date", "Payment Date")
+    if payment_date:
+        extras.append(f"payment_date={payment_date}")
+    if extras:
+        return f"{base} ({', '.join(str(value) for value in extras)})" if base else ", ".join(extras)
+    return base
+
+
+def _unique_rows(rows: Iterable[Mapping[str, Any]], formatter: Callable[[Mapping[str, Any]], str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for row in rows:
+        formatted = formatter(row).strip()
+        if not formatted or formatted in seen:
+            continue
+        seen.add(formatted)
+        ordered.append(formatted)
+    return ordered
+
+
+def _format_row_block(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    formatter: Callable[[Mapping[str, Any]], str],
+    limit: int,
+) -> tuple[list[str], bool]:
+    entries = _unique_rows(rows, formatter)
+    truncated = len(entries) > limit
+    samples = entries[:limit]
+    if not samples:
+        return ["- (none)"], False
+    lines = [f"- {entry}" for entry in samples]
+    if truncated:
+        lines.append(f"... additional {len(entries) - limit} row(s) truncated")
+    return lines, truncated
+
+
+def _normalize_fact_value(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    return str(value).strip()
+
+
+def _normalize_fact_row(
+    row: Mapping[str, Any],
+    *,
+    include_remarks: bool,
+    store_code_fallback: str | None = None,
+) -> dict[str, str]:
+    store_code = _normalize_store_code(_normalize_fact_value(_extract_row_value(row, "store_code") or "")) or ""
+    if not store_code and store_code_fallback:
+        store_code = _normalize_store_code(store_code_fallback) or store_code_fallback
+    order_number = _normalize_fact_value(
+        _extract_row_value(row, "order_number", "Order Number", "Order No.", "Booking ID")
+    )
+    if not order_number:
+        order_number = MISSING_ORDER_NUMBER_PLACEHOLDER
+    order_date = _normalize_fact_value(
+        _extract_row_value(row, "order_date", "Order Date", "invoice_date", "Invoice Date")
+    )
+    customer_name = _normalize_fact_value(
+        _extract_row_value(row, "customer_name", "Customer Name", "Customer")
+    )
+    mobile_number = _normalize_fact_value(
+        _extract_row_value(row, "mobile_number", "Mobile Number", "Phone", "Phone Number")
+    )
+    normalized = {
+        "store_code": store_code,
+        "order_number": order_number,
+        "order_date": order_date,
+        "customer_name": customer_name,
+        "mobile_number": mobile_number,
+    }
+    if include_remarks:
+        remarks = _normalize_fact_value(
+            _extract_row_value(row, "ingest_remarks", "ingestion_remarks", "remarks")
+        )
+        normalized["ingestion_remarks"] = remarks
+    return normalized
+
+
+def _build_fact_rows(
+    rows: Iterable[Mapping[str, Any]] | None,
+    *,
+    include_remarks: bool,
+    store_code_fallback: str | None = None,
+) -> list[dict[str, str]]:
+    normalized_rows = [
+        _normalize_fact_row(row, include_remarks=include_remarks, store_code_fallback=store_code_fallback)
+        for row in rows or []
+    ]
+    return sorted(normalized_rows, key=lambda row: (row.get("store_code") or "", row.get("order_number") or ""))
+
+
+def _format_fact_section(
+    title: str,
+    rows: list[dict[str, str]],
+    *,
+    include_remarks: bool,
+) -> list[str]:
+    if not rows:
+        return []
+    columns = FACT_ROW_COLUMNS_WITH_REMARKS if include_remarks else FACT_ROW_COLUMNS
+    header = " | ".join(columns)
+    lines = [f"{title} ({len(rows)}):", header]
+    for row in rows:
+        lines.append(" | ".join(row.get(column, "") for column in columns))
+    return lines
+
+
+def _format_fact_sections_text(
+    *,
+    warning_rows: list[dict[str, str]] | None = None,
+    dropped_rows: list[dict[str, str]] | None = None,
+    edited_rows: list[dict[str, str]] | None = None,
+    error_rows: list[dict[str, str]] | None = None,
+) -> str:
+    sections: list[str] = []
+    sections.extend(_format_fact_section("Warning rows", warning_rows or [], include_remarks=True))
+    sections.extend(_format_fact_section("Dropped rows", dropped_rows or [], include_remarks=True))
+    sections.extend(_format_fact_section("Edited rows", edited_rows or [], include_remarks=False))
+    sections.extend(_format_fact_section("Error rows", error_rows or [], include_remarks=True))
+    return "\n".join(sections)
+
+
+def _append_fact_sections(summary_text: str, fact_text: str) -> str:
+    if not fact_text:
+        return summary_text
+    header = "Row-level facts:"
+    if summary_text:
+        return f"{summary_text.rstrip()}\n\n{header}\n{fact_text}"
+    return f"{header}\n{fact_text}"
 
 
 def _uc_warning_entries(
@@ -656,6 +861,26 @@ def _build_store_plans(
         store_context["missing_windows"] = resolved_missing
         store_context["missing_window_lines"] = _format_missing_window_lines(resolved_missing)
         store_context["missing_window_count"] = len(store_context["missing_window_lines"])
+        store_payloads = store_context.get("stores") or []
+        store_payload = next(
+            (
+                payload
+                for payload in store_payloads
+                if _normalize_store_code(payload.get("store_code")) == _normalize_store_code(store_code)
+            ),
+            None,
+        )
+        fact_sections_text = ""
+        if store_payload:
+            fact_sections_text = str(store_payload.get("fact_sections_text") or "")
+            store_context["warning_fact_rows"] = store_payload.get("warning_fact_rows") or []
+            store_context["dropped_fact_rows"] = store_payload.get("dropped_fact_rows") or []
+            store_context["edited_fact_rows"] = store_payload.get("edited_fact_rows") or []
+            store_context["error_fact_rows"] = store_payload.get("error_fact_rows") or []
+        store_context["fact_sections_text"] = fact_sections_text
+        store_context["summary_text"] = _append_fact_sections(
+            str(store_context.get("summary_text") or ""), fact_sections_text
+        )
         subject = _render_template(template["subject_template"], store_context)
         body = _render_template(template["body_template"], store_context)
         plans.append(
@@ -878,98 +1103,6 @@ def _build_td_orders_context(
                 return _coerce_int(candidate) or 0
         return 0
 
-    def _count_from_fields(report: Mapping[str, Any], *keys: str) -> int:
-        for key in keys:
-            value = report.get(key)
-            if isinstance(value, int):
-                return _coerce_int(value) or 0
-            if isinstance(value, list):
-                return len(value)
-        return 0
-
-    def _with_store_metadata(
-        rows: Iterable[Mapping[str, Any]] | None,
-        *,
-        store_code: str,
-        include_order_number: bool = False,
-        include_remarks: bool = False,
-    ) -> list[dict[str, Any]]:
-        prepared: list[dict[str, Any]] = []
-        for row in rows or []:
-            data = dict(row)
-            data.setdefault("store_code", store_code)
-            if include_order_number:
-                order_number = data.get("order_number")
-                if not order_number:
-                    values = data.get("values") or {}
-                    for key in ("order_number", "Order Number", "Order No."):
-                        if values.get(key):
-                            order_number = values.get(key)
-                            break
-                data["order_number"] = "" if order_number in (None, "") else str(order_number)
-            if include_remarks:
-                remarks = data.get("ingest_remarks") or data.get("remarks")
-                if remarks is not None:
-                    data["ingest_remarks"] = str(remarks)
-            prepared.append(data)
-        return prepared
-
-    def _extract_row_value(row: Mapping[str, Any], key: str, *fallback_keys: str) -> Any:
-        values = row.get("values") or {}
-        for candidate in (key, *fallback_keys):
-            if candidate in row and row.get(candidate) not in (None, ""):
-                return row.get(candidate)
-            if isinstance(values, Mapping) and values.get(candidate) not in (None, ""):
-                return values.get(candidate)
-        return None
-
-    def _format_identifier(row: Mapping[str, Any], *, include_extras: bool = False) -> str:
-        store_code = _normalize_store_code(str(_extract_row_value(row, "store_code") or "").strip()) or ""
-        order_number = str(_extract_row_value(row, "order_number", "Order Number", "Order No.") or "").strip()
-        base = " ".join(part for part in (store_code, order_number) if part)
-        if not include_extras:
-            return base
-        extras: list[str] = []
-        customer_identifier = _extract_row_value(row, "customer_identifier", "Customer Identifier")
-        if customer_identifier:
-            extras.append(f"customer_identifier={customer_identifier}")
-        order_date = _extract_row_value(row, "order_date", "Order Date")
-        if order_date:
-            extras.append(f"order_date={order_date}")
-        payment_date = _extract_row_value(row, "payment_date", "Payment Date")
-        if payment_date:
-            extras.append(f"payment_date={payment_date}")
-        if extras:
-            return f"{base} ({', '.join(str(value) for value in extras)})" if base else ", ".join(extras)
-        return base
-
-    def _unique_rows(rows: Iterable[Mapping[str, Any]], formatter: Callable[[Mapping[str, Any]], str]) -> list[str]:
-        seen: set[str] = set()
-        ordered: list[str] = []
-        for row in rows:
-            formatted = formatter(row).strip()
-            if not formatted or formatted in seen:
-                continue
-            seen.add(formatted)
-            ordered.append(formatted)
-        return ordered
-
-    def _format_row_block(
-        rows: Iterable[Mapping[str, Any]],
-        *,
-        formatter: Callable[[Mapping[str, Any]], str],
-        limit: int,
-    ) -> tuple[list[str], bool]:
-        entries = _unique_rows(rows, formatter)
-        truncated = len(entries) > limit
-        samples = entries[:limit]
-        if not samples:
-            return ["- (none)"], False
-        lines = [f"- {entry}" for entry in samples]
-        if truncated:
-            lines.append(f"... additional {len(entries) - limit} row(s) truncated")
-        return lines, truncated
-
     stores: list[dict[str, Any]] = []
     resolved_missing_windows = _normalize_missing_windows(missing_windows_by_store)
     primary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
@@ -1010,10 +1143,12 @@ def _build_td_orders_context(
         secondary_metrics = _build_unified_metrics(sales)
         _sum_unified_metrics(primary_totals, primary_metrics)
         _sum_unified_metrics(secondary_totals, secondary_metrics)
-        orders_status = str(orders.get("status") or "").lower()
-        sales_status = str(sales.get("status") or "").lower()
-        orders_status_conflict = orders_status == "skipped" and _has_positive_unified_metrics(primary_metrics)
-        sales_status_conflict = sales_status == "skipped" and _has_positive_unified_metrics(secondary_metrics)
+        orders_status_raw = str(orders.get("status") or "").lower()
+        sales_status_raw = str(sales.get("status") or "").lower()
+        orders_status = _normalize_output_status(orders_status_raw)
+        sales_status = _normalize_output_status(sales_status_raw)
+        orders_status_conflict = orders_status_raw == "skipped" and _has_positive_unified_metrics(primary_metrics)
+        sales_status_conflict = sales_status_raw == "skipped" and _has_positive_unified_metrics(secondary_metrics)
         if orders_status_conflict:
             logger.warning(
                 "orders report status skipped but rows present",
@@ -1024,12 +1159,38 @@ def _build_td_orders_context(
                 "sales report status skipped but rows present",
                 extra={"store_code": store.get("store_code"), "report": "sales"},
             )
+        warning_fact_rows = _build_fact_rows(
+            orders_warning_rows + sales_warning_rows,
+            include_remarks=True,
+            store_code_fallback=store_code,
+        )
+        dropped_fact_rows = _build_fact_rows(
+            orders_dropped_rows + sales_dropped_rows,
+            include_remarks=True,
+            store_code_fallback=store_code,
+        )
+        edited_fact_rows = _build_fact_rows(
+            sales_edited_rows,
+            include_remarks=False,
+            store_code_fallback=store_code,
+        )
+        error_fact_rows = _build_fact_rows(
+            (orders.get("error_rows") or []) + (sales.get("error_rows") or []),
+            include_remarks=True,
+            store_code_fallback=store_code,
+        )
+        fact_sections_text = _format_fact_sections_text(
+            warning_rows=warning_fact_rows,
+            dropped_rows=dropped_fact_rows,
+            edited_rows=edited_fact_rows,
+            error_rows=error_fact_rows,
+        )
         stores.append(
             {
                 "store_code": store_code,
-                "status": store.get("status"),
+                "status": _normalize_output_status(store.get("status")),
                 "message": store.get("message"),
-                "orders_status": orders.get("status"),
+                "orders_status": orders_status,
                 "orders_status_conflict": orders_status_conflict,
                 "orders_filenames": orders.get("filenames") or [],
                 "orders_staging_rows": orders.get("staging_rows"),
@@ -1042,7 +1203,7 @@ def _build_td_orders_context(
                 "orders_warning_rows": orders.get("warning_rows") or [],
                 "orders_warnings": orders.get("warnings") or [],
                 "orders_error": orders.get("error_message"),
-                "sales_status": sales.get("status"),
+                "sales_status": sales_status,
                 "sales_status_conflict": sales_status_conflict,
                 "sales_filenames": sales.get("filenames") or [],
                 "sales_staging_rows": sales.get("staging_rows"),
@@ -1059,6 +1220,11 @@ def _build_td_orders_context(
                 "sales_duplicate_rows": sales.get("duplicate_rows") or [],
                 "sales_warnings": sales.get("warnings") or [],
                 "sales_error": sales.get("error_message"),
+                "warning_fact_rows": warning_fact_rows,
+                "dropped_fact_rows": dropped_fact_rows,
+                "edited_fact_rows": edited_fact_rows,
+                "error_fact_rows": error_fact_rows,
+                "fact_sections_text": fact_sections_text,
                 "missing_windows": missing_windows,
                 "missing_window_lines": missing_window_lines,
                 "missing_window_count": len(missing_window_lines),
@@ -1111,7 +1277,7 @@ def _build_td_orders_context(
         filtered_ingest_rows
     )
 
-    summary_text = _td_summary_text_from_payload(run_data) or run_data.get("summary_text") or ""
+    summary_text = run_data.get("summary_text") or _td_summary_text_from_payload(run_data) or ""
     started_at_formatted = _format_td_timestamp(payload.get("started_at") or run_data.get("started_at"))
     finished_at_formatted = _format_td_timestamp(payload.get("finished_at") or run_data.get("finished_at"))
     window_summary = metrics.get("window_summary") or {}
@@ -1124,10 +1290,14 @@ def _build_td_orders_context(
         "started_at_formatted": started_at_formatted,
         "finished_at_formatted": finished_at_formatted,
         "total_time_taken": payload.get("total_time_taken") or run_data.get("total_time_taken"),
-        "overall_status": payload.get("overall_status") or run_data.get("overall_status"),
-        "td_overall_status": payload.get("overall_status") or run_data.get("overall_status"),
-        "orders_status": payload.get("orders_status") or (metrics.get("orders") or {}).get("overall_status"),
-        "sales_status": payload.get("sales_status") or (metrics.get("sales") or {}).get("overall_status"),
+        "overall_status": _normalize_output_status(payload.get("overall_status") or run_data.get("overall_status")),
+        "td_overall_status": _normalize_output_status(payload.get("overall_status") or run_data.get("overall_status")),
+        "orders_status": _normalize_output_status(
+            payload.get("orders_status") or (metrics.get("orders") or {}).get("overall_status")
+        ),
+        "sales_status": _normalize_output_status(
+            payload.get("sales_status") or (metrics.get("sales") or {}).get("overall_status")
+        ),
         "stores": stores,
         "td_all_stores_failed": _td_all_stores_failed(stores_payload),
         "notification_payload": payload,
@@ -1167,7 +1337,6 @@ def _build_uc_orders_context(
         for store_code, outcome in store_outcomes.items()
         if store_code
     }
-    status_counts = _status_counts(stores_payload)
     window_audit = metrics.get("window_audit") or []
     for entry in window_audit:
         status = str(entry.get("status") or "").lower()
@@ -1224,7 +1393,28 @@ def _build_uc_orders_context(
         primary_metrics = _build_unified_metrics(store)
         _sum_unified_metrics(primary_totals, primary_metrics)
         store_status = _uc_store_status(store, uc_status_by_store)
-        show_error_message = status in {"error"} or store_status in {"failed", "partial"}
+        show_error_message = store_status in {"failed", "partial"}
+        warning_rows = _with_store_metadata(
+            store.get("warning_rows"),
+            store_code=store.get("store_code"),
+            include_order_number=True,
+            include_remarks=True,
+        )
+        dropped_rows = _with_store_metadata(
+            store.get("dropped_rows"),
+            store_code=store.get("store_code"),
+            include_order_number=True,
+            include_remarks=True,
+        )
+        warning_fact_rows = _build_fact_rows(
+            warning_rows, include_remarks=True, store_code_fallback=store_code
+        )
+        dropped_fact_rows = _build_fact_rows(
+            dropped_rows, include_remarks=True, store_code_fallback=store_code
+        )
+        fact_sections_text = _format_fact_sections_text(
+            warning_rows=warning_fact_rows, dropped_rows=dropped_fact_rows
+        )
         stores.append(
             {
                 "store_code": store_code,
@@ -1235,6 +1425,11 @@ def _build_uc_orders_context(
                 or (store.get("message") if not show_error_message else None),
                 "warning_count": resolved_warning_count,
                 "warnings_summary": warning_summary,
+                "warning_rows": warning_rows,
+                "dropped_rows": dropped_rows,
+                "warning_fact_rows": warning_fact_rows,
+                "dropped_fact_rows": dropped_fact_rows,
+                "fact_sections_text": fact_sections_text,
                 "filename": store.get("filename"),
                 "staging_rows": store.get("staging_rows"),
                 "final_rows": store.get("final_rows"),
@@ -1275,6 +1470,7 @@ def _build_uc_orders_context(
     )
     store_count = len(stores_payload)
     outcome_summary = _build_outcome_summary(overall_status, store_count=store_count)
+    status_counts = _uc_status_counts(stores_payload, uc_status_by_store)
 
     return {
         "summary_text": summary_text,
@@ -1287,9 +1483,10 @@ def _build_uc_orders_context(
         "store_count": store_count,
         **outcome_summary,
         "store_status_counts": status_counts,
-        "stores_succeeded": status_counts.get("ok", 0),
-        "stores_warned": status_counts.get("warning", 0),
-        "stores_failed": status_counts.get("error", 0),
+        "stores_succeeded": status_counts.get("success", 0),
+        "stores_warned": status_counts.get("success_with_warnings", 0),
+        "stores_failed": status_counts.get("failed", 0),
+        "stores_partial": status_counts.get("partial", 0),
         "uc_store_status_counts": uc_status_counts,
         "stores": stores,
         "uc_all_stores_failed": _uc_all_stores_failed(stores_payload),
@@ -1341,6 +1538,18 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
         )
 
     summary_text = run_data.get("summary_text") or ""
+    row_facts = metrics.get("row_facts") or {}
+    warning_fact_rows = _build_fact_rows(row_facts.get("warning_rows"), include_remarks=True)
+    dropped_fact_rows = _build_fact_rows(row_facts.get("dropped_rows"), include_remarks=True)
+    edited_fact_rows = _build_fact_rows(row_facts.get("edited_rows"), include_remarks=False)
+    error_fact_rows = _build_fact_rows(row_facts.get("error_rows"), include_remarks=True)
+    fact_sections_text = _format_fact_sections_text(
+        warning_rows=warning_fact_rows,
+        dropped_rows=dropped_fact_rows,
+        edited_rows=edited_fact_rows,
+        error_rows=error_fact_rows,
+    )
+    summary_text = _append_fact_sections(summary_text, fact_sections_text)
     overall_status = payload.get("overall_status") or run_data.get("overall_status")
     store_count = len(stores_payload)
     outcome_summary = _build_outcome_summary(overall_status, store_count=store_count)
@@ -1367,6 +1576,11 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
         "warnings_count": len(warnings),
         "has_warnings": bool(warnings),
         "notification_payload": payload,
+        "fact_sections_text": fact_sections_text,
+        "warning_fact_rows": warning_fact_rows,
+        "dropped_fact_rows": dropped_fact_rows,
+        "edited_fact_rows": edited_fact_rows,
+        "error_fact_rows": error_fact_rows,
     }
 
 
@@ -1375,8 +1589,8 @@ def _td_all_stores_failed(stores_payload: list[Mapping[str, Any]]) -> bool:
         return True
 
     def _failed(report: Mapping[str, Any]) -> bool:
-        status = str(report.get("status") or "").lower()
-        if status in {"ok", "warning", "skipped"}:
+        status = _normalize_output_status(report.get("status"))
+        if status in {"success", "success_with_warnings", "partial"}:
             return False
         return True
 
@@ -1393,8 +1607,8 @@ def _uc_all_stores_failed(stores_payload: list[Mapping[str, Any]]) -> bool:
         return True
 
     def _failed(report: Mapping[str, Any]) -> bool:
-        status = str(report.get("status") or "").lower()
-        if status in {"ok", "warning", "skipped"}:
+        status = _normalize_output_status(report.get("status"))
+        if status in {"success", "success_with_warnings", "partial"}:
             return False
         return True
 
@@ -1448,19 +1662,28 @@ def _td_summary_text_from_payload(run_data: Mapping[str, Any]) -> str:
                 return len(value)
         return 0
 
+    def _inserted_updated(report: Mapping[str, Any]) -> tuple[int, int]:
+        inserted = _coalesce_int(report, "final_inserted", "staging_inserted") or 0
+        updated = _coalesce_int(report, "final_updated", "staging_updated") or 0
+        return inserted, updated
+
     def _format_store_section(*, sales: bool = False) -> list[str]:
         lines: list[str] = []
         for store in stores_payload:
             report = (store.get("sales") if sales else store.get("orders")) or {}
-            status = str(report.get("status") or "unknown").upper()
+            status = _normalize_output_status(report.get("status"))
+            status_label = _format_status_label(status).upper()
             rows_downloaded = report.get("rows_downloaded") or 0
             rows_ingested = _rows_ingested(report)
+            inserted, updated = _inserted_updated(report)
             warning_count = _count(report, "warning_count", "warning_rows", "warnings")
             dropped_count = _count(report, "dropped_rows_count", "dropped_rows")
             base = [
-                f"- {store.get('store_code') or 'UNKNOWN'} — {status}",
+                f"- {store.get('store_code') or 'UNKNOWN'} — {status_label}",
                 f"  rows_downloaded: {rows_downloaded}",
                 f"  rows_ingested: {rows_ingested}",
+                f"  inserted: {inserted}",
+                f"  updated: {updated}",
                 f"  warning_count: {warning_count}",
                 f"  dropped_count: {dropped_count}",
             ]
@@ -1484,7 +1707,13 @@ def _td_summary_text_from_payload(run_data: Mapping[str, Any]) -> str:
     orders_status = payload.get("orders_status") or (metrics.get("orders") or {}).get("overall_status")
     sales_status = payload.get("sales_status") or (metrics.get("sales") or {}).get("overall_status")
     window_summary = metrics.get("window_summary") or {}
-    status_line = f"Overall Status: {payload.get('overall_status') or run_data.get('overall_status')} (Orders: {orders_status}, Sales: {sales_status})"
+    status_line = (
+        "Overall Status: "
+        f"{_format_status_label(_normalize_output_status(payload.get('overall_status') or run_data.get('overall_status')))}"
+        " (Orders: "
+        f"{_format_status_label(_normalize_output_status(orders_status))}, Sales: "
+        f"{_format_status_label(_normalize_output_status(sales_status))})"
+    )
     window_lines = []
     if window_summary:
         window_lines = [
@@ -1589,11 +1818,13 @@ def _uc_summary_text_from_payload(
     for store in stores_payload:
         store_code = store.get("store_code") or "UNKNOWN"
         rows_downloaded = _coerce_int(store.get("rows_downloaded")) or 0
-        unique_inserted = _coerce_int(store.get("final_inserted")) or 0
-        overlap_updates = _coerce_int(store.get("final_updated")) or 0
-        rows_skipped_invalid = _coerce_int(store.get("rows_skipped_invalid")) or 0
+        rows_ingested = _coalesce_int(store, "rows_ingested", "final_rows", "staging_rows") or 0
+        inserted = _coalesce_int(store, "final_inserted", "staging_inserted") or 0
+        updated = _coalesce_int(store, "final_updated", "staging_updated") or 0
+        dropped_count = _coerce_int(store.get("rows_skipped_invalid")) or 0
+        warning_count = _coerce_int(store.get("warning_count")) or 0
         reconciliation = (
-            f"{rows_downloaded} == {unique_inserted} + {overlap_updates} + {rows_skipped_invalid}"
+            f"{rows_downloaded} == {inserted} + {updated} + {dropped_count}"
         )
         reason_counts = store.get("rows_skipped_invalid_reasons") or {}
         reason_parts = [f"{key}={value}" for key, value in reason_counts.items()] or ["(none)"]
@@ -1601,10 +1832,12 @@ def _uc_summary_text_from_payload(
             [
                 f"- {store_code}",
                 f"  rows_downloaded: {rows_downloaded}",
-                f"  unique_inserted: {unique_inserted}",
-                f"  overlap_duplicates_updated: {overlap_updates}",
-                f"  rows_skipped_invalid: {rows_skipped_invalid} ({', '.join(reason_parts)})",
-                f"  reconciliation: rows_downloaded == unique_inserted + overlap_duplicates_updated + rows_skipped_invalid ({reconciliation})",
+                f"  rows_ingested: {rows_ingested}",
+                f"  inserted: {inserted}",
+                f"  updated: {updated}",
+                f"  warning_count: {warning_count}",
+                f"  dropped_count: {dropped_count} ({', '.join(reason_parts)})",
+                f"  reconciliation: rows_downloaded == inserted + updated + dropped_count ({reconciliation})",
             ]
         )
     if store_lines:

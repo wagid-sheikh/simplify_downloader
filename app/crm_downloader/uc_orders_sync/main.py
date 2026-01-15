@@ -271,6 +271,24 @@ class StoreOutcome:
     staging_updated: int | None = None
     final_inserted: int | None = None
     final_updated: int | None = None
+    warning_rows: list[dict[str, Any]] = field(default_factory=list)
+    dropped_rows: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _normalize_output_status(status: str | None) -> str:
+    normalized = str(status or "").lower()
+    mapping = {
+        "ok": "success",
+        "success": "success",
+        "warning": "success_with_warnings",
+        "warn": "success_with_warnings",
+        "success_with_warnings": "success_with_warnings",
+        "partial": "partial",
+        "skipped": "partial",
+        "error": "failed",
+        "failed": "failed",
+    }
+    return mapping.get(normalized, normalized or "unknown")
 
 
 @dataclass
@@ -312,12 +330,12 @@ class UcOrdersDiscoverySummary:
     def overall_status(self) -> str:
         statuses = [outcome.status for outcome in self.store_outcomes.values()]
         if any(status == "error" for status in statuses):
-            return "error"
+            return "failed"
         if any(status == "warning" for status in statuses):
-            return "warning"
+            return "success_with_warnings"
         if not statuses and not self.store_codes:
-            return "warning"
-        return "ok" if statuses else "error"
+            return "success_with_warnings"
+        return "success" if statuses else "failed"
 
     def _window_summary(self) -> Dict[str, Any]:
         expected_windows = len(self.store_codes)
@@ -340,9 +358,10 @@ class UcOrdersDiscoverySummary:
         error = sum(1 for outcome in self.store_outcomes.values() if outcome.status == "error")
         overall_status = self.overall_status()
         status_explanation = {
-            "ok": "run completed with no issues recorded",
-            "warning": "run completed but row-level issues were recorded",
-            "error": "run failed or data could not be ingested",
+            "success": "run completed with no issues recorded",
+            "success_with_warnings": "run completed with row-level warnings",
+            "partial": "run completed but row-level issues were recorded",
+            "failed": "run failed or data could not be ingested",
         }.get(overall_status, "run completed with mixed results")
         window_summary = self._window_summary()
         missing_windows_line = f"Missing Windows: {window_summary['missing_windows']}"
@@ -351,7 +370,7 @@ class UcOrdersDiscoverySummary:
         return (
             "UC GST Run Summary\n"
             f"Overall Status: {overall_status} ({status_explanation})\n"
-            f"Stores: {ok} ok, {warn} warnings, {error} errors across {total} stores\n"
+            f"Stores: {ok} success, {warn} success_with_warnings, {error} failed across {total} stores\n"
             f"Windows Completed: {window_summary['completed_windows']} / {window_summary['expected_windows']}\n"
             f"{missing_windows_line}"
         )
@@ -393,7 +412,7 @@ class UcOrdersDiscoverySummary:
                 else:
                     info_message = outcome.message
             summary[code] = {
-                "status": outcome.status if outcome else "error",
+                "status": _normalize_output_status(outcome.status if outcome else "error"),
                 "message": outcome.message if outcome else "No outcome recorded",
                 "error_message": error_message,
                 "info_message": info_message,
@@ -443,12 +462,14 @@ class UcOrdersDiscoverySummary:
             stores.append(
                 {
                     "store_code": code,
-                    "status": outcome.status if outcome else "error",
+                    "status": _normalize_output_status(outcome.status if outcome else "error"),
                     "message": outcome.message if outcome else "No outcome recorded",
                     "error_message": error_message,
                     "info_message": info_message,
                     "skip_reason": outcome.skip_reason if outcome else None,
                     "warning_count": outcome.warning_count if outcome else None,
+                    "warning_rows": list(outcome.warning_rows) if outcome else [],
+                    "dropped_rows": list(outcome.dropped_rows) if outcome else [],
                     "filename": filename,
                     "staging_rows": outcome.staging_rows if outcome else None,
                     "final_rows": outcome.final_rows if outcome else None,
@@ -1683,6 +1704,8 @@ async def _run_store_discovery(
             staging_updated=ingest_result.staging_updated if ingest_result else None,
             final_inserted=ingest_result.final_inserted if ingest_result else None,
             final_updated=ingest_result.final_updated if ingest_result else None,
+            warning_rows=ingest_result.warning_rows if ingest_result else [],
+            dropped_rows=ingest_result.dropped_rows if ingest_result else [],
         )
         summary.record_store(store.store_code, outcome)
         log_event(
