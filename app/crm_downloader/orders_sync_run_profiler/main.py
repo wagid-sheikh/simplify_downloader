@@ -659,7 +659,7 @@ def _summary_text(
 
 
 def _init_status_counts() -> dict[str, int]:
-    return {status: 0 for status in ("success", "partial", "failed", "skipped")}
+    return {status: 0 for status in ("success", "success_with_warnings", "partial", "failed", "skipped")}
 
 
 def _merge_status_counts(target: dict[str, int], source: Mapping[str, int]) -> None:
@@ -714,6 +714,8 @@ def _rollup_overall_status(status_counts: Mapping[str, int]) -> str:
         return "failed"
     if status_counts.get("partial", 0) > 0:
         return "partial"
+    if status_counts.get("success_with_warnings", 0) > 0:
+        return "success_with_warnings"
     if status_counts.get("success", 0) > 0:
         return "success"
     if status_counts.get("skipped", 0) > 0:
@@ -1135,6 +1137,8 @@ async def _run_store_windows(
         status_counts[status] = status_counts.get(status, 0) + 1
         if status == "partial":
             overall_status = "partial"
+        elif status == "success_with_warnings" and overall_status == "success":
+            overall_status = "success_with_warnings"
         stop_after_window = _should_stop_after_window(
             status=status, error_message=error_message, status_note=status_note
         )
@@ -1167,9 +1171,9 @@ async def _run_store_windows(
     }
     phases = {
         "window": {
-            "ok": sum("success" in line for line in detail_lines),
-            "warning": sum("partial" in line for line in detail_lines),
-            "error": sum("failed" in line for line in detail_lines),
+            "ok": status_counts.get("success", 0) + status_counts.get("skipped", 0),
+            "warning": status_counts.get("partial", 0) + status_counts.get("success_with_warnings", 0),
+            "error": status_counts.get("failed", 0),
         }
     }
     summary_record = {
@@ -1415,6 +1419,25 @@ async def main(
     overall_status = _rollup_overall_status(total_status_counts)
     finished_at = datetime.now(timezone.utc)
     window_summary = _build_window_summary(total_windows, missing_windows)
+    allow_missing_windows = _env_flag("ORDERS_SYNC_ALLOW_MISSING_WINDOWS")
+    if (
+        window_summary.get("completed_windows") != window_summary.get("expected_windows")
+        and not allow_missing_windows
+    ):
+        overall_status = "failed"
+        missing_summary = (
+            f"Missing windows detected: {window_summary.get('missing_windows', 0)} missing "
+            f"of {window_summary.get('expected_windows', 0)}."
+        )
+        warning_messages.append(missing_summary)
+        log_event(
+            logger=logger,
+            phase="summary",
+            status="error",
+            message="Missing windows detected; marking run failed",
+            missing_windows=missing_windows or None,
+            window_summary=window_summary,
+        )
     total_seconds = max(0, int((finished_at - started_at).total_seconds()))
     hours = total_seconds // 3600
     minutes = (total_seconds % 3600) // 60
@@ -1444,7 +1467,8 @@ async def main(
             "window": {
                 "ok": total_status_counts.get("success", 0)
                 + total_status_counts.get("skipped", 0),
-                "warning": total_status_counts.get("partial", 0),
+                "warning": total_status_counts.get("partial", 0)
+                + total_status_counts.get("success_with_warnings", 0),
                 "error": total_status_counts.get("failed", 0),
             }
         },
