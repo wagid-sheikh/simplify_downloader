@@ -6,8 +6,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0052_orders_sync_fact_sections_templates"
-down_revision = "0051_update_order_notification_templates"
+revision = "0052_orders_sync_fact_sections"
+down_revision = "0051_update_order_notification"
 branch_labels = None
 depends_on = None
 

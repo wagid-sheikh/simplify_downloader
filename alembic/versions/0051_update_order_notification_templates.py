@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0051_update_order_notification_templates"
+revision = "0051_update_order_notification"
 down_revision = "0050_uc_orders_determinisfootr"
 branch_labels = None
 depends_on = None
