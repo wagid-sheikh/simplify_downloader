@@ -48,3 +48,6 @@ git push origin v2.06
 
 git tag -a v2.07 -m "Before Starting Development of orders_sync_run_profiler_requirement"
 git push origin v2.07
+
+git tag -a v2.08 -m "partially stable orders_sync_run_profiler"
+git push origin v2.08
