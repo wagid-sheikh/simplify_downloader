@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0048_uc_success_with_warnings_templates"
+revision = "0048_uc_success_with_warnings"
 down_revision = "0047_uc_missing_window_list"
 branch_labels = None
 depends_on = None
