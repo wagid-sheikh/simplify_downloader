@@ -667,6 +667,15 @@ def _merge_status_counts(target: dict[str, int], source: Mapping[str, int]) -> N
         target[status] = target.get(status, 0) + int(count)
 
 
+def _window_warning_entries(store_code: str, status_counts: Mapping[str, int]) -> list[str]:
+    warning_windows = int(status_counts.get("success_with_warnings", 0) or 0)
+    if warning_windows <= 0:
+        return []
+    return [
+        f"WINDOW_WARNINGS: {store_code} had {warning_windows} window(s) completed with warnings"
+    ]
+
+
 def _init_ingestion_totals() -> dict[str, int]:
     return {
         "rows_downloaded": 0,
@@ -1385,6 +1394,9 @@ async def main(
             warning_messages.append(
                 f"{result.store_code}: {len(status_conflicts)} window(s) skipped but rows present"
             )
+        warning_messages.extend(
+            _window_warning_entries(result.store_code, result.status_counts)
+        )
         primary_metrics = {field: 0 for field in UNIFIED_METRIC_FIELDS}
         secondary_metrics = {field: 0 for field in UNIFIED_METRIC_FIELDS}
         secondary_label = None
@@ -1417,6 +1429,13 @@ async def main(
         _sum_unified_metrics(secondary_totals, secondary_metrics)
         _accumulate_ingestion_totals(grand_ingestion_totals, {"total": result.ingestion_totals})
     overall_status = _rollup_overall_status(total_status_counts)
+    warning_windows_total = int(total_status_counts.get("success_with_warnings", 0) or 0)
+    if warning_windows_total > 0 and not any(
+        entry.startswith("WINDOW_WARNINGS:") for entry in warning_messages
+    ):
+        warning_messages.append(
+            f"WINDOW_WARNINGS: {warning_windows_total} window(s) completed with warnings"
+        )
     finished_at = datetime.now(timezone.utc)
     window_summary = _build_window_summary(total_windows, missing_windows)
     allow_missing_windows = _env_flag("ORDERS_SYNC_ALLOW_MISSING_WINDOWS")
