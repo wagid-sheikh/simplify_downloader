@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0050_uc_orders_deterministic_footer"
+revision = "0050_uc_orders_determinisfootr"
 down_revision = "0049_widen_orders_sync_logstatus"
 branch_labels = None
 depends_on = None

@@ -1,196 +1,39 @@
 Email 1:
-UC Orders Sync Run Summary
-Run ID: 20260115_132236782272_UC567_001_attempt1 | Env: dev
-Report Date: 2025-02-09
-Started: 2026-01-15T13:22:37.055973+00:00 | Finished: 2026-01-15T13:24:13.638915+00:00
-Total Duration: 00:01:36
-Overall Status: success
 
-**Per Store UC Metrics:**
-
-- UC567 — SUCCESS
-  filename: UC567_uc_gst_20250209_20250509.xlsx
-  staging_inserted: 277
-  staging_updated: 0
-  final_inserted: 277
-  final_updated: 0
-  warning_count: 0
-
-
-
-
-
-All UC stores completed successfully. Upsert using (cost_center, order_number, invoice_date) to keep reruns idempotent.
 ---
 Email 2:
-UC Orders Sync Run Summary
-Run ID: 20260115_132236782272_UC567_002_attempt1 | Env: dev
-Report Date: 2025-05-08
-Started: 2026-01-15T13:24:22.196809+00:00 | Finished: 2026-01-15T13:25:55.219571+00:00
-Total Duration: 00:01:33
-Overall Status: success
-
-**Per Store UC Metrics:**
-
-- UC567 — SUCCESS
-  filename: UC567_uc_gst_20250508_20250805.xlsx
-  staging_inserted: 263
-  staging_updated: 7
-  final_inserted: 263
-  final_updated: 7
-  warning_count: 0
-
-
-
-
-
-All UC stores completed successfully. Upsert using (cost_center, order_number, invoice_date) to keep reruns idempotent.
 
 ---
 Email 3:
-UC Orders Sync Run Summary
-Run ID: 20260115_132236782272_UC567_003_attempt1 | Env: dev
-Report Date: 2025-08-04
-Started: 2026-01-15T13:26:04.438589+00:00 | Finished: 2026-01-15T13:27:36.637803+00:00
-Total Duration: 00:01:32
-Overall Status: success_with_warnings
 
-**Per Store UC Metrics:**
-
-- UC567 — SUCCESS_WITH_WARNINGS
-  filename: UC567_uc_gst_20250804_20251101.xlsx
-  staging_inserted: 305
-  staging_updated: 2
-  final_inserted: 305
-  final_updated: 2
-  warning_count: 1
-
-
-
-
-
-
-Mixed UC outcomes: review warning/error stores above, fix issues, and rerun; unique constraints prevent duplicate rows on retry.
 ---
 Email 4:
-UC Orders Sync Run Summary
-Run ID: 20260115_132236782272_UC567_004_attempt1 | Env: dev
-Report Date: 2025-10-31
-Started: 2026-01-15T13:27:46.565089+00:00 | Finished: 2026-01-15T13:29:16.906986+00:00
-Total Duration: 00:01:30
-Overall Status: success_with_warnings
 
-**Per Store UC Metrics:**
-
-- UC567 — SUCCESS_WITH_WARNINGS
-  filename: UC567_uc_gst_20251031_20260115.xlsx
-  staging_inserted: 297
-  staging_updated: 11
-  final_inserted: 297
-  final_updated: 11
-  warning_count: 1
-
-
-
-
-
-
-Mixed UC outcomes: review warning/error stores above, fix issues, and rerun; unique constraints prevent duplicate rows on retry.
 ---
 Email 5:
-UC Orders Sync Run Summary
-Run ID: 20260115_132236782272_UC610_001_attempt1 | Env: dev
-Report Date: 2025-05-11
-Started: 2026-01-15T13:29:25.211034+00:00 | Finished: 2026-01-15T13:30:56.739513+00:00
-Total Duration: 00:01:31
-Overall Status: success
 
-**Per Store UC Metrics:**
-
-- UC610 — SUCCESS
-  filename: UC610_uc_gst_20250511_20250808.xlsx
-  staging_inserted: 188
-  staging_updated: 0
-  final_inserted: 188
-  final_updated: 0
-  warning_count: 0
-
-
-
-
-
-All UC stores completed successfully. Upsert using (cost_center, order_number, invoice_date) to keep reruns idempotent.
 ---
 Email 6:
-UC Orders Sync Run Summary
-Run ID: 20260115_132236782272_UC610_002_attempt1 | Env: dev
-Report Date: 2025-08-07
-Started: 2026-01-15T13:31:05.065810+00:00 | Finished: 2026-01-15T13:32:35.947898+00:00
-Total Duration: 00:01:30
-Overall Status: success_with_warnings
 
-**Per Store UC Metrics:**
-
-- UC610 — SUCCESS_WITH_WARNINGS
-  filename: UC610_uc_gst_20250807_20251104.xlsx
-  staging_inserted: 246
-  staging_updated: 2
-  final_inserted: 246
-  final_updated: 2
-  warning_count: 1
-
-
-
-
-
-
-Mixed UC outcomes: review warning/error stores above, fix issues, and rerun; unique constraints prevent duplicate rows on retry.
 ---
 Email 7:
-UC Orders Sync Run Summary
-Run ID: 20260115_132236782272_UC610_003_attempt1 | Env: dev
-Report Date: 2025-11-03
-Started: 2026-01-15T13:32:44.565702+00:00 | Finished: 2026-01-15T13:34:13.565429+00:00
-Total Duration: 00:01:28
-Overall Status: success
 
-**Per Store UC Metrics:**
-
-- UC610 — SUCCESS
-  filename: UC610_uc_gst_20251103_20260115.xlsx
-  staging_inserted: 248
-  staging_updated: 4
-  final_inserted: 248
-  final_updated: 4
-  warning_count: 0
-
-
-
-
-
-All UC stores completed successfully. Upsert using (cost_center, order_number, invoice_date) to keep reruns idempotent.
 ---
 Email 8:
-Orders Sync Profiler Run Summary
-Run ID: 20260115_132236782272
-Env: dev
-Started: 2026-01-15T13:22:36.783684+00:00
-Finished: 2026-01-15T13:34:22.032422+00:00
-Total Duration: 00:11:45
-Overall Status: success_with_warnings
-Windows Completed: 7 / 7
-Missing Windows: 0
 
-Per Store Summary:
-- UC567 (uc_orders_sync) — success_with_warnings
-  window_count: 4
-  primary_metrics: rows_downloaded=1163, rows_ingested=1163, staging_rows=1163, staging_inserted=1142, staging_updated=20, final_inserted=1142, final_updated=20
-  secondary_metrics: rows_downloaded=0, rows_ingested=0, staging_rows=0, staging_inserted=0, staging_updated=0, final_inserted=0, final_updated=0, label=not applicable
-- UC610 (uc_orders_sync) — success_with_warnings
-  window_count: 3
-  primary_metrics: rows_downloaded=688, rows_ingested=688, staging_rows=688, staging_inserted=682, staging_updated=6, final_inserted=682, final_updated=6
-  secondary_metrics: rows_downloaded=0, rows_ingested=0, staging_rows=0, staging_inserted=0, staging_updated=0, final_inserted=0, final_updated=0, label=not applicable
+---
+Email 9:
 
-Warnings:
-- WINDOW_WARNINGS: UC567 had 2 window(s) completed with warnings
-- WINDOW_WARNINGS: UC610 had 1 window(s) completed with warnings
+---
+Email 10:
+
+---
+Email 11:
+
+---
+Email 12:
+
+---
+Email 13:
+
+---
