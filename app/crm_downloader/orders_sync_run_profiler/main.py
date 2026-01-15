@@ -606,6 +606,8 @@ def _has_positive_ingestion_rows(ingestion_counts: Mapping[str, Any]) -> bool:
 def _normalize_window_status(
     *, pipeline_name: str, status: str, error_message: str | None
 ) -> tuple[str, str]:
+    if status == "success_with_warnings":
+        return "partial", " (success with warnings)"
     return status, ""
 
 
@@ -986,7 +988,7 @@ async def _run_store_windows(
                 )
             else:
                 status = fetched_status.lower()
-            if status not in {"success", "partial", "failed", "skipped"}:
+            if status not in {"success", "success_with_warnings", "partial", "failed", "skipped"}:
                 status = "failed"
             if fetched_status:
                 status, mapped_note = _normalize_window_status(
@@ -1039,7 +1041,7 @@ async def _run_store_windows(
             )
             if not fetched_status:
                 break
-            if status in {"failed", "partial"} and attempt == 0:
+            if status == "failed" and attempt == 0:
                 log_event(
                     logger=logger,
                     phase="window",
