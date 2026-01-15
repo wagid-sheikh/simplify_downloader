@@ -571,6 +571,22 @@ class StoreReport:
         }
 
 
+def _normalize_output_status(status: str | None) -> str:
+    normalized = str(status or "").lower()
+    mapping = {
+        "ok": "success",
+        "success": "success",
+        "warning": "success_with_warnings",
+        "warn": "success_with_warnings",
+        "success_with_warnings": "success_with_warnings",
+        "partial": "partial",
+        "skipped": "partial",
+        "error": "failed",
+        "failed": "failed",
+    }
+    return mapping.get(normalized, normalized or "unknown")
+
+
 @dataclass
 class TdOrdersDiscoverySummary:
     run_id: str
@@ -680,12 +696,12 @@ class TdOrdersDiscoverySummary:
     def overall_status(self) -> str:
         statuses = [outcome.status for outcome in self.store_outcomes.values()]
         if any(status == "error" for status in statuses):
-            return "error"
+            return "failed"
         if any(status == "warning" for status in statuses):
-            return "warning"
+            return "success_with_warnings"
         if not statuses and not self.store_codes:
-            return "warning"
-        return "ok" if statuses else "error"
+            return "success_with_warnings"
+        return "success" if statuses else "failed"
 
     def orders_overall_status(self) -> str:
         return self._overall_status_for_reports(self.orders_results)
@@ -695,11 +711,11 @@ class TdOrdersDiscoverySummary:
 
     def _overall_status_for_reports(self, reports: Mapping[str, StoreReport], *, include_sales_fields: bool = False) -> str:
         if not reports:
-            return "error"
+            return "failed"
         statuses = [report.status for report in reports.values()]
         non_skipped = [status for status in statuses if status != "skipped"]
         if not non_skipped:
-            return "ok"
+            return "success"
         all_success = all(status == "ok" for status in non_skipped)
         all_error = all(status == "error" for status in non_skipped)
         has_success_like = any(status in {"ok", "warning"} for status in non_skipped)
@@ -707,10 +723,10 @@ class TdOrdersDiscoverySummary:
             self._report_has_data_warnings(report, include_sales_fields=include_sales_fields) for report in reports.values()
         )
         if all_success and not data_warnings:
-            return "ok"
+            return "success"
         if all_error or not has_success_like:
-            return "error"
-        return "warning"
+            return "failed"
+        return "success_with_warnings"
 
     def _format_duration(self, finished_at: datetime) -> str:
         seconds = max(0, int((finished_at - self.started_at).total_seconds()))
@@ -746,6 +762,11 @@ class TdOrdersDiscoverySummary:
                 if candidate is not None:
                     return candidate
             return 0
+
+        def _inserted_updated(report: StoreReport) -> tuple[int, int]:
+            inserted = report.final_inserted if report.final_inserted is not None else report.staging_inserted
+            updated = report.final_updated if report.final_updated is not None else report.staging_updated
+            return _coerce_count(inserted), _coerce_count(updated)
 
         def _filter_row_fields(
             rows: Iterable[Mapping[str, Any]] | None,
@@ -848,11 +869,15 @@ class TdOrdersDiscoverySummary:
             )
             dropped_count = _coerce_count(report.dropped_rows_count if report.dropped_rows_count is not None else len(report.dropped_rows))
             filenames = ", ".join(report.filenames) if report.filenames else "none"
+            inserted, updated = _inserted_updated(report)
+            status_label = _normalize_output_status(report.status)
             base_lines = [
-                f"- {code} — {report.status.upper()}",
+                f"- {code} — {status_label.upper()}",
                 f"  filenames: {filenames}",
                 f"  rows_downloaded: {rows_downloaded}",
                 f"  rows_ingested: {_rows_ingested(report)}",
+                f"  inserted: {inserted}",
+                f"  updated: {updated}",
                 f"  warning_count: {warning_count}",
                 "  warning rows:",
                 *(
@@ -931,7 +956,9 @@ class TdOrdersDiscoverySummary:
             for code in codes:
                 orders_status = (snapshot_orders.get(code) or {}).get("status")
                 sales_status = (snapshot_sales.get(code) or {}).get("status")
-                if orders_status in {"ok", "warning"} or sales_status in {"ok", "warning"}:
+                if _normalize_output_status(orders_status) in {"success", "success_with_warnings"}:
+                    return False
+                if _normalize_output_status(sales_status) in {"success", "success_with_warnings"}:
                     return False
                 if orders_status == "skipped" or sales_status == "skipped":
                     return False
@@ -1022,7 +1049,8 @@ class TdOrdersDiscoverySummary:
                 details.append(report.message)
             if report.warnings:
                 details.append(f"warnings: {', '.join(report.warnings)}")
-            lines.append(f"- {code}: {report.status.upper()} | " + " | ".join(details))
+            status_label = _normalize_output_status(report.status).upper()
+            lines.append(f"- {code}: {status_label} | " + " | ".join(details))
         return lines
 
     def _format_report_counts(self, report: StoreReport) -> str:

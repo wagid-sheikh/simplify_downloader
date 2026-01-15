@@ -778,7 +778,18 @@ def _build_window_summary(
 
 
 def _format_unified_metrics(metrics: Mapping[str, Any]) -> str:
-    parts = [f"{field}={metrics.get(field)}" for field in UNIFIED_METRIC_FIELDS]
+    inserted = metrics.get("final_inserted")
+    if inserted is None:
+        inserted = metrics.get("staging_inserted")
+    updated = metrics.get("final_updated")
+    if updated is None:
+        updated = metrics.get("staging_updated")
+    parts = [
+        f"rows_downloaded={metrics.get('rows_downloaded')}",
+        f"rows_ingested={metrics.get('rows_ingested')}",
+        f"inserted={inserted}",
+        f"updated={updated}",
+    ]
     label = metrics.get("label")
     if label:
         parts.append(f"label={label}")

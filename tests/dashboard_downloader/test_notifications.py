@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from app.dashboard_downloader.notifications import _build_uc_orders_context, _prepare_ingest_remarks
+from app.dashboard_downloader.notifications import (
+    _build_fact_rows,
+    _build_uc_orders_context,
+    _format_fact_sections_text,
+    _prepare_ingest_remarks,
+)
 
 
 def test_prepare_ingest_remarks_truncates_rows_and_length() -> None:
@@ -44,3 +49,32 @@ def test_uc_orders_warning_count_ignores_row_totals() -> None:
     context = _build_uc_orders_context(run_data)
 
     assert context["stores"][0]["warning_count"] == 0
+
+
+def test_fact_sections_include_placeholder_and_sorted_rows() -> None:
+    rows = [
+        {
+            "store_code": "b2",
+            "order_number": "",
+            "order_date": "2024-01-02",
+            "customer_name": "Bee",
+            "mobile_number": "222",
+            "ingest_remarks": "missing order number",
+        },
+        {
+            "store_code": "a1",
+            "order_number": "ORD-1",
+            "order_date": "2024-01-01",
+            "customer_name": "Ace",
+            "mobile_number": "111",
+            "ingest_remarks": "ok",
+        },
+    ]
+
+    fact_rows = _build_fact_rows(rows, include_remarks=True)
+    fact_text = _format_fact_sections_text(warning_rows=fact_rows)
+
+    assert fact_rows[0]["store_code"] == "A1"
+    assert fact_rows[1]["order_number"] == "<missing_order_number>"
+    assert "Warning rows (2):" in fact_text
+    assert "<missing_order_number>" in fact_text
