@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0049_widen_orders_sync_log_status"
+revision = "0049_widen_orders_sync_logstatus"
 down_revision = "0048_uc_success_with_warnings"
 branch_labels = None
 depends_on = None
