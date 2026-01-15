@@ -78,7 +78,7 @@ Started: {{ started_at }} | Finished: {{ finished_at }}
 {% if overall_status == 'ok' %}
 All TD stores completed successfully. Proceed with merge to production using (cost_center, order_number, order_date).
 {% elif overall_status == 'warning' %}
-Mixed TD outcomes: review failed stores above, re-run after fixing source data, and rely on the unique business key to avoid duplicates.
+Mixed TD outcomes: review failed stores above, re-run after fixing source data, and rely on the unique business key for idempotent merges.
 {% else %}
 All TD stores failed. Check error summaries and retry; no production rows were updated due to the enforced unique constraint.
 {% endif %}
@@ -109,7 +109,7 @@ All UC stores completed successfully. Upsert using (cost_center, order_number, i
 {% if uc_all_stores_failed %}
 All UC stores failed. Review the errors above before reattempting the sync.
 {% else %}
-Mixed UC outcomes: review warning/error stores above, fix issues, and rerun; unique constraints prevent duplicate rows on retry.
+Mixed UC outcomes: review warning/error stores above, fix issues, and rerun once resolved.
 {% endif %}
 {% else %}
 {% if uc_all_stores_failed %}

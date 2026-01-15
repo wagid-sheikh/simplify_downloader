@@ -39,18 +39,26 @@ Run ID: {{ run_id }} | Env: {{ run_env }}
 Report Date: {{ report_date }}
 Started: {{ started_at }} | Finished: {{ finished_at }}
 {% if total_time_taken %}Total Duration: {{ total_time_taken }}{% endif %}
-Overall Status: {{ overall_status }}
+Overall Status: {{ overall_status_label or overall_status }}{% if overall_status_explanation %} ({{ overall_status_explanation }}){% endif %}
 
 **Per Store UC Metrics:**
 {% for store in stores %}
 - {{ store.store_code or 'UNKNOWN' }} — {{ (store.status or 'unknown')|upper }}
   filename: {{ store.filename or 'n/a' }}
-  staging_inserted: {{ store.staging_inserted or 0 }}
-  staging_updated: {{ store.staging_updated or 0 }}
-  final_inserted: {{ store.final_inserted or 0 }}
-  final_updated: {{ store.final_updated or 0 }}
+  rows_downloaded: {{ store.rows_downloaded or 0 }}
+  rows_ingested: {{ store.final_rows or store.staging_rows or 0 }}
+  inserted: {{ store.final_inserted or store.staging_inserted or 0 }}
+  updated: {{ store.final_updated or store.staging_updated or 0 }}
   warning_count: {{ store.warning_count or 0 }}
+  dropped_count: {{ store.rows_skipped_invalid or 0 }}
+  {% if store.missing_window_lines %}missing_windows:{% for window in store.missing_window_lines %}
+    - {{ window }}{% endfor %}
+  {% endif %}
   {% if store.error_message %}error: {{ store.error_message }}{% endif %}
+  {% if store.fact_sections_text %}
+  row_facts:
+{{ store.fact_sections_text | indent(4, true) }}
+  {% endif %}
 {% endfor %}
 
 {% if overall_status in ['ok', 'success'] %}
@@ -59,7 +67,7 @@ All UC stores completed successfully. Upsert using (cost_center, order_number, i
 {% if uc_all_stores_failed %}
 All UC stores failed. Review the errors above before reattempting the sync.
 {% else %}
-Mixed UC outcomes: review warning/error stores above, fix issues, and rerun; unique constraints prevent duplicate rows on retry.
+Mixed UC outcomes: review warning/error stores above, fix issues, and rerun.
 {% endif %}
 {% else %}
 {% if uc_all_stores_failed %}
@@ -82,7 +90,7 @@ Per-store UC order status:
 {% if overall_status == 'ok' %}
 All UC stores completed successfully. Upsert using (cost_center, order_number, invoice_date) to keep reruns idempotent.
 {% elif overall_status in ['warning', 'partial', 'skipped', 'success_with_warnings'] %}
-Mixed UC outcomes: some stores failed. Fix issues and rerun; unique constraints prevent duplicate rows on retry.
+Mixed UC outcomes: some stores failed. Fix issues and rerun once resolved.
 {% else %}
 All UC stores failed. Review the errors above before reattempting the sync.
 {% endif %}
