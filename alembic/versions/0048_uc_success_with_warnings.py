@@ -56,20 +56,25 @@ Overall Status: {{ overall_status }}
   {% if store.error_message %}error: {{ store.error_message }}{% endif %}
 {% endfor %}
 
-{% if overall_status in ['ok', 'success'] %}
-All UC stores completed successfully. Upsert using (cost_center, order_number, invoice_date) to keep reruns idempotent.
-{% elif overall_status in ['warning', 'partial', 'skipped', 'success_with_warnings'] %}
+{% if overall_status == 'success' %}
+All UC stores completed successfully.
+{% elif overall_status == 'success_with_warnings' %}
+Completed with warnings. See warnings below.
+{% elif overall_status in ['partial', 'failed'] %}
 {% if uc_all_stores_failed %}
 All UC stores failed. Review the errors above before reattempting the sync.
 {% else %}
-Mixed UC outcomes: review warning/error stores above, fix issues, and rerun; unique constraints prevent duplicate rows on retry.
+Review error stores above, fix issues, and rerun; unique constraints prevent duplicate rows on retry.
 {% endif %}
 {% else %}
-{% if uc_all_stores_failed %}
-All UC stores failed. Review the errors above before reattempting the sync.
-{% else %}
-UC sync failed after mixed store outcomes. Review failures above and retry once resolved.
+Review error stores above, fix issues, and rerun; unique constraints prevent duplicate rows on retry.
 {% endif %}
+
+{% if warnings %}
+Warnings:
+{% for warning in warnings %}
+- {{ warning }}
+{% endfor %}
 {% endif %}
 """
 

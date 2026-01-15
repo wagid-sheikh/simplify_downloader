@@ -351,7 +351,7 @@ def _normalize_uc_status(status: str | None) -> str:
         "success": "success",
         "partial": "partial",
         "success_with_warnings": "success_with_warnings",
-        "skipped": "skipped",
+        "skipped": "partial",
     }
     return mapping.get(normalized, normalized or "unknown")
 
