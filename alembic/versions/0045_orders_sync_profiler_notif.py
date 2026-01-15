@@ -25,14 +25,12 @@ RECIPIENT_ENVS = ["dev", "prod", "local", "any"]
 
 TEMPLATE_SUBJECT = "Orders Sync Profiler – {{ overall_status }}"
 TEMPLATE_BODY = """
-{{ (summary_text or profiler_summary_text) }}
-{% if not (summary_text or profiler_summary_text) %}
 Orders Sync Profiler Run Summary
 Run ID: {{ run_id }} | Env: {{ run_env }}
 Report Date: {{ report_date }}
 Started: {{ started_at }} | Finished: {{ finished_at }}
 {% if total_time_taken %}Total Duration: {{ total_time_taken }}{% endif %}
-Overall Status: {{ overall_status }}
+Overall Status: {{ overall_status_label or overall_status }}
 
 Windows Completed: {{ completed_windows or 0 }} / {{ expected_windows or 0 }}
 Missing Windows: {{ missing_windows or 0 }}
@@ -67,6 +65,12 @@ Warnings:
 {% else %}
 - None.
 {% endif %}
+
+{% if fact_sections_text %}
+Row-level facts:
+{{ fact_sections_text }}
+{% elif summary_text %}
+{{ summary_text }}
 {% endif %}
 """
 
