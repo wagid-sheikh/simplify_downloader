@@ -1088,24 +1088,27 @@ async def _update_orders_sync_log(
             )
             await session.commit()
             if not result.rowcount:
+                error_message = "Orders sync log update matched no rows"
                 log_event(
                     logger=logger,
                     phase="orders_sync_log",
-                    status="warn",
-                    message="Orders sync log update matched no rows",
+                    status="error",
+                    message=error_message,
                     log_id=log_id,
                     update_values=values,
                 )
+                raise RuntimeError(error_message)
     except Exception as exc:  # pragma: no cover - defensive
         log_event(
             logger=logger,
             phase="orders_sync_log",
-            status="warn",
+            status="error",
             message="Failed to update orders sync log row",
             log_id=log_id,
             error=str(exc),
             update_values=values,
         )
+        raise
 
 
 def _build_unified_metrics(outcome: StoreOutcome | None) -> tuple[dict[str, int | None], dict[str, int | None]]:
