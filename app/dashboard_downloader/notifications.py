@@ -317,6 +317,20 @@ def _format_status_label(status: str | None) -> str:
     return raw.replace("_", " ")
 
 
+def _build_outcome_summary(overall_status: str | None, *, store_count: int) -> dict[str, str]:
+    normalized = _normalize_uc_status(overall_status)
+    label = "Outcome" if store_count == 1 else "Outcomes"
+    if normalized == "success":
+        summary = "Completed successfully."
+    elif normalized == "success_with_warnings":
+        summary = "Completed with warnings."
+    elif normalized in {"partial", "failed"}:
+        summary = "Failed."
+    else:
+        summary = _status_explanation(normalized)
+    return {"outcome_label": label, "outcome_summary": summary}
+
+
 def _status_counts(stores_payload: list[Mapping[str, Any]]) -> dict[str, int]:
     counts = {"ok": 0, "warning": 0, "error": 0}
     for store in stores_payload:
@@ -340,6 +354,49 @@ def _normalize_uc_status(status: str | None) -> str:
         "skipped": "skipped",
     }
     return mapping.get(normalized, normalized or "unknown")
+
+
+def _normalize_warning_entries(entries: Iterable[Any] | None) -> list[str]:
+    warnings: list[str] = []
+    for entry in entries or []:
+        text = ""
+        if isinstance(entry, str):
+            text = entry.strip()
+        elif isinstance(entry, Mapping):
+            code = entry.get("code") or entry.get("warning_code") or entry.get("type")
+            message = entry.get("message") or entry.get("detail") or entry.get("text")
+            if code and message:
+                text = f"{code}: {message}"
+            elif code:
+                text = str(code)
+            elif message:
+                text = str(message)
+            else:
+                text = str(entry)
+        else:
+            text = str(entry)
+        if text and text not in warnings:
+            warnings.append(text)
+    return warnings
+
+
+def _uc_warning_entries(
+    *,
+    stores_payload: Iterable[Mapping[str, Any]],
+    payload_warnings: Iterable[Any] | None,
+) -> list[str]:
+    warnings = _normalize_warning_entries(payload_warnings)
+    if warnings:
+        return warnings
+    for store in stores_payload:
+        store_code = store.get("store_code") or "UNKNOWN"
+        warning_count = _coerce_int(store.get("warning_count"))
+        if warning_count is None or warning_count <= 0:
+            continue
+        warnings.append(
+            f"UC_STORE_WARNINGS: {store_code} reported {warning_count} row-level warning(s)"
+        )
+    return warnings
 
 
 def _uc_window_status_by_store(window_audit: Iterable[Mapping[str, Any]]) -> dict[str, str]:
@@ -1212,6 +1269,12 @@ def _build_uc_orders_context(
         uc_status_by_store,
         fallback_status=payload.get("overall_status") or run_data.get("overall_status"),
     )
+    warnings = _uc_warning_entries(
+        stores_payload=stores_payload,
+        payload_warnings=payload.get("warnings") or metrics.get("warnings") or [],
+    )
+    store_count = len(stores_payload)
+    outcome_summary = _build_outcome_summary(overall_status, store_count=store_count)
 
     return {
         "summary_text": summary_text,
@@ -1220,6 +1283,9 @@ def _build_uc_orders_context(
         "total_time_taken": payload.get("total_time_taken") or run_data.get("total_time_taken"),
         "overall_status": overall_status,
         "overall_status_explanation": _status_explanation(overall_status),
+        "overall_status_label": _format_status_label(overall_status),
+        "store_count": store_count,
+        **outcome_summary,
         "store_status_counts": status_counts,
         "stores_succeeded": status_counts.get("ok", 0),
         "stores_warned": status_counts.get("warning", 0),
@@ -1227,6 +1293,10 @@ def _build_uc_orders_context(
         "uc_store_status_counts": uc_status_counts,
         "stores": stores,
         "uc_all_stores_failed": _uc_all_stores_failed(stores_payload),
+        "warnings": warnings,
+        "warnings_text": "\n".join(warnings) if warnings else "",
+        "warnings_count": len(warnings),
+        "has_warnings": bool(warnings),
         "notification_payload": payload,
         "primary_totals": primary_totals,
         "secondary_totals": secondary_metrics,
@@ -1246,7 +1316,7 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
     payload = metrics.get("notification_payload") or {}
     stores_payload = payload.get("stores") or []
     window_summary = payload.get("window_summary") or metrics.get("window_summary") or {}
-    warnings = payload.get("warnings") or []
+    warnings = _normalize_warning_entries(payload.get("warnings") or [])
 
     stores: list[dict[str, Any]] = []
     primary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
@@ -1271,13 +1341,19 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
         )
 
     summary_text = run_data.get("summary_text") or ""
+    overall_status = payload.get("overall_status") or run_data.get("overall_status")
+    store_count = len(stores_payload)
+    outcome_summary = _build_outcome_summary(overall_status, store_count=store_count)
     return {
         "summary_text": summary_text,
         "profiler_summary_text": summary_text,
         "started_at": _normalize_datetime(payload.get("started_at") or run_data.get("started_at")),
         "finished_at": _normalize_datetime(payload.get("finished_at") or run_data.get("finished_at")),
         "total_time_taken": payload.get("total_time_taken") or run_data.get("total_time_taken"),
-        "overall_status": payload.get("overall_status") or run_data.get("overall_status"),
+        "overall_status": overall_status,
+        "overall_status_label": _format_status_label(overall_status),
+        "store_count": store_count,
+        **outcome_summary,
         "stores": stores,
         "primary_totals": primary_totals,
         "secondary_totals": secondary_totals,
@@ -1288,6 +1364,8 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
         "missing_window_stores": window_summary.get("missing_store_codes") or [],
         "warnings": warnings,
         "warnings_text": "\n".join(str(entry) for entry in warnings) if warnings else "",
+        "warnings_count": len(warnings),
+        "has_warnings": bool(warnings),
         "notification_payload": payload,
     }
 
@@ -1500,6 +1578,13 @@ def _uc_summary_text_from_payload(
     if missing_windows_detail:
         lines.append("Missing Window Ranges:")
         lines.append(missing_windows_detail)
+    warnings = _uc_warning_entries(
+        stores_payload=stores_payload,
+        payload_warnings=payload.get("warnings") or metrics.get("warnings") or [],
+    )
+    if warnings:
+        lines.append("Warnings:")
+        lines.extend(f"- {warning}" for warning in warnings)
     store_lines: list[str] = []
     for store in stores_payload:
         store_code = store.get("store_code") or "UNKNOWN"

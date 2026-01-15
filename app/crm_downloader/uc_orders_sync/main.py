@@ -415,6 +415,17 @@ class UcOrdersDiscoverySummary:
             }
         return summary
 
+    def _build_warning_entries(self) -> list[str]:
+        warnings: list[str] = []
+        for store_code, outcome in self.store_outcomes.items():
+            warning_count = outcome.warning_count if outcome else None
+            if warning_count is None or warning_count <= 0:
+                continue
+            warnings.append(
+                f"UC_STORE_WARNINGS: {store_code} reported {warning_count} row-level warning(s)"
+            )
+        return warnings
+
     def _build_notification_payload(self, *, finished_at: datetime, total_time_taken: str) -> Dict[str, Any]:
         stores: list[dict[str, Any]] = []
         to_date = self.report_end_date or self.report_date
@@ -453,6 +464,7 @@ class UcOrdersDiscoverySummary:
         return {
             "overall_status": self.overall_status(),
             "stores": stores,
+            "warnings": self._build_warning_entries(),
             "started_at": self.started_at.isoformat(),
             "finished_at": finished_at.isoformat(),
             "total_time_taken": total_time_taken,
@@ -479,6 +491,7 @@ class UcOrdersDiscoverySummary:
                 "report_range": {"from": self.report_date.isoformat(), "to": self.report_end_date.isoformat()},
             },
             "notes": list(self.notes),
+            "warnings": self._build_warning_entries(),
             "ingest_remarks": {"rows": list(self.ingest_remarks), "total": len(self.ingest_remarks)},
         }
         metrics["notification_payload"] = self._build_notification_payload(
