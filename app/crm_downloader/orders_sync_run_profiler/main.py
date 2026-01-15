@@ -61,6 +61,7 @@ class StoreRunResult:
     status_counts: dict[str, int]
     window_audit: list[dict[str, Any]]
     ingestion_totals: dict[str, int]
+    row_facts: dict[str, list[dict[str, Any]]]
 
 
 @asynccontextmanager
@@ -245,6 +246,54 @@ async def _fetch_latest_log_row(
         )
         row = (await session.execute(stmt)).mappings().first()
     return dict(row) if row else None
+
+
+def _init_row_facts() -> dict[str, list[dict[str, Any]]]:
+    return {
+        "warning_rows": [],
+        "dropped_rows": [],
+        "edited_rows": [],
+        "error_rows": [],
+    }
+
+
+def _merge_row_facts(
+    target: dict[str, list[dict[str, Any]]], source: Mapping[str, Sequence[Mapping[str, Any]]]
+) -> None:
+    for key in ("warning_rows", "dropped_rows", "edited_rows", "error_rows"):
+        rows = source.get(key) or []
+        if isinstance(rows, Sequence):
+            target[key].extend(list(rows))
+
+
+def _extract_row_facts_from_summary(summary: Mapping[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
+    if not summary:
+        return _init_row_facts()
+    metrics = _coerce_dict(summary.get("metrics_json"))
+    payload = metrics.get("notification_payload") or {}
+    stores = payload.get("stores") or []
+    extracted = _init_row_facts()
+    for store in stores:
+        if not isinstance(store, Mapping):
+            continue
+        orders = store.get("orders")
+        sales = store.get("sales")
+        if orders is not None or sales is not None:
+            orders = orders or {}
+            sales = sales or {}
+            extracted["warning_rows"].extend(list(orders.get("warning_rows") or []))
+            extracted["warning_rows"].extend(list(sales.get("warning_rows") or []))
+            extracted["dropped_rows"].extend(list(orders.get("dropped_rows") or []))
+            extracted["dropped_rows"].extend(list(sales.get("dropped_rows") or []))
+            extracted["edited_rows"].extend(list(sales.get("edited_rows") or []))
+            extracted["error_rows"].extend(list(orders.get("error_rows") or []))
+            extracted["error_rows"].extend(list(sales.get("error_rows") or []))
+        else:
+            extracted["warning_rows"].extend(list(store.get("warning_rows") or []))
+            extracted["dropped_rows"].extend(list(store.get("dropped_rows") or []))
+            extracted["edited_rows"].extend(list(store.get("edited_rows") or []))
+            extracted["error_rows"].extend(list(store.get("error_rows") or []))
+    return extracted
 
 
 def _resolve_missing_window_status(store_summary: Mapping[str, Any]) -> str:
@@ -892,13 +941,20 @@ async def _run_store_windows(
     from_date: date | None,
     to_date: date | None,
 ) -> tuple[
-    str, list[tuple[date, date]], list[str], dict[str, int], list[dict[str, Any]], dict[str, int]
+    str,
+    list[tuple[date, date]],
+    list[str],
+    dict[str, int],
+    list[dict[str, Any]],
+    dict[str, int],
+    dict[str, list[dict[str, Any]]],
 ]:
     started_at = datetime.now(timezone.utc)
     detail_lines: list[str] = []
     status_counts = _init_status_counts()
     window_audit: list[dict[str, Any]] = []
     ingestion_totals = _init_ingestion_totals()
+    row_facts = _init_row_facts()
     backfill, window_size, overlap = resolve_window_settings(
         sync_config=store.sync_config,
         backfill_days=backfill_days,
@@ -979,6 +1035,7 @@ async def _run_store_windows(
                 run_sales=True,
             )
             summary = await fetch_summary_for_run(config.database_url, attempt_run_id)
+            attempt_row_facts = _extract_row_facts_from_summary(summary)
             log_row = await _fetch_latest_log_row(
                 database_url=config.database_url,
                 pipeline_id=pipeline_id,
@@ -1076,6 +1133,8 @@ async def _run_store_windows(
                     window_run_id=attempt_run_id,
                 )
                 continue
+            if attempt_row_facts:
+                _merge_row_facts(row_facts, attempt_row_facts)
             if attempt > 0:
                 status_note += " (after retry)"
             break
@@ -1212,7 +1271,7 @@ async def _run_store_windows(
         "metrics_json": metrics,
     }
     await insert_run_summary(config.database_url, summary_record)
-    return overall_status, windows, detail_lines, status_counts, window_audit, ingestion_totals
+    return overall_status, windows, detail_lines, status_counts, window_audit, ingestion_totals, row_facts
 
 
 async def _process_store(
@@ -1239,6 +1298,7 @@ async def _process_store(
             status_counts,
             window_audit,
             ingestion_totals,
+            row_facts,
         ) = await _run_store_windows(
             logger=logger,
             store=store,
@@ -1264,6 +1324,7 @@ async def _process_store(
         status_counts=status_counts,
         window_audit=window_audit,
         ingestion_totals=ingestion_totals,
+        row_facts=row_facts,
     )
 
 
@@ -1364,6 +1425,7 @@ async def main(
     primary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
     secondary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
     warning_messages: list[str] = []
+    row_facts = _init_row_facts()
     for result in all_results:
         total_windows += result.window_count
         store_window_counts[result.store_code] = result.window_count
@@ -1439,6 +1501,7 @@ async def main(
         _sum_unified_metrics(primary_totals, primary_metrics)
         _sum_unified_metrics(secondary_totals, secondary_metrics)
         _accumulate_ingestion_totals(grand_ingestion_totals, {"total": result.ingestion_totals})
+        _merge_row_facts(row_facts, result.row_facts)
     overall_status = _rollup_overall_status(total_status_counts)
     warning_windows_total = int(total_status_counts.get("success_with_warnings", 0) or 0)
     if warning_windows_total > 0 and not any(
@@ -1447,6 +1510,10 @@ async def main(
         warning_messages.append(
             f"WINDOW_WARNINGS: {warning_windows_total} window(s) completed with warnings"
         )
+    if row_facts["warning_rows"] and not any(
+        entry.startswith("ROW_WARNINGS:") for entry in warning_messages
+    ):
+        warning_messages.append(f"ROW_WARNINGS: {len(row_facts['warning_rows'])} row(s) with warnings")
     finished_at = datetime.now(timezone.utc)
     window_summary = _build_window_summary(total_windows, missing_windows)
     allow_missing_windows = _env_flag("ORDERS_SYNC_ALLOW_MISSING_WINDOWS")
@@ -1512,6 +1579,7 @@ async def main(
             "ingestion_grand_totals": grand_ingestion_totals,
             "primary_totals": primary_totals,
             "secondary_totals": secondary_totals,
+            "row_facts": row_facts,
             "notification_payload": _build_profiler_notification_payload(
                 run_id=resolved_run_id,
                 run_env=resolved_env,

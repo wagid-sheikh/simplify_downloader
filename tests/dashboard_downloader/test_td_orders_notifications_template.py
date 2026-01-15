@@ -200,26 +200,23 @@ def test_td_context_includes_store_metadata_on_row_details() -> None:
     sales_warning_row = store["sales_warning_rows"][0]
     sales_dropped_row = store["sales_dropped_rows"][0]
     sales_edited_row = store["sales_edited_rows"][0]
-    sales_duplicate_row = store["sales_duplicate_rows"][0]
+    assert store["sales_duplicate_rows"] == []
 
     assert orders_warning_row["store_code"] == "A1"
     assert orders_warning_row["order_number"] == "ORD-1"
-    assert orders_warning_row["ingest_remarks"] == "warning row remark"
+    assert orders_warning_row["ingestion_remarks"] == "warning row remark"
 
     assert orders_dropped_row["store_code"] == "A1"
     assert orders_dropped_row["order_number"] == "ORD-2"
-    assert orders_dropped_row["ingest_remarks"] == "drop row remark"
+    assert orders_dropped_row["ingestion_remarks"] == "drop row remark"
 
     assert sales_warning_row["store_code"] == "A1"
     assert sales_warning_row["order_number"] == "S-1"
-    assert sales_warning_row["ingest_remarks"] == "sales warning row remark"
+    assert sales_warning_row["ingestion_remarks"] == "sales warning row remark"
 
     assert sales_dropped_row["store_code"] == "A1"
     assert sales_dropped_row["order_number"] == "S-2"
-    assert sales_dropped_row["ingest_remarks"] == "sales drop row remark"
+    assert sales_dropped_row["ingestion_remarks"] == "sales drop row remark"
 
     assert sales_edited_row["store_code"] == "A1"
     assert sales_edited_row["order_number"] == "S-3"
-
-    assert sales_duplicate_row["store_code"] == "A1"
-    assert sales_duplicate_row["order_number"] == "S-4"

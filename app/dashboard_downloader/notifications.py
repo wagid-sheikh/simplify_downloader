@@ -58,6 +58,7 @@ FACT_ROW_COLUMNS_WITH_REMARKS = (*FACT_ROW_COLUMNS, "ingestion_remarks")
 MISSING_ORDER_NUMBER_PLACEHOLDER = "<missing_order_number>"
 TD_SALES_ROW_SAMPLE_LIMIT = 5
 TD_SALES_EDITED_LIMIT = 50
+FACT_SECTION_ROW_LIMIT = 200
 
 
 @dataclass
@@ -545,6 +546,14 @@ def _build_fact_rows(
     return sorted(normalized_rows, key=lambda row: (row.get("store_code") or "", row.get("order_number") or ""))
 
 
+def _limit_fact_rows(
+    rows: list[dict[str, str]], *, limit: int = FACT_SECTION_ROW_LIMIT
+) -> tuple[list[dict[str, str]], int]:
+    if len(rows) <= limit:
+        return rows, 0
+    return rows[:limit], len(rows) - limit
+
+
 def _format_fact_section(
     title: str,
     rows: list[dict[str, str]],
@@ -553,11 +562,14 @@ def _format_fact_section(
 ) -> list[str]:
     if not rows:
         return []
+    display_rows, truncated_count = _limit_fact_rows(rows)
     columns = FACT_ROW_COLUMNS_WITH_REMARKS if include_remarks else FACT_ROW_COLUMNS
     header = " | ".join(columns)
     lines = [f"{title} ({len(rows)}):", header]
-    for row in rows:
+    for row in display_rows:
         lines.append(" | ".join(row.get(column, "") for column in columns))
+    if truncated_count:
+        lines.append(f"...truncated {truncated_count} more")
     return lines
 
 
@@ -1128,16 +1140,37 @@ def _build_td_orders_context(
         sales_edited_rows = _with_store_metadata(
             sales.get("edited_rows"), store_code=store.get("store_code"), include_order_number=True
         )
-        sales_duplicate_rows = _with_store_metadata(
-            sales.get("duplicate_rows"), store_code=store.get("store_code"), include_order_number=True
+        orders_warning_fact_rows = _build_fact_rows(
+            orders_warning_rows, include_remarks=True, store_code_fallback=store_code
         )
-        orders = {**orders, "warning_rows": orders_warning_rows, "dropped_rows": orders_dropped_rows}
+        orders_dropped_fact_rows = _build_fact_rows(
+            orders_dropped_rows, include_remarks=True, store_code_fallback=store_code
+        )
+        sales_warning_fact_rows = _build_fact_rows(
+            sales_warning_rows, include_remarks=True, store_code_fallback=store_code
+        )
+        sales_dropped_fact_rows = _build_fact_rows(
+            sales_dropped_rows, include_remarks=True, store_code_fallback=store_code
+        )
+        sales_edited_fact_rows = _build_fact_rows(
+            sales_edited_rows, include_remarks=False, store_code_fallback=store_code
+        )
+        orders_warning_display_rows, _ = _limit_fact_rows(orders_warning_fact_rows)
+        orders_dropped_display_rows, _ = _limit_fact_rows(orders_dropped_fact_rows)
+        sales_warning_display_rows, _ = _limit_fact_rows(sales_warning_fact_rows)
+        sales_dropped_display_rows, _ = _limit_fact_rows(sales_dropped_fact_rows)
+        sales_edited_display_rows, _ = _limit_fact_rows(sales_edited_fact_rows)
+        orders = {
+            **orders,
+            "warning_rows": orders_warning_display_rows,
+            "dropped_rows": orders_dropped_display_rows,
+        }
         sales = {
             **sales,
-            "warning_rows": sales_warning_rows,
-            "dropped_rows": sales_dropped_rows,
-            "edited_rows": sales_edited_rows,
-            "duplicate_rows": sales_duplicate_rows,
+            "warning_rows": sales_warning_display_rows,
+            "dropped_rows": sales_dropped_display_rows,
+            "edited_rows": sales_edited_display_rows,
+            "duplicate_rows": [],
         }
         primary_metrics = _build_unified_metrics(orders)
         secondary_metrics = _build_unified_metrics(sales)
@@ -1244,7 +1277,8 @@ def _build_td_orders_context(
             part
             for part in (
                 _format_identifier(row, include_extras=True),
-                str(_extract_row_value(row, "ingest_remarks", "remarks") or "").strip() or "",
+                str(_extract_row_value(row, "ingest_remarks", "ingestion_remarks", "remarks") or "").strip()
+                or "",
             )
             if part
         ),
@@ -1394,8 +1428,13 @@ def _build_uc_orders_context(
         _sum_unified_metrics(primary_totals, primary_metrics)
         store_status = _uc_store_status(store, uc_status_by_store)
         show_error_message = store_status in {"failed", "partial"}
+        warning_rows_payload = store.get("warning_rows")
+        if not warning_rows_payload and resolved_warning_count > 0:
+            warning_rows_payload = [
+                row for row in ingest_rows if _normalize_store_code(row.get("store_code")) == store_code
+            ]
         warning_rows = _with_store_metadata(
-            store.get("warning_rows"),
+            warning_rows_payload,
             store_code=store.get("store_code"),
             include_order_number=True,
             include_remarks=True,
@@ -1412,6 +1451,8 @@ def _build_uc_orders_context(
         dropped_fact_rows = _build_fact_rows(
             dropped_rows, include_remarks=True, store_code_fallback=store_code
         )
+        warning_display_rows, _ = _limit_fact_rows(warning_fact_rows)
+        dropped_display_rows, _ = _limit_fact_rows(dropped_fact_rows)
         fact_sections_text = _format_fact_sections_text(
             warning_rows=warning_fact_rows, dropped_rows=dropped_fact_rows
         )
@@ -1425,8 +1466,8 @@ def _build_uc_orders_context(
                 or (store.get("message") if not show_error_message else None),
                 "warning_count": resolved_warning_count,
                 "warnings_summary": warning_summary,
-                "warning_rows": warning_rows,
-                "dropped_rows": dropped_rows,
+                "warning_rows": warning_display_rows,
+                "dropped_rows": dropped_display_rows,
                 "warning_fact_rows": warning_fact_rows,
                 "dropped_fact_rows": dropped_fact_rows,
                 "fact_sections_text": fact_sections_text,
