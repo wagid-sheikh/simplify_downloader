@@ -446,15 +446,9 @@ def _format_identifier(row: Mapping[str, Any], *, include_extras: bool = False) 
     if not include_extras:
         return base
     extras: list[str] = []
-    customer_identifier = _extract_row_value(row, "customer_identifier", "Customer Identifier")
-    if customer_identifier:
-        extras.append(f"customer_identifier={customer_identifier}")
     order_date = _extract_row_value(row, "order_date", "Order Date", "invoice_date", "Invoice Date")
     if order_date:
         extras.append(f"order_date={order_date}")
-    payment_date = _extract_row_value(row, "payment_date", "Payment Date")
-    if payment_date:
-        extras.append(f"payment_date={payment_date}")
     if extras:
         return f"{base} ({', '.join(str(value) for value in extras)})" if base else ", ".join(extras)
     return base
@@ -1338,6 +1332,16 @@ def _build_td_orders_context(
         dropped_lines.append(
             f"... additional {len(dropped_identifiers) - TD_SALES_ROW_SAMPLE_LIMIT} identifiers truncated"
         )
+    warning_fact_rows = [row for store in stores for row in store.get("warning_fact_rows") or []]
+    dropped_fact_rows = [row for store in stores for row in store.get("dropped_fact_rows") or []]
+    edited_fact_rows = [row for store in stores for row in store.get("edited_fact_rows") or []]
+    error_fact_rows = [row for store in stores for row in store.get("error_fact_rows") or []]
+    fact_sections_text = _format_fact_sections_text(
+        warning_rows=warning_fact_rows,
+        dropped_rows=dropped_fact_rows,
+        edited_rows=edited_fact_rows,
+        error_rows=error_fact_rows,
+    )
     filtered_ingest_rows = [
         row
         for row in ingest_rows
@@ -1348,6 +1352,7 @@ def _build_td_orders_context(
     )
 
     summary_text = run_data.get("summary_text") or _td_summary_text_from_payload(run_data) or ""
+    summary_text = _append_fact_sections(summary_text, fact_sections_text)
     started_at_formatted = _format_td_timestamp(payload.get("started_at") or run_data.get("started_at"))
     finished_at_formatted = _format_td_timestamp(payload.get("finished_at") or run_data.get("finished_at"))
     window_summary = metrics.get("window_summary") or {}
@@ -1379,6 +1384,7 @@ def _build_td_orders_context(
         "missing_windows": window_summary.get("missing_windows"),
         "missing_window_stores": window_summary.get("missing_store_codes") or [],
         "missing_windows_by_store": resolved_missing_windows,
+        "fact_sections_text": fact_sections_text,
         "td_sales_warning_rows_text": "\n".join(sales_warning_lines),
         "td_sales_warning_rows_truncated": sales_warning_truncated,
         "td_sales_edited_rows_text": "\n".join(sales_edited_lines),
