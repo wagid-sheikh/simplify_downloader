@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import sqlalchemy as sa
 from jinja2 import Template
@@ -543,7 +543,11 @@ def _build_fact_rows(
         _normalize_fact_row(row, include_remarks=include_remarks, store_code_fallback=store_code_fallback)
         for row in rows or []
     ]
-    return sorted(normalized_rows, key=lambda row: (row.get("store_code") or "", row.get("order_number") or ""))
+    columns = FACT_ROW_COLUMNS_WITH_REMARKS if include_remarks else FACT_ROW_COLUMNS
+    return sorted(
+        normalized_rows,
+        key=lambda row: tuple(row.get(column) or "" for column in columns),
+    )
 
 
 def _limit_fact_rows(
@@ -586,6 +590,38 @@ def _format_fact_sections_text(
     sections.extend(_format_fact_section("Edited rows", edited_rows or [], include_remarks=False))
     sections.extend(_format_fact_section("Error rows", error_rows or [], include_remarks=True))
     return "\n".join(sections)
+
+
+def _build_profiler_row_fact_warnings(
+    *,
+    warning_rows: list[dict[str, str]],
+    dropped_rows: list[dict[str, str]],
+    edited_rows: list[dict[str, str]],
+    error_rows: list[dict[str, str]],
+) -> list[str]:
+    warnings: list[str] = []
+    if warning_rows:
+        warnings.append(f"ROW_WARNINGS: {len(warning_rows)} row(s) with warnings")
+    if dropped_rows:
+        warnings.append(f"ROW_DROPPED: {len(dropped_rows)} row(s) dropped")
+    if edited_rows:
+        warnings.append(f"ROW_EDITED: {len(edited_rows)} row(s) edited")
+    if error_rows:
+        warnings.append(f"ROW_ERRORS: {len(error_rows)} row(s) errored")
+    return warnings
+
+
+def _replace_profiler_warnings_section(summary_text: str, warnings: Sequence[str]) -> str:
+    if not summary_text or not warnings:
+        return summary_text
+    lines = summary_text.splitlines()
+    try:
+        warnings_index = lines.index("Warnings:")
+    except ValueError:
+        return summary_text
+    updated = lines[: warnings_index + 1]
+    updated.extend(f"- {warning}" for warning in warnings)
+    return "\n".join(updated)
 
 
 def _append_fact_sections(summary_text: str, fact_text: str) -> str:
@@ -1554,8 +1590,6 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
     payload = metrics.get("notification_payload") or {}
     stores_payload = payload.get("stores") or []
     window_summary = payload.get("window_summary") or metrics.get("window_summary") or {}
-    warnings = _normalize_warning_entries(payload.get("warnings") or [])
-
     stores: list[dict[str, Any]] = []
     primary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
     secondary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
@@ -1578,18 +1612,27 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    summary_text = run_data.get("summary_text") or ""
     row_facts = metrics.get("row_facts") or {}
     warning_fact_rows = _build_fact_rows(row_facts.get("warning_rows"), include_remarks=True)
     dropped_fact_rows = _build_fact_rows(row_facts.get("dropped_rows"), include_remarks=True)
     edited_fact_rows = _build_fact_rows(row_facts.get("edited_rows"), include_remarks=False)
     error_fact_rows = _build_fact_rows(row_facts.get("error_rows"), include_remarks=True)
+    warnings = _normalize_warning_entries(payload.get("warnings") or [])
+    if not warnings:
+        warnings = _build_profiler_row_fact_warnings(
+            warning_rows=warning_fact_rows,
+            dropped_rows=dropped_fact_rows,
+            edited_rows=edited_fact_rows,
+            error_rows=error_fact_rows,
+        )
     fact_sections_text = _format_fact_sections_text(
         warning_rows=warning_fact_rows,
         dropped_rows=dropped_fact_rows,
         edited_rows=edited_fact_rows,
         error_rows=error_fact_rows,
     )
+    summary_text = run_data.get("summary_text") or ""
+    summary_text = _replace_profiler_warnings_section(summary_text, warnings)
     summary_text = _append_fact_sections(summary_text, fact_sections_text)
     overall_status = payload.get("overall_status") or run_data.get("overall_status")
     store_count = len(stores_payload)
