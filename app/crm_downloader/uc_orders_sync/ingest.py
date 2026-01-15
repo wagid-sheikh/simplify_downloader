@@ -123,8 +123,32 @@ class UcOrdersIngestResult:
     warnings: list[str]
     ingest_remarks: list[dict[str, str]] = field(default_factory=list)
     rows_downloaded: int = 0
+    rows_skipped_invalid: int = 0
+    rows_skipped_invalid_reasons: dict[str, int] = field(default_factory=dict)
     dropped_rows: list[dict[str, Any]] = field(default_factory=list)
     warning_rows: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _is_totals_row(values: Sequence[Any]) -> bool:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            if "total" in value.strip().lower():
+                return True
+    return False
+
+
+def _increment_skip_reason(reasons: dict[str, int], reason: str) -> None:
+    reasons[reason] = reasons.get(reason, 0) + 1
+
+
+def _normalize_drop_reason(drop_reason: str | None) -> str:
+    if not drop_reason:
+        return "missing_required_fields"
+    if "blank order_number" in drop_reason:
+        return "missing_order_number"
+    if "missing invoice_date" in drop_reason:
+        return "missing_invoice_date"
+    return "missing_required_fields"
 
 
 def _stg_uc_orders_table(metadata: sa.MetaData) -> sa.Table:
@@ -392,7 +416,7 @@ def _coerce_row(
 
 def _read_workbook_rows(
     workbook_path: Path, *, warnings: list[str], logger: JsonLogger, store_code: str
-) -> tuple[list[Dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int]:
+) -> tuple[list[Dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int, dict[str, int]]:
     wb = openpyxl.load_workbook(workbook_path, data_only=True)
     sheet = wb.active
     header_cells = list(next(sheet.iter_rows(min_row=1, max_row=1, values_only=True)))
@@ -404,6 +428,7 @@ def _read_workbook_rows(
     rows: list[Dict[str, Any]] = []
     warning_rows: list[dict[str, Any]] = []
     dropped_rows: list[dict[str, Any]] = []
+    skip_reason_counts: dict[str, int] = {}
     data_rows = list(sheet.iter_rows(min_row=2, values_only=True))
     rows_downloaded = len(data_rows)
 
@@ -411,6 +436,10 @@ def _read_workbook_rows(
 
     for values in data_rows:
         if not any(value not in (None, "") for value in values):
+            _increment_skip_reason(skip_reason_counts, "blank_row")
+            continue
+        if _is_totals_row(values):
+            _increment_skip_reason(skip_reason_counts, "totals_row")
             continue
         raw_row = {header: values[idx] if idx < len(values) else None for idx, header in enumerate(headers)}
         normalized, row_remarks, drop_reason = _coerce_row(
@@ -428,9 +457,10 @@ def _read_workbook_rows(
                         "remarks": "; ".join(row_remarks) if row_remarks else None,
                         "ingest_remarks": normalized.get("ingest_remarks"),
                     }
-                )
+            )
             rows.append(normalized)
         else:
+            _increment_skip_reason(skip_reason_counts, _normalize_drop_reason(drop_reason))
             dropped_rows.append(
                 {
                     "store_code": store_code,
@@ -447,7 +477,7 @@ def _read_workbook_rows(
                     or "Row dropped due to missing required values",
                 }
             )
-    return rows, warning_rows, dropped_rows, rows_downloaded
+    return rows, warning_rows, dropped_rows, rows_downloaded, skip_reason_counts
 
 
 def _make_insert(table: sa.Table, values: Mapping[str, Any], *, use_sqlite: bool) -> sa.sql.dml.Insert:
@@ -474,9 +504,10 @@ async def ingest_uc_orders_workbook(
     logger: JsonLogger,
 ) -> UcOrdersIngestResult:
     warnings: list[str] = []
-    rows, warning_rows, dropped_rows, rows_downloaded = _read_workbook_rows(
+    rows, warning_rows, dropped_rows, rows_downloaded, skip_reason_counts = _read_workbook_rows(
         workbook_path, warnings=warnings, logger=logger, store_code=store_code
     )
+    rows_skipped_invalid = sum(skip_reason_counts.values())
     remark_entries = [
         {
             "store_code": store_code,
@@ -505,6 +536,8 @@ async def ingest_uc_orders_workbook(
             warnings=warnings,
             ingest_remarks=remark_entries,
             rows_downloaded=rows_downloaded,
+            rows_skipped_invalid=rows_skipped_invalid,
+            rows_skipped_invalid_reasons=skip_reason_counts,
             dropped_rows=dropped_rows,
             warning_rows=warning_rows,
         )
@@ -628,6 +661,8 @@ async def ingest_uc_orders_workbook(
         warnings=warnings,
         ingest_remarks=remark_entries,
         rows_downloaded=rows_downloaded,
+        rows_skipped_invalid=rows_skipped_invalid,
+        rows_skipped_invalid_reasons=skip_reason_counts,
         dropped_rows=dropped_rows,
         warning_rows=warning_rows,
     )

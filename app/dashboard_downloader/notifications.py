@@ -37,6 +37,7 @@ INGEST_REMARKS_MAX_CHARS = 200
 STATUS_EXPLANATIONS = {
     "ok": "run completed with no issues recorded",
     "success": "run completed with no issues recorded",
+    "success_with_warnings": "run completed with row-level warnings",
     "warning": "run completed but row-level issues were recorded",
     "partial": "run completed but row-level issues were recorded",
     "error": "run failed or data could not be ingested",
@@ -322,12 +323,13 @@ def _normalize_uc_status(status: str | None) -> str:
     normalized = str(status or "").lower()
     mapping = {
         "ok": "success",
-        "warning": "partial",
-        "warn": "partial",
+        "warning": "success_with_warnings",
+        "warn": "success_with_warnings",
         "error": "failed",
         "failed": "failed",
         "success": "success",
         "partial": "partial",
+        "success_with_warnings": "success_with_warnings",
         "skipped": "skipped",
     }
     return mapping.get(normalized, normalized or "unknown")
@@ -355,7 +357,7 @@ def _uc_store_status(
 def _uc_status_counts(
     stores_payload: list[Mapping[str, Any]], status_by_store: Mapping[str, str]
 ) -> dict[str, int]:
-    counts = {"success": 0, "partial": 0, "failed": 0, "skipped": 0}
+    counts = {"success": 0, "success_with_warnings": 0, "partial": 0, "failed": 0, "skipped": 0}
     for store in stores_payload:
         status = _uc_store_status(store, status_by_store)
         if status in counts:
@@ -376,6 +378,8 @@ def _uc_overall_status(
         return "failed"
     if any(status == "partial" for status in statuses):
         return "partial"
+    if any(status == "success_with_warnings" for status in statuses):
+        return "success_with_warnings"
     if any(status == "success" for status in statuses):
         return "success"
     if any(status == "skipped" for status in statuses):
@@ -1156,7 +1160,7 @@ def _build_uc_orders_context(
         primary_metrics = _build_unified_metrics(store)
         _sum_unified_metrics(primary_totals, primary_metrics)
         store_status = _uc_store_status(store, uc_status_by_store)
-        show_error_message = status in {"error", "warning"} or store_status in {"failed", "partial"}
+        show_error_message = status in {"error"} or store_status in {"failed", "partial"}
         stores.append(
             {
                 "store_code": store_code,
@@ -1174,6 +1178,9 @@ def _build_uc_orders_context(
                 "staging_updated": store.get("staging_updated"),
                 "final_inserted": store.get("final_inserted"),
                 "final_updated": store.get("final_updated"),
+                "rows_downloaded": store.get("rows_downloaded"),
+                "rows_skipped_invalid": store.get("rows_skipped_invalid"),
+                "rows_skipped_invalid_reasons": store.get("rows_skipped_invalid_reasons"),
                 "missing_windows": missing_windows,
                 "missing_window_lines": missing_window_lines,
                 "missing_window_count": len(missing_window_lines),
@@ -1475,8 +1482,10 @@ def _uc_summary_text_from_payload(
         "UC GST Run Summary",
         f"Overall Status: {overall_status} ({status_explanation})",
         (
-            f"Stores: {uc_status_counts.get('success', 0)} success, {uc_status_counts.get('partial', 0)} partial, "
-            f"{uc_status_counts.get('failed', 0)} failed{skipped_suffix} across {total} stores"
+            f"Stores: {uc_status_counts.get('success', 0)} success, "
+            f"{uc_status_counts.get('success_with_warnings', 0)} success_with_warnings, "
+            f"{uc_status_counts.get('partial', 0)} partial, {uc_status_counts.get('failed', 0)} failed"
+            f"{skipped_suffix} across {total} stores"
         ),
         f"Windows Completed: {window_summary.get('completed_windows', 0)} / {window_summary.get('expected_windows', 0)}",
         missing_line,
@@ -1484,6 +1493,31 @@ def _uc_summary_text_from_payload(
     if missing_windows_detail:
         lines.append("Missing Window Ranges:")
         lines.append(missing_windows_detail)
+    store_lines: list[str] = []
+    for store in stores_payload:
+        store_code = store.get("store_code") or "UNKNOWN"
+        rows_downloaded = _coerce_int(store.get("rows_downloaded")) or 0
+        unique_inserted = _coerce_int(store.get("final_inserted")) or 0
+        overlap_updates = _coerce_int(store.get("final_updated")) or 0
+        rows_skipped_invalid = _coerce_int(store.get("rows_skipped_invalid")) or 0
+        reconciliation = (
+            f"{rows_downloaded} == {unique_inserted} + {overlap_updates} + {rows_skipped_invalid}"
+        )
+        reason_counts = store.get("rows_skipped_invalid_reasons") or {}
+        reason_parts = [f"{key}={value}" for key, value in reason_counts.items()] or ["(none)"]
+        store_lines.extend(
+            [
+                f"- {store_code}",
+                f"  rows_downloaded: {rows_downloaded}",
+                f"  unique_inserted: {unique_inserted}",
+                f"  overlap_duplicates_updated: {overlap_updates}",
+                f"  rows_skipped_invalid: {rows_skipped_invalid} ({', '.join(reason_parts)})",
+                f"  reconciliation: rows_downloaded == unique_inserted + overlap_duplicates_updated + rows_skipped_invalid ({reconciliation})",
+            ]
+        )
+    if store_lines:
+        lines.append("Window Reconciliation:")
+        lines.extend(store_lines)
     return "\n".join(lines)
 
 
