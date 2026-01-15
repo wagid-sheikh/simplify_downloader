@@ -310,6 +310,13 @@ def _status_explanation(status: str | None) -> str:
     return STATUS_EXPLANATIONS.get(str(status or "").lower(), "run completed with mixed results")
 
 
+def _format_status_label(status: str | None) -> str:
+    raw = str(status or "").strip()
+    if not raw:
+        return "unknown"
+    return raw.replace("_", " ")
+
+
 def _status_counts(stores_payload: list[Mapping[str, Any]]) -> dict[str, int]:
     counts = {"ok": 0, "warning": 0, "error": 0}
     for store in stores_payload:
@@ -1480,10 +1487,10 @@ def _uc_summary_text_from_payload(
     missing_windows_detail = "\n".join(missing_window_lines) if missing_window_lines else ""
     lines = [
         "UC GST Run Summary",
-        f"Overall Status: {overall_status} ({status_explanation})",
+        f"Overall Status: {_format_status_label(overall_status)} ({status_explanation})",
         (
             f"Stores: {uc_status_counts.get('success', 0)} success, "
-            f"{uc_status_counts.get('success_with_warnings', 0)} success_with_warnings, "
+            f"{uc_status_counts.get('success_with_warnings', 0)} success with warnings, "
             f"{uc_status_counts.get('partial', 0)} partial, {uc_status_counts.get('failed', 0)} failed"
             f"{skipped_suffix} across {total} stores"
         ),
