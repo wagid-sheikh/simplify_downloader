@@ -607,7 +607,7 @@ def _normalize_window_status(
     *, pipeline_name: str, status: str, error_message: str | None
 ) -> tuple[str, str]:
     if status == "success_with_warnings":
-        return "partial", " (success with warnings)"
+        return "success_with_warnings", " (success with warnings)"
     return status, ""
 
 
