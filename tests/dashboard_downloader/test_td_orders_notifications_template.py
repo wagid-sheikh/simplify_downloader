@@ -160,7 +160,8 @@ def test_td_context_prefers_structured_summary_text() -> None:
 
     context = _build_td_orders_context(run_data)
 
-    assert context["summary_text"] == summary_text
+    assert context["summary_text"].startswith(summary_text)
+    assert "Row-level facts:" in context["summary_text"]
     assert context["td_all_stores_failed"] is False
     assert context["started_at_formatted"] == "05-01-2024 10:30:00"
     assert context["orders_status"] == "success_with_warnings"

@@ -56,9 +56,10 @@ UNIFIED_METRIC_FIELDS = (
 FACT_ROW_COLUMNS = ("store_code", "order_number", "order_date", "customer_name", "mobile_number")
 FACT_ROW_COLUMNS_WITH_REMARKS = (*FACT_ROW_COLUMNS, "ingestion_remarks")
 MISSING_ORDER_NUMBER_PLACEHOLDER = "<missing_order_number>"
-TD_SALES_ROW_SAMPLE_LIMIT = 5
-TD_SALES_EDITED_LIMIT = 50
-FACT_SECTION_ROW_LIMIT = 200
+TD_SALES_ROW_SAMPLE_LIMIT: int | None = None
+TD_SALES_EDITED_LIMIT: int | None = None
+FACT_SECTION_ROW_LIMIT: int | None = None
+UC_GSTIN_MISSING_REMARK = "Customer GSTIN missing"
 
 
 @dataclass
@@ -131,6 +132,61 @@ def _normalize_store_code(value: str | None) -> str | None:
     if not value:
         return None
     return value.upper()
+
+
+def _strip_uc_gstin_warning(raw: Any) -> tuple[str | None, bool]:
+    if raw is None:
+        return None, False
+    text = str(raw).strip()
+    if not text:
+        return None, False
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, Mapping):
+        warnings = [str(entry) for entry in (parsed.get("warnings") or [])]
+        failures = [str(entry) for entry in (parsed.get("failures") or [])]
+        filtered_warnings = [warning for warning in warnings if warning != UC_GSTIN_MISSING_REMARK]
+        removed = len(filtered_warnings) != len(warnings)
+        if not filtered_warnings and not failures:
+            return None, removed
+        if removed:
+            cleaned_payload = {"warnings": filtered_warnings, "failures": failures}
+            return json.dumps(cleaned_payload, ensure_ascii=False), True
+        return text, False
+    if UC_GSTIN_MISSING_REMARK not in text:
+        return text, False
+    parts = [part.strip() for part in text.split(";") if part.strip()]
+    filtered_parts = [part for part in parts if part != UC_GSTIN_MISSING_REMARK]
+    cleaned = "; ".join(filtered_parts).strip()
+    if not cleaned:
+        return None, True
+    return cleaned, True
+
+
+def _clean_uc_rows_for_reporting(
+    rows: Iterable[Mapping[str, Any]] | None,
+    *,
+    drop_empty: bool,
+) -> list[dict[str, Any]]:
+    cleaned_rows: list[dict[str, Any]] = []
+    for row in rows or []:
+        remark_value = _extract_row_value(row, "ingest_remarks", "ingestion_remarks", "remarks")
+        cleaned_remark, removed = _strip_uc_gstin_warning(remark_value)
+        if cleaned_remark is None and removed and drop_empty:
+            continue
+        data = dict(row)
+        if cleaned_remark is not None:
+            data["ingest_remarks"] = cleaned_remark
+            data["ingestion_remarks"] = cleaned_remark
+            data["remarks"] = cleaned_remark
+        elif removed:
+            data["ingest_remarks"] = ""
+            data["ingestion_remarks"] = ""
+            data["remarks"] = ""
+        cleaned_rows.append(data)
+    return cleaned_rows
 
 
 def _coerce_mapping(raw: Any) -> Mapping[str, Any]:
@@ -470,11 +526,15 @@ def _format_row_block(
     rows: Iterable[Mapping[str, Any]],
     *,
     formatter: Callable[[Mapping[str, Any]], str],
-    limit: int,
+    limit: int | None,
 ) -> tuple[list[str], bool]:
     entries = _unique_rows(rows, formatter)
-    truncated = len(entries) > limit
-    samples = entries[:limit]
+    if limit is None:
+        samples = entries
+        truncated = False
+    else:
+        truncated = len(entries) > limit
+        samples = entries[:limit]
     if not samples:
         return ["- (none)"], False
     lines = [f"- {entry}" for entry in samples]
@@ -537,17 +597,19 @@ def _build_fact_rows(
         _normalize_fact_row(row, include_remarks=include_remarks, store_code_fallback=store_code_fallback)
         for row in rows or []
     ]
-    columns = FACT_ROW_COLUMNS_WITH_REMARKS if include_remarks else FACT_ROW_COLUMNS
     return sorted(
         normalized_rows,
-        key=lambda row: tuple(row.get(column) or "" for column in columns),
+        key=lambda row: (
+            row.get("store_code") or "",
+            row.get("order_number") or "",
+        ),
     )
 
 
 def _limit_fact_rows(
-    rows: list[dict[str, str]], *, limit: int = FACT_SECTION_ROW_LIMIT
+    rows: list[dict[str, str]], *, limit: int | None = FACT_SECTION_ROW_LIMIT
 ) -> tuple[list[dict[str, str]], int]:
-    if len(rows) <= limit:
+    if limit is None or len(rows) <= limit:
         return rows, 0
     return rows[:limit], len(rows) - limit
 
@@ -631,13 +693,23 @@ def _uc_warning_entries(
     *,
     stores_payload: Iterable[Mapping[str, Any]],
     payload_warnings: Iterable[Any] | None,
+    warning_counts_by_store: Mapping[str, int] | None = None,
 ) -> list[str]:
-    warnings = _normalize_warning_entries(payload_warnings)
+    warnings = [
+        warning
+        for warning in _normalize_warning_entries(payload_warnings)
+        if warning != UC_GSTIN_MISSING_REMARK
+    ]
     if warnings:
         return warnings
     for store in stores_payload:
         store_code = store.get("store_code") or "UNKNOWN"
-        warning_count = _coerce_int(store.get("warning_count"))
+        normalized_store = _normalize_store_code(store_code) or store_code
+        warning_count = None
+        if warning_counts_by_store is not None:
+            warning_count = warning_counts_by_store.get(normalized_store)
+        if warning_count is None:
+            warning_count = _coerce_int(store.get("warning_count"))
         if warning_count is None or warning_count <= 0:
             continue
         warnings.append(
@@ -1320,18 +1392,14 @@ def _build_td_orders_context(
         limit=TD_SALES_EDITED_LIMIT,
     )
     dropped_identifiers = _unique_rows(sales_dropped_rows, lambda row: _format_identifier(row))
-    dropped_samples = dropped_identifiers[:TD_SALES_ROW_SAMPLE_LIMIT]
-    dropped_truncated = len(dropped_identifiers) > TD_SALES_ROW_SAMPLE_LIMIT
+    dropped_samples = dropped_identifiers
+    dropped_truncated = False
     if not dropped_samples:
         dropped_samples = ["(none)"]
     dropped_lines = [
         f"Total dropped rows: {len(sales_dropped_rows)}",
-        f"Sample identifiers: {', '.join(dropped_samples)}",
+        f"Identifiers: {', '.join(dropped_samples)}",
     ]
-    if dropped_truncated:
-        dropped_lines.append(
-            f"... additional {len(dropped_identifiers) - TD_SALES_ROW_SAMPLE_LIMIT} identifiers truncated"
-        )
     warning_fact_rows = [row for store in stores for row in store.get("warning_fact_rows") or []]
     dropped_fact_rows = [row for store in stores for row in store.get("dropped_fact_rows") or []]
     edited_fact_rows = [row for store in stores for row in store.get("edited_fact_rows") or []]
@@ -1405,7 +1473,8 @@ def _build_uc_orders_context(
     metrics = run_data.get("metrics_json") or {}
     payload = metrics.get("notification_payload") or {}
     stores_payload = payload.get("stores") or []
-    ingest_rows = (metrics.get("ingest_remarks") or {}).get("rows") or []
+    raw_ingest_rows = (metrics.get("ingest_remarks") or {}).get("rows") or []
+    ingest_rows = _clean_uc_rows_for_reporting(raw_ingest_rows, drop_empty=True)
     warning_summaries = _summarize_ingest_remarks_by_store(ingest_rows)
     store_outcomes = (metrics.get("stores") or {}).get("outcomes") or {}
     ingest_warning_counts = {
@@ -1441,6 +1510,7 @@ def _build_uc_orders_context(
         )
     primary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
     secondary_metrics = _not_applicable_metrics()
+    store_warning_counts: dict[str, int] = {}
     for store in stores_payload:
         store_code = _normalize_store_code(store.get("store_code")) or store.get("store_code")
         missing_windows = merged_missing_windows.get(store_code or "") or []
@@ -1465,13 +1535,12 @@ def _build_uc_orders_context(
                     "ingest_warning_count": ingest_warning_count,
                 },
             )
-        resolved_warning_count = ingest_warning_count or 0
         primary_metrics = _build_unified_metrics(store)
         _sum_unified_metrics(primary_totals, primary_metrics)
         store_status = _uc_store_status(store, uc_status_by_store)
         show_error_message = store_status in {"failed", "partial"}
-        warning_rows_payload = store.get("warning_rows")
-        if not warning_rows_payload and resolved_warning_count > 0:
+        warning_rows_payload = _clean_uc_rows_for_reporting(store.get("warning_rows"), drop_empty=True)
+        if not warning_rows_payload:
             warning_rows_payload = [
                 row for row in ingest_rows if _normalize_store_code(row.get("store_code")) == store_code
             ]
@@ -1481,8 +1550,11 @@ def _build_uc_orders_context(
             include_order_number=True,
             include_remarks=True,
         )
+        resolved_warning_count = len(warning_rows)
+        store_warning_counts[_normalize_store_code(store_code) or store_code or ""] = resolved_warning_count
+        dropped_rows_payload = _clean_uc_rows_for_reporting(store.get("dropped_rows"), drop_empty=False)
         dropped_rows = _with_store_metadata(
-            store.get("dropped_rows"),
+            dropped_rows_payload,
             store_code=store.get("store_code"),
             include_order_number=True,
             include_remarks=True,
@@ -1550,6 +1622,7 @@ def _build_uc_orders_context(
     warnings = _uc_warning_entries(
         stores_payload=stores_payload,
         payload_warnings=payload.get("warnings") or metrics.get("warnings") or [],
+        warning_counts_by_store=store_warning_counts,
     )
     store_count = len(stores_payload)
     outcome_summary = _build_outcome_summary(overall_status, store_count=store_count)
@@ -1619,10 +1692,14 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
         )
 
     row_facts = metrics.get("row_facts") or {}
-    warning_fact_rows = _build_fact_rows(row_facts.get("warning_rows"), include_remarks=True)
-    dropped_fact_rows = _build_fact_rows(row_facts.get("dropped_rows"), include_remarks=True)
-    edited_fact_rows = _build_fact_rows(row_facts.get("edited_rows"), include_remarks=False)
-    error_fact_rows = _build_fact_rows(row_facts.get("error_rows"), include_remarks=True)
+    warning_rows = _clean_uc_rows_for_reporting(row_facts.get("warning_rows"), drop_empty=True)
+    dropped_rows = _clean_uc_rows_for_reporting(row_facts.get("dropped_rows"), drop_empty=False)
+    edited_rows = row_facts.get("edited_rows") or []
+    error_rows = _clean_uc_rows_for_reporting(row_facts.get("error_rows"), drop_empty=False)
+    warning_fact_rows = _build_fact_rows(warning_rows, include_remarks=True)
+    dropped_fact_rows = _build_fact_rows(dropped_rows, include_remarks=True)
+    edited_fact_rows = _build_fact_rows(edited_rows, include_remarks=False)
+    error_fact_rows = _build_fact_rows(error_rows, include_remarks=True)
     warnings = _normalize_warning_entries(payload.get("warnings") or [])
     if not warnings:
         warnings = _build_profiler_row_fact_warnings(
@@ -1897,9 +1974,21 @@ def _uc_summary_text_from_payload(
     if missing_windows_detail:
         lines.append("Missing Window Ranges:")
         lines.append(missing_windows_detail)
+    warning_counts_by_store: dict[str, int] = {}
+    for store in stores_payload:
+        store_code = store.get("store_code") or "UNKNOWN"
+        normalized_store = _normalize_store_code(store_code) or store_code
+        warning_rows_payload = _clean_uc_rows_for_reporting(store.get("warning_rows"), drop_empty=True)
+        if warning_rows_payload:
+            warning_counts_by_store[normalized_store] = len(warning_rows_payload)
+            continue
+        warning_count = _coerce_int(store.get("warning_count"))
+        if warning_count is not None:
+            warning_counts_by_store[normalized_store] = warning_count
     warnings = _uc_warning_entries(
         stores_payload=stores_payload,
         payload_warnings=payload.get("warnings") or metrics.get("warnings") or [],
+        warning_counts_by_store=warning_counts_by_store,
     )
     if warnings:
         lines.append("Warnings:")
@@ -1912,7 +2001,8 @@ def _uc_summary_text_from_payload(
         inserted = _coalesce_int(store, "final_inserted", "staging_inserted") or 0
         updated = _coalesce_int(store, "final_updated", "staging_updated") or 0
         dropped_count = _coerce_int(store.get("rows_skipped_invalid")) or 0
-        warning_count = _coerce_int(store.get("warning_count")) or 0
+        normalized_store = _normalize_store_code(store_code) or store_code
+        warning_count = warning_counts_by_store.get(normalized_store, _coerce_int(store.get("warning_count")) or 0)
         reconciliation = (
             f"{rows_downloaded} == {inserted} + {updated} + {dropped_count}"
         )
@@ -1974,6 +2064,8 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
         context["started_at"] = _normalize_datetime(run_data.get("started_at"))
         context["finished_at"] = _normalize_datetime(run_data.get("finished_at"))
     ingest_rows = (run_data.get("metrics_json") or {}).get("ingest_remarks", {}).get("rows") or []
+    if pipeline_name == "uc_orders_sync":
+        ingest_rows = _clean_uc_rows_for_reporting(ingest_rows, drop_empty=True)
     prepared_rows, truncated_rows, truncated_length, ingest_text = _prepare_ingest_remarks(ingest_rows)
     context["ingest_remarks"] = prepared_rows
     context["ingest_remarks_truncated"] = truncated_rows or truncated_length

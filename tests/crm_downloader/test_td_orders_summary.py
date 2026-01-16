@@ -6,7 +6,9 @@ from app.crm_downloader.td_orders_sync.main import StoreOutcome, StoreReport, Td
 
 
 def test_summary_text_lists_ingest_remarks() -> None:
-    summary = TdOrdersDiscoverySummary(run_id="run-1", run_env="test", report_date=date(2024, 1, 1))
+    summary = TdOrdersDiscoverySummary(
+        run_id="run-1", run_env="test", report_date=date(2024, 1, 1), report_end_date=date(2024, 1, 1)
+    )
     summary.started_at = datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc)
     summary.add_ingest_remarks(
         [
@@ -30,7 +32,9 @@ def test_summary_text_lists_ingest_remarks() -> None:
 
 
 def test_summary_ingest_remarks_truncate_notice() -> None:
-    summary = TdOrdersDiscoverySummary(run_id="run-2", run_env="test", report_date=date(2024, 1, 2))
+    summary = TdOrdersDiscoverySummary(
+        run_id="run-2", run_env="test", report_date=date(2024, 1, 2), report_end_date=date(2024, 1, 2)
+    )
     long_remark = "x" * 205
     remarks = [{"store_code": "a1", "order_number": "1", "ingest_remarks": long_remark}]
     remarks.extend(
@@ -49,7 +53,9 @@ def test_summary_ingest_remarks_truncate_notice() -> None:
 
 
 def test_summary_records_orders_and_sales_results() -> None:
-    summary = TdOrdersDiscoverySummary(run_id="run-3", run_env="test", report_date=date(2024, 1, 3))
+    summary = TdOrdersDiscoverySummary(
+        run_id="run-3", run_env="test", report_date=date(2024, 1, 3), report_end_date=date(2024, 1, 3)
+    )
     orders_report = StoreReport(
         status="warning",
         filenames=["orders_A1.xlsx"],
@@ -75,20 +81,22 @@ def test_summary_records_orders_and_sales_results() -> None:
 
     orders_metrics = record["metrics_json"]["orders"]
     sales_metrics = record["metrics_json"]["sales"]
-    assert orders_metrics["overall_status"] == "warning"
-    assert sales_metrics["overall_status"] == "ok"
+    assert orders_metrics["overall_status"] == "success_with_warnings"
+    assert sales_metrics["overall_status"] == "success"
     assert orders_metrics["stores"]["A1"]["filenames"] == ["orders_A1.xlsx"]
     assert sales_metrics["stores"]["A1"]["final_rows"] == 3
 
     text_lines = summary.summary_text(finished_at=datetime(2024, 1, 3, tzinfo=timezone.utc)).splitlines()
     assert "**Per Store Orders Metrics:**" in text_lines
-    assert any(line.startswith("- A1 — WARNING") for line in text_lines)
+    assert any(line.startswith("- A1 — SUCCESS_WITH_WARNINGS") for line in text_lines)
     assert any("warning_count: 1" in line for line in text_lines)
-    assert any(line.startswith("- A1 — OK") for line in text_lines)
+    assert any(line.startswith("- A1 — SUCCESS") for line in text_lines)
 
 
 def test_sales_warnings_reflected_in_summary() -> None:
-    summary = TdOrdersDiscoverySummary(run_id="run-4", run_env="test", report_date=date(2024, 1, 4))
+    summary = TdOrdersDiscoverySummary(
+        run_id="run-4", run_env="test", report_date=date(2024, 1, 4), report_end_date=date(2024, 1, 4)
+    )
     sales_report = StoreReport(
         status="ok",
         filenames=["sales_A2.xlsx"],
@@ -100,15 +108,17 @@ def test_sales_warnings_reflected_in_summary() -> None:
 
     record = summary.build_record(finished_at=datetime(2024, 1, 4, tzinfo=timezone.utc))
     sales_metrics = record["metrics_json"]["sales"]
-    assert sales_metrics["overall_status"] == "warning"
+    assert sales_metrics["overall_status"] == "success_with_warnings"
 
     text_lines = summary.summary_text(finished_at=datetime(2024, 1, 4, tzinfo=timezone.utc)).splitlines()
-    assert any(line.startswith("- A2 — OK") for line in text_lines)
+    assert any(line.startswith("- A2 — SUCCESS") for line in text_lines)
     assert any("warning_count: 1" in line for line in text_lines)
 
 
 def test_summary_text_filters_row_fields_and_truncates_samples() -> None:
-    summary = TdOrdersDiscoverySummary(run_id="run-5", run_env="test", report_date=date(2024, 1, 5))
+    summary = TdOrdersDiscoverySummary(
+        run_id="run-5", run_env="test", report_date=date(2024, 1, 5), report_end_date=date(2024, 1, 5)
+    )
     warning_rows = [
         {"values": {"store_code": "A1", "order_number": "W1", "ingest_remarks": "bad W1", "phone": "111"}},
         {"values": {"store_code": "A1", "order_number": "W2", "ingest_remarks": "bad W2", "email": "x@example.com"}},
@@ -127,17 +137,11 @@ def test_summary_text_filters_row_fields_and_truncates_samples() -> None:
         {"values": {"store_code": "A1", "order_number": "E3", "refund": "2.00"}},
         {"values": {"store_code": "A1", "order_number": "E4", "notes": "fix"}},
     ]
-    duplicate_rows = [
-        {"values": {"store_code": "A1", "order_number": "DU1", "notes": "dup 1"}},
-        {"values": {"store_code": "A1", "order_number": "DU2", "notes": "dup 2"}},
-        {"values": {"store_code": "A1", "order_number": "DU3", "notes": "dup 3"}},
-        {"values": {"store_code": "A1", "order_number": "DU4", "notes": "dup 4"}},
-    ]
     summary.record_store(
         "A1",
         StoreOutcome(status="warning", message="Data warnings"),
         orders_result=StoreReport(status="warning", warning_rows=warning_rows, dropped_rows=dropped_rows),
-        sales_result=StoreReport(status="warning", edited_rows=edited_rows, duplicate_rows=duplicate_rows),
+        sales_result=StoreReport(status="warning", edited_rows=edited_rows),
     )
 
     finished_at = datetime(2024, 1, 5, tzinfo=timezone.utc)
@@ -156,26 +160,18 @@ def test_summary_text_filters_row_fields_and_truncates_samples() -> None:
     warning_lines = _collect_row_lines("  warning rows:")
     dropped_lines = _collect_row_lines("  dropped rows:")
     edited_lines = _collect_row_lines("  edited rows:")
-    duplicate_lines = _collect_row_lines("  duplicate rows:")
-
     assert len(warning_lines) == len(warning_rows)
     assert len(dropped_lines) == len(dropped_rows)
     assert len(edited_lines) == len(edited_rows)
-    assert len(duplicate_lines) == len(duplicate_rows)
     assert all("ingest_remarks=" in line for line in warning_lines)
-    assert all("phone" not in line and "email" not in line and "customer" not in line for line in warning_lines)
+    assert all("phone" not in line and "email" not in line for line in warning_lines)
     assert all("…truncated" not in line for line in warning_lines)
 
     assert all("ingest_remarks=" in line for line in dropped_lines)
-    assert all("mobile_number" not in line and "address" not in line for line in dropped_lines)
+    assert all("address" not in line for line in dropped_lines)
     assert all("…truncated" not in line for line in dropped_lines)
 
     assert all("payment_mode" not in line and "adjustment" not in line for line in edited_lines)
     assert all("ingest_remarks" not in line for line in edited_lines)
     assert all("store_code=" in line and "order_number=" in line for line in edited_lines)
     assert all("…truncated" not in line for line in edited_lines)
-
-    assert all("notes" not in line for line in duplicate_lines)
-    assert all("ingest_remarks" not in line for line in duplicate_lines)
-    assert all("store_code=" in line and "order_number=" in line for line in duplicate_lines)
-    assert all("…truncated" not in line for line in duplicate_lines)

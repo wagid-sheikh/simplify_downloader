@@ -796,8 +796,30 @@ class TdOrdersDiscoverySummary:
                             or values_source.get("Order No.")
                             or row_mapping.get("order_number")
                         )
-                    elif field == "payment_date":
-                        value = values_source.get("payment_date") or values_source.get("Payment Date") or row_mapping.get("payment_date")
+                    elif field == "order_date":
+                        value = (
+                            values_source.get("order_date")
+                            or values_source.get("Order Date")
+                            or values_source.get("invoice_date")
+                            or values_source.get("Invoice Date")
+                            or row_mapping.get("order_date")
+                            or row_mapping.get("invoice_date")
+                        )
+                    elif field == "customer_name":
+                        value = (
+                            values_source.get("customer_name")
+                            or values_source.get("Customer Name")
+                            or values_source.get("Customer")
+                            or row_mapping.get("customer_name")
+                        )
+                    elif field == "mobile_number":
+                        value = (
+                            values_source.get("mobile_number")
+                            or values_source.get("Mobile Number")
+                            or values_source.get("Phone")
+                            or values_source.get("Phone Number")
+                            or row_mapping.get("mobile_number")
+                        )
                     elif field == "ingest_remarks":
                         value = values_source.get("ingest_remarks")
                         if value is None and remarks_source is not None:
@@ -884,7 +906,14 @@ class TdOrdersDiscoverySummary:
                     _format_row_entries(
                         _filter_row_fields(
                             report.warning_rows,
-                            allowed_fields=("store_code", "order_number", "customer_identifier", "order_date", "ingest_remarks"),
+                            allowed_fields=(
+                                "store_code",
+                                "order_number",
+                                "order_date",
+                                "customer_name",
+                                "mobile_number",
+                                "ingest_remarks",
+                            ),
                             store_code=code,
                         )
                     )
@@ -895,7 +924,14 @@ class TdOrdersDiscoverySummary:
                     _format_row_entries(
                         _filter_row_fields(
                             report.dropped_rows,
-                            allowed_fields=("store_code", "order_number", "ingest_remarks"),
+                            allowed_fields=(
+                                "store_code",
+                                "order_number",
+                                "order_date",
+                                "customer_name",
+                                "mobile_number",
+                                "ingest_remarks",
+                            ),
                             store_code=code,
                         )
                     )
@@ -915,27 +951,20 @@ class TdOrdersDiscoverySummary:
                                 _distinct_rows(
                                     _filter_row_fields(
                                         report.edited_rows,
-                                        allowed_fields=("store_code", "order_number", "payment_date"),
+                                        allowed_fields=(
+                                            "store_code",
+                                            "order_number",
+                                            "order_date",
+                                            "customer_name",
+                                            "mobile_number",
+                                        ),
                                         store_code=code,
                                     ),
-                                    identifier_fields=("store_code", "order_number", "payment_date"),
+                                    identifier_fields=("store_code", "order_number"),
                                 ),
                             )
                         ),
                         f"  duplicate_count: {duplicate_count}",
-                        "  duplicate rows:",
-                        *(
-                            _format_row_entries(
-                                _distinct_rows(
-                                    _filter_row_fields(
-                                        report.duplicate_rows,
-                                        allowed_fields=("store_code", "order_number", "payment_date"),
-                                        store_code=code,
-                                    ),
-                                    identifier_fields=("store_code", "order_number", "payment_date"),
-                                ),
-                            )
-                        ),
                     ]
                 )
             return base_lines
