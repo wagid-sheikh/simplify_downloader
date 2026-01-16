@@ -32,8 +32,6 @@ STORE_PROFILE_DOC_TYPES: dict[tuple[str, str], str] = {
     ("dashboard_weekly", "store_weekly_reports"): "store_weekly_pdf",
     ("dashboard_monthly", "store_monthly_reports"): "store_monthly_pdf",
 }
-INGEST_REMARKS_MAX_ROWS = 50
-INGEST_REMARKS_MAX_CHARS = 200
 STATUS_EXPLANATIONS = {
     "ok": "run completed with no issues recorded",
     "success": "run completed with no issues recorded",
@@ -854,37 +852,23 @@ def _group_documents(rows: list[dict[str, Any]]) -> list[DocumentRecord]:
     return records
 
 
-def _prepare_ingest_remarks(
-    rows: list[dict[str, Any]], *, max_rows: int = INGEST_REMARKS_MAX_ROWS, max_chars: int = INGEST_REMARKS_MAX_CHARS
-) -> tuple[list[dict[str, str]], bool, bool, str]:
+def _prepare_ingest_remarks(rows: list[dict[str, Any]]) -> tuple[list[dict[str, str]], bool, bool, str]:
     if not rows:
         return [], False, False, ""
 
-    truncated_rows = len(rows) > max_rows
-    truncated_length = False
     cleaned_rows: list[dict[str, str]] = []
-    for entry in rows[:max_rows]:
-        remark = str(entry.get("ingest_remarks") or "")
-        if len(remark) > max_chars:
-            remark = remark[: max_chars - 1] + "…"
-            truncated_length = True
+    for entry in rows:
         cleaned_rows.append(
             {
                 "store_code": (_normalize_store_code(entry.get("store_code")) or ""),
                 "order_number": str(entry.get("order_number") or ""),
-                "ingest_remarks": remark,
+                "ingest_remarks": str(entry.get("ingest_remarks") or ""),
             }
         )
 
     lines = [f"- {row['store_code']} {row['order_number']}: {row['ingest_remarks']}" for row in cleaned_rows]
-    if truncated_rows:
-        hidden = len(rows) - max_rows
-        if hidden > 0:
-            lines.append(f"... additional {hidden} remarks truncated")
-    elif truncated_length:
-        lines.append("... some remarks truncated for length")
     ingest_text = "\n".join(lines)
-    return cleaned_rows, truncated_rows, truncated_length, ingest_text
+    return cleaned_rows, False, False, ingest_text
 
 
 def _build_run_plan(
@@ -1415,9 +1399,7 @@ def _build_td_orders_context(
         for row in ingest_rows
         if (_normalize_store_code(row.get("store_code")) and str(row.get("order_number") or "").strip())
     ]
-    _, td_ingest_truncated_rows, td_ingest_truncated_length, td_ingest_text = _prepare_ingest_remarks(
-        filtered_ingest_rows
-    )
+    _, _, _, td_ingest_text = _prepare_ingest_remarks(filtered_ingest_rows)
 
     summary_text = run_data.get("summary_text") or _td_summary_text_from_payload(run_data) or ""
     summary_text = _append_fact_sections(summary_text, fact_sections_text)
@@ -1461,7 +1443,6 @@ def _build_td_orders_context(
         "td_sales_dropped_rows_count": len(sales_dropped_rows),
         "td_sales_dropped_rows_samples": dropped_samples,
         "td_sales_ingest_remarks_text": td_ingest_text,
-        "td_sales_ingest_remarks_truncated": td_ingest_truncated_rows or td_ingest_truncated_length,
     }
 
 
@@ -2066,11 +2047,8 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
     ingest_rows = (run_data.get("metrics_json") or {}).get("ingest_remarks", {}).get("rows") or []
     if pipeline_name == "uc_orders_sync":
         ingest_rows = _clean_uc_rows_for_reporting(ingest_rows, drop_empty=True)
-    prepared_rows, truncated_rows, truncated_length, ingest_text = _prepare_ingest_remarks(ingest_rows)
+    prepared_rows, _, _, ingest_text = _prepare_ingest_remarks(ingest_rows)
     context["ingest_remarks"] = prepared_rows
-    context["ingest_remarks_truncated"] = truncated_rows or truncated_length
-    context["ingest_remarks_truncated_rows"] = truncated_rows
-    context["ingest_remarks_truncated_length"] = truncated_length
     context["ingest_remarks_text"] = ingest_text
 
     plans = _build_email_plans(

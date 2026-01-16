@@ -8,21 +8,23 @@ from app.dashboard_downloader.notifications import (
 )
 
 
-def test_prepare_ingest_remarks_truncates_rows_and_length() -> None:
+def test_prepare_ingest_remarks_includes_all_rows() -> None:
     rows = [
         {"store_code": "a001", "order_number": "123", "ingest_remarks": "x" * 15},
         {"store_code": "a002", "order_number": "456", "ingest_remarks": "ok"},
     ]
 
-    cleaned, truncated_rows, truncated_length, ingest_text = _prepare_ingest_remarks(
-        rows, max_rows=1, max_chars=10
-    )
+    cleaned, truncated_rows, truncated_length, ingest_text = _prepare_ingest_remarks(rows)
 
-    assert truncated_rows is True
-    assert truncated_length is True
-    assert cleaned == [{"store_code": "A001", "order_number": "123", "ingest_remarks": "xxxxxxxxx…"}]
-    assert "- A001 123: xxxxxxxxx…" in ingest_text
-    assert "... additional 1 remarks truncated" in ingest_text
+    assert truncated_rows is False
+    assert truncated_length is False
+    assert cleaned == [
+        {"store_code": "A001", "order_number": "123", "ingest_remarks": "x" * 15},
+        {"store_code": "A002", "order_number": "456", "ingest_remarks": "ok"},
+    ]
+    assert "- A001 123: " + "x" * 15 in ingest_text
+    assert "- A002 456: ok" in ingest_text
+    assert "truncated" not in ingest_text.lower()
 
 
 def test_uc_orders_warning_count_ignores_row_totals() -> None:
