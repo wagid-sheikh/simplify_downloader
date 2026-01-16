@@ -100,7 +100,7 @@ NUMERIC_FIELDS = {"net_amount", "cgst", "sgst", "gross_amount"}
 
 REQUIRED_HEADERS = set(HEADER_MAP.keys())
 
-GSTIN_PATTERN = re.compile(r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$")
+MOBILE_FALLBACK_NUMBER = "8888999762"
 
 
 def _stringify_value(value: Any) -> str:
@@ -244,21 +244,29 @@ def _orders_table(metadata: sa.MetaData) -> sa.Table:
 def _normalize_phone(
     value: str | None, *, warnings: list[str], invalid_phone_numbers: set[str], row_remarks: list[str]
 ) -> str | None:
-    if value is None:
-        return None
-    digits = re.sub(r"\D", "", str(value))
+    value_str = "" if value is None else str(value)
+    if value_str.strip() == "":
+        row_remarks.append("MOBILE_FALLBACK_APPLIED")
+        if value_str not in invalid_phone_numbers:
+            invalid_phone_numbers.add(value_str)
+            warnings.append("Invalid phone number fallback applied: <missing>")
+        return MOBILE_FALLBACK_NUMBER
+    sanitized = value_str
+    if re.search(r"[oO]", sanitized):
+        sanitized = re.sub(r"[oO]", "0", sanitized)
+        row_remarks.append("MOBILE_SANITIZED_O_TO_0")
+    digits = re.sub(r"\D", "", sanitized)
     if len(digits) == 12 and digits.startswith("91"):
         digits = digits[-10:]
     if len(digits) == 11 and digits.startswith("0"):
         digits = digits[1:]
     if len(digits) == 10:
         return digits
-    value_str = str(value)
-    row_remarks.append(f"Phone value '{value_str}' is invalid and was dropped")
+    row_remarks.append("MOBILE_FALLBACK_APPLIED")
     if value_str not in invalid_phone_numbers:
         invalid_phone_numbers.add(value_str)
-        warnings.append(f"Invalid phone number dropped: {value_str}")
-    return None
+        warnings.append(f"Invalid phone number fallback applied: {value_str}")
+    return MOBILE_FALLBACK_NUMBER
 
 
 def _parse_numeric(value: Any, *, warnings: list[str], field: str, row_remarks: list[str]) -> Decimal:
@@ -346,15 +354,11 @@ def _normalize_invoice_number(value: Any, *, warnings: list[str], row_remarks: l
     return normalized
 
 
-def _normalize_gstin(value: Any, *, warnings: list[str], row_remarks: list[str]) -> str | None:
+def _normalize_gstin(value: Any) -> str | None:
     if value is None or value == "":
         return None
     normalized = re.sub(r"\s+", "", str(value)).upper()
-    if GSTIN_PATTERN.fullmatch(normalized):
-        return normalized
-    row_remarks.append(f"Customer GSTIN '{value}' is invalid and was cleared")
-    warnings.append(f"Invalid GSTIN dropped: {value}")
-    return None
+    return normalized or None
 
 
 def _build_ingest_remarks_payload(*, warnings: list[str], failures: list[str] | None = None) -> str | None:
@@ -395,9 +399,7 @@ def _coerce_row(
         row_remarks=row_remarks,
     )
     raw_gstin = row.get("customer_gstin")
-    row["customer_gstin"] = _normalize_gstin(raw_gstin, warnings=warnings, row_remarks=row_remarks)
-    if raw_gstin in (None, ""):
-        row_remarks.append("Customer GSTIN missing")
+    row["customer_gstin"] = _normalize_gstin(raw_gstin)
 
     if not row.get("order_number"):
         warning = "Skipping row with blank order_number"

@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -78,6 +79,7 @@ GST_CONTAINER_SELECTORS = (
     "div[class*=gst]",
     "div[id*=gst]",
 )
+UC_MAX_WORKERS_DEFAULT = 2
 GST_DATE_RANGE_READY_SELECTORS = (
     "input.search-user[placeholder*='Choose Start Date']",
     "input[placeholder='Choose Start Date - End Date']",
@@ -625,20 +627,25 @@ async def main(
         download_timeout_ms = await _fetch_dashboard_nav_timeout_ms(config.database_url)
         async with async_playwright() as playwright:
             browser = await launch_browser(playwright=playwright, logger=logger)
-            for store in stores:
-                store_start_date = store_start_dates.get(store.store_code, summary.report_date)
-                await _run_store_discovery(
-                    browser=browser,
-                    store=store,
-                    logger=logger,
-                    run_env=resolved_env,
-                    run_id=resolved_run_id,
-                    run_date=resolved_run_date,
-                    summary=summary,
-                    from_date=store_start_date,
-                    to_date=run_end_date,
-                    download_timeout_ms=download_timeout_ms,
-                )
+            semaphore = asyncio.Semaphore(_resolve_uc_max_workers())
+
+            async def _guarded(store: UcStore) -> None:
+                async with semaphore:
+                    store_start_date = store_start_dates.get(store.store_code, summary.report_date)
+                    await _run_store_discovery(
+                        browser=browser,
+                        store=store,
+                        logger=logger,
+                        run_env=resolved_env,
+                        run_id=resolved_run_id,
+                        run_date=resolved_run_date,
+                        summary=summary,
+                        from_date=store_start_date,
+                        to_date=run_end_date,
+                        download_timeout_ms=download_timeout_ms,
+                    )
+
+            await asyncio.gather(*[_guarded(store) for store in stores])
             await browser.close()
 
         log_event(
@@ -738,6 +745,30 @@ def _normalize_id_selector(selector: str) -> str:
 
 def _format_gst_filename(store_code: str, from_date: date, to_date: date) -> str:
     return f"{store_code}_uc_gst_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _resolve_uc_max_workers() -> int:
+    return max(1, _env_int("UC_MAX_WORKERS", UC_MAX_WORKERS_DEFAULT))
+
+
+def _resolve_uc_download_dir(run_id: str, store_code: str, from_date: date, to_date: date) -> Path:
+    return (
+        default_download_dir()
+        / "uc_orders"
+        / run_id
+        / store_code
+        / f"{from_date:%Y%m%d}_{to_date:%Y%m%d}"
+    )
 
 
 async def _load_uc_order_stores(
@@ -1542,12 +1573,15 @@ async def _run_store_discovery(
         else:
             download_warning_reason = None
 
+        download_dir = _resolve_uc_download_dir(run_id, store.store_code, from_date, to_date)
+        download_dir.mkdir(parents=True, exist_ok=True)
         downloaded, download_path, download_message = await _download_gst_report(
             page=page,
             logger=logger,
             store=store,
             from_date=from_date,
             to_date=to_date,
+            download_dir=download_dir,
             download_timeout_ms=download_timeout_ms,
             row_count=row_count,
         )
@@ -2825,12 +2859,11 @@ async def _download_gst_report(
     store: UcStore,
     from_date: date,
     to_date: date,
+    download_dir: Path,
     download_timeout_ms: int,
     row_count: int,
     max_attempts: int = 3,
 ) -> tuple[bool, str | None, str]:
-    download_dir = default_download_dir()
-    download_dir.mkdir(parents=True, exist_ok=True)
     filename = _format_gst_filename(store.store_code, from_date, to_date)
     target_path = (download_dir / filename).resolve()
 
