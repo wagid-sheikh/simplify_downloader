@@ -1,46 +1,1797 @@
 Email 1:
+UC Orders Sync Run Summary
+Run ID: 20260116_104259650039_UC610_001_attempt1 | Env: dev
+Report Date: 2025-05-11
+Started: 2026-01-16T10:43:00.002703+00:00 | Finished: 2026-01-16T10:44:36.011923+00:00
+Total Duration: 00:01:36
+Overall Status: success (run completed with no issues recorded)
 
+**Per Store UC Metrics:**
+
+- UC610 — SUCCESS
+  filename: UC610_uc_gst_20250511_20250808.xlsx
+  rows_downloaded: 188
+  rows_ingested: 188
+  inserted: 188
+  updated: 0
+  warning_count: 0
+  dropped_count: 0
+
+
+
+
+
+
+All UC stores completed successfully.
+
+
+Warnings:
+
+- None.
+
+
+Deterministic filenames:
+
+- UC610: UC610_uc_gst_20250511_20250808.xlsx
+
+Filename format: {STORE_CODE}_uc_gst_YYYYMMDD_YYYYMMDD.xlsx
+
+
+UC GST Run Summary
+Overall Status: success (run completed with no issues recorded)
+Stores: 1 success, 0 success with warnings, 0 partial, 0 failed across 1 stores
+Windows Completed: 1 / 1
+Missing Windows: 0
+Window Reconciliation:
+- UC610
+  rows_downloaded: 188
+  rows_ingested: 188
+  inserted: 188
+  updated: 0
+  warning_count: 0
+  dropped_count: 0 ((none))
+  reconciliation: rows_downloaded == inserted + updated + dropped_count (188 == 188 + 0 + 0)
 ---
 Email 2:
+UC Orders Sync Run Summary
+Run ID: 20260116_104259650039_UC567_001_attempt1 | Env: dev
+Report Date: 2025-02-09
+Started: 2026-01-16T10:42:59.814937+00:00 | Finished: 2026-01-16T10:44:49.917575+00:00
+Total Duration: 00:01:50
+Overall Status: success (run completed with no issues recorded)
+
+**Per Store UC Metrics:**
+
+- UC567 — SUCCESS
+  filename: UC567_uc_gst_20250209_20250509.xlsx
+  rows_downloaded: 277
+  rows_ingested: 277
+  inserted: 277
+  updated: 0
+  warning_count: 0
+  dropped_count: 0
+
+
+
+
+
+
+All UC stores completed successfully.
+
+
+Warnings:
+
+- None.
+
+
+Deterministic filenames:
+
+- UC567: UC567_uc_gst_20250209_20250509.xlsx
+
+Filename format: {STORE_CODE}_uc_gst_YYYYMMDD_YYYYMMDD.xlsx
+
+
+UC GST Run Summary
+Overall Status: success (run completed with no issues recorded)
+Stores: 1 success, 0 success with warnings, 0 partial, 0 failed across 1 stores
+Windows Completed: 1 / 1
+Missing Windows: 0
+Window Reconciliation:
+- UC567
+  rows_downloaded: 277
+  rows_ingested: 277
+  inserted: 277
+  updated: 0
+  warning_count: 0
+  dropped_count: 0 ((none))
+  reconciliation: rows_downloaded == inserted + updated + dropped_count (277 == 277 + 0 + 0)
 ---
 Email 3:
+UC Orders Sync Run Summary
+Run ID: 20260116_104259650039_UC610_002_attempt1 | Env: dev
+Report Date: 2025-08-07
+Started: 2026-01-16T10:44:45.760722+00:00 | Finished: 2026-01-16T10:46:16.558002+00:00
+Total Duration: 00:01:30
+Overall Status: success with warnings (run completed with row-level warnings)
 
+**Per Store UC Metrics:**
+
+- UC610 — SUCCESS_WITH_WARNINGS
+  filename: UC610_uc_gst_20250807_20251104.xlsx
+  rows_downloaded: 248
+  rows_ingested: 248
+  inserted: 246
+  updated: 2
+  warning_count: 1
+  dropped_count: 0
+
+
+
+  row_facts:
+    Warning rows (1):
+    store_code | order_number | order_date | customer_name | mobile_number | ingestion_remarks
+    UC610 | UC610-0487 | 29/10/2025 | Deleted User |  | {"warnings": ["MOBILE_SANITIZED_O_TO_0", "MOBILE_FALLBACK_APPLIED"], "failures": []}
+
+
+
+
+Completed with warnings. See warnings below.
+
+
+Warnings:
+
+
+- UC_STORE_WARNINGS: UC610 reported 1 row-level warning(s)
+
+
+
+Deterministic filenames:
+
+- UC610: UC610_uc_gst_20250807_20251104.xlsx
+
+Filename format: {STORE_CODE}_uc_gst_YYYYMMDD_YYYYMMDD.xlsx
+
+
+UC GST Run Summary
+Overall Status: success with warnings (run completed with row-level warnings)
+Stores: 0 success, 1 success with warnings, 0 partial, 0 failed across 1 stores
+Windows Completed: 1 / 1
+Missing Windows: 0
+Warnings:
+- UC_STORE_WARNINGS: UC610 reported 1 row-level warning(s)
+Window Reconciliation:
+- UC610
+  rows_downloaded: 248
+  rows_ingested: 248
+  inserted: 246
+  updated: 2
+  warning_count: 1
+  dropped_count: 0 ((none))
+  reconciliation: rows_downloaded == inserted + updated + dropped_count (248 == 246 + 2 + 0)
 ---
 Email 4:
+UC Orders Sync Run Summary
+Run ID: 20260116_104259650039_UC567_002_attempt1 | Env: dev
+Report Date: 2025-05-08
+Started: 2026-01-16T10:44:58.247121+00:00 | Finished: 2026-01-16T10:46:38.109436+00:00
+Total Duration: 00:01:39
+Overall Status: success (run completed with no issues recorded)
 
+**Per Store UC Metrics:**
+
+- UC567 — SUCCESS
+  filename: UC567_uc_gst_20250508_20250805.xlsx
+  rows_downloaded: 271
+  rows_ingested: 271
+  inserted: 263
+  updated: 7
+  warning_count: 0
+  dropped_count: 0
+
+
+
+
+
+
+All UC stores completed successfully.
+
+
+Warnings:
+
+- None.
+
+
+Deterministic filenames:
+
+- UC567: UC567_uc_gst_20250508_20250805.xlsx
+
+Filename format: {STORE_CODE}_uc_gst_YYYYMMDD_YYYYMMDD.xlsx
+
+
+UC GST Run Summary
+Overall Status: success (run completed with no issues recorded)
+Stores: 1 success, 0 success with warnings, 0 partial, 0 failed across 1 stores
+Windows Completed: 1 / 1
+Missing Windows: 0
+Window Reconciliation:
+- UC567
+  rows_downloaded: 271
+  rows_ingested: 271
+  inserted: 263
+  updated: 7
+  warning_count: 0
+  dropped_count: 0 ((none))
+  reconciliation: rows_downloaded == inserted + updated + dropped_count (271 == 263 + 7 + 0)
 ---
 Email 5:
+TD Orders & Sales Run Summary
+Run ID: 20260116_104259650039_A817_001 | Env: dev
+Report Date: 2025-05-10
+Started (Asia/Kolkata): 16-01-2026 16:12:59
+Finished (Asia/Kolkata): 16-01-2026 16:17:32
+Total Duration: 00:04:32
+Overall Status: success (Orders: success, Sales: success_with_warnings)
 
+Windows Completed: 1 / 1
+
+Missing Windows: 0
+
+
+**Per Store Orders Metrics:**
+
+- A817 — SUCCESS
+  rows_downloaded: 413
+  rows_ingested: 413
+  inserted: 413
+  updated: 0
+
+
+
+**Per Store Sales Metrics:**
+
+- A817 — SUCCESS
+  rows_downloaded: 338
+  rows_ingested: 338
+  inserted: 338
+  updated: 0
+
+
+
+
+Row-level facts:
+Edited rows (55):
+store_code | order_number | order_date | customer_name | mobile_number
+A817 | A1 | 2025-05-10T00:00:00+05:30 | rita mam | 
+A817 | A1 | 2025-05-10T00:00:00+05:30 | rita mam | 
+A817 | A2 | 2025-05-10T00:00:00+05:30 | amanpreet | 
+A817 | A2 | 2025-05-10T00:00:00+05:30 | amanpreet | 
+A817 | T111 | 2025-06-19T00:00:00+05:30 | Sumit | 
+A817 | T111 | 2025-06-19T00:00:00+05:30 | Sumit | 
+A817 | T122 | 2025-06-21T00:00:00+05:30 | loudless fashion | 
+A817 | T122 | 2025-06-21T00:00:00+05:30 | loudless fashion | 
+A817 | T122 | 2025-06-21T00:00:00+05:30 | loudless fashion | 
+A817 | T159 | 2025-06-28T00:00:00+05:30 | swati chawla | 
+A817 | T159 | 2025-06-28T00:00:00+05:30 | swati chawla | 
+A817 | T168 | 2025-06-30T00:00:00+05:30 | SHAN | 
+A817 | T168 | 2025-06-30T00:00:00+05:30 | SHAN | 
+A817 | T174 | 2025-07-01T00:00:00+05:30 | seema jain | 
+A817 | T174 | 2025-07-01T00:00:00+05:30 | seema jain | 
+A817 | T205 | 2025-07-06T00:00:00+05:30 | saher | 
+A817 | T205 | 2025-07-06T00:00:00+05:30 | saher | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T226 | 2025-07-09T00:00:00+05:30 | punya | 
+A817 | T226 | 2025-07-09T00:00:00+05:30 | punya | 
+A817 | T244 | 2025-07-12T00:00:00+05:30 | Paarth Abrol | 
+A817 | T244 | 2025-07-12T00:00:00+05:30 | Paarth Abrol | 
+A817 | T246 | 2025-07-13T00:00:00+05:30 | Himanshu | 
+A817 | T246 | 2025-07-13T00:00:00+05:30 | Himanshu | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T274 | 2025-07-19T00:00:00+05:30 | Sarthi Bharara | 
+A817 | T274 | 2025-07-19T00:00:00+05:30 | Sarthi Bharara | 
+A817 | T275 | 2025-07-19T00:00:00+05:30 | shradha | 
+A817 | T275 | 2025-07-19T00:00:00+05:30 | shradha | 
+A817 | T295 | 2025-07-22T00:00:00+05:30 | Anuj Mehta | 
+A817 | T295 | 2025-07-22T00:00:00+05:30 | Anuj Mehta | 
+A817 | T358 | 2025-07-29T00:00:00+05:30 | hema | 
+A817 | T358 | 2025-07-29T00:00:00+05:30 | hema | 
+A817 | T76 | 2025-06-12T00:00:00+05:30 | SANDIP | 
+A817 | T76 | 2025-06-12T00:00:00+05:30 | SANDIP | 
+A817 | T76 | 2025-06-12T00:00:00+05:30 | SANDIP | 
+A817 | T76 | 2025-06-12T00:00:00+05:30 | SANDIP | 
+A817 | T76 | 2025-06-12T00:00:00+05:30 | SANDIP | 
+A817 | T76 | 2025-06-12T00:00:00+05:30 | SANDIP | 
+A817 | T76 | 2025-06-12T00:00:00+05:30 | SANDIP | 
+A817 | T76 | 2025-06-12T00:00:00+05:30 | SANDIP | 
+A817 | T76 | 2025-06-12T00:00:00+05:30 | SANDIP | 
+A817 | T76 | 2025-06-12T00:00:00+05:30 | SANDIP |
 ---
 Email 6:
+TD Orders & Sales Run Summary
+Run ID: 20260116_104259650039_A668_001 | Env: dev
+Report Date: 2025-02-28
+Started (Asia/Kolkata): 16-01-2026 16:12:59
+Finished (Asia/Kolkata): 16-01-2026 16:17:32
+Total Duration: 00:04:32
+Overall Status: success (Orders: success, Sales: success_with_warnings)
 
+Windows Completed: 1 / 1
+
+Missing Windows: 0
+
+
+**Per Store Orders Metrics:**
+
+- A668 — SUCCESS
+  rows_downloaded: 450
+  rows_ingested: 450
+  inserted: 450
+  updated: 0
+
+
+
+**Per Store Sales Metrics:**
+
+- A668 — SUCCESS
+  rows_downloaded: 369
+  rows_ingested: 369
+  inserted: 369
+  updated: 0
+
+
+
+
+Row-level facts:
+Edited rows (56):
+store_code | order_number | order_date | customer_name | mobile_number
+A668 | 4 | 2025-03-02T00:00:00+05:30 | Tanisha | 
+A668 | 4 | 2025-03-02T00:00:00+05:30 | Tanisha | 
+A668 | T141 | 2025-04-02T00:00:00+05:30 | Rajindra Singh | 
+A668 | T141 | 2025-04-02T00:00:00+05:30 | Rajindra Singh | 
+A668 | T189 | 2025-04-08T00:00:00+05:30 | Aman 9958632230 | 
+A668 | T189 | 2025-04-08T00:00:00+05:30 | Aman 9958632230 | 
+A668 | T202 | 2025-04-11T00:00:00+05:30 | dev | 
+A668 | T202 | 2025-04-11T00:00:00+05:30 | dev | 
+A668 | T202 | 2025-04-11T00:00:00+05:30 | dev | 
+A668 | T217 | 2025-04-14T00:00:00+05:30 | Ananya Singh Jha | 
+A668 | T217 | 2025-04-14T00:00:00+05:30 | Ananya Singh Jha | 
+A668 | T22 | 2025-03-08T00:00:00+05:30 | wagid sheikh | 
+A668 | T22 | 2025-03-08T00:00:00+05:30 | wagid sheikh | 
+A668 | T331 | 2025-05-05T00:00:00+05:30 | vishal | 
+A668 | T331 | 2025-05-05T00:00:00+05:30 | vishal | 
+A668 | T35 | 2025-03-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T35 | 2025-03-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T367 | 2025-05-12T00:00:00+05:30 | aditya | 
+A668 | T367 | 2025-05-12T00:00:00+05:30 | aditya | 
+A668 | T367 | 2025-05-12T00:00:00+05:30 | aditya | 
+A668 | T367 | 2025-05-12T00:00:00+05:30 | aditya | 
+A668 | T367 | 2025-05-12T00:00:00+05:30 | aditya | 
+A668 | T367 | 2025-05-12T00:00:00+05:30 | aditya | 
+A668 | T367 | 2025-05-12T00:00:00+05:30 | aditya | 
+A668 | T367 | 2025-05-12T00:00:00+05:30 | aditya | 
+A668 | T367 | 2025-05-12T00:00:00+05:30 | aditya | 
+A668 | T367 | 2025-05-12T00:00:00+05:30 | aditya | 
+A668 | T367 | 2025-05-12T00:00:00+05:30 | aditya | 
+A668 | T367 | 2025-05-12T00:00:00+05:30 | aditya | 
+A668 | T38 | 2025-03-12T00:00:00+05:30 | Keerthi walkin | 
+A668 | T38 | 2025-03-12T00:00:00+05:30 | Keerthi walkin | 
+A668 | T410 | 2025-05-22T00:00:00+05:30 | Ms Simran | 
+A668 | T410 | 2025-05-22T00:00:00+05:30 | Ms Simran | 
+A668 | T5 | 2025-03-04T00:00:00+05:30 | Rukmani | 
+A668 | T5 | 2025-03-04T00:00:00+05:30 | Rukmani | 
+A668 | T5 | 2025-03-04T00:00:00+05:30 | Rukmani | 
+A668 | T51 | 2025-03-16T00:00:00+05:30 | Tanisha | 
+A668 | T51 | 2025-03-16T00:00:00+05:30 | Tanisha | 
+A668 | T51 | 2025-03-16T00:00:00+05:30 | Tanisha | 
+A668 | T51 | 2025-03-16T00:00:00+05:30 | Tanisha | 
+A668 | T51 | 2025-03-16T00:00:00+05:30 | Tanisha | 
+A668 | T51 | 2025-03-16T00:00:00+05:30 | Tanisha | 
+A668 | T51 | 2025-03-16T00:00:00+05:30 | Tanisha | 
+A668 | T51 | 2025-03-16T00:00:00+05:30 | Tanisha | 
+A668 | T51 | 2025-03-16T00:00:00+05:30 | Tanisha | 
+A668 | T51 | 2025-03-16T00:00:00+05:30 | Tanisha | 
+A668 | T51 | 2025-03-16T00:00:00+05:30 | Tanisha | 
+A668 | T51 | 2025-03-16T00:00:00+05:30 | Tanisha | 
+A668 | T51 | 2025-03-16T00:00:00+05:30 | Tanisha | 
+A668 | T51 | 2025-03-16T00:00:00+05:30 | Tanisha | 
+A668 | T51 | 2025-03-16T00:00:00+05:30 | Tanisha | 
+A668 | T54 | 2025-03-16T00:00:00+05:30 | Harpreet | 
+A668 | T54 | 2025-03-16T00:00:00+05:30 | Harpreet | 
+A668 | T54 | 2025-03-16T00:00:00+05:30 | Harpreet | 
+A668 | T69 | 2025-03-18T00:00:00+05:30 | rittu bhardwaj | 
+A668 | T69 | 2025-03-18T00:00:00+05:30 | rittu bhardwaj |
 ---
 Email 7:
+UC Orders Sync Run Summary
+Run ID: 20260116_104259650039_UC610_003_attempt1 | Env: dev
+Report Date: 2025-11-03
+Started: 2026-01-16T10:46:25.191131+00:00 | Finished: 2026-01-16T10:48:02.740814+00:00
+Total Duration: 00:01:37
+Overall Status: success (run completed with no issues recorded)
 
+**Per Store UC Metrics:**
+
+- UC610 — SUCCESS
+  filename: UC610_uc_gst_20251103_20260116.xlsx
+  rows_downloaded: 255
+  rows_ingested: 255
+  inserted: 251
+  updated: 4
+  warning_count: 0
+  dropped_count: 0
+
+
+
+
+
+
+All UC stores completed successfully.
+
+
+Warnings:
+
+- None.
+
+
+Deterministic filenames:
+
+- UC610: UC610_uc_gst_20251103_20260116.xlsx
+
+Filename format: {STORE_CODE}_uc_gst_YYYYMMDD_YYYYMMDD.xlsx
+
+
+UC GST Run Summary
+Overall Status: success (run completed with no issues recorded)
+Stores: 1 success, 0 success with warnings, 0 partial, 0 failed across 1 stores
+Windows Completed: 1 / 1
+Missing Windows: 0
+Window Reconciliation:
+- UC610
+  rows_downloaded: 255
+  rows_ingested: 255
+  inserted: 251
+  updated: 4
+  warning_count: 0
+  dropped_count: 0 ((none))
+  reconciliation: rows_downloaded == inserted + updated + dropped_count (255 == 251 + 4 + 0)
 ---
 Email 8:
 
+UC Orders Sync Run Summary
+Run ID: 20260116_104259650039_UC567_003_attempt1 | Env: dev
+Report Date: 2025-08-04
+Started: 2026-01-16T10:46:46.314597+00:00 | Finished: 2026-01-16T10:48:25.438309+00:00
+Total Duration: 00:01:39
+Overall Status: success (run completed with no issues recorded)
+
+**Per Store UC Metrics:**
+
+- UC567 — SUCCESS
+  filename: UC567_uc_gst_20250804_20251101.xlsx
+  rows_downloaded: 307
+  rows_ingested: 307
+  inserted: 305
+  updated: 2
+  warning_count: 0
+  dropped_count: 0
+
+
+
+
+
+
+All UC stores completed successfully.
+
+
+Warnings:
+
+- None.
+
+
+Deterministic filenames:
+
+- UC567: UC567_uc_gst_20250804_20251101.xlsx
+
+Filename format: {STORE_CODE}_uc_gst_YYYYMMDD_YYYYMMDD.xlsx
+
+
+UC GST Run Summary
+Overall Status: success (run completed with no issues recorded)
+Stores: 1 success, 0 success with warnings, 0 partial, 0 failed across 1 stores
+Windows Completed: 1 / 1
+Missing Windows: 0
+Window Reconciliation:
+- UC567
+  rows_downloaded: 307
+  rows_ingested: 307
+  inserted: 305
+  updated: 2
+  warning_count: 0
+  dropped_count: 0 ((none))
+  reconciliation: rows_downloaded == inserted + updated + dropped_count (307 == 305 + 2 + 0)
 
 ---
 Email 9:
+UC Orders Sync Run Summary
+Run ID: 20260116_104259650039_UC567_004_attempt1 | Env: dev
+Report Date: 2025-10-31
+Started: 2026-01-16T10:48:33.733507+00:00 | Finished: 2026-01-16T10:50:03.057733+00:00
+Total Duration: 00:01:29
+Overall Status: success with warnings (run completed with row-level warnings)
 
+**Per Store UC Metrics:**
+
+- UC567 — SUCCESS_WITH_WARNINGS
+  filename: UC567_uc_gst_20251031_20260116.xlsx
+  rows_downloaded: 312
+  rows_ingested: 312
+  inserted: 301
+  updated: 11
+  warning_count: 1
+  dropped_count: 0
+
+
+
+  row_facts:
+    Warning rows (1):
+    store_code | order_number | order_date | customer_name | mobile_number | ingestion_remarks
+    UC567 | UC567-1047 | 04/12/2025 | piyush mathur |  | {"warnings": ["MOBILE_FALLBACK_APPLIED"], "failures": []}
+
+
+
+
+Completed with warnings. See warnings below.
+
+
+Warnings:
+
+
+- UC_STORE_WARNINGS: UC567 reported 1 row-level warning(s)
+
+
+
+Deterministic filenames:
+
+- UC567: UC567_uc_gst_20251031_20260116.xlsx
+
+Filename format: {STORE_CODE}_uc_gst_YYYYMMDD_YYYYMMDD.xlsx
+
+
+UC GST Run Summary
+Overall Status: success with warnings (run completed with row-level warnings)
+Stores: 0 success, 1 success with warnings, 0 partial, 0 failed across 1 stores
+Windows Completed: 1 / 1
+Missing Windows: 0
+Warnings:
+- UC_STORE_WARNINGS: UC567 reported 1 row-level warning(s)
+Window Reconciliation:
+- UC567
+  rows_downloaded: 312
+  rows_ingested: 312
+  inserted: 301
+  updated: 11
+  warning_count: 1
+  dropped_count: 0 ((none))
+  reconciliation: rows_downloaded == inserted + updated + dropped_count (312 == 301 + 11 + 0)
 ---
 Email 10:
+TD Orders & Sales Run Summary
+Run ID: 20260116_104259650039_A817_002 | Env: dev
+Report Date: 2025-08-06
+Started (Asia/Kolkata): 16-01-2026 16:17:40
+Finished (Asia/Kolkata): 16-01-2026 16:22:25
+Total Duration: 00:04:44
+Overall Status: success (Orders: success, Sales: success_with_warnings)
 
+Windows Completed: 1 / 1
+
+Missing Windows: 0
+
+
+**Per Store Orders Metrics:**
+
+- A817 — SUCCESS
+  rows_downloaded: 471
+  rows_ingested: 471
+  inserted: 468
+  updated: 3
+
+
+
+**Per Store Sales Metrics:**
+
+- A817 — SUCCESS
+  rows_downloaded: 420
+  rows_ingested: 420
+  inserted: 396
+  updated: 24
+
+
+
+
+Row-level facts:
+Edited rows (95):
+store_code | order_number | order_date | customer_name | mobile_number
+A817 | T264 | 2025-07-16T00:00:00+05:30 | Naman Gupta | 
+A817 | T264 | 2025-07-16T00:00:00+05:30 | Naman Gupta | 
+A817 | T264 | 2025-07-16T00:00:00+05:30 | Naman Gupta | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T291 | 2025-07-22T00:00:00+05:30 | Mr Saroj | 
+A817 | T291 | 2025-07-22T00:00:00+05:30 | Mr Saroj | 
+A817 | T291 | 2025-07-22T00:00:00+05:30 | Mr Saroj | 
+A817 | T291 | 2025-07-22T00:00:00+05:30 | Mr Saroj | 
+A817 | T291 | 2025-07-22T00:00:00+05:30 | Mr Saroj | 
+A817 | T295 | 2025-07-22T00:00:00+05:30 | Anuj Mehta | 
+A817 | T295 | 2025-07-22T00:00:00+05:30 | Anuj Mehta | 
+A817 | T296 | 2025-07-22T00:00:00+05:30 | Saroj | 
+A817 | T296 | 2025-07-22T00:00:00+05:30 | Saroj | 
+A817 | T296 | 2025-07-22T00:00:00+05:30 | Saroj | 
+A817 | T336 | 2025-07-25T00:00:00+05:30 | Danis arora | 
+A817 | T336 | 2025-07-25T00:00:00+05:30 | Danis arora | 
+A817 | T336 | 2025-07-25T00:00:00+05:30 | Danis arora | 
+A817 | T336 | 2025-07-25T00:00:00+05:30 | Danis arora | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T345 | 2025-07-26T00:00:00+05:30 | SANGEETA ANAND | 
+A817 | T345 | 2025-07-26T00:00:00+05:30 | SANGEETA ANAND | 
+A817 | T358 | 2025-07-29T00:00:00+05:30 | hema | 
+A817 | T358 | 2025-07-29T00:00:00+05:30 | hema | 
+A817 | T370 | 2025-08-01T00:00:00+05:30 | vijeta nagpal | 
+A817 | T370 | 2025-08-01T00:00:00+05:30 | vijeta nagpal | 
+A817 | T403 | 2025-08-08T00:00:00+05:30 | Divansh | 
+A817 | T403 | 2025-08-08T00:00:00+05:30 | Divansh | 
+A817 | T405 | 2025-08-08T00:00:00+05:30 | Sarthi Bharara | 
+A817 | T405 | 2025-08-08T00:00:00+05:30 | Sarthi Bharara | 
+A817 | T415 | 2025-08-10T00:00:00+05:30 | Ashok | 
+A817 | T415 | 2025-08-10T00:00:00+05:30 | Ashok | 
+A817 | T415 | 2025-08-10T00:00:00+05:30 | Ashok | 
+A817 | T486 | 2025-08-23T00:00:00+05:30 | lakshita | 
+A817 | T486 | 2025-08-23T00:00:00+05:30 | lakshita | 
+A817 | T504 | 2025-08-26T00:00:00+05:30 | pavneet | 
+A817 | T504 | 2025-08-26T00:00:00+05:30 | pavneet | 
+A817 | T504 | 2025-08-26T00:00:00+05:30 | pavneet | 
+A817 | T526 | 2025-08-28T00:00:00+05:30 | RAMU 2 | 
+A817 | T526 | 2025-08-28T00:00:00+05:30 | RAMU 2 | 
+A817 | T538 | 2025-08-30T00:00:00+05:30 | LATIKA CHAWLA | 
+A817 | T538 | 2025-08-30T00:00:00+05:30 | LATIKA CHAWLA | 
+A817 | T538 | 2025-08-30T00:00:00+05:30 | LATIKA CHAWLA | 
+A817 | T538 | 2025-08-30T00:00:00+05:30 | LATIKA CHAWLA | 
+A817 | T538 | 2025-08-30T00:00:00+05:30 | LATIKA CHAWLA | 
+A817 | T538 | 2025-08-30T00:00:00+05:30 | LATIKA CHAWLA | 
+A817 | T547 | 2025-09-01T00:00:00+05:30 | Geeta Rani | 
+A817 | T547 | 2025-09-01T00:00:00+05:30 | Geeta Rani | 
+A817 | T547 | 2025-09-01T00:00:00+05:30 | Geeta Rani | 
+A817 | T551 | 2025-09-01T00:00:00+05:30 | ila gupta | 
+A817 | T551 | 2025-09-01T00:00:00+05:30 | ila gupta | 
+A817 | T551 | 2025-09-01T00:00:00+05:30 | ila gupta | 
+A817 | T551 | 2025-09-01T00:00:00+05:30 | ila gupta | 
+A817 | T552 | 2025-09-01T00:00:00+05:30 | Tarun kumar | 
+A817 | T552 | 2025-09-01T00:00:00+05:30 | Tarun kumar | 
+A817 | T555 | 2025-09-02T00:00:00+05:30 | Rahul Kashyap | 
+A817 | T555 | 2025-09-02T00:00:00+05:30 | Rahul Kashyap | 
+A817 | T576 | 2025-09-04T00:00:00+05:30 | Madhu Kant | 
+A817 | T576 | 2025-09-04T00:00:00+05:30 | Madhu Kant | 
+A817 | T582 | 2025-09-05T00:00:00+05:30 | kritika | 
+A817 | T582 | 2025-09-05T00:00:00+05:30 | kritika | 
+A817 | T587 | 2025-09-06T00:00:00+05:30 | Tarun kumar | 
+A817 | T587 | 2025-09-06T00:00:00+05:30 | Tarun kumar | 
+A817 | T612 | 2025-09-09T00:00:00+05:30 | kritarth | 
+A817 | T612 | 2025-09-09T00:00:00+05:30 | kritarth | 
+A817 | T623 | 2025-09-11T00:00:00+05:30 | Aarav sehgal | 
+A817 | T623 | 2025-09-11T00:00:00+05:30 | Aarav sehgal | 
+A817 | T624 | 2025-09-11T00:00:00+05:30 | Mannan | 
+A817 | T624 | 2025-09-11T00:00:00+05:30 | Mannan | 
+A817 | T624 | 2025-09-11T00:00:00+05:30 | Mannan | 
+A817 | T624 | 2025-09-11T00:00:00+05:30 | Mannan | 
+A817 | T704 | 2025-09-28T00:00:00+05:30 | himanshu | 
+A817 | T704 | 2025-09-28T00:00:00+05:30 | himanshu | 
+A817 | T720 | 2025-10-01T00:00:00+05:30 | Sarthi Bharara | 
+A817 | T720 | 2025-10-01T00:00:00+05:30 | Sarthi Bharara | 
+A817 | T772 | 2025-10-13T00:00:00+05:30 | Sunil Bansal | 
+A817 | T772 | 2025-10-13T00:00:00+05:30 | Sunil Bansal | 
+A817 | T772 | 2025-10-13T00:00:00+05:30 | Sunil Bansal | 
+A817 | T787 | 2025-10-15T00:00:00+05:30 | ROHIT JI | 
+A817 | T787 | 2025-10-15T00:00:00+05:30 | ROHIT JI | 
+A817 | T787 | 2025-10-15T00:00:00+05:30 | ROHIT JI |
 ---
 Email 11:
+TD Orders & Sales Run Summary
+Run ID: 20260116_104259650039_A668_002 | Env: dev
+Report Date: 2025-05-27
+Started (Asia/Kolkata): 16-01-2026 16:17:49
+Finished (Asia/Kolkata): 16-01-2026 16:22:35
+Total Duration: 00:04:46
+Overall Status: success (Orders: success, Sales: success_with_warnings)
 
+Windows Completed: 1 / 1
+
+Missing Windows: 0
+
+
+**Per Store Orders Metrics:**
+
+- A668 — SUCCESS
+  rows_downloaded: 520
+  rows_ingested: 520
+  inserted: 511
+  updated: 9
+
+
+
+**Per Store Sales Metrics:**
+
+- A668 — SUCCESS
+  rows_downloaded: 564
+  rows_ingested: 564
+  inserted: 561
+  updated: 3
+
+
+
+
+Row-level facts:
+Edited rows (64):
+store_code | order_number | order_date | customer_name | mobile_number
+A668 | T423 | 2025-05-25T00:00:00+05:30 | Akshat | 
+A668 | T423 | 2025-05-25T00:00:00+05:30 | Akshat | 
+A668 | T440 | 2025-05-28T00:00:00+05:30 | saibi | 
+A668 | T440 | 2025-05-28T00:00:00+05:30 | saibi | 
+A668 | T465 | 2025-06-02T00:00:00+05:30 | Gourav jain | 
+A668 | T465 | 2025-06-02T00:00:00+05:30 | Gourav jain | 
+A668 | T488 | 2025-06-09T00:00:00+05:30 | Ajay dhabas | 
+A668 | T488 | 2025-06-09T00:00:00+05:30 | Ajay dhabas | 
+A668 | T493 | 2025-06-09T00:00:00+05:30 | Himanshu | 
+A668 | T493 | 2025-06-09T00:00:00+05:30 | Himanshu | 
+A668 | T497 | 2025-06-10T00:00:00+05:30 | Ankus Pandey | 
+A668 | T497 | 2025-06-10T00:00:00+05:30 | Ankus Pandey | 
+A668 | T513 | 2025-06-13T00:00:00+05:30 | pushkar | 
+A668 | T513 | 2025-06-13T00:00:00+05:30 | pushkar | 
+A668 | T518 | 2025-06-14T00:00:00+05:30 | MANEESH | 
+A668 | T518 | 2025-06-14T00:00:00+05:30 | MANEESH | 
+A668 | T527 | 2025-06-15T00:00:00+05:30 | pushpak raj | 
+A668 | T527 | 2025-06-15T00:00:00+05:30 | pushpak raj | 
+A668 | T531 | 2025-06-16T00:00:00+05:30 | gaurav | 
+A668 | T531 | 2025-06-16T00:00:00+05:30 | gaurav | 
+A668 | T538 | 2025-06-18T00:00:00+05:30 | nitiya kumari | 
+A668 | T538 | 2025-06-18T00:00:00+05:30 | nitiya kumari | 
+A668 | T538 | 2025-06-18T00:00:00+05:30 | nitiya kumari | 
+A668 | T538 | 2025-06-18T00:00:00+05:30 | nitiya kumari | 
+A668 | T548 | 2025-06-19T00:00:00+05:30 | Ankit kumar | 
+A668 | T548 | 2025-06-19T00:00:00+05:30 | Ankit kumar | 
+A668 | T552 | 2025-06-20T00:00:00+05:30 | Sakshi | 
+A668 | T552 | 2025-06-20T00:00:00+05:30 | Sakshi | 
+A668 | T552 | 2025-06-20T00:00:00+05:30 | Sakshi | 
+A668 | T552 | 2025-06-20T00:00:00+05:30 | Sakshi | 
+A668 | T552 | 2025-06-20T00:00:00+05:30 | Sakshi | 
+A668 | T567 | 2025-06-22T00:00:00+05:30 | pargoal | 
+A668 | T567 | 2025-06-22T00:00:00+05:30 | pargoal | 
+A668 | T576 | 2025-06-24T00:00:00+05:30 | kirat | 
+A668 | T576 | 2025-06-24T00:00:00+05:30 | kirat | 
+A668 | T648 | 2025-07-06T00:00:00+05:30 | manju | 
+A668 | T648 | 2025-07-06T00:00:00+05:30 | manju | 
+A668 | T691 | 2025-07-14T00:00:00+05:30 | Dhruv | 
+A668 | T691 | 2025-07-14T00:00:00+05:30 | Dhruv | 
+A668 | T691 | 2025-07-14T00:00:00+05:30 | Dhruv | 
+A668 | T691 | 2025-07-14T00:00:00+05:30 | Dhruv | 
+A668 | T747 | 2025-07-20T00:00:00+05:30 | mein kudiyal | 
+A668 | T747 | 2025-07-20T00:00:00+05:30 | mein kudiyal | 
+A668 | T828 | 2025-08-03T00:00:00+05:30 | yash | 
+A668 | T828 | 2025-08-03T00:00:00+05:30 | yash | 
+A668 | T831 | 2025-08-04T00:00:00+05:30 | AKARSH | 
+A668 | T831 | 2025-08-04T00:00:00+05:30 | AKARSH | 
+A668 | T849 | 2025-08-06T00:00:00+05:30 | Adarsh | 
+A668 | T849 | 2025-08-06T00:00:00+05:30 | Adarsh | 
+A668 | T852 | 2025-08-06T00:00:00+05:30 | pk dahiya | 
+A668 | T852 | 2025-08-06T00:00:00+05:30 | pk dahiya | 
+A668 | T872 | 2025-08-10T00:00:00+05:30 | Akash thapa | 
+A668 | T872 | 2025-08-10T00:00:00+05:30 | Akash thapa | 
+A668 | T879 | 2025-08-12T00:00:00+05:30 | Ashwani kumar | 
+A668 | T879 | 2025-08-12T00:00:00+05:30 | Ashwani kumar | 
+A668 | T879 | 2025-08-12T00:00:00+05:30 | Ashwani kumar | 
+A668 | T883 | 2025-08-13T00:00:00+05:30 | akash | 
+A668 | T883 | 2025-08-13T00:00:00+05:30 | akash | 
+A668 | T883 | 2025-08-13T00:00:00+05:30 | akash | 
+A668 | T883 | 2025-08-13T00:00:00+05:30 | akash | 
+A668 | T883 | 2025-08-13T00:00:00+05:30 | akash | 
+A668 | T883 | 2025-08-13T00:00:00+05:30 | akash | 
+A668 | T936 | 2025-08-21T00:00:00+05:30 | satyam | 
+A668 | T936 | 2025-08-21T00:00:00+05:30 | satyam |
 ---
 Email 12:
+TD Orders & Sales Run Summary
+Run ID: 20260116_104259650039_A817_003 | Env: dev
+Report Date: 2025-11-02
+Started (Asia/Kolkata): 16-01-2026 16:22:33
+Finished (Asia/Kolkata): 16-01-2026 16:27:16
+Total Duration: 00:04:42
+Overall Status: success (Orders: success_with_warnings, Sales: success_with_warnings)
 
+Windows Completed: 1 / 1
+
+Missing Windows: 0
+
+
+**Per Store Orders Metrics:**
+
+- A817 — SUCCESS
+  rows_downloaded: 607
+  rows_ingested: 607
+  inserted: 593
+  updated: 14
+
+
+
+**Per Store Sales Metrics:**
+
+- A817 — SUCCESS
+  rows_downloaded: 775
+  rows_ingested: 775
+  inserted: 774
+  updated: 1
+
+
+
+
+Row-level facts:
+Warning rows (11):
+store_code | order_number | order_date | customer_name | mobile_number | ingestion_remarks
+A817 | T1018 |  |  | A817--7461 | MOBILE_FALLBACK_APPLIED
+A817 | T1018 | 22 Nov 2025 | Tumbledry Solutions Pvt Ltd 09AAHCT2140E1ZL |  | MOBILE_FALLBACK_APPLIED
+A817 | T1187 |  |  | A817--7461 | MOBILE_FALLBACK_APPLIED
+A817 | T1187 | 14 Dec 2025 | Tumbledry Solutions Pvt Ltd 09AAHCT2140E1ZL |  | MOBILE_FALLBACK_APPLIED
+A817 | T1217 |  |  | 18409065 | MOBILE_FALLBACK_APPLIED
+A817 | T1217 | 17 Dec 2025 | Bhuvi Nagpal |  | MOBILE_FALLBACK_APPLIED
+A817 | T1246 |  |  | A817--7461 | MOBILE_FALLBACK_APPLIED
+A817 | T1246 | 20 Dec 2025 | Tumbledry Solutions Pvt Ltd 09AAHCT2140E1ZL |  | MOBILE_FALLBACK_APPLIED
+A817 | T1246 | 20 Dec 2025 | Tumbledry Solutions Pvt Ltd 09AAHCT2140E1ZL |  | MOBILE_FALLBACK_APPLIED
+A817 | T1402 |  |  | A817--7461 | MOBILE_FALLBACK_APPLIED
+A817 | T1454 |  |  | A817--7461 | MOBILE_FALLBACK_APPLIED
+Edited rows (152):
+store_code | order_number | order_date | customer_name | mobile_number
+A817 | T1010 | 2025-11-21T00:00:00+05:30 | Rohit Vinayak | 
+A817 | T1010 | 2025-11-21T00:00:00+05:30 | Rohit Vinayak | 
+A817 | T1029 | 2025-11-23T00:00:00+05:30 | Megha Vats | 
+A817 | T1029 | 2025-11-23T00:00:00+05:30 | Megha Vats | 
+A817 | T1062 | 2025-11-26T00:00:00+05:30 | Nishu | 
+A817 | T1062 | 2025-11-26T00:00:00+05:30 | Nishu | 
+A817 | T1120 | 2025-12-03T00:00:00+05:30 | NEENA AGRAWAL | 
+A817 | T1120 | 2025-12-03T00:00:00+05:30 | NEENA AGRAWAL | 
+A817 | T1123 | 2025-12-04T00:00:00+05:30 | Chandani kher | 
+A817 | T1123 | 2025-12-04T00:00:00+05:30 | Chandani kher | 
+A817 | T1123 | 2025-12-04T00:00:00+05:30 | Chandani kher | 
+A817 | T1123 | 2025-12-04T00:00:00+05:30 | Chandani kher | 
+A817 | T1123 | 2025-12-04T00:00:00+05:30 | Chandani kher | 
+A817 | T1123 | 2025-12-04T00:00:00+05:30 | Chandani kher | 
+A817 | T1123 | 2025-12-04T00:00:00+05:30 | Chandani kher | 
+A817 | T1141 | 2025-12-07T00:00:00+05:30 | Abhinav dwivedi / 8470868609 | 
+A817 | T1141 | 2025-12-07T00:00:00+05:30 | Abhinav dwivedi / 8470868609 | 
+A817 | T1142 | 2025-12-07T00:00:00+05:30 | Abhinav dwivedi / 8470868609 | 
+A817 | T1142 | 2025-12-07T00:00:00+05:30 | Abhinav dwivedi / 8470868609 | 
+A817 | T1147 | 2025-12-08T00:00:00+05:30 | Sanjeev | 
+A817 | T1147 | 2025-12-08T00:00:00+05:30 | Sanjeev | 
+A817 | T1152 | 2025-12-08T00:00:00+05:30 | Dr, Priti | 
+A817 | T1152 | 2025-12-08T00:00:00+05:30 | Dr, Priti | 
+A817 | T1175 | 2025-12-12T00:00:00+05:30 | Abhinav dwivedi / 8470868609 | 
+A817 | T1175 | 2025-12-12T00:00:00+05:30 | Abhinav dwivedi / 8470868609 | 
+A817 | T1209 | 2025-12-16T00:00:00+05:30 | Gaurav Mahajan | 
+A817 | T1209 | 2025-12-16T00:00:00+05:30 | Gaurav Mahajan | 
+A817 | T1230 | 2025-12-18T00:00:00+05:30 | Shalima anand | 
+A817 | T1230 | 2025-12-18T00:00:00+05:30 | Shalima anand | 
+A817 | T1233 | 2025-12-18T00:00:00+05:30 | Pavnit Singh | 
+A817 | T1233 | 2025-12-18T00:00:00+05:30 | Pavnit Singh | 
+A817 | T1246 | 2025-12-20T00:00:00+05:30 | Tumbledry Solutions Pvt Ltd 09AAHCT2140E1ZL | 
+A817 | T1246 | 2025-12-20T00:00:00+05:30 | Tumbledry Solutions Pvt Ltd 09AAHCT2140E1ZL | 
+A817 | T1252 | 2025-12-21T00:00:00+05:30 | Swati Chopra | 
+A817 | T1252 | 2025-12-21T00:00:00+05:30 | Swati Chopra | 
+A817 | T1254 | 2025-12-21T00:00:00+05:30 | Tridib Maity | 
+A817 | T1254 | 2025-12-21T00:00:00+05:30 | Tridib Maity | 
+A817 | T1256 | 2025-12-21T00:00:00+05:30 | subhan | 
+A817 | T1256 | 2025-12-21T00:00:00+05:30 | subhan | 
+A817 | T1266 | 2025-12-22T00:00:00+05:30 | Kanika Arora | 
+A817 | T1266 | 2025-12-22T00:00:00+05:30 | Kanika Arora | 
+A817 | T1288 | 2025-12-24T00:00:00+05:30 | subhan | 
+A817 | T1288 | 2025-12-24T00:00:00+05:30 | subhan | 
+A817 | T1292 | 2025-12-25T00:00:00+05:30 | subhan | 
+A817 | T1292 | 2025-12-25T00:00:00+05:30 | subhan | 
+A817 | T1297 | 2025-12-25T00:00:00+05:30 | Ashwini | 
+A817 | T1297 | 2025-12-25T00:00:00+05:30 | Ashwini | 
+A817 | T1300 | 2025-12-26T00:00:00+05:30 | Arvind | 
+A817 | T1300 | 2025-12-26T00:00:00+05:30 | Arvind | 
+A817 | T1314 | 2025-12-28T00:00:00+05:30 | Nitin | 
+A817 | T1314 | 2025-12-28T00:00:00+05:30 | Nitin | 
+A817 | T1315 | 2025-12-28T00:00:00+05:30 | subhan | 
+A817 | T1315 | 2025-12-28T00:00:00+05:30 | subhan | 
+A817 | T1320 | 2025-12-29T00:00:00+05:30 | Nishu | 
+A817 | T1320 | 2025-12-29T00:00:00+05:30 | Nishu | 
+A817 | T1326 | 2025-12-29T00:00:00+05:30 | NEENA AGRAWAL | 
+A817 | T1326 | 2025-12-29T00:00:00+05:30 | NEENA AGRAWAL | 
+A817 | T1326 | 2025-12-29T00:00:00+05:30 | NEENA AGRAWAL | 
+A817 | T1330 | 2025-12-30T00:00:00+05:30 | Abhinav dwivedi / 8470868609 | 
+A817 | T1330 | 2025-12-30T00:00:00+05:30 | Abhinav dwivedi / 8470868609 | 
+A817 | T1339 | 2025-12-31T00:00:00+05:30 | subhan | 
+A817 | T1339 | 2025-12-31T00:00:00+05:30 | subhan | 
+A817 | T1350 | 2026-01-01T00:00:00+05:30 | mahak | 
+A817 | T1350 | 2026-01-01T00:00:00+05:30 | mahak | 
+A817 | T1364 | 2026-01-03T00:00:00+05:30 | subhan | 
+A817 | T1364 | 2026-01-03T00:00:00+05:30 | subhan | 
+A817 | T1367 | 2026-01-03T00:00:00+05:30 | Kunal | 
+A817 | T1367 | 2026-01-03T00:00:00+05:30 | Kunal | 
+A817 | T1370 | 2026-01-03T00:00:00+05:30 | Monika Srivastava | 
+A817 | T1370 | 2026-01-03T00:00:00+05:30 | Monika Srivastava | 
+A817 | T1389 | 2026-01-06T00:00:00+05:30 | Kanika Arora | 
+A817 | T1389 | 2026-01-06T00:00:00+05:30 | Kanika Arora | 
+A817 | T1390 | 2026-01-06T00:00:00+05:30 | Kanika Arora | 
+A817 | T1390 | 2026-01-06T00:00:00+05:30 | Kanika Arora | 
+A817 | T1412 | 2026-01-09T00:00:00+05:30 | NEENA AGRAWAL | 
+A817 | T1412 | 2026-01-09T00:00:00+05:30 | NEENA AGRAWAL | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T759 | 2025-10-08T00:00:00+05:30 | Dr, Priti | 
+A817 | T759 | 2025-10-08T00:00:00+05:30 | Dr, Priti | 
+A817 | T777 | 2025-10-14T00:00:00+05:30 | Raj | 
+A817 | T777 | 2025-10-14T00:00:00+05:30 | Raj | 
+A817 | T799 | 2025-10-17T00:00:00+05:30 | devender bardwaj | 
+A817 | T799 | 2025-10-17T00:00:00+05:30 | devender bardwaj | 
+A817 | T799 | 2025-10-17T00:00:00+05:30 | devender bardwaj | 
+A817 | T818 | 2025-10-22T00:00:00+05:30 | subhan | 
+A817 | T818 | 2025-10-22T00:00:00+05:30 | subhan | 
+A817 | T818 | 2025-10-22T00:00:00+05:30 | subhan | 
+A817 | T821 | 2025-10-24T00:00:00+05:30 | Tarun kumar | 
+A817 | T821 | 2025-10-24T00:00:00+05:30 | Tarun kumar | 
+A817 | T840 | 2025-10-28T00:00:00+05:30 | Deepak | 
+A817 | T840 | 2025-10-28T00:00:00+05:30 | Deepak | 
+A817 | T842 | 2025-10-28T00:00:00+05:30 | Madhu Kant | 
+A817 | T842 | 2025-10-28T00:00:00+05:30 | Madhu Kant | 
+A817 | T843 | 2025-10-30T00:00:00+05:30 | Raghav | 
+A817 | T843 | 2025-10-30T00:00:00+05:30 | Raghav | 
+A817 | T844 | 2025-10-30T00:00:00+05:30 | Harman Dhillon | 
+A817 | T844 | 2025-10-30T00:00:00+05:30 | Harman Dhillon | 
+A817 | T845 | 2025-10-30T00:00:00+05:30 | nikhila | 
+A817 | T845 | 2025-10-30T00:00:00+05:30 | nikhila | 
+A817 | T849 | 2025-10-31T00:00:00+05:30 | Neeraj | 
+A817 | T849 | 2025-10-31T00:00:00+05:30 | Neeraj | 
+A817 | T849 | 2025-10-31T00:00:00+05:30 | Neeraj | 
+A817 | T851 | 2025-11-01T00:00:00+05:30 | Parikshit arora | 
+A817 | T851 | 2025-11-01T00:00:00+05:30 | Parikshit arora | 
+A817 | T851 | 2025-11-01T00:00:00+05:30 | Parikshit arora | 
+A817 | T852 | 2025-11-01T00:00:00+05:30 | Shruti | 
+A817 | T852 | 2025-11-01T00:00:00+05:30 | Shruti | 
+A817 | T855 | 2025-11-01T00:00:00+05:30 | kiran | 
+A817 | T855 | 2025-11-01T00:00:00+05:30 | kiran | 
+A817 | T856 | 2025-11-01T00:00:00+05:30 | Kajal Shrivastava | 
+A817 | T856 | 2025-11-01T00:00:00+05:30 | Kajal Shrivastava | 
+A817 | T857 | 2025-11-02T00:00:00+05:30 | Fahad | 
+A817 | T857 | 2025-11-02T00:00:00+05:30 | Fahad | 
+A817 | T858 | 2025-11-02T00:00:00+05:30 | Krishna Gopal Solanki | 
+A817 | T858 | 2025-11-02T00:00:00+05:30 | Krishna Gopal Solanki | 
+A817 | T867 | 2025-11-03T00:00:00+05:30 | rakesh khurana | 
+A817 | T867 | 2025-11-03T00:00:00+05:30 | rakesh khurana | 
+A817 | T869 | 2025-11-03T00:00:00+05:30 | Dr, Priti | 
+A817 | T869 | 2025-11-03T00:00:00+05:30 | Dr, Priti | 
+A817 | T873 | 2025-11-04T00:00:00+05:30 | Sunil Bansal | 
+A817 | T873 | 2025-11-04T00:00:00+05:30 | Sunil Bansal | 
+A817 | T874 | 2025-11-04T00:00:00+05:30 | subhan | 
+A817 | T874 | 2025-11-04T00:00:00+05:30 | subhan | 
+A817 | T881 | 2025-11-06T00:00:00+05:30 | Chanchal | 
+A817 | T881 | 2025-11-06T00:00:00+05:30 | Chanchal | 
+A817 | T881 | 2025-11-06T00:00:00+05:30 | Chanchal | 
+A817 | T881 | 2025-11-06T00:00:00+05:30 | Chanchal | 
+A817 | T887 | 2025-11-07T00:00:00+05:30 | Priyanka Anand | 
+A817 | T887 | 2025-11-07T00:00:00+05:30 | Priyanka Anand | 
+A817 | T910 | 2025-11-10T00:00:00+05:30 | VIKAS | 
+A817 | T910 | 2025-11-10T00:00:00+05:30 | VIKAS | 
+A817 | T949 | 2025-11-15T00:00:00+05:30 | Prachi Singh | 
+A817 | T949 | 2025-11-15T00:00:00+05:30 | Prachi Singh | 
+A817 | T966 | 2025-11-16T00:00:00+05:30 | NIPESH | 
+A817 | T966 | 2025-11-16T00:00:00+05:30 | NIPESH | 
+A817 | T971 | 2025-11-17T00:00:00+05:30 | Muskaan | 
+A817 | T971 | 2025-11-17T00:00:00+05:30 | Muskaan | 
+A817 | T972 | 2025-11-17T00:00:00+05:30 | vanita | 
+A817 | T972 | 2025-11-17T00:00:00+05:30 | vanita | 
+A817 | T974 | 2025-11-17T00:00:00+05:30 | Rakhi | 
+A817 | T974 | 2025-11-17T00:00:00+05:30 | Rakhi | 
+A817 | T974 | 2025-11-17T00:00:00+05:30 | Rakhi | 
+A817 | T978 | 2025-11-17T00:00:00+05:30 | Abhinav dwivedi / 8470868609 | 
+A817 | T978 | 2025-11-17T00:00:00+05:30 | Abhinav dwivedi / 8470868609 |
 ---
 Email 13:
+TD Orders & Sales Run Summary
+Run ID: 20260116_104259650039_A668_003 | Env: dev
+Report Date: 2025-08-23
+Started (Asia/Kolkata): 16-01-2026 16:22:43
+Finished (Asia/Kolkata): 16-01-2026 16:27:26
+Total Duration: 00:04:43
+Overall Status: success (Orders: success_with_warnings, Sales: success_with_warnings)
 
+Windows Completed: 1 / 1
+
+Missing Windows: 0
+
+
+**Per Store Orders Metrics:**
+
+- A668 — SUCCESS
+  rows_downloaded: 625
+  rows_ingested: 625
+  inserted: 616
+  updated: 9
+
+
+
+**Per Store Sales Metrics:**
+
+- A668 — SUCCESS
+  rows_downloaded: 649
+  rows_ingested: 649
+  inserted: 638
+  updated: 11
+
+
+
+
+Row-level facts:
+Warning rows (1):
+store_code | order_number | order_date | customer_name | mobile_number | ingestion_remarks
+A668 | T1538 |  |  | A668--7051 | MOBILE_FALLBACK_APPLIED
+Edited rows (136):
+store_code | order_number | order_date | customer_name | mobile_number
+A668 | T1021 | 2025-09-04T00:00:00+05:30 | avlesh gupta | 
+A668 | T1021 | 2025-09-04T00:00:00+05:30 | avlesh gupta | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1029 | 2025-09-05T00:00:00+05:30 | rajeev | 
+A668 | T1029 | 2025-09-05T00:00:00+05:30 | rajeev | 
+A668 | T1042 | 2025-09-07T00:00:00+05:30 | Raksha | 
+A668 | T1042 | 2025-09-07T00:00:00+05:30 | Raksha | 
+A668 | T1059 | 2025-09-09T00:00:00+05:30 | Piyush Aggarwal | 
+A668 | T1059 | 2025-09-09T00:00:00+05:30 | Piyush Aggarwal | 
+A668 | T1067 | 2025-09-11T00:00:00+05:30 | Tanish | 
+A668 | T1067 | 2025-09-11T00:00:00+05:30 | Tanish | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1094 | 2025-09-14T00:00:00+05:30 | Preeti Swami | 
+A668 | T1094 | 2025-09-14T00:00:00+05:30 | Preeti Swami | 
+A668 | T1100 | 2025-09-15T00:00:00+05:30 | Shahir Suhail | 
+A668 | T1100 | 2025-09-15T00:00:00+05:30 | Shahir Suhail | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1107 | 2025-09-18T00:00:00+05:30 | hitesh | 
+A668 | T1107 | 2025-09-18T00:00:00+05:30 | hitesh | 
+A668 | T1110 | 2025-09-19T00:00:00+05:30 | nithun | 
+A668 | T1110 | 2025-09-19T00:00:00+05:30 | nithun | 
+A668 | T1110 | 2025-09-19T00:00:00+05:30 | nithun | 
+A668 | T1110 | 2025-09-19T00:00:00+05:30 | nithun | 
+A668 | T1159 | 2025-09-25T00:00:00+05:30 | ABBHIMANU | 
+A668 | T1159 | 2025-09-25T00:00:00+05:30 | ABBHIMANU | 
+A668 | T1159 | 2025-09-25T00:00:00+05:30 | ABBHIMANU | 
+A668 | T1290 | 2025-10-20T00:00:00+05:30 | Dinesh Gupta | 
+A668 | T1290 | 2025-10-20T00:00:00+05:30 | Dinesh Gupta | 
+A668 | T1300 | 2025-10-22T00:00:00+05:30 | sumit | 
+A668 | T1300 | 2025-10-22T00:00:00+05:30 | sumit | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T499 | 2025-06-11T00:00:00+05:30 | aradhya | 
+A668 | T499 | 2025-06-11T00:00:00+05:30 | aradhya | 
+A668 | T892 | 2025-08-15T00:00:00+05:30 | sanjeev kumar | 
+A668 | T892 | 2025-08-15T00:00:00+05:30 | sanjeev kumar | 
+A668 | T973 | 2025-08-27T00:00:00+05:30 | Hi, I want to know more about Tumbledry | 
+A668 | T973 | 2025-08-27T00:00:00+05:30 | Hi, I want to know more about Tumbledry | 
+A668 | T973 | 2025-08-27T00:00:00+05:30 | Hi, I want to know more about Tumbledry | 
+A668 | T998 | 2025-08-31T00:00:00+05:30 | Deepak | 
+A668 | T998 | 2025-08-31T00:00:00+05:30 | Deepak | 
+A668 | T998 | 2025-08-31T00:00:00+05:30 | Deepak | 
+A668 | T998 | 2025-08-31T00:00:00+05:30 | Deepak |
 
 ---
 Email 14:
+TD Orders & Sales Run Summary
+Run ID: 20260116_104259650039_A668_004 | Env: dev
+Report Date: 2025-11-19
+Started (Asia/Kolkata): 16-01-2026 16:27:35
+Finished (Asia/Kolkata): 16-01-2026 16:31:58
+Total Duration: 00:04:23
+Overall Status: success (Orders: success_with_warnings, Sales: success_with_warnings)
 
+Windows Completed: 1 / 1
+
+Missing Windows: 0
+
+
+**Per Store Orders Metrics:**
+
+- A668 — SUCCESS
+  rows_downloaded: 502
+  rows_ingested: 502
+  inserted: 479
+  updated: 23
+
+
+
+**Per Store Sales Metrics:**
+
+- A668 — SUCCESS
+  rows_downloaded: 573
+  rows_ingested: 573
+  inserted: 542
+  updated: 31
+
+
+
+
+Row-level facts:
+Warning rows (4):
+store_code | order_number | order_date | customer_name | mobile_number | ingestion_remarks
+A668 | T1538 | 18 Nov 2025 | Tumbledry Solutions Pvt Ltd 09AAHCT2140E1ZL |  | MOBILE_FALLBACK_APPLIED
+A668 | T1798 |  |  | A668--7051 | MOBILE_FALLBACK_APPLIED
+A668 | T1798 | 20 Dec 2025 | Tumbledry Solutions Pvt Ltd 09AAHCT2140E1ZL |  | MOBILE_FALLBACK_APPLIED
+A668 | T1842 |  |  | A668--7051 | MOBILE_FALLBACK_APPLIED
+Edited rows (60):
+store_code | order_number | order_date | customer_name | mobile_number
+A668 | T1210 | 2025-10-05T00:00:00+05:30 | Amandeep Verma | 
+A668 | T1210 | 2025-10-05T00:00:00+05:30 | Amandeep Verma | 
+A668 | T1233 | 2025-10-09T00:00:00+05:30 | akshay | 
+A668 | T1233 | 2025-10-09T00:00:00+05:30 | akshay | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1560 | 2025-11-19T00:00:00+05:30 | Jay Prakash Ji | 
+A668 | T1560 | 2025-11-19T00:00:00+05:30 | Jay Prakash Ji | 
+A668 | T1560 | 2025-11-19T00:00:00+05:30 | Jay Prakash Ji | 
+A668 | T1560 | 2025-11-19T00:00:00+05:30 | Jay Prakash Ji | 
+A668 | T1572 | 2025-11-21T00:00:00+05:30 | irshad | 
+A668 | T1572 | 2025-11-21T00:00:00+05:30 | irshad | 
+A668 | T1572 | 2025-11-21T00:00:00+05:30 | irshad | 
+A668 | T1607 | 2025-11-24T00:00:00+05:30 | Divyank | 
+A668 | T1607 | 2025-11-24T00:00:00+05:30 | Divyank | 
+A668 | T1625 | 2025-11-26T00:00:00+05:30 | neha | 
+A668 | T1625 | 2025-11-26T00:00:00+05:30 | neha | 
+A668 | T1647 | 2025-11-29T00:00:00+05:30 | AVNISH | 
+A668 | T1647 | 2025-11-29T00:00:00+05:30 | AVNISH | 
+A668 | T1774 | 2025-12-16T00:00:00+05:30 | Richa | 
+A668 | T1774 | 2025-12-16T00:00:00+05:30 | Richa | 
+A668 | T1808 | 2025-12-21T00:00:00+05:30 | Asutosh Das | 
+A668 | T1808 | 2025-12-21T00:00:00+05:30 | Asutosh Das | 
+A668 | T1829 | 2025-12-23T00:00:00+05:30 | ayushman yadav | 
+A668 | T1829 | 2025-12-23T00:00:00+05:30 | ayushman yadav | 
+A668 | T1867 | 2025-12-28T00:00:00+05:30 | Chandan sharma | 
+A668 | T1867 | 2025-12-28T00:00:00+05:30 | Chandan sharma | 
+A668 | T1869 | 2025-12-28T00:00:00+05:30 | Shashi | 
+A668 | T1869 | 2025-12-28T00:00:00+05:30 | Shashi | 
+A668 | T1872 | 2025-12-28T00:00:00+05:30 | EDDY | 
+A668 | T1872 | 2025-12-28T00:00:00+05:30 | EDDY | 
+A668 | T1878 | 2025-12-28T00:00:00+05:30 | manju | 
+A668 | T1878 | 2025-12-28T00:00:00+05:30 | manju | 
+A668 | T1883 | 2025-12-29T00:00:00+05:30 | manoj | 
+A668 | T1883 | 2025-12-29T00:00:00+05:30 | manoj | 
+A668 | T1888 | 2025-12-31T00:00:00+05:30 | Anamika | 
+A668 | T1888 | 2025-12-31T00:00:00+05:30 | Anamika | 
+A668 | T1904 | 2026-01-02T00:00:00+05:30 | Pallavi | 
+A668 | T1904 | 2026-01-02T00:00:00+05:30 | Pallavi | 
+A668 | T1912 | 2026-01-02T00:00:00+05:30 | Rahul yadav | 
+A668 | T1912 | 2026-01-02T00:00:00+05:30 | Rahul yadav | 
+A668 | T1916 | 2026-01-03T00:00:00+05:30 | Aryan | 
+A668 | T1916 | 2026-01-03T00:00:00+05:30 | Aryan | 
+A668 | T1929 | 2026-01-04T00:00:00+05:30 | Devesh Raj Singh | 
+A668 | T1929 | 2026-01-04T00:00:00+05:30 | Devesh Raj Singh | 
+A668 | T1930 | 2026-01-04T00:00:00+05:30 | VAIBHAV | 
+A668 | T1930 | 2026-01-04T00:00:00+05:30 | VAIBHAV | 
+A668 | T1938 | 2026-01-04T00:00:00+05:30 | Meher | 
+A668 | T1938 | 2026-01-04T00:00:00+05:30 | Meher | 
+A668 | T1952 | 2026-01-06T00:00:00+05:30 | Aisha Alam | 
+A668 | T1952 | 2026-01-06T00:00:00+05:30 | Aisha Alam | 
+A668 | T1954 | 2026-01-06T00:00:00+05:30 | Arin | 
+A668 | T1954 | 2026-01-06T00:00:00+05:30 | Arin | 
+A668 | T1955 | 2026-01-06T00:00:00+05:30 | Arin | 
+A668 | T1955 | 2026-01-06T00:00:00+05:30 | Arin | 
+A668 | T1961 | 2026-01-07T00:00:00+05:30 | rajendra | 
+A668 | T1961 | 2026-01-07T00:00:00+05:30 | rajendra |
 ---
 Email 15:
+Orders Sync Profiler Run Summary
+Run ID: 20260116_104259650039 | Env: dev
+Report Date: 2026-01-16
+Started: 2026-01-16T10:42:59.651478+00:00 | Finished: 2026-01-16T11:02:07.527291+00:00
+Total Duration: 00:19:07
+Overall Status: success with warnings
 
+Windows Completed: 14 / 14
+Missing Windows: 0
+
+
+**Per Store Summary:**
+
+- A817 (td_orders_sync) — success
+  window_count: 3
+  primary_metrics: rows_downloaded=1491, rows_ingested=1491, staging_rows=1491,
+    staging_inserted=1474, staging_updated=17, final_inserted=1474, final_updated=17
+  secondary_metrics: rows_downloaded=1533, rows_ingested=1533, staging_rows=1533,
+    staging_inserted=1508, staging_updated=25, final_inserted=1508, final_updated=25
+
+
+- A668 (td_orders_sync) — success
+  window_count: 4
+  primary_metrics: rows_downloaded=2097, rows_ingested=2097, staging_rows=2097,
+    staging_inserted=2056, staging_updated=41, final_inserted=2056, final_updated=41
+  secondary_metrics: rows_downloaded=2155, rows_ingested=2155, staging_rows=2155,
+    staging_inserted=2110, staging_updated=45, final_inserted=2110, final_updated=45
+
+
+- UC567 (uc_orders_sync) — success_with_warnings
+  window_count: 4
+  primary_metrics: rows_downloaded=1167, rows_ingested=1167, staging_rows=1167,
+    staging_inserted=1146, staging_updated=20, final_inserted=1146, final_updated=20
+  secondary_metrics: rows_downloaded=0, rows_ingested=0, staging_rows=0,
+    staging_inserted=0, staging_updated=0, final_inserted=0, final_updated=0
+
+
+- UC610 (uc_orders_sync) — success_with_warnings
+  window_count: 3
+  primary_metrics: rows_downloaded=691, rows_ingested=691, staging_rows=691,
+    staging_inserted=685, staging_updated=6, final_inserted=685, final_updated=6
+  secondary_metrics: rows_downloaded=0, rows_ingested=0, staging_rows=0,
+    staging_inserted=0, staging_updated=0, final_inserted=0, final_updated=0
+
+
+
+Warnings:
+
+
+- WINDOW_WARNINGS: UC567 had 1 window(s) completed with warnings
+
+- WINDOW_WARNINGS: UC610 had 1 window(s) completed with warnings
+
+- ROW_WARNINGS: 18 row(s) with warnings
+
+
+
+
+Row-level facts:
+Warning rows (18):
+store_code | order_number | order_date | customer_name | mobile_number | ingestion_remarks
+A668 | T1538 |  |  | A668--7051 | MOBILE_FALLBACK_APPLIED
+A668 | T1538 | 18 Nov 2025 | Tumbledry Solutions Pvt Ltd 09AAHCT2140E1ZL |  | MOBILE_FALLBACK_APPLIED
+A668 | T1798 |  |  | A668--7051 | MOBILE_FALLBACK_APPLIED
+A668 | T1798 | 20 Dec 2025 | Tumbledry Solutions Pvt Ltd 09AAHCT2140E1ZL |  | MOBILE_FALLBACK_APPLIED
+A668 | T1842 |  |  | A668--7051 | MOBILE_FALLBACK_APPLIED
+A817 | T1018 |  |  | A817--7461 | MOBILE_FALLBACK_APPLIED
+A817 | T1018 | 22 Nov 2025 | Tumbledry Solutions Pvt Ltd 09AAHCT2140E1ZL |  | MOBILE_FALLBACK_APPLIED
+A817 | T1187 |  |  | A817--7461 | MOBILE_FALLBACK_APPLIED
+A817 | T1187 | 14 Dec 2025 | Tumbledry Solutions Pvt Ltd 09AAHCT2140E1ZL |  | MOBILE_FALLBACK_APPLIED
+A817 | T1217 |  |  | 18409065 | MOBILE_FALLBACK_APPLIED
+A817 | T1217 | 17 Dec 2025 | Bhuvi Nagpal |  | MOBILE_FALLBACK_APPLIED
+A817 | T1246 |  |  | A817--7461 | MOBILE_FALLBACK_APPLIED
+A817 | T1246 | 20 Dec 2025 | Tumbledry Solutions Pvt Ltd 09AAHCT2140E1ZL |  | MOBILE_FALLBACK_APPLIED
+A817 | T1246 | 20 Dec 2025 | Tumbledry Solutions Pvt Ltd 09AAHCT2140E1ZL |  | MOBILE_FALLBACK_APPLIED
+A817 | T1402 |  |  | A817--7461 | MOBILE_FALLBACK_APPLIED
+A817 | T1454 |  |  | A817--7461 | MOBILE_FALLBACK_APPLIED
+UC567 | UC567-1047 | 04/12/2025 | piyush mathur |  | {"warnings": ["MOBILE_FALLBACK_APPLIED"], "failures": []}
+UC610 | UC610-0487 | 29/10/2025 | Deleted User |  | {"warnings": ["MOBILE_SANITIZED_O_TO_0", "MOBILE_FALLBACK_APPLIED"], "failures": []}
+Edited rows (618):
+store_code | order_number | order_date | customer_name | mobile_number
+A668 | 4 | 2025-03-02T00:00:00+05:30 | Tanisha | 
+A668 | 4 | 2025-03-02T00:00:00+05:30 | Tanisha | 
+A668 | T1021 | 2025-09-04T00:00:00+05:30 | avlesh gupta | 
+A668 | T1021 | 2025-09-04T00:00:00+05:30 | avlesh gupta | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1027 | 2025-09-05T00:00:00+05:30 | Mayank | 
+A668 | T1029 | 2025-09-05T00:00:00+05:30 | rajeev | 
+A668 | T1029 | 2025-09-05T00:00:00+05:30 | rajeev | 
+A668 | T1042 | 2025-09-07T00:00:00+05:30 | Raksha | 
+A668 | T1042 | 2025-09-07T00:00:00+05:30 | Raksha | 
+A668 | T1059 | 2025-09-09T00:00:00+05:30 | Piyush Aggarwal | 
+A668 | T1059 | 2025-09-09T00:00:00+05:30 | Piyush Aggarwal | 
+A668 | T1067 | 2025-09-11T00:00:00+05:30 | Tanish | 
+A668 | T1067 | 2025-09-11T00:00:00+05:30 | Tanish | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1069 | 2025-09-12T00:00:00+05:30 | Karan Jangu | 
+A668 | T1094 | 2025-09-14T00:00:00+05:30 | Preeti Swami | 
+A668 | T1094 | 2025-09-14T00:00:00+05:30 | Preeti Swami | 
+A668 | T1100 | 2025-09-15T00:00:00+05:30 | Shahir Suhail | 
+A668 | T1100 | 2025-09-15T00:00:00+05:30 | Shahir Suhail | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1101 | 2025-09-16T00:00:00+05:30 | Yash Chauhan | 
+A668 | T1107 | 2025-09-18T00:00:00+05:30 | hitesh | 
+A668 | T1107 | 2025-09-18T00:00:00+05:30 | hitesh | 
+A668 | T1110 | 2025-09-19T00:00:00+05:30 | nithun | 
+A668 | T1110 | 2025-09-19T00:00:00+05:30 | nithun | 
+A668 | T1110 | 2025-09-19T00:00:00+05:30 | nithun | 
+A668 | T1110 | 2025-09-19T00:00:00+05:30 | nithun | 
+A668 | T1159 | 2025-09-25T00:00:00+05:30 | ABBHIMANU | 
+A668 | T1159 | 2025-09-25T00:00:00+05:30 | ABBHIMANU | 
+A668 | T1159 | 2025-09-25T00:00:00+05:30 | ABBHIMANU | 
+A668 | T1210 | 2025-10-05T00:00:00+05:30 | Amandeep Verma | 
+A668 | T1210 | 2025-10-05T00:00:00+05:30 | Amandeep Verma | 
+A668 | T1233 | 2025-10-09T00:00:00+05:30 | akshay | 
+A668 | T1233 | 2025-10-09T00:00:00+05:30 | akshay | 
+A668 | T1290 | 2025-10-20T00:00:00+05:30 | Dinesh Gupta | 
+A668 | T1290 | 2025-10-20T00:00:00+05:30 | Dinesh Gupta | 
+A668 | T1300 | 2025-10-22T00:00:00+05:30 | sumit | 
+A668 | T1300 | 2025-10-22T00:00:00+05:30 | sumit | 
+A668 | T141 | 2025-04-02T00:00:00+05:30 | Rajindra Singh | 
+A668 | T141 | 2025-04-02T00:00:00+05:30 | Rajindra Singh | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1470 | 2025-11-11T00:00:00+05:30 | Mr Arjun | 
+A668 | T1560 | 2025-11-19T00:00:00+05:30 | Jay Prakash Ji | 
+A668 | T1560 | 2025-11-19T00:00:00+05:30 | Jay Prakash Ji | 
+A668 | T1560 | 2025-11-19T00:00:00+05:30 | Jay Prakash Ji | 
+A668 | T1560 | 2025-11-19T00:00:00+05:30 | Jay Prakash Ji | 
+A668 | T1572 | 2025-11-21T00:00:00+05:30 | irshad | 
+A668 | T1572 | 2025-11-21T00:00:00+05:30 | irshad | 
+A668 | T1572 | 2025-11-21T00:00:00+05:30 | irshad | 
+A668 | T1607 | 2025-11-24T00:00:00+05:30 | Divyank | 
+A668 | T1607 | 2025-11-24T00:00:00+05:30 | Divyank | 
+A668 | T1625 | 2025-11-26T00:00:00+05:30 | neha | 
+A668 | T1625 | 2025-11-26T00:00:00+05:30 | neha | 
+A668 | T1647 | 2025-11-29T00:00:00+05:30 | AVNISH | 
+A668 | T1647 | 2025-11-29T00:00:00+05:30 | AVNISH | 
+A668 | T1774 | 2025-12-16T00:00:00+05:30 | Richa | 
+A668 | T1774 | 2025-12-16T00:00:00+05:30 | Richa | 
+A668 | T1808 | 2025-12-21T00:00:00+05:30 | Asutosh Das | 
+A668 | T1808 | 2025-12-21T00:00:00+05:30 | Asutosh Das | 
+A668 | T1829 | 2025-12-23T00:00:00+05:30 | ayushman yadav | 
+A668 | T1829 | 2025-12-23T00:00:00+05:30 | ayushman yadav | 
+A668 | T1867 | 2025-12-28T00:00:00+05:30 | Chandan sharma | 
+A668 | T1867 | 2025-12-28T00:00:00+05:30 | Chandan sharma | 
+A668 | T1869 | 2025-12-28T00:00:00+05:30 | Shashi | 
+A668 | T1869 | 2025-12-28T00:00:00+05:30 | Shashi | 
+A668 | T1872 | 2025-12-28T00:00:00+05:30 | EDDY | 
+A668 | T1872 | 2025-12-28T00:00:00+05:30 | EDDY | 
+A668 | T1878 | 2025-12-28T00:00:00+05:30 | manju | 
+A668 | T1878 | 2025-12-28T00:00:00+05:30 | manju | 
+A668 | T1883 | 2025-12-29T00:00:00+05:30 | manoj | 
+A668 | T1883 | 2025-12-29T00:00:00+05:30 | manoj | 
+A668 | T1888 | 2025-12-31T00:00:00+05:30 | Anamika | 
+A668 | T1888 | 2025-12-31T00:00:00+05:30 | Anamika | 
+A668 | T189 | 2025-04-08T00:00:00+05:30 | Aman 9958632230 | 
+A668 | T189 | 2025-04-08T00:00:00+05:30 | Aman 9958632230 | 
+A668 | T1904 | 2026-01-02T00:00:00+05:30 | Pallavi | 
+A668 | T1904 | 2026-01-02T00:00:00+05:30 | Pallavi | 
+A668 | T1912 | 2026-01-02T00:00:00+05:30 | Rahul yadav | 
+A668 | T1912 | 2026-01-02T00:00:00+05:30 | Rahul yadav | 
+A668 | T1916 | 2026-01-03T00:00:00+05:30 | Aryan | 
+A668 | T1916 | 2026-01-03T00:00:00+05:30 | Aryan | 
+A668 | T1929 | 2026-01-04T00:00:00+05:30 | Devesh Raj Singh | 
+A668 | T1929 | 2026-01-04T00:00:00+05:30 | Devesh Raj Singh | 
+A668 | T1930 | 2026-01-04T00:00:00+05:30 | VAIBHAV | 
+A668 | T1930 | 2026-01-04T00:00:00+05:30 | VAIBHAV | 
+A668 | T1938 | 2026-01-04T00:00:00+05:30 | Meher | 
+A668 | T1938 | 2026-01-04T00:00:00+05:30 | Meher | 
+A668 | T1952 | 2026-01-06T00:00:00+05:30 | Aisha Alam | 
+A668 | T1952 | 2026-01-06T00:00:00+05:30 | Aisha Alam | 
+A668 | T1954 | 2026-01-06T00:00:00+05:30 | Arin | 
+A668 | T1954 | 2026-01-06T00:00:00+05:30 | Arin | 
+A668 | T1955 | 2026-01-06T00:00:00+05:30 | Arin | 
+A668 | T1955 | 2026-01-06T00:00:00+05:30 | Arin | 
+A668 | T1961 | 2026-01-07T00:00:00+05:30 | rajendra | 
+A668 | T1961 | 2026-01-07T00:00:00+05:30 | rajendra | 
+A668 | T202 | 2025-04-11T00:00:00+05:30 | dev | 
+A668 | T202 | 2025-04-11T00:00:00+05:30 | dev | 
+A668 | T202 | 2025-04-11T00:00:00+05:30 | dev | 
+A668 | T217 | 2025-04-14T00:00:00+05:30 | Ananya Singh Jha | 
+A668 | T217 | 2025-04-14T00:00:00+05:30 | Ananya Singh Jha | 
+A668 | T22 | 2025-03-08T00:00:00+05:30 | wagid sheikh | 
+A668 | T22 | 2025-03-08T00:00:00+05:30 | wagid sheikh | 
+A668 | T331 | 2025-05-05T00:00:00+05:30 | vishal | 
+A668 | T331 | 2025-05-05T00:00:00+05:30 | vishal | 
+...truncated 116 more
+A817 | A1 | 2025-05-10T00:00:00+05:30 | rita mam | 
+A817 | A1 | 2025-05-10T00:00:00+05:30 | rita mam | 
+A817 | A2 | 2025-05-10T00:00:00+05:30 | amanpreet | 
+A817 | A2 | 2025-05-10T00:00:00+05:30 | amanpreet | 
+A817 | T1010 | 2025-11-21T00:00:00+05:30 | Rohit Vinayak | 
+A817 | T1010 | 2025-11-21T00:00:00+05:30 | Rohit Vinayak | 
+A817 | T1029 | 2025-11-23T00:00:00+05:30 | Megha Vats | 
+A817 | T1029 | 2025-11-23T00:00:00+05:30 | Megha Vats | 
+A817 | T1062 | 2025-11-26T00:00:00+05:30 | Nishu | 
+A817 | T1062 | 2025-11-26T00:00:00+05:30 | Nishu | 
+A817 | T111 | 2025-06-19T00:00:00+05:30 | Sumit | 
+A817 | T111 | 2025-06-19T00:00:00+05:30 | Sumit | 
+A817 | T1120 | 2025-12-03T00:00:00+05:30 | NEENA AGRAWAL | 
+A817 | T1120 | 2025-12-03T00:00:00+05:30 | NEENA AGRAWAL | 
+A817 | T1123 | 2025-12-04T00:00:00+05:30 | Chandani kher | 
+A817 | T1123 | 2025-12-04T00:00:00+05:30 | Chandani kher | 
+A817 | T1123 | 2025-12-04T00:00:00+05:30 | Chandani kher | 
+A817 | T1123 | 2025-12-04T00:00:00+05:30 | Chandani kher | 
+A817 | T1123 | 2025-12-04T00:00:00+05:30 | Chandani kher | 
+A817 | T1123 | 2025-12-04T00:00:00+05:30 | Chandani kher | 
+A817 | T1123 | 2025-12-04T00:00:00+05:30 | Chandani kher | 
+A817 | T1141 | 2025-12-07T00:00:00+05:30 | Abhinav dwivedi / 8470868609 | 
+A817 | T1141 | 2025-12-07T00:00:00+05:30 | Abhinav dwivedi / 8470868609 | 
+A817 | T1142 | 2025-12-07T00:00:00+05:30 | Abhinav dwivedi / 8470868609 | 
+A817 | T1142 | 2025-12-07T00:00:00+05:30 | Abhinav dwivedi / 8470868609 | 
+A817 | T1147 | 2025-12-08T00:00:00+05:30 | Sanjeev | 
+A817 | T1147 | 2025-12-08T00:00:00+05:30 | Sanjeev | 
+A817 | T1152 | 2025-12-08T00:00:00+05:30 | Dr, Priti | 
+A817 | T1152 | 2025-12-08T00:00:00+05:30 | Dr, Priti | 
+A817 | T1175 | 2025-12-12T00:00:00+05:30 | Abhinav dwivedi / 8470868609 | 
+A817 | T1175 | 2025-12-12T00:00:00+05:30 | Abhinav dwivedi / 8470868609 | 
+A817 | T1209 | 2025-12-16T00:00:00+05:30 | Gaurav Mahajan | 
+A817 | T1209 | 2025-12-16T00:00:00+05:30 | Gaurav Mahajan | 
+A817 | T122 | 2025-06-21T00:00:00+05:30 | loudless fashion | 
+A817 | T122 | 2025-06-21T00:00:00+05:30 | loudless fashion | 
+A817 | T122 | 2025-06-21T00:00:00+05:30 | loudless fashion | 
+A817 | T1230 | 2025-12-18T00:00:00+05:30 | Shalima anand | 
+A817 | T1230 | 2025-12-18T00:00:00+05:30 | Shalima anand | 
+A817 | T1233 | 2025-12-18T00:00:00+05:30 | Pavnit Singh | 
+A817 | T1233 | 2025-12-18T00:00:00+05:30 | Pavnit Singh | 
+A817 | T1246 | 2025-12-20T00:00:00+05:30 | Tumbledry Solutions Pvt Ltd 09AAHCT2140E1ZL | 
+A817 | T1246 | 2025-12-20T00:00:00+05:30 | Tumbledry Solutions Pvt Ltd 09AAHCT2140E1ZL | 
+A817 | T1252 | 2025-12-21T00:00:00+05:30 | Swati Chopra | 
+A817 | T1252 | 2025-12-21T00:00:00+05:30 | Swati Chopra | 
+A817 | T1254 | 2025-12-21T00:00:00+05:30 | Tridib Maity | 
+A817 | T1254 | 2025-12-21T00:00:00+05:30 | Tridib Maity | 
+A817 | T1256 | 2025-12-21T00:00:00+05:30 | subhan | 
+A817 | T1256 | 2025-12-21T00:00:00+05:30 | subhan | 
+A817 | T1266 | 2025-12-22T00:00:00+05:30 | Kanika Arora | 
+A817 | T1266 | 2025-12-22T00:00:00+05:30 | Kanika Arora | 
+A817 | T1288 | 2025-12-24T00:00:00+05:30 | subhan | 
+A817 | T1288 | 2025-12-24T00:00:00+05:30 | subhan | 
+A817 | T1292 | 2025-12-25T00:00:00+05:30 | subhan | 
+A817 | T1292 | 2025-12-25T00:00:00+05:30 | subhan | 
+A817 | T1297 | 2025-12-25T00:00:00+05:30 | Ashwini | 
+A817 | T1297 | 2025-12-25T00:00:00+05:30 | Ashwini | 
+A817 | T1300 | 2025-12-26T00:00:00+05:30 | Arvind | 
+A817 | T1300 | 2025-12-26T00:00:00+05:30 | Arvind | 
+A817 | T1314 | 2025-12-28T00:00:00+05:30 | Nitin | 
+A817 | T1314 | 2025-12-28T00:00:00+05:30 | Nitin | 
+A817 | T1315 | 2025-12-28T00:00:00+05:30 | subhan | 
+A817 | T1315 | 2025-12-28T00:00:00+05:30 | subhan | 
+A817 | T1320 | 2025-12-29T00:00:00+05:30 | Nishu | 
+A817 | T1320 | 2025-12-29T00:00:00+05:30 | Nishu | 
+A817 | T1326 | 2025-12-29T00:00:00+05:30 | NEENA AGRAWAL | 
+A817 | T1326 | 2025-12-29T00:00:00+05:30 | NEENA AGRAWAL | 
+A817 | T1326 | 2025-12-29T00:00:00+05:30 | NEENA AGRAWAL | 
+A817 | T1330 | 2025-12-30T00:00:00+05:30 | Abhinav dwivedi / 8470868609 | 
+A817 | T1330 | 2025-12-30T00:00:00+05:30 | Abhinav dwivedi / 8470868609 | 
+A817 | T1339 | 2025-12-31T00:00:00+05:30 | subhan | 
+A817 | T1339 | 2025-12-31T00:00:00+05:30 | subhan | 
+A817 | T1350 | 2026-01-01T00:00:00+05:30 | mahak | 
+A817 | T1350 | 2026-01-01T00:00:00+05:30 | mahak | 
+A817 | T1364 | 2026-01-03T00:00:00+05:30 | subhan | 
+A817 | T1364 | 2026-01-03T00:00:00+05:30 | subhan | 
+A817 | T1367 | 2026-01-03T00:00:00+05:30 | Kunal | 
+A817 | T1367 | 2026-01-03T00:00:00+05:30 | Kunal | 
+A817 | T1370 | 2026-01-03T00:00:00+05:30 | Monika Srivastava | 
+A817 | T1370 | 2026-01-03T00:00:00+05:30 | Monika Srivastava | 
+A817 | T1389 | 2026-01-06T00:00:00+05:30 | Kanika Arora | 
+A817 | T1389 | 2026-01-06T00:00:00+05:30 | Kanika Arora | 
+A817 | T1390 | 2026-01-06T00:00:00+05:30 | Kanika Arora | 
+A817 | T1390 | 2026-01-06T00:00:00+05:30 | Kanika Arora | 
+A817 | T1412 | 2026-01-09T00:00:00+05:30 | NEENA AGRAWAL | 
+A817 | T1412 | 2026-01-09T00:00:00+05:30 | NEENA AGRAWAL | 
+A817 | T159 | 2025-06-28T00:00:00+05:30 | swati chawla | 
+A817 | T159 | 2025-06-28T00:00:00+05:30 | swati chawla | 
+A817 | T168 | 2025-06-30T00:00:00+05:30 | SHAN | 
+A817 | T168 | 2025-06-30T00:00:00+05:30 | SHAN | 
+A817 | T174 | 2025-07-01T00:00:00+05:30 | seema jain | 
+A817 | T174 | 2025-07-01T00:00:00+05:30 | seema jain | 
+A817 | T205 | 2025-07-06T00:00:00+05:30 | saher | 
+A817 | T205 | 2025-07-06T00:00:00+05:30 | saher | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T206 | 2025-07-06T00:00:00+05:30 | Jammun Longri | 
+A817 | T226 | 2025-07-09T00:00:00+05:30 | punya | 
+A817 | T226 | 2025-07-09T00:00:00+05:30 | punya | 
+A817 | T244 | 2025-07-12T00:00:00+05:30 | Paarth Abrol | 
+A817 | T244 | 2025-07-12T00:00:00+05:30 | Paarth Abrol | 
+A817 | T246 | 2025-07-13T00:00:00+05:30 | Himanshu | 
+A817 | T246 | 2025-07-13T00:00:00+05:30 | Himanshu | 
+A817 | T264 | 2025-07-16T00:00:00+05:30 | Naman Gupta | 
+A817 | T264 | 2025-07-16T00:00:00+05:30 | Naman Gupta | 
+A817 | T264 | 2025-07-16T00:00:00+05:30 | Naman Gupta | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T27 | 2025-05-27T00:00:00+05:30 | SAHIB TREHAN | 
+A817 | T274 | 2025-07-19T00:00:00+05:30 | Sarthi Bharara | 
+A817 | T274 | 2025-07-19T00:00:00+05:30 | Sarthi Bharara | 
+A817 | T275 | 2025-07-19T00:00:00+05:30 | shradha | 
+A817 | T275 | 2025-07-19T00:00:00+05:30 | shradha | 
+A817 | T291 | 2025-07-22T00:00:00+05:30 | Mr Saroj | 
+A817 | T291 | 2025-07-22T00:00:00+05:30 | Mr Saroj | 
+A817 | T291 | 2025-07-22T00:00:00+05:30 | Mr Saroj | 
+A817 | T291 | 2025-07-22T00:00:00+05:30 | Mr Saroj | 
+A817 | T291 | 2025-07-22T00:00:00+05:30 | Mr Saroj | 
+A817 | T295 | 2025-07-22T00:00:00+05:30 | Anuj Mehta | 
+A817 | T295 | 2025-07-22T00:00:00+05:30 | Anuj Mehta | 
+A817 | T295 | 2025-07-22T00:00:00+05:30 | Anuj Mehta | 
+A817 | T295 | 2025-07-22T00:00:00+05:30 | Anuj Mehta | 
+A817 | T296 | 2025-07-22T00:00:00+05:30 | Saroj | 
+A817 | T296 | 2025-07-22T00:00:00+05:30 | Saroj | 
+A817 | T296 | 2025-07-22T00:00:00+05:30 | Saroj | 
+A817 | T336 | 2025-07-25T00:00:00+05:30 | Danis arora | 
+A817 | T336 | 2025-07-25T00:00:00+05:30 | Danis arora | 
+A817 | T336 | 2025-07-25T00:00:00+05:30 | Danis arora | 
+A817 | T336 | 2025-07-25T00:00:00+05:30 | Danis arora | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T340 | 2025-07-26T00:00:00+05:30 | kabir 2 | 
+A817 | T345 | 2025-07-26T00:00:00+05:30 | SANGEETA ANAND | 
+A817 | T345 | 2025-07-26T00:00:00+05:30 | SANGEETA ANAND | 
+A817 | T358 | 2025-07-29T00:00:00+05:30 | hema | 
+A817 | T358 | 2025-07-29T00:00:00+05:30 | hema | 
+A817 | T358 | 2025-07-29T00:00:00+05:30 | hema | 
+A817 | T358 | 2025-07-29T00:00:00+05:30 | hema | 
+A817 | T370 | 2025-08-01T00:00:00+05:30 | vijeta nagpal | 
+A817 | T370 | 2025-08-01T00:00:00+05:30 | vijeta nagpal | 
+A817 | T403 | 2025-08-08T00:00:00+05:30 | Divansh | 
+A817 | T403 | 2025-08-08T00:00:00+05:30 | Divansh | 
+A817 | T405 | 2025-08-08T00:00:00+05:30 | Sarthi Bharara | 
+A817 | T405 | 2025-08-08T00:00:00+05:30 | Sarthi Bharara | 
+A817 | T415 | 2025-08-10T00:00:00+05:30 | Ashok | 
+A817 | T415 | 2025-08-10T00:00:00+05:30 | Ashok | 
+A817 | T415 | 2025-08-10T00:00:00+05:30 | Ashok | 
+A817 | T486 | 2025-08-23T00:00:00+05:30 | lakshita | 
+A817 | T486 | 2025-08-23T00:00:00+05:30 | lakshita | 
+A817 | T504 | 2025-08-26T00:00:00+05:30 | pavneet | 
+A817 | T504 | 2025-08-26T00:00:00+05:30 | pavneet | 
+A817 | T504 | 2025-08-26T00:00:00+05:30 | pavneet | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T509 | 2025-08-26T00:00:00+05:30 | ruchi verma | 
+A817 | T526 | 2025-08-28T00:00:00+05:30 | RAMU 2 | 
+A817 | T526 | 2025-08-28T00:00:00+05:30 | RAMU 2 | 
+A817 | T538 | 2025-08-30T00:00:00+05:30 | LATIKA CHAWLA | 
+A817 | T538 | 2025-08-30T00:00:00+05:30 | LATIKA CHAWLA | 
+A817 | T538 | 2025-08-30T00:00:00+05:30 | LATIKA CHAWLA | 
+A817 | T538 | 2025-08-30T00:00:00+05:30 | LATIKA CHAWLA | 
+A817 | T538 | 2025-08-30T00:00:00+05:30 | LATIKA CHAWLA | 
+A817 | T538 | 2025-08-30T00:00:00+05:30 | LATIKA CHAWLA | 
+A817 | T547 | 2025-09-01T00:00:00+05:30 | Geeta Rani | 
+A817 | T547 | 2025-09-01T00:00:00+05:30 | Geeta Rani | 
+A817 | T547 | 2025-09-01T00:00:00+05:30 | Geeta Rani | 
+A817 | T551 | 2025-09-01T00:00:00+05:30 | ila gupta | 
+A817 | T551 | 2025-09-01T00:00:00+05:30 | ila gupta | 
+A817 | T551 | 2025-09-01T00:00:00+05:30 | ila gupta | 
+A817 | T551 | 2025-09-01T00:00:00+05:30 | ila gupta | 
+A817 | T552 | 2025-09-01T00:00:00+05:30 | Tarun kumar | 
+A817 | T552 | 2025-09-01T00:00:00+05:30 | Tarun kumar | 
+A817 | T555 | 2025-09-02T00:00:00+05:30 | Rahul Kashyap | 
+...truncated 102 more
 ---
