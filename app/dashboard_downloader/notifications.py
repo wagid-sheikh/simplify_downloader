@@ -57,6 +57,7 @@ MISSING_ORDER_NUMBER_PLACEHOLDER = "<missing_order_number>"
 TD_SALES_ROW_SAMPLE_LIMIT: int | None = None
 TD_SALES_EDITED_LIMIT: int | None = None
 FACT_SECTION_ROW_LIMIT: int | None = None
+PROFILER_FACT_ROW_LIMIT_PER_STORE: int = 200
 UC_GSTIN_MISSING_REMARK = "Customer GSTIN missing"
 
 
@@ -631,6 +632,44 @@ def _format_fact_section(
     return lines
 
 
+def _format_fact_section_by_store(
+    title: str,
+    rows: list[dict[str, str]],
+    *,
+    include_remarks: bool,
+    per_store_limit: int,
+) -> list[str]:
+    if not rows:
+        return []
+    columns = FACT_ROW_COLUMNS_WITH_REMARKS if include_remarks else FACT_ROW_COLUMNS
+    header = " | ".join(columns)
+    lines = [f"{title} ({len(rows)}):", header]
+    current_store: str | None = None
+    current_rows: list[dict[str, str]] = []
+
+    def _flush_store_rows() -> None:
+        if not current_rows:
+            return
+        display_rows = current_rows[:per_store_limit]
+        for row in display_rows:
+            lines.append(" | ".join(row.get(column, "") for column in columns))
+        truncated_count = len(current_rows) - len(display_rows)
+        if truncated_count:
+            lines.append(f"...truncated {truncated_count} more")
+
+    for row in rows:
+        store_code = row.get("store_code") or ""
+        if current_store is None:
+            current_store = store_code
+        if store_code != current_store:
+            _flush_store_rows()
+            current_rows = []
+            current_store = store_code
+        current_rows.append(row)
+    _flush_store_rows()
+    return lines
+
+
 def _format_fact_sections_text(
     *,
     warning_rows: list[dict[str, str]] | None = None,
@@ -643,6 +682,50 @@ def _format_fact_sections_text(
     sections.extend(_format_fact_section("Dropped rows", dropped_rows or [], include_remarks=True))
     sections.extend(_format_fact_section("Edited rows", edited_rows or [], include_remarks=False))
     sections.extend(_format_fact_section("Error rows", error_rows or [], include_remarks=True))
+    return "\n".join(sections)
+
+
+def _format_fact_sections_text_by_store(
+    *,
+    warning_rows: list[dict[str, str]] | None = None,
+    dropped_rows: list[dict[str, str]] | None = None,
+    edited_rows: list[dict[str, str]] | None = None,
+    error_rows: list[dict[str, str]] | None = None,
+    per_store_limit: int = PROFILER_FACT_ROW_LIMIT_PER_STORE,
+) -> str:
+    sections: list[str] = []
+    sections.extend(
+        _format_fact_section_by_store(
+            "Warning rows",
+            warning_rows or [],
+            include_remarks=True,
+            per_store_limit=per_store_limit,
+        )
+    )
+    sections.extend(
+        _format_fact_section_by_store(
+            "Dropped rows",
+            dropped_rows or [],
+            include_remarks=True,
+            per_store_limit=per_store_limit,
+        )
+    )
+    sections.extend(
+        _format_fact_section_by_store(
+            "Edited rows",
+            edited_rows or [],
+            include_remarks=False,
+            per_store_limit=per_store_limit,
+        )
+    )
+    sections.extend(
+        _format_fact_section_by_store(
+            "Error rows",
+            error_rows or [],
+            include_remarks=True,
+            per_store_limit=per_store_limit,
+        )
+    )
     return "\n".join(sections)
 
 
@@ -1388,7 +1471,7 @@ def _build_td_orders_context(
     dropped_fact_rows = [row for store in stores for row in store.get("dropped_fact_rows") or []]
     edited_fact_rows = [row for store in stores for row in store.get("edited_fact_rows") or []]
     error_fact_rows = [row for store in stores for row in store.get("error_fact_rows") or []]
-    fact_sections_text = _format_fact_sections_text(
+    fact_sections_text = _format_fact_sections_text_by_store(
         warning_rows=warning_fact_rows,
         dropped_rows=dropped_fact_rows,
         edited_rows=edited_fact_rows,
@@ -1689,7 +1772,7 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
             edited_rows=edited_fact_rows,
             error_rows=error_fact_rows,
         )
-    fact_sections_text = _format_fact_sections_text(
+    fact_sections_text = _format_fact_sections_text_by_store(
         warning_rows=warning_fact_rows,
         dropped_rows=dropped_fact_rows,
         edited_rows=edited_fact_rows,

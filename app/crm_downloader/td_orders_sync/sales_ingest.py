@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -217,22 +218,35 @@ def _td_sales_table(metadata: sa.MetaData) -> sa.Table:
     )
 
 
-def _normalize_phone(value: str | None, *, warnings: list[str], invalid_phone_numbers: set[str], row_remarks: list[str]) -> str | None:
-    if value is None:
-        return None
-    digits = "".join(ch for ch in str(value) if ch.isdigit())
+MOBILE_FALLBACK_NUMBER = "8888999762"
+
+
+def _normalize_phone(
+    value: str | None, *, warnings: list[str], invalid_phone_numbers: set[str], row_remarks: list[str]
+) -> str | None:
+    value_str = "" if value is None else str(value)
+    if value_str.strip() == "":
+        row_remarks.append("MOBILE_FALLBACK_APPLIED")
+        if value_str not in invalid_phone_numbers:
+            invalid_phone_numbers.add(value_str)
+            warnings.append("Invalid phone number fallback applied: <missing>")
+        return MOBILE_FALLBACK_NUMBER
+    sanitized = value_str
+    if re.search(r"[oO]", sanitized):
+        sanitized = re.sub(r"[oO]", "0", sanitized)
+        row_remarks.append("MOBILE_SANITIZED_O_TO_0")
+    digits = re.sub(r"\D", "", sanitized)
     if len(digits) == 12 and digits.startswith("91"):
         digits = digits[-10:]
     if len(digits) == 11 and digits.startswith("0"):
         digits = digits[1:]
     if len(digits) == 10:
         return digits
-    value_str = str(value)
-    row_remarks.append(f"Phone value '{value_str}' is invalid and was dropped")
+    row_remarks.append("MOBILE_FALLBACK_APPLIED")
     if value_str not in invalid_phone_numbers:
         invalid_phone_numbers.add(value_str)
-        warnings.append(f"Invalid phone number dropped: {value_str}")
-    return None
+        warnings.append(f"Invalid phone number fallback applied: {value_str}")
+    return MOBILE_FALLBACK_NUMBER
 
 
 def _parse_numeric(value: Any, *, warnings: list[str], field: str, row_remarks: list[str]) -> Decimal:

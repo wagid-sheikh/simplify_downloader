@@ -139,6 +139,16 @@ def _env_flag(name: str) -> bool:
     return str(raw).strip().lower() not in {"", "0", "false", "no"}
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
 async def _load_store_profiles(
     *, logger: JsonLogger, sync_group: str, store_codes: Sequence[str] | None
 ) -> list[StoreProfile]:
@@ -1384,7 +1394,11 @@ async def main(
                 sync_group=group,
             )
             return []
-        group_max_workers = 1 if group == "UC" else max_workers
+        uc_max_workers = _env_int("UC_MAX_WORKERS", max_workers)
+        if group == "UC":
+            group_max_workers = max(1, min(max_workers, uc_max_workers))
+        else:
+            group_max_workers = max_workers
         semaphore = asyncio.Semaphore(max(1, group_max_workers))
 
         async def _guarded(store: StoreProfile) -> StoreRunResult:
