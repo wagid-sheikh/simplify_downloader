@@ -54,7 +54,8 @@ async def fetch_last_success_window_end(
 
     Selection criteria:
     - orders_sync_log rows scoped to the pipeline_id + store_code.
-    - status filter: success only (partial/failed/skipped are ignored).
+    - status filter: success + success_with_warnings (partial/failed/skipped
+      are ignored).
     - run_id is intentionally not filtered so the latest successful window
       across runs is used as the SSOT source-of-truth.
     - max(to_date) is used as the authoritative window end; overlap handling
@@ -65,7 +66,11 @@ async def fetch_last_success_window_end(
             sa.select(sa.func.max(orders_sync_log.c.to_date))
             .where(orders_sync_log.c.pipeline_id == pipeline_id)
             .where(orders_sync_log.c.store_code == store_code)
-            .where(orders_sync_log.c.status == "success")
+            .where(
+                orders_sync_log.c.status.in_(
+                    ["success", "success_with_warnings"]
+                )
+            )
         )
         return (await session.execute(stmt)).scalar_one_or_none()
 
