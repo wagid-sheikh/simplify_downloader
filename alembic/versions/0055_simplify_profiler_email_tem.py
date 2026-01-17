@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0055_simplify_profiler_email_template"
+revision = "0055_simplify_profiler_email_tem"
 down_revision = "0054_uc_store_fact_sections_temp"
 branch_labels = None
 depends_on = None
