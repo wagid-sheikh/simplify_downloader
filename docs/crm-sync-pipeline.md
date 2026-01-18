@@ -301,11 +301,12 @@ Any PR that touches protected paths must be isolated and explicitly labeled “p
 * **store_master** table alter requirements for making this pipeline work smoothly
   * alter store_master and add following columns, and seed/update data as described below
     * start_date date default null
-    * cost_center varchar(8) default null
+    * cost_center varchar(8) default null (references `cost_center.cost_center`)
     * sync_orders_flag boolean default false
     * sync_bank_flag boolean default false
     * sync_config JSONB default null
     * sync_group char(2) default null
+    * Add a foreign key constraint on `store_master.cost_center` → `cost_center.cost_center` during migration, and backfill/seed `cost_center` first so the FK can be applied without errors (use a separate migration or an ordered migration step if needed).
     * Update store_master as below:
       * for store_code 'A668' set cost_center='UN3668', sync_group = 'TD', start_date='01-Mar-2025', sync_orders_flag = true, sync_bank_flag = true
       * for store_code 'A817' set cost_center='KN3817', sync_group = 'TD', start_date='10-May-2025', sync_orders_flag = true, sync_bank_flag = true
