@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0060_add_missing_lead_generation_recipients"
+revision = "0060_add_missed_leadged_recipint"
 down_revision = "0059_rename_sakes_to_sales"
 branch_labels = None
 depends_on = None
