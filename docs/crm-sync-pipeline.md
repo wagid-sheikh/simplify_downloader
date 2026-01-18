@@ -227,7 +227,7 @@ Any PR that touches protected paths must be isolated and explicitly labeled “p
 ### Staging uniqueness and upsert rules
 
 - TD Orders staging (`stg_td_orders`): upsert/merge on `{store_code, order_number, order_date}`. Production `td_orders` should mirror these uniqueness semantics to keep re-runs idempotent.
-- TD Sales staging (`stg_td_sales`): upsert/merge on `{store_code, order_number, payment_date}` with the same key alignment in `td_sales`.
+- TD Sales staging (`stg_td_sales`): upsert/merge on `{store_code, order_number, payment_date}` with the same key alignment in `sakes`.
 - UC Orders staging (`stg_uc_orders`): upsert/merge on `{store_code, order_number, invoice_date}`; ensure the production table enforces the same uniqueness to avoid drift.
 - Bank staging (`stg_bank`): upsert/merge on `{row_id}` and preserve that uniqueness in `bank` so repeated ingests update rather than duplicate rows.
 
@@ -235,7 +235,7 @@ Any PR that touches protected paths must be isolated and explicitly labeled “p
 
 - Enforce the following unique constraints and use them as upsert keys in staging and production tables (already referenced above):
   - `stg_td_orders`: unique on `(store_code, order_number, order_date)`; production `td_orders` must enforce the same business key for idempotent re-runs.
-  - `stg_td_sales`: unique on `(store_code, order_number, payment_date)`; production `td_sales` must match.
+  - `stg_td_sales`: unique on `(store_code, order_number, payment_date)`; production `sakes` must match.
   - `stg_uc_orders`: unique on `(store_code, order_number, invoice_date)`; production `uc_orders` must match.
   - `stg_bank`: unique on `(row_id)`; production `bank` must match.
 - Alembic migration expectations (to be completed before Playwright automation starts):
@@ -511,7 +511,7 @@ create table stg_bank (
 - Upsert/merge behavior in staging must use the above keys to avoid duplicates on re-runs for the same date ranges.
 - Production-table writes must align to these same business keys to keep reruns clean:
   - `orders`: upsert TD rows on (`cost_center`, `order_number`, `order_date`) and UC rows on (`cost_center`, `order_number`, `order_date` = `invoice_date`), updating mutable fields on conflict.
-  - `td_sales`: upsert on (`cost_center`, `order_number`, `payment_date`) instead of blind insert.
+  - `sakes`: upsert on (`cost_center`, `order_number`, `payment_date`) instead of blind insert.
   - `bank`: upsert on (`row_id`) for consistency with staging.
   - Resolve conflicts by updating non-key attributes; do not insert duplicates on reruns.
 
@@ -603,12 +603,12 @@ create table bank (
  );
 ```
 
-### Table: td_sales
+### Table: sakes
 
-This table will be used to hold stg_td_sales data from td_orders_sync pipeline. Always perform insert from std_td_sales to td_sales, no update. Proposed structure of this table is as below:
+This table will be used to hold stg_td_sales data from td_orders_sync pipeline. Always perform insert from stg_td_sales to sakes, no update. Proposed structure of this table is as below:
 
 ```sql
-create table td_sales (
+create table sakes (
     id                  bigserial,
     run_id              text,
     run_date            timestamptz,
@@ -632,8 +632,8 @@ create table td_sales (
     is_duplicate        boolean,
     is_edited_order     boolean,
     ingest_remarks      text,
-    constraint pk_td_sales primary key (id),
-    constraint unq_td_sales(cost_center, order_number, payment_date)
+    constraint pk_sakes primary key (id),
+    constraint uq_sakes_cost_center_order_number_payment_date unique (cost_center, order_number, payment_date)
 );
 ```
 
@@ -973,11 +973,11 @@ Type
 
 **Phase 4 – TD Sales ingest:** populate `stg_td_sales.ingest_remarks` alongside other derived fields so that validation/warning context is retained with the staging row.
 
-**Phase 5 – TD Sales publish:** when appending/upserting into `td_sales`, include `ingest_remarks` as a straight passthrough from staging so downstream consumers see the same remark text.
+**Phase 5 – TD Sales publish:** when appending/upserting into `sakes`, include `ingest_remarks` as a straight passthrough from staging so downstream consumers see the same remark text.
 
-#### from `stg_td_sales` to `td_sales`
+#### from `stg_td_sales` to `sakes`
 
-The table structure of `stg_td_sales` and `td_sales` are almost identical; append/upsert from `stg_td_sales` to `td_sales` must carry `ingest_remarks` forward unchanged.
+The table structure of `stg_td_sales` and `sakes` are almost identical; append/upsert from `stg_td_sales` to `sakes` must carry `ingest_remarks` forward unchanged.
 
 ### from `*bank.xlsx` to `stg_bank
 

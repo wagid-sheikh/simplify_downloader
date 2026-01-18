@@ -28,7 +28,7 @@ STAGING_UNIQUE_SPECS: list[tuple[str, list[str], str]] = [
 
 PRODUCTION_UNIQUE_SPECS: list[tuple[str, list[str], str]] = [
     ("orders", ["cost_center", "order_number", "order_date"], "uq_orders_cost_center_order_number_order_date"),
-    ("td_sales", ["cost_center", "order_number", "payment_date"], "uq_td_sales_cost_center_order_number_payment_date"),
+    ("sakes", ["cost_center", "order_number", "payment_date"], "uq_sakes_cost_center_order_number_payment_date"),
     ("uc_orders", ["cost_center", "order_number", "invoice_date"], "uq_uc_orders_cost_center_order_invoice_date"),
     ("bank", ["row_id"], "uq_bank_row_id"),
 ]
@@ -272,9 +272,9 @@ def _create_orders() -> None:
     )
 
 
-def _create_td_sales() -> None:
+def _create_sakes() -> None:
     op.create_table(
-        "td_sales",
+        "sakes",
         sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
         sa.Column("run_id", sa.Text()),
         sa.Column("run_date", sa.DateTime(timezone=True)),
@@ -297,12 +297,12 @@ def _create_td_sales() -> None:
         sa.Column("order_type", sa.String(length=32)),
         sa.Column("is_duplicate", sa.Boolean()),
         sa.Column("is_edited_order", sa.Boolean()),
-        sa.PrimaryKeyConstraint("id", name="pk_td_sales"),
+        sa.PrimaryKeyConstraint("id", name="pk_sakes"),
         sa.UniqueConstraint(
             "cost_center",
             "order_number",
             "payment_date",
-            name="uq_td_sales_cost_center_order_number_payment_date",
+            name="uq_sakes_cost_center_order_number_payment_date",
         ),
         comment=CREATED_TABLE_COMMENT,
     )
@@ -374,7 +374,7 @@ def upgrade() -> None:
         ("stg_uc_orders", _create_stg_uc_orders),
         ("stg_bank", _create_stg_bank),
         ("orders", _create_orders),
-        ("td_sales", _create_td_sales),
+        ("sakes", _create_sakes),
         ("uc_orders", _create_uc_orders),
         ("bank", _create_bank),
     ]
@@ -422,7 +422,7 @@ def downgrade() -> None:
     for table in (
         "bank",
         "uc_orders",
-        "td_sales",
+        "sakes",
         "orders",
         "stg_bank",
         "stg_uc_orders",

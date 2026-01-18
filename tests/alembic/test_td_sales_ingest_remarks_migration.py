@@ -60,7 +60,7 @@ def test_td_sales_ingest_remarks_migration(monkeypatch: pytest.MonkeyPatch) -> N
         connection.execute(
             sa.text(
                 """
-                CREATE TABLE td_sales (
+                CREATE TABLE sakes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     store_code TEXT,
                     order_number TEXT,
@@ -82,7 +82,7 @@ def test_td_sales_ingest_remarks_migration(monkeypatch: pytest.MonkeyPatch) -> N
         connection.execute(
             sa.text(
                 """
-                INSERT INTO td_sales (store_code, order_number, ingest_remarks, ingest_remark)
+                INSERT INTO sakes (store_code, order_number, ingest_remarks, ingest_remark)
                 VALUES (:store_code, :order_number, :ingest_remarks, :ingest_remark)
                 """
             ),
@@ -95,13 +95,13 @@ def test_td_sales_ingest_remarks_migration(monkeypatch: pytest.MonkeyPatch) -> N
         )
 
     assert "ingest_remark" in _table_columns(engine, "stg_td_sales")
-    assert "ingest_remark" in _table_columns(engine, "td_sales")
+    assert "ingest_remark" in _table_columns(engine, "sakes")
 
     with engine.begin() as connection:
         _run_migration(connection, migration.upgrade, monkeypatch)
 
     stg_columns = _table_columns(engine, "stg_td_sales")
-    final_columns = _table_columns(engine, "td_sales")
+    final_columns = _table_columns(engine, "sakes")
     assert "ingest_remarks" in stg_columns
     assert "ingest_remark" not in stg_columns
     assert "ingest_remarks" in final_columns
@@ -109,7 +109,7 @@ def test_td_sales_ingest_remarks_migration(monkeypatch: pytest.MonkeyPatch) -> N
 
     with engine.connect() as connection:
         stg_remark = connection.execute(sa.text("SELECT ingest_remarks FROM stg_td_sales")).scalar_one()
-        final_remark = connection.execute(sa.text("SELECT ingest_remarks FROM td_sales")).scalar_one()
+        final_remark = connection.execute(sa.text("SELECT ingest_remarks FROM sakes")).scalar_one()
     assert stg_remark == "stg remark"
     assert final_remark == "final remark"
 
@@ -117,7 +117,7 @@ def test_td_sales_ingest_remarks_migration(monkeypatch: pytest.MonkeyPatch) -> N
         _run_migration(connection, migration.downgrade, monkeypatch)
 
     stg_columns_after = _table_columns(engine, "stg_td_sales")
-    final_columns_after = _table_columns(engine, "td_sales")
+    final_columns_after = _table_columns(engine, "sakes")
     assert "ingest_remarks" in stg_columns_after
     assert "ingest_remark" not in stg_columns_after
     assert "ingest_remarks" in final_columns_after
@@ -125,6 +125,6 @@ def test_td_sales_ingest_remarks_migration(monkeypatch: pytest.MonkeyPatch) -> N
 
     with engine.connect() as connection:
         stg_remark_after = connection.execute(sa.text("SELECT ingest_remarks FROM stg_td_sales")).scalar_one()
-        final_remark_after = connection.execute(sa.text("SELECT ingest_remarks FROM td_sales")).scalar_one()
+        final_remark_after = connection.execute(sa.text("SELECT ingest_remarks FROM sakes")).scalar_one()
     assert stg_remark_after == "stg remark"
     assert final_remark_after == "final remark"

@@ -41,7 +41,7 @@ STG_TD_SALES_COLUMNS = [
     "ingest_remarks",
 ]
 
-TD_SALES_COLUMNS = [
+SAKES_COLUMNS = [
     "order_date",
     "payment_date",
     "order_number",
@@ -176,9 +176,9 @@ def _stg_td_sales_table(metadata: sa.MetaData) -> sa.Table:
     )
 
 
-def _td_sales_table(metadata: sa.MetaData) -> sa.Table:
+def _sakes_table(metadata: sa.MetaData) -> sa.Table:
     return sa.Table(
-        "td_sales",
+        "sakes",
         metadata,
         sa.Column(
             "id",
@@ -212,7 +212,7 @@ def _td_sales_table(metadata: sa.MetaData) -> sa.Table:
             "cost_center",
             "order_number",
             "payment_date",
-            name="uq_td_sales_cost_center_order_number_payment_date",
+            name="uq_sakes_cost_center_order_number_payment_date",
         ),
         sqlite_autoincrement=True,
     )
@@ -475,7 +475,7 @@ async def ingest_td_sales_workbook(
 
     metadata = sa.MetaData()
     stg_table = _stg_td_sales_table(metadata)
-    final_table = _td_sales_table(metadata)
+    final_table = _sakes_table(metadata)
     use_sqlite = database_url.startswith("sqlite")
 
     async with session_scope(database_url) as session:
@@ -596,7 +596,7 @@ async def ingest_td_sales_workbook(
             staging_count += 1
 
             final_values = {
-                **{field: row.get(field) for field in TD_SALES_COLUMNS},
+                **{field: row.get(field) for field in SAKES_COLUMNS},
                 "run_id": run_id,
                 "run_date": run_date,
                 "cost_center": cost_center,
@@ -635,6 +635,6 @@ __all__ = [
     "TdSalesIngestResult",
     "ingest_td_sales_workbook",
     "_stg_td_sales_table",
-    "_td_sales_table",
+    "_sakes_table",
     "_expected_headers",
 ]

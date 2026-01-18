@@ -585,12 +585,12 @@ create table bank (
  );
 ```
 
-### Table: td_sales
+### Table: sakes
 
-This table will be used to hold stg_td_sales data from td_orders_sync pipeline. Always perform insert from std_td_sales to td_sales, no update. Proposed structure of this table is as below:
+This table will be used to hold stg_td_sales data from td_orders_sync pipeline. Always perform insert from stg_td_sales to sakes, no update. Proposed structure of this table is as below:
 
 ```sql
-create table td_sales (
+create table sakes (
     id                  bigserial,
     run_id              text,
     run_date            timestamptz,
@@ -613,8 +613,8 @@ create table td_sales (
     order_type          varchar(32),
     is_duplicate        boolean,
     is_edited_order     boolean,
-    constraint pk_td_sales primary key (id),
-    constraint unq_td_sales(cost_center, order_number)
+    constraint pk_sakes primary key (id),
+    constraint uq_sakes_cost_center_order_number_payment_date unique (cost_center, order_number, payment_date)
 );
 ```
 
@@ -943,9 +943,9 @@ Type
 | 21  | *(Not in Excel)*     | stg_td_sales | run_date         | Set from ETL `RUN_DATE`                                                                              |
 | 22  | *(Not in Excel)*     | stg_td_sales | created_at       | Set from ETL `RUN_DATE`                                                                              |
 
-#### from `stg_td_sales` to `td_sales`
+#### from `stg_td_sales` to `sakes`
 
-The table structure of `stg_td_sales` and `td_sales` are almost identical and perform append from `stg_td_sales` to `td_sales`
+The table structure of `stg_td_sales` and `sakes` are almost identical and perform append from `stg_td_sales` to `sakes`
 
 ### from `*bank.xlsx` to `stg_bank
 

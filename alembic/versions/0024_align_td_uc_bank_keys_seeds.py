@@ -1,8 +1,8 @@
 """Align TD/UC/bank keys, constraints, and notification seeds.
 
 Order of operations (staging keys → production keys → seeds):
-- Enforce staging upsert keys for td_orders, td_sales, uc_orders, and bank.
-- Mirror production keys for orders, td_sales, and bank to keep ETL idempotent.
+- Enforce staging upsert keys for td_orders, stg_td_sales, uc_orders, and bank.
+- Mirror production keys for orders, sakes, and bank to keep ETL idempotent.
 - Seed notification pipelines/profiles/templates for td_orders_sync, uc_orders_sync, and bank_sync.
 """
 
@@ -22,7 +22,7 @@ depends_on = None
 
 # Upsert key documentation for ETL reference:
 # - stg_td_orders + td_orders: (store_code, order_number, order_date) / (cost_center, order_number, order_date)
-# - stg_td_sales + td_sales: (store_code, order_number, payment_date) / (cost_center, order_number, payment_date)
+# - stg_td_sales + sakes: (store_code, order_number, payment_date) / (cost_center, order_number, payment_date)
 # - stg_uc_orders + uc_orders: (store_code, order_number, invoice_date) / (cost_center, order_number, invoice_date)
 # - stg_bank + bank: (row_id)
 
@@ -42,9 +42,9 @@ PRODUCTION_UNIQUE_SPECS: list[tuple[str, list[str], str, list[list[str]]]] = [
         [["cost_center", "order_number"]],
     ),
     (
-        "td_sales",
+        "sakes",
         ["cost_center", "order_number", "payment_date"],
-        "uq_td_sales_cost_center_order_number_payment_date",
+        "uq_sakes_cost_center_order_number_payment_date",
         [["cost_center", "order_number"]],
     ),
     ("uc_orders", ["cost_center", "order_number", "invoice_date"], "uq_uc_orders_cost_center_order_invoice_date", []),
