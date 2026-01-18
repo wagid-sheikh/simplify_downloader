@@ -59,6 +59,150 @@ TD_SALES_EDITED_LIMIT: int | None = None
 FACT_SECTION_ROW_LIMIT: int | None = None
 PROFILER_FACT_ROW_LIMIT_PER_STORE: int = 200
 UC_GSTIN_MISSING_REMARK = "Customer GSTIN missing"
+PROFILER_HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+  <body style="margin:0; padding:0; background-color:#f5f5f5;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%; background-color:#f5f5f5;">
+      <tr>
+        <td align="center" style="padding:24px 12px;">
+          <table role="presentation" width="640" cellpadding="0" cellspacing="0" style="width:640px; max-width:640px; background-color:#ffffff; border:1px solid #e1e1e1;">
+            <tr>
+              <td style="padding:20px 24px 12px 24px; font-family:Arial, sans-serif; color:#111111;">
+                <div style="font-size:20px; font-weight:bold; margin:0 0 4px 0;">
+                  Orders Sync Profiler Run Summary
+                </div>
+                <div style="font-size:13px; color:#666666; margin:0;">
+                  Report Date: {{ report_date }}
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 24px 16px 24px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%; border-collapse:collapse; font-family:Arial, sans-serif; font-size:13px; color:#111111;">
+                  <tr>
+                    <td style="padding:6px 8px; background-color:#f7f7f7; border:1px solid #e1e1e1; width:25%;">Run ID</td>
+                    <td style="padding:6px 8px; border:1px solid #e1e1e1;">{{ run_id }}</td>
+                    <td style="padding:6px 8px; background-color:#f7f7f7; border:1px solid #e1e1e1; width:25%;">Env</td>
+                    <td style="padding:6px 8px; border:1px solid #e1e1e1;">{{ run_env }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:6px 8px; background-color:#f7f7f7; border:1px solid #e1e1e1;">Status</td>
+                    <td style="padding:6px 8px; border:1px solid #e1e1e1;">{{ overall_status_label or overall_status }}</td>
+                    <td style="padding:6px 8px; background-color:#f7f7f7; border:1px solid #e1e1e1;">Duration</td>
+                    <td style="padding:6px 8px; border:1px solid #e1e1e1;">{{ total_time_taken }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:6px 8px; background-color:#f7f7f7; border:1px solid #e1e1e1;">Started</td>
+                    <td style="padding:6px 8px; border:1px solid #e1e1e1;">{{ started_at }}</td>
+                    <td style="padding:6px 8px; background-color:#f7f7f7; border:1px solid #e1e1e1;">Finished</td>
+                    <td style="padding:6px 8px; border:1px solid #e1e1e1;">{{ finished_at }}</td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 24px 16px 24px;">
+                <div style="font-family:Arial, sans-serif; font-size:14px; font-weight:bold; margin-bottom:8px;">KPI Summary</div>
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%; border-collapse:collapse; font-family:Arial, sans-serif; font-size:13px; color:#111111;">
+                  <tr>
+                    <td style="padding:8px; border:1px solid #e1e1e1; background-color:#f7f7f7;">Windows Completed</td>
+                    <td style="padding:8px; border:1px solid #e1e1e1;">{{ completed_windows or 0 }} / {{ expected_windows or 0 }}</td>
+                    <td style="padding:8px; border:1px solid #e1e1e1; background-color:#f7f7f7;">Missing Windows</td>
+                    <td style="padding:8px; border:1px solid #e1e1e1;">{{ missing_windows or 0 }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:8px; border:1px solid #e1e1e1; background-color:#f7f7f7;">Missing Window Stores</td>
+                    <td style="padding:8px; border:1px solid #e1e1e1;" colspan="3">
+                      {% if missing_window_stores %}{{ missing_window_stores | join(', ') }}{% else %}—{% endif %}
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 24px 16px 24px;">
+                <div style="font-family:Arial, sans-serif; font-size:14px; font-weight:bold; margin-bottom:8px;">Store Window Run Summary</div>
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%; border-collapse:collapse; font-family:Arial, sans-serif; font-size:12px; color:#111111;">
+                  <tr>
+                    <th align="left" style="padding:6px 8px; border:1px solid #e1e1e1; background-color:#f0f0f0;">Store</th>
+                    <th align="left" style="padding:6px 8px; border:1px solid #e1e1e1; background-color:#f0f0f0;">Pipeline</th>
+                    <th align="left" style="padding:6px 8px; border:1px solid #e1e1e1; background-color:#f0f0f0;">Status</th>
+                    <th align="right" style="padding:6px 8px; border:1px solid #e1e1e1; background-color:#f0f0f0;">Windows</th>
+                    <th align="right" style="padding:6px 8px; border:1px solid #e1e1e1; background-color:#f0f0f0;">Primary Inserted</th>
+                    <th align="right" style="padding:6px 8px; border:1px solid #e1e1e1; background-color:#f0f0f0;">Primary Updated</th>
+                    <th align="right" style="padding:6px 8px; border:1px solid #e1e1e1; background-color:#f0f0f0;">Secondary Inserted</th>
+                    <th align="right" style="padding:6px 8px; border:1px solid #e1e1e1; background-color:#f0f0f0;">Secondary Updated</th>
+                    <th align="left" style="padding:6px 8px; border:1px solid #e1e1e1; background-color:#f0f0f0;">Notes</th>
+                  </tr>
+                  {% for store in stores %}
+                  <tr>
+                    <td style="padding:6px 8px; border:1px solid #e1e1e1;">{{ store.store_code or 'UNKNOWN' }}</td>
+                    <td style="padding:6px 8px; border:1px solid #e1e1e1;">{{ store.pipeline_name or store.pipeline_group or 'unknown' }}</td>
+                    <td style="padding:6px 8px; border:1px solid #e1e1e1;">{{ store.status or 'unknown' }}</td>
+                    <td align="right" style="padding:6px 8px; border:1px solid #e1e1e1;">{{ store.window_count or 0 }}</td>
+                    <td align="right" style="padding:6px 8px; border:1px solid #e1e1e1;">
+                      {{ store.primary_metrics.final_inserted or store.primary_metrics.staging_inserted or 0 }}
+                    </td>
+                    <td align="right" style="padding:6px 8px; border:1px solid #e1e1e1;">
+                      {{ store.primary_metrics.final_updated or store.primary_metrics.staging_updated or 0 }}
+                    </td>
+                    <td align="right" style="padding:6px 8px; border:1px solid #e1e1e1;">
+                      {{ store.secondary_metrics.final_inserted or store.secondary_metrics.staging_inserted or 0 }}
+                    </td>
+                    <td align="right" style="padding:6px 8px; border:1px solid #e1e1e1;">
+                      {{ store.secondary_metrics.final_updated or store.secondary_metrics.staging_updated or 0 }}
+                    </td>
+                    <td style="padding:6px 8px; border:1px solid #e1e1e1;">
+                      {% if store.status_conflict_count %}
+                        {{ store.status_conflict_count }} window(s) skipped but rows present
+                      {% elif store.secondary_metrics.label %}
+                        {{ store.secondary_metrics.label }}
+                      {% else %}
+                        —
+                      {% endif %}
+                    </td>
+                  </tr>
+                  {% endfor %}
+                </table>
+              </td>
+            </tr>
+            {% if warnings %}
+            <tr>
+              <td style="padding:0 24px 16px 24px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%; border-collapse:collapse; font-family:Arial, sans-serif;">
+                  <tr>
+                    <td style="padding:10px 12px; border:1px solid #f2c2c2; background-color:#fff2f2; color:#8a1f1f; font-size:13px;">
+                      <div style="font-weight:bold; margin-bottom:6px;">Warnings</div>
+                      <ul style="margin:0; padding-left:18px;">
+                        {% for warning in warnings %}
+                        <li style="margin:0 0 4px 0;">{{ warning }}</li>
+                        {% endfor %}
+                      </ul>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            {% endif %}
+            <tr>
+              <td style="padding:0 24px 24px 24px;">
+                {% if fact_sections_text %}
+                <div style="font-family:Arial, sans-serif; font-size:14px; font-weight:bold; margin-bottom:8px;">Row-level facts</div>
+                <div style="font-family:Menlo, Consolas, 'Courier New', monospace; font-size:12px; white-space:pre-wrap; background-color:#f7f7f7; border:1px solid #e1e1e1; padding:10px;">{{- fact_sections_text -}}</div>
+                {% elif summary_text %}
+                <div style="font-family:Arial, sans-serif; font-size:14px; font-weight:bold; margin-bottom:8px;">Summary</div>
+                <div style="font-family:Menlo, Consolas, 'Courier New', monospace; font-size:12px; white-space:pre-wrap; background-color:#f7f7f7; border:1px solid #e1e1e1; padding:10px;">{{- summary_text -}}</div>
+                {% endif %}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+"""
 
 
 @dataclass
@@ -85,6 +229,7 @@ class EmailPlan:
     store_code: str | None
     subject: str
     body: str
+    body_html: str | None
     to: list[str]
     cc: list[str]
     bcc: list[str]
@@ -955,6 +1100,7 @@ def _prepare_ingest_remarks(rows: list[dict[str, Any]]) -> tuple[list[dict[str, 
 
 
 def _build_run_plan(
+    pipeline_code: str,
     profile: dict[str, Any],
     template: dict[str, Any] | None,
     recipients: list[dict[str, Any]],
@@ -974,12 +1120,16 @@ def _build_run_plan(
         attachments = _paths_for_documents([rec for rec in docs if rec.store_code])
     subject = _render_template(template["subject_template"], context)
     body = _render_template(template["body_template"], context)
+    body_html = None
+    if pipeline_code == "orders_sync_run_profiler":
+        body_html = _render_template(PROFILER_HTML_TEMPLATE, context)
     return EmailPlan(
         profile_code=profile["code"],
         scope=profile["scope"],
         store_code=None,
         subject=subject,
         body=body,
+        body_html=body_html,
         to=to,
         cc=cc,
         bcc=bcc,
@@ -1071,6 +1221,7 @@ def _build_store_plans(
                 store_code=store_code,
                 subject=subject,
                 body=body,
+                body_html=None,
                 to=to,
                 cc=cc,
                 bcc=bcc,
@@ -1088,6 +1239,8 @@ def _send_email(config: SmtpConfig, plan: EmailPlan) -> bool:
     if plan.cc:
         message["Cc"] = ", ".join(plan.cc)
     message.set_content(plan.body)
+    if plan.body_html:
+        message.add_alternative(plan.body_html, subtype="html")
     for attachment in plan.attachments:
         try:
             data = attachment.read_bytes()
@@ -1142,7 +1295,7 @@ def _build_email_plans(
         template = templates.get(profile["id"])
         scope = profile.get("scope")
         if scope == "run":
-            plan = _build_run_plan(profile, template, profile_recipients, docs, context)
+            plan = _build_run_plan(pipeline_code, profile, template, profile_recipients, docs, context)
             if plan:
                 plans.append(plan)
         elif scope == "store":
