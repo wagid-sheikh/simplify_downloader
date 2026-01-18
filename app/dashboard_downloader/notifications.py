@@ -1122,7 +1122,11 @@ def _build_run_plan(
     body = _render_template(template["body_template"], context)
     body_html = None
     if pipeline_code == "orders_sync_run_profiler":
-        body_html = _render_template(PROFILER_HTML_TEMPLATE, context)
+        html_context = dict(context)
+        html_context["report_date"] = _format_profiler_html_timestamp(context.get("report_date"))
+        html_context["started_at"] = _format_profiler_html_timestamp(context.get("started_at"))
+        html_context["finished_at"] = _format_profiler_html_timestamp(context.get("finished_at"))
+        body_html = _render_template(PROFILER_HTML_TEMPLATE, html_context)
     return EmailPlan(
         profile_code=profile["code"],
         scope=profile["scope"],
@@ -2000,6 +2004,30 @@ def _uc_all_stores_failed(stores_payload: list[Mapping[str, Any]]) -> bool:
         if not _failed(store):
             return False
     return True
+
+
+def _format_profiler_html_timestamp(value: Any) -> str:
+    if not value:
+        return ""
+    tz = get_timezone()
+    try:
+        if isinstance(value, datetime):
+            dt = value
+        elif isinstance(value, str):
+            try:
+                dt = datetime.fromisoformat(value)
+            except ValueError:
+                try:
+                    dt = datetime.strptime(value, "%Y-%m-%d")
+                except ValueError:
+                    return _normalize_datetime(value)
+        else:
+            return _normalize_datetime(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(tz).strftime("%d-%b-%Y %H:%M:%S")
+    except Exception:
+        return _normalize_datetime(value)
 
 
 def _format_td_timestamp(value: Any) -> str:
