@@ -138,7 +138,7 @@ PROFILER_HTML_TEMPLATE = """
                   {% for store in stores %}
                   <tr>
                     <td style="padding:6px 8px; border:1px solid #e1e1e1;">{{ store.store_code or 'UNKNOWN' }}</td>
-                    <td style="padding:6px 8px; border:1px solid #e1e1e1;">{{ store.pipeline_name or store.pipeline_group or 'unknown' }}</td>
+                    <td style="padding:6px 8px; border:1px solid #e1e1e1;">{{ store.pipeline_name or 'unknown' }}</td>
                     <td style="padding:6px 8px; border:1px solid #e1e1e1;">{{ store.status or 'unknown' }}</td>
                     <td align="right" style="padding:6px 8px; border:1px solid #e1e1e1;">{{ store.window_count or 0 }}</td>
                     <td align="right" style="padding:6px 8px; border:1px solid #e1e1e1;">
@@ -156,8 +156,6 @@ PROFILER_HTML_TEMPLATE = """
                     <td style="padding:6px 8px; border:1px solid #e1e1e1;">
                       {% if store.status_conflict_count %}
                         {{ store.status_conflict_count }} window(s) skipped but rows present
-                      {% elif store.secondary_metrics.label %}
-                        {{ store.secondary_metrics.label }}
                       {% else %}
                         —
                       {% endif %}
