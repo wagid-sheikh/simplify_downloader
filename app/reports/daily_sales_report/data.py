@@ -201,7 +201,7 @@ async def fetch_daily_sales_report(
         sa.column("gross_amount"),
     )
     sales = sa.table(
-        "sakes",  # production sales table name per CRM pipeline schema
+        "sales",
         sa.column("cost_center"),
         sa.column("payment_date"),
         sa.column("payment_received"),
