@@ -95,7 +95,7 @@ def _build_context(data: DailySalesReportData) -> dict[str, object]:
     }
 
 
-async def _run(report_date: date | None, env: str | None) -> None:
+async def _run(report_date: date | None, env: str | None, force: bool) -> None:
     run_env = resolve_run_env(env)
     run_id = uuid.uuid4().hex
     tracker = PipelinePhaseTracker(pipeline_name=PIPELINE_NAME, env=run_env, run_id=run_id)
@@ -112,7 +112,7 @@ async def _run(report_date: date | None, env: str | None) -> None:
     tracker.set_report_date(resolved_date)
 
     existing = await check_existing_run(database_url, PIPELINE_NAME, resolved_date)
-    if existing and existing.get("overall_status") in {"ok", "warning"}:
+    if not force and existing and existing.get("overall_status") in {"ok", "warning"}:
         print(
             f"Daily sales report for {resolved_date.isoformat()} already generated with status "
             f"{existing['overall_status']}; skipping."
@@ -126,9 +126,8 @@ async def _run(report_date: date | None, env: str | None) -> None:
     html = _render_html(context)
     tracker.mark_phase("render_html", "ok")
 
-    output_dir = OUTPUT_ROOT / f"{PIPELINE_NAME}_{resolved_date.isoformat()}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{PIPELINE_NAME}_{resolved_date.isoformat()}.pdf"
+    OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    output_path = OUTPUT_ROOT / f"{PIPELINE_NAME}_{resolved_date.isoformat()}.pdf"
     if output_path.exists():
         output_path.unlink()
     await render_pdf_with_configured_browser(html, output_path)
@@ -169,8 +168,10 @@ async def _run(report_date: date | None, env: str | None) -> None:
     await update_summary_record(database_url, run_id, final_record)
 
 
-def run_pipeline(report_date: date | None = None, env: str | None = None) -> None:
-    asyncio.run(_run(report_date, env))
+def run_pipeline(
+    report_date: date | None = None, env: str | None = None, force: bool = False
+) -> None:
+    asyncio.run(_run(report_date, env, force))
 
 
 __all__ = ["run_pipeline"]
