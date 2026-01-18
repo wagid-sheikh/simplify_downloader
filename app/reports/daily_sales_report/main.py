@@ -22,7 +22,7 @@ def main() -> None:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Regenerate the report even if a successful run exists for the date.",
+        help="Re-generate the report even if a successful run already exists.",
     )
     args = parser.parse_args()
 

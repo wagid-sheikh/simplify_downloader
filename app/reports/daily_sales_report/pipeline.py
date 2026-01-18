@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Mapping
 
@@ -38,7 +38,24 @@ def _format_amount(value: Decimal | int | float | None) -> str:
         numeric = Decimal(str(value))
     except Exception:  # pragma: no cover - defensive
         return "0"
-    return f"{numeric:,.0f}"
+    rounded = int(numeric.to_integral_value(rounding=ROUND_HALF_UP))
+    sign = "-" if rounded < 0 else ""
+    return f"{sign}{_format_indian_number(abs(rounded))}"
+
+
+def _format_indian_number(value: int) -> str:
+    digits = str(value)
+    if len(digits) <= 3:
+        return digits
+    last_three = digits[-3:]
+    remaining = digits[:-3]
+    chunks: list[str] = []
+    while len(remaining) > 2:
+        chunks.insert(0, remaining[-2:])
+        remaining = remaining[:-2]
+    if remaining:
+        chunks.insert(0, remaining)
+    return ",".join(chunks + [last_three])
 
 
 def _render_html(context: Mapping[str, object]) -> str:
