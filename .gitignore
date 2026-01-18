@@ -217,6 +217,8 @@ logs
 
 reports
 reports/*
+!app/reports/
+!app/reports/**
 tests/config.db
 
 update_system_secrets_local.py
