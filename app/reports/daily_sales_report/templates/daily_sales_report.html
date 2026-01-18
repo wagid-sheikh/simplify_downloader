@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body {
+        font-family: "Inter", "Helvetica", Arial, sans-serif;
+        color: #111;
+        margin: 24px;
+      }
+      .title {
+        text-align: center;
+        font-weight: 700;
+        font-size: 20px;
+        margin-bottom: 4px;
+      }
+      .subtitle {
+        text-align: center;
+        font-weight: 700;
+        font-size: 18px;
+        margin-bottom: 12px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+      th,
+      td {
+        border: 1px solid #222;
+        padding: 6px 8px;
+        text-align: right;
+      }
+      th {
+        background: #f6f6f6;
+        font-weight: 700;
+      }
+      td.label,
+      th.label {
+        text-align: left;
+      }
+      .section-title {
+        text-align: center;
+        font-weight: 700;
+        margin: 26px 0 8px;
+      }
+      .totals-row td {
+        font-weight: 700;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="title">{{ company_name }}</div>
+    <div class="subtitle">Sales &amp; Collections Report for: {{ report_date_display }}</div>
+
+    <table>
+      <thead>
+        <tr>
+          <th class="label" rowspan="2">#</th>
+          <th class="label" rowspan="2">Cost Center</th>
+          <th colspan="3">Sales</th>
+          <th colspan="3">Collections</th>
+          <th colspan="4">Target</th>
+        </tr>
+        <tr>
+          <th>FTD</th>
+          <th>MTD</th>
+          <th>LMTD</th>
+          <th>FTD</th>
+          <th>MTD</th>
+          <th>LMTD</th>
+          <th>Target</th>
+          <th>Achieved</th>
+          <th>Delta</th>
+          <th>Reqd/Day</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td class="label">{{ row.cost_center_name }}</td>
+          <td>{{ row.sales_ftd | format_amount }}</td>
+          <td>{{ row.sales_mtd | format_amount }}</td>
+          <td>{{ row.sales_lmtd | format_amount }}</td>
+          <td>{{ row.collections_ftd | format_amount }}</td>
+          <td>{{ row.collections_mtd | format_amount }}</td>
+          <td>{{ row.collections_lmtd | format_amount }}</td>
+          <td>{{ row.target | format_amount }}</td>
+          <td>{{ row.achieved | format_amount }}</td>
+          <td>{{ row.delta | format_amount }}</td>
+          <td>{{ row.reqd_per_day | format_amount }}</td>
+        </tr>
+        {% endfor %}
+        <tr class="totals-row">
+          <td class="label" colspan="2">Total</td>
+          <td>{{ totals.sales_ftd | format_amount }}</td>
+          <td>{{ totals.sales_mtd | format_amount }}</td>
+          <td>{{ totals.sales_lmtd | format_amount }}</td>
+          <td>{{ totals.collections_ftd | format_amount }}</td>
+          <td>{{ totals.collections_mtd | format_amount }}</td>
+          <td>{{ totals.collections_lmtd | format_amount }}</td>
+          <td>{{ totals.target | format_amount }}</td>
+          <td>{{ totals.achieved | format_amount }}</td>
+          <td>{{ totals.delta | format_amount }}</td>
+          <td>{{ totals.reqd_per_day | format_amount }}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    {% if edited_orders %}
+    <div class="section-title">Edited Orders</div>
+    <table>
+      <thead>
+        <tr>
+          <th class="label">#</th>
+          <th class="label">Cost Center</th>
+          <th class="label">Order Number</th>
+          <th>Orig Order Value</th>
+          <th>New Order Value</th>
+          <th>Loss</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in edited_orders %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td class="label">{{ row.cost_center }}</td>
+          <td class="label">{{ row.order_number }}</td>
+          <td>{{ row.original_value | format_amount }}</td>
+          <td>{{ row.new_value | format_amount }}</td>
+          <td>{{ row.loss | format_amount }}</td>
+        </tr>
+        {% endfor %}
+        {% if edited_orders_totals %}
+        <tr class="totals-row">
+          <td class="label" colspan="3">Total</td>
+          <td>{{ edited_orders_totals.original_value | format_amount }}</td>
+          <td>{{ edited_orders_totals.new_value | format_amount }}</td>
+          <td>{{ edited_orders_totals.loss | format_amount }}</td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    {% if missed_leads %}
+    <div class="section-title">Missed Leads</div>
+    <table>
+      <thead>
+        <tr>
+          <th class="label">#</th>
+          <th class="label">Cost Center</th>
+          <th class="label">Customer Name</th>
+          <th class="label">Mobile Number</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in missed_leads %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td class="label">{{ row.cost_center }}</td>
+          <td class="label">{{ row.customer_name }}</td>
+          <td class="label">{{ row.mobile_number }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </body>
+</html>
