@@ -39,6 +39,10 @@
       th.label {
         text-align: left;
       }
+      th.group-header,
+      td.center {
+        text-align: center;
+      }
       .section-title {
         text-align: center;
         font-weight: 700;
@@ -51,16 +55,17 @@
   </head>
   <body>
     <div class="title">{{ company_name }}</div>
-    <div class="subtitle">Sales &amp; Collections Report for: {{ report_date_display }}</div>
+    <div class="subtitle">Orders and Collections Report for: {{ report_date_display }}</div>
 
     <table>
       <thead>
         <tr>
           <th class="label" rowspan="2">#</th>
           <th class="label" rowspan="2">Cost Center</th>
-          <th colspan="3">Sales</th>
-          <th colspan="3">Collections</th>
-          <th colspan="4">Target</th>
+          <th class="group-header" colspan="3">Orders</th>
+          <th class="group-header" colspan="3">Collections</th>
+          <th class="group-header" colspan="4">Target</th>
+          <th class="group-header" rowspan="2">TS</th>
         </tr>
         <tr>
           <th>FTD</th>
@@ -90,6 +95,7 @@
           <td>{{ row.achieved | format_amount }}</td>
           <td>{{ row.delta | format_amount }}</td>
           <td>{{ row.reqd_per_day | format_amount }}</td>
+          <td class="center">{{ row.orders_sync_time or "--" }}</td>
         </tr>
         {% endfor %}
         <tr class="totals-row">
@@ -104,6 +110,7 @@
           <td>{{ totals.achieved | format_amount }}</td>
           <td>{{ totals.delta | format_amount }}</td>
           <td>{{ totals.reqd_per_day | format_amount }}</td>
+          <td class="center">--</td>
         </tr>
       </tbody>
     </table>
