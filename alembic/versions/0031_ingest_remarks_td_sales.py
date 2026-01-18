@@ -46,9 +46,9 @@ def _ensure_ingest_remarks(table_name: str) -> None:
 
 def upgrade() -> None:
     _ensure_ingest_remarks("stg_td_sales")
-    _ensure_ingest_remarks("td_sales")
+    _ensure_ingest_remarks("sakes")
 
 
 def downgrade() -> None:
     _ensure_ingest_remarks("stg_td_sales")
-    _ensure_ingest_remarks("td_sales")
+    _ensure_ingest_remarks("sakes")

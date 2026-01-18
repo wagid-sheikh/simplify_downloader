@@ -13,8 +13,8 @@ from app.common.db import session_scope
 from app.crm_downloader.td_orders_sync.sales_ingest import (
     TdSalesIngestResult,
     _expected_headers,
+    _sakes_table,
     _stg_td_sales_table,
-    _td_sales_table,
     ingest_td_sales_workbook,
 )
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger
@@ -23,7 +23,7 @@ from app.dashboard_downloader.json_logger import JsonLogger, get_logger
 async def _create_tables(database_url: str) -> None:
     metadata = sa.MetaData()
     _stg_td_sales_table(metadata)
-    _td_sales_table(metadata)
+    _sakes_table(metadata)
     async with session_scope(database_url) as session:
         bind = session.bind
         async with bind.begin() as conn:
@@ -164,7 +164,7 @@ async def test_sales_ingest_happy_path(tmp_path: Path) -> None:
     async with session_scope(database_url) as session:
         metadata = sa.MetaData()
         stg_table = _stg_td_sales_table(metadata)
-        final_table = _td_sales_table(metadata)
+        final_table = _sakes_table(metadata)
 
         stg_rows = (
             await session.execute(
@@ -244,7 +244,7 @@ async def test_sales_ingest_marks_duplicates_and_warnings(tmp_path: Path) -> Non
     async with session_scope(database_url) as session:
         metadata = sa.MetaData()
         stg_table = _stg_td_sales_table(metadata)
-        final_table = _td_sales_table(metadata)
+        final_table = _sakes_table(metadata)
         stg_rows = (
             await session.execute(
                 sa.select(
@@ -382,7 +382,7 @@ async def test_sales_ingest_parses_dates_numbers_and_mobile(tmp_path: Path) -> N
     async with session_scope(database_url) as session:
         metadata = sa.MetaData()
         stg_table = _stg_td_sales_table(metadata)
-        final_table = _td_sales_table(metadata)
+        final_table = _sakes_table(metadata)
         stg_row = (
             await session.execute(
                 sa.select(
@@ -502,7 +502,7 @@ async def test_sales_upsert_respects_business_keys_and_propagates_remarks(tmp_pa
     async with session_scope(database_url) as session:
         metadata = sa.MetaData()
         stg_table = _stg_td_sales_table(metadata)
-        final_table = _td_sales_table(metadata)
+        final_table = _sakes_table(metadata)
 
         stg_count = (await session.execute(sa.select(sa.func.count()).select_from(stg_table))).scalar_one()
         final_count = (await session.execute(sa.select(sa.func.count()).select_from(final_table))).scalar_one()

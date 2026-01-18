@@ -58,7 +58,7 @@
 
 7. **TD Sales: date selection, download, ingest**
    * Select dates, request report, download** **`{store_code}_td_sales_{YYYYMMDD-from}_{YYYYMMDD-to}.xlsx`.
-   * Parse/validate, upsert** **`stg_td_sales` on (store_code, order_number, payment_date) →** **`td_sales` on (cost_center, order_number, payment_date).
+   * Parse/validate, upsert** **`stg_td_sales` on (store_code, order_number, payment_date) →** **`sakes` on (cost_center, order_number, payment_date).
    * Logging + notifications.
 
 ---
