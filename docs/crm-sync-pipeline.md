@@ -153,6 +153,54 @@ Any PR that touches protected paths must be isolated and explicitly labeled “p
 - All-reports runner: `scripts/run_reports_sequential.sh` executes the sub-pipelines in the order above. Default behavior stops on the first failure; a `--continue-on-error` flag logs warnings and proceeds. Overall status should follow ok/warning/error rollup rules consistent with other pipelines.
 - Data sources: reuse ingested/staged tables from TD/UC/bank pipelines; no new source scraping is expected for reports, only querying + PDF/CSV output as defined by each sub-pipeline spec.
 
+### Reporting requirements
+
+* **DDL for `cost_center`:**
+  ```sql
+  create table cost_center (
+      cost_center varchar(8) primary key,
+      description varchar(32) not null,
+      target_type varchar(16) not null default 'value',
+      is_active boolean default true,
+      check (target_type in ('value', 'orders', 'none'))
+  );
+  ```
+* **Seed data for `cost_center`:**
+  ```sql
+  insert into cost_center (cost_center, description, target_type) values
+      ('UN3668', 'Uttam Nagar', 'value'),
+      ('SC3567', 'Sector 56', 'value'),
+      ('KN3817', 'Kirti Nagar', 'value'),
+      ('SL1610', 'Sushant Lok 1', 'value'),
+      ('TSV001', 'TSV Head Office', 'none'),
+      ('TSV002', 'TSV Delhi', 'orders'),
+      ('TSV003', 'TSV Gurgaon', 'orders');
+  ```
+* **DDL for `cost_center_targets`:**
+  ```sql
+  create table cost_center_targets (
+      month integer not null,
+      year integer not null,
+      cost_center varchar(8) not null references cost_center(cost_center),
+      sale_target numeric(12, 2),
+      collection_target numeric(12, 2),
+      sales_mtd numeric(12, 2),
+      collection_mtd numeric(12, 2),
+      sales_target_met boolean,
+      collection_target_met boolean,
+      unique (month, year, cost_center)
+  );
+  ```
+* **Seed data for `cost_center_targets`:**
+  ```sql
+  insert into cost_center_targets (month, year, cost_center, sale_target, collection_target) values
+      (1, 2026, 'UN3668', 270000, 243000),
+      (1, 2026, 'SC3567', 150000, 135000),
+      (1, 2026, 'KN3817', 270000, 243000),
+      (1, 2026, 'SL1610', 150000, 135000),
+      (1, 2026, 'TSV002', 180, 171);
+  ```
+
 ---
 
 ## Pipeline General Development Guidelines
