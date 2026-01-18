@@ -618,7 +618,11 @@ async def render_store_report_pdf(
     builder.build()
 
 
-async def render_pdf_with_configured_browser(html_content: str, output_path: str | Path) -> None:
+async def render_pdf_with_configured_browser(
+    html_content: str,
+    output_path: str | Path,
+    pdf_options: Mapping[str, Any] | None = None,
+) -> None:
     from app.config import config
 
     backend = config.pdf_render_backend.lower()
@@ -640,7 +644,10 @@ async def render_pdf_with_configured_browser(html_content: str, output_path: str
 
         page = await browser.new_page()
         await page.set_content(html_content, wait_until="networkidle")
-        await page.pdf(path=str(output_path), print_background=True, format="A4")
+        options = {"path": str(output_path), "print_background": True, "format": "A4"}
+        if pdf_options:
+            options.update(pdf_options)
+        await page.pdf(**options)
         await browser.close()
 
 

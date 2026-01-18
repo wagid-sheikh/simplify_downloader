@@ -183,7 +183,7 @@ Any PR that touches protected paths must be isolated and explicitly labeled “p
 * Target = `cost_center_targets.sale_target` for report month/year.
 * Achieved = Sales MTD (not Collections).
 * Delta = Achieved − Target (negative means shortfall, positive means surpassed).
-* Reqd/Day = Delta / remaining_days, where `remaining_days = days_left_in_month_excluding_today`.
+* Reqd/Day = `abs(Delta) / remaining_days`, where `remaining_days = days_left_in_month_excluding_today`.
 * If `remaining_days = 0`, Reqd/Day must render as 0 (avoid division by zero).
 * For `target_type = 'none'`, set Target/Achieved/Delta/Reqd/Day to 0.
 
