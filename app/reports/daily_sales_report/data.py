@@ -26,6 +26,7 @@ class DailySalesRow:
     achieved: Decimal
     delta: Decimal
     reqd_per_day: Decimal
+    orders_sync_time: str | None
 
 
 @dataclass
@@ -89,7 +90,7 @@ def _remaining_days(report_date: date) -> int:
 
 def _build_orders_agg(orders: sa.Table, ranges: dict[str, datetime]) -> sa.Subquery:
     def _sum_when(condition: sa.ColumnElement[bool]) -> sa.ColumnElement:
-        return sa.func.coalesce(sa.func.sum(sa.case((condition, orders.c.gross_amount), else_=0)), 0)
+        return sa.func.coalesce(sa.func.sum(sa.case((condition, orders.c.net_amount), else_=0)), 0)
 
     return (
         sa.select(
@@ -102,6 +103,17 @@ def _build_orders_agg(orders: sa.Table, ranges: dict[str, datetime]) -> sa.Subqu
             .label("sales_lmtd"),
         )
         .group_by(orders.c.cost_center)
+        .subquery()
+    )
+
+
+def _build_orders_sync_agg(orders_sync_log: sa.Table) -> sa.Subquery:
+    return (
+        sa.select(
+            orders_sync_log.c.cost_center.label("cost_center"),
+            sa.func.max(orders_sync_log.c.orders_pulled_at).label("orders_pulled_at"),
+        )
+        .group_by(orders_sync_log.c.cost_center)
         .subquery()
     )
 
@@ -140,6 +152,7 @@ def _totals_row(rows: Iterable[DailySalesRow]) -> DailySalesRow:
         achieved=Decimal("0"),
         delta=Decimal("0"),
         reqd_per_day=Decimal("0"),
+        orders_sync_time=None,
     )
     for row in rows:
         totals.sales_ftd += row.sales_ftd
@@ -198,7 +211,12 @@ async def fetch_daily_sales_report(
         "orders",
         sa.column("cost_center"),
         sa.column("order_date"),
-        sa.column("gross_amount"),
+        sa.column("net_amount"),
+    )
+    orders_sync_log = sa.table(
+        "orders_sync_log",
+        sa.column("cost_center"),
+        sa.column("orders_pulled_at"),
     )
     sales = sa.table(
         "sales",
@@ -212,6 +230,7 @@ async def fetch_daily_sales_report(
 
     orders_agg = _build_orders_agg(orders, ranges)
     sales_agg = _build_sales_agg(sales, ranges)
+    orders_sync_agg = _build_orders_sync_agg(orders_sync_log)
 
     stmt = (
         sa.select(
@@ -225,11 +244,13 @@ async def fetch_daily_sales_report(
             sales_agg.c.collections_mtd,
             sales_agg.c.collections_lmtd,
             targets.c.sale_target,
+            orders_sync_agg.c.orders_pulled_at,
         )
         .select_from(
             cost_center
             .outerjoin(orders_agg, orders_agg.c.cost_center == cost_center.c.cost_center)
             .outerjoin(sales_agg, sales_agg.c.cost_center == cost_center.c.cost_center)
+            .outerjoin(orders_sync_agg, orders_sync_agg.c.cost_center == cost_center.c.cost_center)
             .outerjoin(
                 targets,
                 sa.and_(
@@ -267,6 +288,11 @@ async def fetch_daily_sales_report(
                 delta = Decimal("0")
                 reqd_per_day = Decimal("0")
 
+            orders_pulled_at = entry["orders_pulled_at"]
+            orders_sync_time = None
+            if orders_pulled_at:
+                orders_sync_time = orders_pulled_at.astimezone(tz).strftime("%H:%M")
+
             rows.append(
                 DailySalesRow(
                     cost_center=str(entry["cost_center"]),
@@ -282,6 +308,7 @@ async def fetch_daily_sales_report(
                     achieved=achieved,
                     delta=delta,
                     reqd_per_day=reqd_per_day,
+                    orders_sync_time=orders_sync_time,
                 )
             )
 
