@@ -187,7 +187,44 @@ PROFILER_HTML_TEMPLATE = """
               <td style="padding:0 24px 24px 24px;">
                 {% if fact_sections_text %}
                 <div style="font-family:Arial, sans-serif; font-size:14px; font-weight:bold; margin-bottom:8px;">Row-level facts</div>
-                <div style="font-family:Menlo, Consolas, 'Courier New', monospace; font-size:12px; white-space:pre-wrap; background-color:#f7f7f7; border:1px solid #e1e1e1; padding:10px;">{{- fact_sections_text -}}</div>
+                {% set sections = [] %}
+                {% set current = None %}
+                {% for line in fact_sections_text.splitlines() %}
+                  {% if line.endswith(':') and ' | ' not in line and not line.startswith('...') %}
+                    {% if current %}
+                      {% set _ = sections.append(current) %}
+                    {% endif %}
+                    {% set current = {'title': line[:-1], 'header': [], 'rows': []} %}
+                  {% elif current and not current.header %}
+                    {% set _ = current.update({'header': line.split(' | ')}) %}
+                  {% elif current %}
+                    {% set _ = current.rows.append(line) %}
+                  {% endif %}
+                {% endfor %}
+                {% if current %}
+                  {% set _ = sections.append(current) %}
+                {% endif %}
+                {% for section in sections %}
+                <div style="font-family:Arial, sans-serif; font-size:13px; font-weight:bold; margin:12px 0 6px 0;">{{ section.title }}</div>
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%; border-collapse:collapse; font-family:Arial, sans-serif; font-size:12px; color:#111111; margin-bottom:8px;">
+                  <tr>
+                    {% for header in section.header %}
+                    <th align="left" style="padding:6px 8px; border:1px solid #e1e1e1; background-color:#f0f0f0;">{{ header }}</th>
+                    {% endfor %}
+                  </tr>
+                  {% for row in section.rows %}
+                  <tr>
+                    {% if ' | ' in row %}
+                      {% for cell in row.split(' | ') %}
+                      <td style="padding:6px 8px; border:1px solid #e1e1e1;">{{ cell }}</td>
+                      {% endfor %}
+                    {% else %}
+                      <td style="padding:6px 8px; border:1px solid #e1e1e1; font-style:italic; color:#666666;" colspan="{{ section.header | length }}">{{ row }}</td>
+                    {% endif %}
+                  </tr>
+                  {% endfor %}
+                </table>
+                {% endfor %}
                 {% elif summary_text %}
                 <div style="font-family:Arial, sans-serif; font-size:14px; font-weight:bold; margin-bottom:8px;">Summary</div>
                 <div style="font-family:Menlo, Consolas, 'Courier New', monospace; font-size:12px; white-space:pre-wrap; background-color:#f7f7f7; border:1px solid #e1e1e1; padding:10px;">{{- summary_text -}}</div>
