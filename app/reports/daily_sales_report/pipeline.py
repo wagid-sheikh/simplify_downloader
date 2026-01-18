@@ -112,7 +112,7 @@ def _build_context(data: DailySalesReportData) -> dict[str, object]:
     }
 
 
-async def _run(report_date: date | None, env: str | None) -> None:
+async def _run(report_date: date | None, env: str | None, force: bool) -> None:
     run_env = resolve_run_env(env)
     run_id = uuid.uuid4().hex
     tracker = PipelinePhaseTracker(pipeline_name=PIPELINE_NAME, env=run_env, run_id=run_id)
@@ -128,13 +128,14 @@ async def _run(report_date: date | None, env: str | None) -> None:
     resolved_date = report_date or aware_now(tz).date()
     tracker.set_report_date(resolved_date)
 
-    existing = await check_existing_run(database_url, PIPELINE_NAME, resolved_date)
-    if existing and existing.get("overall_status") in {"ok", "warning"}:
-        print(
-            f"Daily sales report for {resolved_date.isoformat()} already generated with status "
-            f"{existing['overall_status']}; skipping."
-        )
-        return
+    if not force:
+        existing = await check_existing_run(database_url, PIPELINE_NAME, resolved_date)
+        if existing and existing.get("overall_status") in {"ok", "warning"}:
+            print(
+                f"Daily sales report for {resolved_date.isoformat()} already generated with status "
+                f"{existing['overall_status']}; skipping."
+            )
+            return
 
     data = await fetch_daily_sales_report(database_url=database_url, report_date=resolved_date)
     tracker.mark_phase("load_data", "ok")
@@ -186,8 +187,12 @@ async def _run(report_date: date | None, env: str | None) -> None:
     await update_summary_record(database_url, run_id, final_record)
 
 
-def run_pipeline(report_date: date | None = None, env: str | None = None) -> None:
-    asyncio.run(_run(report_date, env))
+def run_pipeline(
+    report_date: date | None = None,
+    env: str | None = None,
+    force: bool = False,
+) -> None:
+    asyncio.run(_run(report_date, env, force))
 
 
 __all__ = ["run_pipeline"]

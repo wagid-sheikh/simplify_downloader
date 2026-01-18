@@ -19,13 +19,18 @@ def main() -> None:
     parser = ArgumentParser(description="Run the daily sales report pipeline.")
     parser.add_argument("--report-date", type=_parse_date, help="Report date (YYYY-MM-DD).")
     parser.add_argument("--env", type=str, default=None, help="Override run environment.")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-generate the report even if a successful run already exists.",
+    )
     args = parser.parse_args()
 
     report_date = args.report_date
     if report_date is None:
         report_date = aware_now(get_timezone()).date()
 
-    run_pipeline(report_date=report_date, env=args.env)
+    run_pipeline(report_date=report_date, env=args.env, force=args.force)
 
 
 if __name__ == "__main__":
