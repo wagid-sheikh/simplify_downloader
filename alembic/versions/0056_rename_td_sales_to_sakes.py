@@ -19,21 +19,20 @@ def _is_postgres() -> bool:
 def _rename_constraint(table_name: str, *, old: str, new: str) -> None:
     if not _is_postgres():
         return
+    connection = op.get_bind()
+    exists = connection.execute(
+        sa.text("SELECT 1 FROM pg_constraint WHERE conname = :name"),
+        {"name": old},
+    ).scalar()
+    if not exists:
+        return
+
+    preparer = connection.dialect.identifier_preparer
+    quoted_table = preparer.quote(table_name)
+    quoted_old = preparer.quote(old)
+    quoted_new = preparer.quote(new)
     op.execute(
-        sa.text(
-            """
-            DO $$
-            BEGIN
-                IF EXISTS (
-                    SELECT 1
-                    FROM pg_constraint
-                    WHERE conname = :old_name
-                ) THEN
-                    EXECUTE format('ALTER TABLE %I RENAME CONSTRAINT %I TO %I', :table_name, :old_name, :new_name);
-                END IF;
-            END $$;
-            """
-        ).bindparams(old_name=old, new_name=new, table_name=table_name)
+        f"ALTER TABLE {quoted_table} RENAME CONSTRAINT {quoted_old} TO {quoted_new}"
     )
 
 
