@@ -197,12 +197,11 @@ Any PR that touches protected paths must be isolated and explicitly labeled “p
 **Output & notification**
 
 * Render HTML via Jinja, convert to PDF.
-* Output path: `app/reports/output_files/{pipeline_name}_{report_date}`.
-* Report can run multiple times per day, but default behavior skips when a successful (`ok`/`warning`) run already exists for the same report date.
-* Use `--force` to re-generate the report and overwrite the PDF output for the same report date.
+* Output path: `app/reports/output_files/{pipeline_name}_{report_date}.pdf` (no per-date subfolders).
 * Email subject: `{pipeline_name}-{report_date}`.
 * Email must include inline summary plus PDF attachment.
 * Use existing pipeline logging/notification architecture as referenced elsewhere in the document.
+* Re-runs: report can be generated multiple times per day. Default behavior skips when a successful run exists for the report date; `--force` re-generates and overwrites the PDF output.
 
 ### Reporting requirements
 
