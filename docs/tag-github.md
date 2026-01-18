@@ -54,3 +54,6 @@ git push origin v2.08
 
 git tag -a v2.09 -m "partially stable orders_sync_run_profiler, before making UC concurrent"
 git push origin v2.09
+
+git tag -a v2.10 -m "Before renaming from td_sales to sales"
+git push origin v2.10
