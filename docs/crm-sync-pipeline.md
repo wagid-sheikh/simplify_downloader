@@ -153,6 +153,55 @@ Any PR that touches protected paths must be isolated and explicitly labeled “p
 - All-reports runner: `scripts/run_reports_sequential.sh` executes the sub-pipelines in the order above. Default behavior stops on the first failure; a `--continue-on-error` flag logs warnings and proceeds. Overall status should follow ok/warning/error rollup rules consistent with other pipelines.
 - Data sources: reuse ingested/staged tables from TD/UC/bank pipelines; no new source scraping is expected for reports, only querying + PDF/CSV output as defined by each sub-pipeline spec.
 
+#### daily_sales_report specification
+
+**Data sources & scope**
+
+* Use prod tables only (`orders`, `sales`).
+* Sales = `orders.gross_amount`.
+* Collections = `sales.payment_received`.
+* Report date is in `PIPELINE_TIMEZONE`.
+* All cost centers must appear even if zero activity.
+
+**Main table layout (per screenshot)**
+
+* Columns:
+  * Cost Center
+  * Sales: FTD, MTD, LMTD
+  * Collections: FTD, MTD, LMTD
+  * Target: Target, Achieved, Delta, Reqd/Day
+* Totals row for each numeric column.
+
+**FTD/MTD/LMTD definitions**
+
+* FTD: sum for `order_date = report_date` (Sales); for Collections use `payment_date = report_date`.
+* MTD: sum from first day of report month through report_date inclusive.
+* LMTD: sum from first day of previous month through the same day-number as report_date, but capped to last day of previous month if shorter (e.g., report_date=31st).
+
+**Target/Achieved/Delta/Reqd/Day rules**
+
+* Target = `cost_center_targets.sale_target` for report month/year.
+* Achieved = Sales MTD (not Collections).
+* Delta = Achieved − Target (negative means shortfall, positive means surpassed).
+* Reqd/Day = Delta / remaining_days, where `remaining_days = days_left_in_month_excluding_today`.
+* If `remaining_days = 0`, Reqd/Day must render as 0 (avoid division by zero).
+* For `target_type = 'none'`, set Target/Achieved/Delta/Reqd/Day to 0.
+
+**Additional sections**
+
+* Edited Orders section only when records exist:
+  * Source: `sales.is_edited_orders = true`
+  * Columns: Cost Center, Order Number, Orig Order Value, New Order Value, Loss
+* Missed Leads section: placeholder layout only (no data logic yet); render only when data exists, otherwise omit.
+
+**Output & notification**
+
+* Render HTML via Jinja, convert to PDF.
+* Output path: `app/reports/output_files/{pipeline_name}_{report_date}`.
+* Email subject: `{pipeline_name}-{report_date}`.
+* Email must include inline summary plus PDF attachment.
+* Use existing pipeline logging/notification architecture as referenced elsewhere in the document.
+
 ### Reporting requirements
 
 * **DDL for `cost_center`:**
