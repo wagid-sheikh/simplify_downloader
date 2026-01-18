@@ -221,6 +221,7 @@ reports/*
 !app/reports/**
 app/reports/**/__pycache__/
 app/reports/**/*.py[codz]
+app/reports/output_files/
 tests/config.db
 
 update_system_secrets_local.py
