@@ -147,7 +147,11 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
     output_path = OUTPUT_ROOT / f"{PIPELINE_NAME}_{resolved_date.isoformat()}.pdf"
     if output_path.exists():
         output_path.unlink()
-    await render_pdf_with_configured_browser(html, output_path)
+    await render_pdf_with_configured_browser(
+        html,
+        output_path,
+        pdf_options={"format": "A4", "landscape": True},
+    )
     tracker.mark_phase("render_pdf", "ok")
 
     await _persist_document(

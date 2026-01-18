@@ -282,11 +282,10 @@ async def fetch_daily_sales_report(
                 achieved = Decimal("0")
             delta = achieved - target
             reqd_per_day = Decimal("0")
-            if remaining_days:
-                reqd_per_day = delta / Decimal(str(remaining_days))
             if target_type == "none":
                 delta = Decimal("0")
-                reqd_per_day = Decimal("0")
+            elif remaining_days:
+                reqd_per_day = abs(delta) / Decimal(str(remaining_days))
 
             orders_pulled_at = entry["orders_pulled_at"]
             orders_sync_time = None
