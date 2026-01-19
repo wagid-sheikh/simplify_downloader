@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
@@ -328,6 +328,36 @@ def _parse_datetime(
         return None
 
 
+def _parse_invoice_date_strict(
+    value: Any, *, warnings: list[str], row_remarks: list[str]
+) -> datetime | None:
+    if value in (None, ""):
+        return None
+    value_str = str(value).strip()
+    if not value_str:
+        return None
+    try:
+        parsed = datetime.strptime(value_str, "%d/%m/%Y")
+        return parsed.replace(tzinfo=get_timezone())
+    except ValueError:
+        warnings.append(f"Invalid invoice_date format (expected dd/mm/yyyy): {value_str}")
+        row_remarks.append(f"Invoice Date '{value_str}' did not match dd/mm/yyyy format (field cleared)")
+        return None
+
+
+def _invoice_date_display_value(cell: openpyxl.cell.cell.Cell | None) -> str | None:
+    if cell is None:
+        return None
+    value = cell.value
+    if value in (None, ""):
+        return None
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (datetime, date, int, float, Decimal)):
+        return openpyxl.styles.numbers.format_cell(cell)
+    return _stringify_value(value).strip()
+
+
 def _normalize_order_number(value: Any, *, warnings: list[str], row_remarks: list[str]) -> str | None:
     if value is None or value == "":
         return None
@@ -389,8 +419,8 @@ def _coerce_row(
     row["invoice_number"] = _normalize_invoice_number(
         row.get("invoice_number"), warnings=warnings, row_remarks=row_remarks
     )
-    row["invoice_date"] = _parse_datetime(
-        row.get("invoice_date"), field="invoice_date", warnings=warnings, row_remarks=row_remarks, dayfirst=True
+    row["invoice_date"] = _parse_invoice_date_strict(
+        row.get("invoice_date"), warnings=warnings, row_remarks=row_remarks
     )
     for field in NUMERIC_FIELDS:
         row[field] = _parse_numeric(row.get(field), warnings=warnings, field=field, row_remarks=row_remarks)
@@ -423,29 +453,39 @@ def _read_workbook_rows(
 ) -> tuple[list[Dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int, dict[str, int]]:
     wb = openpyxl.load_workbook(workbook_path, data_only=True)
     sheet = wb.active
-    header_cells = list(next(sheet.iter_rows(min_row=1, max_row=1, values_only=True)))
-    headers = [cell for cell in header_cells if cell]
+    header_cells = list(next(sheet.iter_rows(min_row=1, max_row=1, values_only=False)))
+    header_values = [cell.value for cell in header_cells]
+    headers = [cell for cell in header_values if cell]
     missing = REQUIRED_HEADERS - set(headers)
     if missing:
         raise ValueError(f"UC GST workbook missing expected columns: {sorted(missing)}")
+
+    header_indices = {header: idx for idx, header in enumerate(header_values) if header}
+    invoice_date_index = header_indices.get("Invoice Date")
 
     rows: list[Dict[str, Any]] = []
     warning_rows: list[dict[str, Any]] = []
     dropped_rows: list[dict[str, Any]] = []
     skip_reason_counts: dict[str, int] = {}
-    data_rows = list(sheet.iter_rows(min_row=2, values_only=True))
+    data_rows = list(sheet.iter_rows(min_row=2, values_only=False))
     rows_downloaded = len(data_rows)
 
     invalid_phone_numbers: set[str] = set()
 
-    for values in data_rows:
+    for row_cells in data_rows:
+        values = [cell.value for cell in row_cells]
         if not any(value not in (None, "") for value in values):
             _increment_skip_reason(skip_reason_counts, "blank_row")
             continue
         if _is_totals_row(values):
             _increment_skip_reason(skip_reason_counts, "totals_row")
             continue
-        raw_row = {header: values[idx] if idx < len(values) else None for idx, header in enumerate(headers)}
+        raw_row = {
+            header: row_cells[idx].value if idx < len(row_cells) else None
+            for header, idx in header_indices.items()
+        }
+        if invoice_date_index is not None and invoice_date_index < len(row_cells):
+            raw_row["Invoice Date"] = _invoice_date_display_value(row_cells[invoice_date_index])
         normalized, row_remarks, drop_reason = _coerce_row(
             raw_row, warnings=warnings, invalid_phone_numbers=invalid_phone_numbers
         )
