@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from decimal import Decimal
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from typing import Iterable, List, Mapping
 
 import sqlalchemy as sa
@@ -24,6 +24,7 @@ class DailySalesRow:
     collections_lmtd: Decimal
     target: Decimal
     achieved: Decimal
+    ttd: Decimal
     delta: Decimal
     reqd_per_day: Decimal
     orders_sync_time: str | None
@@ -88,6 +89,27 @@ def _remaining_days(report_date: date) -> int:
     return max(0, (last_day - report_date).days)
 
 
+def _days_in_month(report_date: date) -> int:
+    next_month = report_date.replace(day=1) + timedelta(days=32)
+    last_day = next_month.replace(day=1) - timedelta(days=1)
+    return last_day.day
+
+
+def _round_amount(value: Decimal) -> Decimal:
+    return value.to_integral_value(rounding=ROUND_HALF_UP)
+
+
+def _truncate_amount(value: Decimal) -> Decimal:
+    return value.to_integral_value(rounding=ROUND_DOWN)
+
+
+def _calculate_ttd(target: Decimal, achieved: Decimal, day_of_month: int, days_in_month: int) -> Decimal:
+    if days_in_month <= 0:
+        return Decimal("0")
+    expected_mtd = _truncate_amount((target / Decimal(str(days_in_month))) * Decimal(str(day_of_month)))
+    return _round_amount(achieved - expected_mtd)
+
+
 def _build_orders_agg(orders: sa.Table, ranges: dict[str, datetime]) -> sa.Subquery:
     def _sum_when(condition: sa.ColumnElement[bool]) -> sa.ColumnElement:
         return sa.func.coalesce(sa.func.sum(sa.case((condition, orders.c.net_amount), else_=0)), 0)
@@ -150,6 +172,7 @@ def _totals_row(rows: Iterable[DailySalesRow]) -> DailySalesRow:
         collections_lmtd=Decimal("0"),
         target=Decimal("0"),
         achieved=Decimal("0"),
+        ttd=Decimal("0"),
         delta=Decimal("0"),
         reqd_per_day=Decimal("0"),
         orders_sync_time=None,
@@ -192,6 +215,8 @@ async def fetch_daily_sales_report(
     tz = get_timezone()
     ranges = _date_range(report_date, tz)
     remaining_days = _remaining_days(report_date)
+    day_of_month = report_date.day
+    days_in_month = _days_in_month(report_date)
 
     cost_center = sa.table(
         "cost_center",
@@ -280,6 +305,7 @@ async def fetch_daily_sales_report(
             if target_type == "none":
                 target = Decimal("0")
                 achieved = Decimal("0")
+            ttd = _calculate_ttd(target, achieved, day_of_month, days_in_month)
             delta = achieved - target
             reqd_per_day = Decimal("0")
             if target_type == "none":
@@ -305,6 +331,7 @@ async def fetch_daily_sales_report(
                     collections_lmtd=collections_lmtd,
                     target=target,
                     achieved=achieved,
+                    ttd=ttd,
                     delta=delta,
                     reqd_per_day=reqd_per_day,
                     orders_sync_time=orders_sync_time,
@@ -342,6 +369,7 @@ async def fetch_daily_sales_report(
             )
 
     totals = _totals_row(rows)
+    totals.ttd = _calculate_ttd(totals.target, totals.achieved, day_of_month, days_in_month)
     edited_totals = _edited_totals(edited_rows)
 
     return DailySalesReportData(
