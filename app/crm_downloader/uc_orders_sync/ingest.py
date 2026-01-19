@@ -312,13 +312,15 @@ def _parse_s_no(value: Any, *, warnings: list[str], row_remarks: list[str]) -> i
         return None
 
 
-def _parse_datetime(value: Any, *, field: str, warnings: list[str], row_remarks: list[str]) -> datetime | None:
+def _parse_datetime(
+    value: Any, *, field: str, warnings: list[str], row_remarks: list[str], dayfirst: bool = False
+) -> datetime | None:
     if value in (None, ""):
         return None
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=get_timezone())
     try:
-        parsed = parser.parse(str(value))
+        parsed = parser.parse(str(value), dayfirst=dayfirst)
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=get_timezone())
     except Exception:
         warnings.append(f"Could not parse datetime for {field}: {value}")
@@ -388,7 +390,7 @@ def _coerce_row(
         row.get("invoice_number"), warnings=warnings, row_remarks=row_remarks
     )
     row["invoice_date"] = _parse_datetime(
-        row.get("invoice_date"), field="invoice_date", warnings=warnings, row_remarks=row_remarks
+        row.get("invoice_date"), field="invoice_date", warnings=warnings, row_remarks=row_remarks, dayfirst=True
     )
     for field in NUMERIC_FIELDS:
         row[field] = _parse_numeric(row.get(field), warnings=warnings, field=field, row_remarks=row_remarks)
