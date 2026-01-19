@@ -60,6 +60,9 @@
       .totals-row td {
         font-weight: 700;
       }
+      .ttd-negative {
+        color: #c00;
+      }
     </style>
   </head>
   <body>
@@ -73,7 +76,7 @@
           <th class="label" rowspan="2">Cost Center</th>
           <th class="group-header" colspan="3">Orders</th>
           <th class="group-header" colspan="3">Collections</th>
-          <th class="group-header" colspan="4">Target</th>
+          <th class="group-header" colspan="5">Target</th>
           <th class="group-header" rowspan="2">TS</th>
         </tr>
         <tr>
@@ -85,6 +88,7 @@
           <th>LMTD</th>
           <th>Target</th>
           <th>Achieved</th>
+          <th>TTD</th>
           <th>Delta</th>
           <th>Reqd/Day</th>
         </tr>
@@ -102,6 +106,9 @@
           <td>{{ row.collections_lmtd | format_amount }}</td>
           <td>{{ row.target | format_amount }}</td>
           <td>{{ row.achieved | format_amount }}</td>
+          <td class="{% if row.ttd < 0 %}ttd-negative{% endif %}">
+            {{ row.ttd | format_amount }}
+          </td>
           <td>{{ row.delta | format_amount }}</td>
           <td>{{ row.reqd_per_day | format_amount }}</td>
           <td class="center">{{ row.orders_sync_time or "--" }}</td>
@@ -117,6 +124,9 @@
           <td>{{ totals.collections_lmtd | format_amount }}</td>
           <td>{{ totals.target | format_amount }}</td>
           <td>{{ totals.achieved | format_amount }}</td>
+          <td class="{% if totals.ttd < 0 %}ttd-negative{% endif %}">
+            {{ totals.ttd | format_amount }}
+          </td>
           <td>{{ totals.delta | format_amount }}</td>
           <td>{{ totals.reqd_per_day | format_amount }}</td>
           <td class="center">--</td>
