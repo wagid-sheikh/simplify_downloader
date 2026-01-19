@@ -762,13 +762,7 @@ def _resolve_uc_max_workers() -> int:
 
 
 def _resolve_uc_download_dir(run_id: str, store_code: str, from_date: date, to_date: date) -> Path:
-    return (
-        default_download_dir()
-        / "uc_orders"
-        / run_id
-        / store_code
-        / f"{from_date:%Y%m%d}_{to_date:%Y%m%d}"
-    )
+    return default_download_dir()
 
 
 async def _load_uc_order_stores(
@@ -1574,7 +1568,6 @@ async def _run_store_discovery(
             download_warning_reason = None
 
         download_dir = _resolve_uc_download_dir(run_id, store.store_code, from_date, to_date)
-        download_dir.mkdir(parents=True, exist_ok=True)
         downloaded, download_path, download_message = await _download_gst_report(
             page=page,
             logger=logger,
