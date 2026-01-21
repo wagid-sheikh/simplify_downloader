@@ -28,6 +28,8 @@ STORE_CODES = [
     "A276",
 ]
 
+REPORT_VERSION = "2.0"
+
 
 @dataclass
 class StoreDiagnosis:
@@ -514,6 +516,7 @@ def _render_report(
     profile_row: dict[str, object] | None,
 ) -> None:
     print("Lead assignment failure diagnosis")
+    print(f"report_version={REPORT_VERSION}")
     print(f"run_id={run_id} env={run_env}")
     if batch_row:
         print(
@@ -530,6 +533,29 @@ def _render_report(
     else:
         print("notification_profile_id=none")
     print(f"notification_recipients={len(recipients_rows)}")
+
+    header_columns = [
+        "store_code",
+        "assignments",
+        "missed_total",
+        "missed_new",
+        "missed_unassigned_new",
+        "eligible_leads",
+        "assign_leads_enabled",
+        "enabled_mappings",
+        "enabled_active_agents",
+        "documents",
+        "missing_files",
+        "document_paths",
+        "has_recipients",
+        "to",
+        "cc",
+        "bcc",
+        "quotas",
+        "today_counts",
+        "reasons",
+    ]
+    print("columns=" + ",".join(header_columns))
 
     for diagnosis in diagnoses:
         reasons = "; ".join(diagnosis.reasons)
