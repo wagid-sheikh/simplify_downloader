@@ -18,4 +18,8 @@ fi
 echo "[leads-assignment] Ensuring database migrations are up to date..."
 poetry run alembic upgrade head
 
-exec poetry run python -m app.lead_assignment.assignment_failure_diagnosis "$@"
+if [[ $# -eq 1 && "$1" != --* ]]; then
+  exec poetry run python -m app.lead_assignment.assignment_failure_diagnosis --run-id "$1"
+else
+  exec poetry run python -m app.lead_assignment.assignment_failure_diagnosis "$@"
+fi
