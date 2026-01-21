@@ -589,6 +589,38 @@ def _render_report(
         )
 
 
+async def _run_diagnosis(run_id: str, run_env: str) -> None:
+    diagnoses = await _diagnose(run_id, run_env)
+    async with session_scope(config.database_url) as session:
+        batch_row = await _load_batch(session, run_id)
+        profile_row = (
+            await session.execute(
+                text(
+                    """
+                    SELECT id
+                    FROM notification_profiles
+                    WHERE code = 'leads_assignment'
+                      AND is_active = true
+                      AND env IN ('any', :env)
+                    ORDER BY CASE WHEN env = :env THEN 0 ELSE 1 END
+                    LIMIT 1
+                    """
+                ),
+                {"env": run_env},
+            )
+        ).mappings().first()
+        recipients_rows = await _load_recipients(session, run_env)
+
+    _render_report(
+        diagnoses,
+        run_id=run_id,
+        run_env=run_env,
+        batch_row=batch_row,
+        recipients_rows=recipients_rows,
+        profile_row=profile_row,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Diagnose why lead assignment emails were not sent for a run."
@@ -598,39 +630,7 @@ def main() -> None:
     args = parser.parse_args()
 
     run_env = resolve_run_env(args.run_env)
-    diagnoses = asyncio.run(_diagnose(args.run_id, run_env))
-
-    async def _load_for_report():
-        async with session_scope(config.database_url) as session:
-            batch_row = await _load_batch(session, args.run_id)
-            profile_row = (
-                await session.execute(
-                    text(
-                        """
-                        SELECT id
-                        FROM notification_profiles
-                        WHERE code = 'leads_assignment'
-                          AND is_active = true
-                          AND env IN ('any', :env)
-                        ORDER BY CASE WHEN env = :env THEN 0 ELSE 1 END
-                        LIMIT 1
-                        """
-                    ),
-                    {"env": run_env},
-                )
-            ).mappings().first()
-            recipients_rows = await _load_recipients(session, run_env)
-        return batch_row, profile_row, recipients_rows
-
-    batch_row, profile_row, recipients_rows = asyncio.run(_load_for_report())
-    _render_report(
-        diagnoses,
-        run_id=args.run_id,
-        run_env=run_env,
-        batch_row=batch_row,
-        recipients_rows=recipients_rows,
-        profile_row=profile_row,
-    )
+    asyncio.run(_run_diagnosis(args.run_id, run_env))
 
 
 if __name__ == "__main__":
