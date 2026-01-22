@@ -5,7 +5,7 @@ set -euo pipefail
 REPO_ROOT="/Users/wagidsheikh/crm_backend/simplify_downloader"
 LOG_DIR="${REPO_ROOT}/logs"
 TIMESTAMP="$(date '+%Y-%m-%d_%H-%M-%S')"
-LOG_FILE="${LOG_DIR}/cron_run_${TIMESTAMP}.log"
+LOG_FILE="${LOG_DIR}/cron_run_orders_and_reports_${TIMESTAMP}.log"
 
 mkdir -p "${LOG_DIR}"
 cd "${REPO_ROOT}"
