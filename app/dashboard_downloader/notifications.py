@@ -264,11 +264,11 @@ class EmailPlan:
     store_code: str | None
     subject: str
     body: str
-    body_html: str | None
     to: list[str]
     cc: list[str]
     bcc: list[str]
     attachments: list[Path]
+    body_html: str | None = None
 
 
 def _load_smtp_config() -> SmtpConfig:
