@@ -57,3 +57,6 @@ git push origin v2.09
 
 git tag -a v2.10 -m "Before renaming from td_sales to sales"
 git push origin v2.10
+
+git tag -a v2.11 -m "Stable after orders_sync_run_profiler and daily_sales_report"
+git push origin v2.11
