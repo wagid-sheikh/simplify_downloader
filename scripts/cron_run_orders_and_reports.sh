@@ -13,7 +13,10 @@ cd "${REPO_ROOT}"
 echo "=== CRON RUN STARTED @ $(date) ===" >> "${LOG_FILE}"
 
 # IMPORTANT: ensure poetry is available to cron
-export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+# export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+export PATH="/Users/wagidsheikh/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
+echo "PATH=$PATH" >> "${LOG_FILE}"
+echo "poetry=$(command -v poetry || echo NOT_FOUND)" >> "${LOG_FILE}"
 
 echo "--- Running Script 1: orders_sync_run_profiler ---" >> "${LOG_FILE}"
 ./scripts/orders_sync_run_profiler.sh >> "${LOG_FILE}" 2>&1
