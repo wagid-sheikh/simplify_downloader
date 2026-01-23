@@ -1,0 +1,71 @@
+('A276', 'A526', 'B002', 'T997', 'TS36', 'TS74', 'TS81')
+
+Wagid SBI A/C#: 43681347119
+IFSC: SBIN0032318
+
+Alisha: Bank of Maharashtra
+A/C: 60513632497
+
+
+
+
+TSV has two bank account. Once in IDFC, one in SBI. 
+I download the account statements from each bank from time to time and copy paste the statement in a google sheet. Update values in few columns.
+
+Structure of IDFC Google sheet bank statement:
+[Bank, ROWID, Transaction Date, Value Date, Particulars, Cheque No., Debit, Credit, Balance, Remarks, Cost Center, Order Number, Category, Sub Category, Branch Code, Message]
+
+Following columns are manually filled by me:
+- "Bank" column with "IDFC"
+- "ROWID" I populate it with unique identifier
+- Remarks, Cost Center, Order Number, Category, Sub Category, Branch Code, Message
+
+These columns come from bank statement:
+Transaction Date, Value Date, Particulars, Cheque No., Debit, Credit, Balance
+
+Structure of of SBI Google Sheet Bank Statement:
+[Bank, ROWID, Transaction Date, Value Date, Particulars, Cheque No., Branch Code,	Debit, Credit, Balance, Remarks, Cost Center, Order Number, Category, Sub Category, Message]
+
+Following columns are manually filled by me:
+- "Bank" column with "SBI"
+- "ROWID" I populate it with unique identifier
+- Remarks, Cost Center, Order Number, Category, Sub Category, Branch Code, Message
+
+These columns come from bank statement:
+Transaction Date, Value Date, Particulars, Cheque No., Debit, Credit, Balance
+
+
+This is the Google Sheet Link:
+https://docs.google.com/spreadsheets/d/16nzFcGpA3zvYY0Zu6ZR5Y_OVSUJrrRfaoVUO1qHNZv4/edit?gid=0#gid=0
+And it contains two Tabs: IDFC & SBI each containing details as described above.
+
+I have attached this Google Sheet after downloading and saved as Excel Workbook "TSV-Bank-Statements.xlsx" for your references and data check. This file can accessed from "scripts/TSV-Bank-Statements.xlsx"
+
+I have also attached existing "scripts/crm-sync_pipeline.md" for your references purposes. Bank Sync pipeline code is not developed yet and the requirement specs is not fully written.
+
+Then I also maintain a Google Sheet named "Payments" whose link is: https://docs.google.com/spreadsheets/d/1qTsfm8R0g8zd4q-0E-qn_R3_hgkwf848TYWJtnD-Cl8/edit?gid=995151739#gid=995151739
+
+I have downloaded this google sheet and attahced in "scripts/Payments.xlsx" for your references and data check. 
+
+In this Google Sheet (tab named: "Payments") I maintain all the Payments received across 4 stores. Valid Payment modes are "UPI, FranchiseUPI, Cash, Package". The structure of this google sheet is:
+[Timestamp, Email address, Mode, Store, Date, Order Number, Amount, Remarks, ROWID, Handed Over, Date Handed]
+- Column "Store" actually holds "Cost Center" value.
+- For a "Store" and a "Order Number" there can be multiple rows (indicating part payment: Cash + UPI)
+- For "Cost Center" [KN3817, UN3668] valid order numbers are like "T%"
+- For "Cost Center" SC3567: Order Number is like "UC567-%" and  for Cost Center "SL1610" valid order number is like "UC610-%"
+- Generally when typing I make mistakes in punching order order prefixes and "Cost Center", a validation must be implemented (handling cost center and order number)
+- Sometimes client over pays
+- Sometimes client under pays
+- Order Number to be matched from "orders" table along with "Cost Center" and gross_amount is the original order value (including taxes). If the "gross_amount" is modified (to reduce order value), a record in "sales" table exists. "sales" table contains payment received against each order by the store team. The store team never updates payments in timely manner.
+- "ROWID" in this google sheet is supposed to contain Bank Statement ROWID after cross tallying it.
+
+Then I also maintain another google sheet named "Sales-Cash-Receipts", who google sheet link is: https://docs.google.com/spreadsheets/d/192yt5bI40WNS-W1VLePSJAIhXuL81AkYg24W5DzFaNo/edit?gid=0#gid=0
+In this Google sheet, every time I visit store I collect cash from the store team and record an entry here.
+
+I have also downloaded this google sheet and saved as excel workbook and available for your references in "scripts/Sales-Cash-Receipts.xlsx".
+
+The overall Idea is to:
+1. update Bank Statements with order number and cost center indicating online payments received
+2. the data in "sales" table is another source of truth, updated in the respective CRM and ingested by us in our pipelines (td_orders_sync - already does it, uc_orders_sync will do it eventually)
+3. I would like to know always which all orders are paid and which are unpaid, over paid, under paid.
+4. Cash Reconciliation
