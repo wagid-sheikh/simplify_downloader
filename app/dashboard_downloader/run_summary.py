@@ -148,6 +148,11 @@ class RunAggregator:
             value = counts.get(key)
             if value is not None:
                 existing[key] = int(value)
+        ingested_by_store = counts.get("ingested_by_store")
+        if ingested_by_store:
+            ingested_stores = entry.setdefault("ingested_stores", {})
+            for store_code, value in ingested_by_store.items():
+                ingested_stores[store_code] = int(value)
 
     def register_pdf_success(self, store_code: str, output_path: str, *, record_file: bool = True) -> None:
         self.report_success[store_code] = output_path
@@ -233,6 +238,17 @@ class RunAggregator:
                 counts = self.bucket_metrics[bucket].get("counts", {})
                 row_count = counts.get("ingested_rows") or counts.get("merged_rows") or counts.get("download_total") or 0
                 lines.append(f"  - {bucket}: {row_count} rows")
+        missed_leads = self.bucket_metrics.get("missed_leads", {})
+        missed_downloads = missed_leads.get("stores", {}) or {}
+        missed_ingested = missed_leads.get("ingested_stores", {}) or {}
+        if missed_downloads or missed_ingested:
+            lines.append("- Missed leads by store:")
+            for store_code in sorted(set(missed_downloads) | set(missed_ingested)):
+                downloaded = missed_downloads.get(store_code, 0)
+                ingested = missed_ingested.get(store_code, 0)
+                lines.append(
+                    f"  - {store_code}: downloaded {downloaded}, ingested {ingested}"
+                )
         return lines
 
     def build_summary_text(self, *, finished_at: datetime) -> str:
@@ -313,5 +329,4 @@ async def fetch_summary_for_run(database_url: str, run_id: str) -> Mapping[str, 
             sa.select(pipeline_run_summaries).where(pipeline_run_summaries.c.run_id == run_id).limit(1)
         )
         return result.mappings().first()
-
 

@@ -81,6 +81,8 @@ async def run_pipeline(
                 run_date=run_date,
             )
             counts["ingested_rows"] = ingest_totals["rows"]
+            if bucket == "missed_leads":
+                counts["ingested_by_store"] = ingest_totals.get("store_rows", {})
 
             deduped_rows = ingest_totals.get("deduped_rows", merged_rows)
             if deduped_rows != merged_rows:
@@ -307,5 +309,4 @@ async def _finalize_summary_and_email(
             message="notification dispatch failed",
             extras={"error": str(exc)},
         )
-
 
