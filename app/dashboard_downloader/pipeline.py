@@ -81,8 +81,8 @@ async def run_pipeline(
                 run_date=run_date,
             )
             counts["ingested_rows"] = ingest_totals["rows"]
-            if bucket == "missed_leads":
-                counts["ingested_by_store"] = ingest_totals.get("store_rows", {})
+            if ingest_totals.get("ingested_by_store"):
+                counts["ingested_by_store"] = ingest_totals["ingested_by_store"]
 
             deduped_rows = ingest_totals.get("deduped_rows", merged_rows)
             if deduped_rows != merged_rows:

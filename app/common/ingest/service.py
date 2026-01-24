@@ -6,7 +6,7 @@ from pathlib import Path
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -411,6 +411,7 @@ async def ingest_bucket(
     run_date: date,
 ) -> Dict[str, Any]:
     totals = {"rows": 0, "deduped_rows": 0}
+    ingested_by_store: Dict[str, int] = defaultdict(int)
     row_context = {"run_id": run_id, "run_date": run_date}
     skipped_missing_mobile: Dict[tuple[str, str], int] = defaultdict(int)
     store_counts: Dict[str, int] | None = None
@@ -433,6 +434,18 @@ async def ingest_bucket(
                 )
                 totals["rows"] += batch_totals["affected_rows"]
                 totals["deduped_rows"] += batch_totals["deduped_rows"]
+
+        if bucket == "missed_leads":
+            model = BUCKET_MODEL_MAP[bucket]
+            results = await session.execute(
+                select(model.store_code, func.count())
+                .where(model.run_id == run_id)
+                .group_by(model.store_code)
+                .order_by(model.store_code)
+            )
+            for store_code, count in results:
+                ingested_by_store[store_code] = int(count)
+            totals["ingested_by_store"] = dict(ingested_by_store)
 
     file_size = 0
     if csv_path.exists():

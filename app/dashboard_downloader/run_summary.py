@@ -150,9 +150,10 @@ class RunAggregator:
                 existing[key] = int(value)
         ingested_by_store = counts.get("ingested_by_store")
         if ingested_by_store:
-            ingested_stores = entry.setdefault("ingested_stores", {})
-            for store_code, value in ingested_by_store.items():
-                ingested_stores[store_code] = int(value)
+            entry["ingested_by_store"] = {
+                store_code: int(store_count)
+                for store_code, store_count in ingested_by_store.items()
+            }
 
     def register_pdf_success(self, store_code: str, output_path: str, *, record_file: bool = True) -> None:
         self.report_success[store_code] = output_path
