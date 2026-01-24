@@ -148,6 +148,12 @@ class RunAggregator:
             value = counts.get(key)
             if value is not None:
                 existing[key] = int(value)
+        ingested_by_store = counts.get("ingested_by_store")
+        if ingested_by_store:
+            entry["ingested_by_store"] = {
+                store_code: int(store_count)
+                for store_code, store_count in ingested_by_store.items()
+            }
 
     def register_pdf_success(self, store_code: str, output_path: str, *, record_file: bool = True) -> None:
         self.report_success[store_code] = output_path
@@ -313,5 +319,4 @@ async def fetch_summary_for_run(database_url: str, run_id: str) -> Mapping[str, 
             sa.select(pipeline_run_summaries).where(pipeline_run_summaries.c.run_id == run_id).limit(1)
         )
         return result.mappings().first()
-
 
