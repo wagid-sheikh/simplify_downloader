@@ -247,6 +247,8 @@ async def _upsert_batch(
     session: AsyncSession,
     bucket: str,
     rows: List[Dict[str, Any]],
+    *,
+    store_counts: Dict[str, int] | None = None,
 ) -> Dict[str, int]:
     """Upsert a batch of rows and return affected and deduped counts."""
     totals = {"affected_rows": 0, "deduped_rows": 0}
@@ -254,6 +256,13 @@ async def _upsert_batch(
         return totals
 
     for chunk in _batched(rows, BULK_INSERT_BATCH_SIZE):
+        if store_counts is not None:
+            spec = MERGE_BUCKET_DB_SPECS[bucket]
+            deduped_rows = _dedupe_rows(bucket, spec, chunk)
+            for row in deduped_rows:
+                store_code = row.get("store_code")
+                if store_code:
+                    store_counts[store_code] += 1
         result = await _upsert_rows(session, bucket, chunk)
         totals["affected_rows"] += result["affected_rows"]
         totals["deduped_rows"] += result["deduped_rows"]
@@ -405,6 +414,9 @@ async def ingest_bucket(
     ingested_by_store: Dict[str, int] = defaultdict(int)
     row_context = {"run_id": run_id, "run_date": run_date}
     skipped_missing_mobile: Dict[tuple[str, str], int] = defaultdict(int)
+    store_counts: Dict[str, int] | None = None
+    if bucket == "missed_leads":
+        store_counts = defaultdict(int)
     async with session_scope(database_url) as session:
         async with session.begin():
             for batch in _batched(
@@ -417,7 +429,9 @@ async def ingest_bucket(
                 ),
                 batch_size,
             ):
-                batch_totals = await _upsert_batch(session, bucket, batch)
+                batch_totals = await _upsert_batch(
+                    session, bucket, batch, store_counts=store_counts
+                )
                 totals["rows"] += batch_totals["affected_rows"]
                 totals["deduped_rows"] += batch_totals["deduped_rows"]
 
@@ -479,4 +493,6 @@ async def ingest_bucket(
             ),
             skipped_missing_mobile=details,
         )
+    if store_counts is not None:
+        totals["store_rows"] = dict(store_counts)
     return totals

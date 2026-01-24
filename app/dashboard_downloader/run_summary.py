@@ -239,6 +239,17 @@ class RunAggregator:
                 counts = self.bucket_metrics[bucket].get("counts", {})
                 row_count = counts.get("ingested_rows") or counts.get("merged_rows") or counts.get("download_total") or 0
                 lines.append(f"  - {bucket}: {row_count} rows")
+        missed_leads = self.bucket_metrics.get("missed_leads", {})
+        missed_downloads = missed_leads.get("stores", {}) or {}
+        missed_ingested = missed_leads.get("ingested_stores", {}) or {}
+        if missed_downloads or missed_ingested:
+            lines.append("- Missed leads by store:")
+            for store_code in sorted(set(missed_downloads) | set(missed_ingested)):
+                downloaded = missed_downloads.get(store_code, 0)
+                ingested = missed_ingested.get(store_code, 0)
+                lines.append(
+                    f"  - {store_code}: downloaded {downloaded}, ingested {ingested}"
+                )
         return lines
 
     def build_summary_text(self, *, finished_at: datetime) -> str:
