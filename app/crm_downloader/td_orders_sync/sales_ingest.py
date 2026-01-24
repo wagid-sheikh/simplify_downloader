@@ -544,6 +544,7 @@ async def ingest_td_sales_workbook(
             sales_key = (store_code, order_number, normalized_payment_date) if normalized_payment_date else None
             remarks = row.pop("_remarks", [])
             is_duplicate = order_number in duplicates_set
+            is_existing = sales_key in existing_keys if sales_key else False
             if is_duplicate:
                 remarks.append(f"Duplicate order_number '{order_number}' detected in sales data")
             if sales_key and sales_key in existing_keys:
@@ -552,7 +553,7 @@ async def ingest_td_sales_workbook(
                     f"'{_stringify_value(row.get('payment_date'))}'"
                 )
             row["is_duplicate"] = is_duplicate
-            row["is_edited_order"] = is_duplicate
+            row["is_edited_order"] = is_duplicate or is_existing
             row["ingest_remarks"] = "; ".join(remarks) if remarks else None
             if row["is_edited_order"]:
                 edited_rows.append(

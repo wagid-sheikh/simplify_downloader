@@ -282,6 +282,10 @@ def _extract_row_facts_from_summary(summary: Mapping[str, Any] | None) -> dict[s
     metrics = _coerce_dict(summary.get("metrics_json"))
     payload = metrics.get("notification_payload") or {}
     stores = payload.get("stores") or []
+    orders_payload = _coerce_dict(metrics.get("orders"))
+    sales_payload = _coerce_dict(metrics.get("sales"))
+    orders_stores = orders_payload.get("stores") or {}
+    sales_stores = sales_payload.get("stores") or {}
     extracted = _init_row_facts()
     for store in stores:
         if not isinstance(store, Mapping):
@@ -303,6 +307,29 @@ def _extract_row_facts_from_summary(summary: Mapping[str, Any] | None) -> dict[s
             extracted["dropped_rows"].extend(list(store.get("dropped_rows") or []))
             extracted["edited_rows"].extend(list(store.get("edited_rows") or []))
             extracted["error_rows"].extend(list(store.get("error_rows") or []))
+            store_code = store.get("store_code")
+            if store_code:
+                orders = _coerce_dict(orders_stores.get(store_code))
+                sales = _coerce_dict(sales_stores.get(store_code))
+                extracted["warning_rows"].extend(list(orders.get("warning_rows") or []))
+                extracted["dropped_rows"].extend(list(orders.get("dropped_rows") or []))
+                extracted["error_rows"].extend(list(orders.get("error_rows") or []))
+                extracted["warning_rows"].extend(list(sales.get("warning_rows") or []))
+                extracted["dropped_rows"].extend(list(sales.get("dropped_rows") or []))
+                extracted["edited_rows"].extend(list(sales.get("edited_rows") or []))
+                extracted["error_rows"].extend(list(sales.get("error_rows") or []))
+    if not stores and (orders_stores or sales_stores):
+        store_codes = {str(code) for code in orders_stores.keys()} | {str(code) for code in sales_stores.keys()}
+        for store_code in store_codes:
+            orders = _coerce_dict(orders_stores.get(store_code))
+            sales = _coerce_dict(sales_stores.get(store_code))
+            extracted["warning_rows"].extend(list(orders.get("warning_rows") or []))
+            extracted["dropped_rows"].extend(list(orders.get("dropped_rows") or []))
+            extracted["error_rows"].extend(list(orders.get("error_rows") or []))
+            extracted["warning_rows"].extend(list(sales.get("warning_rows") or []))
+            extracted["dropped_rows"].extend(list(sales.get("dropped_rows") or []))
+            extracted["edited_rows"].extend(list(sales.get("edited_rows") or []))
+            extracted["error_rows"].extend(list(sales.get("error_rows") or []))
     return extracted
 
 
