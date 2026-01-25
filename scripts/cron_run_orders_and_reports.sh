@@ -25,6 +25,11 @@ echo "--- Script 1 completed successfully ---" >> "${LOG_FILE}"
 
 echo "--- Running Script 2: daily_sales_report ---" >> "${LOG_FILE}"
 ./scripts/run_local_reports_daily_sales.sh >> "${LOG_FILE}" 2>&1
-
 echo "--- Script 2 completed successfully ---" >> "${LOG_FILE}"
+
+
+echo "--- Running Script 3: pending_deliveries ---" >> "${LOG_FILE}"
+./scripts/run_local_reports_pending_deliveries.sh >> "${LOG_FILE}" 2>&1
+echo "--- Script 3 completed successfully ---" >> "${LOG_FILE}"
+
 echo "=== CRON RUN FINISHED @ $(date) ===" >> "${LOG_FILE}"
