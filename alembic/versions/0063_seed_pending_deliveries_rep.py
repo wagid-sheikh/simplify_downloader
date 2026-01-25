@@ -7,7 +7,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision = "0063_seed_pending_deliveries_report_notifications"
+revision = "0063_seed_pending_deliveries_rep"
 down_revision = "0062_skip_uc_pending_delivery"
 branch_labels = None
 depends_on = None
