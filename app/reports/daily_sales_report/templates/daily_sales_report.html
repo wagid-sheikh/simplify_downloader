@@ -67,6 +67,11 @@
       .ttd-negative {
         color: #c00;
       }
+      .edited-orders-summary {
+        text-align: center;
+        font-weight: 600;
+        margin-bottom: 8px;
+      }
     </style>
   </head>
   <body>
@@ -176,6 +181,17 @@
 
     {% if edited_orders %}
     <div class="section-title">Edited Orders</div>
+    {% if edited_orders_summary %}
+    <div class="edited-orders-summary">
+      Stores: {{ edited_orders_summary.store_count }} | Distinct Orders Edited:
+      {{ edited_orders_summary.distinct_order_count_total }} | Original: ₹{{
+      edited_orders_summary.sum_orig_distinct | format_amount }} | Revised: ₹{{
+      edited_orders_summary.sum_new_distinct | format_amount }} | Net Loss: ₹{{
+      edited_orders_summary.net_loss_distinct | format_amount }}{% if
+      edited_orders_summary.per_store_counts %} ({{
+      edited_orders_summary.per_store_counts | join(", ") }}){% endif %}
+    </div>
+    {% endif %}
     <table>
       <thead>
         <tr>

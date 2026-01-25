@@ -43,12 +43,23 @@ class EditedOrderRow:
 
 
 @dataclass
+class EditedOrdersSummary:
+    distinct_order_count_total: int
+    store_count: int
+    sum_orig_distinct: Decimal
+    sum_new_distinct: Decimal
+    net_loss_distinct: Decimal
+    per_store_counts: List[str]
+
+
+@dataclass
 class DailySalesReportData:
     report_date: date
     rows: List[DailySalesRow]
     totals: DailySalesRow
     edited_orders: List[EditedOrderRow]
     edited_orders_totals: EditedOrderRow | None
+    edited_orders_summary: EditedOrdersSummary | None
     missed_leads: List[Mapping[str, str]]
 
 
@@ -410,6 +421,38 @@ async def fetch_daily_sales_report(
     totals = _totals_row(rows)
     totals.ttd = _calculate_ttd(totals.target, totals.achieved, day_of_month, days_in_month)
     edited_totals = _edited_totals(edited_rows)
+    edited_orders_summary = None
+    if edited_rows:
+        distinct_map: dict[tuple[str, str], dict[str, Decimal]] = {}
+        for row in edited_rows:
+            key = (row.cost_center, row.order_number)
+            if key not in distinct_map:
+                distinct_map[key] = {
+                    "orig_value": row.original_value,
+                    "new_value": row.new_value,
+                }
+                continue
+            distinct_map[key]["orig_value"] = max(distinct_map[key]["orig_value"], row.original_value)
+            distinct_map[key]["new_value"] = min(distinct_map[key]["new_value"], row.new_value)
+
+        per_store_counts: dict[str, int] = {}
+        sum_orig_distinct = Decimal("0")
+        sum_new_distinct = Decimal("0")
+        net_loss_distinct = Decimal("0")
+        for (cost_center, _order_number), values in distinct_map.items():
+            per_store_counts[cost_center] = per_store_counts.get(cost_center, 0) + 1
+            sum_orig_distinct += values["orig_value"]
+            sum_new_distinct += values["new_value"]
+            net_loss_distinct += values["orig_value"] - values["new_value"]
+
+        edited_orders_summary = EditedOrdersSummary(
+            distinct_order_count_total=len(distinct_map),
+            store_count=len(per_store_counts),
+            sum_orig_distinct=sum_orig_distinct,
+            sum_new_distinct=sum_new_distinct,
+            net_loss_distinct=net_loss_distinct,
+            per_store_counts=[f"{store}: {count}" for store, count in sorted(per_store_counts.items())],
+        )
 
     return DailySalesReportData(
         report_date=report_date,
@@ -417,5 +460,6 @@ async def fetch_daily_sales_report(
         totals=totals,
         edited_orders=edited_rows,
         edited_orders_totals=edited_totals,
+        edited_orders_summary=edited_orders_summary,
         missed_leads=[],
     )
