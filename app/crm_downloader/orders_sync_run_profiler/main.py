@@ -1066,6 +1066,7 @@ def _build_profiler_notification_payload(
     window_summary: Mapping[str, Any],
     warnings: Sequence[str],
     total_time_taken: str,
+    row_facts: Mapping[str, Sequence[Mapping[str, Any]]],
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
@@ -1074,6 +1075,7 @@ def _build_profiler_notification_payload(
         "stores": list(store_entries),
         "window_summary": dict(window_summary),
         "warnings": list(warnings),
+        "row_facts": dict(row_facts),
         "started_at": started_at.isoformat(),
         "finished_at": finished_at.isoformat(),
         "total_time_taken": total_time_taken,
@@ -1748,6 +1750,7 @@ async def main(
                 window_summary=window_summary,
                 warnings=warning_messages,
                 total_time_taken=total_time_taken,
+                row_facts=row_facts,
             ),
         },
     }
