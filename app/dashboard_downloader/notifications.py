@@ -1947,7 +1947,7 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    row_facts = metrics.get("row_facts") or {}
+    row_facts = payload.get("row_facts") or metrics.get("row_facts") or {}
     warning_rows = _clean_uc_rows_for_reporting(row_facts.get("warning_rows"), drop_empty=True)
     dropped_rows = _clean_uc_rows_for_reporting(row_facts.get("dropped_rows"), drop_empty=False)
     edited_rows = row_facts.get("edited_rows") or []
