@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0062_skip_uc_pending_delivery_config"
+revision = "0062_skip_uc_pending_delivery"
 down_revision = "0061_recompute_salesedited_order"
 branch_labels = None
 depends_on = None
