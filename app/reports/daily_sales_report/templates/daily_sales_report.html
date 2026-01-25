@@ -60,6 +60,10 @@
       .totals-row td {
         font-weight: 700;
       }
+      .secondary-metric {
+        font-size: 9px;
+        color: #666;
+      }
       .ttd-negative {
         color: #c00;
       }
@@ -98,9 +102,27 @@
         <tr>
           <td>{{ loop.index }}</td>
           <td class="label">{{ row.cost_center_name }}</td>
-          <td>{{ row.sales_ftd | format_amount }}</td>
-          <td>{{ row.sales_mtd | format_amount }}</td>
-          <td>{{ row.sales_lmtd | format_amount }}</td>
+          <td>
+            <div>{{ row.sales_ftd | format_amount }}</div>
+            {% set ftd_count = row.orders_count_ftd or 0 %}
+            <div class="secondary-metric">
+              {{ ftd_count }} @ ₹{% if ftd_count %}{{ (row.sales_ftd / ftd_count) | round(0) }}{% else %}0{% endif %}
+            </div>
+          </td>
+          <td>
+            <div>{{ row.sales_mtd | format_amount }}</div>
+            {% set mtd_count = row.orders_count_mtd or 0 %}
+            <div class="secondary-metric">
+              {{ mtd_count }} @ ₹{% if mtd_count %}{{ (row.sales_mtd / mtd_count) | round(0) }}{% else %}0{% endif %}
+            </div>
+          </td>
+          <td>
+            <div>{{ row.sales_lmtd | format_amount }}</div>
+            {% set lmtd_count = row.orders_count_lmtd or 0 %}
+            <div class="secondary-metric">
+              {{ lmtd_count }} @ ₹{% if lmtd_count %}{{ (row.sales_lmtd / lmtd_count) | round(0) }}{% else %}0{% endif %}
+            </div>
+          </td>
           <td>{{ row.collections_ftd | format_amount }}</td>
           <td>{{ row.collections_mtd | format_amount }}</td>
           <td>{{ row.collections_lmtd | format_amount }}</td>
@@ -116,9 +138,27 @@
         {% endfor %}
         <tr class="totals-row">
           <td class="label" colspan="2">Total</td>
-          <td>{{ totals.sales_ftd | format_amount }}</td>
-          <td>{{ totals.sales_mtd | format_amount }}</td>
-          <td>{{ totals.sales_lmtd | format_amount }}</td>
+          <td>
+            <div>{{ totals.sales_ftd | format_amount }}</div>
+            {% set totals_ftd_count = totals.orders_count_ftd or 0 %}
+            <div class="secondary-metric">
+              {{ totals_ftd_count }} @ ₹{% if totals_ftd_count %}{{ (totals.sales_ftd / totals_ftd_count) | round(0) }}{% else %}0{% endif %}
+            </div>
+          </td>
+          <td>
+            <div>{{ totals.sales_mtd | format_amount }}</div>
+            {% set totals_mtd_count = totals.orders_count_mtd or 0 %}
+            <div class="secondary-metric">
+              {{ totals_mtd_count }} @ ₹{% if totals_mtd_count %}{{ (totals.sales_mtd / totals_mtd_count) | round(0) }}{% else %}0{% endif %}
+            </div>
+          </td>
+          <td>
+            <div>{{ totals.sales_lmtd | format_amount }}</div>
+            {% set totals_lmtd_count = totals.orders_count_lmtd or 0 %}
+            <div class="secondary-metric">
+              {{ totals_lmtd_count }} @ ₹{% if totals_lmtd_count %}{{ (totals.sales_lmtd / totals_lmtd_count) | round(0) }}{% else %}0{% endif %}
+            </div>
+          </td>
           <td>{{ totals.collections_ftd | format_amount }}</td>
           <td>{{ totals.collections_mtd | format_amount }}</td>
           <td>{{ totals.collections_lmtd | format_amount }}</td>

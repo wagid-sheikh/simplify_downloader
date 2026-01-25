@@ -19,6 +19,9 @@ class DailySalesRow:
     sales_ftd: Decimal
     sales_mtd: Decimal
     sales_lmtd: Decimal
+    orders_count_ftd: int
+    orders_count_mtd: int
+    orders_count_lmtd: int
     collections_ftd: Decimal
     collections_mtd: Decimal
     collections_lmtd: Decimal
@@ -129,6 +132,25 @@ def _build_orders_agg(orders: sa.Table, ranges: dict[str, datetime]) -> sa.Subqu
     )
 
 
+def _build_orders_count_agg(orders: sa.Table, ranges: dict[str, datetime]) -> sa.Subquery:
+    def _count_when(condition: sa.ColumnElement[bool]) -> sa.ColumnElement:
+        return sa.func.coalesce(sa.func.sum(sa.case((condition, 1), else_=0)), 0)
+
+    return (
+        sa.select(
+            orders.c.cost_center.label("cost_center"),
+            _count_when(sa.and_(orders.c.order_date >= ranges["start_day"], orders.c.order_date < ranges["next_day"]))
+            .label("orders_count_ftd"),
+            _count_when(sa.and_(orders.c.order_date >= ranges["start_month"], orders.c.order_date < ranges["next_day"]))
+            .label("orders_count_mtd"),
+            _count_when(sa.and_(orders.c.order_date >= ranges["lmt_start"], orders.c.order_date < ranges["lmt_end"]))
+            .label("orders_count_lmtd"),
+        )
+        .group_by(orders.c.cost_center)
+        .subquery()
+    )
+
+
 def _build_orders_sync_agg(orders_sync_log: sa.Table) -> sa.Subquery:
     return (
         sa.select(
@@ -167,6 +189,9 @@ def _totals_row(rows: Iterable[DailySalesRow]) -> DailySalesRow:
         sales_ftd=Decimal("0"),
         sales_mtd=Decimal("0"),
         sales_lmtd=Decimal("0"),
+        orders_count_ftd=0,
+        orders_count_mtd=0,
+        orders_count_lmtd=0,
         collections_ftd=Decimal("0"),
         collections_mtd=Decimal("0"),
         collections_lmtd=Decimal("0"),
@@ -181,6 +206,9 @@ def _totals_row(rows: Iterable[DailySalesRow]) -> DailySalesRow:
         totals.sales_ftd += row.sales_ftd
         totals.sales_mtd += row.sales_mtd
         totals.sales_lmtd += row.sales_lmtd
+        totals.orders_count_ftd += row.orders_count_ftd
+        totals.orders_count_mtd += row.orders_count_mtd
+        totals.orders_count_lmtd += row.orders_count_lmtd
         totals.collections_ftd += row.collections_ftd
         totals.collections_mtd += row.collections_mtd
         totals.collections_lmtd += row.collections_lmtd
@@ -254,6 +282,7 @@ async def fetch_daily_sales_report(
     )
 
     orders_agg = _build_orders_agg(orders, ranges)
+    orders_count_agg = _build_orders_count_agg(orders, ranges)
     sales_agg = _build_sales_agg(sales, ranges)
     orders_sync_agg = _build_orders_sync_agg(orders_sync_log)
 
@@ -265,6 +294,9 @@ async def fetch_daily_sales_report(
             orders_agg.c.sales_ftd,
             orders_agg.c.sales_mtd,
             orders_agg.c.sales_lmtd,
+            orders_count_agg.c.orders_count_ftd,
+            orders_count_agg.c.orders_count_mtd,
+            orders_count_agg.c.orders_count_lmtd,
             sales_agg.c.collections_ftd,
             sales_agg.c.collections_mtd,
             sales_agg.c.collections_lmtd,
@@ -274,6 +306,7 @@ async def fetch_daily_sales_report(
         .select_from(
             cost_center
             .outerjoin(orders_agg, orders_agg.c.cost_center == cost_center.c.cost_center)
+            .outerjoin(orders_count_agg, orders_count_agg.c.cost_center == cost_center.c.cost_center)
             .outerjoin(sales_agg, sales_agg.c.cost_center == cost_center.c.cost_center)
             .outerjoin(orders_sync_agg, orders_sync_agg.c.cost_center == cost_center.c.cost_center)
             .outerjoin(
@@ -297,6 +330,9 @@ async def fetch_daily_sales_report(
             sales_ftd = _decimal(entry["sales_ftd"])
             sales_mtd = _decimal(entry["sales_mtd"])
             sales_lmtd = _decimal(entry["sales_lmtd"])
+            orders_count_ftd = int(entry["orders_count_ftd"] or 0)
+            orders_count_mtd = int(entry["orders_count_mtd"] or 0)
+            orders_count_lmtd = int(entry["orders_count_lmtd"] or 0)
             collections_ftd = _decimal(entry["collections_ftd"])
             collections_mtd = _decimal(entry["collections_mtd"])
             collections_lmtd = _decimal(entry["collections_lmtd"])
@@ -326,6 +362,9 @@ async def fetch_daily_sales_report(
                     sales_ftd=sales_ftd,
                     sales_mtd=sales_mtd,
                     sales_lmtd=sales_lmtd,
+                    orders_count_ftd=orders_count_ftd,
+                    orders_count_mtd=orders_count_mtd,
+                    orders_count_lmtd=orders_count_lmtd,
                     collections_ftd=collections_ftd,
                     collections_mtd=collections_mtd,
                     collections_lmtd=collections_lmtd,
