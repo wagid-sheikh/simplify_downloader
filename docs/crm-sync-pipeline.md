@@ -203,6 +203,41 @@ Any PR that touches protected paths must be isolated and explicitly labeled “p
 * Use existing pipeline logging/notification architecture as referenced elsewhere in the document.
 * Re-runs: report can be generated multiple times per day. Default behavior skips when a successful run exists for the report date; `--force` re-generates and overwrites the PDF output.
 
+#### pending_deliveries specification
+
+**Data sources & filters**
+
+* Source tables: `orders` and `sakes` (sales).
+* Join key: `orders.cost_center = sakes.cost_center` **and** `orders.order_number = sakes.order_number`.
+* Required filter: `orders.order_status = 'Pending'`.
+* UC exclusion: add `system_config.key = 'SKIP_UC_Pending_Delivery'` (default `true`) and, when `true`, filter out `orders.source_system = 'UClean'`.
+* Pending definition:
+  * `paid_amount = COALESCE(SUM(sakes.payment_received), 0)`.
+  * `pending_amount = GREATEST(orders.gross_amount - paid_amount, 0)`.
+  * Include orders where `pending_amount > 0`.
+* Overpaid orders are considered delivered (excluded via `pending_amount` logic).
+* `orders.gross_amount` is never NULL; 0 is valid and should follow the same rules.
+
+**Age and bucketing**
+
+* `age_days = report_date - order_date` (use `PIPELINE_TIMEZONE`).
+* Buckets include day 0:
+  * 0–5 days
+  * 6–15 days
+  * > 15 days
+* Sort oldest first within each bucket.
+
+**Layout rules**
+
+* Section totals are mandatory at the bottom of each bucket table (count + sum of `pending_amount`).
+* Include a summary by bucket and an optional summary by cost center.
+* Detail table columns: Age, Order #, Cost Center, Store Code, Order Date, Due Date (if available), Gross Amount, Paid Amount, Pending Amount, Customer, Mobile.
+* Totals are required for every section.
+
+**Notifications**
+
+* Email PDF output to `wagid.sheikh@gmail.com` via `notification_recipients`/`email_templates`.
+
 ### Reporting requirements
 
 * **DDL for `cost_center`:**
