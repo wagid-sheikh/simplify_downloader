@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import logging
 import smtplib
 from dataclasses import dataclass
@@ -185,26 +186,9 @@ PROFILER_HTML_TEMPLATE = """
             {% endif %}
             <tr>
               <td style="padding:0 24px 24px 24px;">
-                {% if fact_sections_text %}
+                {% if fact_sections %}
                 <div style="font-family:Arial, sans-serif; font-size:14px; font-weight:bold; margin-bottom:8px;">Row-level facts</div>
-                {% set sections = [] %}
-                {% set current = None %}
-                {% for line in fact_sections_text.splitlines() %}
-                  {% if line.endswith(':') and ' | ' not in line and not line.startswith('...') %}
-                    {% if current %}
-                      {% set _ = sections.append(current) %}
-                    {% endif %}
-                    {% set current = {'title': line[:-1], 'header': [], 'rows': []} %}
-                  {% elif current and not current.header %}
-                    {% set _ = current.update({'header': line.split(' | ')}) %}
-                  {% elif current %}
-                    {% set _ = current.rows.append(line) %}
-                  {% endif %}
-                {% endfor %}
-                {% if current %}
-                  {% set _ = sections.append(current) %}
-                {% endif %}
-                {% for section in sections %}
+                {% for section in fact_sections %}
                 <div style="font-family:Arial, sans-serif; font-size:13px; font-weight:bold; margin:12px 0 6px 0;">{{ section.title }}</div>
                 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="width:100%; border-collapse:collapse; font-family:Arial, sans-serif; font-size:12px; color:#111111; margin-bottom:8px;">
                   <tr>
@@ -214,12 +198,12 @@ PROFILER_HTML_TEMPLATE = """
                   </tr>
                   {% for row in section.rows %}
                   <tr>
-                    {% if ' | ' in row %}
-                      {% for cell in row.split(' | ') %}
-                      <td style="padding:6px 8px; border:1px solid #e1e1e1;">{{ cell }}</td>
-                      {% endfor %}
+                    {% if row is string %}
+                    <td style="padding:6px 8px; border:1px solid #e1e1e1; font-style:italic; color:#666666;" colspan="{{ section.header | length }}">{{ row }}</td>
                     {% else %}
-                      <td style="padding:6px 8px; border:1px solid #e1e1e1; font-style:italic; color:#666666;" colspan="{{ section.header | length }}">{{ row }}</td>
+                      {% for header in section.header %}
+                      <td style="padding:6px 8px; border:1px solid #e1e1e1;">{{ row.get(header, '') }}</td>
+                      {% endfor %}
                     {% endif %}
                   </tr>
                   {% endfor %}
@@ -850,6 +834,74 @@ def _format_fact_section_by_store(
     return lines
 
 
+def _build_fact_section_rows_by_store(
+    rows: list[dict[str, str]],
+    *,
+    per_store_limit: int | None,
+) -> list[dict[str, str] | str]:
+    if per_store_limit is None:
+        return list(rows)
+    rows_with_limits: list[dict[str, str] | str] = []
+    current_store: str | None = None
+    current_rows: list[dict[str, str]] = []
+
+    def _flush_store_rows() -> None:
+        if not current_rows:
+            return
+        display_rows = current_rows[:per_store_limit]
+        rows_with_limits.extend(display_rows)
+        truncated_count = len(current_rows) - len(display_rows)
+        if truncated_count:
+            rows_with_limits.append(f"...truncated {truncated_count} more")
+
+    for row in rows:
+        store_code = row.get("store_code") or ""
+        if current_store is None:
+            current_store = store_code
+        if store_code != current_store:
+            _flush_store_rows()
+            current_rows = []
+            current_store = store_code
+        current_rows.append(row)
+    _flush_store_rows()
+    return rows_with_limits
+
+
+def _build_fact_sections(
+    *,
+    warning_rows: list[dict[str, str]] | None = None,
+    dropped_rows: list[dict[str, str]] | None = None,
+    edited_rows: list[dict[str, str]] | None = None,
+    error_rows: list[dict[str, str]] | None = None,
+    per_store_limit: int | None = PROFILER_FACT_ROW_LIMIT_PER_STORE,
+) -> list[dict[str, Any]]:
+    sections: list[dict[str, Any]] = []
+
+    def _add_section(title: str, rows: list[dict[str, str]], *, include_remarks: bool) -> None:
+        normalized_rows = _build_fact_rows(rows, include_remarks=include_remarks)
+        if not normalized_rows:
+            return
+        columns = FACT_ROW_COLUMNS_WITH_REMARKS if include_remarks else FACT_ROW_COLUMNS
+        sections.append(
+            {
+                "title": title,
+                "header": list(columns),
+                "rows": _build_fact_section_rows_by_store(
+                    normalized_rows,
+                    per_store_limit=per_store_limit,
+                ),
+                "row_count": len(normalized_rows),
+                "first_row": normalized_rows[0],
+            }
+        )
+
+    _add_section("Warning rows", warning_rows or [], include_remarks=True)
+    _add_section("Dropped rows", dropped_rows or [], include_remarks=True)
+    _add_section("Edited rows", edited_rows or [], include_remarks=False)
+    _add_section("Error rows", error_rows or [], include_remarks=True)
+    return sections
+
+
 def _format_fact_sections_text(
     *,
     warning_rows: list[dict[str, str]] | None = None,
@@ -948,6 +1000,24 @@ def _append_fact_sections(summary_text: str, fact_text: str) -> str:
     if summary_text:
         return f"{summary_text.rstrip()}\n\n{header}\n{fact_text}"
     return f"{header}\n{fact_text}"
+
+
+def _profiler_fact_debug_enabled() -> bool:
+    return os.getenv("PROFILER_FACT_SECTIONS_DEBUG", "").lower() in {"1", "true", "yes", "on"}
+
+
+def _log_profiler_fact_sections(fact_sections: list[dict[str, Any]]) -> None:
+    if not _profiler_fact_debug_enabled():
+        return
+    for section in fact_sections:
+        logger.debug(
+            "profiler fact section debug",
+            extra={
+                "section_title": section.get("title"),
+                "row_count": section.get("row_count", 0),
+                "first_row": section.get("first_row"),
+            },
+        )
 
 
 def _uc_warning_entries(
@@ -1956,6 +2026,12 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
     dropped_fact_rows = _build_fact_rows(dropped_rows, include_remarks=True)
     edited_fact_rows = _build_fact_rows(edited_rows, include_remarks=False)
     error_fact_rows = _build_fact_rows(error_rows, include_remarks=True)
+    fact_sections = _build_fact_sections(
+        warning_rows=warning_fact_rows,
+        dropped_rows=dropped_fact_rows,
+        edited_rows=edited_fact_rows,
+        error_rows=error_fact_rows,
+    )
     warnings = _normalize_warning_entries(payload.get("warnings") or [])
     if not warnings:
         warnings = _build_profiler_row_fact_warnings(
@@ -1973,6 +2049,7 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
     summary_text = run_data.get("summary_text") or ""
     summary_text = _replace_profiler_warnings_section(summary_text, warnings)
     summary_text = _append_fact_sections(summary_text, fact_sections_text)
+    _log_profiler_fact_sections(fact_sections)
     overall_status = payload.get("overall_status") or run_data.get("overall_status")
     store_count = len(stores_payload)
     outcome_summary = _build_outcome_summary(overall_status, store_count=store_count)
@@ -2000,6 +2077,7 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
         "has_warnings": bool(warnings),
         "notification_payload": payload,
         "fact_sections_text": fact_sections_text,
+        "fact_sections": fact_sections,
         "warning_fact_rows": warning_fact_rows,
         "dropped_fact_rows": dropped_fact_rows,
         "edited_fact_rows": edited_fact_rows,
