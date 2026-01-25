@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 
 from app.common.db import session_scope
 from app.common.date_utils import get_timezone
+from app.crm_downloader.td_orders_sync.ingest import _orders_table
 from app.dashboard_downloader.json_logger import JsonLogger, log_event
 
 STG_TD_SALES_COLUMNS = [
@@ -476,6 +477,7 @@ async def ingest_td_sales_workbook(
     metadata = sa.MetaData()
     stg_table = _stg_td_sales_table(metadata)
     final_table = _sales_table(metadata)
+    orders_table = _orders_table(metadata)
     use_sqlite = database_url.startswith("sqlite")
 
     async with session_scope(database_url) as session:
@@ -516,8 +518,33 @@ async def ingest_td_sales_workbook(
         existing_keys = await _existing_sales_keys(
             session, stg_table=stg_table, final_table=final_table, store_code=store_code, tz=tz
         )
-        counts = Counter(str(row.get("order_number")) for row in rows)
-        duplicates_set = {order for order, count in counts.items() if count > 1}
+        duplicate_counts = Counter(
+            (store_code, str(row.get("order_number")), row.get("payment_mode")) for row in rows
+        )
+        duplicates_set = {key for key, count in duplicate_counts.items() if count > 1}
+
+        payment_totals: dict[tuple[str, str], Decimal] = {}
+        for row in rows:
+            order_key = (store_code, str(row.get("order_number")))
+            payment_received = row.get("payment_received") or Decimal("0")
+            payment_totals[order_key] = payment_totals.get(order_key, Decimal("0")) + payment_received
+
+        order_numbers = {str(row.get("order_number")) for row in rows}
+        gross_amounts: dict[tuple[str, str], Decimal] = {}
+        if order_numbers:
+            order_rows = await session.execute(
+                sa.select(orders_table.c.store_code, orders_table.c.order_number, orders_table.c.gross_amount).where(
+                    sa.and_(orders_table.c.store_code == store_code, orders_table.c.order_number.in_(order_numbers))
+                )
+            )
+            for row in order_rows:
+                if row.gross_amount is not None:
+                    gross_amounts[(row.store_code, str(row.order_number))] = row.gross_amount
+
+        # Compare gross_amount using only the current workbook payment totals (exclude prior ingests).
+        edited_shortfall_keys = {
+            key for key, total in payment_totals.items() if key in gross_amounts and total < gross_amounts[key]
+        }
 
         staging_count = 0
         final_count = 0
@@ -528,13 +555,37 @@ async def ingest_td_sales_workbook(
         if duplicates_set:
             await session.execute(
                 sa.update(stg_table)
-                .where(sa.and_(stg_table.c.store_code == store_code, stg_table.c.order_number.in_(duplicates_set)))
+                .where(
+                    sa.tuple_(
+                        stg_table.c.store_code, stg_table.c.order_number, stg_table.c.payment_mode
+                    ).in_(duplicates_set)
+                )
                 .values(is_duplicate=True, is_edited_order=True)
             )
             await session.execute(
                 sa.update(final_table)
-                .where(sa.and_(final_table.c.store_code == store_code, final_table.c.order_number.in_(duplicates_set)))
+                .where(
+                    sa.tuple_(
+                        final_table.c.store_code, final_table.c.order_number, final_table.c.payment_mode
+                    ).in_(duplicates_set)
+                )
                 .values(is_duplicate=True, is_edited_order=True)
+            )
+
+        if edited_shortfall_keys:
+            await session.execute(
+                sa.update(stg_table)
+                .where(
+                    sa.tuple_(stg_table.c.store_code, stg_table.c.order_number).in_(edited_shortfall_keys)
+                )
+                .values(is_edited_order=True)
+            )
+            await session.execute(
+                sa.update(final_table)
+                .where(
+                    sa.tuple_(final_table.c.store_code, final_table.c.order_number).in_(edited_shortfall_keys)
+                )
+                .values(is_edited_order=True)
             )
 
         for row in rows:
@@ -542,18 +593,30 @@ async def ingest_td_sales_workbook(
             payment_date = row.get("payment_date")
             normalized_payment_date = _normalize_payment_key(payment_date, tz=tz)
             sales_key = (store_code, order_number, normalized_payment_date) if normalized_payment_date else None
+            duplicate_key = (store_code, order_number, row.get("payment_mode"))
+            order_key = (store_code, order_number)
             remarks = row.pop("_remarks", [])
-            is_duplicate = order_number in duplicates_set
+            is_duplicate = duplicate_key in duplicates_set
             is_existing = sales_key in existing_keys if sales_key else False
+            is_shortfall = order_key in edited_shortfall_keys
             if is_duplicate:
-                remarks.append(f"Duplicate order_number '{order_number}' detected in sales data")
+                remarks.append(
+                    "Duplicate order_number/payment_mode "
+                    f"'{order_number}'/'{_stringify_value(row.get('payment_mode'))}' detected in sales data"
+                )
             if sales_key and sales_key in existing_keys:
                 remarks.append(
                     "Order already exists in sales data for payment_date "
                     f"'{_stringify_value(row.get('payment_date'))}'"
                 )
+            if is_shortfall:
+                remarks.append(
+                    "Total payment_received "
+                    f"{_stringify_value(payment_totals[order_key])} is less than gross_amount "
+                    f"{_stringify_value(gross_amounts[order_key])} for order '{order_number}'"
+                )
             row["is_duplicate"] = is_duplicate
-            row["is_edited_order"] = is_duplicate or is_existing
+            row["is_edited_order"] = is_duplicate or is_existing or is_shortfall
             row["ingest_remarks"] = "; ".join(remarks) if remarks else None
             if row["is_edited_order"]:
                 edited_rows.append(
@@ -635,6 +698,7 @@ def _expected_headers() -> Sequence[str]:
 __all__ = [
     "TdSalesIngestResult",
     "ingest_td_sales_workbook",
+    "_orders_table",
     "_stg_td_sales_table",
     "_sales_table",
     "_expected_headers",
