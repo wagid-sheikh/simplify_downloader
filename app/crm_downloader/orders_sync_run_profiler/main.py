@@ -276,60 +276,177 @@ def _merge_row_facts(
             target[key].extend(list(rows))
 
 
+def _rows_with_store_metadata(
+    rows: Iterable[Mapping[str, Any]] | None,
+    *,
+    store_code: str | None,
+) -> list[dict[str, Any]]:
+    prepared: list[dict[str, Any]] = []
+    for row in rows or []:
+        if not isinstance(row, Mapping):
+            continue
+        data = dict(row)
+        if store_code and not data.get("store_code"):
+            data["store_code"] = store_code
+        order_number = data.get("order_number")
+        if not order_number:
+            values = data.get("values") or {}
+            if isinstance(values, Mapping):
+                for key in ("order_number", "Order Number", "Order No.", "Booking ID"):
+                    if values.get(key):
+                        order_number = values.get(key)
+                        break
+        if order_number not in (None, "") and not data.get("order_number"):
+            data["order_number"] = str(order_number)
+        prepared.append(data)
+    return prepared
+
+
 def _extract_row_facts_from_summary(summary: Mapping[str, Any] | None) -> dict[str, list[dict[str, Any]]]:
     if not summary:
         return _init_row_facts()
     metrics = _coerce_dict(summary.get("metrics_json"))
-    payload = metrics.get("notification_payload") or {}
+    payload = _coerce_dict(metrics.get("notification_payload"))
     stores = payload.get("stores") or []
     orders_payload = _coerce_dict(metrics.get("orders"))
     sales_payload = _coerce_dict(metrics.get("sales"))
-    orders_stores = orders_payload.get("stores") or {}
-    sales_stores = sales_payload.get("stores") or {}
+    orders_stores = _coerce_dict(orders_payload.get("stores"))
+    sales_stores = _coerce_dict(sales_payload.get("stores"))
+    stores_payload = _coerce_dict(metrics.get("stores"))
+    outcome_stores = _coerce_dict(stores_payload.get("outcomes"))
     extracted = _init_row_facts()
+    row_keys = ("warning_rows", "dropped_rows", "edited_rows", "error_rows")
+    payload_rows_by_store: dict[str, dict[str, bool]] = {}
+
+    def _is_row_list(value: Any) -> bool:
+        return isinstance(value, Sequence) and not isinstance(value, (str, bytes, Mapping))
+
+    def _record_payload_rows(store_code: str | None, key: str, rows: Sequence[Mapping[str, Any]] | None) -> None:
+        if not store_code:
+            return
+        store_map = payload_rows_by_store.setdefault(store_code, {row_key: False for row_key in row_keys})
+        if rows and _is_row_list(rows):
+            store_map[key] = True
+
+    def _add_rows(
+        key: str,
+        rows: Sequence[Mapping[str, Any]] | None,
+        *,
+        store_code: str | None,
+        track_payload: bool = False,
+    ) -> None:
+        prepared = _rows_with_store_metadata(rows, store_code=store_code)
+        if prepared:
+            extracted[key].extend(prepared)
+        if track_payload:
+            _record_payload_rows(store_code, key, rows)
+
+    def _should_fallback(store_code: str | None, key: str) -> bool:
+        if not store_code:
+            return True
+        store_map = payload_rows_by_store.get(store_code)
+        if not store_map:
+            return True
+        return not store_map.get(key)
+
     for store in stores:
         if not isinstance(store, Mapping):
             continue
+        store_code = store.get("store_code")
         orders = store.get("orders")
         sales = store.get("sales")
         if orders is not None or sales is not None:
-            orders = orders or {}
-            sales = sales or {}
-            extracted["warning_rows"].extend(list(orders.get("warning_rows") or []))
-            extracted["warning_rows"].extend(list(sales.get("warning_rows") or []))
-            extracted["dropped_rows"].extend(list(orders.get("dropped_rows") or []))
-            extracted["dropped_rows"].extend(list(sales.get("dropped_rows") or []))
-            extracted["edited_rows"].extend(list(sales.get("edited_rows") or []))
-            extracted["error_rows"].extend(list(orders.get("error_rows") or []))
-            extracted["error_rows"].extend(list(sales.get("error_rows") or []))
+            orders = _coerce_dict(orders)
+            sales = _coerce_dict(sales)
+            _add_rows("warning_rows", orders.get("warning_rows"), store_code=store_code, track_payload=True)
+            _add_rows("warning_rows", sales.get("warning_rows"), store_code=store_code, track_payload=True)
+            _add_rows("dropped_rows", orders.get("dropped_rows"), store_code=store_code, track_payload=True)
+            _add_rows("dropped_rows", sales.get("dropped_rows"), store_code=store_code, track_payload=True)
+            _add_rows("edited_rows", orders.get("edited_rows"), store_code=store_code, track_payload=True)
+            _add_rows("edited_rows", sales.get("edited_rows"), store_code=store_code, track_payload=True)
+            _add_rows("error_rows", orders.get("error_rows"), store_code=store_code, track_payload=True)
+            _add_rows("error_rows", sales.get("error_rows"), store_code=store_code, track_payload=True)
         else:
-            extracted["warning_rows"].extend(list(store.get("warning_rows") or []))
-            extracted["dropped_rows"].extend(list(store.get("dropped_rows") or []))
-            extracted["edited_rows"].extend(list(store.get("edited_rows") or []))
-            extracted["error_rows"].extend(list(store.get("error_rows") or []))
-            store_code = store.get("store_code")
-            if store_code:
-                orders = _coerce_dict(orders_stores.get(store_code))
-                sales = _coerce_dict(sales_stores.get(store_code))
-                extracted["warning_rows"].extend(list(orders.get("warning_rows") or []))
-                extracted["dropped_rows"].extend(list(orders.get("dropped_rows") or []))
-                extracted["error_rows"].extend(list(orders.get("error_rows") or []))
-                extracted["warning_rows"].extend(list(sales.get("warning_rows") or []))
-                extracted["dropped_rows"].extend(list(sales.get("dropped_rows") or []))
-                extracted["edited_rows"].extend(list(sales.get("edited_rows") or []))
-                extracted["error_rows"].extend(list(sales.get("error_rows") or []))
-    if not stores and (orders_stores or sales_stores):
-        store_codes = {str(code) for code in orders_stores.keys()} | {str(code) for code in sales_stores.keys()}
-        for store_code in store_codes:
-            orders = _coerce_dict(orders_stores.get(store_code))
-            sales = _coerce_dict(sales_stores.get(store_code))
-            extracted["warning_rows"].extend(list(orders.get("warning_rows") or []))
-            extracted["dropped_rows"].extend(list(orders.get("dropped_rows") or []))
-            extracted["error_rows"].extend(list(orders.get("error_rows") or []))
-            extracted["warning_rows"].extend(list(sales.get("warning_rows") or []))
-            extracted["dropped_rows"].extend(list(sales.get("dropped_rows") or []))
-            extracted["edited_rows"].extend(list(sales.get("edited_rows") or []))
-            extracted["error_rows"].extend(list(sales.get("error_rows") or []))
+            _add_rows("warning_rows", store.get("warning_rows"), store_code=store_code, track_payload=True)
+            _add_rows("dropped_rows", store.get("dropped_rows"), store_code=store_code, track_payload=True)
+            _add_rows("edited_rows", store.get("edited_rows"), store_code=store_code, track_payload=True)
+            _add_rows("error_rows", store.get("error_rows"), store_code=store_code, track_payload=True)
+
+    for store_code, store_report in orders_stores.items():
+        store_code = str(store_code)
+        if not isinstance(store_report, Mapping):
+            continue
+        if not _should_fallback(store_code, "warning_rows"):
+            warning_rows = None
+        else:
+            warning_rows = store_report.get("warning_rows")
+        if not _should_fallback(store_code, "dropped_rows"):
+            dropped_rows = None
+        else:
+            dropped_rows = store_report.get("dropped_rows")
+        if not _should_fallback(store_code, "edited_rows"):
+            edited_rows = None
+        else:
+            edited_rows = store_report.get("edited_rows")
+        if not _should_fallback(store_code, "error_rows"):
+            error_rows = None
+        else:
+            error_rows = store_report.get("error_rows")
+        _add_rows("warning_rows", warning_rows, store_code=store_code)
+        _add_rows("dropped_rows", dropped_rows, store_code=store_code)
+        _add_rows("edited_rows", edited_rows, store_code=store_code)
+        _add_rows("error_rows", error_rows, store_code=store_code)
+
+    for store_code, store_report in sales_stores.items():
+        store_code = str(store_code)
+        if not isinstance(store_report, Mapping):
+            continue
+        if not _should_fallback(store_code, "warning_rows"):
+            warning_rows = None
+        else:
+            warning_rows = store_report.get("warning_rows")
+        if not _should_fallback(store_code, "dropped_rows"):
+            dropped_rows = None
+        else:
+            dropped_rows = store_report.get("dropped_rows")
+        if not _should_fallback(store_code, "edited_rows"):
+            edited_rows = None
+        else:
+            edited_rows = store_report.get("edited_rows")
+        if not _should_fallback(store_code, "error_rows"):
+            error_rows = None
+        else:
+            error_rows = store_report.get("error_rows")
+        _add_rows("warning_rows", warning_rows, store_code=store_code)
+        _add_rows("dropped_rows", dropped_rows, store_code=store_code)
+        _add_rows("edited_rows", edited_rows, store_code=store_code)
+        _add_rows("error_rows", error_rows, store_code=store_code)
+
+    for store_code, outcome in outcome_stores.items():
+        store_code = str(store_code)
+        if not isinstance(outcome, Mapping):
+            continue
+        if not _should_fallback(store_code, "warning_rows"):
+            warning_rows = None
+        else:
+            warning_rows = outcome.get("warning_rows")
+        if not _should_fallback(store_code, "dropped_rows"):
+            dropped_rows = None
+        else:
+            dropped_rows = outcome.get("dropped_rows")
+        if not _should_fallback(store_code, "edited_rows"):
+            edited_rows = None
+        else:
+            edited_rows = outcome.get("edited_rows")
+        if not _should_fallback(store_code, "error_rows"):
+            error_rows = None
+        else:
+            error_rows = outcome.get("error_rows")
+        _add_rows("warning_rows", warning_rows, store_code=store_code)
+        _add_rows("dropped_rows", dropped_rows, store_code=store_code)
+        _add_rows("edited_rows", edited_rows, store_code=store_code)
+        _add_rows("error_rows", error_rows, store_code=store_code)
+
     return extracted
 
 
