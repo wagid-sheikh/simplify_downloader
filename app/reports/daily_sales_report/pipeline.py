@@ -107,6 +107,7 @@ def _build_context(data: DailySalesReportData) -> dict[str, object]:
         "rows": data.rows,
         "totals": data.totals,
         "edited_orders": data.edited_orders,
+        "edited_orders_summary": data.edited_orders_summary,
         "edited_orders_totals": data.edited_orders_totals,
         "missed_leads": data.missed_leads,
     }
