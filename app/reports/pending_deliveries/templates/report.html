@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Pending Deliveries Report</title>
+    <style>
+      body {
+        font-family: "Helvetica", "Arial", sans-serif;
+        font-size: 12px;
+        color: #1f2933;
+        margin: 24px;
+      }
+      h1, h2, h3 {
+        margin: 0 0 8px 0;
+      }
+      .meta {
+        margin-bottom: 16px;
+      }
+      .meta span {
+        display: inline-block;
+        margin-right: 16px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 16px;
+      }
+      th, td {
+        border: 1px solid #d9dee7;
+        padding: 6px 8px;
+        text-align: left;
+      }
+      th {
+        background-color: #f5f7fa;
+        font-weight: 600;
+      }
+      .text-right {
+        text-align: right;
+      }
+      .summary-table td, .summary-table th {
+        text-align: right;
+      }
+      .summary-table td:first-child, .summary-table th:first-child {
+        text-align: left;
+      }
+      .totals-row {
+        font-weight: 700;
+        background-color: #f0f4f8;
+      }
+      .bucket-title {
+        margin-top: 24px;
+      }
+      .no-data {
+        text-align: center;
+        color: #6b7280;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Pending Deliveries Report</h1>
+    <div class="meta">
+      <span><strong>Report Date:</strong> {{ report_date_display }}</span>
+      <span><strong>Run ID:</strong> {{ run_id }}</span>
+      <span><strong>Timezone:</strong> {{ timezone }}</span>
+    </div>
+
+    <h2>Summary</h2>
+    <table class="summary-table">
+      <thead>
+        <tr>
+          <th>Age Bucket</th>
+          <th>Count</th>
+          <th>Pending Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in summary_rows %}
+        <tr>
+          <td>{{ row.label }}</td>
+          <td>{{ row.count }}</td>
+          <td class="text-right">{{ row.pending_amount | format_amount }}</td>
+        </tr>
+        {% endfor %}
+        <tr class="totals-row">
+          <td>Total</td>
+          <td>{{ total_count }}</td>
+          <td class="text-right">{{ total_pending_amount | format_amount }}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    {% for bucket in buckets %}
+    <h2 class="bucket-title">{{ bucket.label }}</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Age (Days)</th>
+          <th>Order Date</th>
+          <th>Order No.</th>
+          <th>Cost Center</th>
+          <th>Store Code</th>
+          <th>Customer</th>
+          <th>Source</th>
+          <th class="text-right">Gross Amount</th>
+          <th class="text-right">Paid Amount</th>
+          <th class="text-right">Pending Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if bucket.rows %}
+        {% for row in bucket.rows %}
+        <tr>
+          <td>{{ row.age_days }}</td>
+          <td>{{ row.order_date.strftime('%d-%b-%Y') }}</td>
+          <td>{{ row.order_number }}</td>
+          <td>{{ row.cost_center }}</td>
+          <td>{{ row.store_code }}</td>
+          <td>{{ row.customer_name }}</td>
+          <td>{{ row.source_system }}</td>
+          <td class="text-right">{{ row.gross_amount | format_amount }}</td>
+          <td class="text-right">{{ row.paid_amount | format_amount }}</td>
+          <td class="text-right">{{ row.pending_amount | format_amount }}</td>
+        </tr>
+        {% endfor %}
+        {% else %}
+        <tr>
+          <td colspan="10" class="no-data">No pending deliveries in this bucket.</td>
+        </tr>
+        {% endif %}
+        <tr class="totals-row">
+          <td colspan="2">Totals</td>
+          <td>{{ bucket.total_count }}</td>
+          <td colspan="4">&nbsp;</td>
+          <td class="text-right">&nbsp;</td>
+          <td class="text-right">&nbsp;</td>
+          <td class="text-right">{{ bucket.total_pending_amount | format_amount }}</td>
+        </tr>
+      </tbody>
+    </table>
+    {% endfor %}
+  </body>
+</html>

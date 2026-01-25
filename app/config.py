@@ -98,6 +98,7 @@ PLAINTEXT_DB_KEYS = [
     "ETL_HEADLESS",
     "pipeline_skip_dom_logging",
     "skip_lead_assignment",
+    "SKIP_UC_Pending_Delivery",
 ]
 
 ENCRYPTED_DB_KEYS = [
@@ -306,6 +307,7 @@ class Config:
     etl_headless: bool
     pipeline_skip_dom_logging: bool
     skip_lead_assignment: bool
+    skip_uc_pending_delivery: bool
 
     @classmethod
     def load_from_env_and_db(cls) -> Config:
@@ -344,6 +346,9 @@ class Config:
         )
         skip_lead_assignment = _parse_bool(
             db_values["skip_lead_assignment"], key="skip_lead_assignment"
+        )
+        skip_uc_pending_delivery = _parse_bool(
+            db_values["SKIP_UC_Pending_Delivery"], key="SKIP_UC_Pending_Delivery"
         )
 
         td_store_dashboard_path = _clean_text(
@@ -417,6 +422,7 @@ class Config:
             etl_headless=etl_headless,
             pipeline_skip_dom_logging=pipeline_skip_dom_logging,
             skip_lead_assignment=skip_lead_assignment,
+            skip_uc_pending_delivery=skip_uc_pending_delivery,
         )
 
 
