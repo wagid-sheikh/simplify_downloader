@@ -775,6 +775,12 @@ def _normalize_fact_row(
             "Mobile No",
             "Customer Ph. No.",
             "Customer Phone",
+            "Customer Mobile No.",
+            "Customer Mobile No",
+            "Customer Mobile Number",
+            "Customer Phone No.",
+            "Customer Phone No",
+            "Customer Phone Number",
         )
     )
     normalized = {
