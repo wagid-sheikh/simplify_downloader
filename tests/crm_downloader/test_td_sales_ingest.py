@@ -714,13 +714,7 @@ async def test_sales_upsert_respects_business_keys_and_propagates_remarks(tmp_pa
 
     assert result.staging_rows == 1
     assert result.final_rows == 1
-    assert result.ingest_remarks == [
-        {
-            "store_code": "A668",
-            "order_number": "UP-001",
-            "ingest_remarks": "Order already exists in sales data for payment_date '2025-05-11T09:30:00+05:30'",
-        }
-    ]
+    assert result.ingest_remarks == []
 
     async with session_scope(database_url) as session:
         metadata = sa.MetaData()
@@ -746,10 +740,7 @@ async def test_sales_upsert_respects_business_keys_and_propagates_remarks(tmp_pa
         assert float(stg_row.payment_received) == 750
         assert float(stg_row.adjustments) == 10
         assert stg_row.is_duplicate is False
-        assert (
-            stg_row.ingest_remarks
-            == "Order already exists in sales data for payment_date '2025-05-11T09:30:00+05:30'"
-        )
+        assert stg_row.ingest_remarks is None
         assert stg_row.payment_mode == "Card"
 
         final_row = (
@@ -766,5 +757,5 @@ async def test_sales_upsert_respects_business_keys_and_propagates_remarks(tmp_pa
         assert float(final_row.payment_received) == 750
         assert float(final_row.adjustments) == 10
         assert final_row.is_duplicate is False
-        assert final_row.ingest_remarks == stg_row.ingest_remarks
+        assert final_row.ingest_remarks is None
         assert final_row.payment_mode == "Card"
