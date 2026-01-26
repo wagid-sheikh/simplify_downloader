@@ -35,7 +35,7 @@ def _build_context(
             "count": bucket.total_count,
             "pending_amount": bucket.total_pending_amount,
         }
-        for bucket in data.buckets
+        for bucket in data.summary_buckets
     ]
     return {
         "report_date_display": report_date_display,
@@ -43,7 +43,7 @@ def _build_context(
         "run_id": run_id,
         "timezone": timezone_label,
         "summary_rows": summary_rows,
-        "buckets": data.buckets,
+        "store_sections": data.store_sections,
         "total_count": data.total_count,
         "total_pending_amount": data.total_pending_amount,
     }
