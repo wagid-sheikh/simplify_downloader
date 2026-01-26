@@ -75,47 +75,49 @@
     <table class="summary-table">
       <thead>
         <tr>
+          <th>Cost Center</th>
           <th>Age Bucket</th>
           <th>Count</th>
           <th>Pending Amount</th>
         </tr>
       </thead>
       <tbody>
-        {% for row in summary_rows %}
+        {% for section in summary_sections %}
+        <tr class="totals-row">
+          <td>{{ section.cost_center or "Unassigned" }}</td>
+          <td>All Buckets</td>
+          <td>{{ section.total_count }}</td>
+          <td class="text-right">{{ section.total_pending_amount | format_amount }}</td>
+        </tr>
+        {% for bucket in section.buckets %}
         <tr>
-          <td>{{ row.label }}</td>
-          <td>{{ row.count }}</td>
-          <td class="text-right">{{ row.pending_amount | format_amount }}</td>
+          <td></td>
+          <td>{{ bucket.label }}</td>
+          <td>{{ bucket.total_count }}</td>
+          <td class="text-right">{{ bucket.total_pending_amount | format_amount }}</td>
         </tr>
         {% endfor %}
+        {% endfor %}
         <tr class="totals-row">
-          <td>Total</td>
+          <td colspan="2">Grand Total</td>
           <td>{{ total_count }}</td>
           <td class="text-right">{{ total_pending_amount | format_amount }}</td>
         </tr>
       </tbody>
     </table>
 
-    {% for store in store_sections %}
-    <h2 class="store-title">
-      Store {{ store.store_code }}{% if store.cost_center %} (Cost Center: {{ store.cost_center }}){% endif %}
-    </h2>
-    <p class="store-meta">
-      <strong>Total Pending Amount:</strong> {{ store.total_pending_amount | format_amount }}
-      <span style="margin-left: 16px;"><strong>Total Count:</strong> {{ store.total_count }}</span>
-    </p>
-    {% for bucket in store.buckets %}
-    <h3 class="bucket-title">{{ bucket.label }}</h3>
+    {% for cost_center in cost_center_sections %}
+    {% for bucket in cost_center.buckets %}
+    <h3 class="bucket-title">
+      {% if cost_center.cost_center %}{{ cost_center.cost_center }} - {% endif %}{{ bucket.label }}
+    </h3>
     <table>
       <thead>
         <tr>
           <th>Age (Days)</th>
           <th>Order Date</th>
           <th>Order No.</th>
-          <th>Cost Center</th>
-          <th>Store Code</th>
           <th>Customer</th>
-          <th>Source</th>
           <th class="text-right">Gross Amount</th>
           <th class="text-right">Paid Amount</th>
           <th class="text-right">Pending Amount</th>
@@ -128,10 +130,7 @@
           <td>{{ row.age_days }}</td>
           <td>{{ row.order_date.strftime('%d-%b-%Y') }}</td>
           <td>{{ row.order_number }}</td>
-          <td>{{ row.cost_center }}</td>
-          <td>{{ row.store_code }}</td>
           <td>{{ row.customer_name }}</td>
-          <td>{{ row.source_system }}</td>
           <td class="text-right">{{ row.gross_amount | format_amount }}</td>
           <td class="text-right">{{ row.paid_amount | format_amount }}</td>
           <td class="text-right">{{ row.pending_amount | format_amount }}</td>
@@ -139,14 +138,13 @@
         {% endfor %}
         {% else %}
         <tr>
-          <td colspan="10" class="no-data">No pending deliveries in this bucket.</td>
+          <td colspan="7" class="no-data">No pending deliveries in this bucket.</td>
         </tr>
         {% endif %}
         <tr class="totals-row">
           <td colspan="2">Totals</td>
           <td>{{ bucket.total_count }}</td>
-          <td colspan="4">&nbsp;</td>
-          <td class="text-right">&nbsp;</td>
+          <td colspan="2">&nbsp;</td>
           <td class="text-right">&nbsp;</td>
           <td class="text-right">{{ bucket.total_pending_amount | format_amount }}</td>
         </tr>
