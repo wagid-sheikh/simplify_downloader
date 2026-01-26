@@ -97,8 +97,14 @@ async def fetch_pending_deliveries_report(
     sales = _sales_table(metadata)
 
     paid_amount_expr = sa.func.coalesce(sa.func.sum(sales.c.payment_received), 0)
-    gross_amount_expr = sa.func.coalesce(orders.c.gross_amount, 0)
-    pending_amount_expr = sa.func.greatest(gross_amount_expr - paid_amount_expr, 0)
+    amount_expr = sa.func.coalesce(
+        sa.case(
+            (orders.c.source_system == "TumbleDry", orders.c.net_amount),
+            else_=orders.c.gross_amount,
+        ),
+        0,
+    )
+    pending_amount_expr = sa.func.greatest(amount_expr - paid_amount_expr, 0)
 
     stmt = (
         sa.select(
@@ -108,7 +114,7 @@ async def fetch_pending_deliveries_report(
             orders.c.customer_name,
             orders.c.order_date,
             orders.c.source_system,
-            gross_amount_expr.label("gross_amount"),
+            amount_expr.label("gross_amount"),
             paid_amount_expr.label("paid_amount"),
             pending_amount_expr.label("pending_amount"),
         )
@@ -129,7 +135,7 @@ async def fetch_pending_deliveries_report(
             orders.c.customer_name,
             orders.c.order_date,
             orders.c.source_system,
-            orders.c.gross_amount,
+            amount_expr,
         )
         .having(pending_amount_expr > 0)
     )
