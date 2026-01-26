@@ -50,6 +50,13 @@
       .bucket-title {
         margin-top: 24px;
       }
+      .store-title {
+        margin-top: 32px;
+      }
+      .store-meta {
+        margin: 0 0 12px 0;
+        color: #52606d;
+      }
       .no-data {
         text-align: center;
         color: #6b7280;
@@ -89,8 +96,16 @@
       </tbody>
     </table>
 
-    {% for bucket in buckets %}
-    <h2 class="bucket-title">{{ bucket.label }}</h2>
+    {% for store in store_sections %}
+    <h2 class="store-title">
+      Store {{ store.store_code }}{% if store.cost_center %} (Cost Center: {{ store.cost_center }}){% endif %}
+    </h2>
+    <p class="store-meta">
+      <strong>Total Pending Amount:</strong> {{ store.total_pending_amount | format_amount }}
+      <span style="margin-left: 16px;"><strong>Total Count:</strong> {{ store.total_count }}</span>
+    </p>
+    {% for bucket in store.buckets %}
+    <h3 class="bucket-title">{{ bucket.label }}</h3>
     <table>
       <thead>
         <tr>
@@ -137,6 +152,7 @@
         </tr>
       </tbody>
     </table>
+    {% endfor %}
     {% endfor %}
   </body>
 </html>

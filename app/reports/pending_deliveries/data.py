@@ -38,9 +38,19 @@ class PendingDeliveriesBucket:
 
 
 @dataclass
+class PendingDeliveriesStoreSection:
+    cost_center: str
+    store_code: str
+    buckets: List[PendingDeliveriesBucket]
+    total_pending_amount: Decimal
+    total_count: int
+
+
+@dataclass
 class PendingDeliveriesReportData:
     report_date: date
-    buckets: List[PendingDeliveriesBucket]
+    summary_buckets: List[PendingDeliveriesBucket]
+    store_sections: List[PendingDeliveriesStoreSection]
     total_pending_amount: Decimal
     total_count: int
 
@@ -84,6 +94,29 @@ def _build_buckets(rows: Iterable[PendingDeliveryRow]) -> List[PendingDeliveries
         bucket.total_pending_amount = sum((row.pending_amount for row in bucket.rows), Decimal("0"))
 
     return [buckets_map["0-5"], buckets_map["6-15"], buckets_map[">15"]]
+
+
+def _build_store_sections(rows: Iterable[PendingDeliveryRow]) -> List[PendingDeliveriesStoreSection]:
+    grouped_rows: dict[tuple[str, str], list[PendingDeliveryRow]] = {}
+    for row in rows:
+        key = (row.store_code, row.cost_center)
+        grouped_rows.setdefault(key, []).append(row)
+
+    store_sections: list[PendingDeliveriesStoreSection] = []
+    for (store_code, cost_center), store_rows in sorted(grouped_rows.items()):
+        buckets = _build_buckets(store_rows)
+        total_pending_amount = sum((bucket.total_pending_amount for bucket in buckets), Decimal("0"))
+        total_count = sum(bucket.total_count for bucket in buckets)
+        store_sections.append(
+            PendingDeliveriesStoreSection(
+                cost_center=cost_center,
+                store_code=store_code,
+                buckets=buckets,
+                total_pending_amount=total_pending_amount,
+                total_count=total_count,
+            )
+        )
+    return store_sections
 
 
 async def fetch_pending_deliveries_report(
@@ -172,12 +205,14 @@ async def fetch_pending_deliveries_report(
                 )
             )
 
-    buckets = _build_buckets(rows)
-    total_pending_amount = sum((bucket.total_pending_amount for bucket in buckets), Decimal("0"))
-    total_count = sum(bucket.total_count for bucket in buckets)
+    summary_buckets = _build_buckets(rows)
+    store_sections = _build_store_sections(rows)
+    total_pending_amount = sum((bucket.total_pending_amount for bucket in summary_buckets), Decimal("0"))
+    total_count = sum(bucket.total_count for bucket in summary_buckets)
     return PendingDeliveriesReportData(
         report_date=report_date,
-        buckets=buckets,
+        summary_buckets=summary_buckets,
+        store_sections=store_sections,
         total_pending_amount=total_pending_amount,
         total_count=total_count,
     )
