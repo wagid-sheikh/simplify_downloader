@@ -29,21 +29,13 @@ def _build_context(
     data: PendingDeliveriesReportData, *, run_id: str, timezone_label: str
 ) -> dict[str, object]:
     report_date_display = data.report_date.strftime("%d-%b-%Y")
-    summary_rows = [
-        {
-            "label": bucket.label,
-            "count": bucket.total_count,
-            "pending_amount": bucket.total_pending_amount,
-        }
-        for bucket in data.summary_buckets
-    ]
     return {
         "report_date_display": report_date_display,
         "report_date": data.report_date.isoformat(),
         "run_id": run_id,
         "timezone": timezone_label,
-        "summary_rows": summary_rows,
-        "store_sections": data.store_sections,
+        "summary_sections": data.summary_sections,
+        "cost_center_sections": data.cost_center_sections,
         "total_count": data.total_count,
         "total_pending_amount": data.total_pending_amount,
     }
