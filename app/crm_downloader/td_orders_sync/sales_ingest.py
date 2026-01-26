@@ -498,16 +498,16 @@ async def ingest_td_sales_workbook(
                 payment_dates_by_order.setdefault(order_key, set()).add(payment_date)
 
         order_numbers = {str(row.get("order_number")) for row in rows}
-        gross_amounts: dict[tuple[str, str], Decimal] = {}
+        net_amounts: dict[tuple[str, str], Decimal] = {}
         if order_numbers:
             order_rows = await session.execute(
-                sa.select(orders_table.c.store_code, orders_table.c.order_number, orders_table.c.gross_amount).where(
+                sa.select(orders_table.c.store_code, orders_table.c.order_number, orders_table.c.net_amount).where(
                     sa.and_(orders_table.c.store_code == store_code, orders_table.c.order_number.in_(order_numbers))
                 )
             )
             for row in order_rows:
-                if row.gross_amount is not None:
-                    gross_amounts[(row.store_code, str(row.order_number))] = row.gross_amount
+                if row.net_amount is not None:
+                    net_amounts[(row.store_code, str(row.order_number))] = row.net_amount
 
         existing_payment_totals: dict[tuple[str, str], Decimal] = {}
         if order_numbers:
@@ -531,12 +531,12 @@ async def ingest_td_sales_workbook(
                     existing_payment_totals.get(order_key, Decimal("0")) + payment_received
                 )
 
-        # Compare gross_amount using the cumulative payment totals (existing payments + current workbook).
+        # Compare net_amount using the cumulative payment totals (existing payments + current workbook).
         edited_shortfall_keys = {
             key
             for key, total in payment_totals.items()
-            if key in gross_amounts
-            and (total + existing_payment_totals.get(key, Decimal("0"))) < gross_amounts[key]
+            if key in net_amounts
+            and (total + existing_payment_totals.get(key, Decimal("0"))) < net_amounts[key]
         }
 
         staging_count = 0
@@ -596,8 +596,8 @@ async def ingest_td_sales_workbook(
             if is_shortfall:
                 remarks.append(
                     "Total payment_received "
-                    f"{_stringify_value(payment_totals[order_key])} is less than gross_amount "
-                    f"{_stringify_value(gross_amounts[order_key])} for order '{order_number}'"
+                    f"{_stringify_value(payment_totals[order_key])} is less than net_amount "
+                    f"{_stringify_value(net_amounts[order_key])} for order '{order_number}'"
                 )
             row["is_duplicate"] = is_duplicate
             row["is_edited_order"] = is_duplicate or is_shortfall
