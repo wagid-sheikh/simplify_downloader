@@ -5,7 +5,7 @@ import os
 import logging
 import smtplib
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -665,7 +665,9 @@ def _format_identifier(row: Mapping[str, Any], *, include_extras: bool = False) 
     if not include_extras:
         return base
     extras: list[str] = []
-    order_date = _extract_row_value(row, "order_date", "Order Date", "invoice_date", "Invoice Date")
+    order_date = _format_fact_date(
+        _extract_row_value(row, "order_date", "Order Date", "invoice_date", "Invoice Date")
+    )
     if order_date:
         extras.append(f"order_date={order_date}")
     if extras:
@@ -712,6 +714,36 @@ def _normalize_fact_value(value: Any) -> str:
     return str(value).strip()
 
 
+def _format_fact_date(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    tz = get_timezone()
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(tz).strftime("%d-%m-%Y")
+    if isinstance(value, date):
+        return value.strftime("%d-%m-%Y")
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return ""
+        for candidate in (stripped, stripped.replace(" ", "")):
+            try:
+                if "T" in candidate or ":" in candidate:
+                    dt = datetime.fromisoformat(candidate)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt.astimezone(tz).strftime("%d-%m-%Y")
+                parsed_date = date.fromisoformat(candidate)
+                return parsed_date.strftime("%d-%m-%Y")
+            except ValueError:
+                continue
+        return stripped
+    return _normalize_fact_value(value)
+
+
 def _normalize_fact_row(
     row: Mapping[str, Any],
     *,
@@ -726,14 +758,24 @@ def _normalize_fact_row(
     )
     if not order_number:
         order_number = MISSING_ORDER_NUMBER_PLACEHOLDER
-    order_date = _normalize_fact_value(
+    order_date = _format_fact_date(
         _extract_row_value(row, "order_date", "Order Date", "invoice_date", "Invoice Date")
     )
     customer_name = _normalize_fact_value(
         _extract_row_value(row, "customer_name", "Customer Name", "Customer")
     )
     mobile_number = _normalize_fact_value(
-        _extract_row_value(row, "mobile_number", "Mobile Number", "Phone", "Phone Number")
+        _extract_row_value(
+            row,
+            "mobile_number",
+            "Mobile Number",
+            "Phone",
+            "Phone Number",
+            "Mobile No.",
+            "Mobile No",
+            "Customer Ph. No.",
+            "Customer Phone",
+        )
     )
     normalized = {
         "store_code": store_code,
