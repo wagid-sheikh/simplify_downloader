@@ -488,10 +488,14 @@ async def ingest_td_sales_workbook(
         duplicates_set = {key for key, count in duplicate_counts.items() if count > 1}
 
         payment_totals: dict[tuple[str, str], Decimal] = {}
+        payment_dates_by_order: dict[tuple[str, str], set[datetime]] = {}
         for row in rows:
             order_key = (store_code, str(row.get("order_number")))
             payment_received = row.get("payment_received") or Decimal("0")
             payment_totals[order_key] = payment_totals.get(order_key, Decimal("0")) + payment_received
+            payment_date = row.get("payment_date")
+            if payment_date is not None:
+                payment_dates_by_order.setdefault(order_key, set()).add(payment_date)
 
         order_numbers = {str(row.get("order_number")) for row in rows}
         gross_amounts: dict[tuple[str, str], Decimal] = {}
@@ -505,9 +509,34 @@ async def ingest_td_sales_workbook(
                 if row.gross_amount is not None:
                     gross_amounts[(row.store_code, str(row.order_number))] = row.gross_amount
 
-        # Compare gross_amount using only the current workbook payment totals (exclude prior ingests).
+        existing_payment_totals: dict[tuple[str, str], Decimal] = {}
+        if order_numbers:
+            existing_rows = await session.execute(
+                sa.select(
+                    final_table.c.store_code,
+                    final_table.c.order_number,
+                    final_table.c.payment_date,
+                    final_table.c.payment_received,
+                ).where(
+                    sa.and_(final_table.c.store_code == store_code, final_table.c.order_number.in_(order_numbers))
+                )
+            )
+            for row in existing_rows:
+                order_key = (row.store_code, str(row.order_number))
+                payment_date = row.payment_date
+                if payment_date and payment_date in payment_dates_by_order.get(order_key, set()):
+                    continue
+                payment_received = row.payment_received or Decimal("0")
+                existing_payment_totals[order_key] = (
+                    existing_payment_totals.get(order_key, Decimal("0")) + payment_received
+                )
+
+        # Compare gross_amount using the cumulative payment totals (existing payments + current workbook).
         edited_shortfall_keys = {
-            key for key, total in payment_totals.items() if key in gross_amounts and total < gross_amounts[key]
+            key
+            for key, total in payment_totals.items()
+            if key in gross_amounts
+            and (total + existing_payment_totals.get(key, Decimal("0"))) < gross_amounts[key]
         }
 
         staging_count = 0
