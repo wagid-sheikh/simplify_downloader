@@ -275,6 +275,7 @@ async def fetch_daily_sales_report(
     orders = sa.table(
         "orders",
         sa.column("cost_center"),
+        sa.column("order_number"),
         sa.column("order_date"),
         sa.column("net_amount"),
     )
@@ -394,7 +395,16 @@ async def fetch_daily_sales_report(
                 sales.c.cost_center,
                 sales.c.order_number,
                 sales.c.payment_received,
-                sales.c.adjustments,
+                orders.c.net_amount,
+            )
+            .select_from(
+                sales.outerjoin(
+                    orders,
+                    sa.and_(
+                        orders.c.order_number == sales.c.order_number,
+                        orders.c.cost_center == sales.c.cost_center,
+                    ),
+                )
             )
             .where(sales.c.is_edited_order.is_(True))
             .where(sales.c.payment_date >= edited_ranges["start_day"])
@@ -405,16 +415,14 @@ async def fetch_daily_sales_report(
         edited_result = await session.execute(edited_stmt)
         for entry in edited_result.mappings():
             payment_received = _decimal(entry["payment_received"])
-            adjustments = _decimal(entry["adjustments"])
-            original_value = payment_received + adjustments
-            new_value = payment_received
-            loss = original_value - new_value
+            net_amount = _decimal(entry["net_amount"])
+            loss = net_amount - payment_received
             edited_rows.append(
                 EditedOrderRow(
                     cost_center=str(entry["cost_center"]),
                     order_number=str(entry["order_number"]),
-                    original_value=original_value,
-                    new_value=new_value,
+                    original_value=net_amount,
+                    new_value=payment_received,
                     loss=loss,
                 )
             )
