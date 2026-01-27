@@ -180,7 +180,7 @@
     </table>
 
     {% if edited_orders %}
-    <div class="section-title">Edited Orders</div>
+    <div class="section-title">Edited/Underpaid Orders</div>
     {% if edited_orders_summary %}
     <div class="edited-orders-summary">
       Stores: {{ edited_orders_summary.store_count }} | Distinct Orders Edited:
@@ -198,8 +198,8 @@
           <th class="label">#</th>
           <th class="label">Cost Center</th>
           <th class="label">Order Number</th>
-          <th>Orig Order Value</th>
-          <th>New Order Value</th>
+          <th>Net Amount</th>
+          <th>Payment/New Value</th>
           <th>Loss</th>
         </tr>
       </thead>
