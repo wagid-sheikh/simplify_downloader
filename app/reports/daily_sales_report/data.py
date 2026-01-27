@@ -396,8 +396,6 @@ async def fetch_daily_sales_report(
                 sales.c.adjustments,
             )
             .where(sales.c.is_edited_order.is_(True))
-            .where(sales.c.payment_date >= ranges["start_day"])
-            .where(sales.c.payment_date < ranges["next_day"])
             .order_by(sales.c.cost_center, sales.c.order_number)
         )
         edited_rows: list[EditedOrderRow] = []
