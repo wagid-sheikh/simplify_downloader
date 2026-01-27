@@ -184,8 +184,8 @@
     {% if edited_orders_summary %}
     <div class="edited-orders-summary">
       Stores: {{ edited_orders_summary.store_count }} | Distinct Orders Edited:
-      {{ edited_orders_summary.distinct_order_count_total }} | Original: ₹{{
-      edited_orders_summary.sum_orig_distinct | format_amount }} | Revised: ₹{{
+      {{ edited_orders_summary.distinct_order_count_total }} | Net Amount: ₹{{
+      edited_orders_summary.sum_orig_distinct | format_amount }} | Payment/New Value: ₹{{
       edited_orders_summary.sum_new_distinct | format_amount }} | Net Loss: ₹{{
       edited_orders_summary.net_loss_distinct | format_amount }}{% if
       edited_orders_summary.per_store_counts %} ({{
@@ -198,8 +198,8 @@
           <th class="label">#</th>
           <th class="label">Cost Center</th>
           <th class="label">Order Number</th>
-          <th>Orig Order Value</th>
-          <th>New Order Value</th>
+          <th>Net Amount</th>
+          <th>Payment/New Value</th>
           <th>Loss</th>
         </tr>
       </thead>
