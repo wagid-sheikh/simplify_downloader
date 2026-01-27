@@ -253,6 +253,7 @@ async def fetch_daily_sales_report(
 ) -> DailySalesReportData:
     tz = get_timezone()
     ranges = _date_range(report_date, tz)
+    edited_ranges = _date_range(report_date - timedelta(days=1), tz)
     remaining_days = _remaining_days(report_date)
     day_of_month = report_date.day
     days_in_month = _days_in_month(report_date)
@@ -396,6 +397,8 @@ async def fetch_daily_sales_report(
                 sales.c.adjustments,
             )
             .where(sales.c.is_edited_order.is_(True))
+            .where(sales.c.payment_date >= edited_ranges["start_day"])
+            .where(sales.c.payment_date < ranges["next_day"])
             .order_by(sales.c.cost_center, sales.c.order_number)
         )
         edited_rows: list[EditedOrderRow] = []
