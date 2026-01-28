@@ -621,7 +621,17 @@ async def main(
             summary.notes.append("No UC stores with sync_orders_flag found; exiting")
             persist_attempted = True
             if await _persist_summary(summary=summary, logger=logger):
-                await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
+                notification_result = await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
+                log_event(
+                    logger=logger,
+                    phase="notifications",
+                    message="UC orders sync notification summary",
+                    run_id=resolved_run_id,
+                    run_env=resolved_env,
+                    emails_planned=notification_result["emails_planned"],
+                    emails_sent=notification_result["emails_sent"],
+                    notification_errors=notification_result["errors"],
+                )
             return
 
         download_timeout_ms = await _fetch_dashboard_nav_timeout_ms(config.database_url)
@@ -656,7 +666,17 @@ async def main(
         )
         persist_attempted = True
         if await _persist_summary(summary=summary, logger=logger):
-            await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
+            notification_result = await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
+            log_event(
+                logger=logger,
+                phase="notifications",
+                message="UC orders sync notification summary",
+                run_id=resolved_run_id,
+                run_env=resolved_env,
+                emails_planned=notification_result["emails_planned"],
+                emails_sent=notification_result["emails_sent"],
+                notification_errors=notification_result["errors"],
+            )
         else:
             log_event(
                 logger=logger,
