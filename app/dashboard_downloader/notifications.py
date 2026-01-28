@@ -2432,12 +2432,17 @@ def _uc_summary_text_from_payload(
     return "\n".join(lines)
 
 
-async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
+async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[str, Any]:
+    result: dict[str, Any] = {"emails_planned": 0, "emails_sent": 0, "errors": []}
     resources, errors = await _load_notification_resources(pipeline_name, run_id)
     if errors:
         for message in errors:
             logger.warning(message, extra={"pipeline": pipeline_name, "run_id": run_id})
-        return
+        result["errors"].extend(errors)
+        return result
+    if not resources:
+        result["errors"].append("notification resources unavailable")
+        return result
 
     pipeline_data = resources["pipeline"]
     run_data = resources["run"]
@@ -2476,6 +2481,10 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
     context["ingest_remarks"] = prepared_rows
     context["ingest_remarks_text"] = ingest_text
 
+    total_recipients = sum(len(recips) for recips in recipients_by_profile.values())
+    if not total_recipients:
+        result["errors"].append(f"no active notification recipients found for pipeline {pipeline_name}")
+
     plans = _build_email_plans(
         pipeline_code=pipeline_name,
         profiles=profiles_data,
@@ -2486,23 +2495,29 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> None:
         store_names=store_names,
     )
 
+    result["emails_planned"] = len(plans)
     if not plans:
         logger.info("No notification emails scheduled", extra={"pipeline": pipeline_name, "run_id": run_id})
-        return
+        result["errors"].append("no notification emails scheduled")
+        return result
 
     smtp_config = _load_smtp_config()
     if not smtp_config:
         logger.warning("SMTP configuration missing; skipping notifications")
-        return
+        result["errors"].append("SMTP configuration missing; skipping notifications")
+        return result
 
     sent = 0
     for plan in plans:
         if _send_email(smtp_config, plan):
             sent += 1
+    result["emails_sent"] = sent
+    result["emails_planned"] = len(plans)
     logger.info(
         "Notification dispatch complete",
         extra={"pipeline": pipeline_name, "run_id": run_id, "emails_sent": sent, "emails_planned": len(plans)},
     )
+    return result
 
 
 async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str]:

@@ -1763,7 +1763,17 @@ async def main(
         missing_windows=missing_windows,
         store_totals=store_totals,
     )
-    await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
+    notification_result = await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
+    log_event(
+        logger=logger,
+        phase="notifications",
+        message="Orders sync profiler notification summary",
+        run_id=resolved_run_id,
+        run_env=resolved_env,
+        emails_planned=notification_result["emails_planned"],
+        emails_sent=notification_result["emails_sent"],
+        notification_errors=notification_result["errors"],
+    )
     log_event(
         logger=logger,
         phase="summary",
