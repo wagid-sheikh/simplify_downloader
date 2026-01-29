@@ -189,6 +189,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             html,
             output_path,
             pdf_options={"format": "A4", "landscape": True},
+            logger=logger,
         )
         tracker.mark_phase("render_pdf", "ok")
         log_event(

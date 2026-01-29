@@ -625,7 +625,7 @@ async def render_pdf_with_configured_browser(
     html_content: str,
     output_path: str | Path,
     pdf_options: Mapping[str, Any] | None = None,
-    logger: JsonLogger | None = None,
+    logger: JsonLogger,
 ) -> None:
     from app.config import config
     from app.dashboard_downloader.json_logger import log_event
@@ -634,17 +634,16 @@ async def render_pdf_with_configured_browser(
     headless = config.pdf_render_headless
     chrome_exec = config.pdf_render_chrome_executable
 
-    if logger:
-        log_event(
-            logger=logger,
-            phase="render_pdf",
-            status="info",
-            message="rendering pdf with configured browser",
-            pdf_render_backend=backend,
-            pdf_render_headless=headless,
-            chrome_exec=Path(chrome_exec).name if chrome_exec else None,
-            executable_source="config.pdf_render_chrome_executable" if chrome_exec else None,
-        )
+    log_event(
+        logger=logger,
+        phase="render_pdf",
+        status="info",
+        message="rendering pdf with configured browser",
+        pdf_render_backend=backend,
+        pdf_render_headless=headless,
+        chrome_exec=Path(chrome_exec).name if chrome_exec else None,
+        executable_source="config.pdf_render_chrome_executable" if chrome_exec else None,
+    )
 
     async with async_playwright() as p:
         if backend == "local_chrome":

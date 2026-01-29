@@ -9,6 +9,7 @@ import sqlalchemy as sa
 
 from app.dashboard_downloader.config import fetch_store_codes
 from app.dashboard_downloader.db_tables import documents
+from app.dashboard_downloader.json_logger import JsonLogger
 from app.common.dashboard_store import store_dashboard_summary, store_master
 from app.common.db import session_scope
 from app.config import config
@@ -136,6 +137,7 @@ async def render_pdf(
     template_dir: Path,
     context: Mapping[str, Any],
     output_path: Path,
+    logger: JsonLogger,
 ) -> None:
     from jinja2 import Environment, FileSystemLoader, select_autoescape
     from app.dashboard_downloader.report_generator import render_pdf_with_configured_browser
@@ -145,7 +147,7 @@ async def render_pdf(
     template = env.get_template(TEMPLATE_NAME)
     html = template.render(**context)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    await render_pdf_with_configured_browser(html, output_path)
+    await render_pdf_with_configured_browser(html, output_path, logger=logger)
 
 
 async def generate_period_pdfs(
@@ -157,6 +159,7 @@ async def generate_period_pdfs(
     stores_without_data: Sequence[str],
     prefix: str,
     reference_key: str,
+    logger: JsonLogger,
 ) -> list[PdfArtifact]:
     artifacts: list[PdfArtifact] = []
     template_dir = TEMPLATE_DIR
@@ -173,7 +176,12 @@ async def generate_period_pdfs(
             "missing_stores": [],
         }
         output_path = REPORTS_ROOT / f"{report_date.year}" / f"{store_code}_{reference_key}_{period_label}.pdf"
-        await render_pdf(template_dir=template_dir, context=context, output_path=output_path)
+        await render_pdf(
+            template_dir=template_dir,
+            context=context,
+            output_path=output_path,
+            logger=logger,
+        )
         artifacts.append(PdfArtifact(store_code=store_code, file_path=output_path, period_label=period_label))
 
     for store_code, stats in store_stats.items():
@@ -194,6 +202,7 @@ async def generate_combined_pdf(
     missing_stores: Sequence[str],
     prefix: str,
     reference_key: str,
+    logger: JsonLogger,
 ) -> PdfArtifact:
     template_dir = TEMPLATE_DIR
     generated_at = datetime.utcnow().isoformat()
@@ -207,7 +216,12 @@ async def generate_combined_pdf(
         "missing_stores": list(missing_stores),
     }
     output_path = REPORTS_ROOT / f"{report_date.year}" / f"ALL_{reference_key}_{period_label}.pdf"
-    await render_pdf(template_dir=template_dir, context=context, output_path=output_path)
+    await render_pdf(
+        template_dir=template_dir,
+        context=context,
+        output_path=output_path,
+        logger=logger,
+    )
     return PdfArtifact(store_code="ALL", file_path=output_path, period_label=period_label)
 
 
