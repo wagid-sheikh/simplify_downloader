@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 from dataclasses import dataclass
@@ -633,51 +634,78 @@ async def render_pdf_with_configured_browser(
     backend = config.pdf_render_backend.lower()
     headless = config.pdf_render_headless
     chrome_exec = config.pdf_render_chrome_executable
+    timeout_seconds = config.pdf_render_timeout_seconds
 
     async with async_playwright() as p:
-        if backend == "local_chrome":
-            if not chrome_exec:
-                raise RuntimeError(
-                    "PDF_RENDER_CHROME_EXECUTABLE must be set when PDF_RENDER_BACKEND=local_chrome"
+        browser = None
+        try:
+            if backend == "local_chrome":
+                if not chrome_exec:
+                    raise RuntimeError(
+                        "PDF_RENDER_CHROME_EXECUTABLE must be set when PDF_RENDER_BACKEND=local_chrome"
+                    )
+                executable_path = chrome_exec
+                executable_source = "config.pdf_render_chrome_executable"
+                log_event(
+                    logger=logger,
+                    phase="render_pdf",
+                    status="info",
+                    message="rendering pdf with configured browser",
+                    pdf_render_backend=backend,
+                    pdf_render_headless=headless,
+                    chrome_exec=Path(executable_path).name,
+                    executable_source=executable_source,
                 )
-            executable_path = chrome_exec
-            executable_source = "config.pdf_render_chrome_executable"
-            log_event(
-                logger=logger,
-                phase="render_pdf",
-                status="info",
-                message="rendering pdf with configured browser",
-                pdf_render_backend=backend,
-                pdf_render_headless=headless,
-                chrome_exec=Path(executable_path).name,
-                executable_source=executable_source,
-            )
-            browser = await p.chromium.launch(
-                executable_path=executable_path,
-                headless=headless,
-            )
-        else:
-            executable_path = p.chromium.executable_path
-            executable_source = "playwright.chromium.executable_path"
-            log_event(
-                logger=logger,
-                phase="render_pdf",
-                status="info",
-                message="rendering pdf with configured browser",
-                pdf_render_backend=backend,
-                pdf_render_headless=headless,
-                chrome_exec=Path(executable_path).name if executable_path else None,
-                executable_source=executable_source,
-            )
-            browser = await p.chromium.launch(headless=headless)
+                browser = await asyncio.wait_for(
+                    p.chromium.launch(
+                        executable_path=executable_path,
+                        headless=headless,
+                    ),
+                    timeout=timeout_seconds,
+                )
+            else:
+                executable_path = p.chromium.executable_path
+                executable_source = "playwright.chromium.executable_path"
+                log_event(
+                    logger=logger,
+                    phase="render_pdf",
+                    status="info",
+                    message="rendering pdf with configured browser",
+                    pdf_render_backend=backend,
+                    pdf_render_headless=headless,
+                    chrome_exec=Path(executable_path).name if executable_path else None,
+                    executable_source=executable_source,
+                )
+                browser = await asyncio.wait_for(
+                    p.chromium.launch(headless=headless),
+                    timeout=timeout_seconds,
+                )
 
-        page = await browser.new_page()
-        await page.set_content(html_content, wait_until="networkidle")
-        options = {"path": str(output_path), "print_background": True, "format": "A4"}
-        if pdf_options:
-            options.update(pdf_options)
-        await page.pdf(**options)
-        await browser.close()
+            page = await asyncio.wait_for(browser.new_page(), timeout=timeout_seconds)
+            await asyncio.wait_for(
+                page.set_content(html_content, wait_until="networkidle"),
+                timeout=timeout_seconds,
+            )
+            options = {"path": str(output_path), "print_background": True, "format": "A4"}
+            if pdf_options:
+                options.update(pdf_options)
+            await asyncio.wait_for(page.pdf(**options), timeout=timeout_seconds)
+        except asyncio.TimeoutError as exc:
+            log_event(
+                logger=logger,
+                phase="render_pdf",
+                status="error",
+                message="pdf rendering timed out",
+                extras={
+                    "error": str(exc),
+                    "timeout_seconds": timeout_seconds,
+                    "pdf_render_backend": backend,
+                },
+            )
+            raise
+        finally:
+            if browser is not None:
+                await browser.close()
 
 
 class StoreReportPdfBuilder:

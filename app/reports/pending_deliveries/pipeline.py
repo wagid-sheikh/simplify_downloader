@@ -144,7 +144,27 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
         output_path = OUTPUT_ROOT / f"{PIPELINE_NAME}_{resolved_date.isoformat()}.pdf"
         if output_path.exists():
             output_path.unlink()
-        await render_pdf(html, output_path, logger=logger)
+        try:
+            await render_pdf(html, output_path, logger=logger)
+        except asyncio.TimeoutError as exc:
+            tracker.mark_phase("render_pdf", "error")
+            tracker.add_summary(
+                f"PDF rendering timed out after {config.pdf_render_timeout_seconds}s."
+            )
+            tracker.overall = "error"
+            log_event(
+                logger=logger,
+                phase="render_pdf",
+                status="error",
+                message="pending deliveries report pdf render timed out",
+                report_date=resolved_date.isoformat(),
+                file_path=str(output_path),
+                error=str(exc),
+            )
+            finished_at = datetime.now(timezone.utc)
+            record = tracker.build_record(finished_at)
+            await persist_summary_record(database_url, record)
+            return
         tracker.mark_phase("render_pdf", "ok")
         log_event(
             logger=logger,

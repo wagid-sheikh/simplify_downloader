@@ -2310,8 +2310,12 @@ async def run_all_stores_single_session(
     )
 
     async with async_playwright() as p:
-        ctx = await p.chromium.launch_persistent_context(**context_kwargs)
+        ctx: BrowserContext | None = None
         try:
+            ctx = await asyncio.wait_for(
+                p.chromium.launch_persistent_context(**context_kwargs),
+                timeout=config.etl_step_timeout_seconds,
+            )
             if storage_state_file is not None:
                 log_event(
                     logger=logger,
@@ -2348,27 +2352,53 @@ async def run_all_stores_single_session(
             home_page = pages[0] if pages else await ctx.new_page()
             session_page: Page | None = None
 
-            session_page = await _bootstrap_session_via_home_and_tracker(
-                home_page,
-                first_store_cfg,
-                logger,
-                settings=settings,
-                storage_state_file=storage_state_file,
-                storage_state_source=storage_state_source,
-                nav_timeout_ms=nav_timeout_ms,
-            )
+            try:
+                session_page = await asyncio.wait_for(
+                    _bootstrap_session_via_home_and_tracker(
+                        home_page,
+                        first_store_cfg,
+                        logger,
+                        settings=settings,
+                        storage_state_file=storage_state_file,
+                        storage_state_source=storage_state_source,
+                        nav_timeout_ms=nav_timeout_ms,
+                    ),
+                    timeout=config.etl_step_timeout_seconds,
+                )
+            except asyncio.TimeoutError as exc:
+                failure_extras = {
+                    "error": str(exc),
+                    "timeout_seconds": config.etl_step_timeout_seconds,
+                    "login_selector": page_selectors.LOGIN_USERNAME,
+                }
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    status="error",
+                    store_code=first_store_cfg.get("store_code"),
+                    bucket=None,
+                    message="single-session bootstrap timed out",
+                    extras=failure_extras,
+                )
+                if settings is not None:
+                    setattr(settings, "single_session_failure", failure_extras)
+                _finalize_merges(merged_buckets, download_counts, logger=logger)
+                return {}
 
             for _, cfg in store_items:
                 sc = cfg.get("store_code")
                 try:
-                    session_page = await _switch_to_store_dashboard_and_download(
-                        session_page,
-                        cfg,
-                        logger=logger,
-                        nav_timeout_ms=nav_timeout_ms,
-                        settings=settings,
-                        merged_buckets=merged_buckets,
-                        download_counts=download_counts,
+                    session_page = await asyncio.wait_for(
+                        _switch_to_store_dashboard_and_download(
+                            session_page,
+                            cfg,
+                            logger=logger,
+                            nav_timeout_ms=nav_timeout_ms,
+                            settings=settings,
+                            merged_buckets=merged_buckets,
+                            download_counts=download_counts,
+                        ),
+                        timeout=config.etl_step_timeout_seconds,
                     )
                 except NavigationTooManyRequestsError as exc:
                     backoff_seconds = 3
@@ -2390,7 +2420,11 @@ async def run_all_stores_single_session(
                     )
                     await asyncio.sleep(backoff_seconds)
                     continue
-                except TimeoutError as exc:
+                except asyncio.TimeoutError as exc:
+                    timeout_meta = download_counts.setdefault("_meta", {})
+                    timeout_meta["timeout_skips"] = (
+                        int(timeout_meta.get("timeout_skips", 0)) + 1
+                    )
                     log_event(
                         logger=logger,
                         phase="download",
@@ -2398,7 +2432,10 @@ async def run_all_stores_single_session(
                         store_code=sc,
                         bucket=None,
                         message="dashboard navigation timed out; skipping store",
-                        extras={"error": str(exc)},
+                        extras={
+                            "error": str(exc),
+                            "timeout_seconds": config.etl_step_timeout_seconds,
+                        },
                     )
                     continue
                 except SkipStoreDashboardError as exc:
@@ -2420,6 +2457,24 @@ async def run_all_stores_single_session(
                     store_code=sc,
                     bucket=None,
                 )
+        except asyncio.TimeoutError as exc:
+            failure_extras = {
+                "error": str(exc),
+                "timeout_seconds": config.etl_step_timeout_seconds,
+            }
+            log_event(
+                logger=logger,
+                phase="download",
+                status="error",
+                store_code=first_store_cfg.get("store_code"),
+                bucket=None,
+                message="single-session browser launch timed out",
+                extras=failure_extras,
+            )
+            if settings is not None:
+                setattr(settings, "single_session_failure", failure_extras)
+            _finalize_merges(merged_buckets, download_counts, logger=logger)
+            return {}
         except LoginBootstrapError as exc:
             failed_store_codes = [
                 (cfg.get("store_code") or name or "<unknown>")
@@ -2444,12 +2499,13 @@ async def run_all_stores_single_session(
             _finalize_merges(merged_buckets, download_counts, logger=logger)
             return {}
         finally:
-            ctx_is_closed = getattr(ctx, "is_closed", None)
-            if callable(ctx_is_closed):
-                if not ctx.is_closed():
+            if ctx is not None:
+                ctx_is_closed = getattr(ctx, "is_closed", None)
+                if callable(ctx_is_closed):
+                    if not ctx.is_closed():
+                        await ctx.close()
+                else:
                     await ctx.close()
-            else:
-                await ctx.close()
 
     _finalize_merges(merged_buckets, download_counts, logger=logger)
 

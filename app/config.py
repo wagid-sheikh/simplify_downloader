@@ -96,6 +96,8 @@ PLAINTEXT_DB_KEYS = [
     "PDF_RENDER_BACKEND",
     "PDF_RENDER_HEADLESS",
     "ETL_HEADLESS",
+    "ETL_STEP_TIMEOUT_SECONDS",
+    "PDF_RENDER_TIMEOUT_SECONDS",
     "pipeline_skip_dom_logging",
     "skip_lead_assignment",
     "SKIP_UC_Pending_Delivery",
@@ -305,6 +307,8 @@ class Config:
     pdf_render_backend: str
     pdf_render_headless: bool
     etl_headless: bool
+    etl_step_timeout_seconds: int
+    pdf_render_timeout_seconds: int
     pipeline_skip_dom_logging: bool
     skip_lead_assignment: bool
     skip_uc_pending_delivery: bool
@@ -341,6 +345,12 @@ class Config:
             db_values["PDF_RENDER_HEADLESS"], key="PDF_RENDER_HEADLESS"
         )
         etl_headless = _parse_bool(db_values["ETL_HEADLESS"], key="ETL_HEADLESS")
+        etl_step_timeout_seconds = _parse_int(
+            db_values["ETL_STEP_TIMEOUT_SECONDS"], key="ETL_STEP_TIMEOUT_SECONDS"
+        )
+        pdf_render_timeout_seconds = _parse_int(
+            db_values["PDF_RENDER_TIMEOUT_SECONDS"], key="PDF_RENDER_TIMEOUT_SECONDS"
+        )
         pipeline_skip_dom_logging = _parse_bool(
             db_values["pipeline_skip_dom_logging"], key="pipeline_skip_dom_logging"
         )
@@ -420,6 +430,8 @@ class Config:
             pdf_render_backend=pdf_render_backend,
             pdf_render_headless=pdf_render_headless,
             etl_headless=etl_headless,
+            etl_step_timeout_seconds=etl_step_timeout_seconds,
+            pdf_render_timeout_seconds=pdf_render_timeout_seconds,
             pipeline_skip_dom_logging=pipeline_skip_dom_logging,
             skip_lead_assignment=skip_lead_assignment,
             skip_uc_pending_delivery=skip_uc_pending_delivery,
