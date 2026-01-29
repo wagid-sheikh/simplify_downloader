@@ -27,7 +27,7 @@ Notification profiles and run summaries now standardise on the
 | Category | Variable(s) | Notes |
 | --- | --- | --- |
 | Reports & artifacts | `REPORTS_ROOT`, `JSON_LOG_FILE` | Point both at persistent volumes so Docker/Compose deployments keep history. |
-| PDF rendering | `PDF_RENDER_BACKEND`, `PDF_RENDER_HEADLESS`, `PDF_RENDER_CHROME_EXECUTABLE` | Tune based on whether Chrome is system-installed or bundled. |
+| PDF rendering | `PDF_RENDER_BACKEND`, `PDF_RENDER_HEADLESS`, `PDF_RENDER_CHROME_EXECUTABLE` | Tune based on whether Chrome is system-installed or bundled. Cron/non-interactive runs will still force headless mode on as a safety override. |
 | Dashboard endpoints | `TD_BASE_URL`, `TD_LOGIN_URL`, `TD_HOME_URL`, `TMS_BASE`, `TD_STORE_DASHBOARD_PATH` | Override only in staging where URLs differ. |
 | Batch tuning | `INGEST_BATCH_SIZE` | Adjust ingestion chunking for constrained CPUs. |
 
@@ -51,6 +51,12 @@ Example crontab entry (runs at 6:00 AM daily and logs via the script):
 ```bash
 0 6 * * * ENV_FILE=/opt/simplify/cron.env /opt/simplify/scripts/cron_run_orders_and_reports.sh
 ```
+
+When the runtime detects a non-interactive environment (for example, cron with
+`CRON_TZ` set, no `SHELL`, `TERM=dumb`, or SSH sessions without a GUI), it
+automatically forces both `ETL_HEADLESS` and `PDF_RENDER_HEADLESS` to `true`.
+The override is logged once at startup so automated runs avoid hanging on
+headful browser prompts.
 
 ## 3. Runtime validation guarantees
 

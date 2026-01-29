@@ -30,6 +30,7 @@ import binascii
 import logging
 import os
 import threading
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Mapping, TypeVar
@@ -112,6 +113,7 @@ REQUIRED_DB_KEYS = PLAINTEXT_DB_KEYS + ENCRYPTED_DB_KEYS
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
+_NON_INTERACTIVE_OVERRIDE_LOGGED = False
 
 
 class ConfigError(RuntimeError):
@@ -192,6 +194,38 @@ def _clean_text(value: str, *, key: str) -> str:
         logger.error(message)
         raise ConfigError(message)
     return stripped
+
+
+def is_non_interactive() -> bool:
+    if os.getenv("CRON_TZ"):
+        return True
+    if not os.getenv("SHELL"):
+        return True
+    if os.getenv("TERM") == "dumb":
+        return True
+
+    has_display = bool(os.getenv("DISPLAY") or os.getenv("WAYLAND_DISPLAY"))
+    if os.getenv("SSH_TTY") and not has_display:
+        return True
+    if sys.platform == "darwin" and not has_display:
+        return True
+
+    return False
+
+
+def _warn_non_interactive_override(
+    original_etl_headless: bool, original_pdf_render_headless: bool
+) -> None:
+    global _NON_INTERACTIVE_OVERRIDE_LOGGED
+    if _NON_INTERACTIVE_OVERRIDE_LOGGED:
+        return
+    _NON_INTERACTIVE_OVERRIDE_LOGGED = True
+    logger.warning(
+        "Non-interactive environment detected; overriding ETL_HEADLESS=%s and "
+        "PDF_RENDER_HEADLESS=%s to True.",
+        original_etl_headless,
+        original_pdf_render_headless,
+    )
 
 
 T = TypeVar("T")
@@ -345,6 +379,11 @@ class Config:
             db_values["PDF_RENDER_HEADLESS"], key="PDF_RENDER_HEADLESS"
         )
         etl_headless = _parse_bool(db_values["ETL_HEADLESS"], key="ETL_HEADLESS")
+        if is_non_interactive():
+            if not (etl_headless and pdf_render_headless):
+                _warn_non_interactive_override(etl_headless, pdf_render_headless)
+            etl_headless = True
+            pdf_render_headless = True
         etl_step_timeout_seconds = _parse_int(
             db_values["ETL_STEP_TIMEOUT_SECONDS"], key="ETL_STEP_TIMEOUT_SECONDS"
         )
