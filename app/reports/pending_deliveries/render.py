@@ -6,6 +6,7 @@ from typing import Mapping
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from app.dashboard_downloader.json_logger import JsonLogger
 from app.dashboard_downloader.report_generator import render_pdf_with_configured_browser
 
 TEMPLATE_NAME = "report.html"
@@ -49,10 +50,11 @@ def render_html(context: Mapping[str, object]) -> str:
     return template.render(**context)
 
 
-async def render_pdf(html: str, output_path: Path) -> None:
+async def render_pdf(html: str, output_path: Path, *, logger: JsonLogger) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     await render_pdf_with_configured_browser(
         html,
         output_path,
         pdf_options={"format": "A4", "landscape": True},
+        logger=logger,
     )
