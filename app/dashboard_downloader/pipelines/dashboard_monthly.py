@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List
 
 from app.dashboard_downloader.notifications import send_notifications_for_run
-from app.dashboard_downloader.json_logger import get_logger
+from app.dashboard_downloader.json_logger import get_logger, log_event
 from app.config import config
 
 from .base import (
@@ -121,17 +121,35 @@ async def _run(env: str | None = None) -> None:
             return
 
         pdfs: List[PdfArtifact] = []
-        per_store = await generate_period_pdfs(
-            pipeline_name=PIPELINE_NAME,
-            report_date=period_end,
-            period_label=period_label,
-            store_stats=stats_by_store,
-            stores_without_data=stores_without_data,
-            prefix="Monthly Store Performance",
-            reference_key="month",
-            logger=logger,
-        )
-        pdfs.extend(per_store)
+        try:
+            per_store = await generate_period_pdfs(
+                pipeline_name=PIPELINE_NAME,
+                report_date=period_end,
+                period_label=period_label,
+                store_stats=stats_by_store,
+                stores_without_data=stores_without_data,
+                prefix="Monthly Store Performance",
+                reference_key="month",
+                logger=logger,
+            )
+            pdfs.extend(per_store)
+        except asyncio.TimeoutError as exc:
+            tracker.mark_phase("render_pdfs", "error")
+            tracker.add_summary(
+                f"PDF rendering timed out after {config.pdf_render_timeout_seconds}s."
+            )
+            tracker.overall = "error"
+            log_event(
+                logger=logger,
+                phase="render_pdfs",
+                status="error",
+                message="monthly report pdf rendering timed out",
+                error=str(exc),
+            )
+            finished_at = datetime.now(timezone.utc)
+            record = tracker.build_record(finished_at)
+            await persist_summary_record(database_url, record)
+            return
 
         combined_totals = {
             "row_count": sum(stats["row_count"] for stats in stats_by_store.values()),
@@ -142,17 +160,35 @@ async def _run(env: str | None = None) -> None:
             values = [stats[key] for stats in stats_by_store.values() if stats[key] is not None]
             combined_totals[key] = sum(values) / len(values) if values else 0
 
-        combined_pdf = await generate_combined_pdf(
-            pipeline_name=PIPELINE_NAME,
-            report_date=period_end,
-            period_label=period_label,
-            combined_stats=combined_totals,
-            missing_stores=stores_without_data,
-            prefix="Monthly Store Performance",
-            reference_key="month",
-            logger=logger,
-        )
-        pdfs.append(combined_pdf)
+        try:
+            combined_pdf = await generate_combined_pdf(
+                pipeline_name=PIPELINE_NAME,
+                report_date=period_end,
+                period_label=period_label,
+                combined_stats=combined_totals,
+                missing_stores=stores_without_data,
+                prefix="Monthly Store Performance",
+                reference_key="month",
+                logger=logger,
+            )
+            pdfs.append(combined_pdf)
+        except asyncio.TimeoutError as exc:
+            tracker.mark_phase("render_pdfs", "error")
+            tracker.add_summary(
+                f"PDF rendering timed out after {config.pdf_render_timeout_seconds}s."
+            )
+            tracker.overall = "error"
+            log_event(
+                logger=logger,
+                phase="render_pdfs",
+                status="error",
+                message="monthly combined pdf rendering timed out",
+                error=str(exc),
+            )
+            finished_at = datetime.now(timezone.utc)
+            record = tracker.build_record(finished_at)
+            await persist_summary_record(database_url, record)
+            return
         tracker.metrics["pdfs_generated"] = len(pdfs)
         tracker.mark_phase("render_pdfs", "ok")
 
