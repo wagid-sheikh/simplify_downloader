@@ -625,8 +625,9 @@ async def render_store_report_pdf(
 async def render_pdf_with_configured_browser(
     html_content: str,
     output_path: str | Path,
-    pdf_options: Mapping[str, Any] | None = None,
+    *,
     logger: JsonLogger,
+    pdf_options: Mapping[str, Any] | None = None,
 ) -> None:
     from app.config import config
     from app.dashboard_downloader.json_logger import log_event
