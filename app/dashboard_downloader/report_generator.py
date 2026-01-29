@@ -634,28 +634,41 @@ async def render_pdf_with_configured_browser(
     headless = config.pdf_render_headless
     chrome_exec = config.pdf_render_chrome_executable
 
-    log_event(
-        logger=logger,
-        phase="render_pdf",
-        status="info",
-        message="rendering pdf with configured browser",
-        pdf_render_backend=backend,
-        pdf_render_headless=headless,
-        chrome_exec=Path(chrome_exec).name if chrome_exec else None,
-        executable_source="config.pdf_render_chrome_executable" if chrome_exec else None,
-    )
-
     async with async_playwright() as p:
         if backend == "local_chrome":
             if not chrome_exec:
                 raise RuntimeError(
                     "PDF_RENDER_CHROME_EXECUTABLE must be set when PDF_RENDER_BACKEND=local_chrome"
                 )
+            executable_path = chrome_exec
+            executable_source = "config.pdf_render_chrome_executable"
+            log_event(
+                logger=logger,
+                phase="render_pdf",
+                status="info",
+                message="rendering pdf with configured browser",
+                pdf_render_backend=backend,
+                pdf_render_headless=headless,
+                chrome_exec=Path(executable_path).name,
+                executable_source=executable_source,
+            )
             browser = await p.chromium.launch(
-                executable_path=chrome_exec,
+                executable_path=executable_path,
                 headless=headless,
             )
         else:
+            executable_path = p.chromium.executable_path
+            executable_source = "playwright.chromium.executable_path"
+            log_event(
+                logger=logger,
+                phase="render_pdf",
+                status="info",
+                message="rendering pdf with configured browser",
+                pdf_render_backend=backend,
+                pdf_render_headless=headless,
+                chrome_exec=Path(executable_path).name if executable_path else None,
+                executable_source=executable_source,
+            )
             browser = await p.chromium.launch(headless=headless)
 
         page = await browser.new_page()
