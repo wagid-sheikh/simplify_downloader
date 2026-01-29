@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/cron.env}"
+
+if [[ -f "${ENV_FILE}" ]]; then
+  # shellcheck disable=SC1090
+  source "${ENV_FILE}"
+fi
+
 # -------- CONFIG --------
-REPO_ROOT="/Users/wagidsheikh/crm_backend/simplify_downloader"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LOG_DIR="${REPO_ROOT}/logs"
 TIMESTAMP="$(date '+%Y-%m-%d_%H-%M-%S')"
 LOG_FILE="${LOG_DIR}/cron_run_orders_and_reports_${TIMESTAMP}.log"
@@ -14,7 +22,13 @@ echo "=== CRON RUN STARTED @ $(date) ===" >> "${LOG_FILE}"
 
 # IMPORTANT: ensure poetry is available to cron
 # export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
-export PATH="/Users/wagidsheikh/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
+CRON_HOME="${CRON_HOME:-${HOME:-/tmp}}"
+export HOME="${CRON_HOME}"
+
+CRON_PATH="${CRON_PATH:-/usr/local/bin:/opt/homebrew/bin}"
+export PATH="${CRON_PATH}:${PATH}"
+echo "ENV_FILE=${ENV_FILE}" >> "${LOG_FILE}"
+echo "HOME=${HOME}" >> "${LOG_FILE}"
 echo "PATH=$PATH" >> "${LOG_FILE}"
 echo "poetry=$(command -v poetry || echo NOT_FOUND)" >> "${LOG_FILE}"
 

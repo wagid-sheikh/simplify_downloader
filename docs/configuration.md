@@ -31,6 +31,27 @@ Notification profiles and run summaries now standardise on the
 | Dashboard endpoints | `TD_BASE_URL`, `TD_LOGIN_URL`, `TD_HOME_URL`, `TMS_BASE`, `TD_STORE_DASHBOARD_PATH` | Override only in staging where URLs differ. |
 | Batch tuning | `INGEST_BATCH_SIZE` | Adjust ingestion chunking for constrained CPUs. |
 
+## 2.1 Cron environment configuration
+
+The cron runner script (`scripts/cron_run_orders_and_reports.sh`) loads a small
+environment file before it executes so that cron does not rely on machine-local
+paths. Copy `scripts/cron.env.example` to `scripts/cron.env`, set the values for
+the cron user, and optionally point cron at a custom `ENV_FILE` path.
+
+Recommended variables for the cron env file:
+
+| Variable | Description |
+| --- | --- |
+| `CRON_HOME` | Stable home directory for the cron user; the script exports this to `HOME`. |
+| `CRON_PATH` | Extra PATH entries needed for Poetry/Python. |
+| `ENV_FILE` | (Optional) Override the env file path; defaults to `scripts/cron.env`. |
+
+Example crontab entry (runs at 6:00 AM daily and logs via the script):
+
+```bash
+0 6 * * * ENV_FILE=/opt/simplify/cron.env /opt/simplify/scripts/cron_run_orders_and_reports.sh
+```
+
 ## 3. Runtime validation guarantees
 
 * `dashboard_downloader.settings.load_settings` resolves stores from
