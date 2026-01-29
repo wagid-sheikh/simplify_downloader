@@ -5,6 +5,7 @@ import csv
 import json
 from pathlib import Path
 import re
+import subprocess
 from typing import Any, Awaitable, Dict, Iterable, List
 from datetime import datetime
 from urllib.parse import urlparse
@@ -67,6 +68,100 @@ class NavigationCertificateError(RuntimeError):
     """Raised when navigation encounters a certificate-related error."""
 
     pass
+
+
+def _chrome_process_running_for_profile(profile_dir: Path) -> bool:
+    profile_dir = profile_dir.expanduser().resolve()
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "pid,args"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return False
+
+    profile_marker = str(profile_dir)
+    for line in result.stdout.splitlines()[1:]:
+        if profile_marker in line:
+            lowered = line.lower()
+            if "chrome" in lowered or "chromium" in lowered:
+                return True
+    return False
+
+
+def cleanup_stale_chrome_locks(
+    profile_dir: Path,
+    *,
+    logger: JsonLogger | None = None,
+    store_code: str | None = None,
+) -> list[str]:
+    lock_names = ["SingletonLock", "SingletonSocket", "SingletonCookie"]
+    profile_dir = profile_dir.expanduser().resolve()
+    if logger:
+        log_event(
+            logger=logger,
+            phase="download",
+            status="info",
+            store_code=store_code,
+            bucket=None,
+            message="checking for stale chrome profile locks",
+            extras={"profile_dir": str(profile_dir), "lock_names": lock_names},
+        )
+
+    if _chrome_process_running_for_profile(profile_dir):
+        if logger:
+            log_event(
+                logger=logger,
+                phase="download",
+                status="info",
+                store_code=store_code,
+                bucket=None,
+                message="chrome process detected for profile; skipping lock cleanup",
+                extras={"profile_dir": str(profile_dir)},
+            )
+        return []
+
+    removed: list[str] = []
+    for lock_name in lock_names:
+        lock_path = profile_dir / lock_name
+        if lock_path.exists():
+            try:
+                lock_path.unlink()
+            except Exception as exc:
+                if logger:
+                    log_event(
+                        logger=logger,
+                        phase="download",
+                        status="warn",
+                        store_code=store_code,
+                        bucket=None,
+                        message="unable to remove stale chrome lock file",
+                        extras={
+                            "profile_dir": str(profile_dir),
+                            "lock_file": str(lock_path),
+                            "error": str(exc),
+                        },
+                    )
+            else:
+                removed.append(lock_name)
+
+    if logger:
+        message = (
+            "removed stale chrome profile locks" if removed else "no stale chrome locks found"
+        )
+        log_event(
+            logger=logger,
+            phase="download",
+            status="info",
+            store_code=store_code,
+            bucket=None,
+            message=message,
+            extras={"profile_dir": str(profile_dir), "removed": removed},
+        )
+
+    return removed
 
 
 async def navigate_with_retry(
@@ -2208,46 +2303,51 @@ async def run_all_stores_single_session(
         if config.pdf_render_chrome_executable:
             context_kwargs["executable_path"] = config.pdf_render_chrome_executable
 
+    cleanup_stale_chrome_locks(
+        user_dir,
+        logger=logger,
+        store_code=first_store_cfg.get("store_code"),
+    )
+
     async with async_playwright() as p:
         ctx = await p.chromium.launch_persistent_context(**context_kwargs)
-
-        if storage_state_file is not None:
-            log_event(
-                logger=logger,
-                phase="download",
-                status="info",
-                store_code=first_store_cfg.get("store_code"),
-                bucket=None,
-                message="loading storage state for single-session run",
-                extras={
-                    "storage_state": str(storage_state_file),
-                    "source": storage_state_source or "unspecified",
-                },
-            )
-            await _prime_context_with_storage_state(
-                ctx,
-                storage_state_file,
-                store_code=first_store_cfg.get("store_code", ""),
-                logger=logger,
-            )
-            log_event(
-                logger=logger,
-                phase="download",
-                status="info",
-                store_code=first_store_cfg.get("store_code"),
-                bucket=None,
-                message="bootstrap: using stored browser state for single-session run",
-                extras={
-                    "storage_state": str(storage_state_file),
-                    "source": storage_state_source or "unspecified",
-                },
-            )
-
-        pages = ctx.pages
-        home_page = pages[0] if pages else await ctx.new_page()
-        session_page: Page | None = None
-
         try:
+            if storage_state_file is not None:
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    status="info",
+                    store_code=first_store_cfg.get("store_code"),
+                    bucket=None,
+                    message="loading storage state for single-session run",
+                    extras={
+                        "storage_state": str(storage_state_file),
+                        "source": storage_state_source or "unspecified",
+                    },
+                )
+                await _prime_context_with_storage_state(
+                    ctx,
+                    storage_state_file,
+                    store_code=first_store_cfg.get("store_code", ""),
+                    logger=logger,
+                )
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    status="info",
+                    store_code=first_store_cfg.get("store_code"),
+                    bucket=None,
+                    message="bootstrap: using stored browser state for single-session run",
+                    extras={
+                        "storage_state": str(storage_state_file),
+                        "source": storage_state_source or "unspecified",
+                    },
+                )
+
+            pages = ctx.pages
+            home_page = pages[0] if pages else await ctx.new_page()
+            session_page: Page | None = None
+
             session_page = await _bootstrap_session_via_home_and_tracker(
                 home_page,
                 first_store_cfg,
