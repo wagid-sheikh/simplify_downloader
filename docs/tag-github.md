@@ -60,3 +60,6 @@ git push origin v2.10
 
 git tag -a v2.11 -m "Stable after orders_sync_run_profiler and daily_sales_report"
 git push origin v2.11
+
+git tag -a v2.12 -m "Before Development of UC Sales Sync"
+git push origin v2.12
