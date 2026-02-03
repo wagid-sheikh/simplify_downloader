@@ -16,7 +16,8 @@ ADJUSTMENT_REMARK = "Orders Value was adjusted"
 
 
 def _update_adjusted_rows(table_name: str) -> None:
-    op.execute(
+    connection = op.get_bind()
+    connection.execute(
         sa.text(
             f"""
             UPDATE {table_name}
