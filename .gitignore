@@ -230,3 +230,4 @@ update_system_secrets_local.py
 *.sql.gz
 
 app/charms_wiki/Wiki-PDF
+.DS_Store

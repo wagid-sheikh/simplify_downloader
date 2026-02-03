@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0066_mark_adjusted_sales_as_edited"
+revision = "0066_mark_adjusted_sales_edited"
 down_revision = "0065_add_timeout_config_keys"
 branch_labels = None
 depends_on = None
