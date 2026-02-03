@@ -588,6 +588,8 @@ async def ingest_td_sales_workbook(
             remarks = row.pop("_remarks", [])
             is_duplicate = duplicate_key in duplicates_set
             is_shortfall = order_key in edited_shortfall_keys
+            adjustments = row.get("adjustments") or Decimal("0")
+            is_adjusted = adjustments > 0
             if is_duplicate:
                 remarks.append(
                     "Duplicate order_number/payment_mode "
@@ -599,8 +601,10 @@ async def ingest_td_sales_workbook(
                     f"{_stringify_value(payment_totals[order_key])} is less than net_amount "
                     f"{_stringify_value(net_amounts[order_key])} for order '{order_number}'"
                 )
+            if is_adjusted:
+                remarks.append("Orders Value was adjusted")
             row["is_duplicate"] = is_duplicate
-            row["is_edited_order"] = is_duplicate or is_shortfall
+            row["is_edited_order"] = is_duplicate or is_shortfall or is_adjusted
             row["ingest_remarks"] = "; ".join(remarks) if remarks else None
             if row["is_edited_order"]:
                 edited_rows.append(
