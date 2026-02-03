@@ -157,6 +157,8 @@ async def fetch_pending_deliveries_report(
     orders = _orders_table(metadata)
     sales = _sales_table(metadata)
 
+    # TODO: Include adjustments in TumbleDry paid amount calculation.
+    # Task stub: For TumbleDry, paid should be sum(payment_received + adjustments).
     paid_amount_expr = sa.func.coalesce(sa.func.sum(sales.c.payment_received), 0)
     amount_expr = sa.func.coalesce(
         sa.case(
