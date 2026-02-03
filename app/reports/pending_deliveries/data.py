@@ -24,6 +24,9 @@ class PendingDeliveryRow:
     gross_amount: Decimal
     paid_amount: Decimal
     pending_amount: Decimal
+    adjustments: Decimal
+    is_edited_order: bool
+    is_duplicate: bool
     source_system: str
 
 
@@ -177,6 +180,13 @@ async def fetch_pending_deliveries_report(
         ),
         0,
     )
+    adjustments_expr = sa.func.coalesce(sa.func.sum(sales.c.adjustments), 0)
+    is_edited_order_expr = sa.func.max(
+        sa.case((sales.c.is_edited_order.is_(True), 1), else_=0)
+    )
+    is_duplicate_expr = sa.func.max(
+        sa.case((sales.c.is_duplicate.is_(True), 1), else_=0)
+    )
     pending_amount_expr = sa.func.greatest(amount_expr - paid_amount_expr, 0)
 
     stmt = (
@@ -190,6 +200,9 @@ async def fetch_pending_deliveries_report(
             amount_expr.label("gross_amount"),
             paid_amount_expr.label("paid_amount"),
             pending_amount_expr.label("pending_amount"),
+            adjustments_expr.label("adjustments"),
+            is_edited_order_expr.label("is_edited_order"),
+            is_duplicate_expr.label("is_duplicate"),
         )
         .select_from(
             orders.outerjoin(
@@ -230,6 +243,9 @@ async def fetch_pending_deliveries_report(
             gross_amount = _decimal(record.get("gross_amount"))
             paid_amount = _decimal(record.get("paid_amount"))
             pending_amount = _decimal(record.get("pending_amount"))
+            adjustments = _decimal(record.get("adjustments"))
+            is_edited_order = bool(record.get("is_edited_order"))
+            is_duplicate = bool(record.get("is_duplicate"))
             rows.append(
                 PendingDeliveryRow(
                     cost_center=str(record.get("cost_center") or ""),
@@ -241,6 +257,9 @@ async def fetch_pending_deliveries_report(
                     gross_amount=gross_amount,
                     paid_amount=paid_amount,
                     pending_amount=pending_amount,
+                    adjustments=adjustments,
+                    is_edited_order=is_edited_order,
+                    is_duplicate=is_duplicate,
                     source_system=str(record.get("source_system") or ""),
                 )
             )

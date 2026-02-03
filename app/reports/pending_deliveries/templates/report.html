@@ -61,6 +61,9 @@
         text-align: center;
         color: #6b7280;
       }
+      .adjusted-row {
+        color: #b91c1c;
+      }
     </style>
   </head>
   <body>
@@ -126,7 +129,7 @@
       <tbody>
         {% if bucket.rows %}
         {% for row in bucket.rows %}
-        <tr>
+        <tr class="{% if row.adjustments > 0 or row.is_edited_order or row.is_duplicate %}adjusted-row{% endif %}">
           <td>{{ row.age_days }}</td>
           <td>{{ row.order_date.strftime('%d-%b-%Y') }}</td>
           <td>{{ row.order_number }}</td>
