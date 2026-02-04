@@ -4880,83 +4880,19 @@ async def _is_on_home_dashboard(*, page: Page, store: UcStore) -> bool:
 
 async def _navigate_to_gst_reports(*, page: Page, store: UcStore, logger: JsonLogger) -> bool:
     orders_url = store.orders_url or ""
+    gst_report_url = "https://store.ucleanlaundry.com/gst-report"
     try:
-        await page.wait_for_load_state("networkidle", timeout=15_000)
-    except Exception:
-        pass
-    nav_root = await _find_nav_root(page)
-    link_locator: Locator | None = None
-    matched_selector: str | None = None
-    gst_href_candidate = "/gst-report"
-    link_locator = await _locate_nav_link_by_href(nav_root, gst_href_candidate)
-    if link_locator is not None:
-        matched_selector = f"a[href*='{gst_href_candidate}']"
-    else:
-        await _expand_nav_groups(page=page, nav_root=nav_root, logger=logger, store=store)
-        link_locator = await _locate_nav_link_by_href(nav_root, gst_href_candidate)
-        if link_locator is not None:
-            matched_selector = f"a[href*='{gst_href_candidate}']"
-
-    url_candidates = _build_url_candidates(orders_url)
-    if link_locator is None:
-        for candidate in url_candidates:
-            locator = nav_root.locator(f"a[href*=\"{candidate}\"]")
-            try:
-                if await locator.count():
-                    link_locator = locator.first
-                    matched_selector = f"a[href*='{candidate}']"
-                    break
-            except Exception:
-                continue
-
-    fallback_handle = None
-    if link_locator is None:
-        label_candidates = store.gst_menu_labels or list(GST_MENU_LABELS)
-        label_candidates = list(dict.fromkeys([*label_candidates, "Reports"]))
-        for label in label_candidates:
-            locator = nav_root.locator("a, button, [role='menuitem']").filter(has_text=re.compile(label, re.I))
-            try:
-                if await locator.count():
-                    link_locator = locator.first
-                    matched_selector = f"nav text '{label}'"
-                    break
-            except Exception:
-                continue
-        if link_locator is None:
-            fallback_handle = await _locate_nav_ancestor_by_text(nav_root, label_candidates)
-            if fallback_handle is not None:
-                matched_selector = "nav ancestor by text"
-
-    if link_locator is None and fallback_handle is None:
-        nav_links = await _summarize_nav_links(nav_root)
-        dom_snippet = await _maybe_get_dom_snippet(page)
-        log_event(
-            logger=logger,
-            phase="navigation",
-            status="warn",
-            message="GST reports navigation item not found",
-            store_code=store.store_code,
-            orders_url=orders_url,
-            current_url=page.url,
-            nav_links=nav_links,
-            **_dom_snippet_fields(dom_snippet),
-        )
-        return False
-
-    try:
-        if link_locator is not None:
-            await link_locator.click()
-        else:
-            await fallback_handle.click()
+        await page.goto(gst_report_url, wait_until="domcontentloaded")
     except Exception as exc:
         log_event(
             logger=logger,
             phase="navigation",
             status="warn",
-            message="GST reports navigation click failed",
+            message="GST reports direct navigation failed",
             store_code=store.store_code,
             orders_url=orders_url,
             current_url=page.url,
+            target_url=gst_report_url,
             error=str(exc),
         )
         return False
@@ -4964,11 +4900,11 @@ async def _navigate_to_gst_reports(*, page: Page, store: UcStore, logger: JsonLo
     log_event(
         logger=logger,
         phase="navigation",
-        message="GST reports navigation clicked",
+        message="GST reports direct navigation complete",
         store_code=store.store_code,
         orders_url=orders_url,
         current_url=page.url,
-        selector=matched_selector,
+        target_url=gst_report_url,
     )
     return True
 
