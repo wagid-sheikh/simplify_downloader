@@ -329,6 +329,7 @@ class ArchiveOrdersExtract:
     order_detail_rows: list[dict[str, Any]] = field(default_factory=list)
     payment_detail_rows: list[dict[str, Any]] = field(default_factory=list)
     page_count: int = 0
+    footer_total: int | None = None
 
 def _normalize_output_status(status: str | None) -> str:
     normalized = str(status or "").lower()
@@ -1551,16 +1552,41 @@ def _normalize_order_mode(text: str | None) -> str | None:
     return cleaned or None
 
 
-ARCHIVE_REQUIRED_FIELDS = (
-    "order_code",
-    "delivery",
-    "customer_name",
-    "customer_phone",
+ARCHIVE_FOOTER_TOTAL_SELECTORS = (
+    "div[style*='justify-content: flex-end'] p",
+    ".table-footer p",
+    ".pagination-footer p",
+    ".pagination-summary p",
 )
 
 
-def _get_missing_archive_fields(base_row: dict[str, Any]) -> list[str]:
-    return [field for field in ARCHIVE_REQUIRED_FIELDS if not base_row.get(field)]
+def _parse_archive_footer_total(text: str) -> int | None:
+    match = re.search(r"showing\s+results\s+\d+\s+to\s+\d+\s+of\s+([\d,]+)\s+total", text, re.I)
+    if not match:
+        match = re.search(r"\bof\s+([\d,]+)\b", text, re.I)
+    if not match:
+        return None
+    return int(match.group(1).replace(",", ""))
+
+
+async def _get_archive_footer_total(page: Page) -> int | None:
+    for selector in ARCHIVE_FOOTER_TOTAL_SELECTORS:
+        locator = page.locator(selector).first
+        if not await locator.count():
+            continue
+        text = await _locator_text(locator)
+        if not text:
+            continue
+        total = _parse_archive_footer_total(text)
+        if total is not None:
+            return total
+    return None
+
+
+def _is_payment_pending(payment_text: str | None) -> bool:
+    if not payment_text:
+        return False
+    return "payment pending" in payment_text.lower()
 
 
 async def _extract_archive_base_row(
@@ -1842,10 +1868,15 @@ async def _collect_archive_orders(
     extract = ArchiveOrdersExtract()
     seen_orders: set[str] = set()
     page_index = 1
+    footer_total: int | None = None
 
     while True:
         with contextlib.suppress(TimeoutError):
             await page.wait_for_selector(ARCHIVE_TABLE_ROW_SELECTOR, timeout=NAV_TIMEOUT_MS)
+        if footer_total is None:
+            footer_total = await _get_archive_footer_total(page)
+            if footer_total is not None:
+                extract.footer_total = footer_total
         row_locator = page.locator(ARCHIVE_TABLE_ROW_SELECTOR)
         raw_row_count = await row_locator.count()
         valid_rows: list[tuple[Locator, str]] = []
@@ -1853,9 +1884,18 @@ async def _collect_archive_orders(
             row = row_locator.nth(idx)
             order_code = await _get_archive_order_code(row)
             if not order_code:
+                log_event(
+                    logger=logger,
+                    phase="warnings",
+                    status="warn",
+                    message="Archive Orders row missing order code; skipping details",
+                    store_code=store.store_code,
+                    page_number=page_index,
+                    row_index=idx,
+                )
                 continue
             valid_rows.append((row, order_code))
-        row_count = len(valid_rows)
+        row_count = raw_row_count
         extract.page_count += 1
         log_event(
             logger=logger,
@@ -1864,6 +1904,7 @@ async def _collect_archive_orders(
             store_code=store.store_code,
             page_number=page_index,
             row_count=row_count,
+            footer_total=footer_total,
         )
         if row_count == 0:
             log_event(
@@ -1890,19 +1931,6 @@ async def _collect_archive_orders(
                     store_code=store.store_code,
                     order_code=order_code,
                     page_number=page_index,
-                )
-                continue
-            missing_fields = _get_missing_archive_fields(base_row)
-            if missing_fields:
-                log_event(
-                    logger=logger,
-                    phase="warnings",
-                    status="warn",
-                    message="Archive Orders row missing required fields; skipping",
-                    store_code=store.store_code,
-                    order_code=order_code,
-                    page_number=page_index,
-                    missing_fields=missing_fields,
                 )
                 continue
             seen_orders.add(order_code)
@@ -1933,14 +1961,24 @@ async def _collect_archive_orders(
                     error=str(exc),
                 )
             try:
-                payment_rows = await _extract_payment_details(
-                    page=page,
-                    row=row,
-                    store=store,
-                    logger=logger,
-                    order_code=order_code,
-                )
-                extract.payment_detail_rows.extend(payment_rows)
+                if _is_payment_pending(base_row.get("payment_text")):
+                    log_event(
+                        logger=logger,
+                        phase="extraction",
+                        message="Payment pending; skipping payment details extraction",
+                        store_code=store.store_code,
+                        order_code=order_code,
+                        page_number=page_index,
+                    )
+                else:
+                    payment_rows = await _extract_payment_details(
+                        page=page,
+                        row=row,
+                        store=store,
+                        logger=logger,
+                        order_code=order_code,
+                    )
+                    extract.payment_detail_rows.extend(payment_rows)
             except Exception as exc:
                 log_event(
                     logger=logger,
@@ -1951,6 +1989,18 @@ async def _collect_archive_orders(
                     order_code=order_code,
                     error=str(exc),
                 )
+
+        if footer_total is not None and len(seen_orders) >= footer_total:
+            log_event(
+                logger=logger,
+                phase="pagination",
+                message="Archive Orders footer total reached; stopping pagination",
+                store_code=store.store_code,
+                page_number=page_index,
+                footer_total=footer_total,
+                total_rows=len(seen_orders),
+            )
+            break
 
         if store.store_code == "UC610" and page_index >= 2 and new_unique_orders == 0:
             log_event(
@@ -1972,6 +2022,7 @@ async def _collect_archive_orders(
                 store_code=store.store_code,
                 page_number=page_index,
                 total_rows=len(extract.base_rows),
+                footer_total=footer_total,
             )
             break
         previous_first = await _get_first_order_code(page)
@@ -2053,6 +2104,7 @@ async def _collect_archive_orders(
         order_detail_rows=len(extract.order_detail_rows),
         payment_detail_rows=len(extract.payment_detail_rows),
         page_count=extract.page_count,
+        footer_total=extract.footer_total,
     )
     return extract
 
