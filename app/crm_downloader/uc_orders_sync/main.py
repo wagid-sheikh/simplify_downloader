@@ -1368,74 +1368,14 @@ async def _navigate_to_archive_orders(*, page: Page, store: UcStore, logger: Jso
         store_code=store.store_code,
         current_url=page.url,
     )
-    reports_selectors = [
-        "button:has-text('Reports')",
-        ".navigation-item:has-text('Reports')",
-        "text=Reports",
-    ]
-    clicked_reports = False
-    for selector in reports_selectors:
-        locator = page.locator(selector).first
-        if await locator.count():
-            try:
-                await locator.click()
-                clicked_reports = True
-                log_event(
-                    logger=logger,
-                    phase="navigation",
-                    message="Reports menu clicked",
-                    store_code=store.store_code,
-                    selector=selector,
-                )
-                break
-            except Exception as exc:
-                log_event(
-                    logger=logger,
-                    phase="navigation",
-                    status="warn",
-                    message="Reports menu click failed",
-                    store_code=store.store_code,
-                    selector=selector,
-                    error=str(exc),
-                )
-    if clicked_reports:
-        archive_menu = page.locator("text=Archive Orders").first
-        if await archive_menu.count():
-            try:
-                await archive_menu.click()
-                log_event(
-                    logger=logger,
-                    phase="navigation",
-                    message="Archive Orders menu clicked",
-                    store_code=store.store_code,
-                )
-            except Exception as exc:
-                log_event(
-                    logger=logger,
-                    phase="navigation",
-                    status="warn",
-                    message="Archive Orders menu click failed",
-                    store_code=store.store_code,
-                    error=str(exc),
-                )
-        else:
-            log_event(
-                logger=logger,
-                phase="navigation",
-                status="warn",
-                message="Archive Orders menu not found; using direct URL",
-                store_code=store.store_code,
-            )
-            await page.goto(ARCHIVE_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-    else:
-        log_event(
-            logger=logger,
-            phase="navigation",
-            status="warn",
-            message="Reports menu not found; using direct URL",
-            store_code=store.store_code,
-        )
-        await page.goto(ARCHIVE_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+    log_event(
+        logger=logger,
+        phase="navigation",
+        message="Navigating to Archive Orders via direct URL",
+        store_code=store.store_code,
+        target_url=ARCHIVE_URL,
+    )
+    await page.goto(ARCHIVE_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
 
     try:
         await page.wait_for_url("**/archive", timeout=NAV_TIMEOUT_MS)
