@@ -604,6 +604,9 @@ async def main(
     resolved_run_date = datetime.now(get_timezone())
     resolved_env = run_env or config.run_env
     current_date = aware_now(get_timezone()).date()
+    # TODO: Remove this fixed sampling window before Stage 2; restore dynamic date range handling.
+    from_date = current_date - timedelta(days=30)
+    to_date = current_date
     run_end_date = to_date or current_date
     if from_date and from_date > run_end_date:
         raise ValueError(f"from_date ({from_date}) must be on or before to_date ({run_end_date})")
