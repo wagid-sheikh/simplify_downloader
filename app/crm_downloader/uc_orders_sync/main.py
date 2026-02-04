@@ -1552,12 +1552,10 @@ def _normalize_order_mode(text: str | None) -> str | None:
 
 
 ARCHIVE_REQUIRED_FIELDS = (
-    "pickup",
+    "order_code",
     "delivery",
     "customer_name",
     "customer_phone",
-    "address",
-    "status",
 )
 
 
@@ -1605,7 +1603,7 @@ async def _extract_order_details(
     store: UcStore,
     logger: JsonLogger,
     order_code: str,
-) -> tuple[list[dict[str, Any]], str | None]:
+) -> tuple[list[dict[str, Any]], str | None, str | None]:
     details: list[dict[str, Any]] = []
     order_click = row.locator("td.order-col span").first
     if not await order_click.count():
@@ -1617,7 +1615,7 @@ async def _extract_order_details(
             store_code=store.store_code,
             order_code=order_code,
         )
-        return details, None
+        return details, None, None
     await order_click.click()
     modal = page.locator("mat-dialog-container").last
     try:
@@ -1631,7 +1629,7 @@ async def _extract_order_details(
             store_code=store.store_code,
             order_code=order_code,
         )
-        return details, None
+        return details, None, None
 
     order_number = order_code
     order_mode = _normalize_order_mode(
@@ -1710,7 +1708,7 @@ async def _extract_order_details(
             await page.keyboard.press("Escape")
     with contextlib.suppress(TimeoutError):
         await modal.wait_for(state="detached", timeout=10_000)
-    return details, order_mode
+    return details, order_mode, pickup_datetime
 
 
 async def _extract_payment_details(
@@ -1912,7 +1910,7 @@ async def _collect_archive_orders(
             extract.base_rows.append(base_row)
 
             try:
-                detail_rows, customer_source = await _extract_order_details(
+                detail_rows, customer_source, pickup_datetime = await _extract_order_details(
                     page=page,
                     row=row,
                     store=store,
@@ -1922,6 +1920,8 @@ async def _collect_archive_orders(
                 extract.order_detail_rows.extend(detail_rows)
                 if customer_source:
                     base_row["customer_source"] = customer_source
+                if not base_row.get("pickup") and pickup_datetime:
+                    base_row["pickup"] = pickup_datetime
             except Exception as exc:
                 log_event(
                     logger=logger,
