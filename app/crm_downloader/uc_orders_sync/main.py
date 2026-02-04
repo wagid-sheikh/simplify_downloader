@@ -153,6 +153,7 @@ ARCHIVE_BASE_COLUMNS = [
     "address",
     "payment_text",
     "instructions",
+    "customer_source",
     "status",
     "status_date",
 ]
@@ -1541,6 +1542,15 @@ def _split_multiline_cell(text: str | None) -> list[str]:
     return cleaned_items
 
 
+def _normalize_order_mode(text: str | None) -> str | None:
+    if not text:
+        return None
+    cleaned = text.strip()
+    if cleaned.startswith("(") and cleaned.endswith(")"):
+        cleaned = cleaned[1:-1].strip()
+    return cleaned or None
+
+
 async def _extract_archive_base_row(
     *,
     row: Locator,
@@ -1568,6 +1578,7 @@ async def _extract_archive_base_row(
         "address": address,
         "payment_text": payment_text,
         "instructions": instructions,
+        "customer_source": None,
         "status": status,
         "status_date": status_date,
     }
@@ -1580,7 +1591,7 @@ async def _extract_order_details(
     store: UcStore,
     logger: JsonLogger,
     order_code: str,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], str | None]:
     details: list[dict[str, Any]] = []
     order_click = row.locator("td.order-col span").first
     if not await order_click.count():
@@ -1592,7 +1603,7 @@ async def _extract_order_details(
             store_code=store.store_code,
             order_code=order_code,
         )
-        return details
+        return details, None
     await order_click.click()
     modal = page.locator("mat-dialog-container").last
     try:
@@ -1606,10 +1617,12 @@ async def _extract_order_details(
             store_code=store.store_code,
             order_code=order_code,
         )
-        return details
+        return details, None
 
     order_number = order_code
-    order_mode = None
+    order_mode = _normalize_order_mode(
+        await _locator_text(modal.locator(".order-info-label .order-mode").first)
+    )
     order_datetime = None
     pickup_datetime = None
     delivery_datetime = None
@@ -1623,8 +1636,8 @@ async def _extract_order_details(
             if match:
                 order_number = match.group(1)
             mode_match = re.search(r"\(([^)]+)\)", label)
-            if mode_match:
-                order_mode = mode_match.group(1)
+            if mode_match and not order_mode:
+                order_mode = _normalize_order_mode(mode_match.group(0))
             timestamp = await _locator_text(item.locator("div").nth(1))
             order_datetime = timestamp or order_datetime
         elif label and "Pickup" in label:
@@ -1683,7 +1696,7 @@ async def _extract_order_details(
             await page.keyboard.press("Escape")
     with contextlib.suppress(TimeoutError):
         await modal.wait_for(state="detached", timeout=10_000)
-    return details
+    return details, order_mode
 
 
 async def _extract_payment_details(
@@ -1872,7 +1885,7 @@ async def _collect_archive_orders(
             extract.base_rows.append(base_row)
 
             try:
-                detail_rows = await _extract_order_details(
+                detail_rows, customer_source = await _extract_order_details(
                     page=page,
                     row=row,
                     store=store,
@@ -1880,6 +1893,8 @@ async def _collect_archive_orders(
                     order_code=order_code,
                 )
                 extract.order_detail_rows.extend(detail_rows)
+                if customer_source:
+                    base_row["customer_source"] = customer_source
             except Exception as exc:
                 log_event(
                     logger=logger,
