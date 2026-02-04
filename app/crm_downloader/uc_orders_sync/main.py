@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from openpyxl import Workbook
 from playwright.async_api import Browser, ElementHandle, Locator, Page, TimeoutError, async_playwright
 
 from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
@@ -26,7 +27,6 @@ from app.crm_downloader.orders_sync_window import (
     resolve_orders_sync_start_date,
     resolve_window_settings,
 )
-from app.crm_downloader.uc_orders_sync.ingest import UcOrdersIngestResult, ingest_uc_orders_workbook
 from app.dashboard_downloader.db_tables import orders_sync_log, pipelines
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from app.dashboard_downloader.notifications import send_notifications_for_run
@@ -135,6 +135,51 @@ GST_REPORT_ROW_SELECTORS = (
     ".table-section tbody tr:has(td:has-text('No records'))",
     ".table-section tbody tr:has(td:has-text('No Records'))",
 )
+ARCHIVE_URL = "https://store.ucleanlaundry.com/archive"
+ARCHIVE_FILTER_BUTTON_SELECTOR = "div.filter-btn"
+ARCHIVE_DATE_TYPE_SELECTOR = "input[name='dateType'][value='Delivery Date']"
+ARCHIVE_CUSTOM_OPTION_SELECTOR = "div.date-option:has-text('Custom')"
+ARCHIVE_CUSTOM_INPUT_SELECTOR = ".custom-date-inputs input[type='date']"
+ARCHIVE_TABLE_ROW_SELECTOR = ".table-wrapper .orders-table tbody tr"
+ARCHIVE_NEXT_BUTTON_SELECTOR = ".pagination-btn:has-text('Next')"
+ARCHIVE_PREV_BUTTON_SELECTOR = ".pagination-btn:has-text('Prev')"
+ARCHIVE_BASE_COLUMNS = [
+    "store_code",
+    "order_code",
+    "pickup",
+    "delivery",
+    "customer_name",
+    "customer_phone",
+    "address",
+    "payment_text",
+    "instructions",
+    "status",
+    "status_date",
+]
+ARCHIVE_ORDER_DETAIL_COLUMNS = [
+    "store_code",
+    "order_code",
+    "order_mode",
+    "order_datetime",
+    "pickup_datetime",
+    "delivery_datetime",
+    "service",
+    "hsn_sac",
+    "item_name",
+    "rate",
+    "quantity",
+    "weight",
+    "addons",
+    "amount",
+]
+ARCHIVE_PAYMENT_COLUMNS = [
+    "store_code",
+    "order_code",
+    "payment_mode",
+    "amount",
+    "payment_date",
+    "transaction_id",
+]
 DATE_PICKER_POPUP_SELECTORS = (
     ".calendar-body.show",
     ".calendar-body .calendar",
@@ -277,6 +322,13 @@ class StoreOutcome:
     dropped_rows: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass
+class ArchiveOrdersExtract:
+    base_rows: list[dict[str, Any]] = field(default_factory=list)
+    order_detail_rows: list[dict[str, Any]] = field(default_factory=list)
+    payment_detail_rows: list[dict[str, Any]] = field(default_factory=list)
+    page_count: int = 0
+
 def _normalize_output_status(status: str | None) -> str:
     normalized = str(status or "").lower()
     mapping = {
@@ -363,14 +415,14 @@ class UcOrdersDiscoverySummary:
             "success": "run completed with no issues recorded",
             "success_with_warnings": "run completed with row-level warnings",
             "partial": "run completed but row-level issues were recorded",
-            "failed": "run failed or data could not be ingested",
+            "failed": "run failed or data could not be downloaded",
         }.get(overall_status, "run completed with mixed results")
         window_summary = self._window_summary()
         missing_windows_line = f"Missing Windows: {window_summary['missing_windows']}"
         if window_summary["missing_store_codes"]:
             missing_windows_line += f" ({', '.join(window_summary['missing_store_codes'])})"
         return (
-            "UC GST Run Summary\n"
+            "UC Archive Orders Run Summary\n"
             f"Overall Status: {overall_status} ({status_explanation})\n"
             f"Stores: {ok} success, {warn} success_with_warnings, {error} failed across {total} stores\n"
             f"Windows Completed: {window_summary['completed_windows']} / {window_summary['expected_windows']}\n"
@@ -545,7 +597,7 @@ async def main(
     run_orders: bool = True,
     run_sales: bool = True,
 ) -> None:
-    """Run the UC GST report discovery flow (login + selector identification)."""
+    """Run the UC Archive Orders download flow."""
 
     _ = run_orders, run_sales
     resolved_run_id = run_id or new_run_id()
@@ -765,6 +817,29 @@ def _normalize_id_selector(selector: str) -> str:
 
 def _format_gst_filename(store_code: str, from_date: date, to_date: date) -> str:
     return f"{store_code}_uc_gst_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
+
+
+def _format_archive_base_filename(store_code: str) -> str:
+    return f"{store_code}-base_order_info.xlsx"
+
+
+def _format_archive_order_details_filename(store_code: str) -> str:
+    return f"{store_code}-order_details.xlsx"
+
+
+def _format_archive_payment_details_filename(store_code: str) -> str:
+    return f"{store_code}-payment_details.xlsx"
+
+
+def _write_excel_rows(path: Path, rows: Sequence[dict[str, Any]], columns: Sequence[str]) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(list(columns))
+    for row in rows:
+        sheet.append([row.get(column) for column in columns])
+    workbook.save(path)
+    return len(rows)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -1282,6 +1357,590 @@ def _log_ui_issues(
         )
 
 
+async def _navigate_to_archive_orders(*, page: Page, store: UcStore, logger: JsonLogger) -> bool:
+    log_event(
+        logger=logger,
+        phase="navigation",
+        message="Navigating to Archive Orders",
+        store_code=store.store_code,
+        current_url=page.url,
+    )
+    reports_selectors = [
+        "button:has-text('Reports')",
+        ".navigation-item:has-text('Reports')",
+        "text=Reports",
+    ]
+    clicked_reports = False
+    for selector in reports_selectors:
+        locator = page.locator(selector).first
+        if await locator.count():
+            try:
+                await locator.click()
+                clicked_reports = True
+                log_event(
+                    logger=logger,
+                    phase="navigation",
+                    message="Reports menu clicked",
+                    store_code=store.store_code,
+                    selector=selector,
+                )
+                break
+            except Exception as exc:
+                log_event(
+                    logger=logger,
+                    phase="navigation",
+                    status="warn",
+                    message="Reports menu click failed",
+                    store_code=store.store_code,
+                    selector=selector,
+                    error=str(exc),
+                )
+    if clicked_reports:
+        archive_menu = page.locator("text=Archive Orders").first
+        if await archive_menu.count():
+            try:
+                await archive_menu.click()
+                log_event(
+                    logger=logger,
+                    phase="navigation",
+                    message="Archive Orders menu clicked",
+                    store_code=store.store_code,
+                )
+            except Exception as exc:
+                log_event(
+                    logger=logger,
+                    phase="navigation",
+                    status="warn",
+                    message="Archive Orders menu click failed",
+                    store_code=store.store_code,
+                    error=str(exc),
+                )
+        else:
+            log_event(
+                logger=logger,
+                phase="navigation",
+                status="warn",
+                message="Archive Orders menu not found; using direct URL",
+                store_code=store.store_code,
+            )
+            await page.goto(ARCHIVE_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+    else:
+        log_event(
+            logger=logger,
+            phase="navigation",
+            status="warn",
+            message="Reports menu not found; using direct URL",
+            store_code=store.store_code,
+        )
+        await page.goto(ARCHIVE_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+
+    try:
+        await page.wait_for_url("**/archive", timeout=NAV_TIMEOUT_MS)
+    except TimeoutError:
+        log_event(
+            logger=logger,
+            phase="navigation",
+            status="warn",
+            message="Archive Orders URL confirmation timed out",
+            store_code=store.store_code,
+            current_url=page.url,
+        )
+        return False
+    log_event(
+        logger=logger,
+        phase="navigation",
+        message="Archive Orders URL confirmed",
+        store_code=store.store_code,
+        current_url=page.url,
+    )
+    return True
+
+
+async def _apply_archive_date_filter(
+    *,
+    page: Page,
+    store: UcStore,
+    logger: JsonLogger,
+    from_date: date,
+    to_date: date,
+) -> bool:
+    filter_button = page.locator(ARCHIVE_FILTER_BUTTON_SELECTOR).first
+    if not await filter_button.count():
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Archive Orders filter control missing",
+            store_code=store.store_code,
+            selector=ARCHIVE_FILTER_BUTTON_SELECTOR,
+        )
+        return False
+    await filter_button.click()
+    log_event(
+        logger=logger,
+        phase="filters",
+        message="Archive Orders filter dropdown opened",
+        store_code=store.store_code,
+    )
+
+    date_type = page.locator(ARCHIVE_DATE_TYPE_SELECTOR).first
+    if await date_type.count():
+        with contextlib.suppress(Exception):
+            await date_type.check()
+        with contextlib.suppress(Exception):
+            await date_type.click()
+        log_event(
+            logger=logger,
+            phase="filters",
+            message="Delivery Date filter selected",
+            store_code=store.store_code,
+        )
+    else:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Delivery Date filter radio missing",
+            store_code=store.store_code,
+            selector=ARCHIVE_DATE_TYPE_SELECTOR,
+        )
+
+    custom_option = page.locator(ARCHIVE_CUSTOM_OPTION_SELECTOR).first
+    if not await custom_option.count():
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Custom date option missing",
+            store_code=store.store_code,
+            selector=ARCHIVE_CUSTOM_OPTION_SELECTOR,
+        )
+        return False
+    await custom_option.click()
+    inputs = page.locator(ARCHIVE_CUSTOM_INPUT_SELECTOR)
+    if await inputs.count() < 2:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Custom date inputs missing",
+            store_code=store.store_code,
+            selector=ARCHIVE_CUSTOM_INPUT_SELECTOR,
+        )
+        return False
+    await inputs.nth(0).fill(from_date.isoformat())
+    await inputs.nth(1).fill(to_date.isoformat())
+    log_event(
+        logger=logger,
+        phase="filters",
+        message="Custom date range filled",
+        store_code=store.store_code,
+        from_date=from_date,
+        to_date=to_date,
+    )
+    with contextlib.suppress(Exception):
+        await page.locator("body").click(position={"x": 5, "y": 5})
+    await page.wait_for_timeout(1_000)
+    with contextlib.suppress(TimeoutError):
+        await page.wait_for_selector(".table-wrapper", timeout=NAV_TIMEOUT_MS)
+    log_event(
+        logger=logger,
+        phase="filters",
+        message="Archive Orders filter refresh completed",
+        store_code=store.store_code,
+    )
+    return True
+
+
+async def _locator_text(locator: Locator) -> str | None:
+    if not await locator.count():
+        return None
+    text = (await locator.first.inner_text()).strip()
+    return text or None
+
+
+def _normalize_cell_text(text: str | None) -> str | None:
+    if not text:
+        return None
+    cleaned = re.sub(r"\s*\n\s*", "; ", text.strip())
+    return cleaned or None
+
+
+async def _extract_archive_base_row(
+    *,
+    row: Locator,
+    store: UcStore,
+    logger: JsonLogger,
+    row_index: int,
+) -> dict[str, Any] | None:
+    order_code = await _locator_text(row.locator("td.order-col span"))
+    if not order_code:
+        log_event(
+            logger=logger,
+            phase="extraction",
+            status="warn",
+            message="Missing order code in archive row",
+            store_code=store.store_code,
+            row_index=row_index,
+        )
+        return None
+    pickup = await _locator_text(row.locator("td").nth(1))
+    delivery = await _locator_text(row.locator("td").nth(2))
+    customer_name = await _locator_text(row.locator(".customer-name"))
+    customer_phone = await _locator_text(row.locator(".customer-phone"))
+    address = await _locator_text(row.locator(".address-col"))
+    payment_text = await _locator_text(row.locator(".payment-col"))
+    instructions = await _locator_text(row.locator("td").nth(6))
+    status = await _locator_text(row.locator(".status-col span"))
+    status_date = await _locator_text(row.locator(".status-col .status-date"))
+    return {
+        "store_code": store.store_code,
+        "order_code": order_code,
+        "pickup": pickup,
+        "delivery": delivery,
+        "customer_name": customer_name,
+        "customer_phone": customer_phone,
+        "address": address,
+        "payment_text": payment_text,
+        "instructions": instructions,
+        "status": status,
+        "status_date": status_date,
+    }
+
+
+async def _extract_order_details(
+    *,
+    page: Page,
+    row: Locator,
+    store: UcStore,
+    logger: JsonLogger,
+    order_code: str,
+) -> list[dict[str, Any]]:
+    details: list[dict[str, Any]] = []
+    order_click = row.locator("td.order-col span").first
+    if not await order_click.count():
+        log_event(
+            logger=logger,
+            phase="warnings",
+            status="warn",
+            message="Order details trigger missing",
+            store_code=store.store_code,
+            order_code=order_code,
+        )
+        return details
+    await order_click.click()
+    modal = page.locator("mat-dialog-container").last
+    try:
+        await modal.wait_for(timeout=NAV_TIMEOUT_MS)
+    except TimeoutError:
+        log_event(
+            logger=logger,
+            phase="warnings",
+            status="warn",
+            message="Order details modal did not appear",
+            store_code=store.store_code,
+            order_code=order_code,
+        )
+        return details
+
+    order_number = order_code
+    order_mode = None
+    order_datetime = None
+    pickup_datetime = None
+    delivery_datetime = None
+    info_items = modal.locator(".order-info-item")
+    for idx in range(await info_items.count()):
+        item = info_items.nth(idx)
+        label = await _locator_text(item.locator(".order-info-label"))
+        value = await _locator_text(item.locator(".order-info-value"))
+        if label and "Order No." in label:
+            match = re.search(r"Order No\.\s*-\s*([A-Za-z0-9-]+)", label)
+            if match:
+                order_number = match.group(1)
+            mode_match = re.search(r"\(([^)]+)\)", label)
+            if mode_match:
+                order_mode = mode_match.group(1)
+            timestamp = await _locator_text(item.locator("div").nth(1))
+            order_datetime = timestamp or order_datetime
+        elif label and "Pickup" in label:
+            pickup_datetime = value or pickup_datetime
+        elif label and "Delivery" in label:
+            delivery_datetime = value or delivery_datetime
+
+    item_rows = modal.locator(".order-breakup tbody tr")
+    for idx in range(await item_rows.count()):
+        item_row = item_rows.nth(idx)
+        cells = item_row.locator("td")
+        service = _normalize_cell_text(await _locator_text(cells.nth(1)))
+        hsn_sac = _normalize_cell_text(await _locator_text(cells.nth(2)))
+        item_name = _normalize_cell_text(await _locator_text(cells.nth(3)))
+        rate = _normalize_cell_text(await _locator_text(cells.nth(4)))
+        quantity = _normalize_cell_text(await _locator_text(cells.nth(5)))
+        weight = _normalize_cell_text(await _locator_text(cells.nth(6)))
+        addons = _normalize_cell_text(await _locator_text(cells.nth(7)))
+        amount = _normalize_cell_text(await _locator_text(cells.nth(8)))
+        details.append(
+            {
+                "store_code": store.store_code,
+                "order_code": order_number,
+                "order_mode": order_mode,
+                "order_datetime": order_datetime,
+                "pickup_datetime": pickup_datetime,
+                "delivery_datetime": delivery_datetime,
+                "service": service,
+                "hsn_sac": hsn_sac,
+                "item_name": item_name,
+                "rate": rate,
+                "quantity": quantity,
+                "weight": weight,
+                "addons": addons,
+                "amount": amount,
+            }
+        )
+
+    close_button = modal.locator("button:has-text('Close')").first
+    if await close_button.count():
+        with contextlib.suppress(Exception):
+            await close_button.click()
+    else:
+        with contextlib.suppress(Exception):
+            await page.keyboard.press("Escape")
+    with contextlib.suppress(TimeoutError):
+        await modal.wait_for(state="detached", timeout=10_000)
+    return details
+
+
+async def _extract_payment_details(
+    *,
+    page: Page,
+    row: Locator,
+    store: UcStore,
+    logger: JsonLogger,
+    order_code: str,
+) -> list[dict[str, Any]]:
+    details: list[dict[str, Any]] = []
+    payment_trigger = row.locator(".payment-details-available").first
+    if not await payment_trigger.count():
+        return details
+    await payment_trigger.click()
+    modal = page.locator(".modal-content").last
+    try:
+        await modal.wait_for(timeout=NAV_TIMEOUT_MS)
+    except TimeoutError:
+        log_event(
+            logger=logger,
+            phase="warnings",
+            status="warn",
+            message="Payment details modal did not appear",
+            store_code=store.store_code,
+            order_code=order_code,
+        )
+        return details
+
+    header_text = await _locator_text(modal.locator("h2"))
+    resolved_order_code = order_code
+    if header_text:
+        match = re.search(r"Order\s+([A-Za-z0-9-]+)", header_text)
+        if match:
+            resolved_order_code = match.group(1)
+    payment_items = modal.locator(".payment-item")
+    for idx in range(await payment_items.count()):
+        item = payment_items.nth(idx)
+        mode = None
+        amount = None
+        payment_date = None
+        transaction_id = None
+        for line in await item.locator("div").all_inner_texts():
+            if ":" not in line:
+                continue
+            label, value = line.split(":", 1)
+            normalized = label.strip().lower()
+            value = value.strip()
+            if "mode" in normalized:
+                mode = value
+            elif "amount" in normalized:
+                amount = value
+            elif "date" in normalized:
+                payment_date = value
+            elif "transaction" in normalized or "txn" in normalized:
+                transaction_id = value
+        details.append(
+            {
+                "store_code": store.store_code,
+                "order_code": resolved_order_code,
+                "payment_mode": mode,
+                "amount": amount,
+                "payment_date": payment_date,
+                "transaction_id": transaction_id,
+            }
+        )
+
+    close_button = modal.locator(".close-button").first
+    if await close_button.count():
+        with contextlib.suppress(Exception):
+            await close_button.click()
+    else:
+        with contextlib.suppress(Exception):
+            await page.keyboard.press("Escape")
+    with contextlib.suppress(TimeoutError):
+        await modal.wait_for(state="detached", timeout=10_000)
+    return details
+
+
+async def _get_first_order_code(page: Page) -> str | None:
+    locator = page.locator(f"{ARCHIVE_TABLE_ROW_SELECTOR} td.order-col span").first
+    return await _locator_text(locator)
+
+
+async def _is_button_disabled(locator: Locator) -> bool:
+    if not await locator.count():
+        return True
+    if await locator.is_disabled():
+        return True
+    classes = (await locator.get_attribute("class")) or ""
+    return "disabled" in classes.lower()
+
+
+async def _collect_archive_orders(
+    *,
+    page: Page,
+    store: UcStore,
+    logger: JsonLogger,
+) -> ArchiveOrdersExtract:
+    extract = ArchiveOrdersExtract()
+    seen_orders: set[str] = set()
+    page_index = 1
+
+    while True:
+        with contextlib.suppress(TimeoutError):
+            await page.wait_for_selector(ARCHIVE_TABLE_ROW_SELECTOR, timeout=NAV_TIMEOUT_MS)
+        row_locator = page.locator(ARCHIVE_TABLE_ROW_SELECTOR)
+        row_count = await row_locator.count()
+        extract.page_count += 1
+        log_event(
+            logger=logger,
+            phase="pagination",
+            message="Archive Orders page loaded",
+            store_code=store.store_code,
+            page_number=page_index,
+            row_count=row_count,
+        )
+        if row_count == 0:
+            log_event(
+                logger=logger,
+                phase="warnings",
+                status="warn",
+                message="No archive rows found on page",
+                store_code=store.store_code,
+                page_number=page_index,
+            )
+        for idx in range(row_count):
+            row = row_locator.nth(idx)
+            base_row = await _extract_archive_base_row(
+                row=row, store=store, logger=logger, row_index=idx
+            )
+            if not base_row:
+                continue
+            order_code = base_row["order_code"]
+            if order_code in seen_orders:
+                log_event(
+                    logger=logger,
+                    phase="warnings",
+                    status="warn",
+                    message="Duplicate order code encountered; skipping",
+                    store_code=store.store_code,
+                    order_code=order_code,
+                    page_number=page_index,
+                )
+                continue
+            seen_orders.add(order_code)
+            extract.base_rows.append(base_row)
+
+            try:
+                detail_rows = await _extract_order_details(
+                    page=page,
+                    row=row,
+                    store=store,
+                    logger=logger,
+                    order_code=order_code,
+                )
+                extract.order_detail_rows.extend(detail_rows)
+            except Exception as exc:
+                log_event(
+                    logger=logger,
+                    phase="warnings",
+                    status="warn",
+                    message="Failed to extract order details",
+                    store_code=store.store_code,
+                    order_code=order_code,
+                    error=str(exc),
+                )
+            try:
+                payment_rows = await _extract_payment_details(
+                    page=page,
+                    row=row,
+                    store=store,
+                    logger=logger,
+                    order_code=order_code,
+                )
+                extract.payment_detail_rows.extend(payment_rows)
+            except Exception as exc:
+                log_event(
+                    logger=logger,
+                    phase="warnings",
+                    status="warn",
+                    message="Failed to extract payment details",
+                    store_code=store.store_code,
+                    order_code=order_code,
+                    error=str(exc),
+                )
+
+        next_button = page.locator(ARCHIVE_NEXT_BUTTON_SELECTOR).first
+        if await _is_button_disabled(next_button):
+            log_event(
+                logger=logger,
+                phase="pagination",
+                message="Archive Orders pagination complete",
+                store_code=store.store_code,
+                page_number=page_index,
+                total_rows=len(extract.base_rows),
+            )
+            break
+        previous_first = await _get_first_order_code(page)
+        await next_button.click()
+        log_event(
+            logger=logger,
+            phase="pagination",
+            message="Navigated to next page",
+            store_code=store.store_code,
+            page_number=page_index + 1,
+        )
+        if previous_first:
+            with contextlib.suppress(TimeoutError):
+                await page.wait_for_function(
+                    """([selector, previous]) => {
+                        const el = document.querySelector(selector);
+                        if (!el) return false;
+                        return el.textContent.trim() !== previous;
+                    }""",
+                    [f"{ARCHIVE_TABLE_ROW_SELECTOR} td.order-col span", previous_first],
+                    timeout=NAV_TIMEOUT_MS,
+                )
+        page_index += 1
+
+    log_event(
+        logger=logger,
+        phase="extraction",
+        message="Archive Orders extraction complete",
+        store_code=store.store_code,
+        base_rows=len(extract.base_rows),
+        order_detail_rows=len(extract.order_detail_rows),
+        payment_detail_rows=len(extract.payment_detail_rows),
+        page_count=extract.page_count,
+    )
+    return extract
+
+
 async def _run_store_discovery(
     *,
     browser: Browser,
@@ -1339,7 +1998,7 @@ async def _run_store_discovery(
         if from_date > to_date:
             outcome = StoreOutcome(
                 status="warning",
-                message="Invalid date range; skipping GST discovery",
+                message="Invalid date range; skipping Archive Orders download",
                 login_used=False,
                 skip_reason="date range invalid",
             )
@@ -1464,9 +2123,9 @@ async def _run_store_discovery(
                 on_login = _url_is_login(page.url or "", store)
                 outcome = StoreOutcome(
                     status="error" if on_login else "warning",
-                    message="Home page not reached; skipping GST discovery"
+                    message="Home page not reached; skipping Archive Orders download"
                     if on_login
-                    else "Home page not ready; skipping GST discovery",
+                    else "Home page not ready; skipping Archive Orders download",
                     final_url=page.url,
                     storage_state=str(storage_state_path) if storage_state_path.exists() else None,
                     login_used=login_used,
@@ -1475,74 +2134,30 @@ async def _run_store_discovery(
                 summary.record_store(store.store_code, outcome)
                 return
 
-        direct_ready, container = await _try_direct_gst_reports(page=page, store=store, logger=logger)
-        if direct_ready and container is not None:
-            log_event(
-                logger=logger,
-                phase="navigation",
-                message="GST reports navigation path selected",
-                store_code=store.store_code,
-                path="direct URL",
-                current_url=page.url,
-            )
-            ready = True
-        else:
-            log_event(
-                logger=logger,
-                phase="navigation",
-                message="GST reports navigation path selected",
-                store_code=store.store_code,
-                path="menu fallback",
-                current_url=page.url,
-            )
-            gst_clicked = await _navigate_to_gst_reports(page=page, store=store, logger=logger)
-            if not gst_clicked:
-                outcome = StoreOutcome(
-                    status="warning",
-                    message="GST reports navigation failed",
-                    final_url=page.url,
-                    storage_state=str(storage_state_path) if storage_state_path.exists() else None,
-                    login_used=login_used,
-                    skip_reason="navigation failed",
-                )
-                summary.record_store(store.store_code, outcome)
-                return
-
-            ready, container = await _wait_for_gst_report_ready(page=page, logger=logger, store=store)
-        if not ready or container is None:
+        archive_ready = await _navigate_to_archive_orders(page=page, store=store, logger=logger)
+        if not archive_ready:
             outcome = StoreOutcome(
                 status="warning",
-                message="GST report readiness signal missing",
+                message="Archive Orders navigation failed",
                 final_url=page.url,
                 storage_state=str(storage_state_path) if storage_state_path.exists() else None,
                 login_used=login_used,
-                skip_reason="report not ready",
+                skip_reason="navigation failed",
             )
             summary.record_store(store.store_code, outcome)
             return
-        apply_ok, row_count, row_visibility_issue, ui_issues, apply_failure_reason = await _apply_date_range(
+
+        filter_ok = await _apply_archive_date_filter(
             page=page,
-            container=container,
-            logger=logger,
             store=store,
+            logger=logger,
             from_date=from_date,
             to_date=to_date,
         )
-        if not apply_ok:
-            _log_ui_issues(logger=logger, store=store, ui_issues=ui_issues, status="warn")
-            log_event(
-                logger=logger,
-                phase="filters",
-                status="warn",
-                message="Date range apply incomplete; skipping export",
-                store_code=store.store_code,
-                from_date=from_date,
-                to_date=to_date,
-            )
-            failure_reason = apply_failure_reason or "filter_validation_failed"
+        if not filter_ok:
             outcome = StoreOutcome(
                 status="warning",
-                message=failure_reason,
+                message="Archive Orders filter failed",
                 final_url=page.url,
                 storage_state=str(storage_state_path) if storage_state_path.exists() else None,
                 login_used=login_used,
@@ -1550,209 +2165,48 @@ async def _run_store_discovery(
             )
             summary.record_store(store.store_code, outcome)
             return
-        report_visible = await _validate_gst_report_visible(
-            container=container,
-            logger=logger,
-            store=store,
-            row_count=row_count,
-        )
-        if not report_visible:
-            export_ready, export_selector = await _is_gst_export_ready(
-                container=container,
-                logger=logger,
-                store=store,
-            )
-            if not export_ready:
-                outcome = StoreOutcome(
-                    status="warning",
-                    message="filter_validation_failed",
-                    final_url=page.url,
-                    storage_state=str(storage_state_path) if storage_state_path.exists() else None,
-                    login_used=login_used,
-                    skip_reason="report table missing",
-                )
-                summary.record_store(store.store_code, outcome)
-                return
-            download_warning_reason = "table_not_detected_exported_anyway"
-            log_event(
-                logger=logger,
-                phase="filters",
-                status="warn",
-                message="GST report table missing but export button ready; proceeding to export",
-                store_code=store.store_code,
-                row_count=row_count,
-                export_selector=export_selector,
-                warning_reason=download_warning_reason,
-            )
-        else:
-            download_warning_reason = None
 
         download_dir = _resolve_uc_download_dir(run_id, store.store_code, from_date, to_date)
-        downloaded, download_path, download_message = await _download_gst_report(
-            page=page,
+        extract = await _collect_archive_orders(page=page, store=store, logger=logger)
+        row_count = len(extract.base_rows)
+        base_path = download_dir / _format_archive_base_filename(store.store_code)
+        order_details_path = download_dir / _format_archive_order_details_filename(store.store_code)
+        payment_details_path = download_dir / _format_archive_payment_details_filename(store.store_code)
+        base_count = _write_excel_rows(base_path, extract.base_rows, ARCHIVE_BASE_COLUMNS)
+        order_details_count = _write_excel_rows(
+            order_details_path, extract.order_detail_rows, ARCHIVE_ORDER_DETAIL_COLUMNS
+        )
+        payment_details_count = _write_excel_rows(
+            payment_details_path, extract.payment_detail_rows, ARCHIVE_PAYMENT_COLUMNS
+        )
+        download_succeeded = True
+        await _update_orders_sync_log(
             logger=logger,
-            store=store,
-            from_date=from_date,
-            to_date=to_date,
-            download_dir=download_dir,
-            download_timeout_ms=download_timeout_ms,
-            row_count=row_count,
+            log_id=sync_log_id,
+            orders_pulled_at=aware_now(),
         )
-        ingest_result: UcOrdersIngestResult | None = None
-        ingest_succeeded = False
-        status_label = "ok" if downloaded else "warning"
-        if download_warning_reason:
-            if download_message:
-                if download_warning_reason not in download_message:
-                    download_message = f"{download_message}; {download_warning_reason}"
-            else:
-                download_message = download_warning_reason
-        if downloaded and download_path:
-            download_succeeded = True
-            await _update_orders_sync_log(
-                logger=logger,
-                log_id=sync_log_id,
-                orders_pulled_at=aware_now(),
-            )
-            if config.database_url:
-                if not store.cost_center:
-                    log_event(
-                        logger=logger,
-                        phase="ingest",
-                        status="error",
-                        message="Missing cost_center for UC store; cannot ingest GST report",
-                        store_code=store.store_code,
-                    )
-                    outcome = StoreOutcome(
-                        status="error",
-                        message="Missing cost_center for UC store; cannot ingest GST report",
-                        final_url=page.url,
-                        storage_state=str(storage_state_path) if storage_state_path.exists() else None,
-                        login_used=login_used,
-                        download_path=download_path,
-                    )
-                    summary.record_store(store.store_code, outcome)
-                    return
-                try:
-                    ingest_result = await ingest_uc_orders_workbook(
-                        workbook_path=Path(download_path),
-                        store_code=store.store_code,
-                        cost_center=store.cost_center or "",
-                        run_id=run_id,
-                        run_date=run_date,
-                        database_url=config.database_url,
-                        logger=logger,
-                    )
-                    ingest_succeeded = True
-                    if ingest_result.warnings:
-                        status_label = "warning"
-                        log_event(
-                            logger=logger,
-                            phase="ingest",
-                            status="warn",
-                            message="UC GST workbook ingested with warnings",
-                            store_code=store.store_code,
-                            warning_count=len(ingest_result.warnings),
-                            staging_rows=ingest_result.staging_rows,
-                            final_rows=ingest_result.final_rows,
-                            staging_inserted=ingest_result.staging_inserted,
-                            staging_updated=ingest_result.staging_updated,
-                            final_inserted=ingest_result.final_inserted,
-                            final_updated=ingest_result.final_updated,
-                        )
-                    else:
-                        log_event(
-                            logger=logger,
-                            phase="ingest",
-                            message="UC GST workbook ingested",
-                            store_code=store.store_code,
-                            staging_rows=ingest_result.staging_rows,
-                            final_rows=ingest_result.final_rows,
-                            staging_inserted=ingest_result.staging_inserted,
-                            staging_updated=ingest_result.staging_updated,
-                            final_inserted=ingest_result.final_inserted,
-                            final_updated=ingest_result.final_updated,
-                        )
-                except Exception as exc:
-                    status_label = "warning"
-                    log_event(
-                        logger=logger,
-                        phase="ingest",
-                        status="error",
-                        message="UC GST ingestion failed",
-                        store_code=store.store_code,
-                        error=str(exc),
-                    )
-                    download_message = f"GST ingestion failed: {exc}"
-            else:
-                status_label = "warning"
-                log_event(
-                    logger=logger,
-                    phase="ingest",
-                    status="warn",
-                    message="Skipping UC GST ingestion because database_url is missing",
-                    store_code=store.store_code,
-                )
-        final_success = downloaded and ingest_succeeded
-        ui_checks_failed = bool(ui_issues or row_visibility_issue or download_warning_reason)
-        if downloaded and ui_checks_failed:
-            log_event(
-                logger=logger,
-                phase="filters",
-                status="warn",
-                message="UI checks failed but export succeeded",
-                store_code=store.store_code,
-                row_count=row_count,
-                ui_issue_count=len(ui_issues) if ui_issues else 0,
-                row_visibility_issue=row_visibility_issue,
-                warning_reason=download_warning_reason,
-            )
-        if ui_issues:
-            _log_ui_issues(
-                logger=logger,
-                store=store,
-                ui_issues=ui_issues,
-                status="info" if final_success else "warn",
-            )
-        if row_visibility_issue:
-            log_event(
-                logger=logger,
-                phase="filters",
-                status="warn",
-                message="GST report rows missing but export button was ready",
-                store_code=store.store_code,
-                row_count=row_count,
-                download_succeeded=downloaded,
-                ingest_succeeded=ingest_succeeded,
-            )
-        await _log_selector_cues(logger=logger, store_code=store.store_code, container=container, page=page)
-        if ingest_result and ingest_result.ingest_remarks:
-            summary.add_ingest_remarks(ingest_result.ingest_remarks)
-
-        warning_count = (
-            len(ingest_result.warnings)
-            if ingest_result is not None and ingest_result.warnings is not None
-            else None
+        log_event(
+            logger=logger,
+            phase="output",
+            message="Archive Orders files saved",
+            store_code=store.store_code,
+            base_file=str(base_path),
+            base_rows=base_count,
+            order_details_file=str(order_details_path),
+            order_details_rows=order_details_count,
+            payment_details_file=str(payment_details_path),
+            payment_details_rows=payment_details_count,
         )
+        status_label = "ok"
+        download_message = "Archive Orders download complete"
         outcome = StoreOutcome(
             status=status_label,
-            message=download_message if download_message else "GST report download complete",
+            message=download_message,
             final_url=page.url,
             storage_state=str(storage_state_path) if storage_state_path.exists() else None,
             login_used=login_used,
-            download_path=download_path,
-            warning_count=warning_count,
-            rows_downloaded=ingest_result.rows_downloaded if ingest_result else row_count,
-            rows_skipped_invalid=ingest_result.rows_skipped_invalid if ingest_result else None,
-            rows_skipped_invalid_reasons=ingest_result.rows_skipped_invalid_reasons if ingest_result else None,
-            staging_rows=ingest_result.staging_rows if ingest_result else None,
-            final_rows=ingest_result.final_rows if ingest_result else None,
-            staging_inserted=ingest_result.staging_inserted if ingest_result else None,
-            staging_updated=ingest_result.staging_updated if ingest_result else None,
-            final_inserted=ingest_result.final_inserted if ingest_result else None,
-            final_updated=ingest_result.final_updated if ingest_result else None,
-            warning_rows=ingest_result.warning_rows if ingest_result else [],
-            dropped_rows=ingest_result.dropped_rows if ingest_result else [],
+            download_path=str(base_path),
+            rows_downloaded=row_count,
         )
         summary.record_store(store.store_code, outcome)
         log_event(
@@ -1765,7 +2219,7 @@ async def _run_store_discovery(
     except TimeoutError as exc:
         outcome = StoreOutcome(
             status="warning",
-            message="Timeout while loading GST report page",
+            message="Timeout while loading Archive Orders page",
             final_url=page.url,
             storage_state=str(storage_state_path) if storage_state_path.exists() else None,
             login_used=login_used,
@@ -1835,7 +2289,7 @@ async def _run_store_discovery(
         log_event(
             logger=logger,
             phase="window_result",
-            message="UC GST window completed",
+            message="UC Archive Orders window completed",
             store_code=store.store_code,
             run_id=run_id,
             from_date=from_date,
@@ -1857,12 +2311,12 @@ async def _run_store_discovery(
         log_event(
             logger=logger,
             phase="uc_window",
-            message="UC GST window complete",
+            message="UC Archive Orders window complete",
             store_code=store.store_code,
             from_date=from_date,
             to_date=to_date,
-            gst_downloaded_path=outcome.download_path,
-            gst_ingested_rows=outcome.final_rows,
+            archive_download_path=outcome.download_path,
+            archive_rows=outcome.rows_downloaded,
             final_status=sync_status,
             skip_reason=status_note,
             attempt_no=attempt_no,
