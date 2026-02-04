@@ -2121,6 +2121,104 @@ async def _run_store_discovery(
                 summary.record_store(store.store_code, outcome)
                 return
 
+        try:
+            gst_download_ok = False
+            gst_download_path: str | None = None
+            gst_row_count = 0
+            gst_container: Locator | None = None
+            gst_navigation_ok = await _navigate_to_gst_reports(page=page, store=store, logger=logger)
+            if gst_navigation_ok:
+                gst_ready, gst_container = await _wait_for_gst_report_ready(
+                    page=page,
+                    logger=logger,
+                    store=store,
+                )
+            else:
+                gst_ready = False
+
+            if not gst_ready:
+                gst_ready, gst_container = await _try_direct_gst_reports(
+                    page=page,
+                    store=store,
+                    logger=logger,
+                )
+
+            if not gst_ready or gst_container is None:
+                log_event(
+                    logger=logger,
+                    phase="navigation",
+                    status="warn",
+                    message="GST report navigation failed; skipping GST download",
+                    store_code=store.store_code,
+                    current_url=page.url,
+                )
+            else:
+                download_dir = _resolve_uc_download_dir(run_id, store.store_code, from_date, to_date)
+                download_dir.mkdir(parents=True, exist_ok=True)
+                apply_ok, gst_row_count, row_visibility_issue, ui_issues, failure_reason = await _apply_date_range(
+                    page=page,
+                    container=gst_container,
+                    logger=logger,
+                    store=store,
+                    from_date=from_date,
+                    to_date=to_date,
+                )
+                if ui_issues:
+                    _log_ui_issues(
+                        logger=logger,
+                        store=store,
+                        ui_issues=ui_issues,
+                        status="warn" if not apply_ok else "info",
+                    )
+                if not apply_ok:
+                    log_event(
+                        logger=logger,
+                        phase="filters",
+                        status="warn",
+                        message="GST report date range apply failed; skipping download",
+                        store_code=store.store_code,
+                        row_count=gst_row_count,
+                        failure_reason=failure_reason,
+                    )
+                else:
+                    if row_visibility_issue:
+                        log_event(
+                            logger=logger,
+                            phase="filters",
+                            status="warn",
+                            message="GST report rows not visible but export may still be ready",
+                            store_code=store.store_code,
+                            row_count=gst_row_count,
+                        )
+                    gst_download_ok, gst_download_path, gst_message = await _download_gst_report(
+                        page=page,
+                        logger=logger,
+                        store=store,
+                        from_date=from_date,
+                        to_date=to_date,
+                        download_dir=download_dir,
+                        download_timeout_ms=download_timeout_ms,
+                        row_count=gst_row_count,
+                    )
+                    log_event(
+                        logger=logger,
+                        phase="download",
+                        status=None if gst_download_ok else "warn",
+                        message=gst_message if gst_message else "GST report download complete",
+                        store_code=store.store_code,
+                        download_path=gst_download_path,
+                        row_count=gst_row_count,
+                    )
+        except Exception as exc:
+            log_event(
+                logger=logger,
+                phase="download",
+                status="warn",
+                message="GST report download failed; continuing to Archive Orders",
+                store_code=store.store_code,
+                error=str(exc),
+            )
+
         archive_ready = await _navigate_to_archive_orders(page=page, store=store, logger=logger)
         if not archive_ready:
             outcome = StoreOutcome(
