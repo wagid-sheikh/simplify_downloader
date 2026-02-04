@@ -1778,8 +1778,34 @@ async def _is_button_disabled(locator: Locator) -> bool:
         return True
     if await locator.is_disabled():
         return True
+    aria_disabled = (await locator.get_attribute("aria-disabled")) or ""
+    if aria_disabled.strip().lower() in {"true", "1"}:
+        return True
+    if await locator.get_attribute("disabled") is not None:
+        return True
     classes = (await locator.get_attribute("class")) or ""
     return "disabled" in classes.lower()
+
+
+async def _get_archive_page_number(page: Page) -> int | None:
+    selectors = [
+        ".pagination-btn.active",
+        ".pagination-btn.current",
+        ".pagination-btn[aria-current='page']",
+        ".pagination .active",
+        ".pagination [aria-current='page']",
+    ]
+    for selector in selectors:
+        locator = page.locator(selector).first
+        if not await locator.count():
+            continue
+        text = await _locator_text(locator)
+        if not text:
+            continue
+        match = re.search(r"\d+", text)
+        if match:
+            return int(match.group(0))
+    return None
 
 
 async def _collect_archive_orders(
@@ -1823,6 +1849,7 @@ async def _collect_archive_orders(
                 store_code=store.store_code,
                 page_number=page_index,
             )
+        new_unique_orders = 0
         for idx, (row, order_code) in enumerate(valid_rows):
             base_row = await _extract_archive_base_row(
                 row=row, store=store, logger=logger, row_index=idx, order_code=order_code
@@ -1841,6 +1868,7 @@ async def _collect_archive_orders(
                 )
                 continue
             seen_orders.add(order_code)
+            new_unique_orders += 1
             extract.base_rows.append(base_row)
 
             try:
@@ -1882,6 +1910,17 @@ async def _collect_archive_orders(
                     error=str(exc),
                 )
 
+        if store.store_code == "UC610" and page_index >= 2 and new_unique_orders == 0:
+            log_event(
+                logger=logger,
+                phase="pagination",
+                status="warn",
+                message="No new unique orders found for UC610; stopping pagination",
+                store_code=store.store_code,
+                page_number=page_index,
+            )
+            break
+
         next_button = page.locator(ARCHIVE_NEXT_BUTTON_SELECTOR).first
         if await _is_button_disabled(next_button):
             log_event(
@@ -1894,6 +1933,7 @@ async def _collect_archive_orders(
             )
             break
         previous_first = await _get_first_order_code(page)
+        previous_page_number = await _get_archive_page_number(page)
         await next_button.click()
         log_event(
             logger=logger,
@@ -1902,17 +1942,64 @@ async def _collect_archive_orders(
             store_code=store.store_code,
             page_number=page_index + 1,
         )
-        if previous_first:
+        if previous_first or previous_page_number is not None:
             with contextlib.suppress(TimeoutError):
                 await page.wait_for_function(
-                    """([selector, previous]) => {
-                        const el = document.querySelector(selector);
-                        if (!el) return false;
-                        return el.textContent.trim() !== previous;
+                    """([selectors, previousPage, firstSelector, previousFirst]) => {
+                        const findPage = () => {
+                            for (const selector of selectors) {
+                                const el = document.querySelector(selector);
+                                if (!el) continue;
+                                const text = el.textContent || "";
+                                const match = text.match(/\\d+/);
+                                if (match) return parseInt(match[0], 10);
+                            }
+                            return null;
+                        };
+                        const currentPage = findPage();
+                        const firstEl = document.querySelector(firstSelector);
+                        const firstText = firstEl ? (firstEl.textContent || "").trim() : null;
+                        const pageChanged =
+                            previousPage !== null && currentPage !== null && currentPage !== previousPage;
+                        const firstChanged =
+                            previousFirst && firstText && firstText !== previousFirst;
+                        return pageChanged || firstChanged;
                     }""",
-                    arg=[f"{ARCHIVE_TABLE_ROW_SELECTOR} td.order-col span", previous_first],
+                    arg=[
+                        [
+                            ".pagination-btn.active",
+                            ".pagination-btn.current",
+                            ".pagination-btn[aria-current='page']",
+                            ".pagination .active",
+                            ".pagination [aria-current='page']",
+                        ],
+                        previous_page_number,
+                        f"{ARCHIVE_TABLE_ROW_SELECTOR} td.order-col span",
+                        previous_first,
+                    ],
                     timeout=NAV_TIMEOUT_MS,
                 )
+        current_page_number = await _get_archive_page_number(page)
+        current_first = await _get_first_order_code(page)
+        page_number_unchanged = (
+            previous_page_number is not None
+            and current_page_number is not None
+            and current_page_number == previous_page_number
+        )
+        first_order_unchanged = previous_first and current_first == previous_first
+        if page_number_unchanged or first_order_unchanged:
+            log_event(
+                logger=logger,
+                phase="pagination",
+                status="warn",
+                message="Pagination did not advance; stopping to prevent infinite loop",
+                store_code=store.store_code,
+                previous_page_number=previous_page_number,
+                current_page_number=current_page_number,
+                previous_first_order=previous_first,
+                current_first_order=current_first,
+            )
+            break
         page_index += 1
 
     log_event(
