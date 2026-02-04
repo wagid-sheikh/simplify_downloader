@@ -1551,6 +1551,20 @@ def _normalize_order_mode(text: str | None) -> str | None:
     return cleaned or None
 
 
+ARCHIVE_REQUIRED_FIELDS = (
+    "pickup",
+    "delivery",
+    "customer_name",
+    "customer_phone",
+    "address",
+    "status",
+)
+
+
+def _get_missing_archive_fields(base_row: dict[str, Any]) -> list[str]:
+    return [field for field in ARCHIVE_REQUIRED_FIELDS if not base_row.get(field)]
+
+
 async def _extract_archive_base_row(
     *,
     row: Locator,
@@ -1878,6 +1892,19 @@ async def _collect_archive_orders(
                     store_code=store.store_code,
                     order_code=order_code,
                     page_number=page_index,
+                )
+                continue
+            missing_fields = _get_missing_archive_fields(base_row)
+            if missing_fields:
+                log_event(
+                    logger=logger,
+                    phase="warnings",
+                    status="warn",
+                    message="Archive Orders row missing required fields; skipping",
+                    store_code=store.store_code,
+                    order_code=order_code,
+                    page_number=page_index,
+                    missing_fields=missing_fields,
                 )
                 continue
             seen_orders.add(order_code)
