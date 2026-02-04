@@ -117,6 +117,22 @@ Any PR that touches protected paths must be isolated and explicitly labeled “p
       - If no arguments provided → default both dates to today in `PIPELINE_TIMEZONE`
       - Follow the same orchestration and logging style as TD and dashboard_downloader
 
+#### Stage 1: Archive Orders export
+
+- Menu navigation: click “Reports” → “Archive Orders”, confirm URL `https://store.ucleanlaundry.com/archive`.
+- Pagination handling:
+  - Use Prev/Next or numbered pages; loop until all pages exhausted.
+  - Capture total pages from the UI if available to drive the loop.
+- Per-row actions:
+  - Base table row capture for each order in the archive list.
+  - Click order code (e.g., `<span style="cursor: pointer;">UC610-0890</span>`) to open the order details modal; extract **one row per item line**.
+  - Click “View Payment Details” to open the payment modal; extract **one row per payment line** (mode, amount, date, optional transaction_id).
+- Output files per store:
+  - `{store_code}-base_order_info.xlsx`
+  - `{store_code}-order_details.xlsx`
+  - `{store_code}-payment_details.xlsx`
+- Note: Stage 1 is **download-only** (no DB writes); data will be reviewed and later ingested in Stage 2.
+
 ### bank_sync
 
 - Objective of this pipeline is to Ingest Bank Statement Data (for all bank accounts relevant to payment reconciliation)
