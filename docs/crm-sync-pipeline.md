@@ -378,6 +378,8 @@ Any PR that touches protected paths must be isolated and explicitly labeled “p
 - TD Orders staging (`stg_td_orders`): upsert/merge on `{store_code, order_number, order_date}`. Production `td_orders` should mirror these uniqueness semantics to keep re-runs idempotent.
 - TD Sales staging (`stg_td_sales`): upsert/merge on `{store_code, order_number, payment_date}` with the same key alignment in `sales`.
 - UC Orders staging (`stg_uc_orders`): upsert/merge on `{store_code, order_number, invoice_date}`; ensure the production table enforces the same uniqueness to avoid drift.
+- UC Order Details staging (`stg_uc_order_details`): upsert/merge on `{store_code, order_number, line_hash}` where `line_hash` is a deterministic hash of the item-line attributes.
+- UC Payment Details staging (`stg_uc_payment_details`): upsert/merge on `{store_code, order_number, payment_date, payment_amount, payment_mode, transaction_id}`.
 - Bank staging (`stg_bank`): upsert/merge on `{row_id}` and preserve that uniqueness in `bank` so repeated ingests update rather than duplicate rows.
 
 ### DB alignment prerequisites (before Playwright)
@@ -386,6 +388,8 @@ Any PR that touches protected paths must be isolated and explicitly labeled “p
   - `stg_td_orders`: unique on `(store_code, order_number, order_date)`; production `td_orders` must enforce the same business key for idempotent re-runs.
   - `stg_td_sales`: unique on `(store_code, order_number, payment_date)`; production `sales` must match.
   - `stg_uc_orders`: unique on `(store_code, order_number, invoice_date)`; production `uc_orders` must match.
+  - `stg_uc_order_details`: unique on `(store_code, order_number, line_hash)`; downstream consumers must enforce the same business key.
+  - `stg_uc_payment_details`: unique on `(store_code, order_number, payment_date, payment_amount, payment_mode, transaction_id)`; downstream consumers must enforce the same business key.
   - `stg_bank`: unique on `(row_id)`; production `bank` must match.
 - Alembic migration expectations (to be completed before Playwright automation starts):
   - Apply required table creates/alters to reflect the schemas specified in this document, including indexes/constraints for the business keys above.
@@ -588,6 +592,49 @@ create table stg_uc_orders (
 );
 ```
 
+### Table: stg_uc_order_details
+
+This table will be used to hold per-line order item rows extracted from the UC archive order details modal for `store_master.sync_group='UC'` stores. `line_hash` is a deterministic hash of the item-line attributes to support idempotent upserts. Proposed structure of this table is as below:
+
+```sql
+create table stg_uc_order_details (
+    id              bigserial,
+    run_id          text,
+    run_date        timestamptz,
+    store_code      varchar(8),
+    order_number    varchar(12),
+    service_name    varchar(64),
+    hsn_sac         varchar(32),
+    item_name       varchar(128),
+    rate            numeric(12,2),
+    quantity        numeric(12,2),
+    weight          numeric(12,2),
+    addons          text,
+    amount          numeric(12,2),
+    line_hash       varchar(64),
+    constraint pk_stg_uc_order_details primary key (id)
+);
+```
+
+### Table: stg_uc_payment_details
+
+This table will be used to hold per-line payment rows extracted from the UC payment details modal for `store_master.sync_group='UC'` stores. `transaction_id` is nullable because some payment modes do not provide a reference. Proposed structure of this table is as below:
+
+```sql
+create table stg_uc_payment_details (
+    id              bigserial,
+    run_id          text,
+    run_date        timestamptz,
+    store_code      varchar(8),
+    order_number    varchar(12),
+    payment_mode    varchar(32),
+    payment_amount  numeric(12,2),
+    payment_date    timestamptz,
+    transaction_id  varchar(64),
+    constraint pk_stg_uc_payment_details primary key (id)
+);
+```
+
 ### Table: stg_td_sales
 
 This table will be used to hold downloaded `sales & delivery` excel data from `td_orders_sync` pipeline for `store_master.sync_group='TD'` stores. Proposed structure of this table is as below:
@@ -657,6 +704,8 @@ create table stg_bank (
   - `stg_td_orders`: unique on (`store_code`, `order_number`, `order_date`).
   - `stg_td_sales`: unique on (`store_code`, `order_number`, `payment_date`).
   - `stg_uc_orders`: unique on (`store_code`, `order_number`, `invoice_date`).
+  - `stg_uc_order_details`: unique on (`store_code`, `order_number`, `line_hash`) where `line_hash` is a deterministic hash of the item-line attributes.
+  - `stg_uc_payment_details`: unique on (`store_code`, `order_number`, `payment_date`, `payment_amount`, `payment_mode`, `transaction_id`).
   - `stg_bank`: unique on (`row_id`) (already noted as `uq_stg_bank_row_id`).
 - Upsert/merge behavior in staging must use the above keys to avoid duplicates on re-runs for the same date ranges.
 - Production-table writes must align to these same business keys to keep reruns clean:
