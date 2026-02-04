@@ -1,0 +1,154 @@
+This page (https://store.ucleanlaundry.com/archive) contains a drop down to filter records
+Drop Down HTML is:
+<div _ngcontent-ile-c174="" class="filter-btn"><img _ngcontent-ile-c174="" alt="calendar"
+        src="https://storeassets.ucleanlaundry.com/assets/orderthrough/calendar.png"> Any Date <img
+        _ngcontent-ile-c174="" alt="dropdown" src="https://storeassets.ucleanlaundry.com/assets/orderthrough/cross.svg">
+</div>
+
+On Click of drop down folloiwng HTML element opens up:
+<div _ngcontent-ile-c174="" class="ng-star-inserted">
+    <div _ngcontent-ile-c174="" class="date-type-section">
+        <div _ngcontent-ile-c174="" class="section-title">Apply On</div>
+        <div _ngcontent-ile-c174="" class="radio-group"><label _ngcontent-ile-c174="" class="radio-label"><input
+                    _ngcontent-ile-c174="" type="radio" name="dateType" value="Pickup Date" ng-reflect-name="dateType"
+                    ng-reflect-value="Pickup Date" ng-reflect-model="Delivery Date"
+                    class="ng-untouched ng-pristine ng-valid"> Pickup Date </label><label _ngcontent-ile-c174=""
+                class="radio-label"><input _ngcontent-ile-c174="" type="radio" name="dateType" value="Delivery Date"
+                    ng-reflect-name="dateType" ng-reflect-value="Delivery Date" ng-reflect-model="Delivery Date"
+                    class="ng-valid ng-dirty ng-touched"> Delivery Date </label></div>
+    </div>
+    <div _ngcontent-ile-c174="" class="date-options">
+        <div _ngcontent-ile-c174="" class="date-option active ng-star-inserted"> Any Date </div>
+        <div _ngcontent-ile-c174="" class="date-option ng-star-inserted"> Today </div>
+        <div _ngcontent-ile-c174="" class="date-option ng-star-inserted"> Last 7 Days </div>
+        <div _ngcontent-ile-c174="" class="date-option ng-star-inserted"> Last 30 Days </div>
+        <div _ngcontent-ile-c174="" class="date-option ng-star-inserted"> Last Year </div>
+        <div _ngcontent-ile-c174="" class="date-option ng-star-inserted"> Custom </div><!--bindings={
+  "ng-reflect-ng-for-of": "Any Date,Today,Last 7 Days,Las"
+}-->
+    </div><!--bindings={
+  "ng-reflect-ng-if": "false"
+}-->
+</div>
+
+Here we are supposed to select "Delivery Date" radio button. And then click "Custom" date option.
+
+The HTML of custom date picker that opens up is as below, in the UI i had manually entered date range from 31-Jan-2026
+to 03-Feb-2026:
+<div _ngcontent-iup-c174="" class="custom-date-inputs ng-star-inserted">
+    <input _ngcontent-iup-c174="" type="date" max="2026-02-03" ng-reflect-model="2026-01-31"
+        class="ng-valid ng-dirty ng-touched">
+    <input _ngcontent-iup-c174="" type="date" min="2026-01-31" ng-reflect-model="2026-02-03"
+        class="ng-valid ng-dirty ng-touched">
+</div>
+
+After entering the date range, I clicked outside the date picker to close it and the data get auto-refreshed based on
+the selected date range.
+
+The data gets populated in the table as below:
+<div _ngcontent-iup-c175="" class="table-wrapper">
+    <table _ngcontent-iup-c175="" class="orders-table">
+        <thead _ngcontent-iup-c175="">
+            <tr _ngcontent-iup-c175="">
+                <th _ngcontent-iup-c175="" class="sortable-header"> Order <span _ngcontent-iup-c175=""
+                        class="sort-icon">↕</span></th>
+                <th _ngcontent-iup-c175="" class="sortable-header"> Pickup <span _ngcontent-iup-c175=""
+                        class="sort-icon">↕</span></th>
+                <th _ngcontent-iup-c175="" class="sortable-header"> Delivery <span _ngcontent-iup-c175=""
+                        class="sort-icon">↕</span></th>
+                <th _ngcontent-iup-c175="">Customer</th>
+                <th _ngcontent-iup-c175="">Address</th>
+                <th _ngcontent-iup-c175="">Payment</th>
+                <th _ngcontent-iup-c175="">Instructions</th>
+                <th _ngcontent-iup-c175="" class="sortable-header"> Status <span _ngcontent-iup-c175=""
+                        class="sort-icon">↕</span></th>
+            </tr>
+        </thead>
+        <tbody _ngcontent-iup-c175="">
+            <tr _ngcontent-iup-c175="" class="ng-star-inserted">
+                <td _ngcontent-iup-c175="" class="order-col">
+                    <div _ngcontent-iup-c175="" class="order-code"><img _ngcontent-iup-c175="" alt="order type"
+                            src="https://storeassets.ucleanlaundry.com/assets/images/icons/order-through/walk.svg"><span
+                            _ngcontent-iup-c175="" style="cursor: pointer;">UC610-0890</span></div>
+                </td>
+                <td _ngcontent-iup-c175=""></td>
+                <td _ngcontent-iup-c175="">03 Feb 2026, 12:12 PM</td>
+                <td _ngcontent-iup-c175="" class="customer-col">
+                    <div _ngcontent-iup-c175="" class="customer-name">Combos Saloon </div>
+                    <div _ngcontent-iup-c175="" class="customer-phone">7836087861</div>
+                </td>
+                <td _ngcontent-iup-c175="" class="address-col">Vyapar Kendra Sushant lok 1 GF shop 206 , , , </td>
+                <td _ngcontent-iup-c175="" class="payment-col"><!--bindings={
+  "ng-reflect-ng-if": "false"
+}-->
+                    <div _ngcontent-iup-c175="" class="payment-details-available ng-star-inserted"> View Payment Details
+                    </div><!--bindings={
+  "ng-reflect-ng-if": "[{\"created_at\": \"2026-02-03 12"
+}-->
+                </td>
+                <td _ngcontent-iup-c175="">Handle with care</td>
+                <td _ngcontent-iup-c175="" class="status-col"><span _ngcontent-iup-c175=""
+                        class="delivered status-badge"> Delivered </span>
+                    <div _ngcontent-iup-c175="" class="status-date">03 Feb 2026, 12:12 PM</div>
+                </td>
+            </tr>
+            <tr _ngcontent-iup-c175="" class="ng-star-inserted">
+                <td _ngcontent-iup-c175="" class="order-col">
+                    <div _ngcontent-iup-c175="" class="order-code"><img _ngcontent-iup-c175="" alt="order type"
+                            src="https://storeassets.ucleanlaundry.com/assets/images/icons/order-through/walk.svg"><span
+                            _ngcontent-iup-c175="" style="cursor: pointer;">UC610-0867</span></div>
+                </td>
+                <td _ngcontent-iup-c175=""></td>
+                <td _ngcontent-iup-c175="">03 Feb 2026, 10:43 AM</td>
+                <td _ngcontent-iup-c175="" class="customer-col">
+                    <div _ngcontent-iup-c175="" class="customer-name">Asmita ji </div>
+                    <div _ngcontent-iup-c175="" class="customer-phone">9474965201</div>
+                </td>
+                <td _ngcontent-iup-c175="" class="address-col">C1251-52,, 102,, Near lily park</td>
+                <td _ngcontent-iup-c175="" class="payment-col"><!--bindings={
+  "ng-reflect-ng-if": "false"
+}-->
+                    <div _ngcontent-iup-c175="" class="payment-details-available ng-star-inserted"> View Payment Details
+                    </div><!--bindings={
+  "ng-reflect-ng-if": "[{\"created_at\": \"2026-02-03 10"
+}-->
+                </td>
+                <td _ngcontent-iup-c175="">Handle with care</td>
+                <td _ngcontent-iup-c175="" class="status-col"><span _ngcontent-iup-c175=""
+                        class="delivered status-badge"> Delivered </span>
+                    <div _ngcontent-iup-c175="" class="status-date">03 Feb 2026, 10:43 AM</div>
+                </td>
+            </tr>
+            <tr _ngcontent-iup-c175="" class="ng-star-inserted">
+                <td _ngcontent-iup-c175="" class="order-col">
+                    <div _ngcontent-iup-c175="" class="order-code"><img _ngcontent-iup-c175="" alt="order type"
+                            src="https://storeassets.ucleanlaundry.com/assets/images/icons/order-through/mobile.svg"><span
+                            _ngcontent-iup-c175="" style="cursor: pointer;">UC610-0869</span></div>
+                </td>
+                <td _ngcontent-iup-c175="">29 Jan 2026, 10:55 AM</td>
+                <td _ngcontent-iup-c175="">31 Jan 2026, 05:56 PM</td>
+                <td _ngcontent-iup-c175="" class="customer-col">
+                    <div _ngcontent-iup-c175="" class="customer-name">shreya</div>
+                    <div _ngcontent-iup-c175="" class="customer-phone">9084476036</div>
+                </td>
+                <td _ngcontent-iup-c175="" class="address-col">Room-306, B 723 ground floor , Sushant Lok Phase I,
+                    Gurugram, Haryana 122009, Gurugram, </td>
+                <td _ngcontent-iup-c175="" class="payment-col"><!--bindings={
+  "ng-reflect-ng-if": "false"
+}-->
+                    <div _ngcontent-iup-c175="" class="payment-details-available ng-star-inserted"> View Payment Details
+                    </div><!--bindings={
+  "ng-reflect-ng-if": "[{\"created_at\": \"2026-01-31 17"
+}-->
+                </td>
+                <td _ngcontent-iup-c175="">Handle with care</td>
+                <td _ngcontent-iup-c175="" class="status-col"><span _ngcontent-iup-c175=""
+                        class="delivered status-badge"> Delivered </span>
+                    <div _ngcontent-iup-c175="" class="status-date">31 Jan 2026, 05:56 PM</div>
+                </td>
+            </tr><!--bindings={
+  "ng-reflect-ng-for-of": "[object Object],[object Object"
+}-->
+        </tbody>
+    </table>
+</div>
