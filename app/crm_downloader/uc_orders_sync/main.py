@@ -1592,18 +1592,8 @@ async def _extract_archive_base_row(
     store: UcStore,
     logger: JsonLogger,
     row_index: int,
+    order_code: str,
 ) -> dict[str, Any] | None:
-    order_code = await _locator_text(row.locator("td.order-col span"))
-    if not order_code:
-        log_event(
-            logger=logger,
-            phase="extraction",
-            status="warn",
-            message="Missing order code in archive row",
-            store_code=store.store_code,
-            row_index=row_index,
-        )
-        return None
     pickup = await _locator_text(row.locator("td").nth(1))
     delivery = await _locator_text(row.locator("td").nth(2))
     customer_name = await _locator_text(row.locator(".customer-name"))
@@ -1807,6 +1797,11 @@ async def _extract_payment_details(
     return details
 
 
+async def _get_archive_order_code(row: Locator) -> str | None:
+    order_locator = row.locator("td.order-col span[style*='cursor']")
+    return await _locator_text(order_locator)
+
+
 async def _get_first_order_code(page: Page) -> str | None:
     locator = page.locator(f"{ARCHIVE_TABLE_ROW_SELECTOR} td.order-col span").first
     return await _locator_text(locator)
@@ -1835,7 +1830,15 @@ async def _collect_archive_orders(
         with contextlib.suppress(TimeoutError):
             await page.wait_for_selector(ARCHIVE_TABLE_ROW_SELECTOR, timeout=NAV_TIMEOUT_MS)
         row_locator = page.locator(ARCHIVE_TABLE_ROW_SELECTOR)
-        row_count = await row_locator.count()
+        raw_row_count = await row_locator.count()
+        valid_rows: list[tuple[Locator, str]] = []
+        for idx in range(raw_row_count):
+            row = row_locator.nth(idx)
+            order_code = await _get_archive_order_code(row)
+            if not order_code:
+                continue
+            valid_rows.append((row, order_code))
+        row_count = len(valid_rows)
         extract.page_count += 1
         log_event(
             logger=logger,
@@ -1854,14 +1857,12 @@ async def _collect_archive_orders(
                 store_code=store.store_code,
                 page_number=page_index,
             )
-        for idx in range(row_count):
-            row = row_locator.nth(idx)
+        for idx, (row, order_code) in enumerate(valid_rows):
             base_row = await _extract_archive_base_row(
-                row=row, store=store, logger=logger, row_index=idx
+                row=row, store=store, logger=logger, row_index=idx, order_code=order_code
             )
             if not base_row:
                 continue
-            order_code = base_row["order_code"]
             if order_code in seen_orders:
                 log_event(
                     logger=logger,
