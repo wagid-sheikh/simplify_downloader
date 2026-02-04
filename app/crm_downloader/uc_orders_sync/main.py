@@ -1483,6 +1483,26 @@ async def _apply_archive_date_filter(
         store_code=store.store_code,
     )
 
+    dropdown_selectors = [".date-type-section", ".date-options"]
+    dropdown_ready = False
+    try:
+        await page.locator(dropdown_selectors[0]).first.wait_for(state="visible", timeout=5_000)
+        dropdown_ready = True
+    except TimeoutError:
+        with contextlib.suppress(TimeoutError):
+            await page.locator(dropdown_selectors[1]).first.wait_for(state="visible", timeout=5_000)
+            dropdown_ready = True
+    if not dropdown_ready:
+        log_event(
+            logger=logger,
+            phase="filters",
+            status="warn",
+            message="Archive Orders filter dropdown content failed to render after clicking filter button",
+            store_code=store.store_code,
+            selectors=dropdown_selectors,
+        )
+        return False
+
     date_type = page.locator(ARCHIVE_DATE_TYPE_SELECTOR).first
     if await date_type.count():
         with contextlib.suppress(Exception):
