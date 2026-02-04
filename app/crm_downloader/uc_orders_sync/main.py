@@ -1910,7 +1910,7 @@ async def _collect_archive_orders(
                         if (!el) return false;
                         return el.textContent.trim() !== previous;
                     }""",
-                    [f"{ARCHIVE_TABLE_ROW_SELECTOR} td.order-col span", previous_first],
+                    arg=[f"{ARCHIVE_TABLE_ROW_SELECTOR} td.order-col span", previous_first],
                     timeout=NAV_TIMEOUT_MS,
                 )
         page_index += 1
