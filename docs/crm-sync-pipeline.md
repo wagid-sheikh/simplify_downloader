@@ -1118,6 +1118,62 @@ These rules apply during ingestion of `GST_Report_2025-12-01_to_2025-12-01.xlsx`
 | 42  | `orders.run_id`                 | `stg_uc_orders.run_id`                          | Traceability of ETL run                                                      |
 | 43  | `orders.run_date`               | `stg_uc_orders.run_date`                        | Same as created_at / ETL execution timestamp                                 |
 
+#### from `stg_uc_order_details` to `orders` (enrichment)
+
+`stg_uc_order_details` enriches the base UC `orders` rows produced from `stg_uc_orders`. This is a **post-upsert enrichment** step (run after Phase 7) keyed on (`store_code`, `order_number`), and it must be safe to re-run.
+
+**Fields to update (derived from order details):**
+
+- `orders.pieces`: set to `SUM(quantity)` for the order (ignore NULLs). Update only if the computed sum is > 0.
+- `orders.weight`: set to `SUM(weight)` for the order (ignore NULLs). Update only if the computed sum is > 0.
+- `orders.service_type`: set to a deterministic summary string, e.g. `STRING_AGG(DISTINCT service_name, ', ')` ordered alphabetically. Update only when non-empty.
+
+**Fields to preserve (do not overwrite from order details):**
+
+- All customer fields (`customer_name`, `mobile_number`, `customer_gstin`, `customer_address`, `customer_source`).
+- All monetary fields (`gross_amount`, `discount_amount`, `tax_amount`, `net_amount`) sourced from `stg_uc_orders`.
+- All date/status fields (`order_date`, `due_date`, `default_due_date`, `order_status`, `payment_status`), plus ETL trace fields (`run_id`, `run_date`, `created_at`).
+
+If no matching order-details rows exist for an order, leave the base `orders` record unchanged.
+
+#### from `stg_uc_payment_details` to `sales`
+
+UC payment details drive `sales` rows **one row per payment line**. For each line in `stg_uc_payment_details`, insert/update exactly one `sales` row, using the payment fields as the business key. Use the parent UC order for any missing context.
+
+| Target column               | Source / Expression                                                         | Notes / Transform                                                                 |
+| --------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `sales.cost_center`         | `stg_uc_orders.cost_center` via join on (`store_code`, `order_number`)       | Use the UC order’s cost center.                                                   |
+| `sales.store_code`          | `stg_uc_payment_details.store_code`                                         | Copy from staging.                                                                |
+| `sales.order_number`        | `stg_uc_payment_details.order_number`                                       | Copy from staging.                                                                |
+| `sales.order_date`          | `stg_uc_orders.invoice_date`                                                | Use UC invoice date for order date context.                                       |
+| `sales.payment_date`        | `stg_uc_payment_details.payment_date`                                       | Copy from staging (parsed timestamptz).                                           |
+| `sales.payment_mode`        | `stg_uc_payment_details.payment_mode`                                       | Copy from staging.                                                                |
+| `sales.payment_received`    | `stg_uc_payment_details.payment_amount`                                     | Use UC payment amount as payment received.                                        |
+| `sales.transaction_id`      | `stg_uc_payment_details.transaction_id`                                     | Optional; keep NULL when not provided by UC.                                      |
+| `sales.customer_name`       | `stg_uc_orders.customer_name`                                               | Optional enrichment; set to NULL if UC order missing.                             |
+| `sales.mobile_number`       | `stg_uc_orders.mobile_number`                                               | Optional enrichment; set to NULL if UC order missing.                             |
+| `sales.customer_address`    | `NULL`                                                                      | UC payment details do not include address; keep NULL.                             |
+| `sales.customer_code`       | `NULL`                                                                      | UC payment details do not include customer code; keep NULL.                       |
+| `sales.adjustments`         | `0`                                                                         | UC payment lines have no adjustment; default to 0.                                |
+| `sales.balance`             | `0`                                                                         | UC payment lines have no balance; default to 0.                                   |
+| `sales.accepted_by`         | `NULL`                                                                      | Not available from UC payment details.                                            |
+| `sales.payment_made_at`     | `NULL`                                                                      | Not available from UC payment details.                                            |
+| `sales.order_type`          | `'UClean'`                                                                  | Constant for UC-sourced payment lines.                                            |
+| `sales.is_duplicate`        | `FALSE`                                                                     | Default to false.                                                                 |
+| `sales.is_edited_order`     | `FALSE`                                                                     | Default to false.                                                                 |
+| `sales.ingest_remarks`      | `stg_uc_orders.ingest_remarks`                                              | Carry forward UC order ingest remarks when available.                             |
+| `sales.run_id`              | `stg_uc_payment_details.run_id`                                             | Traceability of ETL run.                                                          |
+| `sales.run_date`            | `stg_uc_payment_details.run_date`                                           | Same as ETL execution timestamp.                                                  |
+
+If multiple payment lines exist for a single order, each line produces its own `sales` row with its own `payment_date`/`payment_mode`/`payment_amount` (and optional `transaction_id`).
+
+#### UC conflict handling & idempotent upserts
+
+- **Orders base upsert:** `stg_uc_orders → orders` uses (`cost_center`, `order_number`, `order_date = invoice_date`) as the conflict key. On conflict, update only mutable columns (customer fields, amounts, status fields, ingest_remarks, updated_at/updated_by) while preserving immutable identifiers and created_at/run_id/run_date from the original insert.
+- **Orders enrichment:** `stg_uc_order_details → orders` is a deterministic update keyed on (`store_code`, `order_number`). Re-running should **recompute** `pieces`, `weight`, and `service_type` from the latest detail lines without touching other columns.
+- **Sales upsert:** `stg_uc_payment_details → sales` must upsert on a payment-line key to avoid duplicates on reruns. Use (`cost_center`, `order_number`, `payment_date`, `payment_mode`, `payment_amount`, `transaction_id`) as the logical business key; if the physical unique index remains `(cost_center, order_number, payment_date)`, then use a conflict-safe merge that updates the payment columns to match the latest line without inserting duplicates.
+- **Idempotency expectation:** rerunning UC extraction for the same date range should not create extra orders or sales rows. Instead, it should converge to the same state by updating existing rows and inserting only genuinely new order/payment lines.
+
 ### from `1170-nQ2-KWQLOo_udNoF6SNoa.xlsx` Sales & Delivery to `stg_td_sales`
 
 #### Expected Columns in Downloaded `1170-nQ2-KWQLOo_udNoF6SNoa.xlsx`
