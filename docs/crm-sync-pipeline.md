@@ -120,6 +120,14 @@ Any PR that touches protected paths must be isolated and explicitly labeled “p
 #### Stage 1: Archive Orders export
 
 - Menu navigation: click “Reports” → “Archive Orders”, confirm URL `https://store.ucleanlaundry.com/archive`.
+- Date filtering algorithm:
+  - Open the date filter dropdown: `div.filter-btn` (text “Any Date”).
+  - In the dropdown, select **Delivery Date** radio input (`input[name="dateType"][value="Delivery Date"]`).
+  - Select **Custom** date option (`div.date-option` with text “Custom”).
+  - Fill the two `<input type="date">` fields (start + end) in `.custom-date-inputs` with `from_date` and `to_date`.
+  - Close the picker by clicking outside; data auto-refreshes (no explicit “Apply” button).
+  - Wait for table refresh: `.table-wrapper` / `.orders-table` rows re-rendered.
+  - Note: the pipeline’s date range must drive this filter, and all pages for the filtered range must be iterated.
 - Pagination handling:
   - Use Prev/Next or numbered pages; loop until all pages exhausted.
   - Capture total pages from the UI if available to drive the loop.
