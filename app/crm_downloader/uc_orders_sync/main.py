@@ -1586,6 +1586,18 @@ def _normalize_cell_text(text: str | None) -> str | None:
     return cleaned or None
 
 
+def _split_multiline_cell(text: str | None) -> list[str]:
+    if not text:
+        return []
+    parts = re.split(r"\s*\n\s*", text.strip())
+    cleaned_items: list[str] = []
+    for part in parts:
+        cleaned = re.sub(r"\s+", " ", part.strip())
+        if cleaned:
+            cleaned_items.append(cleaned)
+    return cleaned_items
+
+
 async def _extract_archive_base_row(
     *,
     row: Locator,
@@ -1683,30 +1695,41 @@ async def _extract_order_details(
         cells = item_row.locator("td")
         service = _normalize_cell_text(await _locator_text(cells.nth(1)))
         hsn_sac = _normalize_cell_text(await _locator_text(cells.nth(2)))
-        item_name = _normalize_cell_text(await _locator_text(cells.nth(3)))
-        rate = _normalize_cell_text(await _locator_text(cells.nth(4)))
-        quantity = _normalize_cell_text(await _locator_text(cells.nth(5)))
-        weight = _normalize_cell_text(await _locator_text(cells.nth(6)))
-        addons = _normalize_cell_text(await _locator_text(cells.nth(7)))
-        amount = _normalize_cell_text(await _locator_text(cells.nth(8)))
-        details.append(
-            {
-                "store_code": store.store_code,
-                "order_code": order_number,
-                "order_mode": order_mode,
-                "order_datetime": order_datetime,
-                "pickup_datetime": pickup_datetime,
-                "delivery_datetime": delivery_datetime,
-                "service": service,
-                "hsn_sac": hsn_sac,
-                "item_name": item_name,
-                "rate": rate,
-                "quantity": quantity,
-                "weight": weight,
-                "addons": addons,
-                "amount": amount,
-            }
+        item_names = _split_multiline_cell(await _locator_text(cells.nth(3)))
+        rates = _split_multiline_cell(await _locator_text(cells.nth(4)))
+        quantities = _split_multiline_cell(await _locator_text(cells.nth(5)))
+        weights = _split_multiline_cell(await _locator_text(cells.nth(6)))
+        addons_list = _split_multiline_cell(await _locator_text(cells.nth(7)))
+        amounts = _split_multiline_cell(await _locator_text(cells.nth(8)))
+
+        max_items = max(
+            1,
+            len(item_names),
+            len(rates),
+            len(quantities),
+            len(weights),
+            len(addons_list),
+            len(amounts),
         )
+        for item_index in range(max_items):
+            details.append(
+                {
+                    "store_code": store.store_code,
+                    "order_code": order_number,
+                    "order_mode": order_mode,
+                    "order_datetime": order_datetime,
+                    "pickup_datetime": pickup_datetime,
+                    "delivery_datetime": delivery_datetime,
+                    "service": service,
+                    "hsn_sac": hsn_sac,
+                    "item_name": item_names[item_index] if item_index < len(item_names) else None,
+                    "rate": rates[item_index] if item_index < len(rates) else None,
+                    "quantity": quantities[item_index] if item_index < len(quantities) else None,
+                    "weight": weights[item_index] if item_index < len(weights) else None,
+                    "addons": addons_list[item_index] if item_index < len(addons_list) else None,
+                    "amount": amounts[item_index] if item_index < len(amounts) else None,
+                }
+            )
 
     close_button = modal.locator("button:has-text('Close')").first
     if await close_button.count():
