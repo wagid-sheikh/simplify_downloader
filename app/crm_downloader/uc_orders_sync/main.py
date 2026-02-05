@@ -824,16 +824,16 @@ def _format_gst_filename(store_code: str, from_date: date, to_date: date) -> str
     return f"{store_code}_uc_gst_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
 
 
-def _format_archive_base_filename(store_code: str) -> str:
-    return f"{store_code}-base_order_info.xlsx"
+def _format_archive_base_filename(store_code: str, from_date: date, to_date: date) -> str:
+    return f"{store_code}-base_order_info_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
 
 
-def _format_archive_order_details_filename(store_code: str) -> str:
-    return f"{store_code}-order_details.xlsx"
+def _format_archive_order_details_filename(store_code: str, from_date: date, to_date: date) -> str:
+    return f"{store_code}-order_details_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
 
 
-def _format_archive_payment_details_filename(store_code: str) -> str:
-    return f"{store_code}-payment_details.xlsx"
+def _format_archive_payment_details_filename(store_code: str, from_date: date, to_date: date) -> str:
+    return f"{store_code}-payment_details_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
 
 
 def _write_excel_rows(path: Path, rows: Sequence[dict[str, Any]], columns: Sequence[str]) -> int:
@@ -2435,9 +2435,9 @@ async def _run_store_discovery(
         download_dir = _resolve_uc_download_dir(run_id, store.store_code, from_date, to_date)
         extract = await _collect_archive_orders(page=page, store=store, logger=logger)
         row_count = len(extract.base_rows)
-        base_path = download_dir / _format_archive_base_filename(store.store_code)
-        order_details_path = download_dir / _format_archive_order_details_filename(store.store_code)
-        payment_details_path = download_dir / _format_archive_payment_details_filename(store.store_code)
+        base_path = download_dir / _format_archive_base_filename(store.store_code, from_date, to_date)
+        order_details_path = download_dir / _format_archive_order_details_filename(store.store_code, from_date, to_date)
+        payment_details_path = download_dir / _format_archive_payment_details_filename(store.store_code, from_date, to_date)
         base_count = _write_excel_rows(base_path, extract.base_rows, ARCHIVE_BASE_COLUMNS)
         order_details_count = _write_excel_rows(
             order_details_path, extract.order_detail_rows, ARCHIVE_ORDER_DETAIL_COLUMNS
