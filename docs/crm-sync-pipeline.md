@@ -1182,6 +1182,98 @@ These rules apply during ingestion of `GST_Report_2025-12-01_to_2025-12-01.xlsx`
 | 42  | `orders.run_id`                 | `stg_uc_orders.run_id`                          | Traceability of ETL run                                                      |
 | 43  | `orders.run_date`               | `stg_uc_orders.run_date`                        | Same as created_at / ETL execution timestamp                                 |
 
+### UC archive orders-only Excel → staging mapping (Stage 2 ingest)
+
+> Scope guard: this section applies **only** to UC archive orders ingestion (`*-base_order_info*.xlsx`, `*-order_details*.xlsx`, `*-payment_details*.xlsx`) and must not be reused for UC GST exports or any non-archive UC datasets.
+
+#### Source artifacts reviewed (UC archive orders only)
+
+- `docs/uc_page_htmls/downloaded_excels/UC567-base_order_info.xlsx`
+- `docs/uc_page_htmls/downloaded_excels/UC567-order_details.xlsx`
+- `docs/uc_page_htmls/downloaded_excels/UC567-payment_details.xlsx`
+- `docs/uc_page_htmls/downloaded_excels/UC610-base_order_info.xlsx`
+- `docs/uc_page_htmls/downloaded_excels/UC610-order_details.xlsx`
+- `docs/uc_page_htmls/downloaded_excels/UC610-payment_details.xlsx`
+
+Observed naming/header pattern for archive orders export files:
+
+- `{store_code}-base_order_info.xlsx`
+- `{store_code}-order_details.xlsx`
+- `{store_code}-payment_details.xlsx`
+
+#### Base file mapping (`*-base_order_info*.xlsx` → `stg_uc_archive_orders_base`)
+
+| Excel column name | Target staging table + column | Transformation / normalization | Null/default handling | Notes (unmatched/deprecated) |
+| --- | --- | --- | --- | --- |
+| `store_code` | `stg_uc_archive_orders_base.store_code` | Trim + uppercase; validate exists in `store_master` for UC sync group. | If blank/unmapped → reject row from upsert and append `missing_store_code` to `ingest_remarks`. | Required for store→cost center derivation. |
+| `order_code` | `stg_uc_archive_orders_base.order_code` | Trim + uppercase; collapse inner spaces. | If blank → reject row and append `missing_order_code` to `ingest_remarks`. | Required business key with `store_code`. |
+| `pickup` | `stg_uc_archive_orders_base.pickup_raw` | Keep raw text; trim outer whitespace only. | Blank/`-` → `NULL`. | Date parsing deferred to publish layer. |
+| `delivery` | `stg_uc_archive_orders_base.delivery_raw` | Keep raw text; trim outer whitespace only. | Blank/`-` → `NULL`. | Date parsing deferred to publish layer. |
+| `customer_name` | `stg_uc_archive_orders_base.customer_name` | Trim; normalize repeated spaces to one. | Blank → `NULL`. | Preserve source casing for now. |
+| `customer_phone` | `stg_uc_archive_orders_base.customer_phone` | Strip spaces, `+91`, punctuation; keep digits as text. | If empty after cleanup → `NULL`; if not 10 digits, keep cleaned value and append `phone_format_warning`. | Do not hard-fail archive row for phone issues. |
+| `address` | `stg_uc_archive_orders_base.address` | Trim; collapse repeated separators (`, ,`) where possible. | Blank → `NULL`. | Keep as free text (no geocode split in staging). |
+| `payment_text` | `stg_uc_archive_orders_base.payment_text` | Trim. | Blank → `NULL`. | Values like `View Payment Details` are expected and informational. |
+| `instructions` | `stg_uc_archive_orders_base.instructions` | Trim. | Blank → `NULL`. | Keep full text for downstream ops context. |
+| `customer_source` | `stg_uc_archive_orders_base.customer_source` | Trim + uppercase enum normalization (`WALK-IN`/`Walk-In` → `WALK-IN`). | Blank → `NULL`. | Non-standard values allowed; append `unknown_customer_source` only as warning. |
+| `status` | `stg_uc_archive_orders_base.status` | Trim + title/enum normalization (`delivered` → `Delivered`). | Blank → `NULL`. | Do not drop row for unknown status; capture warning. |
+| `status_date` | `stg_uc_archive_orders_base.status_date_raw` | Keep raw text; trim only. | Blank/`-` → `NULL`. | Parse later with timezone-aware rules. |
+| *(Not in Excel)* `cost_center` | `stg_uc_archive_orders_base.cost_center` | Resolve from `store_master.cost_center` using normalized `store_code`. | If store has no cost center mapping → set `NULL`, keep row, append `missing_cost_center_mapping`. | Required follow-up before publish if unresolved. |
+| *(Not in Excel)* `run_id`, `run_date`, `source_file`, `ingest_remarks` | same-named staging columns | Set by ingest process metadata. | `ingest_remarks` default `NULL` when clean. | `source_file` should keep actual archive filename used for ingest. |
+
+#### Order details mapping (`*-order_details*.xlsx` → `stg_uc_archive_order_details`)
+
+| Excel column name | Target staging table + column | Transformation / normalization | Null/default handling | Notes (unmatched/deprecated) |
+| --- | --- | --- | --- | --- |
+| `store_code` | `stg_uc_archive_order_details.store_code` | Trim + uppercase; validate against `store_master`. | Blank/unmapped → reject row; append `missing_store_code`. | Required. |
+| `order_code` | `stg_uc_archive_order_details.order_code` | Trim + uppercase. | Blank → reject row; append `missing_order_code`. | Required. |
+| `order_mode` | `stg_uc_archive_order_details.order_mode` | Trim + uppercase normalization (`Walk-In` → `WALK-IN`). | Blank → `NULL`. | Keep unknown modes as-is after normalization. |
+| `order_datetime` | `stg_uc_archive_order_details.order_datetime_raw` | Keep raw text, trimmed. | Blank/`-` → `NULL`. | Parse later. |
+| `pickup_datetime` | `stg_uc_archive_order_details.pickup_datetime_raw` | Keep raw text, trimmed. | Blank/`-` → `NULL`. | Parse later. |
+| `delivery_datetime` | `stg_uc_archive_order_details.delivery_datetime_raw` | Keep raw text, trimmed. | Blank/`-` → `NULL`. | Parse later. |
+| `service` | `stg_uc_archive_order_details.service` | Trim; normalize whitespace. | Blank → `NULL`. | Used in downstream `service_type` enrichment. |
+| `hsn_sac` | `stg_uc_archive_order_details.hsn_sac` | Trim, preserve leading zeros/text form. | Blank → `NULL`. | Keep as text, not numeric. |
+| `item_name` | `stg_uc_archive_order_details.item_name` | Trim. | Blank → `NULL`. | Used in deterministic `line_hash`. |
+| `rate` | `stg_uc_archive_order_details.rate` | Numeric cast after removing commas/currency symbols (`₹`, `INR`). | Unparseable/blank → `NULL` + `invalid_rate`. | Keep decimals to 2 places. |
+| `quantity` | `stg_uc_archive_order_details.quantity` | Numeric cast; allow integer or decimal quantities. | Unparseable/blank → `NULL` + `invalid_quantity`. | `-` should be treated as `NULL`. |
+| `weight` | `stg_uc_archive_order_details.weight` | Numeric cast; map `-` to `NULL`; remove unit suffixes if present. | Unparseable → `NULL` + `invalid_weight`. | Preserve scale up to 3 decimals. |
+| `addons` | `stg_uc_archive_order_details.addons` | Trim. | Blank/`-` → `NULL`. | In samples appears as numeric text like `0.00`; keep as text to avoid semantic assumptions. |
+| `amount` | `stg_uc_archive_order_details.amount` | Numeric cast after removing commas/currency symbols. | Unparseable/blank → `NULL` + `invalid_amount`. | Used in reconciliation checks and line hash input. |
+| *(Not in Excel)* `line_hash` | `stg_uc_archive_order_details.line_hash` | Deterministic hash of normalized line fields: `store_code|order_code|service|item_name|rate|quantity|weight|amount|addons`. | If hash input lacks both `order_code` and all line attributes → reject row. | Required for idempotent upsert key. |
+| *(Not in Excel)* `cost_center`, `run_id`, `run_date`, `source_file`, `ingest_remarks` | same-named staging columns | Set by ingest metadata and store mapping. | Missing cost center → keep row, append warning. | Archive-orders-only metadata columns. |
+
+#### Payment details mapping (`*-payment_details*.xlsx` → `stg_uc_archive_payment_details`)
+
+| Excel column name | Target staging table + column | Transformation / normalization | Null/default handling | Notes (unmatched/deprecated) |
+| --- | --- | --- | --- | --- |
+| `store_code` | `stg_uc_archive_payment_details.store_code` | Trim + uppercase; validate against UC store list. | Blank/unmapped → reject row + `missing_store_code`. | Required. |
+| `order_code` | `stg_uc_archive_payment_details.order_code` | Trim + uppercase. | Blank → reject row + `missing_order_code`. | Required. |
+| `payment_mode` | `stg_uc_archive_payment_details.payment_mode` | Trim + enum normalization (e.g., `UPI / Wallet`, `UPI/Wallet` → `UPI_WALLET`; `Cash` → `CASH`). | Blank → `UNKNOWN` + warning. | Keep original token in remarks when normalized. |
+| `amount` | `stg_uc_archive_payment_details.amount` | Numeric cast after removing commas/currency symbols, plus optional trailing `.00`. | Blank/unparseable → `NULL` + `invalid_payment_amount`. | Amount must remain signed numeric (negative refunds allowed if present later). |
+| `payment_date` | `stg_uc_archive_payment_details.payment_date_raw` | Keep raw text in staging; trim only. | Blank/`-` → `NULL` + `missing_payment_date`. | Parse in publish with timezone handling (`Asia/Kolkata`). |
+| `transaction_id` | `stg_uc_archive_payment_details.transaction_id` | Trim; normalize empty strings to `NULL`. | Blank → `NULL`. | Optional; idempotency key uses `coalesce(transaction_id,'')`. |
+| *(Not in Excel)* `cost_center`, `run_id`, `run_date`, `source_file`, `ingest_remarks` | same-named staging columns | Set from store mapping + pipeline metadata. | Missing cost center → keep row with warning. | Archive-orders-only metadata columns. |
+
+#### UC archive orders-only ingestion assumptions and edge-case handling
+
+- **Missing/blank identifiers:** rows missing either `store_code` or `order_code` are not eligible for upsert in any archive staging table; keep a rejected-row audit in logs and increment ingest warning counters.
+- **Duplicate archive rows:**
+  - Base file duplicates collapse on (`store_code`, `order_code`) with latest-row-wins inside the same file and upsert-on-conflict across reruns.
+  - Order details duplicates collapse by deterministic `line_hash`.
+  - Payment duplicates collapse on (`store_code`, `order_code`, `payment_date_raw`, `payment_mode`, `amount`, `coalesce(transaction_id,''))`.
+- **Currency/amount formatting:** accept numeric strings with commas and optional currency tokens (`₹`, `INR`), strip formatting before cast, and record `invalid_*` remarks instead of hard-failing file ingest.
+- **Date format/timezone discrepancies:** keep all source datetime strings as raw text in staging (`*_raw`), then parse in publish using `PIPELINE_TIMEZONE` (`Asia/Kolkata`) with fallback patterns like `DD Mon YYYY, HH:MM AM/PM`; unparseable values remain NULL with remarks.
+- **Column drift/unmatched columns:** ignore extra columns not listed above, but add a file-level ingest note identifying unexpected headers so mapping coverage can be reviewed.
+
+#### Mapping coverage check (UC archive orders only)
+
+Before promoting Stage 2 ingest changes, run a per-file header audit for UC archive orders artifacts only and classify each header as:
+
+1. **Mapped** to a staging column,
+2. **Intentionally ignored** (documented reason), or
+3. **Follow-up required** (new/renamed field).
+
+The ingest task is considered complete for a given artifact set only when every discovered header is in one of those three states; no “unclassified” UC archive orders columns should remain.
+
 #### from `stg_uc_archive_order_details` to `orders` (enrichment)
 
 `stg_uc_archive_order_details` enriches the base UC `orders` rows produced from `stg_uc_orders`. This is a **post-upsert enrichment** step (run after Phase 7) keyed on (`store_code`, `order_code`), and it must be safe to re-run.
