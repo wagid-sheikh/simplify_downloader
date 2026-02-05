@@ -181,6 +181,15 @@ async def fetch_pending_deliveries_report(
         0,
     )
     adjustments_expr = sa.func.coalesce(sa.func.sum(sales.c.adjustments), 0)
+    has_package_payment_mode_expr = sa.func.max(
+        sa.case(
+            (
+                sa.func.lower(sa.func.coalesce(sales.c.payment_mode, "")) == "package",
+                1,
+            ),
+            else_=0,
+        )
+    )
     is_edited_order_expr = sa.func.max(
         sa.case((sales.c.is_edited_order.is_(True), 1), else_=0)
     )
@@ -188,6 +197,21 @@ async def fetch_pending_deliveries_report(
         sa.case((sales.c.is_duplicate.is_(True), 1), else_=0)
     )
     pending_amount_expr = sa.func.greatest(amount_expr - paid_amount_expr, 0)
+    package_pending_amount_covered_expr = sa.and_(
+        orders.c.source_system == "TumbleDry",
+        has_package_payment_mode_expr == 1,
+        amount_expr > 0,
+        sa.or_(
+            pending_amount_expr * 100 == amount_expr * 10,
+            pending_amount_expr * 100 == amount_expr * 15,
+            pending_amount_expr * 100 == amount_expr * 20,
+            pending_amount_expr * 100 == amount_expr * 35,
+        ),
+    )
+    report_pending_amount_expr = sa.case(
+        (package_pending_amount_covered_expr, 0),
+        else_=pending_amount_expr,
+    )
 
     stmt = (
         sa.select(
@@ -199,7 +223,7 @@ async def fetch_pending_deliveries_report(
             orders.c.source_system,
             amount_expr.label("gross_amount"),
             paid_amount_expr.label("paid_amount"),
-            pending_amount_expr.label("pending_amount"),
+            report_pending_amount_expr.label("pending_amount"),
             adjustments_expr.label("adjustments"),
             is_edited_order_expr.label("is_edited_order"),
             is_duplicate_expr.label("is_duplicate"),
@@ -223,7 +247,7 @@ async def fetch_pending_deliveries_report(
             orders.c.source_system,
             amount_expr,
         )
-        .having(pending_amount_expr > 0)
+        .having(report_pending_amount_expr > 0)
     )
 
     if skip_uc_pending_delivery:
