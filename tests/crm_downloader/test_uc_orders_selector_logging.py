@@ -23,3 +23,13 @@ async def test_selector_cue_logging_skipped_when_dom_logging_disabled(monkeypatc
     assert log["store_code"] == "A100"
     assert "controls" not in log
     assert "spinners" not in log
+
+
+def test_normalize_order_info_key_handles_punctuation_and_spacing() -> None:
+    assert uc_main._normalize_order_info_key(" Order Date : ") == "order date"
+    assert uc_main._normalize_order_info_key("Order No. - UC123") == "order no - uc123"
+
+
+def test_normalize_order_info_key_handles_empty_values() -> None:
+    assert uc_main._normalize_order_info_key(None) == ""
+    assert uc_main._normalize_order_info_key("   ") == ""

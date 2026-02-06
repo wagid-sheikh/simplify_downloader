@@ -1552,6 +1552,14 @@ def _normalize_order_mode(text: str | None) -> str | None:
     return cleaned or None
 
 
+def _normalize_order_info_key(text: str | None) -> str:
+    if not text:
+        return ""
+    lowered = text.lower()
+    lowered = lowered.replace(".", " ").replace(":", " ")
+    return re.sub(r"\s+", " ", lowered).strip()
+
+
 ARCHIVE_FOOTER_TOTAL_SELECTORS = (
     "div[style*='justify-content: flex-end'] p",
     ".table-footer p",
@@ -1669,18 +1677,27 @@ async def _extract_order_details(
         item = info_items.nth(idx)
         label = await _locator_text(item.locator(".order-info-label"))
         value = await _locator_text(item.locator(".order-info-value"))
-        if label and "Order No." in label:
-            match = re.search(r"Order No\.\s*-\s*([A-Za-z0-9-]+)", label)
+        if not value:
+            value = await _locator_text(item.locator("div[style*='font-size: 13px']").first)
+        if not value:
+            value = await _locator_text(item.locator("div").nth(1))
+
+        item_text = await _locator_text(item)
+        key = _normalize_order_info_key(label or item_text)
+
+        if "order no" in key:
+            match = re.search(r"Order No\.\s*-\s*([A-Za-z0-9-]+)", label or "")
             if match:
                 order_number = match.group(1)
-            mode_match = re.search(r"\(([^)]+)\)", label)
+            mode_match = re.search(r"\(([^)]+)\)", label or "")
             if mode_match and not order_mode:
                 order_mode = _normalize_order_mode(mode_match.group(0))
-            timestamp = await _locator_text(item.locator("div").nth(1))
-            order_datetime = timestamp or order_datetime
-        elif label and "Pickup" in label:
+            order_datetime = value or order_datetime
+        elif "order date" in key:
+            order_datetime = value or order_datetime
+        elif "pickup" in key:
             pickup_datetime = value or pickup_datetime
-        elif label and "Delivery" in label:
+        elif "delivery" in key:
             delivery_datetime = value or delivery_datetime
 
     item_rows = modal.locator(".order-breakup tbody tr")
