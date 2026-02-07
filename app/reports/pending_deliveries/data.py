@@ -197,15 +197,21 @@ async def fetch_pending_deliveries_report(
         sa.case((sales.c.is_duplicate.is_(True), 1), else_=0)
     )
     pending_amount_expr = sa.func.greatest(amount_expr - paid_amount_expr, 0)
+    package_pending_targets = (
+        amount_expr * Decimal("0.10"),
+        amount_expr * Decimal("0.15"),
+        amount_expr * Decimal("0.20"),
+        amount_expr * Decimal("0.35"),
+    )
     package_pending_amount_covered_expr = sa.and_(
         orders.c.source_system == "TumbleDry",
         has_package_payment_mode_expr == 1,
         amount_expr > 0,
         sa.or_(
-            pending_amount_expr * 100 == amount_expr * 10,
-            pending_amount_expr * 100 == amount_expr * 15,
-            pending_amount_expr * 100 == amount_expr * 20,
-            pending_amount_expr * 100 == amount_expr * 35,
+            *[
+                sa.func.abs(pending_amount_expr - target_pending_amount) <= 1
+                for target_pending_amount in package_pending_targets
+            ]
         ),
     )
     report_pending_amount_expr = sa.case(
