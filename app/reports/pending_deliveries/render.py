@@ -15,14 +15,16 @@ TEMPLATE_DIR = Path("app") / "reports" / "pending_deliveries" / "templates"
 
 def _format_amount(value: Decimal | int | float | None) -> str:
     if value is None:
-        return "0"
+        return "0.00"
     try:
         numeric = Decimal(str(value))
     except Exception:  # pragma: no cover - defensive
-        return "0"
-    rounded = int(numeric.to_integral_value(rounding=ROUND_HALF_UP))
+        return "0.00"
+    rounded = numeric.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     sign = "-" if rounded < 0 else ""
-    return f"{sign}{_format_indian_number(abs(rounded))}"
+    absolute = abs(rounded)
+    integer_part, _, decimal_part = format(absolute, "f").partition(".")
+    return f"{sign}{_format_indian_number(int(integer_part))}.{decimal_part[:2]}"
 
 
 def _format_indian_number(value: int) -> str:
