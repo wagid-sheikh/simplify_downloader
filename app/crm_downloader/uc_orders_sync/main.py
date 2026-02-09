@@ -148,9 +148,22 @@ ARCHIVE_CUSTOM_INPUT_SELECTOR = ".custom-date-inputs input[type='date']"
 ARCHIVE_TABLE_ROW_SELECTOR = ".table-wrapper .orders-table tbody tr"
 ARCHIVE_ORDER_DETAIL_TRIGGER_SELECTORS = (
     "td.order-col span[style*='cursor']",
+    "td.order-col span a",
+    "td.order-col span button",
     "td.order-col span",
     "td.order-col button",
     "td.order-col a",
+    "td.order-col [role='button']",
+    "td.order-col",
+)
+ARCHIVE_ORDER_CODE_SELECTORS = (
+    "td.order-col span[style*='cursor']",
+    "td.order-col span a",
+    "td.order-col span button",
+    "td.order-col span",
+    "td.order-col a",
+    "td.order-col button",
+    "td.order-col",
 )
 ARCHIVE_NEXT_BUTTON_SELECTOR = ".pagination-btn:has-text('Next')"
 ARCHIVE_PREV_BUTTON_SELECTOR = ".pagination-btn:has-text('Prev')"
@@ -430,7 +443,15 @@ async def _click_order_details_trigger(row: Locator) -> tuple[bool, list[dict[st
             force_click = attempt == 1
             await _wait_for_row_stable(row)
             with contextlib.suppress(Exception):
+                await row.locator("td.order-col").first.scroll_into_view_if_needed(timeout=5_000)
+            with contextlib.suppress(Exception):
                 await trigger.scroll_into_view_if_needed(timeout=5_000)
+            with contextlib.suppress(Exception):
+                await trigger.wait_for(state="visible", timeout=5_000)
+            with contextlib.suppress(Exception):
+                await trigger.wait_for(state="attached", timeout=5_000)
+            with contextlib.suppress(Exception):
+                await trigger.click(timeout=5_000, trial=True)
             try:
                 await trigger.click(timeout=10_000, force=force_click)
                 return True, diagnostics, None
@@ -1823,8 +1844,6 @@ async def _extract_order_details(
             message="Order details modal did not appear; skipping order",
             store_code=store.store_code,
             order_code=order_code,
-            row_html_snippet=row_html,
-            selector_diagnostics=selector_diagnostics,
         )
         return details, None, None, False
 
@@ -1995,8 +2014,23 @@ async def _extract_payment_details(
 
 
 async def _get_archive_order_code(row: Locator) -> str | None:
-    order_locator = row.locator("td.order-col span[style*='cursor']")
-    return await _locator_text(order_locator)
+    for selector in ARCHIVE_ORDER_CODE_SELECTORS:
+        locator = row.locator(selector)
+        text = await _locator_text(locator)
+        if text:
+            return text.strip()
+
+        nested_candidates = (
+            locator.locator("span"),
+            locator.locator("a"),
+            locator.locator("button"),
+            locator.locator("[role='button']"),
+        )
+        for nested in nested_candidates:
+            nested_text = await _locator_text(nested)
+            if nested_text:
+                return nested_text.strip()
+    return None
 
 
 async def _get_first_order_code(page: Page) -> str | None:

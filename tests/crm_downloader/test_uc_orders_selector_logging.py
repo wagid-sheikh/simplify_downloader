@@ -221,3 +221,61 @@ def test_summary_overall_status_rolls_up_partial_reason_codes() -> None:
     )
 
     assert summary.overall_status() == "success_with_warnings"
+
+
+class _FakeSimpleLocator:
+    def __init__(self, text: str | None = None, present: bool = True, children: dict[str, "_FakeSimpleLocator"] | None = None):
+        self._text = text
+        self._present = present
+        self._children = children or {}
+
+    @property
+    def first(self):
+        return self
+
+    async def count(self) -> int:
+        return 1 if self._present else 0
+
+    async def inner_text(self) -> str:
+        return self._text or ""
+
+    def locator(self, selector: str):
+        return self._children.get(selector, _FakeSimpleLocator(present=False))
+
+
+class _FakeRowForOrderCode:
+    def __init__(self, mapping: dict[str, _FakeSimpleLocator]):
+        self._mapping = mapping
+
+    def locator(self, selector: str):
+        return self._mapping.get(selector, _FakeSimpleLocator(present=False))
+
+
+@pytest.mark.asyncio
+async def test_get_archive_order_code_falls_back_to_anchor_when_primary_missing() -> None:
+    row = _FakeRowForOrderCode(
+        {
+            "td.order-col span[style*='cursor']": _FakeSimpleLocator(present=False),
+            "td.order-col span a": _FakeSimpleLocator(text="  UC-456  "),
+        }
+    )
+
+    order_code = await uc_main._get_archive_order_code(row)
+
+    assert order_code == "UC-456"
+
+
+@pytest.mark.asyncio
+async def test_get_archive_order_code_falls_back_to_nested_button_text() -> None:
+    nested_button = _FakeSimpleLocator(text=" UC-789 ")
+    order_col = _FakeSimpleLocator(children={"button": nested_button})
+    row = _FakeRowForOrderCode(
+        {
+            "td.order-col span[style*='cursor']": _FakeSimpleLocator(present=False),
+            "td.order-col": order_col,
+        }
+    )
+
+    order_code = await uc_main._get_archive_order_code(row)
+
+    assert order_code == "UC-789"
