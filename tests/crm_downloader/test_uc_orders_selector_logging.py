@@ -33,3 +33,12 @@ def test_normalize_order_info_key_handles_punctuation_and_spacing() -> None:
 def test_normalize_order_info_key_handles_empty_values() -> None:
     assert uc_main._normalize_order_info_key(None) == ""
     assert uc_main._normalize_order_info_key("   ") == ""
+
+
+def test_parse_archive_footer_window_extracts_start_end_total() -> None:
+    assert uc_main._parse_archive_footer_window("Showing results 1 to 30 of 785 total") == (1, 30, 785)
+    assert uc_main._parse_archive_footer_window(" showing results 31 to 60 of 785 total ") == (31, 60, 785)
+
+
+def test_parse_archive_footer_window_returns_none_for_non_matching_text() -> None:
+    assert uc_main._parse_archive_footer_window("Showing page 1") is None
