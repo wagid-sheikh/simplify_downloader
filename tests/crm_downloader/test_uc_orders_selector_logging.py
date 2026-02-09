@@ -74,6 +74,10 @@ class _FakeNextButton:
         return None
 
     async def click(self) -> None:
+        remaining_stalls = int(self._page.pages[self._page.index].get("stall_next_clicks", 0))
+        if remaining_stalls > 0:
+            self._page.pages[self._page.index]["stall_next_clicks"] = remaining_stalls - 1
+            return
         if self._page.index < len(self._page.pages) - 1:
             self._page.index += 1
 
@@ -160,6 +164,38 @@ async def test_collect_archive_orders_forces_retry_when_duplicates_but_footer_ha
     assert extract.page_count == 3
     assert page.scroll_calls >= 1
     assert page.timeout_calls >= 1
+
+
+@pytest.mark.asyncio
+async def test_collect_archive_orders_aborts_after_stalled_next_click_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    pages = [
+        {
+            "order_codes": [f"O{i:03d}" for i in range(1, 31)],
+            "footer": (1, 30, 48),
+            "next_disabled": False,
+            "stall_next_clicks": 2,
+        },
+    ]
+    page = _FakePage(pages)
+    store = uc_main.UcStore(store_code="UCX", store_name=None, cost_center=None, sync_config={})
+    logger = JsonLogger(stream=io.StringIO(), log_file_path=None)
+
+    monkeypatch.setattr(uc_main, "_get_archive_footer_window", lambda _p: asyncio.sleep(0, result=pages[page.index]["footer"]))
+    monkeypatch.setattr(uc_main, "_get_archive_footer_total", lambda _p: asyncio.sleep(0, result=None))
+    monkeypatch.setattr(uc_main, "_get_archive_order_code", lambda row: asyncio.sleep(0, result=row.order_code))
+    monkeypatch.setattr(uc_main, "_extract_archive_base_row", lambda **kwargs: asyncio.sleep(0, result={"order_code": kwargs["order_code"], "payment_text": "paid"}))
+    monkeypatch.setattr(uc_main, "_extract_order_details", lambda **kwargs: asyncio.sleep(0, result=([], None, None, True)))
+    monkeypatch.setattr(uc_main, "_extract_payment_details", lambda **kwargs: asyncio.sleep(0, result=[]))
+    monkeypatch.setattr(uc_main, "_get_first_order_code", lambda _p: asyncio.sleep(0, result=pages[page.index]["order_codes"][0]))
+    monkeypatch.setattr(uc_main, "_get_archive_page_number", lambda _p: asyncio.sleep(0, result=page.index + 1))
+    monkeypatch.setattr(uc_main, "_is_button_disabled", lambda _b: asyncio.sleep(0, result=pages[page.index]["next_disabled"]))
+
+    extract = await uc_main._collect_archive_orders(page=page, store=store, logger=logger)
+
+    assert len(extract.base_rows) == 30
+    assert extract.page_count == 1
+    assert extract.skipped_order_counters["partial_extraction_non_advancing_next_click_after_retry"] == 1
+    assert extract.skipped_order_counters["partial_extraction_footer_total_mismatch"] == 1
 
 
 def test_archive_extraction_gap_uses_footer_total() -> None:
