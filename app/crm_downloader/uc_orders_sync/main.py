@@ -1992,6 +1992,16 @@ async def _get_first_order_code(page: Page) -> str | None:
     return await _locator_text(locator)
 
 
+async def _get_archive_row_signatures(page: Page) -> tuple[str, ...]:
+    row_locator = page.locator(ARCHIVE_TABLE_ROW_SELECTOR)
+    signatures: list[str] = []
+    for idx in range(await row_locator.count()):
+        order_code = await _get_archive_order_code(row_locator.nth(idx))
+        if order_code:
+            signatures.append(order_code)
+    return tuple(signatures)
+
+
 async def _is_button_disabled(locator: Locator) -> bool:
     if not await locator.count():
         return True
@@ -2181,16 +2191,20 @@ async def _collect_archive_orders(
             )
             break
 
-        if store.store_code == "UC610" and page_index >= 2 and new_unique_orders == 0:
+        force_retry_navigation = False
+        if footer_window is not None and new_unique_orders == 0 and footer_window[1] < footer_window[2]:
+            force_retry_navigation = True
+            pre_retry_signatures = await _get_archive_row_signatures(page)
             log_event(
                 logger=logger,
                 phase="pagination",
                 status="warn",
-                message="No new unique orders found for UC610; stopping pagination",
+                message="No new unique orders found while footer indicates more rows; forcing pagination retry",
                 store_code=store.store_code,
                 page_number=page_index,
+                footer_window=footer_window,
+                row_signatures=pre_retry_signatures,
             )
-            break
 
         next_button = page.locator(ARCHIVE_NEXT_BUTTON_SELECTOR).first
         if await _is_button_disabled(next_button):
@@ -2204,6 +2218,13 @@ async def _collect_archive_orders(
                 footer_total=footer_total,
             )
             break
+
+        if force_retry_navigation:
+            with contextlib.suppress(Exception):
+                await next_button.scroll_into_view_if_needed(timeout=5_000)
+            with contextlib.suppress(Exception):
+                await page.wait_for_timeout(500)
+
         previous_first = await _get_first_order_code(page)
         previous_page_number = await _get_archive_page_number(page)
         previous_footer_window = footer_window
@@ -2270,6 +2291,15 @@ async def _collect_archive_orders(
         current_page_number = await _get_archive_page_number(page)
         current_first = await _get_first_order_code(page)
         current_footer_window = await _get_archive_footer_window(page)
+        if force_retry_navigation:
+            log_event(
+                logger=logger,
+                phase="pagination",
+                message="Forced pagination retry completed",
+                store_code=store.store_code,
+                previous_footer_window=previous_footer_window,
+                current_footer_window=current_footer_window,
+            )
         progress_signals: list[bool] = []
         if previous_page_number is not None and current_page_number is not None:
             progress_signals.append(current_page_number != previous_page_number)
@@ -2293,6 +2323,22 @@ async def _collect_archive_orders(
             )
             break
         page_index += 1
+
+    if extract.footer_total is not None and len(extract.base_rows) < extract.footer_total:
+        _record_skipped_order(
+            extract,
+            order_code=f"partial_extraction:{store.store_code}",
+            reason="partial_extraction_footer_total_mismatch",
+        )
+        log_event(
+            logger=logger,
+            phase="warnings",
+            status="warn",
+            message="Archive Orders extraction ended before footer total was reached",
+            store_code=store.store_code,
+            extracted_base_rows=len(extract.base_rows),
+            footer_total=extract.footer_total,
+        )
 
     log_event(
         logger=logger,
