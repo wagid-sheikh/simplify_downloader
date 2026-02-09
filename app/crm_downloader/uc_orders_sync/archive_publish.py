@@ -14,14 +14,17 @@ from dateutil import parser
 from app.common.db import session_scope
 from app.crm_downloader.td_orders_sync.sales_ingest import _sales_table
 from app.crm_downloader.uc_orders_sync.archive_ingest import (
+    TABLE_ARCHIVE_BASE,
     TABLE_ARCHIVE_ORDER_DETAILS,
     TABLE_ARCHIVE_PAYMENT_DETAILS,
 )
+from app.crm_downloader.uc_orders_sync.ingest import _stg_uc_orders_table
 from app.crm_downloader.uc_orders_sync.ingest import _orders_table
 
 REASON_MISSING_PARENT_ORDER_CONTEXT = "missing_parent_order_context"
 REASON_UNPARSEABLE_PAYMENT_DATE = "unparseable_payment_date"
 REASON_MISSING_REQUIRED_IDENTIFIERS = "missing_required_identifiers"
+REASON_PREFLIGHT_PARENT_COVERAGE_NEAR_ZERO = "preflight_parent_coverage_near_zero"
 
 
 @dataclass
@@ -31,6 +34,9 @@ class PublishMetrics:
     skipped: int = 0
     warnings: int = 0
     reason_codes: dict[str, int] = field(default_factory=dict)
+    publish_parent_match_rate: float | None = None
+    missing_parent_count: int = 0
+    preflight_warning: str | None = None
 
 
 @dataclass
@@ -167,6 +173,17 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
         sa.Column("transaction_id", sa.String(128)),
         sa.Column("ingest_remarks", sa.Text),
     )
+    archive_base = sa.Table(
+        TABLE_ARCHIVE_BASE,
+        metadata,
+        sa.Column("store_code", sa.String(8)),
+        sa.Column("order_code", sa.String(24)),
+        sa.Column("cost_center", sa.String(8)),
+        sa.Column("customer_name", sa.String(128)),
+        sa.Column("customer_phone", sa.String(24)),
+        sa.Column("ingest_remarks", sa.Text),
+    )
+    stg_orders = _stg_uc_orders_table(metadata)
     orders = _orders_table(metadata)
     sales = _sales_table(metadata)
 
@@ -191,8 +208,14 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
             metrics.reason_codes = {}
             return metrics
 
-        order_keys = {(r.store_code, r.order_code) for r in payment_rows if r.store_code and r.order_code}
+        order_keys = {
+            ((r.store_code or "").strip().upper(), (r.order_code or "").strip())
+            for r in payment_rows
+            if r.store_code and r.order_code
+        }
         order_lookup: dict[tuple[str, str], Any] = {}
+        stg_parent_keys: set[tuple[str, str]] = set()
+        archive_base_lookup: dict[tuple[str, str], Any] = {}
         if order_keys:
             order_rows = await session.execute(
                 sa.select(
@@ -207,6 +230,43 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
             )
             for row in order_rows:
                 order_lookup[(row.store_code, row.order_number)] = row
+
+            stg_rows = await session.execute(
+                sa.select(stg_orders.c.store_code, stg_orders.c.order_number).where(
+                    sa.tuple_(stg_orders.c.store_code, stg_orders.c.order_number).in_(list(order_keys))
+                )
+            )
+            stg_parent_keys = {((r.store_code or "").strip().upper(), (r.order_number or "").strip()) for r in stg_rows}
+
+            archive_base_rows = await session.execute(
+                sa.select(
+                    archive_base.c.store_code,
+                    archive_base.c.order_code,
+                    archive_base.c.cost_center,
+                    archive_base.c.customer_name,
+                    archive_base.c.customer_phone,
+                    archive_base.c.ingest_remarks,
+                ).where(sa.tuple_(archive_base.c.store_code, archive_base.c.order_code).in_(list(order_keys)))
+            )
+            for row in archive_base_rows:
+                archive_base_lookup[((row.store_code or "").strip().upper(), (row.order_code or "").strip())] = row
+
+        parent_match_count = sum(1 for key in order_keys if key in order_lookup or key in stg_parent_keys)
+        missing_parent_count = len(order_keys) - parent_match_count
+        metrics.publish_parent_match_rate = (parent_match_count / len(order_keys)) if order_keys else None
+        metrics.missing_parent_count = missing_parent_count
+
+        sample_missing_keys = [f"{store_code}:{order_code}" for store_code, order_code in sorted(order_keys - set(order_lookup.keys()) - stg_parent_keys)[:5]]
+        if order_keys and parent_match_count == 0:
+            metrics.skipped += len(payment_rows)
+            metrics.warnings += 1
+            _append_reason(reasons, REASON_PREFLIGHT_PARENT_COVERAGE_NEAR_ZERO)
+            metrics.preflight_warning = (
+                "Skipping archive payment publish: parent order join coverage is near-zero (0%). "
+                + (f"Sample missing keys: {', '.join(sample_missing_keys)}" if sample_missing_keys else "No sample keys available.")
+            )
+            metrics.reason_codes = dict(reasons)
+            return metrics
 
         processed_keys: set[tuple[Any, ...]] = set()
         for row in payment_rows:
@@ -229,13 +289,24 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
                 continue
 
             parent = order_lookup.get((store_code, order_number))
-            if parent is None or not parent.cost_center:
+            base_parent = archive_base_lookup.get((store_code, order_number))
+            parent_cost_center = parent.cost_center if parent is not None else None
+            if not parent_cost_center and base_parent is not None:
+                parent_cost_center = (base_parent.cost_center or "").strip() or None
+
+            if parent is None and base_parent is None:
                 metrics.skipped += 1
                 metrics.warnings += 1
                 _append_reason(reasons, REASON_MISSING_PARENT_ORDER_CONTEXT)
                 continue
 
-            logical_key = (parent.cost_center, order_number, payment_date, payment_mode, Decimal(str(amount)), txid)
+            if not parent_cost_center:
+                metrics.skipped += 1
+                metrics.warnings += 1
+                _append_reason(reasons, REASON_MISSING_PARENT_ORDER_CONTEXT)
+                continue
+
+            logical_key = (parent_cost_center, order_number, payment_date, payment_mode, Decimal(str(amount)), txid)
             if logical_key in processed_keys:
                 continue
             processed_keys.add(logical_key)
@@ -243,15 +314,15 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
             sales_payload = {
                 "run_id": row.run_id,
                 "run_date": row.run_date,
-                "cost_center": parent.cost_center,
+                "cost_center": parent_cost_center,
                 "store_code": store_code,
-                "order_date": parent.order_date,
+                "order_date": parent.order_date if parent is not None else row.run_date,
                 "payment_date": payment_date,
                 "order_number": order_number,
                 "customer_code": None,
-                "customer_name": parent.customer_name,
+                "customer_name": (parent.customer_name if parent is not None else None) or (base_parent.customer_name if base_parent is not None else None),
                 "customer_address": None,
-                "mobile_number": parent.mobile_number,
+                "mobile_number": (parent.mobile_number if parent is not None else None) or (base_parent.customer_phone if base_parent is not None else None),
                 "payment_received": amount,
                 "adjustments": Decimal("0"),
                 "balance": Decimal("0"),
@@ -262,14 +333,18 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
                 "order_type": "UClean",
                 "is_duplicate": False,
                 "is_edited_order": False,
-                "ingest_remarks": _merge_remarks(parent.ingest_remarks, row.ingest_remarks),
+                "ingest_remarks": _merge_remarks(
+                    parent.ingest_remarks if parent is not None else None,
+                    base_parent.ingest_remarks if base_parent is not None else None,
+                    row.ingest_remarks,
+                ),
             }
 
             existing = (
                 await session.execute(
                     sa.select(sales.c.id).where(
                         sa.and_(
-                            sales.c.cost_center == parent.cost_center,
+                            sales.c.cost_center == parent_cost_center,
                             sales.c.order_number == order_number,
                             sales.c.payment_date == payment_date,
                             sales.c.payment_mode == payment_mode,
@@ -289,7 +364,7 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
                 await session.execute(
                     sa.select(sales.c.id).where(
                         sa.and_(
-                            sales.c.cost_center == parent.cost_center,
+                            sales.c.cost_center == parent_cost_center,
                             sales.c.order_number == order_number,
                             sales.c.payment_date == payment_date,
                         )

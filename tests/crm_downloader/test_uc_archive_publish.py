@@ -10,23 +10,40 @@ import sqlalchemy as sa
 from app.common.db import session_scope
 from app.crm_downloader.td_orders_sync.sales_ingest import _sales_table
 from app.crm_downloader.uc_orders_sync.archive_ingest import (
+    TABLE_ARCHIVE_BASE,
     TABLE_ARCHIVE_ORDER_DETAILS,
     TABLE_ARCHIVE_PAYMENT_DETAILS,
 )
 from app.crm_downloader.uc_orders_sync.archive_publish import (
     REASON_MISSING_PARENT_ORDER_CONTEXT,
+    REASON_PREFLIGHT_PARENT_COVERAGE_NEAR_ZERO,
     REASON_UNPARSEABLE_PAYMENT_DATE,
     publish_uc_archive_order_details_to_orders,
     publish_uc_archive_payments_to_sales,
     publish_uc_archive_stage2_stage3,
 )
 from app.crm_downloader.uc_orders_sync.ingest import _orders_table
+from app.crm_downloader.uc_orders_sync.ingest import _stg_uc_orders_table
 
 
 async def _create_tables(db_url: str) -> None:
     metadata = sa.MetaData()
     _orders_table(metadata)
+    _stg_uc_orders_table(metadata)
     _sales_table(metadata)
+    sa.Table(
+        TABLE_ARCHIVE_BASE,
+        metadata,
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("run_id", sa.Text),
+        sa.Column("run_date", sa.DateTime(timezone=True)),
+        sa.Column("cost_center", sa.String(8)),
+        sa.Column("store_code", sa.String(8)),
+        sa.Column("ingest_remarks", sa.Text),
+        sa.Column("order_code", sa.String(24)),
+        sa.Column("customer_name", sa.String(128)),
+        sa.Column("customer_phone", sa.String(24)),
+    )
     sa.Table(
         TABLE_ARCHIVE_ORDER_DETAILS,
         metadata,
@@ -176,10 +193,108 @@ async def test_payment_skip_reasons_and_metrics_and_orchestrator(tmp_path: Path)
 
     sales_metrics = await publish_uc_archive_payments_to_sales(database_url=db_url)
     assert sales_metrics.skipped == 3
-    assert sales_metrics.warnings == 3
-    assert sales_metrics.reason_codes[REASON_MISSING_PARENT_ORDER_CONTEXT] == 1
-    assert sales_metrics.reason_codes[REASON_UNPARSEABLE_PAYMENT_DATE] == 1
+    assert sales_metrics.warnings == 1
+    assert sales_metrics.reason_codes[REASON_PREFLIGHT_PARENT_COVERAGE_NEAR_ZERO] == 1
+    assert sales_metrics.publish_parent_match_rate == 0.0
+    assert sales_metrics.missing_parent_count == 2
 
     stage = await publish_uc_archive_stage2_stage3(database_url=db_url)
     assert isinstance(stage.orders.updated, int)
     assert stage.sales.skipped >= 3
+
+
+@pytest.mark.asyncio
+async def test_payment_publish_parent_coverage_full(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_parent_full.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders (cost_center, store_code, order_number, order_date, customer_name, mobile_number, created_at)
+                VALUES
+                    ('CC01', 'UC567', 'ORD-1', '2025-01-01T00:00:00+00:00', 'Alice', '9999999999', '2025-01-01T00:00:00+00:00'),
+                    ('CC01', 'UC567', 'ORD-2', '2025-01-01T00:00:00+00:00', 'Bob', '8888888888', '2025-01-01T00:00:00+00:00')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_payment_details (run_id, run_date, store_code, order_code, payment_mode, amount, payment_date_raw, transaction_id)
+                VALUES
+                    ('run-full', '2025-01-03T00:00:00+00:00', 'UC567', 'ORD-1', 'UPI', 50, '03 Jan 2025, 11:00 AM', 'T1'),
+                    ('run-full', '2025-01-03T00:00:00+00:00', 'UC567', 'ORD-2', 'CASH', 60, '03 Jan 2025, 11:10 AM', 'T2')
+                """
+            )
+        )
+        await session.commit()
+
+    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url)
+    assert metrics.publish_parent_match_rate == 1.0
+    assert metrics.missing_parent_count == 0
+    assert metrics.preflight_warning is None
+    assert metrics.inserted == 2
+
+
+@pytest.mark.asyncio
+async def test_payment_publish_parent_coverage_near_zero_preflight_skip(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_parent_zero.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_payment_details (run_id, run_date, store_code, order_code, payment_mode, amount, payment_date_raw, transaction_id)
+                VALUES
+                    ('run-zero', '2025-01-03T00:00:00+00:00', 'UC999', 'ORD-X', 'UPI', 50, '03 Jan 2025, 11:00 AM', 'T1')
+                """
+            )
+        )
+        await session.commit()
+
+    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url)
+    assert metrics.publish_parent_match_rate == 0.0
+    assert metrics.missing_parent_count == 1
+    assert metrics.inserted == 0
+    assert metrics.skipped == 1
+    assert metrics.warnings == 1
+    assert metrics.reason_codes[REASON_PREFLIGHT_PARENT_COVERAGE_NEAR_ZERO] == 1
+    assert metrics.preflight_warning is not None
+    assert "UC999:ORD-X" in metrics.preflight_warning
+
+
+@pytest.mark.asyncio
+async def test_payment_publish_parent_coverage_mixed(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_parent_mixed.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders (cost_center, store_code, order_number, order_date, customer_name, mobile_number, created_at)
+                VALUES ('CC01', 'UC567', 'ORD-1', '2025-01-01T00:00:00+00:00', 'Alice', '9999999999', '2025-01-01T00:00:00+00:00')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_payment_details (run_id, run_date, store_code, order_code, payment_mode, amount, payment_date_raw, transaction_id)
+                VALUES
+                    ('run-mixed', '2025-01-03T00:00:00+00:00', 'UC567', 'ORD-1', 'UPI', 50, '03 Jan 2025, 11:00 AM', 'T1'),
+                    ('run-mixed', '2025-01-03T00:00:00+00:00', 'UC567', 'ORD-MISSING', 'UPI', 60, '03 Jan 2025, 11:10 AM', 'T2')
+                """
+            )
+        )
+        await session.commit()
+
+    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url)
+    assert metrics.publish_parent_match_rate == 0.5
+    assert metrics.missing_parent_count == 1
+    assert metrics.preflight_warning is None
+    assert metrics.inserted == 1
+    assert metrics.reason_codes[REASON_MISSING_PARENT_ORDER_CONTEXT] == 1
