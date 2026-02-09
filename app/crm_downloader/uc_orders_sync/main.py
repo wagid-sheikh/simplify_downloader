@@ -23,7 +23,10 @@ from app.config import config
 from app.crm_downloader.browser import launch_browser
 from app.crm_downloader.config import default_download_dir, default_profiles_dir
 from app.crm_downloader.uc_orders_sync.archive_ingest import ingest_uc_archive_excels
-from app.crm_downloader.uc_orders_sync.archive_publish import publish_uc_archive_stage2_stage3
+from app.crm_downloader.uc_orders_sync.archive_publish import (
+    publish_uc_archive_order_details_to_orders,
+    publish_uc_archive_payments_to_sales,
+)
 from app.crm_downloader.orders_sync_window import (
     fetch_last_success_window_end,
     resolve_orders_sync_start_date,
@@ -321,6 +324,8 @@ class StoreOutcome:
     staging_updated: int | None = None
     final_inserted: int | None = None
     final_updated: int | None = None
+    stage_statuses: dict[str, str] = field(default_factory=dict)
+    stage_metrics: dict[str, dict[str, Any]] = field(default_factory=dict)
     archive_publish_orders: dict[str, Any] | None = None
     archive_publish_sales: dict[str, Any] | None = None
     warning_rows: list[dict[str, Any]] = field(default_factory=list)
@@ -457,6 +462,15 @@ class UcOrdersDiscoverySummary:
                 counts[outcome.status] += 1
         return counts
 
+    def _build_stage_summary(self) -> Dict[str, Dict[str, int]]:
+        stage_summary: Dict[str, Dict[str, int]] = {}
+        for outcome in self.store_outcomes.values():
+            for stage_name, stage_status in (outcome.stage_statuses or {}).items():
+                counters = stage_summary.setdefault(stage_name, {"success": 0, "failed": 0, "skipped": 0})
+                normalized = stage_status if stage_status in counters else "skipped"
+                counters[normalized] += 1
+        return stage_summary
+
     def _build_store_summary(self) -> Dict[str, Dict[str, Any]]:
         summary: Dict[str, Dict[str, Any]] = {}
         to_date = self.report_end_date or self.report_date
@@ -490,6 +504,8 @@ class UcOrdersDiscoverySummary:
                     "archive_publish_orders": outcome.archive_publish_orders if outcome else None,
                     "archive_publish_sales": outcome.archive_publish_sales if outcome else None,
                 },
+                "stage_statuses": dict(outcome.stage_statuses) if outcome else {},
+                "stage_metrics": dict(outcome.stage_metrics) if outcome else {},
                 "rows_downloaded": outcome.rows_downloaded if outcome else None,
                 "rows_skipped_invalid": outcome.rows_skipped_invalid if outcome else None,
                 "rows_skipped_invalid_reasons": outcome.rows_skipped_invalid_reasons if outcome else None,
@@ -542,6 +558,8 @@ class UcOrdersDiscoverySummary:
                     "rows_downloaded": outcome.rows_downloaded if outcome else None,
                     "rows_skipped_invalid": outcome.rows_skipped_invalid if outcome else None,
                     "rows_skipped_invalid_reasons": outcome.rows_skipped_invalid_reasons if outcome else None,
+                    "stage_statuses": dict(outcome.stage_statuses) if outcome else {},
+                    "stage_metrics": dict(outcome.stage_metrics) if outcome else {},
                 }
             )
         return {
@@ -569,6 +587,7 @@ class UcOrdersDiscoverySummary:
             "window_audit": list(self.window_audit),
             "stores_summary": {
                 "counts": self._store_status_counts(),
+                "stages": self._build_stage_summary(),
                 "stores": store_summary,
                 "store_order": list(self.store_codes),
                 "report_range": {"from": self.report_date.isoformat(), "to": self.report_end_date.isoformat()},
@@ -2489,72 +2508,151 @@ async def _run_store_discovery(
 
         archive_publish_orders: dict[str, Any] | None = None
         archive_publish_sales: dict[str, Any] | None = None
-        try:
-            if not config.database_url:
-                raise ValueError("database_url is required for archive ingest/publish")
-            ingest_result = await ingest_uc_archive_excels(
-                database_url=config.database_url,
-                run_id=run_id,
-                run_date=aware_now(),
-                store_code=store.store_code,
-                cost_center=store.cost_center,
-                base_order_info_path=base_path,
-                order_details_path=order_details_path,
-                payment_details_path=payment_details_path,
-                logger=logger,
-            )
-            publish_result = await publish_uc_archive_stage2_stage3(database_url=config.database_url)
-            archive_publish_orders = {
-                "inserted": publish_result.orders.inserted,
-                "updated": publish_result.orders.updated,
-                "skipped": publish_result.orders.skipped,
-                "warnings": publish_result.orders.warnings,
-                "reason_codes": publish_result.orders.reason_codes,
+        stage_statuses: dict[str, str] = {"download": "success", "archive_ingest": "skipped", "archive_publish": "skipped"}
+        stage_metrics: dict[str, dict[str, Any]] = {
+            "download": {
+                "base_rows": base_count,
+                "order_details_rows": order_details_count,
+                "payment_details_rows": payment_details_count,
             }
-            archive_publish_sales = {
-                "inserted": publish_result.sales.inserted,
-                "updated": publish_result.sales.updated,
-                "skipped": publish_result.sales.skipped,
-                "warnings": publish_result.sales.warnings,
-                "reason_codes": publish_result.sales.reason_codes,
-            }
+        }
+
+        if not config.database_url:
+            stage_statuses["archive_ingest"] = "failed"
+            stage_statuses["archive_publish"] = "skipped"
+            stage_metrics["archive_ingest"] = {"error": "database_url is required for archive ingest/publish"}
             log_event(
                 logger=logger,
-                phase="archive_publish_orders",
-                status="info",
-                message="UC archive order-details publish completed",
+                phase="archive_ingest",
+                status="warn",
+                message="UC archive ingest failed; continuing with partial success",
                 store_code=store.store_code,
-                metrics=archive_publish_orders,
+                error=stage_metrics["archive_ingest"]["error"],
             )
-            log_event(
-                logger=logger,
-                phase="archive_publish_sales",
-                status="info",
-                message="UC archive payment publish completed",
-                store_code=store.store_code,
-                metrics=archive_publish_sales,
-            )
-            if ingest_result.files:
+        else:
+            ingest_completed = False
+            try:
+                ingest_result = await ingest_uc_archive_excels(
+                    database_url=config.database_url,
+                    run_id=run_id,
+                    run_date=aware_now(),
+                    store_code=store.store_code,
+                    cost_center=store.cost_center,
+                    base_order_info_path=base_path,
+                    order_details_path=order_details_path,
+                    payment_details_path=payment_details_path,
+                    logger=logger,
+                )
+                ingest_metrics = {
+                    "files": {k: vars(v) for k, v in ingest_result.files.items()},
+                    "rejects": len(ingest_result.rejects),
+                }
+                stage_metrics["archive_ingest"] = ingest_metrics
+                stage_statuses["archive_ingest"] = "success"
+                ingest_completed = True
                 log_event(
                     logger=logger,
                     phase="archive_ingest",
                     status="info",
                     message="UC archive ingest completed",
                     store_code=store.store_code,
-                    files={k: vars(v) for k, v in ingest_result.files.items()},
+                    **ingest_metrics,
                 )
-        except Exception as exc:
-            log_event(
-                logger=logger,
-                phase="archive_publish",
-                status="warn",
-                message="UC archive ingest/publish failed; continuing with partial success",
-                store_code=store.store_code,
-                error=str(exc),
-            )
+            except Exception as exc:
+                stage_statuses["archive_ingest"] = "failed"
+                stage_statuses["archive_publish"] = "skipped"
+                stage_metrics["archive_ingest"] = {"error": str(exc)}
+                log_event(
+                    logger=logger,
+                    phase="archive_ingest",
+                    status="warn",
+                    message="UC archive ingest failed; continuing with partial success",
+                    store_code=store.store_code,
+                    error=str(exc),
+                )
 
-        status_label = "ok"
+            if ingest_completed:
+                publish_failed = False
+                orders_error: str | None = None
+                sales_error: str | None = None
+                try:
+                    orders_publish = await publish_uc_archive_order_details_to_orders(database_url=config.database_url)
+                    archive_publish_orders = {
+                        "inserted": orders_publish.inserted,
+                        "updated": orders_publish.updated,
+                        "skipped": orders_publish.skipped,
+                        "warnings": orders_publish.warnings,
+                        "reason_codes": orders_publish.reason_codes,
+                    }
+                    log_event(
+                        logger=logger,
+                        phase="archive_publish_orders",
+                        status="info",
+                        message="UC archive order-details publish completed",
+                        store_code=store.store_code,
+                        metrics=archive_publish_orders,
+                    )
+                except Exception as exc:
+                    publish_failed = True
+                    orders_error = str(exc)
+                    archive_publish_orders = {"error": orders_error}
+                    log_event(
+                        logger=logger,
+                        phase="archive_publish_orders",
+                        status="warn",
+                        message="UC archive order-details publish failed; continuing to payments publish",
+                        store_code=store.store_code,
+                        error=orders_error,
+                    )
+
+                try:
+                    sales_publish = await publish_uc_archive_payments_to_sales(database_url=config.database_url)
+                    archive_publish_sales = {
+                        "inserted": sales_publish.inserted,
+                        "updated": sales_publish.updated,
+                        "skipped": sales_publish.skipped,
+                        "warnings": sales_publish.warnings,
+                        "reason_codes": sales_publish.reason_codes,
+                    }
+                    log_event(
+                        logger=logger,
+                        phase="archive_publish_sales",
+                        status="info",
+                        message="UC archive payment publish completed",
+                        store_code=store.store_code,
+                        metrics=archive_publish_sales,
+                    )
+                except Exception as exc:
+                    publish_failed = True
+                    sales_error = str(exc)
+                    archive_publish_sales = {"error": sales_error}
+                    log_event(
+                        logger=logger,
+                        phase="archive_publish_sales",
+                        status="warn",
+                        message="UC archive payment publish failed; continuing with partial success",
+                        store_code=store.store_code,
+                        error=sales_error,
+                    )
+
+                stage_statuses["archive_publish"] = "failed" if publish_failed else "success"
+                stage_metrics["archive_publish"] = {
+                    "order_details_to_orders": archive_publish_orders,
+                    "payment_details_to_sales": archive_publish_sales,
+                }
+                if orders_error or sales_error:
+                    stage_metrics["archive_publish"]["errors"] = {
+                        "order_details_to_orders": orders_error,
+                        "payment_details_to_sales": sales_error,
+                    }
+
+        status_label = "warning" if any(v == "failed" for k, v in stage_statuses.items() if k != "download") else "ok"
         download_message = "Archive Orders download complete"
+        if status_label == "warning":
+            failed_stages = [name for name, stage_status in stage_statuses.items() if stage_status == "failed"]
+            download_message = (
+                "Archive Orders download complete; archive stages failed: " + ", ".join(sorted(failed_stages))
+            )
         outcome = StoreOutcome(
             status=status_label,
             message=download_message,
@@ -2563,6 +2661,8 @@ async def _run_store_discovery(
             login_used=login_used,
             download_path=str(base_path),
             rows_downloaded=row_count,
+            stage_statuses=stage_statuses,
+            stage_metrics=stage_metrics,
             archive_publish_orders=archive_publish_orders,
             archive_publish_sales=archive_publish_sales,
         )
