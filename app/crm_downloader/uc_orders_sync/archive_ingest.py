@@ -409,7 +409,16 @@ def _build_upsert_statement(table: sa.Table, rows: list[dict[str, Any]], key_col
 
 
 def _key_tuple(row: Mapping[str, Any], keys: Sequence[str]) -> tuple[Any, ...]:
-    return tuple(("" if row.get(k) is None else row.get(k)) for k in keys)
+    return tuple(row.get(k) for k in keys)
+
+
+def _existing_rows_predicate(table: sa.Table, key_names: Sequence[str], rows: Sequence[Mapping[str, Any]]) -> Any:
+    return sa.or_(
+        *[
+            sa.and_(*[getattr(table.c, c).is_not_distinct_from(row.get(c)) for c in key_names if c in table.c])
+            for row in rows
+        ]
+    )
 
 
 async def _ingest_file(
@@ -494,18 +503,7 @@ async def _ingest_file(
                 ]
                 key_names = ["store_code", "order_code", "payment_date_raw", "payment_mode", "amount", "transaction_id"]
 
-        where_clause = sa.or_(
-            *[
-                sa.and_(
-                    *[
-                        (sa.func.coalesce(getattr(table.c, c), "") == ("" if row.get(c) is None else row.get(c)))
-                        for c in key_names
-                        if c in table.c
-                    ]
-                )
-                for row in upsert_rows
-            ]
-        )
+        where_clause = _existing_rows_predicate(table, key_names, upsert_rows)
         existing_rows = (await session.execute(sa.select(table).where(where_clause))).mappings().all()
         existing_keys = {_key_tuple(r, key_names) for r in existing_rows}
         use_sqlite = bind.url.get_backend_name().startswith("sqlite")
