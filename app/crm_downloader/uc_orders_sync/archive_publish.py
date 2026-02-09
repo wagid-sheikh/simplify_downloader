@@ -1,0 +1,315 @@
+from __future__ import annotations
+
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime
+from zoneinfo import ZoneInfo
+import os
+from decimal import Decimal
+from typing import Any
+
+import sqlalchemy as sa
+from dateutil import parser
+
+from app.common.db import session_scope
+from app.crm_downloader.td_orders_sync.sales_ingest import _sales_table
+from app.crm_downloader.uc_orders_sync.archive_ingest import (
+    TABLE_ARCHIVE_ORDER_DETAILS,
+    TABLE_ARCHIVE_PAYMENT_DETAILS,
+)
+from app.crm_downloader.uc_orders_sync.ingest import _orders_table
+
+REASON_MISSING_PARENT_ORDER_CONTEXT = "missing_parent_order_context"
+REASON_UNPARSEABLE_PAYMENT_DATE = "unparseable_payment_date"
+REASON_MISSING_REQUIRED_IDENTIFIERS = "missing_required_identifiers"
+
+
+@dataclass
+class PublishMetrics:
+    inserted: int = 0
+    updated: int = 0
+    skipped: int = 0
+    warnings: int = 0
+    reason_codes: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class ArchivePublishResult:
+    orders: PublishMetrics
+    sales: PublishMetrics
+
+
+def _append_reason(counter: Counter[str], reason: str) -> None:
+    counter[reason] += 1
+
+
+def _merge_remarks(*remarks: str | None) -> str | None:
+    parts: list[str] = []
+    for remark in remarks:
+        if not remark:
+            continue
+        parts.extend([token.strip() for token in remark.split(";") if token.strip()])
+    if not parts:
+        return None
+    return "; ".join(sorted(set(parts)))
+
+
+def _parse_payment_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = parser.parse(str(value), dayfirst=True)
+    except Exception:
+        return None
+    tz_name = os.getenv("PIPELINE_TIMEZONE", "Asia/Kolkata")
+    tz = ZoneInfo(tz_name)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=tz)
+
+
+async def publish_uc_archive_order_details_to_orders(*, database_url: str) -> PublishMetrics:
+    metrics = PublishMetrics()
+    metadata = sa.MetaData()
+    details = sa.Table(
+        TABLE_ARCHIVE_ORDER_DETAILS,
+        metadata,
+        sa.Column("store_code", sa.String(8)),
+        sa.Column("order_code", sa.String(24)),
+        sa.Column("quantity", sa.Numeric(12, 2)),
+        sa.Column("weight", sa.Numeric(12, 3)),
+        sa.Column("service", sa.Text),
+        extend_existing=True,
+    )
+    orders = _orders_table(metadata)
+
+    async with session_scope(database_url) as session:
+        rows = (
+            await session.execute(
+                sa.select(
+                    details.c.store_code,
+                    details.c.order_code,
+                    details.c.quantity,
+                    details.c.weight,
+                    details.c.service,
+                )
+            )
+        ).all()
+
+        grouped: dict[tuple[str, str], dict[str, Any]] = defaultdict(
+            lambda: {"pieces": Decimal("0"), "weight": Decimal("0"), "services": set()}
+        )
+        for row in rows:
+            store_code = (row.store_code or "").strip().upper()
+            order_code = (row.order_code or "").strip()
+            if not store_code or not order_code:
+                metrics.skipped += 1
+                metrics.warnings += 1
+                continue
+            group = grouped[(store_code, order_code)]
+            if row.quantity is not None:
+                group["pieces"] += Decimal(str(row.quantity))
+            if row.weight is not None:
+                group["weight"] += Decimal(str(row.weight))
+            if row.service and str(row.service).strip():
+                group["services"].add(str(row.service).strip())
+
+        if not grouped:
+            return metrics
+
+        existing_orders = {
+            (r.store_code, r.order_number): r.id
+            for r in (
+                await session.execute(
+                    sa.select(orders.c.id, orders.c.store_code, orders.c.order_number).where(
+                        sa.tuple_(orders.c.store_code, orders.c.order_number).in_(list(grouped.keys()))
+                    )
+                )
+            ).all()
+        }
+
+        reasons = Counter[str]()
+        for key, aggregate in grouped.items():
+            order_id = existing_orders.get(key)
+            if order_id is None:
+                metrics.skipped += 1
+                metrics.warnings += 1
+                _append_reason(reasons, REASON_MISSING_PARENT_ORDER_CONTEXT)
+                continue
+            values: dict[str, Any] = {}
+            if aggregate["pieces"] > 0:
+                values["pieces"] = aggregate["pieces"]
+            if aggregate["weight"] > 0:
+                values["weight"] = aggregate["weight"]
+            if aggregate["services"]:
+                values["service_type"] = ", ".join(sorted(aggregate["services"]))
+            if values:
+                await session.execute(sa.update(orders).where(orders.c.id == order_id).values(**values))
+                metrics.updated += 1
+
+        await session.commit()
+        metrics.reason_codes = dict(reasons)
+        return metrics
+
+
+async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishMetrics:
+    metrics = PublishMetrics()
+    reasons = Counter[str]()
+    metadata = sa.MetaData()
+    payments = sa.Table(
+        TABLE_ARCHIVE_PAYMENT_DETAILS,
+        metadata,
+        sa.Column("run_id", sa.Text),
+        sa.Column("run_date", sa.DateTime(timezone=True)),
+        sa.Column("store_code", sa.String(8)),
+        sa.Column("order_code", sa.String(24)),
+        sa.Column("payment_mode", sa.String(32)),
+        sa.Column("amount", sa.Numeric(12, 2)),
+        sa.Column("payment_date_raw", sa.Text),
+        sa.Column("transaction_id", sa.String(128)),
+        sa.Column("ingest_remarks", sa.Text),
+    )
+    orders = _orders_table(metadata)
+    sales = _sales_table(metadata)
+
+    async with session_scope(database_url) as session:
+        payment_rows = (
+            await session.execute(
+                sa.select(
+                    payments.c.run_id,
+                    payments.c.run_date,
+                    payments.c.store_code,
+                    payments.c.order_code,
+                    payments.c.payment_mode,
+                    payments.c.amount,
+                    payments.c.payment_date_raw,
+                    payments.c.transaction_id,
+                    payments.c.ingest_remarks,
+                )
+            )
+        ).all()
+
+        if not payment_rows:
+            metrics.reason_codes = {}
+            return metrics
+
+        order_keys = {(r.store_code, r.order_code) for r in payment_rows if r.store_code and r.order_code}
+        order_lookup: dict[tuple[str, str], Any] = {}
+        if order_keys:
+            order_rows = await session.execute(
+                sa.select(
+                    orders.c.cost_center,
+                    orders.c.store_code,
+                    orders.c.order_number,
+                    orders.c.order_date,
+                    orders.c.customer_name,
+                    orders.c.mobile_number,
+                    orders.c.ingest_remarks,
+                ).where(sa.tuple_(orders.c.store_code, orders.c.order_number).in_(list(order_keys)))
+            )
+            for row in order_rows:
+                order_lookup[(row.store_code, row.order_number)] = row
+
+        processed_keys: set[tuple[Any, ...]] = set()
+        for row in payment_rows:
+            store_code = (row.store_code or "").strip().upper()
+            order_number = (row.order_code or "").strip()
+            payment_mode = (row.payment_mode or "").strip()
+            amount = row.amount
+            txid = (row.transaction_id or "").strip()
+            normalized_txid = txid or None
+            if not store_code or not order_number or not payment_mode or amount is None:
+                metrics.skipped += 1
+                metrics.warnings += 1
+                _append_reason(reasons, REASON_MISSING_REQUIRED_IDENTIFIERS)
+                continue
+            payment_date = _parse_payment_datetime(row.payment_date_raw)
+            if payment_date is None:
+                metrics.skipped += 1
+                metrics.warnings += 1
+                _append_reason(reasons, REASON_UNPARSEABLE_PAYMENT_DATE)
+                continue
+
+            parent = order_lookup.get((store_code, order_number))
+            if parent is None or not parent.cost_center:
+                metrics.skipped += 1
+                metrics.warnings += 1
+                _append_reason(reasons, REASON_MISSING_PARENT_ORDER_CONTEXT)
+                continue
+
+            logical_key = (parent.cost_center, order_number, payment_date, payment_mode, Decimal(str(amount)), txid)
+            if logical_key in processed_keys:
+                continue
+            processed_keys.add(logical_key)
+
+            sales_payload = {
+                "run_id": row.run_id,
+                "run_date": row.run_date,
+                "cost_center": parent.cost_center,
+                "store_code": store_code,
+                "order_date": parent.order_date,
+                "payment_date": payment_date,
+                "order_number": order_number,
+                "customer_code": None,
+                "customer_name": parent.customer_name,
+                "customer_address": None,
+                "mobile_number": parent.mobile_number,
+                "payment_received": amount,
+                "adjustments": Decimal("0"),
+                "balance": Decimal("0"),
+                "accepted_by": None,
+                "payment_mode": payment_mode,
+                "transaction_id": normalized_txid,
+                "payment_made_at": None,
+                "order_type": "UClean",
+                "is_duplicate": False,
+                "is_edited_order": False,
+                "ingest_remarks": _merge_remarks(parent.ingest_remarks, row.ingest_remarks),
+            }
+
+            existing = (
+                await session.execute(
+                    sa.select(sales.c.id).where(
+                        sa.and_(
+                            sales.c.cost_center == parent.cost_center,
+                            sales.c.order_number == order_number,
+                            sales.c.payment_date == payment_date,
+                            sales.c.payment_mode == payment_mode,
+                            sales.c.payment_received == amount,
+                            sa.func.coalesce(sales.c.transaction_id, "") == txid,
+                        )
+                    )
+                )
+            ).first()
+
+            if existing:
+                await session.execute(sa.update(sales).where(sales.c.id == existing.id).values(**sales_payload))
+                metrics.updated += 1
+                continue
+
+            by_physical = (
+                await session.execute(
+                    sa.select(sales.c.id).where(
+                        sa.and_(
+                            sales.c.cost_center == parent.cost_center,
+                            sales.c.order_number == order_number,
+                            sales.c.payment_date == payment_date,
+                        )
+                    )
+                )
+            ).first()
+            if by_physical:
+                await session.execute(sa.update(sales).where(sales.c.id == by_physical.id).values(**sales_payload))
+                metrics.updated += 1
+            else:
+                await session.execute(sa.insert(sales).values(**sales_payload))
+                metrics.inserted += 1
+
+        await session.commit()
+
+    metrics.reason_codes = dict(reasons)
+    return metrics
+
+
+async def publish_uc_archive_stage2_stage3(*, database_url: str) -> ArchivePublishResult:
+    orders_metrics = await publish_uc_archive_order_details_to_orders(database_url=database_url)
+    sales_metrics = await publish_uc_archive_payments_to_sales(database_url=database_url)
+    return ArchivePublishResult(orders=orders_metrics, sales=sales_metrics)

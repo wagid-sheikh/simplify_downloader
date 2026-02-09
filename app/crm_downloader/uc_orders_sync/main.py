@@ -22,6 +22,8 @@ from app.common.db import session_scope
 from app.config import config
 from app.crm_downloader.browser import launch_browser
 from app.crm_downloader.config import default_download_dir, default_profiles_dir
+from app.crm_downloader.uc_orders_sync.archive_ingest import ingest_uc_archive_excels
+from app.crm_downloader.uc_orders_sync.archive_publish import publish_uc_archive_stage2_stage3
 from app.crm_downloader.orders_sync_window import (
     fetch_last_success_window_end,
     resolve_orders_sync_start_date,
@@ -319,6 +321,8 @@ class StoreOutcome:
     staging_updated: int | None = None
     final_inserted: int | None = None
     final_updated: int | None = None
+    archive_publish_orders: dict[str, Any] | None = None
+    archive_publish_sales: dict[str, Any] | None = None
     warning_rows: list[dict[str, Any]] = field(default_factory=list)
     dropped_rows: list[dict[str, Any]] = field(default_factory=list)
 
@@ -483,6 +487,8 @@ class UcOrdersDiscoverySummary:
                     "staging_updated": outcome.staging_updated if outcome else None,
                     "final_inserted": outcome.final_inserted if outcome else None,
                     "final_updated": outcome.final_updated if outcome else None,
+                    "archive_publish_orders": outcome.archive_publish_orders if outcome else None,
+                    "archive_publish_sales": outcome.archive_publish_sales if outcome else None,
                 },
                 "rows_downloaded": outcome.rows_downloaded if outcome else None,
                 "rows_skipped_invalid": outcome.rows_skipped_invalid if outcome else None,
@@ -2480,6 +2486,73 @@ async def _run_store_discovery(
             payment_details_file=str(payment_details_path),
             payment_details_rows=payment_details_count,
         )
+
+        archive_publish_orders: dict[str, Any] | None = None
+        archive_publish_sales: dict[str, Any] | None = None
+        try:
+            if not config.database_url:
+                raise ValueError("database_url is required for archive ingest/publish")
+            ingest_result = await ingest_uc_archive_excels(
+                database_url=config.database_url,
+                run_id=run_id,
+                run_date=aware_now(),
+                store_code=store.store_code,
+                cost_center=store.cost_center,
+                base_order_info_path=base_path,
+                order_details_path=order_details_path,
+                payment_details_path=payment_details_path,
+                logger=logger,
+            )
+            publish_result = await publish_uc_archive_stage2_stage3(database_url=config.database_url)
+            archive_publish_orders = {
+                "inserted": publish_result.orders.inserted,
+                "updated": publish_result.orders.updated,
+                "skipped": publish_result.orders.skipped,
+                "warnings": publish_result.orders.warnings,
+                "reason_codes": publish_result.orders.reason_codes,
+            }
+            archive_publish_sales = {
+                "inserted": publish_result.sales.inserted,
+                "updated": publish_result.sales.updated,
+                "skipped": publish_result.sales.skipped,
+                "warnings": publish_result.sales.warnings,
+                "reason_codes": publish_result.sales.reason_codes,
+            }
+            log_event(
+                logger=logger,
+                phase="archive_publish_orders",
+                status="info",
+                message="UC archive order-details publish completed",
+                store_code=store.store_code,
+                metrics=archive_publish_orders,
+            )
+            log_event(
+                logger=logger,
+                phase="archive_publish_sales",
+                status="info",
+                message="UC archive payment publish completed",
+                store_code=store.store_code,
+                metrics=archive_publish_sales,
+            )
+            if ingest_result.files:
+                log_event(
+                    logger=logger,
+                    phase="archive_ingest",
+                    status="info",
+                    message="UC archive ingest completed",
+                    store_code=store.store_code,
+                    files={k: vars(v) for k, v in ingest_result.files.items()},
+                )
+        except Exception as exc:
+            log_event(
+                logger=logger,
+                phase="archive_publish",
+                status="warn",
+                message="UC archive ingest/publish failed; continuing with partial success",
+                store_code=store.store_code,
+                error=str(exc),
+            )
+
         status_label = "ok"
         download_message = "Archive Orders download complete"
         outcome = StoreOutcome(
@@ -2490,6 +2563,8 @@ async def _run_store_discovery(
             login_used=login_used,
             download_path=str(base_path),
             rows_downloaded=row_count,
+            archive_publish_orders=archive_publish_orders,
+            archive_publish_sales=archive_publish_sales,
         )
         summary.record_store(store.store_code, outcome)
         log_event(
