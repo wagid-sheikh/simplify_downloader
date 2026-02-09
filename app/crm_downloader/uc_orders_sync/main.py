@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -350,6 +351,7 @@ class ArchiveOrdersExtract:
     skipped_order_counters: dict[str, int] = field(default_factory=dict)
     page_count: int = 0
     footer_total: int | None = None
+    partial_extraction_reason: str | None = None
 
 
 def _record_skipped_order(extract: ArchiveOrdersExtract, *, order_code: str, reason: str) -> None:
@@ -1684,7 +1686,12 @@ ARCHIVE_FOOTER_TOTAL_SELECTORS = (
     ".table-footer p",
     ".pagination-footer p",
     ".pagination-summary p",
+    ".orders-table + div p",
 )
+
+ARCHIVE_PAGINATION_ADVANCE_TIMEOUT_MS = 12_000
+ARCHIVE_PAGINATION_POLL_MS = 400
+ARCHIVE_MAX_ITERATION_BUFFER = 3
 
 
 def _parse_archive_footer_total(text: str) -> int | None:
@@ -1694,6 +1701,49 @@ def _parse_archive_footer_total(text: str) -> int | None:
     if not match:
         return None
     return int(match.group(1).replace(",", ""))
+
+
+def _parse_archive_footer_range(text: str) -> tuple[int, int, int] | None:
+    match = re.search(
+        r"showing\s+results\s+([\d,]+)\s+to\s+([\d,]+)\s+of\s+([\d,]+)\s+total",
+        text,
+        re.I,
+    )
+    if not match:
+        return None
+    start = int(match.group(1).replace(",", ""))
+    end = int(match.group(2).replace(",", ""))
+    total = int(match.group(3).replace(",", ""))
+    return start, end, total
+
+
+async def _get_archive_footer_range(
+    page: Page,
+    *,
+    logger: JsonLogger,
+    store_code: str,
+) -> tuple[int, int, int] | None:
+    for selector in ARCHIVE_FOOTER_TOTAL_SELECTORS:
+        locator = page.locator(selector).first
+        if not await locator.count():
+            continue
+        text = await _locator_text(locator)
+        if not text:
+            continue
+        parsed = _parse_archive_footer_range(text)
+        log_event(
+            logger=logger,
+            phase="pagination",
+            message="Archive footer parse attempt",
+            store_code=store_code,
+            footer_selector=selector,
+            footer_raw_text=text,
+            footer_parsed=parsed,
+            footer_parse_status="parsed" if parsed else "unparsed",
+        )
+        if parsed:
+            return parsed
+    return None
 
 
 async def _get_archive_footer_total(page: Page) -> int | None:
@@ -1971,6 +2021,13 @@ async def _get_first_order_code(page: Page) -> str | None:
     return await _locator_text(locator)
 
 
+async def _get_first_row_signature(page: Page) -> str | None:
+    first = await _get_first_order_code(page)
+    if not first:
+        return None
+    return hashlib.sha1(first.encode("utf-8")).hexdigest()
+
+
 async def _is_button_disabled(locator: Locator) -> bool:
     if not await locator.count():
         return True
@@ -2006,6 +2063,40 @@ async def _get_archive_page_number(page: Page) -> int | None:
     return None
 
 
+def _footer_advanced(
+    previous_footer: tuple[int, int, int] | None,
+    current_footer: tuple[int, int, int] | None,
+) -> bool:
+    if not previous_footer or not current_footer:
+        return False
+    return current_footer[0] > previous_footer[0] or current_footer[1] > previous_footer[1]
+
+
+async def _wait_for_archive_pagination_advance(
+    *,
+    page: Page,
+    logger: JsonLogger,
+    store_code: str,
+    previous_footer: tuple[int, int, int] | None,
+    previous_signature: str | None,
+    timeout_ms: int = ARCHIVE_PAGINATION_ADVANCE_TIMEOUT_MS,
+) -> tuple[bool, tuple[int, int, int] | None, str | None]:
+    deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
+    last_footer = previous_footer
+    last_signature = previous_signature
+    while asyncio.get_event_loop().time() < deadline:
+        current_footer = await _get_archive_footer_range(page, logger=logger, store_code=store_code)
+        current_signature = await _get_first_row_signature(page)
+        if _footer_advanced(previous_footer, current_footer) or (
+            previous_signature is not None and current_signature != previous_signature
+        ):
+            return True, current_footer, current_signature
+        last_footer = current_footer
+        last_signature = current_signature
+        await asyncio.sleep(ARCHIVE_PAGINATION_POLL_MS / 1000)
+    return False, last_footer, last_signature
+
+
 async def _collect_archive_orders(
     *,
     page: Page,
@@ -2016,14 +2107,24 @@ async def _collect_archive_orders(
     seen_orders: set[str] = set()
     page_index = 1
     footer_total: int | None = None
+    max_iterations: int | None = None
 
     while True:
         with contextlib.suppress(TimeoutError):
             await page.wait_for_selector(ARCHIVE_TABLE_ROW_SELECTOR, timeout=NAV_TIMEOUT_MS)
-        if footer_total is None:
+
+        current_footer = await _get_archive_footer_range(page, logger=logger, store_code=store.store_code)
+        if current_footer is not None:
+            start_idx, end_idx, current_total = current_footer
+            footer_total = current_total
+            extract.footer_total = current_total
+            page_size = max(1, end_idx - start_idx + 1)
+            max_iterations = (current_total + page_size - 1) // page_size + ARCHIVE_MAX_ITERATION_BUFFER
+        elif footer_total is None:
             footer_total = await _get_archive_footer_total(page)
             if footer_total is not None:
                 extract.footer_total = footer_total
+
         row_locator = page.locator(ARCHIVE_TABLE_ROW_SELECTOR)
         raw_row_count = await row_locator.count()
         valid_rows: list[tuple[Locator, str]] = []
@@ -2052,7 +2153,25 @@ async def _collect_archive_orders(
             page_number=page_index,
             row_count=row_count,
             footer_total=footer_total,
+            footer_range=current_footer,
+            max_iterations=max_iterations,
         )
+
+        if max_iterations is not None and page_index > max_iterations:
+            extract.partial_extraction_reason = "partial_extraction_pagination_stall"
+            log_event(
+                logger=logger,
+                phase="pagination",
+                status="warn",
+                message="pagination_stalled_footer_unchanged",
+                store_code=store.store_code,
+                page_number=page_index,
+                max_iterations=max_iterations,
+                previous_footer=current_footer,
+                current_footer=current_footer,
+            )
+            break
+
         if row_count == 0:
             log_event(
                 logger=logger,
@@ -2143,6 +2262,18 @@ async def _collect_archive_orders(
                     error=str(exc),
                 )
 
+        if current_footer is not None and current_footer[1] >= current_footer[2]:
+            log_event(
+                logger=logger,
+                phase="pagination",
+                message="Archive Orders footer range indicates completion",
+                store_code=store.store_code,
+                page_number=page_index,
+                footer_range=current_footer,
+                total_rows=len(seen_orders),
+            )
+            break
+
         if footer_total is not None and len(seen_orders) >= footer_total:
             log_event(
                 logger=logger,
@@ -2176,10 +2307,13 @@ async def _collect_archive_orders(
                 page_number=page_index,
                 total_rows=len(extract.base_rows),
                 footer_total=footer_total,
+                footer_range=current_footer,
             )
             break
         previous_first = await _get_first_order_code(page)
+        previous_signature = await _get_first_row_signature(page)
         previous_page_number = await _get_archive_page_number(page)
+        previous_footer = current_footer
         await next_button.click()
         log_event(
             logger=logger,
@@ -2187,66 +2321,74 @@ async def _collect_archive_orders(
             message="Navigated to next page",
             store_code=store.store_code,
             page_number=page_index + 1,
+            previous_footer=previous_footer,
         )
-        if previous_first or previous_page_number is not None:
-            with contextlib.suppress(TimeoutError):
-                await page.wait_for_function(
-                    """([selectors, previousPage, firstSelector, previousFirst]) => {
-                        const findPage = () => {
-                            for (const selector of selectors) {
-                                const el = document.querySelector(selector);
-                                if (!el) continue;
-                                const text = el.textContent || "";
-                                const match = text.match(/\\d+/);
-                                if (match) return parseInt(match[0], 10);
-                            }
-                            return null;
-                        };
-                        const currentPage = findPage();
-                        const firstEl = document.querySelector(firstSelector);
-                        const firstText = firstEl ? (firstEl.textContent || "").trim() : null;
-                        const pageChanged =
-                            previousPage !== null && currentPage !== null && currentPage !== previousPage;
-                        const firstChanged =
-                            previousFirst && firstText && firstText !== previousFirst;
-                        return pageChanged || firstChanged;
-                    }""",
-                    arg=[
-                        [
-                            ".pagination-btn.active",
-                            ".pagination-btn.current",
-                            ".pagination-btn[aria-current='page']",
-                            ".pagination .active",
-                            ".pagination [aria-current='page']",
-                        ],
-                        previous_page_number,
-                        f"{ARCHIVE_TABLE_ROW_SELECTOR} td.order-col span",
-                        previous_first,
-                    ],
-                    timeout=NAV_TIMEOUT_MS,
-                )
+
+        advanced, advanced_footer, _ = await _wait_for_archive_pagination_advance(
+            page=page,
+            logger=logger,
+            store_code=store.store_code,
+            previous_footer=previous_footer,
+            previous_signature=previous_signature,
+        )
+        if not advanced:
+            with contextlib.suppress(Exception):
+                await next_button.scroll_into_view_if_needed()
+            with contextlib.suppress(Exception):
+                await next_button.click(force=True)
+            advanced, advanced_footer, _ = await _wait_for_archive_pagination_advance(
+                page=page,
+                logger=logger,
+                store_code=store.store_code,
+                previous_footer=previous_footer,
+                previous_signature=previous_signature,
+            )
+        if not advanced:
+            extract.partial_extraction_reason = "partial_extraction_pagination_stall"
+            log_event(
+                logger=logger,
+                phase="pagination",
+                status="warn",
+                message="pagination_stalled_footer_unchanged",
+                store_code=store.store_code,
+                page_number=page_index,
+                previous_footer=previous_footer,
+                current_footer=advanced_footer,
+            )
+            break
+
         current_page_number = await _get_archive_page_number(page)
         current_first = await _get_first_order_code(page)
+        current_signature = await _get_first_row_signature(page)
         page_number_unchanged = (
             previous_page_number is not None
             and current_page_number is not None
             and current_page_number == previous_page_number
         )
         first_order_unchanged = previous_first and current_first == previous_first
-        if page_number_unchanged or first_order_unchanged:
+        signature_unchanged = previous_signature is not None and current_signature == previous_signature
+        if (page_number_unchanged and (first_order_unchanged or signature_unchanged)) and not _footer_advanced(
+            previous_footer, advanced_footer
+        ):
+            extract.partial_extraction_reason = "partial_extraction_pagination_stall"
             log_event(
                 logger=logger,
                 phase="pagination",
                 status="warn",
-                message="Pagination did not advance; stopping to prevent infinite loop",
+                message="pagination_stalled_footer_unchanged",
                 store_code=store.store_code,
                 previous_page_number=previous_page_number,
                 current_page_number=current_page_number,
                 previous_first_order=previous_first,
                 current_first_order=current_first,
+                previous_footer=previous_footer,
+                current_footer=advanced_footer,
             )
             break
         page_index += 1
+
+    if footer_total is not None and len(extract.base_rows) < footer_total and extract.partial_extraction_reason is None:
+        extract.partial_extraction_reason = "partial_extraction_pagination_stall"
 
     log_event(
         logger=logger,
@@ -2260,8 +2402,10 @@ async def _collect_archive_orders(
         skipped_order_counters=extract.skipped_order_counters,
         page_count=extract.page_count,
         footer_total=extract.footer_total,
+        partial_extraction_reason=extract.partial_extraction_reason,
     )
     return extract
+
 
 
 async def _run_store_discovery(
@@ -2608,6 +2752,8 @@ async def _run_store_discovery(
                 "payment_details_rows": payment_details_count,
                 "skipped_order_counters": extract.skipped_order_counters,
                 "skipped_order_codes": extract.skipped_order_codes,
+                "footer_total": extract.footer_total,
+                "partial_extraction_reason": extract.partial_extraction_reason,
             }
         }
 
@@ -2740,13 +2886,23 @@ async def _run_store_discovery(
                         "payment_details_to_sales": sales_error,
                     }
 
+        extraction_partial = (
+            extract.footer_total is not None
+            and row_count < extract.footer_total
+            and extract.partial_extraction_reason == "partial_extraction_pagination_stall"
+        )
         status_label = "warning" if any(v == "failed" for k, v in stage_statuses.items() if k != "download") else "ok"
+        if extraction_partial:
+            status_label = "warning"
         download_message = "Archive Orders download complete"
         if status_label == "warning":
             failed_stages = [name for name, stage_status in stage_statuses.items() if stage_status == "failed"]
-            download_message = (
-                "Archive Orders download complete; archive stages failed: " + ", ".join(sorted(failed_stages))
-            )
+            if failed_stages:
+                download_message = (
+                    "Archive Orders download complete; archive stages failed: " + ", ".join(sorted(failed_stages))
+                )
+            if extraction_partial:
+                download_message = "Archive Orders download complete with warnings: partial extraction due to pagination stall"
         outcome = StoreOutcome(
             status=status_label,
             message=download_message,
@@ -2758,6 +2914,7 @@ async def _run_store_discovery(
             fallback_login_result=fallback_login_result,
             download_path=str(base_path),
             rows_downloaded=row_count,
+            skip_reason=extract.partial_extraction_reason if extraction_partial else None,
             stage_statuses=stage_statuses,
             stage_metrics=stage_metrics,
             archive_publish_orders=archive_publish_orders,
