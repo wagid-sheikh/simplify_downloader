@@ -160,3 +160,28 @@ async def test_collect_archive_orders_forces_retry_when_duplicates_but_footer_ha
     assert extract.page_count == 3
     assert page.scroll_calls >= 1
     assert page.timeout_calls >= 1
+
+
+def test_archive_extraction_gap_uses_footer_total() -> None:
+    extract = uc_main.ArchiveOrdersExtract(base_rows=[{"order_code": "O1"}], footer_total=3)
+    assert uc_main._archive_extraction_gap(extract) == 2
+
+
+def test_summary_overall_status_rolls_up_partial_reason_codes() -> None:
+    summary = uc_main.UcOrdersDiscoverySummary(
+        run_id="run-1",
+        run_env="test",
+        report_date=uc_main.date(2025, 1, 1),
+        report_end_date=uc_main.date(2025, 1, 1),
+        store_codes=["UCX"],
+    )
+    summary.record_store(
+        "UCX",
+        uc_main.StoreOutcome(
+            status="ok",
+            message="Archive Orders download complete",
+            reason_codes=["partial_extraction"],
+        ),
+    )
+
+    assert summary.overall_status() == "success_with_warnings"

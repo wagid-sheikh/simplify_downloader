@@ -339,6 +339,10 @@ class StoreOutcome:
     archive_publish_sales: dict[str, Any] | None = None
     warning_rows: list[dict[str, Any]] = field(default_factory=list)
     dropped_rows: list[dict[str, Any]] = field(default_factory=list)
+    reason_codes: list[str] = field(default_factory=list)
+    footer_total: int | None = None
+    base_rows_extracted: int | None = None
+    rows_missing_estimate: int | None = None
 
 
 @dataclass
@@ -350,6 +354,12 @@ class ArchiveOrdersExtract:
     skipped_order_counters: dict[str, int] = field(default_factory=dict)
     page_count: int = 0
     footer_total: int | None = None
+
+
+def _archive_extraction_gap(extract: ArchiveOrdersExtract) -> int | None:
+    if extract.footer_total is None:
+        return None
+    return max(0, extract.footer_total - len(extract.base_rows))
 
 
 def _record_skipped_order(extract: ArchiveOrdersExtract, *, order_code: str, reason: str) -> None:
@@ -485,6 +495,8 @@ class UcOrdersDiscoverySummary:
         if any(status == "error" for status in statuses):
             return "failed"
         if any(status == "warning" for status in statuses):
+            return "success_with_warnings"
+        if any("partial_extraction" in (outcome.reason_codes or []) for outcome in self.store_outcomes.values()):
             return "success_with_warnings"
         if not statuses and not self.store_codes:
             return "success_with_warnings"
@@ -2661,6 +2673,9 @@ async def _run_store_discovery(
         download_dir = _resolve_uc_download_dir(run_id, store.store_code, from_date, to_date)
         extract = await _collect_archive_orders(page=page, store=store, logger=logger)
         row_count = len(extract.base_rows)
+        rows_missing_estimate = _archive_extraction_gap(extract)
+        is_partial_extraction = rows_missing_estimate is not None and rows_missing_estimate > 0
+        reason_codes: list[str] = ["partial_extraction"] if is_partial_extraction else []
         base_path = download_dir / _format_archive_base_filename(store.store_code, from_date, to_date)
         order_details_path = download_dir / _format_archive_order_details_filename(store.store_code, from_date, to_date)
         payment_details_path = download_dir / _format_archive_payment_details_filename(store.store_code, from_date, to_date)
@@ -2700,6 +2715,10 @@ async def _run_store_discovery(
                 "payment_details_rows": payment_details_count,
                 "skipped_order_counters": extract.skipped_order_counters,
                 "skipped_order_codes": extract.skipped_order_codes,
+                "footer_total": extract.footer_total,
+                "base_rows_extracted": len(extract.base_rows),
+                "rows_missing_estimate": rows_missing_estimate,
+                "reason_codes": reason_codes,
             }
         }
 
@@ -2834,7 +2853,10 @@ async def _run_store_discovery(
 
         status_label = "warning" if any(v == "failed" for k, v in stage_statuses.items() if k != "download") else "ok"
         download_message = "Archive Orders download complete"
-        if status_label == "warning":
+        if is_partial_extraction:
+            status_label = "warning"
+            download_message = "Archive Orders extracted partially (footer total mismatch)"
+        elif status_label == "warning":
             failed_stages = [name for name, stage_status in stage_statuses.items() if stage_status == "failed"]
             download_message = (
                 "Archive Orders download complete; archive stages failed: " + ", ".join(sorted(failed_stages))
@@ -2854,6 +2876,10 @@ async def _run_store_discovery(
             stage_metrics=stage_metrics,
             archive_publish_orders=archive_publish_orders,
             archive_publish_sales=archive_publish_sales,
+            reason_codes=reason_codes,
+            footer_total=extract.footer_total,
+            base_rows_extracted=len(extract.base_rows),
+            rows_missing_estimate=rows_missing_estimate,
         )
         summary.record_store(store.store_code, outcome)
         log_event(
@@ -2958,6 +2984,10 @@ async def _run_store_discovery(
             overlap_duplicates_updated=outcome.final_updated,
             rows_skipped_invalid=outcome.rows_skipped_invalid,
             rows_skipped_invalid_reasons=outcome.rows_skipped_invalid_reasons,
+            reason_codes=outcome.reason_codes,
+            footer_total=outcome.footer_total,
+            base_rows_extracted=outcome.base_rows_extracted,
+            rows_missing_estimate=outcome.rows_missing_estimate,
             primary_metrics=primary_metrics,
             secondary_metrics=secondary_metrics,
         )
@@ -2989,6 +3019,10 @@ async def _run_store_discovery(
                 "overlap_duplicates_updated": outcome.final_updated,
                 "rows_skipped_invalid": outcome.rows_skipped_invalid,
                 "rows_skipped_invalid_reasons": outcome.rows_skipped_invalid_reasons,
+                "reason_codes": list(outcome.reason_codes),
+                "footer_total": outcome.footer_total,
+                "base_rows_extracted": outcome.base_rows_extracted,
+                "rows_missing_estimate": outcome.rows_missing_estimate,
                 "attempt_no": attempt_no,
                 "orders_sync_log_id": sync_log_id,
             }
