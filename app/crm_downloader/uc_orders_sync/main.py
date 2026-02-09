@@ -1696,6 +1696,13 @@ def _parse_archive_footer_total(text: str) -> int | None:
     return int(match.group(1).replace(",", ""))
 
 
+def _parse_archive_footer_window(text: str) -> tuple[int, int, int] | None:
+    match = re.search(r"showing\s+results\s+([\d,]+)\s+to\s+([\d,]+)\s+of\s+([\d,]+)\s+total", text, re.I)
+    if not match:
+        return None
+    return tuple(int(match.group(i).replace(",", "")) for i in (1, 2, 3))
+
+
 async def _get_archive_footer_total(page: Page) -> int | None:
     for selector in ARCHIVE_FOOTER_TOTAL_SELECTORS:
         locator = page.locator(selector).first
@@ -1707,6 +1714,20 @@ async def _get_archive_footer_total(page: Page) -> int | None:
         total = _parse_archive_footer_total(text)
         if total is not None:
             return total
+    return None
+
+
+async def _get_archive_footer_window(page: Page) -> tuple[int, int, int] | None:
+    for selector in ARCHIVE_FOOTER_TOTAL_SELECTORS:
+        locator = page.locator(selector).first
+        if not await locator.count():
+            continue
+        text = await _locator_text(locator)
+        if not text:
+            continue
+        parsed = _parse_archive_footer_window(text)
+        if parsed is not None:
+            return parsed
     return None
 
 
@@ -2020,7 +2041,11 @@ async def _collect_archive_orders(
     while True:
         with contextlib.suppress(TimeoutError):
             await page.wait_for_selector(ARCHIVE_TABLE_ROW_SELECTOR, timeout=NAV_TIMEOUT_MS)
-        if footer_total is None:
+        footer_window = await _get_archive_footer_window(page)
+        if footer_window is not None:
+            footer_total = footer_window[2]
+            extract.footer_total = footer_total
+        elif footer_total is None:
             footer_total = await _get_archive_footer_total(page)
             if footer_total is not None:
                 extract.footer_total = footer_total
@@ -2052,6 +2077,7 @@ async def _collect_archive_orders(
             page_number=page_index,
             row_count=row_count,
             footer_total=footer_total,
+            footer_window=footer_window,
         )
         if row_count == 0:
             log_event(
@@ -2180,6 +2206,7 @@ async def _collect_archive_orders(
             break
         previous_first = await _get_first_order_code(page)
         previous_page_number = await _get_archive_page_number(page)
+        previous_footer_window = footer_window
         await next_button.click()
         log_event(
             logger=logger,
@@ -2188,10 +2215,10 @@ async def _collect_archive_orders(
             store_code=store.store_code,
             page_number=page_index + 1,
         )
-        if previous_first or previous_page_number is not None:
+        if previous_first or previous_page_number is not None or previous_footer_window is not None:
             with contextlib.suppress(TimeoutError):
                 await page.wait_for_function(
-                    """([selectors, previousPage, firstSelector, previousFirst]) => {
+                    r"""([selectors, previousPage, firstSelector, previousFirst, footerSelectors, previousFooter]) => {
                         const findPage = () => {
                             for (const selector of selectors) {
                                 const el = document.querySelector(selector);
@@ -2202,14 +2229,27 @@ async def _collect_archive_orders(
                             }
                             return null;
                         };
+                        const findFooterWindow = () => {
+                            for (const selector of footerSelectors) {
+                                const el = document.querySelector(selector);
+                                if (!el) continue;
+                                const text = (el.textContent || "").trim();
+                                const match = text.match(/showing\s+results\s+([\d,]+)\s+to\s+([\d,]+)\s+of\s+([\d,]+)\s+total/i);
+                                if (!match) continue;
+                                return [1, 2, 3].map((idx) => parseInt(match[idx].replace(/,/g, ""), 10));
+                            }
+                            return null;
+                        };
                         const currentPage = findPage();
                         const firstEl = document.querySelector(firstSelector);
                         const firstText = firstEl ? (firstEl.textContent || "").trim() : null;
+                        const footer = findFooterWindow();
                         const pageChanged =
                             previousPage !== null && currentPage !== null && currentPage !== previousPage;
                         const firstChanged =
                             previousFirst && firstText && firstText !== previousFirst;
-                        return pageChanged || firstChanged;
+                        const footerChanged = previousFooter && footer && footer.join("|") !== previousFooter.join("|");
+                        return pageChanged || firstChanged || footerChanged;
                     }""",
                     arg=[
                         [
@@ -2222,18 +2262,22 @@ async def _collect_archive_orders(
                         previous_page_number,
                         f"{ARCHIVE_TABLE_ROW_SELECTOR} td.order-col span",
                         previous_first,
+                        list(ARCHIVE_FOOTER_TOTAL_SELECTORS),
+                        list(previous_footer_window) if previous_footer_window is not None else None,
                     ],
                     timeout=NAV_TIMEOUT_MS,
                 )
         current_page_number = await _get_archive_page_number(page)
         current_first = await _get_first_order_code(page)
-        page_number_unchanged = (
-            previous_page_number is not None
-            and current_page_number is not None
-            and current_page_number == previous_page_number
-        )
-        first_order_unchanged = previous_first and current_first == previous_first
-        if page_number_unchanged or first_order_unchanged:
+        current_footer_window = await _get_archive_footer_window(page)
+        progress_signals: list[bool] = []
+        if previous_page_number is not None and current_page_number is not None:
+            progress_signals.append(current_page_number != previous_page_number)
+        if previous_first and current_first:
+            progress_signals.append(current_first != previous_first)
+        if previous_footer_window is not None and current_footer_window is not None:
+            progress_signals.append(current_footer_window != previous_footer_window)
+        if progress_signals and not any(progress_signals):
             log_event(
                 logger=logger,
                 phase="pagination",
@@ -2244,6 +2288,8 @@ async def _collect_archive_orders(
                 current_page_number=current_page_number,
                 previous_first_order=previous_first,
                 current_first_order=current_first,
+                previous_footer_window=previous_footer_window,
+                current_footer_window=current_footer_window,
             )
             break
         page_index += 1
