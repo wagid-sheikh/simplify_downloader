@@ -2980,11 +2980,15 @@ async def _run_store_discovery(
                         "skipped": sales_publish.skipped,
                         "warnings": sales_publish.warnings,
                         "reason_codes": sales_publish.reason_codes,
+                        "publish_parent_match_rate": sales_publish.publish_parent_match_rate,
+                        "missing_parent_count": sales_publish.missing_parent_count,
+                        "preflight_warning": sales_publish.preflight_warning,
+                        "preflight_diagnostics": sales_publish.preflight_diagnostics,
                     }
                     log_event(
                         logger=logger,
                         phase="archive_publish_sales",
-                        status="info",
+                        status="warn" if sales_publish.preflight_warning else "info",
                         message="UC archive payment publish completed",
                         store_code=store.store_code,
                         metrics=archive_publish_sales,
