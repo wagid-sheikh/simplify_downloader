@@ -16,6 +16,7 @@ from app.crm_downloader.uc_orders_sync.archive_ingest import (
 )
 from app.crm_downloader.uc_orders_sync.archive_publish import (
     REASON_MISSING_PARENT_ORDER_CONTEXT,
+    REASON_PREFLIGHT_PARENT_COVERAGE_LOW,
     REASON_PREFLIGHT_PARENT_COVERAGE_NEAR_ZERO,
     REASON_UNPARSEABLE_PAYMENT_DATE,
     publish_uc_archive_order_details_to_orders,
@@ -295,6 +296,100 @@ async def test_payment_publish_parent_coverage_mixed(tmp_path: Path) -> None:
     metrics = await publish_uc_archive_payments_to_sales(database_url=db_url)
     assert metrics.publish_parent_match_rate == 0.5
     assert metrics.missing_parent_count == 1
-    assert metrics.preflight_warning is None
+    assert metrics.preflight_warning is not None
     assert metrics.inserted == 1
+    assert metrics.reason_codes[REASON_PREFLIGHT_PARENT_COVERAGE_LOW] == 1
     assert metrics.reason_codes[REASON_MISSING_PARENT_ORDER_CONTEXT] == 1
+
+
+@pytest.mark.asyncio
+async def test_payment_publish_parent_coverage_low_logs_diagnostics(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_parent_low.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders (cost_center, store_code, order_number, order_date, customer_name, mobile_number, created_at)
+                VALUES ('CC01', 'UC567', 'ORD-1', '2025-01-01T00:00:00+00:00', 'Alice', '9999999999', '2025-01-01T00:00:00+00:00')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_payment_details (run_id, run_date, store_code, order_code, payment_mode, amount, payment_date_raw, transaction_id)
+                VALUES
+                    ('run-low', '2025-01-03T00:00:00+00:00', 'UC567', 'ORD-1', 'UPI', 50, '03 Jan 2025, 11:00 AM', 'T1'),
+                    ('run-low', '2025-01-03T00:00:00+00:00', 'UC567', 'ORD-X', 'UPI', 60, '03 Jan 2025, 11:10 AM', 'T2'),
+                    ('run-low', '2025-01-03T00:00:00+00:00', 'UC567', 'ORD-Y', 'UPI', 70, '03 Jan 2025, 11:20 AM', 'T3')
+                """
+            )
+        )
+        await session.commit()
+
+    caplog.set_level("WARNING")
+    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url)
+
+    assert metrics.inserted == 1
+    assert metrics.reason_codes[REASON_PREFLIGHT_PARENT_COVERAGE_LOW] == 1
+    assert metrics.reason_codes[REASON_MISSING_PARENT_ORDER_CONTEXT] == 2
+    assert metrics.preflight_warning is not None
+    assert "ORD-X" in metrics.preflight_warning
+    assert metrics.preflight_diagnostics is not None
+    assert metrics.preflight_diagnostics["matched_parent_keys"] == 1
+
+    warning_records = [r for r in caplog.records if "archive_publish_parent_preflight_low" in r.message]
+    assert warning_records
+
+
+@pytest.mark.asyncio
+async def test_payment_publish_uses_archive_base_fallback_when_stg_parent_exists(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_parent_fallback.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_orders (run_id, run_date, cost_center, store_code, order_number, invoice_date)
+                VALUES ('run-fallback', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-FB', '2025-01-02T00:00:00+00:00')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_orders_base (run_id, run_date, cost_center, store_code, order_code, customer_name, customer_phone, ingest_remarks)
+                VALUES ('run-fallback', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-FB', 'Fallback User', '7777777777', 'archive-base-remark')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_payment_details (run_id, run_date, store_code, order_code, payment_mode, amount, payment_date_raw, transaction_id, ingest_remarks)
+                VALUES ('run-fallback', '2025-01-03T00:00:00+00:00', 'UC567', 'ORD-FB', 'UPI', 80, '03 Jan 2025, 11:30 AM', 'TFB', 'payment-remark')
+                """
+            )
+        )
+        await session.commit()
+
+    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url)
+    assert metrics.inserted == 1
+    assert metrics.missing_parent_count == 0
+
+    async with session_scope(db_url) as session:
+        row = (
+            await session.execute(
+                sa.text(
+                    "SELECT cost_center, customer_name, mobile_number, ingest_remarks FROM sales WHERE store_code='UC567' AND order_number='ORD-FB'"
+                )
+            )
+        ).one()
+    assert row.cost_center == "CC01"
+    assert row.customer_name == "Fallback User"
+    assert row.mobile_number == "7777777777"
+    assert "archive-base-remark" in (row.ingest_remarks or "")
+    assert "payment-remark" in (row.ingest_remarks or "")

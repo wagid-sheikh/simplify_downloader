@@ -4,6 +4,8 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import json
+import logging
 import os
 from decimal import Decimal
 from typing import Any
@@ -25,6 +27,11 @@ REASON_MISSING_PARENT_ORDER_CONTEXT = "missing_parent_order_context"
 REASON_UNPARSEABLE_PAYMENT_DATE = "unparseable_payment_date"
 REASON_MISSING_REQUIRED_IDENTIFIERS = "missing_required_identifiers"
 REASON_PREFLIGHT_PARENT_COVERAGE_NEAR_ZERO = "preflight_parent_coverage_near_zero"
+REASON_PREFLIGHT_PARENT_COVERAGE_LOW = "preflight_parent_coverage_low"
+
+PREFLIGHT_PARENT_COVERAGE_MIN = Decimal("0.80")
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -37,6 +44,7 @@ class PublishMetrics:
     publish_parent_match_rate: float | None = None
     missing_parent_count: int = 0
     preflight_warning: str | None = None
+    preflight_diagnostics: dict[str, Any] | None = None
 
 
 @dataclass
@@ -256,7 +264,17 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
         metrics.publish_parent_match_rate = (parent_match_count / len(order_keys)) if order_keys else None
         metrics.missing_parent_count = missing_parent_count
 
-        sample_missing_keys = [f"{store_code}:{order_code}" for store_code, order_code in sorted(order_keys - set(order_lookup.keys()) - stg_parent_keys)[:5]]
+        missing_keys = sorted(order_keys - set(order_lookup.keys()) - stg_parent_keys)
+        sample_missing_keys = [f"{store_code}:{order_code}" for store_code, order_code in missing_keys[:5]]
+        coverage = Decimal(str(metrics.publish_parent_match_rate or 0)) if order_keys else Decimal("1")
+        metrics.preflight_diagnostics = {
+            "total_archive_payment_keys": len(order_keys),
+            "matched_parent_keys": parent_match_count,
+            "missing_parent_keys": missing_parent_count,
+            "coverage": float(coverage),
+            "sample_missing_keys": sample_missing_keys,
+        }
+
         if order_keys and parent_match_count == 0:
             metrics.skipped += len(payment_rows)
             metrics.warnings += 1
@@ -265,8 +283,25 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
                 "Skipping archive payment publish: parent order join coverage is near-zero (0%). "
                 + (f"Sample missing keys: {', '.join(sample_missing_keys)}" if sample_missing_keys else "No sample keys available.")
             )
+            LOGGER.warning(
+                "archive_publish_parent_preflight_near_zero %s",
+                json.dumps(metrics.preflight_diagnostics, sort_keys=True),
+            )
             metrics.reason_codes = dict(reasons)
             return metrics
+
+        if order_keys and coverage < PREFLIGHT_PARENT_COVERAGE_MIN:
+            _append_reason(reasons, REASON_PREFLIGHT_PARENT_COVERAGE_LOW)
+            metrics.warnings += 1
+            metrics.preflight_warning = (
+                "Archive payment publish has low parent order join coverage "
+                f"({float(coverage) * 100:.1f}%). "
+                + (f"Sample missing keys: {', '.join(sample_missing_keys)}" if sample_missing_keys else "No sample keys available.")
+            )
+            LOGGER.warning(
+                "archive_publish_parent_preflight_low %s",
+                json.dumps(metrics.preflight_diagnostics, sort_keys=True),
+            )
 
         processed_keys: set[tuple[Any, ...]] = set()
         for row in payment_rows:
@@ -290,11 +325,12 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
 
             parent = order_lookup.get((store_code, order_number))
             base_parent = archive_base_lookup.get((store_code, order_number))
+            has_stg_parent = (store_code, order_number) in stg_parent_keys
             parent_cost_center = parent.cost_center if parent is not None else None
-            if not parent_cost_center and base_parent is not None:
+            if not parent_cost_center and base_parent is not None and (has_stg_parent or parent is not None):
                 parent_cost_center = (base_parent.cost_center or "").strip() or None
 
-            if parent is None and base_parent is None:
+            if parent is None and (base_parent is None or not has_stg_parent):
                 metrics.skipped += 1
                 metrics.warnings += 1
                 _append_reason(reasons, REASON_MISSING_PARENT_ORDER_CONTEXT)
