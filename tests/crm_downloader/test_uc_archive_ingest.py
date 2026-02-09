@@ -9,6 +9,8 @@ import sqlalchemy as sa
 
 from app.common.db import session_scope
 from app.crm_downloader.uc_orders_sync.archive_ingest import (
+    _existing_rows_predicate,
+    _stg_uc_archive_payment_details_table,
     FILE_BASE,
     FILE_ORDER_DETAILS,
     FILE_PAYMENT_DETAILS,
@@ -266,3 +268,107 @@ async def test_uc_archive_payment_idempotency_with_blank_transaction_id(tmp_path
     async with session_scope(db_url) as session:
         count = (await session.execute(sa.text("SELECT COUNT(*) FROM stg_uc_archive_payment_details"))).scalar_one()
     assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_uc_archive_payment_idempotency_mixed_null_keys_and_numeric_amount(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'db4.sqlite'}"
+    await _create_tables(db_url)
+
+    base = _write_xlsx(
+        tmp_path / "b2.xlsx",
+        ["store_code", "order_code", "pickup", "delivery", "customer_name", "customer_phone", "address", "payment_text", "instructions", "customer_source", "status", "status_date"],
+        [
+            ["UC567", "ORD-10", "", "", "", "", "", "", "", "", "", ""],
+            ["UC567", "ORD-11", "", "", "", "", "", "", "", "", "", ""],
+        ],
+    )
+    details = _write_xlsx(
+        tmp_path / "d2.xlsx",
+        ["store_code", "order_code", "order_mode", "order_datetime", "pickup_datetime", "delivery_datetime", "service", "hsn_sac", "item_name", "rate", "quantity", "weight", "addons", "amount"],
+        [
+            ["UC567", "ORD-10", "", "", "", "", "Svc", "", "Item", "1", "1", "", "", "1"],
+            ["UC567", "ORD-11", "", "", "", "", "Svc", "", "Item", "1", "1", "", "", "1"],
+        ],
+    )
+
+    payments_first = _write_xlsx(
+        tmp_path / "p2_first.xlsx",
+        ["store_code", "order_code", "payment_mode", "amount", "payment_date", "transaction_id"],
+        [
+            ["UC567", "ORD-10", "Cash", "150", "2025-01-01", ""],
+            ["UC567", "ORD-11", "", "200", "2025-01-02", "TX-11"],
+        ],
+    )
+
+    first = await ingest_uc_archive_excels(
+        database_url=db_url,
+        run_id="run-5",
+        run_date=datetime(2025, 1, 7, tzinfo=timezone.utc),
+        store_code=None,
+        cost_center="CC01",
+        base_order_info_path=base,
+        order_details_path=details,
+        payment_details_path=payments_first,
+        logger=get_logger("test_uc_archive_ingest4_first"),
+    )
+    assert first.files[FILE_PAYMENT_DETAILS].inserted == 2
+
+    payments_second = _write_xlsx(
+        tmp_path / "p2_second.xlsx",
+        ["store_code", "order_code", "payment_mode", "amount", "payment_date", "transaction_id"],
+        [
+            ["UC567", "ORD-10", "Cash", "150.00", "2025-01-01", None],
+            ["UC567", "ORD-11", "", "200.00", "2025-01-02", "TX-11"],
+        ],
+    )
+
+    second = await ingest_uc_archive_excels(
+        database_url=db_url,
+        run_id="run-6",
+        run_date=datetime(2025, 1, 8, tzinfo=timezone.utc),
+        store_code=None,
+        cost_center="CC01",
+        base_order_info_path=base,
+        order_details_path=details,
+        payment_details_path=payments_second,
+        logger=get_logger("test_uc_archive_ingest4_second"),
+    )
+    assert second.files[FILE_PAYMENT_DETAILS].updated == 2
+
+    async with session_scope(db_url) as session:
+        count = (await session.execute(sa.text("SELECT COUNT(*) FROM stg_uc_archive_payment_details"))).scalar_one()
+    assert count == 2
+
+
+def test_uc_archive_payment_match_predicate_compiles_for_postgres_and_sqlite() -> None:
+    table = _stg_uc_archive_payment_details_table(sa.MetaData())
+    key_names = ["store_code", "order_code", "payment_date_raw", "payment_mode", "amount", "transaction_id"]
+    rows = [
+        {
+            "store_code": "UC567",
+            "order_code": "ORD-10",
+            "payment_date_raw": None,
+            "payment_mode": "CASH",
+            "amount": 150,
+            "transaction_id": None,
+        }
+    ]
+
+    predicate = _existing_rows_predicate(table, key_names, rows)
+    postgres_sql = str(
+        predicate.compile(
+            dialect=sa.dialects.postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    sqlite_sql = str(
+        predicate.compile(
+            dialect=sa.dialects.sqlite.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "IS NOT DISTINCT FROM" in postgres_sql
+    assert "coalesce" not in postgres_sql.lower()
+    assert "coalesce" not in sqlite_sql.lower()
