@@ -312,6 +312,9 @@ class StoreOutcome:
     final_url: str | None = None
     storage_state: str | None = None
     login_used: bool | None = None
+    session_probe_result: bool | None = None
+    fallback_login_attempted: bool | None = None
+    fallback_login_result: bool | None = None
     download_path: str | None = None
     skip_reason: str | None = None
     warning_count: int | None = None
@@ -494,6 +497,9 @@ class UcOrdersDiscoverySummary:
                 "filename": filename,
                 "download_path": outcome.download_path if outcome else None,
                 "warning_count": outcome.warning_count if outcome else None,
+                "session_probe_result": outcome.session_probe_result if outcome else None,
+                "fallback_login_attempted": outcome.fallback_login_attempted if outcome else None,
+                "fallback_login_result": outcome.fallback_login_result if outcome else None,
                 "row_counts": {
                     "staging_rows": outcome.staging_rows if outcome else None,
                     "final_rows": outcome.final_rows if outcome else None,
@@ -546,6 +552,9 @@ class UcOrdersDiscoverySummary:
                     "info_message": info_message,
                     "skip_reason": outcome.skip_reason if outcome else None,
                     "warning_count": outcome.warning_count if outcome else None,
+                    "session_probe_result": outcome.session_probe_result if outcome else None,
+                    "fallback_login_attempted": outcome.fallback_login_attempted if outcome else None,
+                    "fallback_login_result": outcome.fallback_login_result if outcome else None,
                     "warning_rows": list(outcome.warning_rows) if outcome else [],
                     "dropped_rows": list(outcome.dropped_rows) if outcome else [],
                     "filename": filename,
@@ -2225,6 +2234,11 @@ async def _run_store_discovery(
             summary.record_store(store.store_code, outcome)
             return
 
+        login_used = not storage_state_exists
+        session_probe_result: bool | None = None
+        fallback_login_attempted = False
+        fallback_login_result: bool | None = None
+
         if storage_state_exists:
             log_event(
                 logger=logger,
@@ -2233,34 +2247,15 @@ async def _run_store_discovery(
                 store_code=store.store_code,
                 storage_state=storage_state_value,
             )
-            login_used = False
-        else:
-            login_used = True
-            login_ok = await _perform_login(page=page, store=store, logger=logger)
-            if not login_ok:
-                outcome = StoreOutcome(
-                    status="error",
-                    message="Login failed",
-                    storage_state=None,
-                    login_used=True,
-                )
-                summary.record_store(store.store_code, outcome)
-                return
-            storage_state_path.parent.mkdir(parents=True, exist_ok=True)
-            await context.storage_state(path=str(storage_state_path))
-            log_event(
-                logger=logger,
-                phase="login",
-                message="Saved storage state",
-                store_code=store.store_code,
-                storage_state=str(storage_state_path),
-            )
 
         if not store.home_url:
             outcome = StoreOutcome(
                 status="error",
                 message="Missing home URL in sync_config",
                 login_used=login_used,
+                session_probe_result=session_probe_result,
+                fallback_login_attempted=fallback_login_attempted,
+                fallback_login_result=fallback_login_result,
             )
             log_event(
                 logger=logger,
@@ -2277,6 +2272,9 @@ async def _run_store_discovery(
                 status="error",
                 message="Missing orders_link URL in sync_config",
                 login_used=login_used,
+                session_probe_result=session_probe_result,
+                fallback_login_attempted=fallback_login_attempted,
+                fallback_login_result=fallback_login_result,
             )
             log_event(
                 logger=logger,
@@ -2289,57 +2287,41 @@ async def _run_store_discovery(
             return
 
         await page.goto(store.home_url, wait_until="domcontentloaded")
-        if await _session_invalid(page=page, store=store):
+        session_probe_result = await _assert_home_ready(page=page, store=store, logger=logger, source="session")
+        if not session_probe_result:
+            fallback_login_attempted = True
             log_event(
                 logger=logger,
                 phase="login",
                 status="warn",
-                message="Session invalid; re-authenticated",
+                message="Session probe failed; attempting full login",
                 store_code=store.store_code,
                 current_url=page.url,
             )
             login_used = True
-            login_ok = await _perform_login(page=page, store=store, logger=logger)
-            if not login_ok:
-                outcome = StoreOutcome(
-                    status="error",
-                    message="Login failed after session invalidation",
-                    storage_state=str(storage_state_path) if storage_state_path.exists() else None,
-                    login_used=True,
+            fallback_login_result = await _perform_login(page=page, store=store, logger=logger)
+            if fallback_login_result:
+                storage_state_path.parent.mkdir(parents=True, exist_ok=True)
+                await context.storage_state(path=str(storage_state_path))
+                log_event(
+                    logger=logger,
+                    phase="login",
+                    message="Saved storage state",
+                    store_code=store.store_code,
+                    storage_state=str(storage_state_path),
                 )
-                summary.record_store(store.store_code, outcome)
-                return
-            storage_state_path.parent.mkdir(parents=True, exist_ok=True)
-            await context.storage_state(path=str(storage_state_path))
-            log_event(
-                logger=logger,
-                phase="login",
-                message="Saved storage state",
-                store_code=store.store_code,
-                storage_state=str(storage_state_path),
-            )
-            if not await _wait_for_home_ready(page=page, store=store, logger=logger, source="post-login"):
+                if not await _assert_home_ready(page=page, store=store, logger=logger, source="post-login"):
+                    fallback_login_result = False
+            if not fallback_login_result:
                 outcome = StoreOutcome(
                     status="error",
-                    message="Home page not reached after login",
+                    message="Login failed after session probe",
                     final_url=page.url,
                     storage_state=str(storage_state_path) if storage_state_path.exists() else None,
                     login_used=login_used,
-                )
-                summary.record_store(store.store_code, outcome)
-                return
-        else:
-            if not await _wait_for_home_ready(page=page, store=store, logger=logger, source="session"):
-                on_login = _url_is_login(page.url or "", store)
-                outcome = StoreOutcome(
-                    status="error" if on_login else "warning",
-                    message="Home page not reached; skipping Archive Orders download"
-                    if on_login
-                    else "Home page not ready; skipping Archive Orders download",
-                    final_url=page.url,
-                    storage_state=str(storage_state_path) if storage_state_path.exists() else None,
-                    login_used=login_used,
-                    skip_reason=None if on_login else "home page not ready",
+                    session_probe_result=session_probe_result,
+                    fallback_login_attempted=fallback_login_attempted,
+                    fallback_login_result=fallback_login_result,
                 )
                 summary.record_store(store.store_code, outcome)
                 return
@@ -2450,6 +2432,9 @@ async def _run_store_discovery(
                 final_url=page.url,
                 storage_state=str(storage_state_path) if storage_state_path.exists() else None,
                 login_used=login_used,
+                session_probe_result=session_probe_result,
+                fallback_login_attempted=fallback_login_attempted,
+                fallback_login_result=fallback_login_result,
                 skip_reason="navigation failed",
             )
             summary.record_store(store.store_code, outcome)
@@ -2469,6 +2454,9 @@ async def _run_store_discovery(
                 final_url=page.url,
                 storage_state=str(storage_state_path) if storage_state_path.exists() else None,
                 login_used=login_used,
+                session_probe_result=session_probe_result,
+                fallback_login_attempted=fallback_login_attempted,
+                fallback_login_result=fallback_login_result,
                 skip_reason="date range invalid",
             )
             summary.record_store(store.store_code, outcome)
@@ -2659,6 +2647,9 @@ async def _run_store_discovery(
             final_url=page.url,
             storage_state=str(storage_state_path) if storage_state_path.exists() else None,
             login_used=login_used,
+            session_probe_result=session_probe_result,
+            fallback_login_attempted=fallback_login_attempted,
+            fallback_login_result=fallback_login_result,
             download_path=str(base_path),
             rows_downloaded=row_count,
             stage_statuses=stage_statuses,
@@ -2681,6 +2672,9 @@ async def _run_store_discovery(
             final_url=page.url,
             storage_state=str(storage_state_path) if storage_state_path.exists() else None,
             login_used=login_used,
+            session_probe_result=session_probe_result,
+            fallback_login_attempted=fallback_login_attempted,
+            fallback_login_result=fallback_login_result,
             skip_reason="timeout",
         )
         summary.record_store(store.store_code, outcome)
@@ -2698,6 +2692,9 @@ async def _run_store_discovery(
             final_url=page.url,
             storage_state=str(storage_state_path) if storage_state_path.exists() else None,
             login_used=login_used,
+            session_probe_result=session_probe_result,
+            fallback_login_attempted=fallback_login_attempted,
+            fallback_login_result=fallback_login_result,
         )
         sync_error_message = str(exc)
         summary.record_store(store.store_code, outcome)
@@ -3189,6 +3186,22 @@ async def _try_direct_gst_reports(*, page: Page, store: UcStore, logger: JsonLog
         on_dashboard=on_dashboard,
     )
     return False, container
+
+
+async def _assert_home_ready(*, page: Page, store: UcStore, logger: JsonLogger, source: str) -> bool:
+    session_invalid = await _session_invalid(page=page, store=store)
+    if session_invalid:
+        log_event(
+            logger=logger,
+            phase="navigation",
+            status="warn",
+            message="Home readiness probe failed; session appears invalid",
+            store_code=store.store_code,
+            current_url=page.url,
+            source=source,
+        )
+        return False
+    return await _wait_for_home_ready(page=page, store=store, logger=logger, source=source)
 
 
 async def _wait_for_home_ready(
