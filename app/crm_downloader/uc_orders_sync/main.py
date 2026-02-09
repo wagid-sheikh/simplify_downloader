@@ -350,6 +350,8 @@ class ArchiveOrdersExtract:
     skipped_order_counters: dict[str, int] = field(default_factory=dict)
     page_count: int = 0
     footer_total: int | None = None
+    partial_extraction: bool = False
+    partial_reason: str | None = None
 
 
 def _record_skipped_order(extract: ArchiveOrdersExtract, *, order_code: str, reason: str) -> None:
@@ -2006,6 +2008,106 @@ async def _get_archive_page_number(page: Page) -> int | None:
     return None
 
 
+async def _wait_for_archive_page_advance(
+    *,
+    page: Page,
+    previous_page_number: int | None,
+    previous_first_order: str | None,
+    timeout_ms: int = 8_000,
+) -> tuple[bool, int | None, str | None]:
+    if previous_first_order or previous_page_number is not None:
+        with contextlib.suppress(TimeoutError):
+            await page.wait_for_function(
+                """([selectors, previousPage, firstSelector, previousFirst]) => {
+                    const findPage = () => {
+                        for (const selector of selectors) {
+                            const el = document.querySelector(selector);
+                            if (!el) continue;
+                            const text = el.textContent || "";
+                            const match = text.match(/\\d+/);
+                            if (match) return parseInt(match[0], 10);
+                        }
+                        return null;
+                    };
+                    const currentPage = findPage();
+                    const firstEl = document.querySelector(firstSelector);
+                    const firstText = firstEl ? (firstEl.textContent || "").trim() : null;
+                    const pageChanged =
+                        previousPage !== null && currentPage !== null && currentPage !== previousPage;
+                    const firstChanged =
+                        previousFirst && firstText && firstText !== previousFirst;
+                    return pageChanged || firstChanged;
+                }""",
+                arg=[
+                    [
+                        ".pagination-btn.active",
+                        ".pagination-btn.current",
+                        ".pagination-btn[aria-current='page']",
+                        ".pagination .active",
+                        ".pagination [aria-current='page']",
+                    ],
+                    previous_page_number,
+                    f"{ARCHIVE_TABLE_ROW_SELECTOR} td.order-col span",
+                    previous_first_order,
+                ],
+                timeout=timeout_ms,
+            )
+    current_page_number = await _get_archive_page_number(page)
+    current_first_order = await _get_first_order_code(page)
+    page_number_advanced = (
+        previous_page_number is not None
+        and current_page_number is not None
+        and current_page_number != previous_page_number
+    )
+    first_order_advanced = bool(previous_first_order and current_first_order and current_first_order != previous_first_order)
+    return page_number_advanced or first_order_advanced, current_page_number, current_first_order
+
+
+async def _detect_archive_paginator_sticky_state(*, page: Page, next_button: Locator) -> dict[str, Any]:
+    is_disabled = await _is_button_disabled(next_button)
+    aria_disabled_raw = ((await next_button.get_attribute("aria-disabled")) or "").strip().lower()
+    aria_disabled = aria_disabled_raw in {"true", "1"}
+    disabled_attr = await next_button.get_attribute("disabled") is not None
+    classes = (await next_button.get_attribute("class")) or ""
+    class_disabled = "disabled" in classes.lower()
+
+    overlay_blocking = False
+    blocker_tag: str | None = None
+    blocker_classes: str | None = None
+    with contextlib.suppress(Exception):
+        overlay_probe = await next_button.evaluate(
+            """(el) => {
+                const rect = el.getBoundingClientRect();
+                const x = rect.left + rect.width / 2;
+                const y = rect.top + rect.height / 2;
+                const topEl = document.elementFromPoint(x, y);
+                const blocked = !!topEl && topEl !== el && !el.contains(topEl);
+                return {
+                    blocked,
+                    blockerTag: blocked ? (topEl.tagName || null) : null,
+                    blockerClasses: blocked ? (topEl.className || null) : null,
+                };
+            }"""
+        )
+        overlay_blocking = bool(overlay_probe.get("blocked"))
+        blocker_tag = overlay_probe.get("blockerTag")
+        blocker_classes = overlay_probe.get("blockerClasses")
+
+    disabled_next_mismatch = len({is_disabled, aria_disabled, disabled_attr, class_disabled}) > 1
+    return {
+        "overlay_blocking": overlay_blocking,
+        "blocker_tag": blocker_tag,
+        "blocker_classes": blocker_classes,
+        "disabled_next_mismatch": disabled_next_mismatch,
+        "disabled_signals": {
+            "is_disabled": is_disabled,
+            "aria_disabled": aria_disabled,
+            "disabled_attr": disabled_attr,
+            "class_disabled": class_disabled,
+        },
+    }
+
+
 async def _collect_archive_orders(
     *,
     page: Page,
@@ -2188,64 +2290,66 @@ async def _collect_archive_orders(
             store_code=store.store_code,
             page_number=page_index + 1,
         )
-        if previous_first or previous_page_number is not None:
-            with contextlib.suppress(TimeoutError):
-                await page.wait_for_function(
-                    """([selectors, previousPage, firstSelector, previousFirst]) => {
-                        const findPage = () => {
-                            for (const selector of selectors) {
-                                const el = document.querySelector(selector);
-                                if (!el) continue;
-                                const text = el.textContent || "";
-                                const match = text.match(/\\d+/);
-                                if (match) return parseInt(match[0], 10);
-                            }
-                            return null;
-                        };
-                        const currentPage = findPage();
-                        const firstEl = document.querySelector(firstSelector);
-                        const firstText = firstEl ? (firstEl.textContent || "").trim() : null;
-                        const pageChanged =
-                            previousPage !== null && currentPage !== null && currentPage !== previousPage;
-                        const firstChanged =
-                            previousFirst && firstText && firstText !== previousFirst;
-                        return pageChanged || firstChanged;
-                    }""",
-                    arg=[
-                        [
-                            ".pagination-btn.active",
-                            ".pagination-btn.current",
-                            ".pagination-btn[aria-current='page']",
-                            ".pagination .active",
-                            ".pagination [aria-current='page']",
-                        ],
-                        previous_page_number,
-                        f"{ARCHIVE_TABLE_ROW_SELECTOR} td.order-col span",
-                        previous_first,
-                    ],
-                    timeout=NAV_TIMEOUT_MS,
-                )
-        current_page_number = await _get_archive_page_number(page)
-        current_first = await _get_first_order_code(page)
-        page_number_unchanged = (
-            previous_page_number is not None
-            and current_page_number is not None
-            and current_page_number == previous_page_number
+        advanced, current_page_number, current_first = await _wait_for_archive_page_advance(
+            page=page,
+            previous_page_number=previous_page_number,
+            previous_first_order=previous_first,
         )
-        first_order_unchanged = previous_first and current_first == previous_first
-        if page_number_unchanged or first_order_unchanged:
+        if not advanced:
             log_event(
                 logger=logger,
                 phase="pagination",
                 status="warn",
-                message="Pagination did not advance; stopping to prevent infinite loop",
+                message="Pagination did not advance after first Next click; retrying once",
                 store_code=store.store_code,
                 previous_page_number=previous_page_number,
                 current_page_number=current_page_number,
                 previous_first_order=previous_first,
                 current_first_order=current_first,
             )
-            break
+            await page.wait_for_timeout(600)
+            next_disabled_after_delay = await _is_button_disabled(next_button)
+            if next_disabled_after_delay:
+                log_event(
+                    logger=logger,
+                    phase="pagination",
+                    message="Archive Orders pagination complete after Next stabilization check",
+                    store_code=store.store_code,
+                    page_number=page_index,
+                    total_rows=len(extract.base_rows),
+                    footer_total=footer_total,
+                )
+                break
+            await next_button.click()
+            log_event(
+                logger=logger,
+                phase="pagination",
+                message="Retried Next click after non-advancing paginator",
+                store_code=store.store_code,
+                page_number=page_index + 1,
+            )
+            advanced, current_page_number, current_first = await _wait_for_archive_page_advance(
+                page=page,
+                previous_page_number=previous_page_number,
+                previous_first_order=previous_first,
+            )
+            if not advanced:
+                sticky_state = await _detect_archive_paginator_sticky_state(page=page, next_button=next_button)
+                extract.partial_extraction = True
+                extract.partial_reason = "pagination_non_advancing_after_retry"
+                log_event(
+                    logger=logger,
+                    phase="pagination",
+                    status="warn",
+                    message="Pagination still did not advance after retry; aborting pagination with partial extraction",
+                    store_code=store.store_code,
+                    previous_page_number=previous_page_number,
+                    current_page_number=current_page_number,
+                    previous_first_order=previous_first,
+                    current_first_order=current_first,
+                    sticky_paginator_state=sticky_state,
+                )
+                break
         page_index += 1
 
     log_event(
@@ -2260,6 +2364,8 @@ async def _collect_archive_orders(
         skipped_order_counters=extract.skipped_order_counters,
         page_count=extract.page_count,
         footer_total=extract.footer_total,
+        partial_extraction=extract.partial_extraction,
+        partial_reason=extract.partial_reason,
     )
     return extract
 
@@ -2608,6 +2714,8 @@ async def _run_store_discovery(
                 "payment_details_rows": payment_details_count,
                 "skipped_order_counters": extract.skipped_order_counters,
                 "skipped_order_codes": extract.skipped_order_codes,
+                "partial_extraction": extract.partial_extraction,
+                "partial_reason": extract.partial_reason,
             }
         }
 
@@ -2740,13 +2848,22 @@ async def _run_store_discovery(
                         "payment_details_to_sales": sales_error,
                     }
 
-        status_label = "warning" if any(v == "failed" for k, v in stage_statuses.items() if k != "download") else "ok"
+        has_partial_extract = bool(extract.partial_extraction)
+        status_label = (
+            "warning"
+            if has_partial_extract or any(v == "failed" for k, v in stage_statuses.items() if k != "download")
+            else "ok"
+        )
         download_message = "Archive Orders download complete"
         if status_label == "warning":
             failed_stages = [name for name, stage_status in stage_statuses.items() if stage_status == "failed"]
-            download_message = (
-                "Archive Orders download complete; archive stages failed: " + ", ".join(sorted(failed_stages))
-            )
+            message_parts: list[str] = []
+            if failed_stages:
+                message_parts.append("archive stages failed: " + ", ".join(sorted(failed_stages)))
+            if has_partial_extract:
+                message_parts.append(f"pagination partial extraction ({extract.partial_reason or 'unknown'})")
+            if message_parts:
+                download_message = "Archive Orders download complete; " + "; ".join(message_parts)
         outcome = StoreOutcome(
             status=status_label,
             message=download_message,
