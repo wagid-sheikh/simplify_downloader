@@ -146,6 +146,12 @@ ARCHIVE_DATE_TYPE_SELECTOR = "input[name='dateType'][value='Delivery Date']"
 ARCHIVE_CUSTOM_OPTION_SELECTOR = "div.date-option:has-text('Custom')"
 ARCHIVE_CUSTOM_INPUT_SELECTOR = ".custom-date-inputs input[type='date']"
 ARCHIVE_TABLE_ROW_SELECTOR = ".table-wrapper .orders-table tbody tr"
+ARCHIVE_ORDER_DETAIL_TRIGGER_SELECTORS = (
+    "td.order-col span[style*='cursor']",
+    "td.order-col span",
+    "td.order-col button",
+    "td.order-col a",
+)
 ARCHIVE_NEXT_BUTTON_SELECTOR = ".pagination-btn:has-text('Next')"
 ARCHIVE_PREV_BUTTON_SELECTOR = ".pagination-btn:has-text('Prev')"
 ARCHIVE_BASE_COLUMNS = [
@@ -340,8 +346,87 @@ class ArchiveOrdersExtract:
     base_rows: list[dict[str, Any]] = field(default_factory=list)
     order_detail_rows: list[dict[str, Any]] = field(default_factory=list)
     payment_detail_rows: list[dict[str, Any]] = field(default_factory=list)
+    skipped_order_codes: list[str] = field(default_factory=list)
+    skipped_order_counters: dict[str, int] = field(default_factory=dict)
     page_count: int = 0
     footer_total: int | None = None
+
+
+def _record_skipped_order(extract: ArchiveOrdersExtract, *, order_code: str, reason: str) -> None:
+    extract.skipped_order_codes.append(order_code)
+    extract.skipped_order_counters[reason] = extract.skipped_order_counters.get(reason, 0) + 1
+
+
+async def _wait_for_row_stable(row: Locator) -> None:
+    with contextlib.suppress(Exception):
+        await row.wait_for(state="visible", timeout=5_000)
+    with contextlib.suppress(Exception):
+        await row.scroll_into_view_if_needed(timeout=5_000)
+    with contextlib.suppress(Exception):
+        await row.evaluate(
+            """async (el) => {
+                const sleepFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+                let last = el.getBoundingClientRect();
+                for (let i = 0; i < 3; i += 1) {
+                    await sleepFrame();
+                    const next = el.getBoundingClientRect();
+                    const stable =
+                        Math.abs(next.top - last.top) < 0.5 &&
+                        Math.abs(next.left - last.left) < 0.5 &&
+                        Math.abs(next.width - last.width) < 0.5 &&
+                        Math.abs(next.height - last.height) < 0.5;
+                    if (stable) {
+                        return;
+                    }
+                    last = next;
+                }
+            }"""
+        )
+
+
+async def _collect_selector_diagnostics(row: Locator, selectors: Sequence[str]) -> list[dict[str, Any]]:
+    diagnostics: list[dict[str, Any]] = []
+    for selector in selectors:
+        locator = row.locator(selector)
+        count = await locator.count()
+        visible = None
+        enabled = None
+        if count:
+            first = locator.first
+            with contextlib.suppress(Exception):
+                visible = await first.is_visible()
+            with contextlib.suppress(Exception):
+                enabled = await first.is_enabled()
+        diagnostics.append(
+            {
+                "selector": selector,
+                "count": count,
+                "first_visible": visible,
+                "first_enabled": enabled,
+            }
+        )
+    return diagnostics
+
+
+async def _click_order_details_trigger(row: Locator) -> tuple[bool, list[dict[str, Any]], str | None]:
+    diagnostics = await _collect_selector_diagnostics(row, ARCHIVE_ORDER_DETAIL_TRIGGER_SELECTORS)
+    max_attempts_per_selector = 2
+    last_error: str | None = None
+    for selector in ARCHIVE_ORDER_DETAIL_TRIGGER_SELECTORS:
+        trigger = row.locator(selector).first
+        if not await trigger.count():
+            continue
+        for attempt in range(max_attempts_per_selector):
+            force_click = attempt == 1
+            await _wait_for_row_stable(row)
+            with contextlib.suppress(Exception):
+                await trigger.scroll_into_view_if_needed(timeout=5_000)
+            try:
+                await trigger.click(timeout=10_000, force=force_click)
+                return True, diagnostics, None
+            except Exception as exc:
+                last_error = str(exc)
+    return False, diagnostics, last_error
 
 def _normalize_output_status(status: str | None) -> str:
     normalized = str(status or "").lower()
@@ -1671,33 +1756,44 @@ async def _extract_order_details(
     store: UcStore,
     logger: JsonLogger,
     order_code: str,
-) -> tuple[list[dict[str, Any]], str | None, str | None]:
+) -> tuple[list[dict[str, Any]], str | None, str | None, bool]:
     details: list[dict[str, Any]] = []
-    order_click = row.locator("td.order-col span").first
-    if not await order_click.count():
+    clicked, selector_diagnostics, click_error = await _click_order_details_trigger(row)
+    if not clicked:
+        row_html = ""
+        with contextlib.suppress(Exception):
+            row_html = (await row.inner_html())[:DOM_SNIPPET_MAX_CHARS]
         log_event(
             logger=logger,
             phase="warnings",
             status="warn",
-            message="Order details trigger missing",
+            message="Order details trigger click failed; skipping order",
             store_code=store.store_code,
             order_code=order_code,
+            row_html_snippet=row_html,
+            selector_diagnostics=selector_diagnostics,
+            click_error=click_error,
         )
-        return details, None, None
-    await order_click.click()
+        return details, None, None, False
+
     modal = page.locator("mat-dialog-container").last
     try:
         await modal.wait_for(timeout=NAV_TIMEOUT_MS)
     except TimeoutError:
+        row_html = ""
+        with contextlib.suppress(Exception):
+            row_html = (await row.inner_html())[:DOM_SNIPPET_MAX_CHARS]
         log_event(
             logger=logger,
             phase="warnings",
             status="warn",
-            message="Order details modal did not appear",
+            message="Order details modal did not appear; skipping order",
             store_code=store.store_code,
             order_code=order_code,
+            row_html_snippet=row_html,
+            selector_diagnostics=selector_diagnostics,
         )
-        return details, None, None
+        return details, None, None, False
 
     order_number = order_code
     order_mode = _normalize_order_mode(
@@ -1785,7 +1881,7 @@ async def _extract_order_details(
             await page.keyboard.press("Escape")
     with contextlib.suppress(TimeoutError):
         await modal.wait_for(state="detached", timeout=10_000)
-    return details, order_mode, pickup_datetime
+    return details, order_mode, pickup_datetime, True
 
 
 async def _extract_payment_details(
@@ -1989,7 +2085,7 @@ async def _collect_archive_orders(
             extract.base_rows.append(base_row)
 
             try:
-                detail_rows, customer_source, pickup_datetime = await _extract_order_details(
+                detail_rows, customer_source, pickup_datetime, details_extracted = await _extract_order_details(
                     page=page,
                     row=row,
                     store=store,
@@ -1997,6 +2093,12 @@ async def _collect_archive_orders(
                     order_code=order_code,
                 )
                 extract.order_detail_rows.extend(detail_rows)
+                if not details_extracted:
+                    _record_skipped_order(
+                        extract,
+                        order_code=order_code,
+                        reason="order_details_unavailable",
+                    )
                 if customer_source:
                     base_row["customer_source"] = customer_source
                 if not base_row.get("pickup") and pickup_datetime:
@@ -2154,6 +2256,8 @@ async def _collect_archive_orders(
         base_rows=len(extract.base_rows),
         order_detail_rows=len(extract.order_detail_rows),
         payment_detail_rows=len(extract.payment_detail_rows),
+        skipped_order_codes=extract.skipped_order_codes,
+        skipped_order_counters=extract.skipped_order_counters,
         page_count=extract.page_count,
         footer_total=extract.footer_total,
     )
@@ -2502,6 +2606,8 @@ async def _run_store_discovery(
                 "base_rows": base_count,
                 "order_details_rows": order_details_count,
                 "payment_details_rows": payment_details_count,
+                "skipped_order_counters": extract.skipped_order_counters,
+                "skipped_order_codes": extract.skipped_order_codes,
             }
         }
 
