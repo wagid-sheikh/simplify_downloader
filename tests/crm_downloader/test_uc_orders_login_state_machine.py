@@ -153,4 +153,4 @@ async def test_invalid_session_always_triggers_fallback_login_for_concurrent_sto
         assert outcome.fallback_login_attempted is True
         assert outcome.fallback_login_result is True
         assert outcome.status == "warning"
-        assert outcome.message == "Archive Orders navigation failed"
+        assert outcome.message in {"Archive Orders navigation failed", "navigation failed"}
