@@ -27,6 +27,8 @@ STG_UC_ORDERS_COLUMNS = [
     "mobile_number",
     "payment_status",
     "customer_gstin",
+    "customer_source",
+    "customer_address",
     "place_of_supply",
     "net_amount",
     "cgst",
@@ -173,6 +175,8 @@ def _stg_uc_orders_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("mobile_number", sa.String(length=16)),
         sa.Column("payment_status", sa.String(length=24)),
         sa.Column("customer_gstin", sa.String(length=32)),
+        sa.Column("customer_source", sa.String(length=64)),
+        sa.Column("customer_address", sa.Text()),
         sa.Column("place_of_supply", sa.String(length=64)),
         sa.Column("net_amount", sa.Numeric(12, 2)),
         sa.Column("cgst", sa.Numeric(12, 2)),
@@ -537,6 +541,13 @@ def _make_insert(table: sa.Table, values: Mapping[str, Any], *, use_sqlite: bool
     return insert.on_conflict_do_update(index_elements=conflict_cols, set_={key: insert.excluded[key] for key in values})
 
 
+def _non_blank_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 async def ingest_uc_orders_workbook(
     *,
     workbook_path: Path,
@@ -603,13 +614,24 @@ async def ingest_uc_orders_workbook(
 
         stg_keys = {(store_code, row["order_number"], row["invoice_date"]) for row in rows}
         existing_stg: set[tuple[str, str, datetime | None]] = set()
+        existing_stg_customer_fields: dict[tuple[str, str], dict[str, Any]] = {}
         if stg_keys:
             key_tuple = sa.tuple_(stg_table.c.store_code, stg_table.c.order_number, stg_table.c.invoice_date)
-            stmt = sa.select(stg_table.c.store_code, stg_table.c.order_number, stg_table.c.invoice_date).where(
-                key_tuple.in_(list(stg_keys))
-            )
+            stmt = sa.select(
+                stg_table.c.store_code,
+                stg_table.c.order_number,
+                stg_table.c.invoice_date,
+                stg_table.c.customer_source,
+                stg_table.c.customer_address,
+            ).where(key_tuple.in_(list(stg_keys)))
             result = await session.execute(stmt)
-            existing_stg = {tuple(row) for row in result.all()}
+            for existing_row in result:
+                key = (existing_row.store_code, existing_row.order_number, existing_row.invoice_date)
+                existing_stg.add(key)
+                existing_stg_customer_fields[(existing_row.store_code, existing_row.order_number)] = {
+                    "customer_source": existing_row.customer_source,
+                    "customer_address": existing_row.customer_address,
+                }
         staging_inserted = len(stg_keys - existing_stg)
         staging_updated = len(stg_keys & existing_stg)
 
@@ -625,6 +647,49 @@ async def ingest_uc_orders_workbook(
         final_inserted = len(final_keys - existing_final)
         final_updated = len(final_keys & existing_final)
 
+        archive_enrichment: dict[str, dict[str, str | None]] = {}
+        order_numbers = sorted({row["order_number"] for row in rows if row.get("order_number")})
+        if order_numbers:
+            archive_table = sa.table(
+                "stg_uc_archive_orders_base",
+                sa.column("id"),
+                sa.column("store_code"),
+                sa.column("order_code"),
+                sa.column("run_date"),
+                sa.column("customer_source"),
+                sa.column("address"),
+            )
+            archive_stmt = (
+                sa.select(
+                    archive_table.c.order_code,
+                    archive_table.c.customer_source,
+                    archive_table.c.address,
+                )
+                .where(
+                    archive_table.c.store_code == store_code,
+                    archive_table.c.order_code.in_(order_numbers),
+                )
+                .order_by(
+                    archive_table.c.order_code,
+                    archive_table.c.run_date.desc(),
+                    archive_table.c.id.desc(),
+                )
+            )
+            try:
+                archive_rows = await session.execute(archive_stmt)
+                for archive_row in archive_rows:
+                    order_code = archive_row.order_code
+                    if order_code in archive_enrichment:
+                        continue
+                    # Deterministic selection rule when duplicates exist:
+                    # choose the row with latest run_date and then highest id.
+                    archive_enrichment[order_code] = {
+                        "customer_source": _non_blank_text(archive_row.customer_source),
+                        "customer_address": _non_blank_text(archive_row.address),
+                    }
+            except sa.exc.SQLAlchemyError:
+                archive_enrichment = {}
+
         staging_count = 0
         final_count = 0
         for row in rows:
@@ -635,6 +700,25 @@ async def ingest_uc_orders_workbook(
                 "cost_center": cost_center,
                 "store_code": store_code,
             }
+
+            archive_values = archive_enrichment.get(str(stg_values.get("order_number") or ""))
+            if archive_values:
+                if archive_values.get("customer_source"):
+                    stg_values["customer_source"] = archive_values["customer_source"]
+                if archive_values.get("customer_address"):
+                    stg_values["customer_address"] = archive_values["customer_address"]
+
+            stg_customer_key = (store_code, stg_values.get("order_number"))
+            existing_customer_fields = existing_stg_customer_fields.get(stg_customer_key, {})
+            if not _non_blank_text(stg_values.get("customer_source")) and _non_blank_text(
+                existing_customer_fields.get("customer_source")
+            ):
+                stg_values["customer_source"] = existing_customer_fields.get("customer_source")
+            if not _non_blank_text(stg_values.get("customer_address")) and _non_blank_text(
+                existing_customer_fields.get("customer_address")
+            ):
+                stg_values["customer_address"] = existing_customer_fields.get("customer_address")
+
             stmt = _make_insert(stg_table, stg_values, use_sqlite=use_sqlite)
             await session.execute(stmt)
             staging_count += 1
@@ -656,10 +740,10 @@ async def ingest_uc_orders_workbook(
                 "customer_name": stg_values.get("customer_name") or "",
                 "mobile_number": stg_values.get("mobile_number") or "",
                 "customer_gstin": stg_values.get("customer_gstin"),
-                "customer_source": "Walk in Customer",
+                "customer_source": stg_values.get("customer_source"),
                 "package_flag": False,
                 "service_type": "UNKNOWN",
-                "customer_address": None,
+                "customer_address": stg_values.get("customer_address"),
                 "pieces": Decimal("0"),
                 "weight": Decimal("0"),
                 "due_date": default_due_date,

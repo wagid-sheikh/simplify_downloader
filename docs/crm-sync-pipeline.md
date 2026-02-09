@@ -601,6 +601,8 @@ create table stg_uc_orders (
     mobile_number   varchar(16) not null,
     payment_status  varchar(24),
     customer_gstin  varchar(32),
+    customer_source varchar(64),
+    customer_address text,
     place_of_supply varchar(32),
     net_amount      numeric(12,2),
     cgst            numeric(12,2),
@@ -1135,6 +1137,8 @@ These rules apply during ingestion of `GST_Report_2025-12-01_to_2025-12-01.xlsx`
 
 #### from `stg_uc_orders` to `orders`
 
+> Note: Prior to final UC publish, `stg_uc_orders.customer_source` and `stg_uc_orders.customer_address` are backfilled from `stg_uc_archive_orders_base` using (`store_code`, `order_code` = UC `order_number`). If multiple archive rows exist for the same key, choose the latest by `run_date` and then highest `id` as deterministic tie-breaker.
+
 **Phase 7 – UC orders publish:** carry `ingest_remarks` from staging into `orders` alongside the existing field mappings.
 
 | #   | Target column                   | Source / Expression                             | Notes / Transform                                                            |
@@ -1150,10 +1154,10 @@ These rules apply during ingestion of `GST_Report_2025-12-01_to_2025-12-01.xlsx`
 | 9   | `orders.customer_name`          | `stg_uc_orders.customer_name`                   | `orders.customer_name ← stg_uc_orders.customer_name`                         |
 | 10  | `orders.mobile_number`          | `stg_uc_orders.mobile_number`                   | Normalize to 10-digit mobile                                                 |
 | 11  | `orders.customer_gstin`         | `stg_uc_orders.customer_gstin`                  | `orders.customer_gstin ← stg_uc_orders.customer_gstin`                       |
-| 12  | `orders.customer_source`        | `'Walk in Customer'`                            | Constant                                                                     |
+| 12  | `orders.customer_source`        | `stg_uc_orders.customer_source`                    | Enriched in UC ingest from `stg_uc_archive_orders_base.customer_source` via (`store_code`,`order_number=order_code`) when non-blank; otherwise keep staging value/NULL. |
 | 13  | `orders.package_flag`           | `FALSE`                                         | No package concept in staging table                                          |
 | 14  | `orders.service_type`           | `'UNKNOWN'`                                     | Constant; can be refined later                                               |
-| 15  | `orders.customer_address`       | `NULL`                                          | Address not present in staging table                                         |
+| 15  | `orders.customer_address`       | `stg_uc_orders.customer_address`                  | Enriched in UC ingest from `stg_uc_archive_orders_base.address` via (`store_code`,`order_number=order_code`) when non-blank; otherwise keep staging value/NULL. |
 | 16  | `orders.pieces`                 | `0`                                             | Not available; default to 0                                                  |
 | 17  | `orders.weight`                 | `0`                                             | Not available; default to 0                                                  |
 | 18  | `orders.due_date`               | `stg_uc_orders.invoice_date + interval '3 day'` | `stg_uc_orders.invoice_date + interval '3 day'`                              |
