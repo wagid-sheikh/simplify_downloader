@@ -2059,6 +2059,7 @@ async def _collect_archive_orders(
     seen_orders: set[str] = set()
     page_index = 1
     footer_total: int | None = None
+    partial_reason: str | None = None
 
     while True:
         with contextlib.suppress(TimeoutError):
@@ -2191,7 +2192,19 @@ async def _collect_archive_orders(
                     error=str(exc),
                 )
 
-        if footer_total is not None and len(seen_orders) >= footer_total:
+        if footer_window is not None and footer_window[1] >= footer_window[2]:
+            log_event(
+                logger=logger,
+                phase="pagination",
+                message="Archive Orders footer window reached total; stopping pagination",
+                store_code=store.store_code,
+                page_number=page_index,
+                footer_total=footer_window[2],
+                footer_window=footer_window,
+                total_rows=len(seen_orders),
+            )
+            break
+        if footer_window is None and footer_total is not None and len(seen_orders) >= footer_total:
             log_event(
                 logger=logger,
                 phase="pagination",
@@ -2220,6 +2233,21 @@ async def _collect_archive_orders(
 
         next_button = page.locator(ARCHIVE_NEXT_BUTTON_SELECTOR).first
         if await _is_button_disabled(next_button):
+            if footer_window is not None and footer_window[1] < footer_window[2]:
+                partial_reason = "partial_extraction_next_disabled_before_footer_total"
+                log_event(
+                    logger=logger,
+                    phase="pagination",
+                    status="warn",
+                    message="Archive Orders pagination aborted early: next button disabled before footer total",
+                    store_code=store.store_code,
+                    partial_reason=partial_reason,
+                    extracted_rows=len(extract.base_rows),
+                    footer_total=footer_window[2],
+                    page_count=extract.page_count,
+                    footer_window=footer_window,
+                )
+                break
             log_event(
                 logger=logger,
                 phase="pagination",
@@ -2320,11 +2348,14 @@ async def _collect_archive_orders(
         if previous_footer_window is not None and current_footer_window is not None:
             progress_signals.append(current_footer_window != previous_footer_window)
         if progress_signals and not any(progress_signals):
+            retry_reference_first = current_first
+            retry_reference_footer_window = current_footer_window
+            retry_reference_page_number = current_page_number
             log_event(
                 logger=logger,
                 phase="pagination",
                 status="warn",
-                message="Pagination did not advance; stopping to prevent infinite loop",
+                message="Pagination did not advance; retrying next click once",
                 store_code=store.store_code,
                 previous_page_number=previous_page_number,
                 current_page_number=current_page_number,
@@ -2333,8 +2364,105 @@ async def _collect_archive_orders(
                 previous_footer_window=previous_footer_window,
                 current_footer_window=current_footer_window,
             )
-            break
+            with contextlib.suppress(Exception):
+                await next_button.scroll_into_view_if_needed(timeout=5_000)
+            with contextlib.suppress(Exception):
+                await page.wait_for_timeout(500)
+            await next_button.click()
+            if (
+                retry_reference_first
+                or retry_reference_page_number is not None
+                or retry_reference_footer_window is not None
+            ):
+                with contextlib.suppress(TimeoutError):
+                    await page.wait_for_function(
+                        r"""([selectors, previousPage, firstSelector, previousFirst, footerSelectors, previousFooter]) => {
+                            const findPage = () => {
+                                for (const selector of selectors) {
+                                    const el = document.querySelector(selector);
+                                    if (!el) continue;
+                                    const text = el.textContent || "";
+                                    const match = text.match(/\d+/);
+                                    if (match) return parseInt(match[0], 10);
+                                }
+                                return null;
+                            };
+                            const findFooterWindow = () => {
+                                for (const selector of footerSelectors) {
+                                    const el = document.querySelector(selector);
+                                    if (!el) continue;
+                                    const text = (el.textContent || "").trim();
+                                    const match = text.match(/showing\s+results\s+([\d,]+)\s+to\s+([\d,]+)\s+of\s+([\d,]+)\s+total/i);
+                                    if (!match) continue;
+                                    return [1, 2, 3].map((idx) => parseInt(match[idx].replace(/,/g, ""), 10));
+                                }
+                                return null;
+                            };
+                            const currentPage = findPage();
+                            const firstEl = document.querySelector(firstSelector);
+                            const firstText = firstEl ? (firstEl.textContent || "").trim() : null;
+                            const footer = findFooterWindow();
+                            const pageChanged =
+                                previousPage !== null && currentPage !== null && currentPage !== previousPage;
+                            const firstChanged =
+                                previousFirst && firstText && firstText !== previousFirst;
+                            const footerChanged = previousFooter && footer && footer.join("|") !== previousFooter.join("|");
+                            return pageChanged || firstChanged || footerChanged;
+                        }""",
+                        arg=[
+                            [
+                                ".pagination-btn.active",
+                                ".pagination-btn.current",
+                                ".pagination-btn[aria-current='page']",
+                                ".pagination .active",
+                                ".pagination [aria-current='page']",
+                            ],
+                            retry_reference_page_number,
+                            f"{ARCHIVE_TABLE_ROW_SELECTOR} td.order-col span",
+                            retry_reference_first,
+                            list(ARCHIVE_FOOTER_TOTAL_SELECTORS),
+                            list(retry_reference_footer_window) if retry_reference_footer_window is not None else None,
+                        ],
+                        timeout=NAV_TIMEOUT_MS,
+                    )
+            current_page_number = await _get_archive_page_number(page)
+            current_first = await _get_first_order_code(page)
+            current_footer_window = await _get_archive_footer_window(page)
+            progress_signals = []
+            if previous_page_number is not None and current_page_number is not None:
+                progress_signals.append(current_page_number != previous_page_number)
+            if previous_first and current_first:
+                progress_signals.append(current_first != previous_first)
+            if previous_footer_window is not None and current_footer_window is not None:
+                progress_signals.append(current_footer_window != previous_footer_window)
+            if progress_signals and not any(progress_signals):
+                partial_reason = "partial_extraction_non_advancing_next_click_after_retry"
+                log_event(
+                    logger=logger,
+                    phase="pagination",
+                    status="warn",
+                    message="Pagination did not advance after one retry; aborting early",
+                    store_code=store.store_code,
+                    partial_reason=partial_reason,
+                    extracted_rows=len(extract.base_rows),
+                    footer_total=footer_total,
+                    page_count=extract.page_count,
+                    previous_page_number=previous_page_number,
+                    current_page_number=current_page_number,
+                    previous_first_order=previous_first,
+                    current_first_order=current_first,
+                    previous_footer_window=previous_footer_window,
+                    current_footer_window=current_footer_window,
+                )
+                break
         page_index += 1
+
+    if partial_reason is not None:
+        _record_skipped_order(
+            extract,
+            order_code=f"partial_extraction:{store.store_code}",
+            reason=partial_reason,
+        )
 
     if extract.footer_total is not None and len(extract.base_rows) < extract.footer_total:
         _record_skipped_order(
