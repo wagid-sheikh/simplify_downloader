@@ -4,17 +4,19 @@ import hashlib
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import openpyxl
 import sqlalchemy as sa
+from dateutil import parser
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.common.db import session_scope
+from app.common.date_utils import get_timezone
 from app.dashboard_downloader.json_logger import JsonLogger, log_event
 
 TABLE_ARCHIVE_BASE = "stg_uc_archive_orders_base"
@@ -102,6 +104,15 @@ class RejectRecord:
 class ArchiveIngestResult:
     files: dict[str, FileIngestResult] = field(default_factory=dict)
     rejects: list[RejectRecord] = field(default_factory=list)
+
+
+@dataclass
+class ArchivePublishResult:
+    orders_updated: int = 0
+    sales_inserted: int = 0
+    sales_updated: int = 0
+    skipped: int = 0
+    skip_reasons: dict[str, int] = field(default_factory=dict)
 
 
 def _stg_uc_archive_orders_base_table(metadata: sa.MetaData) -> sa.Table:
@@ -563,3 +574,237 @@ async def ingest_uc_archive_excels(
         summary.files[file_kind] = file_result
         summary.rejects.extend(file_rejects)
     return summary
+
+
+def _orders_table(metadata: sa.MetaData) -> sa.Table:
+    return sa.Table(
+        "orders",
+        metadata,
+        sa.Column("id", sa.BigInteger().with_variant(sa.Integer(), "sqlite"), primary_key=True, autoincrement=True),
+        sa.Column("run_id", sa.Text()),
+        sa.Column("run_date", sa.DateTime(timezone=True)),
+        sa.Column("cost_center", sa.String(length=8)),
+        sa.Column("store_code", sa.String(length=8)),
+        sa.Column("order_number", sa.String(length=24)),
+        sa.Column("order_date", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("customer_name", sa.String(length=128)),
+        sa.Column("customer_address", sa.String(length=256)),
+        sa.Column("mobile_number", sa.String(length=16)),
+        sa.Column("service_type", sa.String(length=64)),
+        sa.Column("pieces", sa.Numeric(12, 0)),
+        sa.Column("weight", sa.Numeric(12, 2)),
+    )
+
+
+def _sales_table(metadata: sa.MetaData) -> sa.Table:
+    return sa.Table(
+        "sales",
+        metadata,
+        sa.Column("id", sa.BigInteger().with_variant(sa.Integer(), "sqlite"), primary_key=True, autoincrement=True),
+        sa.Column("run_id", sa.Text()),
+        sa.Column("run_date", sa.DateTime(timezone=True)),
+        sa.Column("cost_center", sa.String(length=8)),
+        sa.Column("store_code", sa.String(length=16)),
+        sa.Column("order_date", sa.DateTime(timezone=True)),
+        sa.Column("payment_date", sa.DateTime(timezone=True)),
+        sa.Column("order_number", sa.String(length=16)),
+        sa.Column("customer_code", sa.String(length=16)),
+        sa.Column("customer_name", sa.String(length=128)),
+        sa.Column("customer_address", sa.String(length=256)),
+        sa.Column("mobile_number", sa.String(length=16)),
+        sa.Column("payment_received", sa.Numeric(12, 2)),
+        sa.Column("adjustments", sa.Numeric(12, 2)),
+        sa.Column("balance", sa.Numeric(12, 2)),
+        sa.Column("accepted_by", sa.String(length=64)),
+        sa.Column("payment_mode", sa.String(length=32)),
+        sa.Column("transaction_id", sa.String(length=64)),
+        sa.Column("payment_made_at", sa.String(length=128)),
+        sa.Column("order_type", sa.String(length=32)),
+        sa.Column("is_duplicate", sa.Boolean()),
+        sa.Column("is_edited_order", sa.Boolean()),
+        sa.Column("ingest_remarks", sa.Text()),
+    )
+
+
+def _parse_payment_datetime(raw: Any) -> datetime | None:
+    if raw in (None, ""):
+        return None
+    try:
+        tz = get_timezone()
+    except Exception:
+        tz = timezone.utc
+    if isinstance(raw, datetime):
+        parsed = raw
+    else:
+        try:
+            parsed = parser.parse(str(raw), dayfirst=True)
+        except Exception:
+            return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=tz)
+    return parsed.astimezone(tz)
+
+
+async def publish_uc_archive_to_orders_and_sales(
+    *,
+    database_url: str,
+    logger: JsonLogger,
+    run_id: str | None = None,
+) -> ArchivePublishResult:
+    result = ArchivePublishResult()
+    async with session_scope(database_url) as session:
+        bind = session.bind
+        assert isinstance(bind, sa.ext.asyncio.AsyncEngine)
+        metadata = sa.MetaData()
+        orders_table = _orders_table(metadata)
+        sales_table = _sales_table(metadata)
+        details_table = _stg_uc_archive_order_details_table(metadata)
+        payments_table = _stg_uc_archive_payment_details_table(metadata)
+
+        details_stmt = sa.select(
+            details_table.c.store_code,
+            details_table.c.order_code,
+            details_table.c.quantity,
+            details_table.c.weight,
+            details_table.c.service,
+        )
+        if run_id:
+            details_stmt = details_stmt.where(details_table.c.run_id == run_id)
+        details_rows = (await session.execute(details_stmt)).mappings().all()
+        aggregates: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in details_rows:
+            store_code = str(row.store_code or "").strip().upper()
+            order_code = str(row.order_code or "").strip().upper()
+            if not store_code or not order_code:
+                continue
+            key = (store_code, order_code)
+            bucket = aggregates.setdefault(key, {"pieces": Decimal("0"), "weight": Decimal("0"), "services": set()})
+            bucket["pieces"] += Decimal(str(row.quantity or 0))
+            bucket["weight"] += Decimal(str(row.weight or 0))
+            service = _non_blank_text(row.service, collapse_spaces=True)
+            if service:
+                bucket["services"].add(service)
+
+        for (store_code, order_code), agg in aggregates.items():
+            service_type = ", ".join(sorted(agg["services"])) if agg["services"] else None
+            update_stmt = (
+                sa.update(orders_table)
+                .where(
+                    orders_table.c.store_code == store_code,
+                    orders_table.c.order_number == order_code,
+                )
+                .values(pieces=agg["pieces"], weight=agg["weight"], service_type=service_type)
+            )
+            update_result = await session.execute(update_stmt)
+            result.orders_updated += int(update_result.rowcount or 0)
+
+        context_rows = (
+            await session.execute(
+                sa.select(
+                    orders_table.c.store_code,
+                    orders_table.c.order_number,
+                    orders_table.c.cost_center,
+                    orders_table.c.order_date,
+                    orders_table.c.customer_name,
+                    orders_table.c.customer_address,
+                    orders_table.c.mobile_number,
+                )
+            )
+        ).mappings().all()
+        order_context: dict[tuple[str, str], Mapping[str, Any]] = {}
+        for ctx in context_rows:
+            key = (str(ctx.store_code or "").strip().upper(), str(ctx.order_number or "").strip().upper())
+            if not key[0] or not key[1]:
+                continue
+            current = order_context.get(key)
+            if current is None or (ctx.order_date and (current.get("order_date") is None or ctx.order_date > current.get("order_date"))):
+                order_context[key] = ctx
+
+        payment_stmt = sa.select(payments_table)
+        if run_id:
+            payment_stmt = payment_stmt.where(payments_table.c.run_id == run_id)
+        payment_rows = (await session.execute(payment_stmt)).mappings().all()
+
+        deduped_sales: dict[tuple[str, str, datetime], dict[str, Any]] = {}
+        for row in payment_rows:
+            store_code = str(row.store_code or "").strip().upper()
+            order_code = str(row.order_code or "").strip().upper()
+            ctx = order_context.get((store_code, order_code))
+            if ctx is None:
+                result.skipped += 1
+                result.skip_reasons["missing_order_context"] = result.skip_reasons.get("missing_order_context", 0) + 1
+                log_event(logger=logger, phase="archive_publish_skip", status="warning", reason="missing_order_context", store_code=store_code, order_code=order_code)
+                continue
+            payment_date = _parse_payment_datetime(row.payment_date_raw)
+            if payment_date is None:
+                result.skipped += 1
+                result.skip_reasons["payment_date_parse_failure"] = result.skip_reasons.get("payment_date_parse_failure", 0) + 1
+                log_event(
+                    logger=logger,
+                    phase="archive_publish_skip",
+                    status="warning",
+                    reason="payment_date_parse_failure",
+                    store_code=store_code,
+                    order_code=order_code,
+                    payment_date_raw=row.payment_date_raw,
+                )
+                continue
+            if not ctx.get("cost_center") or not ctx.get("order_date"):
+                result.skipped += 1
+                result.skip_reasons["missing_required_context_fields"] = result.skip_reasons.get("missing_required_context_fields", 0) + 1
+                log_event(logger=logger, phase="archive_publish_skip", status="warning", reason="missing_required_context_fields", store_code=store_code, order_code=order_code)
+                continue
+            key = (str(ctx["cost_center"]), order_code, payment_date)
+            if key in deduped_sales:
+                result.skipped += 1
+                result.skip_reasons["key_conflict"] = result.skip_reasons.get("key_conflict", 0) + 1
+                log_event(logger=logger, phase="archive_publish_skip", status="warning", reason="key_conflict", store_code=store_code, order_code=order_code, payment_date=payment_date.isoformat())
+            deduped_sales[key] = {
+                "run_id": row.run_id,
+                "run_date": row.run_date,
+                "cost_center": ctx["cost_center"],
+                "store_code": store_code,
+                "order_date": ctx["order_date"],
+                "payment_date": payment_date,
+                "order_number": order_code,
+                "customer_name": ctx.get("customer_name"),
+                "customer_address": ctx.get("customer_address"),
+                "mobile_number": ctx.get("mobile_number"),
+                "payment_received": row.amount,
+                "payment_mode": row.payment_mode,
+                "transaction_id": row.transaction_id,
+                "payment_made_at": row.payment_date_raw,
+            }
+
+        upsert_rows = list(deduped_sales.values())
+        if upsert_rows:
+            key_names = ["cost_center", "order_number", "payment_date"]
+            where_clause = sa.or_(
+                *[
+                    sa.and_(
+                        sales_table.c.cost_center == row["cost_center"],
+                        sales_table.c.order_number == row["order_number"],
+                        sales_table.c.payment_date == row["payment_date"],
+                    )
+                    for row in upsert_rows
+                ]
+            )
+            existing_rows = (await session.execute(sa.select(sales_table).where(where_clause))).mappings().all()
+            existing_keys = {_key_tuple(r, key_names) for r in existing_rows}
+            use_sqlite = bind.url.get_backend_name().startswith("sqlite")
+            stmt = _build_upsert_statement(
+                sales_table,
+                upsert_rows,
+                [sales_table.c.cost_center, sales_table.c.order_number, sales_table.c.payment_date],
+                use_sqlite=use_sqlite,
+            )
+            await session.execute(stmt)
+            for row in upsert_rows:
+                if _key_tuple(row, key_names) in existing_keys:
+                    result.sales_updated += 1
+                else:
+                    result.sales_inserted += 1
+
+        await session.commit()
+
+    return result

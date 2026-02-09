@@ -16,6 +16,7 @@ from app.crm_downloader.uc_orders_sync.archive_ingest import (
     TABLE_ARCHIVE_ORDER_DETAILS,
     TABLE_ARCHIVE_PAYMENT_DETAILS,
     ingest_uc_archive_excels,
+    publish_uc_archive_to_orders_and_sales,
 )
 from app.dashboard_downloader.json_logger import get_logger
 
@@ -88,6 +89,53 @@ async def _create_tables(database_url: str) -> None:
         sa.Column("source_file", sa.Text),
         sa.UniqueConstraint("store_code", "order_code", "line_hash", name="uq_stg_uc_archive_order_details_store_order_line"),
     )
+
+    sa.Table(
+        "orders",
+        metadata,
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("run_id", sa.Text),
+        sa.Column("run_date", sa.DateTime(timezone=True)),
+        sa.Column("cost_center", sa.String(8)),
+        sa.Column("store_code", sa.String(8)),
+        sa.Column("order_number", sa.String(24)),
+        sa.Column("order_date", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("customer_name", sa.String(128)),
+        sa.Column("customer_address", sa.String(256)),
+        sa.Column("mobile_number", sa.String(16)),
+        sa.Column("service_type", sa.String(64)),
+        sa.Column("pieces", sa.Numeric(12, 0)),
+        sa.Column("weight", sa.Numeric(12, 2)),
+    )
+    sa.Table(
+        "sales",
+        metadata,
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("run_id", sa.Text),
+        sa.Column("run_date", sa.DateTime(timezone=True)),
+        sa.Column("cost_center", sa.String(8)),
+        sa.Column("store_code", sa.String(16)),
+        sa.Column("order_date", sa.DateTime(timezone=True)),
+        sa.Column("payment_date", sa.DateTime(timezone=True)),
+        sa.Column("order_number", sa.String(16)),
+        sa.Column("customer_code", sa.String(16)),
+        sa.Column("customer_name", sa.String(128)),
+        sa.Column("customer_address", sa.String(256)),
+        sa.Column("mobile_number", sa.String(16)),
+        sa.Column("payment_received", sa.Numeric(12, 2)),
+        sa.Column("adjustments", sa.Numeric(12, 2)),
+        sa.Column("balance", sa.Numeric(12, 2)),
+        sa.Column("accepted_by", sa.String(64)),
+        sa.Column("payment_mode", sa.String(32)),
+        sa.Column("transaction_id", sa.String(64)),
+        sa.Column("payment_made_at", sa.String(128)),
+        sa.Column("order_type", sa.String(32)),
+        sa.Column("is_duplicate", sa.Boolean()),
+        sa.Column("is_edited_order", sa.Boolean()),
+        sa.Column("ingest_remarks", sa.Text),
+        sa.UniqueConstraint("cost_center", "order_number", "payment_date", name="uq_sales_cost_center_order_number_payment_date"),
+    )
+
     payment = sa.Table(
         TABLE_ARCHIVE_PAYMENT_DETAILS,
         metadata,
@@ -266,3 +314,50 @@ async def test_uc_archive_payment_idempotency_with_blank_transaction_id(tmp_path
     async with session_scope(db_url) as session:
         count = (await session.execute(sa.text("SELECT COUNT(*) FROM stg_uc_archive_payment_details"))).scalar_one()
     assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_uc_archive_publish_orders_and_sales_idempotent(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'db4.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO orders (cost_center, store_code, order_number, order_date, customer_name, customer_address, mobile_number)
+            VALUES ('CC01', 'UC567', 'ORD-1', '2025-01-01T00:00:00+00:00', 'Alice', 'Addr1', '9999988888')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO stg_uc_archive_order_details (run_id, run_date, cost_center, store_code, order_code, service, quantity, weight, line_hash, source_file)
+            VALUES
+            ('run-pub', '2025-01-07T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'Dryclean', 2, 1.2, 'h1', 'f.xlsx'),
+            ('run-pub', '2025-01-07T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'Steam', 1, 0.3, 'h2', 'f.xlsx')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO stg_uc_archive_payment_details (run_id, run_date, cost_center, store_code, order_code, payment_mode, amount, payment_date_raw, transaction_id, source_file)
+            VALUES
+            ('run-pub', '2025-01-07T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'UPI', 200, '07-01-2025 10:30', 'TX1', 'p.xlsx'),
+            ('run-pub', '2025-01-07T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'CASH', 50, '07-01-2025 10:30', 'TX1B', 'p.xlsx'),
+            ('run-pub', '2025-01-07T00:00:00+00:00', 'CC01', 'UC567', 'ORD-MISS', 'UPI', 50, '07-01-2025 11:00', 'TX2', 'p.xlsx'),
+            ('run-pub', '2025-01-07T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'CASH', 100, 'bad-date', 'TX3', 'p.xlsx')
+        """))
+        await session.commit()
+
+    logger = get_logger('test_uc_archive_publish')
+    first = await publish_uc_archive_to_orders_and_sales(database_url=db_url, logger=logger, run_id='run-pub')
+    second = await publish_uc_archive_to_orders_and_sales(database_url=db_url, logger=logger, run_id='run-pub')
+
+    assert first.orders_updated >= 1
+    assert first.sales_inserted == 1
+    assert first.skipped == 3
+    assert first.skip_reasons['missing_order_context'] == 1
+    assert first.skip_reasons['payment_date_parse_failure'] == 1
+    assert first.skip_reasons['key_conflict'] == 1
+    assert second.sales_updated + second.sales_inserted == 1
+
+    async with session_scope(db_url) as session:
+        order_row = (await session.execute(sa.text("SELECT pieces, weight, service_type FROM orders WHERE store_code='UC567' AND order_number='ORD-1'"))).one()
+        sales_count = (await session.execute(sa.text("SELECT COUNT(*) FROM sales WHERE cost_center='CC01' AND order_number='ORD-1'"))).scalar_one()
+    assert str(order_row.pieces) in {'3', '3.0000000000'}
+    assert float(order_row.weight) == pytest.approx(1.5, rel=1e-6)
+    assert order_row.service_type == 'Dryclean, Steam'
+    assert sales_count == 1
