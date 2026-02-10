@@ -369,6 +369,12 @@ class ArchiveOrdersExtract:
     footer_total: int | None = None
 
 
+@dataclass
+class ArchiveFilterFooterState:
+    pre_filter_footer_window: tuple[int, int, int] | None = None
+    post_filter_footer_window: tuple[int, int, int] | None = None
+
+
 def _archive_extraction_gap(extract: ArchiveOrdersExtract) -> int | None:
     if extract.footer_total is None:
         return None
@@ -1560,7 +1566,7 @@ async def _apply_archive_date_filter(
     logger: JsonLogger,
     from_date: date,
     to_date: date,
-) -> bool:
+) -> ArchiveFilterFooterState | None:
     filter_button = page.locator(ARCHIVE_FILTER_BUTTON_SELECTOR).first
     if not await filter_button.count():
         log_event(
@@ -1571,7 +1577,7 @@ async def _apply_archive_date_filter(
             store_code=store.store_code,
             selector=ARCHIVE_FILTER_BUTTON_SELECTOR,
         )
-        return False
+        return None
     await filter_button.click()
     log_event(
         logger=logger,
@@ -1598,7 +1604,7 @@ async def _apply_archive_date_filter(
             store_code=store.store_code,
             selectors=dropdown_selectors,
         )
-        return False
+        return None
 
     date_type = page.locator(ARCHIVE_DATE_TYPE_SELECTOR).first
     if await date_type.count():
@@ -1632,7 +1638,7 @@ async def _apply_archive_date_filter(
             store_code=store.store_code,
             selector=ARCHIVE_CUSTOM_OPTION_SELECTOR,
         )
-        return False
+        return None
     await custom_option.click()
     inputs = page.locator(ARCHIVE_CUSTOM_INPUT_SELECTOR)
     if await inputs.count() < 2:
@@ -1644,7 +1650,7 @@ async def _apply_archive_date_filter(
             store_code=store.store_code,
             selector=ARCHIVE_CUSTOM_INPUT_SELECTOR,
         )
-        return False
+        return None
     await inputs.nth(0).fill(from_date.isoformat())
     await inputs.nth(1).fill(to_date.isoformat())
     log_event(
@@ -1655,18 +1661,30 @@ async def _apply_archive_date_filter(
         from_date=from_date,
         to_date=to_date,
     )
+    pre_filter_footer_window = await _get_archive_footer_window(page)
     with contextlib.suppress(Exception):
         await page.locator("body").click(position={"x": 5, "y": 5})
-    await page.wait_for_timeout(1_000)
     with contextlib.suppress(TimeoutError):
         await page.wait_for_selector(".table-wrapper", timeout=NAV_TIMEOUT_MS)
+
+    post_filter_footer_window = await _wait_for_archive_filter_refresh_completion(
+        page=page,
+        store=store,
+        logger=logger,
+        pre_filter_footer_window=pre_filter_footer_window,
+    )
     log_event(
         logger=logger,
         phase="filters",
         message="Archive Orders filter refresh completed",
         store_code=store.store_code,
+        pre_filter_footer_window=pre_filter_footer_window,
+        post_filter_footer_window=post_filter_footer_window,
     )
-    return True
+    return ArchiveFilterFooterState(
+        pre_filter_footer_window=pre_filter_footer_window,
+        post_filter_footer_window=post_filter_footer_window,
+    )
 
 
 async def _locator_text(locator: Locator) -> str | None:
@@ -1762,6 +1780,78 @@ async def _get_archive_footer_window(page: Page) -> tuple[int, int, int] | None:
         if parsed is not None:
             return parsed
     return None
+
+
+async def _get_archive_footer_text(page: Page) -> str | None:
+    for selector in ARCHIVE_FOOTER_TOTAL_SELECTORS:
+        locator = page.locator(selector).first
+        if not await locator.count():
+            continue
+        text = await _locator_text(locator)
+        if text:
+            return text
+    return None
+
+
+async def _wait_for_archive_filter_refresh_completion(
+    *,
+    page: Page,
+    store: UcStore,
+    logger: JsonLogger,
+    pre_filter_footer_window: tuple[int, int, int] | None,
+) -> tuple[int, int, int] | None:
+    pre_filter_footer_text = await _get_archive_footer_text(page)
+    pre_filter_row_signatures = await _get_archive_row_signatures(page)
+    deadline = asyncio.get_running_loop().time() + (NAV_TIMEOUT_MS / 1000)
+    redraw_detected = False
+    footer_changed = False
+
+    while asyncio.get_running_loop().time() < deadline:
+        current_row_signatures = await _get_archive_row_signatures(page)
+        if current_row_signatures != pre_filter_row_signatures:
+            redraw_detected = True
+
+        current_footer_text = await _get_archive_footer_text(page)
+        if pre_filter_footer_text:
+            if current_footer_text and current_footer_text != pre_filter_footer_text:
+                footer_changed = True
+        elif current_footer_text:
+            footer_changed = True
+
+        if redraw_detected and footer_changed and current_footer_text:
+            await page.wait_for_timeout(600)
+            stable_footer_text_mid = await _get_archive_footer_text(page)
+            await page.wait_for_timeout(600)
+            stable_footer_text_end = await _get_archive_footer_text(page)
+            if (
+                stable_footer_text_mid
+                and stable_footer_text_end
+                and current_footer_text == stable_footer_text_mid == stable_footer_text_end
+            ):
+                post_filter_footer_window = _parse_archive_footer_window(current_footer_text)
+                log_event(
+                    logger=logger,
+                    phase="filters",
+                    message="Archive Orders filter refresh settled",
+                    store_code=store.store_code,
+                    pre_filter_footer_window=pre_filter_footer_window,
+                    post_filter_footer_window=post_filter_footer_window,
+                )
+                return post_filter_footer_window
+
+        await page.wait_for_timeout(250)
+
+    post_filter_footer_window = await _get_archive_footer_window(page)
+    log_event(
+        logger=logger,
+        phase="filters",
+        status="warn",
+        message="Archive Orders filter refresh completion signal timed out",
+        store_code=store.store_code,
+        pre_filter_footer_window=pre_filter_footer_window,
+        post_filter_footer_window=post_filter_footer_window,
+    )
+    return post_filter_footer_window
 
 
 def _is_payment_pending(payment_text: str | None) -> bool:
@@ -2088,24 +2178,24 @@ async def _collect_archive_orders(
     page: Page,
     store: UcStore,
     logger: JsonLogger,
+    filtered_footer_window: tuple[int, int, int] | None,
 ) -> ArchiveOrdersExtract:
     extract = ArchiveOrdersExtract()
     seen_orders: set[str] = set()
     page_index = 1
-    footer_total: int | None = None
+    footer_total: int | None = filtered_footer_window[2] if filtered_footer_window is not None else None
     partial_reason: str | None = None
+
+    if footer_total is not None:
+        extract.footer_total = footer_total
 
     while True:
         with contextlib.suppress(TimeoutError):
             await page.wait_for_selector(ARCHIVE_TABLE_ROW_SELECTOR, timeout=NAV_TIMEOUT_MS)
-        footer_window = await _get_archive_footer_window(page)
+        footer_window = filtered_footer_window if page_index == 1 else await _get_archive_footer_window(page)
         if footer_window is not None:
             footer_total = footer_window[2]
             extract.footer_total = footer_total
-        elif footer_total is None:
-            footer_total = await _get_archive_footer_total(page)
-            if footer_total is not None:
-                extract.footer_total = footer_total
         row_locator = page.locator(ARCHIVE_TABLE_ROW_SELECTOR)
         raw_row_count = await row_locator.count()
         valid_rows: list[tuple[Locator, str]] = []
@@ -2810,14 +2900,14 @@ async def _run_store_discovery(
             summary.record_store(store.store_code, outcome)
             return
 
-        filter_ok = await _apply_archive_date_filter(
+        filter_footer_state = await _apply_archive_date_filter(
             page=page,
             store=store,
             logger=logger,
             from_date=from_date,
             to_date=to_date,
         )
-        if not filter_ok:
+        if filter_footer_state is None:
             outcome = StoreOutcome(
                 status="warning",
                 message="Archive Orders filter failed",
@@ -2833,7 +2923,12 @@ async def _run_store_discovery(
             return
 
         download_dir = _resolve_uc_download_dir(run_id, store.store_code, from_date, to_date)
-        extract = await _collect_archive_orders(page=page, store=store, logger=logger)
+        extract = await _collect_archive_orders(
+            page=page,
+            store=store,
+            logger=logger,
+            filtered_footer_window=filter_footer_state.post_filter_footer_window,
+        )
         row_count = len(extract.base_rows)
         rows_missing_estimate = _archive_extraction_gap(extract)
         is_partial_extraction = rows_missing_estimate is not None and rows_missing_estimate > 0
