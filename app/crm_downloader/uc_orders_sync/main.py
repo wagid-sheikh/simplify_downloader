@@ -374,8 +374,19 @@ class ArchiveOrdersExtract:
     footer_total: int | None = None
     pre_filter_footer_total: int | None = None
     post_filter_footer_total: int | None = None
+    post_filter_footer_window: tuple[int, int, int] | None = None
     footer_baseline_source: str | None = None
     footer_baseline_stable: bool = False
+
+
+@dataclass
+class ArchiveFilterRefreshState:
+    post_filter_footer_window: tuple[int, int, int] | None = None
+    footer_during_refresh: list[dict[str, Any]] = field(default_factory=list)
+    table_rows_during_refresh: list[dict[str, Any]] = field(default_factory=list)
+    refresh_phase_marker: str = "loading"
+    refresh_attempts: int = 0
+    refresh_elapsed_ms: int = 0
 
 
 @dataclass
@@ -1714,14 +1725,29 @@ async def _apply_archive_date_filter(
         from_date=from_date,
         to_date=to_date,
     )
-    pre_filter_footer_window = await _get_archive_footer_window(page)
+    pre_filter_footer_text = await _get_archive_footer_text(page)
+    pre_filter_footer_window = _parse_archive_footer_window(pre_filter_footer_text or "") if pre_filter_footer_text else None
     pre_filter_footer_total = pre_filter_footer_window[2] if pre_filter_footer_window is not None else None
+    row_count_before_filter = len(await _get_archive_row_signatures(page))
+    log_event(
+        logger=logger,
+        phase="filters",
+        message="Archive Orders filter baseline captured",
+        store_code=store.store_code,
+        current_url=page.url,
+        footer_before_filter={
+            "raw_text": pre_filter_footer_text,
+            "parsed_window": pre_filter_footer_window,
+            "parsed_total": pre_filter_footer_total,
+        },
+        table_rows_before_filter=row_count_before_filter,
+    )
     with contextlib.suppress(Exception):
         await page.locator("body").click(position={"x": 5, "y": 5})
     with contextlib.suppress(TimeoutError):
         await page.wait_for_selector(".table-wrapper", timeout=NAV_TIMEOUT_MS)
 
-    post_filter_footer_window = await _wait_for_archive_filter_refresh_completion(
+    refresh_state = await _wait_for_archive_filter_refresh_completion(
         page=page,
         store=store,
         logger=logger,
@@ -1743,7 +1769,30 @@ async def _apply_archive_date_filter(
         footer_baseline_source = "post_filter_refresh"
         footer_baseline_stable = True
     else:
-        stabilized_footer_window = post_filter_footer_window
+        stabilized_footer_window = refresh_state.post_filter_footer_window
+
+    footer_after_filter_stable_text = await _get_archive_footer_text(page)
+    table_rows_after_filter_stable = len(await _get_archive_row_signatures(page))
+    log_event(
+        logger=logger,
+        phase="filters",
+        message="Archive Orders filter refresh stabilized snapshot",
+        store_code=store.store_code,
+        current_url=page.url,
+        selected_from_date=from_date.isoformat(),
+        selected_to_date=to_date.isoformat(),
+        footer_after_filter_stable={
+            "raw_text": footer_after_filter_stable_text,
+            "parsed_window": stabilized_footer_window,
+            "parsed_total": post_filter_footer_total,
+        },
+        table_rows_after_filter_stable=table_rows_after_filter_stable,
+        footer_during_refresh=refresh_state.footer_during_refresh,
+        table_rows_during_refresh=refresh_state.table_rows_during_refresh,
+        refresh_phase_marker=refresh_state.refresh_phase_marker,
+        stabilization_attempts=post_filter_stability.stability_attempts,
+        stabilization_elapsed_ms=refresh_state.refresh_elapsed_ms,
+    )
 
     log_event(
         logger=logger,
@@ -1752,7 +1801,7 @@ async def _apply_archive_date_filter(
         store_code=store.store_code,
         pre_filter_footer_window=pre_filter_footer_window,
         pre_filter_footer_total=pre_filter_footer_total,
-        post_filter_footer_window=post_filter_footer_window,
+        post_filter_footer_window=refresh_state.post_filter_footer_window,
         stabilized_footer_window=stabilized_footer_window,
         post_filter_footer_total=post_filter_footer_total,
         footer_baseline_source=footer_baseline_source,
@@ -1881,19 +1930,37 @@ async def _wait_for_archive_filter_refresh_completion(
     store: UcStore,
     logger: JsonLogger,
     pre_filter_footer_window: tuple[int, int, int] | None,
-) -> tuple[int, int, int] | None:
+) -> ArchiveFilterRefreshState:
     pre_filter_footer_text = await _get_archive_footer_text(page)
     pre_filter_row_signatures = await _get_archive_row_signatures(page)
-    deadline = asyncio.get_running_loop().time() + (NAV_TIMEOUT_MS / 1000)
+    start = asyncio.get_running_loop().time()
+    deadline = start + (NAV_TIMEOUT_MS / 1000)
     redraw_detected = False
     footer_changed = False
+    footer_during_refresh: list[dict[str, Any]] = []
+    table_rows_during_refresh: list[dict[str, Any]] = []
+    refresh_phase_marker = "loading"
+    refresh_attempts = 0
 
     while asyncio.get_running_loop().time() < deadline:
+        refresh_attempts += 1
+        elapsed_ms = int((asyncio.get_running_loop().time() - start) * 1000)
         current_row_signatures = await _get_archive_row_signatures(page)
+        row_count = len(current_row_signatures)
+        table_rows_during_refresh.append({"elapsed_ms": elapsed_ms, "row_count": row_count})
         if current_row_signatures != pre_filter_row_signatures:
             redraw_detected = True
 
         current_footer_text = await _get_archive_footer_text(page)
+        current_footer_window = _parse_archive_footer_window(current_footer_text or "") if current_footer_text else None
+        footer_during_refresh.append(
+            {
+                "elapsed_ms": elapsed_ms,
+                "raw_text": current_footer_text,
+                "parsed_window": current_footer_window,
+            }
+        )
+
         if pre_filter_footer_text:
             if current_footer_text and current_footer_text != pre_filter_footer_text:
                 footer_changed = True
@@ -1901,6 +1968,7 @@ async def _wait_for_archive_filter_refresh_completion(
             footer_changed = True
 
         if redraw_detected and footer_changed and current_footer_text:
+            refresh_phase_marker = "settling"
             await page.wait_for_timeout(600)
             stable_footer_text_mid = await _get_archive_footer_text(page)
             await page.wait_for_timeout(600)
@@ -1911,6 +1979,8 @@ async def _wait_for_archive_filter_refresh_completion(
                 and current_footer_text == stable_footer_text_mid == stable_footer_text_end
             ):
                 post_filter_footer_window = _parse_archive_footer_window(current_footer_text)
+                refresh_phase_marker = "stable"
+                total_elapsed_ms = int((asyncio.get_running_loop().time() - start) * 1000)
                 log_event(
                     logger=logger,
                     phase="filters",
@@ -1918,12 +1988,23 @@ async def _wait_for_archive_filter_refresh_completion(
                     store_code=store.store_code,
                     pre_filter_footer_window=pre_filter_footer_window,
                     post_filter_footer_window=post_filter_footer_window,
+                    refresh_phase_marker=refresh_phase_marker,
+                    footer_during_refresh=footer_during_refresh,
+                    table_rows_during_refresh=table_rows_during_refresh,
                 )
-                return post_filter_footer_window
+                return ArchiveFilterRefreshState(
+                    post_filter_footer_window=post_filter_footer_window,
+                    footer_during_refresh=footer_during_refresh,
+                    table_rows_during_refresh=table_rows_during_refresh,
+                    refresh_phase_marker=refresh_phase_marker,
+                    refresh_attempts=refresh_attempts,
+                    refresh_elapsed_ms=total_elapsed_ms,
+                )
 
         await page.wait_for_timeout(250)
 
     post_filter_footer_window = await _get_archive_footer_window(page)
+    total_elapsed_ms = int((asyncio.get_running_loop().time() - start) * 1000)
     log_event(
         logger=logger,
         phase="filters",
@@ -1932,8 +2013,18 @@ async def _wait_for_archive_filter_refresh_completion(
         store_code=store.store_code,
         pre_filter_footer_window=pre_filter_footer_window,
         post_filter_footer_window=post_filter_footer_window,
+        refresh_phase_marker=refresh_phase_marker,
+        footer_during_refresh=footer_during_refresh,
+        table_rows_during_refresh=table_rows_during_refresh,
     )
-    return post_filter_footer_window
+    return ArchiveFilterRefreshState(
+        post_filter_footer_window=post_filter_footer_window,
+        footer_during_refresh=footer_during_refresh,
+        table_rows_during_refresh=table_rows_during_refresh,
+        refresh_phase_marker=refresh_phase_marker,
+        refresh_attempts=refresh_attempts,
+        refresh_elapsed_ms=total_elapsed_ms,
+    )
 
 
 def _is_payment_pending(payment_text: str | None) -> bool:
@@ -2353,8 +2444,11 @@ async def _collect_archive_orders(
 
     extract.pre_filter_footer_total = pre_filter_footer_total
     extract.post_filter_footer_total = post_filter_footer_total
+    extract.post_filter_footer_window = post_filter_footer_window
     extract.footer_baseline_source = footer_baseline_source
     extract.footer_baseline_stable = footer_baseline_stable
+    baseline_footer_window = post_filter_footer_window
+    baseline_source = footer_baseline_source or "fallback_unknown"
     if footer_total is not None:
         extract.footer_total = footer_total
 
@@ -2393,17 +2487,39 @@ async def _collect_archive_orders(
             valid_rows.append((row, order_code))
         row_count = raw_row_count
         extract.page_count += 1
-        log_event(
-            logger=logger,
-            phase="pagination",
-            message="Archive Orders page loaded",
-            store_code=store.store_code,
-            page_number=page_index,
-            row_count=row_count,
-            footer_total=extract.post_filter_footer_total,
-            footer_window=footer_window,
+        current_footer_window = footer_window
+        page_log_fields: dict[str, Any] = {
+            "logger": logger,
+            "phase": "pagination",
+            "message": "Archive Orders page loaded",
+            "store_code": store.store_code,
+            "page_number": page_index,
+            "row_count": row_count,
+            "footer_total": extract.post_filter_footer_total,
+            "footer_window": current_footer_window,
             **_stability_log_fields(stability_state),
-        )
+        }
+        if page_index == 1:
+            page_log_fields.update(
+                {
+                    "footer_baseline_source": baseline_source,
+                    "baseline_footer_window": baseline_footer_window,
+                    "current_footer_window": current_footer_window,
+                }
+            )
+        log_event(**page_log_fields)
+        if page_index == 1 and baseline_footer_window is not None and current_footer_window is not None and baseline_footer_window != current_footer_window:
+            log_event(
+                logger=logger,
+                phase="pagination",
+                status="warn",
+                message="First pagination footer window drifted from post-filter baseline",
+                store_code=store.store_code,
+                reason_code="footer_baseline_drift_after_refresh",
+                footer_baseline_source=baseline_source,
+                baseline_footer_window=baseline_footer_window,
+                current_footer_window=current_footer_window,
+            )
         if row_count == 0:
             log_event(
                 logger=logger,

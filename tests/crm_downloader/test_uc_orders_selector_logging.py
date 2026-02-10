@@ -456,3 +456,158 @@ def test_store_outcome_marks_warning_when_footer_baseline_unavailable() -> None:
     status = uc_main._resolve_sync_log_status(outcome=outcome, download_succeeded=True, row_count=3)
 
     assert status == "success_with_warnings"
+
+
+class _FakeFilterLocator:
+    def __init__(self, *, present: bool = True, count_value: int = 1):
+        self._present = present
+        self._count_value = count_value
+
+    @property
+    def first(self):
+        return self
+
+    async def count(self) -> int:
+        return self._count_value if self._present else 0
+
+    async def click(self, *args, **kwargs) -> None:
+        return None
+
+    async def check(self) -> None:
+        return None
+
+    async def fill(self, _value: str) -> None:
+        return None
+
+    def nth(self, _idx: int):
+        return self
+
+    async def wait_for(self, *args, **kwargs) -> None:
+        return None
+
+
+class _FakeFilterPage:
+    def __init__(self):
+        self.url = "https://store.ucleanlaundry.com/archive"
+
+    def locator(self, selector: str):
+        if selector == uc_main.ARCHIVE_CUSTOM_INPUT_SELECTOR:
+            return _FakeFilterLocator(present=True, count_value=2)
+        return _FakeFilterLocator(present=True)
+
+    async def wait_for_selector(self, *args, **kwargs) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_apply_archive_date_filter_logs_baseline_and_stable_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    output = io.StringIO()
+    logger = JsonLogger(stream=output, log_file_path=None)
+    page = _FakeFilterPage()
+    store = uc_main.UcStore(store_code="UCX", store_name=None, cost_center=None, sync_config={})
+
+    monkeypatch.setattr(uc_main, "_get_archive_footer_text", lambda _p: asyncio.sleep(0, result="Showing results 1 to 10 of 10 total"))
+    monkeypatch.setattr(uc_main, "_get_archive_row_signatures", lambda _p: asyncio.sleep(0, result=("O001", "O002")))
+    monkeypatch.setattr(
+        uc_main,
+        "_wait_for_archive_filter_refresh_completion",
+        lambda **kwargs: asyncio.sleep(
+            0,
+            result=uc_main.ArchiveFilterRefreshState(
+                post_filter_footer_window=(1, 10, 10),
+                footer_during_refresh=[{"elapsed_ms": 50, "raw_text": "Showing results 1 to 10 of 10 total", "parsed_window": (1, 10, 10)}],
+                table_rows_during_refresh=[{"elapsed_ms": 50, "row_count": 2}],
+                refresh_phase_marker="stable",
+                refresh_attempts=2,
+                refresh_elapsed_ms=100,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        uc_main,
+        "_wait_for_archive_page_stability",
+        lambda **kwargs: asyncio.sleep(
+            0,
+            result=uc_main.ArchivePageStabilityState(
+                stable=True,
+                stability_attempts=2,
+                stable_footer_window=(1, 10, 10),
+                stable_signature_hash="sig",
+                last_observed_footer_window=(1, 10, 10),
+                last_observed_signature_hash="sig",
+                stability_timeout_ms=1_000,
+            ),
+        ),
+    )
+
+    state = await uc_main._apply_archive_date_filter(
+        page=page,
+        store=store,
+        logger=logger,
+        from_date=uc_main.date(2025, 1, 1),
+        to_date=uc_main.date(2025, 1, 31),
+    )
+
+    logs = [json.loads(line) for line in output.getvalue().splitlines() if line.strip()]
+    baseline_log = next(log for log in logs if log.get("message") == "Archive Orders filter baseline captured")
+    stable_log = next(log for log in logs if log.get("message") == "Archive Orders filter refresh stabilized snapshot")
+
+    assert baseline_log["footer_before_filter"]["raw_text"]
+    assert baseline_log["table_rows_before_filter"] == 2
+    assert stable_log["footer_after_filter_stable"]["parsed_window"] == [1, 10, 10]
+    assert stable_log["table_rows_after_filter_stable"] == 2
+    assert stable_log["selected_from_date"] == "2025-01-01"
+    assert stable_log["selected_to_date"] == "2025-01-31"
+    assert state is not None
+    assert state.footer_baseline_source == "post_filter_refresh"
+
+
+@pytest.mark.asyncio
+async def test_collect_archive_orders_logs_first_page_baseline_and_drift_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    pages = [{"order_codes": [f"O{i:03d}" for i in range(1, 31)], "footer": (1, 30, 30), "next_disabled": True}]
+    page = _FakePage(pages)
+    store = uc_main.UcStore(store_code="UCX", store_name=None, cost_center=None, sync_config={})
+    output = io.StringIO()
+    logger = JsonLogger(stream=output, log_file_path=None)
+
+    monkeypatch.setattr(uc_main, "_get_archive_order_code", lambda row: asyncio.sleep(0, result=row.order_code))
+    monkeypatch.setattr(uc_main, "_extract_archive_base_row", lambda **kwargs: asyncio.sleep(0, result={"order_code": kwargs["order_code"], "payment_text": "paid"}))
+    monkeypatch.setattr(uc_main, "_extract_order_details", lambda **kwargs: asyncio.sleep(0, result=([], None, None, True)))
+    monkeypatch.setattr(uc_main, "_extract_payment_details", lambda **kwargs: asyncio.sleep(0, result=[]))
+    monkeypatch.setattr(
+        uc_main,
+        "_wait_for_archive_page_stability",
+        lambda **kwargs: asyncio.sleep(
+            0,
+            result=uc_main.ArchivePageStabilityState(
+                stable=True,
+                stability_attempts=2,
+                stable_footer_window=(1, 30, 30),
+                stable_signature_hash="sig",
+                last_observed_footer_window=(1, 30, 30),
+                last_observed_signature_hash="sig",
+                stability_timeout_ms=1_000,
+            ),
+        ),
+    )
+    monkeypatch.setattr(uc_main, "_is_button_disabled", lambda _b: asyncio.sleep(0, result=True))
+
+    await uc_main._collect_archive_orders(
+        page=page,
+        store=store,
+        logger=logger,
+        post_filter_footer_window=(1, 20, 30),
+        post_filter_footer_total=30,
+        footer_baseline_source="post_filter_refresh",
+        footer_baseline_stable=True,
+    )
+
+    logs = [json.loads(line) for line in output.getvalue().splitlines() if line.strip()]
+    first_page_log = next(log for log in logs if log.get("message") == "Archive Orders page loaded")
+    drift_log = next(log for log in logs if log.get("reason_code") == "footer_baseline_drift_after_refresh")
+
+    assert first_page_log["footer_baseline_source"] == "post_filter_refresh"
+    assert first_page_log["baseline_footer_window"] == [1, 20, 30]
+    assert first_page_log["current_footer_window"] == [1, 30, 30]
+    assert drift_log["baseline_footer_window"] == [1, 20, 30]
+    assert drift_log["current_footer_window"] == [1, 30, 30]
