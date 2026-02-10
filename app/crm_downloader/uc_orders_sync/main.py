@@ -355,6 +355,7 @@ class StoreOutcome:
     dropped_rows: list[dict[str, Any]] = field(default_factory=list)
     reason_codes: list[str] = field(default_factory=list)
     footer_total: int | None = None
+    footer_baseline_source: str | None = None
     base_rows_extracted: int | None = None
     rows_missing_estimate: int | None = None
 
@@ -368,6 +369,8 @@ class ArchiveOrdersExtract:
     skipped_order_counters: dict[str, int] = field(default_factory=dict)
     page_count: int = 0
     footer_total: int | None = None
+    footer_baseline_source: str | None = None
+    pagination_exhausted_after_retry: bool = False
 
 
 @dataclass
@@ -2285,11 +2288,15 @@ async def _collect_archive_orders(
     extract = ArchiveOrdersExtract()
     seen_orders: set[str] = set()
     page_index = 1
-    footer_total: int | None = filtered_footer_window[2] if filtered_footer_window is not None else None
+    filtered_footer_total: int | None = filtered_footer_window[2] if filtered_footer_window is not None else None
+    footer_total: int | None = filtered_footer_total
     partial_reason: str | None = None
 
-    if footer_total is not None:
-        extract.footer_total = footer_total
+    if filtered_footer_window is not None:
+        extract.footer_baseline_source = "post_filter_refresh"
+
+    if filtered_footer_total is not None:
+        extract.footer_total = filtered_footer_total
 
     while True:
         with contextlib.suppress(TimeoutError):
@@ -2303,7 +2310,8 @@ async def _collect_archive_orders(
             footer_window = filtered_footer_window
         if footer_window is not None:
             footer_total = footer_window[2]
-            extract.footer_total = footer_total
+            if extract.footer_total is None:
+                extract.footer_total = footer_total
         row_locator = page.locator(ARCHIVE_TABLE_ROW_SELECTOR)
         raw_row_count = await row_locator.count()
         valid_rows: list[tuple[Locator, str]] = []
@@ -2438,6 +2446,7 @@ async def _collect_archive_orders(
                 page_count=extract.page_count,
                 **_stability_log_fields(stability_state),
             )
+            extract.pagination_exhausted_after_retry = True
             break
 
         if footer_window is not None and footer_window[1] >= footer_window[2]:
@@ -2452,6 +2461,7 @@ async def _collect_archive_orders(
                 total_rows=len(seen_orders),
                 **_stability_log_fields(stability_state),
             )
+            extract.pagination_exhausted_after_retry = True
             break
 
         force_retry_navigation = False
@@ -2487,6 +2497,7 @@ async def _collect_archive_orders(
                     footer_window=footer_window,
                     **_stability_log_fields(stability_state),
                 )
+                extract.pagination_exhausted_after_retry = True
                 break
             log_event(
                 logger=logger,
@@ -2498,6 +2509,7 @@ async def _collect_archive_orders(
                 footer_total=footer_total,
                 **_stability_log_fields(stability_state),
             )
+            extract.pagination_exhausted_after_retry = True
             break
 
         if force_retry_navigation:
@@ -2713,17 +2725,23 @@ async def _collect_archive_orders(
                     current_footer_window=current_footer_window,
                     **_stability_log_fields(retry_stability),
                 )
+                extract.pagination_exhausted_after_retry = True
                 break
         page_index += 1
 
-    if partial_reason is not None:
+    extracted_less_than_footer = (
+        extract.footer_total is not None and len(extract.base_rows) < extract.footer_total
+    )
+    should_emit_partial_extraction = extracted_less_than_footer and extract.pagination_exhausted_after_retry
+
+    if partial_reason is not None and should_emit_partial_extraction:
         _record_skipped_order(
             extract,
             order_code=f"partial_extraction:{store.store_code}",
             reason=partial_reason,
         )
 
-    if extract.footer_total is not None and len(extract.base_rows) < extract.footer_total:
+    if should_emit_partial_extraction:
         _record_skipped_order(
             extract,
             order_code=f"partial_extraction:{store.store_code}",
@@ -2737,6 +2755,7 @@ async def _collect_archive_orders(
             store_code=store.store_code,
             extracted_base_rows=len(extract.base_rows),
             footer_total=extract.footer_total,
+            footer_baseline_source=extract.footer_baseline_source,
         )
 
     log_event(
@@ -2751,6 +2770,7 @@ async def _collect_archive_orders(
         skipped_order_counters=extract.skipped_order_counters,
         page_count=extract.page_count,
         footer_total=extract.footer_total,
+        footer_baseline_source=extract.footer_baseline_source,
     )
     return extract
 
@@ -3066,7 +3086,11 @@ async def _run_store_discovery(
         )
         row_count = len(extract.base_rows)
         rows_missing_estimate = _archive_extraction_gap(extract)
-        is_partial_extraction = rows_missing_estimate is not None and rows_missing_estimate > 0
+        is_partial_extraction = (
+            rows_missing_estimate is not None
+            and rows_missing_estimate > 0
+            and extract.pagination_exhausted_after_retry
+        )
         reason_codes: list[str] = ["partial_extraction"] if is_partial_extraction else []
         base_path = download_dir / _format_archive_base_filename(store.store_code, from_date, to_date)
         order_details_path = download_dir / _format_archive_order_details_filename(store.store_code, from_date, to_date)
@@ -3108,6 +3132,7 @@ async def _run_store_discovery(
                 "skipped_order_counters": extract.skipped_order_counters,
                 "skipped_order_codes": extract.skipped_order_codes,
                 "footer_total": extract.footer_total,
+                "footer_baseline_source": extract.footer_baseline_source,
                 "base_rows_extracted": len(extract.base_rows),
                 "rows_missing_estimate": rows_missing_estimate,
                 "reason_codes": reason_codes,
@@ -3274,6 +3299,7 @@ async def _run_store_discovery(
             archive_publish_sales=archive_publish_sales,
             reason_codes=reason_codes,
             footer_total=extract.footer_total,
+            footer_baseline_source=extract.footer_baseline_source,
             base_rows_extracted=len(extract.base_rows),
             rows_missing_estimate=rows_missing_estimate,
         )
@@ -3382,6 +3408,7 @@ async def _run_store_discovery(
             rows_skipped_invalid_reasons=outcome.rows_skipped_invalid_reasons,
             reason_codes=outcome.reason_codes,
             footer_total=outcome.footer_total,
+            footer_baseline_source=outcome.footer_baseline_source,
             base_rows_extracted=outcome.base_rows_extracted,
             rows_missing_estimate=outcome.rows_missing_estimate,
             primary_metrics=primary_metrics,
@@ -3417,6 +3444,7 @@ async def _run_store_discovery(
                 "rows_skipped_invalid_reasons": outcome.rows_skipped_invalid_reasons,
                 "reason_codes": list(outcome.reason_codes),
                 "footer_total": outcome.footer_total,
+                "footer_baseline_source": outcome.footer_baseline_source,
                 "base_rows_extracted": outcome.base_rows_extracted,
                 "rows_missing_estimate": outcome.rows_missing_estimate,
                 "attempt_no": attempt_no,
