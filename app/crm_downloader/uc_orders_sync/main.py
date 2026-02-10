@@ -44,6 +44,9 @@ from app.dashboard_downloader.run_summary import (
 
 PIPELINE_NAME = "uc_orders_sync"
 NAV_TIMEOUT_MS = 90_000
+ARCHIVE_PAGINATION_STABILIZATION_READS = 2
+ARCHIVE_PAGINATION_STABILIZATION_INTERVAL_MS = 300
+ARCHIVE_PAGINATION_STABILIZATION_TIMEOUT_MS = 8_000
 SPINNER_CSS_SELECTORS = [".spinner", ".loading", ".loader", ".k-loading-mask"]
 SPINNER_TEXT_SELECTOR = "text=/loading/i"
 DOM_SNIPPET_MAX_CHARS = 600
@@ -2138,6 +2141,37 @@ async def _get_archive_row_signatures(page: Page) -> tuple[str, ...]:
     return tuple(signatures)
 
 
+async def _wait_for_archive_pagination_stability(
+    *,
+    page: Page,
+    initial_footer_window: tuple[int, int, int] | None,
+    initial_row_signatures: tuple[str, ...],
+    required_consecutive_reads: int = ARCHIVE_PAGINATION_STABILIZATION_READS,
+    interval_ms: int = ARCHIVE_PAGINATION_STABILIZATION_INTERVAL_MS,
+    timeout_ms: int = ARCHIVE_PAGINATION_STABILIZATION_TIMEOUT_MS,
+) -> tuple[tuple[int, int, int] | None, tuple[str, ...], bool]:
+    reads_needed = max(1, required_consecutive_reads)
+    stable_reads = 0
+    last_footer_window = initial_footer_window
+    last_row_signatures = initial_row_signatures
+    deadline = asyncio.get_running_loop().time() + (timeout_ms / 1000)
+
+    while asyncio.get_running_loop().time() < deadline:
+        current_footer_window = await _get_archive_footer_window(page)
+        current_row_signatures = await _get_archive_row_signatures(page)
+        if current_footer_window == last_footer_window and current_row_signatures == last_row_signatures:
+            stable_reads += 1
+            if stable_reads >= reads_needed:
+                return current_footer_window, current_row_signatures, True
+        else:
+            stable_reads = 0
+            last_footer_window = current_footer_window
+            last_row_signatures = current_row_signatures
+        await page.wait_for_timeout(interval_ms)
+
+    return last_footer_window, last_row_signatures, False
+
+
 async def _is_button_disabled(locator: Locator) -> bool:
     if not await locator.count():
         return True
@@ -2192,10 +2226,6 @@ async def _collect_archive_orders(
     while True:
         with contextlib.suppress(TimeoutError):
             await page.wait_for_selector(ARCHIVE_TABLE_ROW_SELECTOR, timeout=NAV_TIMEOUT_MS)
-        footer_window = filtered_footer_window if page_index == 1 else await _get_archive_footer_window(page)
-        if footer_window is not None:
-            footer_total = footer_window[2]
-            extract.footer_total = footer_total
         row_locator = page.locator(ARCHIVE_TABLE_ROW_SELECTOR)
         raw_row_count = await row_locator.count()
         valid_rows: list[tuple[Locator, str]] = []
@@ -2214,6 +2244,29 @@ async def _collect_archive_orders(
                 )
                 continue
             valid_rows.append((row, order_code))
+
+        initial_footer_window = filtered_footer_window if page_index == 1 else await _get_archive_footer_window(page)
+        row_signatures = tuple(order_code for _, order_code in valid_rows)
+        footer_window, row_signatures, pagination_stable = await _wait_for_archive_pagination_stability(
+            page=page,
+            initial_footer_window=initial_footer_window,
+            initial_row_signatures=row_signatures,
+        )
+        if footer_window is not None:
+            footer_total = footer_window[2]
+            extract.footer_total = footer_total
+        if not pagination_stable:
+            log_event(
+                logger=logger,
+                phase="pagination",
+                status="warn",
+                message="Archive Orders pagination stability wait timed out; using latest observed snapshot",
+                store_code=store.store_code,
+                page_number=page_index,
+                footer_window=footer_window,
+                row_signatures=row_signatures,
+            )
+
         row_count = raw_row_count
         extract.page_count += 1
         log_event(
