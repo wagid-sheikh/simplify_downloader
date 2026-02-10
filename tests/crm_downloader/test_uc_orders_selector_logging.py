@@ -167,6 +167,37 @@ async def test_collect_archive_orders_forces_retry_when_duplicates_but_footer_ha
 
 
 @pytest.mark.asyncio
+async def test_collect_archive_orders_continues_when_single_row_read_fails_on_partial_last_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    pages = [
+        {"order_codes": [f"O{i:03d}" for i in range(1, 31)], "footer": (1, 30, 48), "next_disabled": False},
+        {"order_codes": [f"O{i:03d}" for i in range(31, 49)], "footer": (31, 48, 48), "next_disabled": True},
+    ]
+    page = _FakePage(pages)
+    store = uc_main.UcStore(store_code="UCX", store_name=None, cost_center=None, sync_config={})
+    logger = JsonLogger(stream=io.StringIO(), log_file_path=None)
+
+    async def _extract_archive_base_row(**kwargs):
+        if kwargs["order_code"] == "O048":
+            raise RuntimeError("detached row")
+        return {"order_code": kwargs["order_code"], "payment_text": "paid"}
+
+    monkeypatch.setattr(uc_main, "_get_archive_footer_window", lambda _p: asyncio.sleep(0, result=pages[page.index]["footer"]))
+    monkeypatch.setattr(uc_main, "_get_archive_footer_total", lambda _p: asyncio.sleep(0, result=None))
+    monkeypatch.setattr(uc_main, "_get_archive_order_code", lambda row: asyncio.sleep(0, result=row.order_code))
+    monkeypatch.setattr(uc_main, "_extract_archive_base_row", _extract_archive_base_row)
+    monkeypatch.setattr(uc_main, "_extract_order_details", lambda **kwargs: asyncio.sleep(0, result=([], None, None, True)))
+    monkeypatch.setattr(uc_main, "_extract_payment_details", lambda **kwargs: asyncio.sleep(0, result=[]))
+    monkeypatch.setattr(uc_main, "_get_first_order_code", lambda _p: asyncio.sleep(0, result=pages[page.index]["order_codes"][0]))
+    monkeypatch.setattr(uc_main, "_get_archive_page_number", lambda _p: asyncio.sleep(0, result=page.index + 1))
+    monkeypatch.setattr(uc_main, "_is_button_disabled", lambda _b: asyncio.sleep(0, result=pages[page.index]["next_disabled"]))
+
+    extract = await uc_main._collect_archive_orders(page=page, store=store, logger=logger)
+
+    assert extract.page_count == 2
+    assert len(extract.base_rows) == 47
+    assert "O048" not in {row["order_code"] for row in extract.base_rows}
+
+@pytest.mark.asyncio
 async def test_collect_archive_orders_aborts_after_stalled_next_click_retry(monkeypatch: pytest.MonkeyPatch) -> None:
     pages = [
         {
@@ -236,7 +267,10 @@ class _FakeSimpleLocator:
     async def count(self) -> int:
         return 1 if self._present else 0
 
-    async def inner_text(self) -> str:
+    async def text_content(self, timeout: int | None = None) -> str | None:
+        return self._text
+
+    async def inner_text(self, timeout: int | None = None) -> str:
         return self._text or ""
 
     def locator(self, selector: str):

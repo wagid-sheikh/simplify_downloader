@@ -1821,8 +1821,16 @@ async def _apply_archive_date_filter(
 async def _locator_text(locator: Locator) -> str | None:
     if not await locator.count():
         return None
-    text = (await locator.first.inner_text()).strip()
-    return text or None
+    with contextlib.suppress(TimeoutError, Exception):
+        text_content = await locator.first.text_content(timeout=1_000)
+        if text_content:
+            text = text_content.strip()
+            if text:
+                return text
+    with contextlib.suppress(TimeoutError, Exception):
+        text = (await locator.first.inner_text(timeout=1_000)).strip()
+        return text or None
+    return None
 
 
 def _normalize_cell_text(text: str | None) -> str | None:
@@ -2278,21 +2286,24 @@ async def _extract_payment_details(
 
 async def _get_archive_order_code(row: Locator) -> str | None:
     for selector in ARCHIVE_ORDER_CODE_SELECTORS:
-        locator = row.locator(selector)
-        text = await _locator_text(locator)
-        if text:
-            return text.strip()
+        try:
+            locator = row.locator(selector)
+            text = await _locator_text(locator)
+            if text:
+                return text.strip()
 
-        nested_candidates = (
-            locator.locator("span"),
-            locator.locator("a"),
-            locator.locator("button"),
-            locator.locator("[role='button']"),
-        )
-        for nested in nested_candidates:
-            nested_text = await _locator_text(nested)
-            if nested_text:
-                return nested_text.strip()
+            nested_candidates = (
+                locator.locator("span"),
+                locator.locator("a"),
+                locator.locator("button"),
+                locator.locator("[role='button']"),
+            )
+            for nested in nested_candidates:
+                nested_text = await _locator_text(nested)
+                if nested_text:
+                    return nested_text.strip()
+        except (TimeoutError, Exception):
+            continue
     return None
 
 
@@ -2531,9 +2542,23 @@ async def _collect_archive_orders(
             )
         new_unique_orders = 0
         for idx, (row, order_code) in enumerate(valid_rows):
-            base_row = await _extract_archive_base_row(
-                row=row, store=store, logger=logger, row_index=idx, order_code=order_code
-            )
+            try:
+                base_row = await _extract_archive_base_row(
+                    row=row, store=store, logger=logger, row_index=idx, order_code=order_code
+                )
+            except Exception as exc:
+                log_event(
+                    logger=logger,
+                    phase="warnings",
+                    status="warn",
+                    message="Failed to read archive row; skipping",
+                    store_code=store.store_code,
+                    order_code=order_code,
+                    page_number=page_index,
+                    row_index=idx,
+                    error=str(exc),
+                )
+                continue
             if not base_row:
                 continue
             if order_code in seen_orders:
