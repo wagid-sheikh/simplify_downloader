@@ -203,14 +203,35 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
         await persist_summary_record(database_url, pre_record)
 
         try:
-            await send_notifications_for_run(PIPELINE_NAME, run_id)
-            tracker.mark_phase("send_email", "ok")
-            log_event(
-                logger=logger,
-                phase="send_email",
-                message="notification sent",
-                report_date=resolved_date.isoformat(),
-            )
+            notification_result = await send_notifications_for_run(PIPELINE_NAME, run_id)
+            emails_planned = int(notification_result.get("emails_planned") or 0)
+            emails_sent = int(notification_result.get("emails_sent") or 0)
+            notification_errors = notification_result.get("errors") or []
+            if emails_sent > 0:
+                tracker.mark_phase("send_email", "ok")
+                log_event(
+                    logger=logger,
+                    phase="send_email",
+                    message="notification sent",
+                    report_date=resolved_date.isoformat(),
+                    emails_planned=emails_planned,
+                    emails_sent=emails_sent,
+                    notification_errors=notification_errors,
+                )
+            else:
+                tracker.mark_phase("send_email", "warning")
+                tracker.add_summary("Notification dispatch completed but no emails were sent; see logs.")
+                tracker.overall = "warning"
+                log_event(
+                    logger=logger,
+                    phase="send_email",
+                    status="warn",
+                    message="notification dispatch completed with zero emails sent",
+                    report_date=resolved_date.isoformat(),
+                    emails_planned=emails_planned,
+                    emails_sent=emails_sent,
+                    notification_errors=notification_errors,
+                )
         except Exception as exc:  # pragma: no cover - defensive guardrail
             tracker.mark_phase("send_email", "warning")
             tracker.add_summary(f"Notification dispatch failed; see logs for details ({exc}).")
