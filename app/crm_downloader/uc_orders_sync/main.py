@@ -45,6 +45,7 @@ from app.dashboard_downloader.run_summary import (
 
 PIPELINE_NAME = "uc_orders_sync"
 NAV_TIMEOUT_MS = 90_000
+ARCHIVE_FILTER_REFRESH_TIMEOUT_MS = 20_000
 SPINNER_CSS_SELECTORS = [".spinner", ".loading", ".loader", ".k-loading-mask"]
 SPINNER_TEXT_SELECTOR = "text=/loading/i"
 DOM_SNIPPET_MAX_CHARS = 600
@@ -385,6 +386,7 @@ class ArchiveFilterRefreshState:
     footer_during_refresh: list[dict[str, Any]] = field(default_factory=list)
     table_rows_during_refresh: list[dict[str, Any]] = field(default_factory=list)
     refresh_phase_marker: str = "loading"
+    refresh_settle_reason: str | None = None
     refresh_attempts: int = 0
     refresh_elapsed_ms: int = 0
 
@@ -1790,6 +1792,7 @@ async def _apply_archive_date_filter(
         footer_during_refresh=refresh_state.footer_during_refresh,
         table_rows_during_refresh=refresh_state.table_rows_during_refresh,
         refresh_phase_marker=refresh_state.refresh_phase_marker,
+        refresh_settle_reason=refresh_state.refresh_settle_reason,
         stabilization_attempts=post_filter_stability.stability_attempts,
         stabilization_elapsed_ms=refresh_state.refresh_elapsed_ms,
     )
@@ -1806,6 +1809,7 @@ async def _apply_archive_date_filter(
         post_filter_footer_total=post_filter_footer_total,
         footer_baseline_source=footer_baseline_source,
         footer_baseline_stable=footer_baseline_stable,
+        refresh_settle_reason=refresh_state.refresh_settle_reason,
         **_stability_log_fields(post_filter_stability),
     )
     return ArchiveFilterFooterState(
@@ -1942,9 +1946,10 @@ async def _wait_for_archive_filter_refresh_completion(
     pre_filter_footer_text = await _get_archive_footer_text(page)
     pre_filter_row_signatures = await _get_archive_row_signatures(page)
     start = asyncio.get_running_loop().time()
-    deadline = start + (NAV_TIMEOUT_MS / 1000)
+    deadline = start + (ARCHIVE_FILTER_REFRESH_TIMEOUT_MS / 1000)
     redraw_detected = False
     footer_changed = False
+    refresh_settle_reason: str | None = None
     footer_during_refresh: list[dict[str, Any]] = []
     table_rows_during_refresh: list[dict[str, Any]] = []
     refresh_phase_marker = "loading"
@@ -1975,7 +1980,7 @@ async def _wait_for_archive_filter_refresh_completion(
         elif current_footer_text:
             footer_changed = True
 
-        if redraw_detected and footer_changed and current_footer_text:
+        if footer_changed and current_footer_text:
             refresh_phase_marker = "settling"
             await page.wait_for_timeout(600)
             stable_footer_text_mid = await _get_archive_footer_text(page)
@@ -1986,6 +1991,7 @@ async def _wait_for_archive_filter_refresh_completion(
                 and stable_footer_text_end
                 and current_footer_text == stable_footer_text_mid == stable_footer_text_end
             ):
+                refresh_settle_reason = "footer_and_redraw" if redraw_detected else "footer_stable_only"
                 post_filter_footer_window = _parse_archive_footer_window(current_footer_text)
                 refresh_phase_marker = "stable"
                 total_elapsed_ms = int((asyncio.get_running_loop().time() - start) * 1000)
@@ -1997,6 +2003,7 @@ async def _wait_for_archive_filter_refresh_completion(
                     pre_filter_footer_window=pre_filter_footer_window,
                     post_filter_footer_window=post_filter_footer_window,
                     refresh_phase_marker=refresh_phase_marker,
+                    refresh_settle_reason=refresh_settle_reason,
                     footer_during_refresh=footer_during_refresh,
                     table_rows_during_refresh=table_rows_during_refresh,
                 )
@@ -2005,6 +2012,7 @@ async def _wait_for_archive_filter_refresh_completion(
                     footer_during_refresh=footer_during_refresh,
                     table_rows_during_refresh=table_rows_during_refresh,
                     refresh_phase_marker=refresh_phase_marker,
+                    refresh_settle_reason=refresh_settle_reason,
                     refresh_attempts=refresh_attempts,
                     refresh_elapsed_ms=total_elapsed_ms,
                 )
@@ -2022,6 +2030,7 @@ async def _wait_for_archive_filter_refresh_completion(
         pre_filter_footer_window=pre_filter_footer_window,
         post_filter_footer_window=post_filter_footer_window,
         refresh_phase_marker=refresh_phase_marker,
+        refresh_settle_reason=refresh_settle_reason,
         footer_during_refresh=footer_during_refresh,
         table_rows_during_refresh=table_rows_during_refresh,
     )
@@ -2030,6 +2039,7 @@ async def _wait_for_archive_filter_refresh_completion(
         footer_during_refresh=footer_during_refresh,
         table_rows_during_refresh=table_rows_during_refresh,
         refresh_phase_marker=refresh_phase_marker,
+        refresh_settle_reason=refresh_settle_reason,
         refresh_attempts=refresh_attempts,
         refresh_elapsed_ms=total_elapsed_ms,
     )
