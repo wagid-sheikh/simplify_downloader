@@ -16,7 +16,14 @@ from urllib.parse import urlparse
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from openpyxl import Workbook
-from playwright.async_api import Browser, ElementHandle, Locator, Page, TimeoutError, async_playwright
+from playwright.async_api import (
+    Browser,
+    ElementHandle,
+    Locator,
+    Page,
+    TimeoutError,
+    async_playwright,
+)
 
 from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
 from app.common.db import session_scope
@@ -34,7 +41,12 @@ from app.crm_downloader.orders_sync_window import (
     resolve_window_settings,
 )
 from app.dashboard_downloader.db_tables import orders_sync_log, pipelines
-from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
+from app.dashboard_downloader.json_logger import (
+    JsonLogger,
+    get_logger,
+    log_event,
+    new_run_id,
+)
 from app.dashboard_downloader.notifications import send_notifications_for_run
 from app.dashboard_downloader.run_summary import (
     fetch_summary_for_run,
@@ -299,29 +311,45 @@ class UcStore:
     @property
     def login_selectors(self) -> Dict[str, str]:
         selectors = _coerce_dict(self.sync_config.get("login_selector"))
-        return {key: value for key, value in selectors.items() if isinstance(value, str) and value.strip()}
+        return {
+            key: value
+            for key, value in selectors.items()
+            if isinstance(value, str) and value.strip()
+        }
 
     @property
     def home_selectors(self) -> list[str]:
         raw_selectors: list[str] = []
-        raw = self.sync_config.get("home_selectors") or self.sync_config.get("home_selector")
+        raw = self.sync_config.get("home_selectors") or self.sync_config.get(
+            "home_selector"
+        )
         if isinstance(raw, str) and raw.strip():
             raw_selectors.append(raw.strip())
         elif isinstance(raw, Sequence):
             raw_selectors.extend(
-                [str(value).strip() for value in raw if isinstance(value, str) and str(value).strip()]
+                [
+                    str(value).strip()
+                    for value in raw
+                    if isinstance(value, str) and str(value).strip()
+                ]
             )
         return raw_selectors
 
     @property
     def gst_menu_labels(self) -> list[str]:
         raw_labels: list[str] = []
-        raw = self.sync_config.get("gst_menu_label") or self.sync_config.get("orders_menu_label")
+        raw = self.sync_config.get("gst_menu_label") or self.sync_config.get(
+            "orders_menu_label"
+        )
         if isinstance(raw, str) and raw.strip():
             raw_labels.append(raw.strip())
         elif isinstance(raw, Sequence):
             raw_labels.extend(
-                [str(value).strip() for value in raw if isinstance(value, str) and str(value).strip()]
+                [
+                    str(value).strip()
+                    for value in raw
+                    if isinstance(value, str) and str(value).strip()
+                ]
             )
         return raw_labels
 
@@ -418,9 +446,13 @@ def _archive_extraction_gap(extract: ArchiveOrdersExtract) -> int | None:
     return max(0, extract.post_filter_footer_total - len(extract.base_rows))
 
 
-def _record_skipped_order(extract: ArchiveOrdersExtract, *, order_code: str, reason: str) -> None:
+def _record_skipped_order(
+    extract: ArchiveOrdersExtract, *, order_code: str, reason: str
+) -> None:
     extract.skipped_order_codes.append(order_code)
-    extract.skipped_order_counters[reason] = extract.skipped_order_counters.get(reason, 0) + 1
+    extract.skipped_order_counters[reason] = (
+        extract.skipped_order_counters.get(reason, 0) + 1
+    )
 
 
 async def _wait_for_row_stable(row: Locator) -> None:
@@ -450,7 +482,9 @@ async def _wait_for_row_stable(row: Locator) -> None:
         )
 
 
-async def _collect_selector_diagnostics(row: Locator, selectors: Sequence[str]) -> list[dict[str, Any]]:
+async def _collect_selector_diagnostics(
+    row: Locator, selectors: Sequence[str]
+) -> list[dict[str, Any]]:
     diagnostics: list[dict[str, Any]] = []
     for selector in selectors:
         locator = row.locator(selector)
@@ -474,8 +508,12 @@ async def _collect_selector_diagnostics(row: Locator, selectors: Sequence[str]) 
     return diagnostics
 
 
-async def _click_order_details_trigger(row: Locator) -> tuple[bool, list[dict[str, Any]], str | None]:
-    diagnostics = await _collect_selector_diagnostics(row, ARCHIVE_ORDER_DETAIL_TRIGGER_SELECTORS)
+async def _click_order_details_trigger(
+    row: Locator,
+) -> tuple[bool, list[dict[str, Any]], str | None]:
+    diagnostics = await _collect_selector_diagnostics(
+        row, ARCHIVE_ORDER_DETAIL_TRIGGER_SELECTORS
+    )
     max_attempts_per_selector = 2
     last_error: str | None = None
     for selector in ARCHIVE_ORDER_DETAIL_TRIGGER_SELECTORS:
@@ -486,7 +524,9 @@ async def _click_order_details_trigger(row: Locator) -> tuple[bool, list[dict[st
             force_click = attempt == 1
             await _wait_for_row_stable(row)
             with contextlib.suppress(Exception):
-                await row.locator("td.order-col").first.scroll_into_view_if_needed(timeout=5_000)
+                await row.locator("td.order-col").first.scroll_into_view_if_needed(
+                    timeout=5_000
+                )
             with contextlib.suppress(Exception):
                 await trigger.scroll_into_view_if_needed(timeout=5_000)
             with contextlib.suppress(Exception):
@@ -501,6 +541,7 @@ async def _click_order_details_trigger(row: Locator) -> tuple[bool, list[dict[st
             except Exception as exc:
                 last_error = str(exc)
     return False, diagnostics, last_error
+
 
 def _normalize_output_status(status: str | None) -> str:
     normalized = str(status or "").lower()
@@ -526,11 +567,97 @@ def _classify_store_window_status(outcome: StoreOutcome | None) -> str:
     reason_codes = set(outcome.reason_codes or [])
     if "partial_extraction" in reason_codes:
         return "partial"
-    if "footer_baseline_unavailable" in reason_codes or outcome.status == "warning":
+    if (
+        "footer_baseline_unavailable" in reason_codes
+        or _has_non_trivial_archive_publish_warning(outcome)
+        or outcome.status == "warning"
+    ):
         return "success_with_warnings"
     if outcome.status == "ok":
         return "success"
     return "skipped"
+
+
+def _iter_archive_publish_metrics(
+    outcome: StoreOutcome | None,
+) -> Iterable[dict[str, Any]]:
+    if outcome is None:
+        return ()
+    publish_metrics: list[dict[str, Any]] = []
+    for publish_result in (
+        outcome.archive_publish_orders,
+        outcome.archive_publish_sales,
+    ):
+        if isinstance(publish_result, Mapping):
+            publish_metrics.append(publish_result)
+    return publish_metrics
+
+
+def _iter_archive_publish_metrics_payloads(
+    *publish_results: Mapping[str, Any] | None
+) -> Iterable[dict[str, Any]]:
+    publish_metrics: list[dict[str, Any]] = []
+    for publish_result in publish_results:
+        if isinstance(publish_result, Mapping):
+            publish_metrics.append(dict(publish_result))
+    return publish_metrics
+
+
+def _archive_publish_warning_count(outcome: StoreOutcome | None) -> int:
+    return _archive_publish_warning_count_for_metrics(
+        outcome.archive_publish_orders if outcome else None,
+        outcome.archive_publish_sales if outcome else None,
+    )
+
+
+def _archive_publish_warning_count_for_metrics(
+    *publish_results: Mapping[str, Any] | None
+) -> int:
+    warning_count = 0
+    for publish_metrics in _iter_archive_publish_metrics_payloads(*publish_results):
+        warnings = publish_metrics.get("warnings")
+        if isinstance(warnings, int) and warnings > 0:
+            warning_count += warnings
+    return warning_count
+
+
+def _archive_publish_reason_codes(outcome: StoreOutcome | None) -> set[str]:
+    return _archive_publish_reason_codes_for_metrics(
+        outcome.archive_publish_orders if outcome else None,
+        outcome.archive_publish_sales if outcome else None,
+    )
+
+
+def _archive_publish_reason_codes_for_metrics(
+    *publish_results: Mapping[str, Any] | None
+) -> set[str]:
+    reason_codes: set[str] = set()
+    for publish_metrics in _iter_archive_publish_metrics_payloads(*publish_results):
+        raw_reason_codes = publish_metrics.get("reason_codes")
+        if isinstance(raw_reason_codes, Mapping):
+            reason_codes.update(
+                str(code) for code in raw_reason_codes.keys() if str(code).strip()
+            )
+    return reason_codes
+
+
+def _has_non_trivial_archive_publish_warning(outcome: StoreOutcome | None) -> bool:
+    if outcome is None:
+        return False
+    publish_reason_codes = _archive_publish_reason_codes(outcome)
+    if "preflight_parent_coverage_near_zero" in publish_reason_codes:
+        return True
+    for publish_metrics in _iter_archive_publish_metrics(outcome):
+        warnings = publish_metrics.get("warnings")
+        skipped = publish_metrics.get("skipped")
+        if (
+            isinstance(warnings, int)
+            and isinstance(skipped, int)
+            and warnings >= 5
+            and skipped >= 5
+        ):
+            return True
+    return False
 
 
 @dataclass
@@ -551,7 +678,10 @@ class UcOrdersDiscoverySummary:
     store_codes: list[str] = field(default_factory=list)
     store_outcomes: Dict[str, StoreOutcome] = field(default_factory=dict)
     phases: dict[str, Dict[str, int]] = field(
-        default_factory=lambda: {"init": {"ok": 0, "warning": 0, "error": 0}, "store": {"ok": 0, "warning": 0, "error": 0}}
+        default_factory=lambda: {
+            "init": {"ok": 0, "warning": 0, "error": 0},
+            "store": {"ok": 0, "warning": 0, "error": 0},
+        }
     )
     notes: list[str] = field(default_factory=list)
     ingest_remarks: list[dict[str, str]] = field(default_factory=list)
@@ -570,7 +700,10 @@ class UcOrdersDiscoverySummary:
         self.mark_phase("store", outcome.status)
 
     def overall_status(self) -> str:
-        classifications = [_classify_store_window_status(outcome) for outcome in self.store_outcomes.values()]
+        classifications = [
+            _classify_store_window_status(outcome)
+            for outcome in self.store_outcomes.values()
+        ]
         if any(state == "failed" for state in classifications):
             return "failed"
         if any(state == "partial" for state in classifications):
@@ -583,8 +716,12 @@ class UcOrdersDiscoverySummary:
 
     def _window_summary(self) -> Dict[str, Any]:
         expected_windows = len(self.store_codes)
-        completed_store_codes = [code for code in self.store_codes if code in self.store_outcomes]
-        missing_store_codes = [code for code in self.store_codes if code not in self.store_outcomes]
+        completed_store_codes = [
+            code for code in self.store_codes if code in self.store_outcomes
+        ]
+        missing_store_codes = [
+            code for code in self.store_codes if code not in self.store_outcomes
+        ]
         completed_windows = len(completed_store_codes)
         missing_windows = max(0, expected_windows - completed_windows)
         return {
@@ -597,13 +734,22 @@ class UcOrdersDiscoverySummary:
 
     def summary_text(self) -> str:
         total = len(self.store_codes)
-        ok = sum(1 for outcome in self.store_outcomes.values() if _classify_store_window_status(outcome) == "success")
+        ok = sum(
+            1
+            for outcome in self.store_outcomes.values()
+            if _classify_store_window_status(outcome) == "success"
+        )
         warn = sum(
             1
             for outcome in self.store_outcomes.values()
-            if _classify_store_window_status(outcome) in {"success_with_warnings", "partial"}
+            if _classify_store_window_status(outcome)
+            in {"success_with_warnings", "partial"}
         )
-        error = sum(1 for outcome in self.store_outcomes.values() if _classify_store_window_status(outcome) == "failed")
+        error = sum(
+            1
+            for outcome in self.store_outcomes.values()
+            if _classify_store_window_status(outcome) == "failed"
+        )
         overall_status = self.overall_status()
         status_explanation = {
             "success": "run completed with no issues recorded",
@@ -614,7 +760,9 @@ class UcOrdersDiscoverySummary:
         window_summary = self._window_summary()
         missing_windows_line = f"Missing Windows: {window_summary['missing_windows']}"
         if window_summary["missing_store_codes"]:
-            missing_windows_line += f" ({', '.join(window_summary['missing_store_codes'])})"
+            missing_windows_line += (
+                f" ({', '.join(window_summary['missing_store_codes'])})"
+            )
         return (
             "UC Archive Orders Run Summary\n"
             f"Overall Status: {overall_status} ({status_explanation})\n"
@@ -633,13 +781,21 @@ class UcOrdersDiscoverySummary:
             self.ingest_remarks.append(
                 {
                     "store_code": (store_code or "").upper(),
-                    "order_number": str(order_number) if order_number is not None else "",
+                    "order_number": (
+                        str(order_number) if order_number is not None else ""
+                    ),
                     "ingest_remarks": str(remark_text),
                 }
             )
 
     def _store_status_counts(self) -> Dict[str, int]:
-        counts = {"success": 0, "success_with_warnings": 0, "partial": 0, "failed": 0, "skipped": 0}
+        counts = {
+            "success": 0,
+            "success_with_warnings": 0,
+            "partial": 0,
+            "failed": 0,
+            "skipped": 0,
+        }
         for outcome in self.store_outcomes.values():
             counts[_classify_store_window_status(outcome)] += 1
         return counts
@@ -648,7 +804,9 @@ class UcOrdersDiscoverySummary:
         stage_summary: Dict[str, Dict[str, int]] = {}
         for outcome in self.store_outcomes.values():
             for stage_name, stage_status in (outcome.stage_statuses or {}).items():
-                counters = stage_summary.setdefault(stage_name, {"success": 0, "failed": 0, "skipped": 0})
+                counters = stage_summary.setdefault(
+                    stage_name, {"success": 0, "failed": 0, "skipped": 0}
+                )
                 normalized = stage_status if stage_status in counters else "skipped"
                 counters[normalized] += 1
         return stage_summary
@@ -676,9 +834,15 @@ class UcOrdersDiscoverySummary:
                 "filename": filename,
                 "download_path": outcome.download_path if outcome else None,
                 "warning_count": outcome.warning_count if outcome else None,
-                "session_probe_result": outcome.session_probe_result if outcome else None,
-                "fallback_login_attempted": outcome.fallback_login_attempted if outcome else None,
-                "fallback_login_result": outcome.fallback_login_result if outcome else None,
+                "session_probe_result": (
+                    outcome.session_probe_result if outcome else None
+                ),
+                "fallback_login_attempted": (
+                    outcome.fallback_login_attempted if outcome else None
+                ),
+                "fallback_login_result": (
+                    outcome.fallback_login_result if outcome else None
+                ),
                 "row_counts": {
                     "staging_rows": outcome.staging_rows if outcome else None,
                     "final_rows": outcome.final_rows if outcome else None,
@@ -686,18 +850,34 @@ class UcOrdersDiscoverySummary:
                     "staging_updated": outcome.staging_updated if outcome else None,
                     "final_inserted": outcome.final_inserted if outcome else None,
                     "final_updated": outcome.final_updated if outcome else None,
-                    "archive_publish_orders": outcome.archive_publish_orders if outcome else None,
-                    "archive_publish_sales": outcome.archive_publish_sales if outcome else None,
+                    "archive_publish_orders": (
+                        outcome.archive_publish_orders if outcome else None
+                    ),
+                    "archive_publish_sales": (
+                        outcome.archive_publish_sales if outcome else None
+                    ),
                 },
                 "stage_statuses": dict(outcome.stage_statuses) if outcome else {},
                 "stage_metrics": dict(outcome.stage_metrics) if outcome else {},
                 "rows_downloaded": outcome.rows_downloaded if outcome else None,
-                "rows_skipped_invalid": outcome.rows_skipped_invalid if outcome else None,
-                "rows_skipped_invalid_reasons": outcome.rows_skipped_invalid_reasons if outcome else None,
-                "pre_filter_footer_total": outcome.pre_filter_footer_total if outcome else None,
-                "post_filter_footer_total": outcome.post_filter_footer_total if outcome else None,
-                "footer_baseline_source": outcome.footer_baseline_source if outcome else None,
-                "footer_baseline_stable": outcome.footer_baseline_stable if outcome else False,
+                "rows_skipped_invalid": (
+                    outcome.rows_skipped_invalid if outcome else None
+                ),
+                "rows_skipped_invalid_reasons": (
+                    outcome.rows_skipped_invalid_reasons if outcome else None
+                ),
+                "pre_filter_footer_total": (
+                    outcome.pre_filter_footer_total if outcome else None
+                ),
+                "post_filter_footer_total": (
+                    outcome.post_filter_footer_total if outcome else None
+                ),
+                "footer_baseline_source": (
+                    outcome.footer_baseline_source if outcome else None
+                ),
+                "footer_baseline_stable": (
+                    outcome.footer_baseline_stable if outcome else False
+                ),
             }
         return summary
 
@@ -712,7 +892,9 @@ class UcOrdersDiscoverySummary:
             )
         return warnings
 
-    def _build_notification_payload(self, *, finished_at: datetime, total_time_taken: str) -> Dict[str, Any]:
+    def _build_notification_payload(
+        self, *, finished_at: datetime, total_time_taken: str
+    ) -> Dict[str, Any]:
         stores: list[dict[str, Any]] = []
         to_date = self.report_end_date or self.report_date
         for store_code in self.store_codes:
@@ -735,9 +917,15 @@ class UcOrdersDiscoverySummary:
                     "info_message": info_message,
                     "skip_reason": outcome.skip_reason if outcome else None,
                     "warning_count": outcome.warning_count if outcome else None,
-                    "session_probe_result": outcome.session_probe_result if outcome else None,
-                    "fallback_login_attempted": outcome.fallback_login_attempted if outcome else None,
-                    "fallback_login_result": outcome.fallback_login_result if outcome else None,
+                    "session_probe_result": (
+                        outcome.session_probe_result if outcome else None
+                    ),
+                    "fallback_login_attempted": (
+                        outcome.fallback_login_attempted if outcome else None
+                    ),
+                    "fallback_login_result": (
+                        outcome.fallback_login_result if outcome else None
+                    ),
                     "warning_rows": list(outcome.warning_rows) if outcome else [],
                     "dropped_rows": list(outcome.dropped_rows) if outcome else [],
                     "filename": filename,
@@ -748,12 +936,24 @@ class UcOrdersDiscoverySummary:
                     "final_inserted": outcome.final_inserted if outcome else None,
                     "final_updated": outcome.final_updated if outcome else None,
                     "rows_downloaded": outcome.rows_downloaded if outcome else None,
-                    "rows_skipped_invalid": outcome.rows_skipped_invalid if outcome else None,
-                    "rows_skipped_invalid_reasons": outcome.rows_skipped_invalid_reasons if outcome else None,
-                "pre_filter_footer_total": outcome.pre_filter_footer_total if outcome else None,
-                "post_filter_footer_total": outcome.post_filter_footer_total if outcome else None,
-                "footer_baseline_source": outcome.footer_baseline_source if outcome else None,
-                "footer_baseline_stable": outcome.footer_baseline_stable if outcome else False,
+                    "rows_skipped_invalid": (
+                        outcome.rows_skipped_invalid if outcome else None
+                    ),
+                    "rows_skipped_invalid_reasons": (
+                        outcome.rows_skipped_invalid_reasons if outcome else None
+                    ),
+                    "pre_filter_footer_total": (
+                        outcome.pre_filter_footer_total if outcome else None
+                    ),
+                    "post_filter_footer_total": (
+                        outcome.post_filter_footer_total if outcome else None
+                    ),
+                    "footer_baseline_source": (
+                        outcome.footer_baseline_source if outcome else None
+                    ),
+                    "footer_baseline_stable": (
+                        outcome.footer_baseline_stable if outcome else False
+                    ),
                     "stage_statuses": dict(outcome.stage_statuses) if outcome else {},
                     "stage_metrics": dict(outcome.stage_metrics) if outcome else {},
                 }
@@ -777,7 +977,10 @@ class UcOrdersDiscoverySummary:
         metrics = {
             "stores": {
                 "configured": list(self.store_codes),
-                "outcomes": {code: outcome.__dict__ for code, outcome in self.store_outcomes.items()},
+                "outcomes": {
+                    code: outcome.__dict__
+                    for code, outcome in self.store_outcomes.items()
+                },
             },
             "window_summary": self._window_summary(),
             "window_audit": list(self.window_audit),
@@ -786,11 +989,17 @@ class UcOrdersDiscoverySummary:
                 "stages": self._build_stage_summary(),
                 "stores": store_summary,
                 "store_order": list(self.store_codes),
-                "report_range": {"from": self.report_date.isoformat(), "to": self.report_end_date.isoformat()},
+                "report_range": {
+                    "from": self.report_date.isoformat(),
+                    "to": self.report_end_date.isoformat(),
+                },
             },
             "notes": list(self.notes),
             "warnings": self._build_warning_entries(),
-            "ingest_remarks": {"rows": list(self.ingest_remarks), "total": len(self.ingest_remarks)},
+            "ingest_remarks": {
+                "rows": list(self.ingest_remarks),
+                "total": len(self.ingest_remarks),
+            },
         }
         metrics["notification_payload"] = self._build_notification_payload(
             finished_at=finished_at, total_time_taken=total_time_taken
@@ -805,7 +1014,9 @@ class UcOrdersDiscoverySummary:
             "report_date": self.report_date,
             "overall_status": self.overall_status(),
             "summary_text": self.summary_text(),
-            "phases_json": {phase: dict(counts) for phase, counts in self.phases.items()},
+            "phases_json": {
+                phase: dict(counts) for phase, counts in self.phases.items()
+            },
             "metrics_json": metrics,
         }
 
@@ -832,7 +1043,9 @@ async def main(
     to_date = current_date
     run_end_date = to_date or current_date
     if from_date and from_date > run_end_date:
-        raise ValueError(f"from_date ({from_date}) must be on or before to_date ({run_end_date})")
+        raise ValueError(
+            f"from_date ({from_date}) must be on or before to_date ({run_end_date})"
+        )
     logger = get_logger(run_id=resolved_run_id)
     stores = await _load_uc_order_stores(logger=logger, store_codes=store_codes)
     store_start_dates: dict[str, date] = {}
@@ -842,7 +1055,9 @@ async def main(
             database_url=config.database_url, pipeline_name=PIPELINE_NAME, logger=logger
         )
     for store in stores:
-        backfill, window_size, overlap = resolve_window_settings(sync_config=store.sync_config)
+        backfill, window_size, overlap = resolve_window_settings(
+            sync_config=store.sync_config
+        )
         last_success = None
         if from_date is None and pipeline_id and config.database_url:
             last_success = await fetch_last_success_window_end(
@@ -859,7 +1074,9 @@ async def main(
             from_date=from_date,
             store_start_date=None,
         )
-    report_start_date = from_date or (min(store_start_dates.values()) if store_start_dates else run_end_date)
+    report_start_date = from_date or (
+        min(store_start_dates.values()) if store_start_dates else run_end_date
+    )
     summary = UcOrdersDiscoverySummary(
         run_id=resolved_run_id,
         run_env=resolved_env,
@@ -899,7 +1116,9 @@ async def main(
             summary.notes.append("No UC stores with sync_orders_flag found; exiting")
             persist_attempted = True
             if await _persist_summary(summary=summary, logger=logger):
-                notification_result = await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
+                notification_result = await send_notifications_for_run(
+                    PIPELINE_NAME, resolved_run_id
+                )
                 log_event(
                     logger=logger,
                     phase="notifications",
@@ -919,7 +1138,9 @@ async def main(
 
             async def _guarded(store: UcStore) -> None:
                 async with semaphore:
-                    store_start_date = store_start_dates.get(store.store_code, summary.report_date)
+                    store_start_date = store_start_dates.get(
+                        store.store_code, summary.report_date
+                    )
                     await _run_store_discovery(
                         browser=browser,
                         store=store,
@@ -944,7 +1165,9 @@ async def main(
         )
         persist_attempted = True
         if await _persist_summary(summary=summary, logger=logger):
-            notification_result = await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
+            notification_result = await send_notifications_for_run(
+                PIPELINE_NAME, resolved_run_id
+            )
             log_event(
                 logger=logger,
                 phase="notifications",
@@ -1017,7 +1240,9 @@ def _parse_date(value: str) -> date:
     try:
         return date.fromisoformat(value)
     except ValueError as exc:  # pragma: no cover - exercised via CLI parsing
-        raise argparse.ArgumentTypeError(f"Invalid date {value!r}; expected YYYY-MM-DD") from exc
+        raise argparse.ArgumentTypeError(
+            f"Invalid date {value!r}; expected YYYY-MM-DD"
+        ) from exc
 
 
 def _get_nested_str(mapping: Mapping[str, Any], path: Sequence[str]) -> str | None:
@@ -1045,19 +1270,27 @@ def _format_gst_filename(store_code: str, from_date: date, to_date: date) -> str
     return f"{store_code}_uc_gst_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
 
 
-def _format_archive_base_filename(store_code: str, from_date: date, to_date: date) -> str:
+def _format_archive_base_filename(
+    store_code: str, from_date: date, to_date: date
+) -> str:
     return f"{store_code}-base_order_info_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
 
 
-def _format_archive_order_details_filename(store_code: str, from_date: date, to_date: date) -> str:
+def _format_archive_order_details_filename(
+    store_code: str, from_date: date, to_date: date
+) -> str:
     return f"{store_code}-order_details_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
 
 
-def _format_archive_payment_details_filename(store_code: str, from_date: date, to_date: date) -> str:
+def _format_archive_payment_details_filename(
+    store_code: str, from_date: date, to_date: date
+) -> str:
     return f"{store_code}-payment_details_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
 
 
-def _write_excel_rows(path: Path, rows: Sequence[dict[str, Any]], columns: Sequence[str]) -> int:
+def _write_excel_rows(
+    path: Path, rows: Sequence[dict[str, Any]], columns: Sequence[str]
+) -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook = Workbook()
     sheet = workbook.active
@@ -1082,7 +1315,9 @@ def _resolve_uc_max_workers() -> int:
     return max(1, _env_int("UC_MAX_WORKERS", UC_MAX_WORKERS_DEFAULT))
 
 
-def _resolve_uc_download_dir(run_id: str, store_code: str, from_date: date, to_date: date) -> Path:
+def _resolve_uc_download_dir(
+    run_id: str, store_code: str, from_date: date, to_date: date
+) -> Path:
     return default_download_dir()
 
 
@@ -1171,11 +1406,15 @@ async def _fetch_dashboard_nav_timeout_ms(database_url: str | None) -> int:
         return NAV_TIMEOUT_MS
 
 
-async def _fetch_pipeline_id(*, database_url: str, pipeline_name: str, logger: JsonLogger) -> int | None:
+async def _fetch_pipeline_id(
+    *, database_url: str, pipeline_name: str, logger: JsonLogger
+) -> int | None:
     try:
         async with session_scope(database_url) as session:
             pipeline_id = (
-                await session.execute(sa.select(pipelines.c.id).where(pipelines.c.code == pipeline_name))
+                await session.execute(
+                    sa.select(pipelines.c.id).where(pipelines.c.code == pipeline_name)
+                )
             ).scalar_one_or_none()
     except Exception as exc:  # pragma: no cover - defensive
         log_event(
@@ -1237,7 +1476,9 @@ async def _insert_orders_sync_log(
         summary_started = await _start_run_summary(summary=summary, logger=logger)
         if not summary_started:
             if allow_defer:
-                _defer_orders_sync_log(summary, store, run_id, run_start_date, run_end_date)
+                _defer_orders_sync_log(
+                    summary, store, run_id, run_start_date, run_end_date
+                )
             logger.error(
                 phase="orders_sync_log",
                 message=(
@@ -1259,7 +1500,9 @@ async def _insert_orders_sync_log(
                 store_code=store.store_code,
             )
             if allow_defer:
-                _defer_orders_sync_log(summary, store, run_id, run_start_date, run_end_date)
+                _defer_orders_sync_log(
+                    summary, store, run_id, run_start_date, run_end_date
+                )
             return None
 
     attempt_no = _parse_attempt_no(run_id) or 1
@@ -1302,7 +1545,9 @@ async def _insert_orders_sync_log(
             await session.commit()
             exists = (
                 await session.execute(
-                    sa.select(orders_sync_log.c.id).where(orders_sync_log.c.id == log_id)
+                    sa.select(orders_sync_log.c.id).where(
+                        orders_sync_log.c.id == log_id
+                    )
                 )
             ).scalar_one_or_none()
             if not exists:
@@ -1362,7 +1607,10 @@ def _defer_orders_sync_log(
         return
     summary.deferred_orders_sync_logs.append(
         DeferredOrdersSyncLog(
-            store=store, run_id=run_id, run_start_date=run_start_date, run_end_date=run_end_date
+            store=store,
+            run_id=run_id,
+            run_start_date=run_start_date,
+            run_end_date=run_end_date,
         )
     )
 
@@ -1464,7 +1712,9 @@ async def _update_orders_sync_log(
     try:
         async with session_scope(config.database_url) as session:
             result = await session.execute(
-                sa.update(orders_sync_log).where(orders_sync_log.c.id == log_id).values(**values)
+                sa.update(orders_sync_log)
+                .where(orders_sync_log.c.id == log_id)
+                .values(**values)
             )
             await session.commit()
             if not result.rowcount:
@@ -1491,7 +1741,9 @@ async def _update_orders_sync_log(
         raise
 
 
-def _build_unified_metrics(outcome: StoreOutcome | None) -> tuple[dict[str, int | None], dict[str, int | None]]:
+def _build_unified_metrics(
+    outcome: StoreOutcome | None,
+) -> tuple[dict[str, int | None], dict[str, int | None]]:
     primary_metrics = {
         "primary_rows_downloaded": outcome.rows_downloaded if outcome else None,
         "primary_rows_ingested": outcome.final_rows if outcome else None,
@@ -1529,7 +1781,11 @@ def _resolve_sync_log_status(
     reason_codes = set(outcome.reason_codes or [])
     if "partial_extraction" in reason_codes:
         return "partial"
-    if "footer_baseline_unavailable" in reason_codes or outcome.status == "warning":
+    if (
+        "footer_baseline_unavailable" in reason_codes
+        or _has_non_trivial_archive_publish_warning(outcome)
+        or outcome.status == "warning"
+    ):
         return "success_with_warnings"
     return "success"
 
@@ -1586,7 +1842,9 @@ def _log_ui_issues(
         )
 
 
-async def _navigate_to_archive_orders(*, page: Page, store: UcStore, logger: JsonLogger) -> bool:
+async def _navigate_to_archive_orders(
+    *, page: Page, store: UcStore, logger: JsonLogger
+) -> bool:
     log_event(
         logger=logger,
         phase="navigation",
@@ -1655,11 +1913,15 @@ async def _apply_archive_date_filter(
     dropdown_selectors = [".date-type-section", ".date-options"]
     dropdown_ready = False
     try:
-        await page.locator(dropdown_selectors[0]).first.wait_for(state="visible", timeout=5_000)
+        await page.locator(dropdown_selectors[0]).first.wait_for(
+            state="visible", timeout=5_000
+        )
         dropdown_ready = True
     except TimeoutError:
         with contextlib.suppress(TimeoutError):
-            await page.locator(dropdown_selectors[1]).first.wait_for(state="visible", timeout=5_000)
+            await page.locator(dropdown_selectors[1]).first.wait_for(
+                state="visible", timeout=5_000
+            )
             dropdown_ready = True
     if not dropdown_ready:
         log_event(
@@ -1728,8 +1990,14 @@ async def _apply_archive_date_filter(
         to_date=to_date,
     )
     pre_filter_footer_text = await _get_archive_footer_text(page)
-    pre_filter_footer_window = _parse_archive_footer_window(pre_filter_footer_text or "") if pre_filter_footer_text else None
-    pre_filter_footer_total = pre_filter_footer_window[2] if pre_filter_footer_window is not None else None
+    pre_filter_footer_window = (
+        _parse_archive_footer_window(pre_filter_footer_text or "")
+        if pre_filter_footer_text
+        else None
+    )
+    pre_filter_footer_total = (
+        pre_filter_footer_window[2] if pre_filter_footer_window is not None else None
+    )
     row_count_before_filter = len(await _get_archive_row_signatures(page))
     log_event(
         logger=logger,
@@ -1765,7 +2033,10 @@ async def _apply_archive_date_filter(
     post_filter_footer_total: int | None = None
     stabilized_footer_window: tuple[int, int, int] | None = None
 
-    if post_filter_stability.stable and post_filter_stability.stable_footer_window is not None:
+    if (
+        post_filter_stability.stable
+        and post_filter_stability.stable_footer_window is not None
+    ):
         stabilized_footer_window = post_filter_stability.stable_footer_window
         post_filter_footer_total = stabilized_footer_window[2]
         footer_baseline_source = "post_filter_refresh"
@@ -1882,7 +2153,9 @@ ARCHIVE_FOOTER_TOTAL_SELECTORS = (
 
 
 def _parse_archive_footer_total(text: str) -> int | None:
-    match = re.search(r"showing\s+results\s+\d+\s+to\s+\d+\s+of\s+([\d,]+)\s+total", text, re.I)
+    match = re.search(
+        r"showing\s+results\s+\d+\s+to\s+\d+\s+of\s+([\d,]+)\s+total", text, re.I
+    )
     if not match:
         match = re.search(r"\bof\s+([\d,]+)\b", text, re.I)
     if not match:
@@ -1891,7 +2164,11 @@ def _parse_archive_footer_total(text: str) -> int | None:
 
 
 def _parse_archive_footer_window(text: str) -> tuple[int, int, int] | None:
-    match = re.search(r"showing\s+results\s+([\d,]+)\s+to\s+([\d,]+)\s+of\s+([\d,]+)\s+total", text, re.I)
+    match = re.search(
+        r"showing\s+results\s+([\d,]+)\s+to\s+([\d,]+)\s+of\s+([\d,]+)\s+total",
+        text,
+        re.I,
+    )
     if not match:
         return None
     return tuple(int(match.group(i).replace(",", "")) for i in (1, 2, 3))
@@ -1960,12 +2237,18 @@ async def _wait_for_archive_filter_refresh_completion(
         elapsed_ms = int((asyncio.get_running_loop().time() - start) * 1000)
         current_row_signatures = await _get_archive_row_signatures(page)
         row_count = len(current_row_signatures)
-        table_rows_during_refresh.append({"elapsed_ms": elapsed_ms, "row_count": row_count})
+        table_rows_during_refresh.append(
+            {"elapsed_ms": elapsed_ms, "row_count": row_count}
+        )
         if current_row_signatures != pre_filter_row_signatures:
             redraw_detected = True
 
         current_footer_text = await _get_archive_footer_text(page)
-        current_footer_window = _parse_archive_footer_window(current_footer_text or "") if current_footer_text else None
+        current_footer_window = (
+            _parse_archive_footer_window(current_footer_text or "")
+            if current_footer_text
+            else None
+        )
         footer_during_refresh.append(
             {
                 "elapsed_ms": elapsed_ms,
@@ -1989,12 +2272,20 @@ async def _wait_for_archive_filter_refresh_completion(
             if (
                 stable_footer_text_mid
                 and stable_footer_text_end
-                and current_footer_text == stable_footer_text_mid == stable_footer_text_end
+                and current_footer_text
+                == stable_footer_text_mid
+                == stable_footer_text_end
             ):
-                refresh_settle_reason = "footer_and_redraw" if redraw_detected else "footer_stable_only"
-                post_filter_footer_window = _parse_archive_footer_window(current_footer_text)
+                refresh_settle_reason = (
+                    "footer_and_redraw" if redraw_detected else "footer_stable_only"
+                )
+                post_filter_footer_window = _parse_archive_footer_window(
+                    current_footer_text
+                )
                 refresh_phase_marker = "stable"
-                total_elapsed_ms = int((asyncio.get_running_loop().time() - start) * 1000)
+                total_elapsed_ms = int(
+                    (asyncio.get_running_loop().time() - start) * 1000
+                )
                 log_event(
                     logger=logger,
                     phase="filters",
@@ -2141,7 +2432,9 @@ async def _extract_order_details(
         label = await _locator_text(item.locator(".order-info-label"))
         value = await _locator_text(item.locator(".order-info-value"))
         if not value:
-            value = await _locator_text(item.locator("div[style*='font-size: 13px']").first)
+            value = await _locator_text(
+                item.locator("div[style*='font-size: 13px']").first
+            )
         if not value:
             value = await _locator_text(item.locator("div").nth(1))
 
@@ -2196,12 +2489,24 @@ async def _extract_order_details(
                     "delivery_datetime": delivery_datetime,
                     "service": service,
                     "hsn_sac": hsn_sac,
-                    "item_name": item_names[item_index] if item_index < len(item_names) else None,
+                    "item_name": (
+                        item_names[item_index] if item_index < len(item_names) else None
+                    ),
                     "rate": rates[item_index] if item_index < len(rates) else None,
-                    "quantity": quantities[item_index] if item_index < len(quantities) else None,
-                    "weight": weights[item_index] if item_index < len(weights) else None,
-                    "addons": addons_list[item_index] if item_index < len(addons_list) else None,
-                    "amount": amounts[item_index] if item_index < len(amounts) else None,
+                    "quantity": (
+                        quantities[item_index] if item_index < len(quantities) else None
+                    ),
+                    "weight": (
+                        weights[item_index] if item_index < len(weights) else None
+                    ),
+                    "addons": (
+                        addons_list[item_index]
+                        if item_index < len(addons_list)
+                        else None
+                    ),
+                    "amount": (
+                        amounts[item_index] if item_index < len(amounts) else None
+                    ),
                 }
             )
 
@@ -2336,8 +2641,6 @@ async def _get_archive_row_signatures(page: Page) -> tuple[str, ...]:
     return tuple(signatures)
 
 
-
-
 def _archive_signature_hash(signatures: tuple[str, ...] | None) -> str | None:
     if signatures is None:
         return None
@@ -2371,7 +2674,10 @@ async def _wait_for_archive_page_stability(
         last_footer_window = footer_window
         last_signature_hash = signature_hash
 
-        if footer_window == previous_footer_window and signatures == previous_signatures:
+        if (
+            footer_window == previous_footer_window
+            and signatures == previous_signatures
+        ):
             consecutive_stable += 1
         else:
             consecutive_stable = 1
@@ -2398,7 +2704,8 @@ async def _wait_for_archive_page_stability(
                 stable_footer_window=None,
                 stable_signature_hash=None,
                 last_observed_footer_window=last_footer_window,
-                last_observed_signature_hash=last_signature_hash or previous_signature_hash,
+                last_observed_signature_hash=last_signature_hash
+                or previous_signature_hash,
                 stability_timeout_ms=timeout_ms,
             )
 
@@ -2414,6 +2721,7 @@ def _stability_log_fields(state: ArchivePageStabilityState) -> dict[str, Any]:
         "last_observed_signature_hash": state.last_observed_signature_hash,
         "stability_timeout_ms": state.stability_timeout_ms,
     }
+
 
 async def _is_button_disabled(locator: Locator) -> bool:
     if not await locator.count():
@@ -2479,7 +2787,9 @@ async def _collect_archive_orders(
 
     while True:
         with contextlib.suppress(TimeoutError):
-            await page.wait_for_selector(ARCHIVE_TABLE_ROW_SELECTOR, timeout=NAV_TIMEOUT_MS)
+            await page.wait_for_selector(
+                ARCHIVE_TABLE_ROW_SELECTOR, timeout=NAV_TIMEOUT_MS
+            )
         stability_state = await _wait_for_archive_page_stability(
             page=page,
             timeout_ms=max(1_000, NAV_TIMEOUT_MS // 3),
@@ -2489,7 +2799,10 @@ async def _collect_archive_orders(
             footer_window = post_filter_footer_window
         if footer_window is not None:
             footer_total = footer_window[2]
-            if extract.post_filter_footer_total is None and extract.footer_baseline_stable:
+            if (
+                extract.post_filter_footer_total is None
+                and extract.footer_baseline_stable
+            ):
                 extract.post_filter_footer_total = footer_total
             extract.footer_total = extract.post_filter_footer_total
         row_locator = page.locator(ARCHIVE_TABLE_ROW_SELECTOR)
@@ -2534,7 +2847,12 @@ async def _collect_archive_orders(
                 }
             )
         log_event(**page_log_fields)
-        if page_index == 1 and baseline_footer_window is not None and current_footer_window is not None and baseline_footer_window != current_footer_window:
+        if (
+            page_index == 1
+            and baseline_footer_window is not None
+            and current_footer_window is not None
+            and baseline_footer_window != current_footer_window
+        ):
             log_event(
                 logger=logger,
                 phase="pagination",
@@ -2559,7 +2877,11 @@ async def _collect_archive_orders(
         for idx, (row, order_code) in enumerate(valid_rows):
             try:
                 base_row = await _extract_archive_base_row(
-                    row=row, store=store, logger=logger, row_index=idx, order_code=order_code
+                    row=row,
+                    store=store,
+                    logger=logger,
+                    row_index=idx,
+                    order_code=order_code,
                 )
             except Exception as exc:
                 log_event(
@@ -2592,12 +2914,14 @@ async def _collect_archive_orders(
             extract.base_rows.append(base_row)
 
             try:
-                detail_rows, customer_source, pickup_datetime, details_extracted = await _extract_order_details(
-                    page=page,
-                    row=row,
-                    store=store,
-                    logger=logger,
-                    order_code=order_code,
+                detail_rows, customer_source, pickup_datetime, details_extracted = (
+                    await _extract_order_details(
+                        page=page,
+                        row=row,
+                        store=store,
+                        logger=logger,
+                        order_code=order_code,
+                    )
                 )
                 extract.order_detail_rows.extend(detail_rows)
                 if not details_extracted:
@@ -2680,7 +3004,11 @@ async def _collect_archive_orders(
             break
 
         force_retry_navigation = False
-        if footer_window is not None and new_unique_orders == 0 and footer_window[1] < footer_window[2]:
+        if (
+            footer_window is not None
+            and new_unique_orders == 0
+            and footer_window[1] < footer_window[2]
+        ):
             force_retry_navigation = True
             pre_retry_signatures = await _get_archive_row_signatures(page)
             log_event(
@@ -2742,7 +3070,11 @@ async def _collect_archive_orders(
             store_code=store.store_code,
             page_number=page_index + 1,
         )
-        if previous_first or previous_page_number is not None or previous_footer_window is not None:
+        if (
+            previous_first
+            or previous_page_number is not None
+            or previous_footer_window is not None
+        ):
             with contextlib.suppress(TimeoutError):
                 await page.wait_for_function(
                     r"""([selectors, previousPage, firstSelector, previousFirst, footerSelectors, previousFooter]) => {
@@ -2790,7 +3122,11 @@ async def _collect_archive_orders(
                         f"{ARCHIVE_TABLE_ROW_SELECTOR} td.order-col span",
                         previous_first,
                         list(ARCHIVE_FOOTER_TOTAL_SELECTORS),
-                        list(previous_footer_window) if previous_footer_window is not None else None,
+                        (
+                            list(previous_footer_window)
+                            if previous_footer_window is not None
+                            else None
+                        ),
                     ],
                     timeout=NAV_TIMEOUT_MS,
                 )
@@ -2896,7 +3232,11 @@ async def _collect_archive_orders(
                             f"{ARCHIVE_TABLE_ROW_SELECTOR} td.order-col span",
                             retry_reference_first,
                             list(ARCHIVE_FOOTER_TOTAL_SELECTORS),
-                            list(retry_reference_footer_window) if retry_reference_footer_window is not None else None,
+                            (
+                                list(retry_reference_footer_window)
+                                if retry_reference_footer_window is not None
+                                else None
+                            ),
                         ],
                         timeout=NAV_TIMEOUT_MS,
                     )
@@ -2919,7 +3259,9 @@ async def _collect_archive_orders(
             if previous_footer_window is not None and current_footer_window is not None:
                 progress_signals.append(current_footer_window != previous_footer_window)
             if progress_signals and not any(progress_signals):
-                partial_reason = "partial_extraction_non_advancing_next_click_after_retry"
+                partial_reason = (
+                    "partial_extraction_non_advancing_next_click_after_retry"
+                )
                 log_event(
                     logger=logger,
                     phase="pagination",
@@ -2948,7 +3290,10 @@ async def _collect_archive_orders(
             reason=partial_reason,
         )
 
-    if extract.post_filter_footer_total is not None and len(extract.base_rows) < extract.post_filter_footer_total:
+    if (
+        extract.post_filter_footer_total is not None
+        and len(extract.base_rows) < extract.post_filter_footer_total
+    ):
         _record_skipped_order(
             extract,
             order_code=f"partial_extraction:{store.store_code}",
@@ -2963,7 +3308,6 @@ async def _collect_archive_orders(
             extracted_base_rows=len(extract.base_rows),
             footer_total=extract.post_filter_footer_total,
         )
-
 
     if extract.post_filter_footer_total is None or not extract.footer_baseline_stable:
         _record_skipped_order(
@@ -3115,7 +3459,9 @@ async def _run_store_discovery(
             return
 
         await page.goto(store.home_url, wait_until="domcontentloaded")
-        session_probe_result = await _assert_home_ready(page=page, store=store, logger=logger, source="session")
+        session_probe_result = await _assert_home_ready(
+            page=page, store=store, logger=logger, source="session"
+        )
         if not session_probe_result:
             fallback_login_attempted = True
             log_event(
@@ -3127,7 +3473,9 @@ async def _run_store_discovery(
                 current_url=page.url,
             )
             login_used = True
-            fallback_login_result = await _perform_login(page=page, store=store, logger=logger)
+            fallback_login_result = await _perform_login(
+                page=page, store=store, logger=logger
+            )
             if fallback_login_result:
                 storage_state_path.parent.mkdir(parents=True, exist_ok=True)
                 await context.storage_state(path=str(storage_state_path))
@@ -3138,14 +3486,18 @@ async def _run_store_discovery(
                     store_code=store.store_code,
                     storage_state=str(storage_state_path),
                 )
-                if not await _assert_home_ready(page=page, store=store, logger=logger, source="post-login"):
+                if not await _assert_home_ready(
+                    page=page, store=store, logger=logger, source="post-login"
+                ):
                     fallback_login_result = False
             if not fallback_login_result:
                 outcome = StoreOutcome(
                     status="error",
                     message="Login failed after session probe",
                     final_url=page.url,
-                    storage_state=str(storage_state_path) if storage_state_path.exists() else None,
+                    storage_state=(
+                        str(storage_state_path) if storage_state_path.exists() else None
+                    ),
                     login_used=login_used,
                     session_probe_result=session_probe_result,
                     fallback_login_attempted=fallback_login_attempted,
@@ -3159,7 +3511,9 @@ async def _run_store_discovery(
             gst_download_path: str | None = None
             gst_row_count = 0
             gst_container: Locator | None = None
-            gst_navigation_ok = await _navigate_to_gst_reports(page=page, store=store, logger=logger)
+            gst_navigation_ok = await _navigate_to_gst_reports(
+                page=page, store=store, logger=logger
+            )
             if gst_navigation_ok:
                 gst_ready, gst_container = await _wait_for_gst_report_ready(
                     page=page,
@@ -3186,9 +3540,17 @@ async def _run_store_discovery(
                     current_url=page.url,
                 )
             else:
-                download_dir = _resolve_uc_download_dir(run_id, store.store_code, from_date, to_date)
+                download_dir = _resolve_uc_download_dir(
+                    run_id, store.store_code, from_date, to_date
+                )
                 download_dir.mkdir(parents=True, exist_ok=True)
-                apply_ok, gst_row_count, row_visibility_issue, ui_issues, failure_reason = await _apply_date_range(
+                (
+                    apply_ok,
+                    gst_row_count,
+                    row_visibility_issue,
+                    ui_issues,
+                    failure_reason,
+                ) = await _apply_date_range(
                     page=page,
                     container=gst_container,
                     logger=logger,
@@ -3223,21 +3585,27 @@ async def _run_store_discovery(
                             store_code=store.store_code,
                             row_count=gst_row_count,
                         )
-                    gst_download_ok, gst_download_path, gst_message = await _download_gst_report(
-                        page=page,
-                        logger=logger,
-                        store=store,
-                        from_date=from_date,
-                        to_date=to_date,
-                        download_dir=download_dir,
-                        download_timeout_ms=download_timeout_ms,
-                        row_count=gst_row_count,
+                    gst_download_ok, gst_download_path, gst_message = (
+                        await _download_gst_report(
+                            page=page,
+                            logger=logger,
+                            store=store,
+                            from_date=from_date,
+                            to_date=to_date,
+                            download_dir=download_dir,
+                            download_timeout_ms=download_timeout_ms,
+                            row_count=gst_row_count,
+                        )
                     )
                     log_event(
                         logger=logger,
                         phase="download",
                         status=None if gst_download_ok else "warn",
-                        message=gst_message if gst_message else "GST report download complete",
+                        message=(
+                            gst_message
+                            if gst_message
+                            else "GST report download complete"
+                        ),
                         store_code=store.store_code,
                         download_path=gst_download_path,
                         row_count=gst_row_count,
@@ -3252,13 +3620,17 @@ async def _run_store_discovery(
                 error=str(exc),
             )
 
-        archive_ready = await _navigate_to_archive_orders(page=page, store=store, logger=logger)
+        archive_ready = await _navigate_to_archive_orders(
+            page=page, store=store, logger=logger
+        )
         if not archive_ready:
             outcome = StoreOutcome(
                 status="warning",
                 message="Archive Orders navigation failed",
                 final_url=page.url,
-                storage_state=str(storage_state_path) if storage_state_path.exists() else None,
+                storage_state=(
+                    str(storage_state_path) if storage_state_path.exists() else None
+                ),
                 login_used=login_used,
                 session_probe_result=session_probe_result,
                 fallback_login_attempted=fallback_login_attempted,
@@ -3280,7 +3652,9 @@ async def _run_store_discovery(
                 status="warning",
                 message="Archive Orders filter failed",
                 final_url=page.url,
-                storage_state=str(storage_state_path) if storage_state_path.exists() else None,
+                storage_state=(
+                    str(storage_state_path) if storage_state_path.exists() else None
+                ),
                 login_used=login_used,
                 session_probe_result=session_probe_result,
                 fallback_login_attempted=fallback_login_attempted,
@@ -3290,7 +3664,9 @@ async def _run_store_discovery(
             summary.record_store(store.store_code, outcome)
             return
 
-        download_dir = _resolve_uc_download_dir(run_id, store.store_code, from_date, to_date)
+        download_dir = _resolve_uc_download_dir(
+            run_id, store.store_code, from_date, to_date
+        )
         extract = await _collect_archive_orders(
             page=page,
             store=store,
@@ -3304,15 +3680,26 @@ async def _run_store_discovery(
         row_count = len(extract.base_rows)
         rows_missing_estimate = _archive_extraction_gap(extract)
         reason_codes: list[str] = []
-        if extract.post_filter_footer_total is None or not extract.footer_baseline_stable:
+        if (
+            extract.post_filter_footer_total is None
+            or not extract.footer_baseline_stable
+        ):
             reason_codes.append("footer_baseline_unavailable")
         elif rows_missing_estimate is not None and rows_missing_estimate > 0:
             reason_codes.append("partial_extraction")
         is_partial_extraction = "partial_extraction" in reason_codes
-        base_path = download_dir / _format_archive_base_filename(store.store_code, from_date, to_date)
-        order_details_path = download_dir / _format_archive_order_details_filename(store.store_code, from_date, to_date)
-        payment_details_path = download_dir / _format_archive_payment_details_filename(store.store_code, from_date, to_date)
-        base_count = _write_excel_rows(base_path, extract.base_rows, ARCHIVE_BASE_COLUMNS)
+        base_path = download_dir / _format_archive_base_filename(
+            store.store_code, from_date, to_date
+        )
+        order_details_path = download_dir / _format_archive_order_details_filename(
+            store.store_code, from_date, to_date
+        )
+        payment_details_path = download_dir / _format_archive_payment_details_filename(
+            store.store_code, from_date, to_date
+        )
+        base_count = _write_excel_rows(
+            base_path, extract.base_rows, ARCHIVE_BASE_COLUMNS
+        )
         order_details_count = _write_excel_rows(
             order_details_path, extract.order_detail_rows, ARCHIVE_ORDER_DETAIL_COLUMNS
         )
@@ -3340,7 +3727,11 @@ async def _run_store_discovery(
 
         archive_publish_orders: dict[str, Any] | None = None
         archive_publish_sales: dict[str, Any] | None = None
-        stage_statuses: dict[str, str] = {"download": "success", "archive_ingest": "skipped", "archive_publish": "skipped"}
+        stage_statuses: dict[str, str] = {
+            "download": "success",
+            "archive_ingest": "skipped",
+            "archive_publish": "skipped",
+        }
         stage_metrics: dict[str, dict[str, Any]] = {
             "download": {
                 "base_rows": base_count,
@@ -3361,7 +3752,9 @@ async def _run_store_discovery(
         if not config.database_url:
             stage_statuses["archive_ingest"] = "failed"
             stage_statuses["archive_publish"] = "skipped"
-            stage_metrics["archive_ingest"] = {"error": "database_url is required for archive ingest/publish"}
+            stage_metrics["archive_ingest"] = {
+                "error": "database_url is required for archive ingest/publish"
+            }
             log_event(
                 logger=logger,
                 phase="archive_ingest",
@@ -3417,7 +3810,9 @@ async def _run_store_discovery(
                 orders_error: str | None = None
                 sales_error: str | None = None
                 try:
-                    orders_publish = await publish_uc_archive_order_details_to_orders(database_url=config.database_url)
+                    orders_publish = await publish_uc_archive_order_details_to_orders(
+                        database_url=config.database_url
+                    )
                     archive_publish_orders = {
                         "inserted": orders_publish.inserted,
                         "updated": orders_publish.updated,
@@ -3447,7 +3842,9 @@ async def _run_store_discovery(
                     )
 
                 try:
-                    sales_publish = await publish_uc_archive_payments_to_sales(database_url=config.database_url)
+                    sales_publish = await publish_uc_archive_payments_to_sales(
+                        database_url=config.database_url
+                    )
                     archive_publish_sales = {
                         "inserted": sales_publish.inserted,
                         "updated": sales_publish.updated,
@@ -3480,7 +3877,9 @@ async def _run_store_discovery(
                         error=sales_error,
                     )
 
-                stage_statuses["archive_publish"] = "failed" if publish_failed else "success"
+                stage_statuses["archive_publish"] = (
+                    "failed" if publish_failed else "success"
+                )
                 stage_metrics["archive_publish"] = {
                     "order_details_to_orders": archive_publish_orders,
                     "payment_details_to_sales": archive_publish_sales,
@@ -3491,7 +3890,24 @@ async def _run_store_discovery(
                         "payment_details_to_sales": sales_error,
                     }
 
-        status_label = "warning" if any(v == "failed" for k, v in stage_statuses.items() if k != "download") else "ok"
+        archive_warning_count = _archive_publish_warning_count_for_metrics(
+            archive_publish_orders,
+            archive_publish_sales,
+        )
+        publish_reason_codes = sorted(
+            _archive_publish_reason_codes_for_metrics(
+                archive_publish_orders,
+                archive_publish_sales,
+            )
+        )
+        for code in publish_reason_codes:
+            if code not in reason_codes:
+                reason_codes.append(code)
+        status_label = (
+            "warning"
+            if any(v == "failed" for k, v in stage_statuses.items() if k != "download")
+            else "ok"
+        )
         baseline_source = extract.footer_baseline_source or "fallback_unknown"
         download_message = (
             f"Archive Orders extracted {len(extract.base_rows)} rows "
@@ -3511,15 +3927,22 @@ async def _run_store_discovery(
                 "post-filter footer baseline unavailable after refresh stabilization"
             )
         elif status_label == "warning":
-            failed_stages = [name for name, stage_status in stage_statuses.items() if stage_status == "failed"]
+            failed_stages = [
+                name
+                for name, stage_status in stage_statuses.items()
+                if stage_status == "failed"
+            ]
             download_message = (
-                "Archive Orders download complete; archive stages failed: " + ", ".join(sorted(failed_stages))
+                "Archive Orders download complete; archive stages failed: "
+                + ", ".join(sorted(failed_stages))
             )
         outcome = StoreOutcome(
             status=status_label,
             message=download_message,
             final_url=page.url,
-            storage_state=str(storage_state_path) if storage_state_path.exists() else None,
+            storage_state=(
+                str(storage_state_path) if storage_state_path.exists() else None
+            ),
             login_used=login_used,
             session_probe_result=session_probe_result,
             fallback_login_attempted=fallback_login_attempted,
@@ -3530,6 +3953,7 @@ async def _run_store_discovery(
             stage_metrics=stage_metrics,
             archive_publish_orders=archive_publish_orders,
             archive_publish_sales=archive_publish_sales,
+            warning_count=archive_warning_count,
             reason_codes=reason_codes,
             footer_total=extract.post_filter_footer_total,
             pre_filter_footer_total=extract.pre_filter_footer_total,
@@ -3552,7 +3976,9 @@ async def _run_store_discovery(
             status="warning",
             message="Timeout while loading Archive Orders page",
             final_url=page.url,
-            storage_state=str(storage_state_path) if storage_state_path.exists() else None,
+            storage_state=(
+                str(storage_state_path) if storage_state_path.exists() else None
+            ),
             login_used=login_used,
             session_probe_result=session_probe_result,
             fallback_login_attempted=fallback_login_attempted,
@@ -3572,7 +3998,9 @@ async def _run_store_discovery(
             status="error",
             message="Store discovery failed",
             final_url=page.url,
-            storage_state=str(storage_state_path) if storage_state_path.exists() else None,
+            storage_state=(
+                str(storage_state_path) if storage_state_path.exists() else None
+            ),
             login_used=login_used,
             session_probe_result=session_probe_result,
             fallback_login_attempted=fallback_login_attempted,
@@ -3794,7 +4222,11 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
         username_length=len(username_value),
         password_length=len(password_value),
     )
-    empty_fields = [name for name, value in (("username", username_value), ("password", password_value)) if not value]
+    empty_fields = [
+        name
+        for name, value in (("username", username_value), ("password", password_value))
+        if not value
+    ]
     if empty_fields:
         dom_snippet = await _maybe_get_dom_snippet(page)
         log_event(
@@ -3820,12 +4252,15 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
         login_url = (store.login_url or "").lower()
         if login_url and login_url in url_lower:
             return True
-        return any(token in url_lower for token in ("/login", "auth", "signin", "session"))
+        return any(
+            token in url_lower for token in ("/login", "auth", "signin", "session")
+        )
 
     response = None
     try:
         async with page.expect_response(
-            lambda response: response.status in {200, 302} and _login_response_matches(response.url),
+            lambda response: response.status in {200, 302}
+            and _login_response_matches(response.url),
             timeout=15_000,
         ) as response_info:
             await page.click(selectors["submit"])
@@ -3878,7 +4313,9 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
             store_code=store.store_code,
         )
     with contextlib.suppress(TimeoutError):
-        await page.wait_for_url(lambda url: not _url_is_login(url, store), timeout=10_000)
+        await page.wait_for_url(
+            lambda url: not _url_is_login(url, store), timeout=10_000
+        )
         log_event(
             logger=logger,
             phase="login",
@@ -3904,14 +4341,22 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
     nav_locator = page.locator(nav_selector).first
     error_locator = page.locator(error_selector).first
     post_login_tasks = {
-        "nav": asyncio.create_task(nav_locator.wait_for(state="visible", timeout=10_000)),
-        "error": asyncio.create_task(error_locator.wait_for(state="visible", timeout=10_000)),
+        "nav": asyncio.create_task(
+            nav_locator.wait_for(state="visible", timeout=10_000)
+        ),
+        "error": asyncio.create_task(
+            error_locator.wait_for(state="visible", timeout=10_000)
+        ),
     }
-    done, pending = await asyncio.wait(post_login_tasks.values(), timeout=10, return_when=asyncio.FIRST_COMPLETED)
+    done, pending = await asyncio.wait(
+        post_login_tasks.values(), timeout=10, return_when=asyncio.FIRST_COMPLETED
+    )
     for task in pending:
         task.cancel()
     if done:
-        completed_label = next(label for label, task in post_login_tasks.items() if task in done)
+        completed_label = next(
+            label for label, task in post_login_tasks.items() if task in done
+        )
         if completed_label == "error":
             banner_text = ""
             with contextlib.suppress(Exception):
@@ -3945,7 +4390,9 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
             current_url=page.url,
         )
         return False
-    if not await _wait_for_home_ready(page=page, store=store, logger=logger, source="login"):
+    if not await _wait_for_home_ready(
+        page=page, store=store, logger=logger, source="login"
+    ):
         return False
     return True
 
@@ -3975,7 +4422,9 @@ async def _wait_for_gst_report_ready(
 ) -> tuple[bool, Locator | None]:
     await page.wait_for_load_state("domcontentloaded")
     try:
-        await page.locator(GST_PAGE_LABEL_SELECTOR).first.wait_for(timeout=NAV_TIMEOUT_MS)
+        await page.locator(GST_PAGE_LABEL_SELECTOR).first.wait_for(
+            timeout=NAV_TIMEOUT_MS
+        )
     except TimeoutError:
         dom_snippet = await _maybe_get_dom_snippet(page)
         log_event(
@@ -3998,9 +4447,13 @@ async def _wait_for_gst_report_ready(
     except Exception:
         primary_count = 0
     if primary_count:
-        container = await _find_gst_report_container(page=page, readiness_selector=readiness_selector)
+        container = await _find_gst_report_container(
+            page=page, readiness_selector=readiness_selector
+        )
     else:
-        container = await _find_gst_report_container(page=page, readiness_selector=fallback_selector)
+        container = await _find_gst_report_container(
+            page=page, readiness_selector=fallback_selector
+        )
         if container is not None:
             readiness_selector = fallback_selector
 
@@ -4020,7 +4473,9 @@ async def _wait_for_gst_report_ready(
         return False, None
 
     try:
-        await container.locator(readiness_selector).first.wait_for(timeout=NAV_TIMEOUT_MS)
+        await container.locator(readiness_selector).first.wait_for(
+            timeout=NAV_TIMEOUT_MS
+        )
     except TimeoutError:
         dom_snippet = await _maybe_get_dom_snippet(page)
         log_event(
@@ -4039,7 +4494,9 @@ async def _wait_for_gst_report_ready(
     spinner_selector = ", ".join(SPINNER_CSS_SELECTORS)
     if spinner_selector:
         with contextlib.suppress(TimeoutError):
-            await page.wait_for_selector(spinner_selector, state="hidden", timeout=NAV_TIMEOUT_MS)
+            await page.wait_for_selector(
+                spinner_selector, state="hidden", timeout=NAV_TIMEOUT_MS
+            )
 
     log_event(
         logger=logger,
@@ -4050,7 +4507,9 @@ async def _wait_for_gst_report_ready(
     return True, container
 
 
-async def _try_direct_gst_reports(*, page: Page, store: UcStore, logger: JsonLogger) -> tuple[bool, Locator | None]:
+async def _try_direct_gst_reports(
+    *, page: Page, store: UcStore, logger: JsonLogger
+) -> tuple[bool, Locator | None]:
     orders_url = store.orders_url or ""
     try:
         await page.goto(orders_url, wait_until="domcontentloaded")
@@ -4066,7 +4525,9 @@ async def _try_direct_gst_reports(*, page: Page, store: UcStore, logger: JsonLog
         )
         return False, None
 
-    ready, container = await _wait_for_gst_report_ready(page=page, logger=logger, store=store)
+    ready, container = await _wait_for_gst_report_ready(
+        page=page, logger=logger, store=store
+    )
     if ready and container is not None:
         return True, container
 
@@ -4084,7 +4545,9 @@ async def _try_direct_gst_reports(*, page: Page, store: UcStore, logger: JsonLog
     return False, container
 
 
-async def _assert_home_ready(*, page: Page, store: UcStore, logger: JsonLogger, source: str) -> bool:
+async def _assert_home_ready(
+    *, page: Page, store: UcStore, logger: JsonLogger, source: str
+) -> bool:
     session_invalid = await _session_invalid(page=page, store=store)
     if session_invalid:
         log_event(
@@ -4097,7 +4560,9 @@ async def _assert_home_ready(*, page: Page, store: UcStore, logger: JsonLogger, 
             source=source,
         )
         return False
-    return await _wait_for_home_ready(page=page, store=store, logger=logger, source=source)
+    return await _wait_for_home_ready(
+        page=page, store=store, logger=logger, source=source
+    )
 
 
 async def _wait_for_home_ready(
@@ -4116,7 +4581,9 @@ async def _wait_for_home_ready(
         return False
 
     try:
-        await page.wait_for_url(lambda url: _url_matches_target(url, home_url), timeout=NAV_TIMEOUT_MS)
+        await page.wait_for_url(
+            lambda url: _url_matches_target(url, home_url), timeout=NAV_TIMEOUT_MS
+        )
     except TimeoutError:
         log_event(
             logger=logger,
@@ -4149,7 +4616,9 @@ async def _wait_for_home_ready(
     per_selector_timeout = max(2_000, NAV_TIMEOUT_MS // max(len(home_selectors), 1))
     for selector in home_selectors:
         try:
-            await page.locator(selector).first.wait_for(state="visible", timeout=per_selector_timeout)
+            await page.locator(selector).first.wait_for(
+                state="visible", timeout=per_selector_timeout
+            )
         except TimeoutError:
             continue
         except Exception:
@@ -4298,7 +4767,9 @@ async def _apply_date_range(
         )
         popup = await _reopen_date_picker_popup(page=page, logger=logger, store=store)
     if popup is None:
-        refreshed, row_count, refreshed_row_issue = await _fallback_set_date_range_input("popup-missing")
+        refreshed, row_count, refreshed_row_issue = (
+            await _fallback_set_date_range_input("popup-missing")
+        )
         if not refreshed:
             failure_reason = "filter_validation_failed"
         return refreshed, row_count, refreshed_row_issue, ui_issues, failure_reason
@@ -4333,8 +4804,8 @@ async def _apply_date_range(
             end_date=to_date,
             error=str(exc),
         )
-        refreshed, row_count, refreshed_row_issue = await _fallback_set_date_range_input(
-            "calendar-navigation-error"
+        refreshed, row_count, refreshed_row_issue = (
+            await _fallback_set_date_range_input("calendar-navigation-error")
         )
         if not refreshed:
             failure_reason = "filter_validation_failed"
@@ -4348,7 +4819,9 @@ async def _apply_date_range(
             store_code=store.store_code,
             start_date=from_date,
         )
-        retry_popup = await _reopen_date_picker_popup(page=page, logger=logger, store=store)
+        retry_popup = await _reopen_date_picker_popup(
+            page=page, logger=logger, store=store
+        )
         if retry_popup is not None:
             retry_calendars = await _get_calendar_locators(popup=retry_popup)
             retry_start_calendar = retry_calendars[0]
@@ -4393,8 +4866,8 @@ async def _apply_date_range(
             start_ok=start_ok,
             end_ok=end_ok,
         )
-        refreshed, row_count, refreshed_row_issue = await _fallback_set_date_range_input(
-            "calendar-selection-incomplete"
+        refreshed, row_count, refreshed_row_issue = (
+            await _fallback_set_date_range_input("calendar-selection-incomplete")
         )
         if not refreshed:
             failure_reason = "filter_validation_failed"
@@ -4436,8 +4909,12 @@ async def _apply_date_range(
                 break
         await asyncio.sleep(0.2)
     if apply_section_found and apply_section_visible:
-        start_input = apply_section.locator("input[readonly][placeholder='Start Date']").first
-        end_input = apply_section.locator("input[readonly][placeholder='End Date']").first
+        start_input = apply_section.locator(
+            "input[readonly][placeholder='Start Date']"
+        ).first
+        end_input = apply_section.locator(
+            "input[readonly][placeholder='End Date']"
+        ).first
         if await start_input.count() and await end_input.count():
             for _ in range(10):
                 with contextlib.suppress(Exception):
@@ -4452,9 +4929,11 @@ async def _apply_date_range(
                 logger=logger,
                 phase="filters",
                 status=None if status == "info" else "warn",
-                message="Apply inputs populated after date selection"
-                if status == "info"
-                else "Apply inputs missing values after date selection",
+                message=(
+                    "Apply inputs populated after date selection"
+                    if status == "info"
+                    else "Apply inputs missing values after date selection"
+                ),
                 store_code=store.store_code,
                 start_value=start_value,
                 end_value=end_value,
@@ -4478,7 +4957,9 @@ async def _apply_date_range(
 
     overlay_apply_container_selector = ".calendar-body.show .apply"
     try:
-        await page.wait_for_selector(overlay_apply_container_selector, state="visible", timeout=2_500)
+        await page.wait_for_selector(
+            overlay_apply_container_selector, state="visible", timeout=2_500
+        )
     except TimeoutError:
         overlay_apply_warn = await _is_export_button_missing()
         ui_issues.append(
@@ -4490,7 +4971,9 @@ async def _apply_date_range(
         )
         await _reopen_date_picker_popup(page=page, logger=logger, store=store)
         try:
-            await page.wait_for_selector(overlay_apply_container_selector, state="visible", timeout=2_500)
+            await page.wait_for_selector(
+                overlay_apply_container_selector, state="visible", timeout=2_500
+            )
             log_event(
                 logger=logger,
                 phase="filters",
@@ -4547,7 +5030,9 @@ async def _apply_date_range(
                 )
                 if popup is not None:
                     with contextlib.suppress(Exception):
-                        await page.wait_for_selector(overlay_selector, state="visible", timeout=5_000)
+                        await page.wait_for_selector(
+                            overlay_selector, state="visible", timeout=5_000
+                        )
                 continue
             log_event(
                 logger=logger,
@@ -4784,7 +5269,9 @@ async def _download_gst_report(
             return False, None, "Export Report button disabled after retry"
 
         try:
-            async with page.expect_download(timeout=download_timeout_ms) as download_info:
+            async with page.expect_download(
+                timeout=download_timeout_ms
+            ) as download_info:
                 log_event(
                     logger=logger,
                     phase="download",
@@ -4879,7 +5366,9 @@ async def _download_gst_report(
     return False, None, message
 
 
-async def _wait_for_non_empty_file(*, target_path: Path, timeout_ms: int, poll_s: float = 0.5) -> int:
+async def _wait_for_non_empty_file(
+    *, target_path: Path, timeout_ms: int, poll_s: float = 0.5
+) -> int:
     deadline = asyncio.get_running_loop().time() + (timeout_ms / 1000)
     while asyncio.get_running_loop().time() < deadline:
         if target_path.exists():
@@ -4943,7 +5432,11 @@ async def _reopen_date_picker_popup(
 
 
 async def _wait_for_date_picker_popup(
-    *, page: Page, logger: JsonLogger, store: UcStore, input_locator: Locator | None = None
+    *,
+    page: Page,
+    logger: JsonLogger,
+    store: UcStore,
+    input_locator: Locator | None = None,
 ) -> Locator | None:
     fallback_selectors = ("mat-calendar", "[class*='mat-calendar']", "[role='dialog']")
     for attempt in range(3):
@@ -5006,7 +5499,9 @@ async def _find_apply_button(
     logger: JsonLogger,
     store: UcStore,
 ) -> tuple[Locator | None, str | None]:
-    cue_regex = re.compile("|".join(re.escape(cue) for cue in CONTROL_CUES["apply"]), re.I)
+    cue_regex = re.compile(
+        "|".join(re.escape(cue) for cue in CONTROL_CUES["apply"]), re.I
+    )
     search_scopes: list[tuple[str, Locator]] = []
 
     overlay_apply = page.locator(".calendar-body.show .apply").first
@@ -5024,19 +5519,25 @@ async def _find_apply_button(
         for child_selector in (".buttons", ""):
             scope_locator = scope.locator(child_selector) if child_selector else scope
             try:
-                button_candidate = scope_locator.get_by_role("button", name=cue_regex).first
+                button_candidate = scope_locator.get_by_role(
+                    "button", name=cue_regex
+                ).first
                 if await button_candidate.count():
                     return button_candidate, f"{scope_name} >> role=button"
             except Exception:
                 pass
             try:
-                text_button = scope_locator.locator("button").filter(has_text=cue_regex).first
+                text_button = (
+                    scope_locator.locator("button").filter(has_text=cue_regex).first
+                )
                 if await text_button.count():
                     return text_button, f"{scope_name} >> button text"
             except Exception:
                 pass
             try:
-                input_buttons = scope_locator.locator("input[type='button'], input[type='submit']")
+                input_buttons = scope_locator.locator(
+                    "input[type='button'], input[type='submit']"
+                )
                 input_count = await input_buttons.count()
                 for idx in range(input_count):
                     candidate = input_buttons.nth(idx)
@@ -5398,7 +5899,9 @@ async def _try_fill_date_input(
     return False
 
 
-def _select_fallback_date(target_date: date, candidates: list[date], label: str) -> date | None:
+def _select_fallback_date(
+    target_date: date, candidates: list[date], label: str
+) -> date | None:
     if not candidates:
         return None
     before = sorted([candidate for candidate in candidates if candidate <= target_date])
@@ -5446,7 +5949,9 @@ async def _select_closest_available_day(
             candidates.append((parsed, cell))
         except Exception:
             continue
-    fallback_date = _select_fallback_date(target_date, [candidate[0] for candidate in candidates], label)
+    fallback_date = _select_fallback_date(
+        target_date, [candidate[0] for candidate in candidates], label
+    )
     if fallback_date is None:
         log_event(
             logger=logger,
@@ -5593,7 +6098,9 @@ async def _click_calendar_nav(*, calendar: Locator, direction: str) -> None:
                 return
         except Exception:
             continue
-    raise TimeoutError(f"Calendar navigation button not found for direction={direction}")
+    raise TimeoutError(
+        f"Calendar navigation button not found for direction={direction}"
+    )
 
 
 async def _click_day_in_calendar(
@@ -5741,7 +6248,8 @@ async def _click_day_in_calendar(
         except Exception:
             scope = calendar
         day_cell_candidates = [
-            scope.locator(f"[aria-label='{label_value}']") for label_value in aria_labels
+            scope.locator(f"[aria-label='{label_value}']")
+            for label_value in aria_labels
         ]
         day_cell_candidates.extend(
             [
@@ -5785,7 +6293,9 @@ async def _click_day_in_calendar(
                     )
                 return True
             if await button_locator.count():
-                button_selected = (await button_locator.get_attribute("aria-selected")) or ""
+                button_selected = (
+                    await button_locator.get_attribute("aria-selected")
+                ) or ""
                 if button_selected == "true":
                     if label == "end":
                         log_event(
@@ -5827,7 +6337,14 @@ def _matches_date_value(value: str, target_date: date) -> bool:
     if not value:
         return False
     normalized = value.strip()
-    for fmt in ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%m/%d/%Y", "%b %d, %Y", "%B %d, %Y"):
+    for fmt in (
+        "%Y-%m-%d",
+        "%d-%m-%Y",
+        "%d/%m/%Y",
+        "%m/%d/%Y",
+        "%b %d, %Y",
+        "%B %d, %Y",
+    ):
         if target_date.strftime(fmt) in normalized:
             return True
     return False
@@ -5909,7 +6426,9 @@ async def _confirm_apply_dates(
     logger: JsonLogger,
     store: UcStore,
 ) -> bool:
-    start_input = apply_section.locator("input[readonly][placeholder='Start Date']").first
+    start_input = apply_section.locator(
+        "input[readonly][placeholder='Start Date']"
+    ).first
     end_input = apply_section.locator("input[readonly][placeholder='End Date']").first
     if not await start_input.count() or not await end_input.count():
         log_event(
@@ -5928,7 +6447,9 @@ async def _confirm_apply_dates(
             start_value = await start_input.input_value()
         with contextlib.suppress(Exception):
             end_value = await end_input.input_value()
-        if _matches_date_value(start_value, from_date) and _matches_date_value(end_value, to_date):
+        if _matches_date_value(start_value, from_date) and _matches_date_value(
+            end_value, to_date
+        ):
             return True
         await asyncio.sleep(0.3)
 
@@ -5980,7 +6501,9 @@ async def _wait_for_report_refresh(
         try:
             if spinner_locator is not None and await spinner_locator.is_visible():
                 with contextlib.suppress(TimeoutError):
-                    await page.wait_for_selector(spinner_selector, state="hidden", timeout=10_000)
+                    await page.wait_for_selector(
+                        spinner_selector, state="hidden", timeout=10_000
+                    )
         except Exception:
             pass
         try:
@@ -6160,7 +6683,9 @@ async def _is_on_home_dashboard(*, page: Page, store: UcStore) -> bool:
     return False
 
 
-async def _navigate_to_gst_reports(*, page: Page, store: UcStore, logger: JsonLogger) -> bool:
+async def _navigate_to_gst_reports(
+    *, page: Page, store: UcStore, logger: JsonLogger
+) -> bool:
     orders_url = store.orders_url or ""
     gst_report_url = "https://store.ucleanlaundry.com/gst-report"
     try:
@@ -6191,7 +6716,9 @@ async def _navigate_to_gst_reports(*, page: Page, store: UcStore, logger: JsonLo
     return True
 
 
-async def _locate_nav_link_by_href(nav_root: Locator, href_fragment: str) -> Locator | None:
+async def _locate_nav_link_by_href(
+    nav_root: Locator, href_fragment: str
+) -> Locator | None:
     locator = nav_root.locator(f"a[href*='{href_fragment}']")
     try:
         if await locator.count():
@@ -6201,7 +6728,9 @@ async def _locate_nav_link_by_href(nav_root: Locator, href_fragment: str) -> Loc
     return None
 
 
-async def _expand_nav_groups(*, page: Page, nav_root: Locator, logger: JsonLogger, store: UcStore) -> None:
+async def _expand_nav_groups(
+    *, page: Page, nav_root: Locator, logger: JsonLogger, store: UcStore
+) -> None:
     toggle_selectors = [
         "button[aria-expanded='false']",
         "[role='button'][aria-expanded='false']",
@@ -6238,7 +6767,9 @@ async def _expand_nav_groups(*, page: Page, nav_root: Locator, logger: JsonLogge
                 continue
 
 
-async def _locate_nav_ancestor_by_text(nav_root: Locator, labels: Sequence[str]) -> ElementHandle | None:
+async def _locate_nav_ancestor_by_text(
+    nav_root: Locator, labels: Sequence[str]
+) -> ElementHandle | None:
     for label in labels:
         locator = nav_root.locator(":scope *").filter(has_text=re.compile(label, re.I))
         try:
@@ -6332,9 +6863,15 @@ def _url_is_login(current_url: str, store: UcStore) -> bool:
     if not login_url:
         return False
     parsed_login = urlparse(login_url)
-    if parsed_login.netloc and parsed_current.netloc and parsed_login.netloc != parsed_current.netloc:
+    if (
+        parsed_login.netloc
+        and parsed_current.netloc
+        and parsed_login.netloc != parsed_current.netloc
+    ):
         return False
-    if parsed_login.path and parsed_current.path.rstrip("/") == parsed_login.path.rstrip("/"):
+    if parsed_login.path and parsed_current.path.rstrip(
+        "/"
+    ) == parsed_login.path.rstrip("/"):
         return True
     return False
 
@@ -6351,7 +6888,9 @@ async def _maybe_get_dom_snippet(page: Page) -> str | None:
     return await _get_dom_snippet(page)
 
 
-async def _find_gst_report_container(*, page: Page, readiness_selector: str) -> Locator | None:
+async def _find_gst_report_container(
+    *, page: Page, readiness_selector: str
+) -> Locator | None:
     readiness_locator = page.locator(readiness_selector)
     for selector in GST_CONTAINER_SELECTORS:
         locator = page.locator(selector).filter(has=readiness_locator)
@@ -6435,7 +6974,14 @@ async def _discover_selector_cues(*, container: Locator, page: Page) -> Dict[str
                     }
                 )
             if count > sample_count:
-                matches.append({"cue": cue, "selector": selector, "truncated": True, "count": count})
+                matches.append(
+                    {
+                        "cue": cue,
+                        "selector": selector,
+                        "truncated": True,
+                        "count": count,
+                    }
+                )
         results[label] = {"cues": cues, "matches": matches}
     return results
 
@@ -6515,11 +7061,19 @@ async def _discover_spinner_cues(page: Page) -> list[Dict[str, Any]]:
                     "id": await entry.get_attribute("id"),
                 }
             )
-        results.append({"selector": "[class*=spinner|loading|loader]", "count": count, "samples": samples})
+        results.append(
+            {
+                "selector": "[class*=spinner|loading|loader]",
+                "count": count,
+                "samples": samples,
+            }
+        )
     return results
 
 
-async def _persist_summary(*, summary: UcOrdersDiscoverySummary, logger: JsonLogger) -> bool:
+async def _persist_summary(
+    *, summary: UcOrdersDiscoverySummary, logger: JsonLogger
+) -> bool:
     finished_at = datetime.now(timezone.utc)
     record = summary.build_record(finished_at=finished_at)
     if not config.database_url:
@@ -6534,7 +7088,10 @@ async def _persist_summary(*, summary: UcOrdersDiscoverySummary, logger: JsonLog
 
     try:
         await _flush_deferred_orders_sync_logs(
-            summary=summary, logger=logger, run_id=summary.run_id, run_env=summary.run_env
+            summary=summary,
+            logger=logger,
+            run_id=summary.run_id,
+            run_env=summary.run_env,
         )
         existing = await fetch_summary_for_run(config.database_url, summary.run_id)
         if existing:
@@ -6577,7 +7134,9 @@ async def _persist_summary(*, summary: UcOrdersDiscoverySummary, logger: JsonLog
         return False
 
 
-async def _start_run_summary(*, summary: UcOrdersDiscoverySummary, logger: JsonLogger) -> bool:
+async def _start_run_summary(
+    *, summary: UcOrdersDiscoverySummary, logger: JsonLogger
+) -> bool:
     if not config.database_url:
         log_event(
             logger=logger,
@@ -6649,10 +7208,34 @@ async def _start_run_summary(*, summary: UcOrdersDiscoverySummary, logger: JsonL
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the UC Orders discovery flow")
-    parser.add_argument("--run-env", dest="run_env", type=str, default=None, help="Override run environment label")
-    parser.add_argument("--run-id", dest="run_id", type=str, default=None, help="Override generated run id")
-    parser.add_argument("--from-date", dest="from_date", type=_parse_date, default=None, help="Start date (YYYY-MM-DD)")
-    parser.add_argument("--to-date", dest="to_date", type=_parse_date, default=None, help="End date (YYYY-MM-DD)")
+    parser.add_argument(
+        "--run-env",
+        dest="run_env",
+        type=str,
+        default=None,
+        help="Override run environment label",
+    )
+    parser.add_argument(
+        "--run-id",
+        dest="run_id",
+        type=str,
+        default=None,
+        help="Override generated run id",
+    )
+    parser.add_argument(
+        "--from-date",
+        dest="from_date",
+        type=_parse_date,
+        default=None,
+        help="Start date (YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--to-date",
+        dest="to_date",
+        type=_parse_date,
+        default=None,
+        help="End date (YYYY-MM-DD)",
+    )
     return parser
 
 
