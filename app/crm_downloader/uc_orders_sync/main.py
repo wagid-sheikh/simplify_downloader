@@ -355,6 +355,10 @@ class StoreOutcome:
     dropped_rows: list[dict[str, Any]] = field(default_factory=list)
     reason_codes: list[str] = field(default_factory=list)
     footer_total: int | None = None
+    pre_filter_footer_total: int | None = None
+    post_filter_footer_total: int | None = None
+    footer_baseline_source: str | None = None
+    footer_baseline_stable: bool = False
     base_rows_extracted: int | None = None
     rows_missing_estimate: int | None = None
 
@@ -368,12 +372,20 @@ class ArchiveOrdersExtract:
     skipped_order_counters: dict[str, int] = field(default_factory=dict)
     page_count: int = 0
     footer_total: int | None = None
+    pre_filter_footer_total: int | None = None
+    post_filter_footer_total: int | None = None
+    footer_baseline_source: str | None = None
+    footer_baseline_stable: bool = False
 
 
 @dataclass
 class ArchiveFilterFooterState:
     pre_filter_footer_window: tuple[int, int, int] | None = None
     post_filter_footer_window: tuple[int, int, int] | None = None
+    pre_filter_footer_total: int | None = None
+    post_filter_footer_total: int | None = None
+    footer_baseline_source: str = "fallback_unknown"
+    footer_baseline_stable: bool = False
 
 
 @dataclass
@@ -388,9 +400,9 @@ class ArchivePageStabilityState:
 
 
 def _archive_extraction_gap(extract: ArchiveOrdersExtract) -> int | None:
-    if extract.footer_total is None:
+    if extract.post_filter_footer_total is None:
         return None
-    return max(0, extract.footer_total - len(extract.base_rows))
+    return max(0, extract.post_filter_footer_total - len(extract.base_rows))
 
 
 def _record_skipped_order(extract: ArchiveOrdersExtract, *, order_code: str, reason: str) -> None:
@@ -493,6 +505,21 @@ def _normalize_output_status(status: str | None) -> str:
     return mapping.get(normalized, normalized or "unknown")
 
 
+def _classify_store_window_status(outcome: StoreOutcome | None) -> str:
+    if outcome is None:
+        return "skipped"
+    if outcome.status == "error":
+        return "failed"
+    reason_codes = set(outcome.reason_codes or [])
+    if "partial_extraction" in reason_codes:
+        return "partial"
+    if "footer_baseline_unavailable" in reason_codes or outcome.status == "warning":
+        return "success_with_warnings"
+    if outcome.status == "ok":
+        return "success"
+    return "skipped"
+
+
 @dataclass
 class DeferredOrdersSyncLog:
     store: "UcStore"
@@ -530,16 +557,16 @@ class UcOrdersDiscoverySummary:
         self.mark_phase("store", outcome.status)
 
     def overall_status(self) -> str:
-        statuses = [outcome.status for outcome in self.store_outcomes.values()]
-        if any(status == "error" for status in statuses):
+        classifications = [_classify_store_window_status(outcome) for outcome in self.store_outcomes.values()]
+        if any(state == "failed" for state in classifications):
             return "failed"
-        if any(status == "warning" for status in statuses):
+        if any(state == "partial" for state in classifications):
+            return "partial"
+        if any(state == "success_with_warnings" for state in classifications):
             return "success_with_warnings"
-        if any("partial_extraction" in (outcome.reason_codes or []) for outcome in self.store_outcomes.values()):
+        if not classifications and not self.store_codes:
             return "success_with_warnings"
-        if not statuses and not self.store_codes:
-            return "success_with_warnings"
-        return "success" if statuses else "failed"
+        return "success" if classifications else "failed"
 
     def _window_summary(self) -> Dict[str, Any]:
         expected_windows = len(self.store_codes)
@@ -557,9 +584,13 @@ class UcOrdersDiscoverySummary:
 
     def summary_text(self) -> str:
         total = len(self.store_codes)
-        ok = sum(1 for outcome in self.store_outcomes.values() if outcome.status == "ok")
-        warn = sum(1 for outcome in self.store_outcomes.values() if outcome.status == "warning")
-        error = sum(1 for outcome in self.store_outcomes.values() if outcome.status == "error")
+        ok = sum(1 for outcome in self.store_outcomes.values() if _classify_store_window_status(outcome) == "success")
+        warn = sum(
+            1
+            for outcome in self.store_outcomes.values()
+            if _classify_store_window_status(outcome) in {"success_with_warnings", "partial"}
+        )
+        error = sum(1 for outcome in self.store_outcomes.values() if _classify_store_window_status(outcome) == "failed")
         overall_status = self.overall_status()
         status_explanation = {
             "success": "run completed with no issues recorded",
@@ -595,10 +626,9 @@ class UcOrdersDiscoverySummary:
             )
 
     def _store_status_counts(self) -> Dict[str, int]:
-        counts = {"ok": 0, "warning": 0, "error": 0}
+        counts = {"success": 0, "success_with_warnings": 0, "partial": 0, "failed": 0, "skipped": 0}
         for outcome in self.store_outcomes.values():
-            if outcome.status in counts:
-                counts[outcome.status] += 1
+            counts[_classify_store_window_status(outcome)] += 1
         return counts
 
     def _build_stage_summary(self) -> Dict[str, Dict[str, int]]:
@@ -625,7 +655,7 @@ class UcOrdersDiscoverySummary:
                 else:
                     info_message = outcome.message
             summary[code] = {
-                "status": _normalize_output_status(outcome.status if outcome else "error"),
+                "status": _classify_store_window_status(outcome),
                 "message": outcome.message if outcome else "No outcome recorded",
                 "error_message": error_message,
                 "info_message": info_message,
@@ -651,6 +681,10 @@ class UcOrdersDiscoverySummary:
                 "rows_downloaded": outcome.rows_downloaded if outcome else None,
                 "rows_skipped_invalid": outcome.rows_skipped_invalid if outcome else None,
                 "rows_skipped_invalid_reasons": outcome.rows_skipped_invalid_reasons if outcome else None,
+                "pre_filter_footer_total": outcome.pre_filter_footer_total if outcome else None,
+                "post_filter_footer_total": outcome.post_filter_footer_total if outcome else None,
+                "footer_baseline_source": outcome.footer_baseline_source if outcome else None,
+                "footer_baseline_stable": outcome.footer_baseline_stable if outcome else False,
             }
         return summary
 
@@ -682,7 +716,7 @@ class UcOrdersDiscoverySummary:
             stores.append(
                 {
                     "store_code": code,
-                    "status": _normalize_output_status(outcome.status if outcome else "error"),
+                    "status": _classify_store_window_status(outcome),
                     "message": outcome.message if outcome else "No outcome recorded",
                     "error_message": error_message,
                     "info_message": info_message,
@@ -703,6 +737,10 @@ class UcOrdersDiscoverySummary:
                     "rows_downloaded": outcome.rows_downloaded if outcome else None,
                     "rows_skipped_invalid": outcome.rows_skipped_invalid if outcome else None,
                     "rows_skipped_invalid_reasons": outcome.rows_skipped_invalid_reasons if outcome else None,
+                "pre_filter_footer_total": outcome.pre_filter_footer_total if outcome else None,
+                "post_filter_footer_total": outcome.post_filter_footer_total if outcome else None,
+                "footer_baseline_source": outcome.footer_baseline_source if outcome else None,
+                "footer_baseline_stable": outcome.footer_baseline_stable if outcome else False,
                     "stage_statuses": dict(outcome.stage_statuses) if outcome else {},
                     "stage_metrics": dict(outcome.stage_metrics) if outcome else {},
                 }
@@ -1475,7 +1513,10 @@ def _resolve_sync_log_status(
     has_output = download_succeeded or has_rows
     if not has_output:
         return "skipped"
-    if outcome.status == "warning":
+    reason_codes = set(outcome.reason_codes or [])
+    if "partial_extraction" in reason_codes:
+        return "partial"
+    if "footer_baseline_unavailable" in reason_codes or outcome.status == "warning":
         return "success_with_warnings"
     return "success"
 
@@ -1674,6 +1715,7 @@ async def _apply_archive_date_filter(
         to_date=to_date,
     )
     pre_filter_footer_window = await _get_archive_footer_window(page)
+    pre_filter_footer_total = pre_filter_footer_window[2] if pre_filter_footer_window is not None else None
     with contextlib.suppress(Exception):
         await page.locator("body").click(position={"x": 5, "y": 5})
     with contextlib.suppress(TimeoutError):
@@ -1689,24 +1731,41 @@ async def _apply_archive_date_filter(
         page=page,
         timeout_ms=max(1_000, NAV_TIMEOUT_MS // 3),
     )
-    stabilized_footer_window = (
-        post_filter_stability.stable_footer_window
-        if post_filter_stability.stable and post_filter_stability.stable_footer_window is not None
-        else post_filter_footer_window
-    )
+
+    footer_baseline_source = "fallback_unknown"
+    footer_baseline_stable = False
+    post_filter_footer_total: int | None = None
+    stabilized_footer_window: tuple[int, int, int] | None = None
+
+    if post_filter_stability.stable and post_filter_stability.stable_footer_window is not None:
+        stabilized_footer_window = post_filter_stability.stable_footer_window
+        post_filter_footer_total = stabilized_footer_window[2]
+        footer_baseline_source = "post_filter_refresh"
+        footer_baseline_stable = True
+    else:
+        stabilized_footer_window = post_filter_footer_window
+
     log_event(
         logger=logger,
         phase="filters",
         message="Archive Orders filter refresh completed",
         store_code=store.store_code,
         pre_filter_footer_window=pre_filter_footer_window,
+        pre_filter_footer_total=pre_filter_footer_total,
         post_filter_footer_window=post_filter_footer_window,
         stabilized_footer_window=stabilized_footer_window,
+        post_filter_footer_total=post_filter_footer_total,
+        footer_baseline_source=footer_baseline_source,
+        footer_baseline_stable=footer_baseline_stable,
         **_stability_log_fields(post_filter_stability),
     )
     return ArchiveFilterFooterState(
         pre_filter_footer_window=pre_filter_footer_window,
         post_filter_footer_window=stabilized_footer_window,
+        pre_filter_footer_total=pre_filter_footer_total,
+        post_filter_footer_total=post_filter_footer_total,
+        footer_baseline_source=footer_baseline_source,
+        footer_baseline_stable=footer_baseline_stable,
     )
 
 
@@ -2280,14 +2339,22 @@ async def _collect_archive_orders(
     page: Page,
     store: UcStore,
     logger: JsonLogger,
-    filtered_footer_window: tuple[int, int, int] | None = None,
+    post_filter_footer_window: tuple[int, int, int] | None = None,
+    pre_filter_footer_total: int | None = None,
+    post_filter_footer_total: int | None = None,
+    footer_baseline_source: str | None = None,
+    footer_baseline_stable: bool = False,
 ) -> ArchiveOrdersExtract:
     extract = ArchiveOrdersExtract()
     seen_orders: set[str] = set()
     page_index = 1
-    footer_total: int | None = filtered_footer_window[2] if filtered_footer_window is not None else None
+    footer_total: int | None = post_filter_footer_total
     partial_reason: str | None = None
 
+    extract.pre_filter_footer_total = pre_filter_footer_total
+    extract.post_filter_footer_total = post_filter_footer_total
+    extract.footer_baseline_source = footer_baseline_source
+    extract.footer_baseline_stable = footer_baseline_stable
     if footer_total is not None:
         extract.footer_total = footer_total
 
@@ -2300,10 +2367,12 @@ async def _collect_archive_orders(
         )
         footer_window = stability_state.stable_footer_window
         if page_index == 1 and footer_window is None:
-            footer_window = filtered_footer_window
+            footer_window = post_filter_footer_window
         if footer_window is not None:
             footer_total = footer_window[2]
-            extract.footer_total = footer_total
+            if extract.post_filter_footer_total is None and extract.footer_baseline_stable:
+                extract.post_filter_footer_total = footer_total
+            extract.footer_total = extract.post_filter_footer_total
         row_locator = page.locator(ARCHIVE_TABLE_ROW_SELECTOR)
         raw_row_count = await row_locator.count()
         valid_rows: list[tuple[Locator, str]] = []
@@ -2331,7 +2400,7 @@ async def _collect_archive_orders(
             store_code=store.store_code,
             page_number=page_index,
             row_count=row_count,
-            footer_total=footer_total,
+            footer_total=extract.post_filter_footer_total,
             footer_window=footer_window,
             **_stability_log_fields(stability_state),
         )
@@ -2495,7 +2564,7 @@ async def _collect_archive_orders(
                 store_code=store.store_code,
                 page_number=page_index,
                 total_rows=len(extract.base_rows),
-                footer_total=footer_total,
+                footer_total=extract.post_filter_footer_total,
                 **_stability_log_fields(stability_state),
             )
             break
@@ -2703,7 +2772,7 @@ async def _collect_archive_orders(
                     store_code=store.store_code,
                     partial_reason=partial_reason,
                     extracted_rows=len(extract.base_rows),
-                    footer_total=footer_total,
+                    footer_total=extract.post_filter_footer_total,
                     page_count=extract.page_count,
                     previous_page_number=previous_page_number,
                     current_page_number=current_page_number,
@@ -2723,20 +2792,28 @@ async def _collect_archive_orders(
             reason=partial_reason,
         )
 
-    if extract.footer_total is not None and len(extract.base_rows) < extract.footer_total:
+    if extract.post_filter_footer_total is not None and len(extract.base_rows) < extract.post_filter_footer_total:
         _record_skipped_order(
             extract,
             order_code=f"partial_extraction:{store.store_code}",
-            reason="partial_extraction_footer_total_mismatch",
+            reason="partial_extraction",
         )
         log_event(
             logger=logger,
             phase="warnings",
             status="warn",
-            message="Archive Orders extraction ended before footer total was reached",
+            message="Archive Orders extraction ended before post-filter footer baseline was reached",
             store_code=store.store_code,
             extracted_base_rows=len(extract.base_rows),
-            footer_total=extract.footer_total,
+            footer_total=extract.post_filter_footer_total,
+        )
+
+
+    if extract.post_filter_footer_total is None or not extract.footer_baseline_stable:
+        _record_skipped_order(
+            extract,
+            order_code=f"partial_extraction:{store.store_code}",
+            reason="footer_baseline_unavailable",
         )
 
     log_event(
@@ -2750,7 +2827,7 @@ async def _collect_archive_orders(
         skipped_order_codes=extract.skipped_order_codes,
         skipped_order_counters=extract.skipped_order_counters,
         page_count=extract.page_count,
-        footer_total=extract.footer_total,
+        footer_total=extract.post_filter_footer_total,
     )
     return extract
 
@@ -3062,12 +3139,20 @@ async def _run_store_discovery(
             page=page,
             store=store,
             logger=logger,
-            filtered_footer_window=filter_footer_state.post_filter_footer_window,
+            post_filter_footer_window=filter_footer_state.post_filter_footer_window,
+            pre_filter_footer_total=filter_footer_state.pre_filter_footer_total,
+            post_filter_footer_total=filter_footer_state.post_filter_footer_total,
+            footer_baseline_source=filter_footer_state.footer_baseline_source,
+            footer_baseline_stable=filter_footer_state.footer_baseline_stable,
         )
         row_count = len(extract.base_rows)
         rows_missing_estimate = _archive_extraction_gap(extract)
-        is_partial_extraction = rows_missing_estimate is not None and rows_missing_estimate > 0
-        reason_codes: list[str] = ["partial_extraction"] if is_partial_extraction else []
+        reason_codes: list[str] = []
+        if extract.post_filter_footer_total is None or not extract.footer_baseline_stable:
+            reason_codes.append("footer_baseline_unavailable")
+        elif rows_missing_estimate is not None and rows_missing_estimate > 0:
+            reason_codes.append("partial_extraction")
+        is_partial_extraction = "partial_extraction" in reason_codes
         base_path = download_dir / _format_archive_base_filename(store.store_code, from_date, to_date)
         order_details_path = download_dir / _format_archive_order_details_filename(store.store_code, from_date, to_date)
         payment_details_path = download_dir / _format_archive_payment_details_filename(store.store_code, from_date, to_date)
@@ -3107,7 +3192,10 @@ async def _run_store_discovery(
                 "payment_details_rows": payment_details_count,
                 "skipped_order_counters": extract.skipped_order_counters,
                 "skipped_order_codes": extract.skipped_order_codes,
-                "footer_total": extract.footer_total,
+                "footer_total": extract.post_filter_footer_total,
+                "pre_filter_footer_total": extract.pre_filter_footer_total,
+                "footer_baseline_source": extract.footer_baseline_source,
+                "footer_baseline_stable": extract.footer_baseline_stable,
                 "base_rows_extracted": len(extract.base_rows),
                 "rows_missing_estimate": rows_missing_estimate,
                 "reason_codes": reason_codes,
@@ -3248,10 +3336,24 @@ async def _run_store_discovery(
                     }
 
         status_label = "warning" if any(v == "failed" for k, v in stage_statuses.items() if k != "download") else "ok"
-        download_message = "Archive Orders download complete"
-        if is_partial_extraction:
+        baseline_source = extract.footer_baseline_source or "fallback_unknown"
+        download_message = (
+            f"Archive Orders extracted {len(extract.base_rows)} rows "
+            f"(post-filter footer total: {extract.post_filter_footer_total}); "
+            f"footer baseline source: {baseline_source}"
+        )
+        if "partial_extraction" in reason_codes:
             status_label = "warning"
-            download_message = "Archive Orders extracted partially (footer total mismatch)"
+            download_message = (
+                f"Archive Orders extracted partially: {len(extract.base_rows)} of "
+                f"{extract.post_filter_footer_total} post-filter rows"
+            )
+        elif "footer_baseline_unavailable" in reason_codes:
+            status_label = "warning"
+            download_message = (
+                f"Archive Orders extracted {len(extract.base_rows)} rows; "
+                "post-filter footer baseline unavailable after refresh stabilization"
+            )
         elif status_label == "warning":
             failed_stages = [name for name, stage_status in stage_statuses.items() if stage_status == "failed"]
             download_message = (
@@ -3273,7 +3375,11 @@ async def _run_store_discovery(
             archive_publish_orders=archive_publish_orders,
             archive_publish_sales=archive_publish_sales,
             reason_codes=reason_codes,
-            footer_total=extract.footer_total,
+            footer_total=extract.post_filter_footer_total,
+            pre_filter_footer_total=extract.pre_filter_footer_total,
+            post_filter_footer_total=extract.post_filter_footer_total,
+            footer_baseline_source=extract.footer_baseline_source,
+            footer_baseline_stable=extract.footer_baseline_stable,
             base_rows_extracted=len(extract.base_rows),
             rows_missing_estimate=rows_missing_estimate,
         )
@@ -3381,7 +3487,10 @@ async def _run_store_discovery(
             rows_skipped_invalid=outcome.rows_skipped_invalid,
             rows_skipped_invalid_reasons=outcome.rows_skipped_invalid_reasons,
             reason_codes=outcome.reason_codes,
-            footer_total=outcome.footer_total,
+            footer_total=outcome.post_filter_footer_total,
+            pre_filter_footer_total=outcome.pre_filter_footer_total,
+            footer_baseline_source=outcome.footer_baseline_source,
+            footer_baseline_stable=outcome.footer_baseline_stable,
             base_rows_extracted=outcome.base_rows_extracted,
             rows_missing_estimate=outcome.rows_missing_estimate,
             primary_metrics=primary_metrics,
@@ -3416,7 +3525,10 @@ async def _run_store_discovery(
                 "rows_skipped_invalid": outcome.rows_skipped_invalid,
                 "rows_skipped_invalid_reasons": outcome.rows_skipped_invalid_reasons,
                 "reason_codes": list(outcome.reason_codes),
-                "footer_total": outcome.footer_total,
+                "footer_total": outcome.post_filter_footer_total,
+                "pre_filter_footer_total": outcome.pre_filter_footer_total,
+                "footer_baseline_source": outcome.footer_baseline_source,
+                "footer_baseline_stable": outcome.footer_baseline_stable,
                 "base_rows_extracted": outcome.base_rows_extracted,
                 "rows_missing_estimate": outcome.rows_missing_estimate,
                 "attempt_no": attempt_no,

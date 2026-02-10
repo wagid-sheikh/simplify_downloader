@@ -134,7 +134,7 @@ async def test_collect_archive_orders_does_not_stop_on_page1_when_footer_has_mor
 
     assert extract.page_count == 2
     assert len(extract.base_rows) == 60
-    assert extract.skipped_order_counters["partial_extraction_footer_total_mismatch"] == 1
+    assert extract.skipped_order_counters["footer_baseline_unavailable"] == 1
 
 
 @pytest.mark.asyncio
@@ -195,11 +195,11 @@ async def test_collect_archive_orders_aborts_after_stalled_next_click_retry(monk
     assert len(extract.base_rows) == 30
     assert extract.page_count == 1
     assert extract.skipped_order_counters["partial_extraction_non_advancing_next_click_after_retry"] == 1
-    assert extract.skipped_order_counters["partial_extraction_footer_total_mismatch"] == 1
+    assert extract.skipped_order_counters["footer_baseline_unavailable"] == 1
 
 
 def test_archive_extraction_gap_uses_footer_total() -> None:
-    extract = uc_main.ArchiveOrdersExtract(base_rows=[{"order_code": "O1"}], footer_total=3)
+    extract = uc_main.ArchiveOrdersExtract(base_rows=[{"order_code": "O1"}], post_filter_footer_total=3)
     assert uc_main._archive_extraction_gap(extract) == 2
 
 
@@ -220,7 +220,7 @@ def test_summary_overall_status_rolls_up_partial_reason_codes() -> None:
         ),
     )
 
-    assert summary.overall_status() == "success_with_warnings"
+    assert summary.overall_status() == "partial"
 
 
 class _FakeSimpleLocator:
@@ -414,3 +414,45 @@ async def test_collect_archive_orders_stable_footer_completion_does_not_click_ne
 
     assert extract.page_count == 1
     assert page.index == 0
+
+
+def test_partial_reason_uses_post_filter_baseline_not_pre_filter() -> None:
+    extract = uc_main.ArchiveOrdersExtract(
+        base_rows=[{"order_code": f"O{i}"} for i in range(1, 11)],
+        pre_filter_footer_total=100,
+        post_filter_footer_total=10,
+        footer_baseline_source="post_filter_refresh",
+        footer_baseline_stable=True,
+    )
+
+    assert uc_main._archive_extraction_gap(extract) == 0
+
+
+
+def test_store_outcome_marks_partial_when_extracted_below_post_filter_total() -> None:
+    outcome = uc_main.StoreOutcome(
+        status="warning",
+        message="partial",
+        reason_codes=["partial_extraction"],
+        post_filter_footer_total=10,
+        base_rows_extracted=8,
+    )
+
+    status = uc_main._resolve_sync_log_status(outcome=outcome, download_succeeded=True, row_count=8)
+
+    assert status == "partial"
+
+
+
+def test_store_outcome_marks_warning_when_footer_baseline_unavailable() -> None:
+    outcome = uc_main.StoreOutcome(
+        status="warning",
+        message="baseline unavailable",
+        reason_codes=["footer_baseline_unavailable"],
+        footer_baseline_source="fallback_unknown",
+        footer_baseline_stable=False,
+    )
+
+    status = uc_main._resolve_sync_log_status(outcome=outcome, download_succeeded=True, row_count=3)
+
+    assert status == "success_with_warnings"
