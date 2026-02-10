@@ -105,13 +105,14 @@
 ## Production readiness blockers (UC windows)
 
 13. **Fix missing UC windows in orders_sync_run_profiler**
+
     * Reproduce a profiler run with UC567/UC610 and **capture the generated window plan** (from/to ranges) in logs plus a persisted artifact (JSON or CSV) for comparison against expected coverage.
     * Trace where the UC window list is trimmed or skipped (planner, retry loop, exit conditions). Add logging that explicitly states **why** any UC window is skipped or dropped.
     * Validate date-boundary math: inclusive/exclusive edges, overlap behavior, and “end_date” alignment so the **final window always reaches the run’s end date**.
     * Add a regression test (or deterministic dry-run harness) that asserts **no missing windows** for UC567/UC610 across a full-range run.
     * Update the profiler summary to fail loudly (status=failed) if any UC window is missing, so this cannot silently ship.
-
 14. **Eliminate UC partial status (GST export shows row_count=0)**
+
     * Capture DOM snapshots and logging when GST rows are missing after Apply (selectors, timing, network idle vs spinner waits, visible row count).
     * Compare against a manual run to confirm whether **Apply is required** or if the export button is decoupled from row rendering; ensure row detection matches the DOM structure used by the GST table.
     * Implement a resilient readiness check: wait for a **positive data signal** (row count > 0 or “no data” banner) before exporting, and treat “no data” as a distinct success case with explicit status/notes.
@@ -125,3 +126,59 @@
 * Proceed sequentially through phases, keeping each PR small and isolated to the new directories (`app/crm_downloader`,** **`app/bank_sync`, scripts), with no changes to existing pipelines.
 
 If this plan looks good, I’ll proceed with the Phase 0 scaffolding PR first.
+
+
+
+
+## All questions I have before implementation
+
+### A) Auth / session / routing
+
+1. Are API calls guaranteed to work using the same browser-authenticated cookies/session after login, with no extra headers (e.g.,** **`Authorization`,** **`x-api-key`, CSRF token)? [I guess yes, we can write a seperate section of code and test this]
+2. Do we have any store-specific host variation, or always** **`https://store.ucleanlaundry.com`? [NO]
+3. Is** **`franchise=UCLEAN` always constant for all stores you process? [YES]
+
+### B) Pagination contract
+
+4. Can we trust** **`pagination.totalPages` and** **`pagination.total` as authoritative? [yes]
+5. Is** **`limit=30` fixed, or can/should we use higher values? [let's keep 30]
+6. Any observed duplicates across pages for same date window? [can not say that]
+7. Is ordering stable (newest first) and deterministic for a fixed date range? [can not say what ordering is implemented by their backend]
+8. Should we stop by** **`totalPages`, by empty** **`data`, or by both safeguards? [yes]
+
+### C) Date filtering semantics
+
+9. Is** **`dateType=delivery` always the intended business filter for archive sync? [yes]
+10. Should** **`startDate/endDate` be inclusive in business terms (and is timezone IST on backend)? [yes]
+11. Any cases where API ignores** **`dateRange=custom` and returns default page set? [once you reach archive page, then their system automatically pulls 30 records without any date range]
+
+### D) Data mapping (critical)
+
+12. `payment_details` is a JSON string, not object array — should we treat parse failures as warning + keep base row, or hard-fail the order? [payment_details can be converted to our needed object. If an order does not have payment, then this payment_details is null]
+13. For multi-payment orders (e.g., UC610-0769), should we emit one payment row per payment entry exactly as-is? [for multi payment we need all rows that will go to our payment details, 1:UPI, 4:Cash, any other pament mode: "Others"]
+14. Confirm your mapping:** **`payment_mode=1 => UPI`,** **`payment_mode=4 => Cash`; do we have a full enum (2/3/5/etc.)? [we do not have full enums]
+15. If payment mode is unknown code, preferred normalized value:** **`UNKNOWN`? [It should be marked as: Others]
+16. Should amount rounding follow API value exactly, or follow existing Decimal normalization and two-decimal storage? [Let's pull the raw data we get and save in our excels]
+17. For base row status, API gives numeric** **`status: 7`; do you want numeric or mapped text (`DELIVERED`)?
+
+### E) Order details source
+
+18. Is** **`generateInvoice/{id}` always available for every delivered booking?
+19. Can** **`generateInvoice` return different HTML templates by service/store?
+20. Should we parse order details from invoice HTML only, or use list API fields where possible and invoice only for line items?
+21. For orders with multiple services + multiline items (like UC610-0759), do you want one row per item line (current behavior) or one row per service block?
+
+### F) Reliability / fallback behavior
+
+22. Do you want UI scraping fallback if API fails, or fail-fast and retry run later?
+23. Retry policy preference for API errors (e.g., 429/5xx): max retries + backoff?
+24. Should partial extraction still be allowed if some invoice/detail calls fail but list pages succeed?
+25. Is it acceptable to proceed with base + payment even if some order_details are unavailable?
+
+### G) Operational / observability
+
+26. Should logs include API page progress (`page/totalPages`, rows fetched, parse failures) replacing current footer-based telemetry?
+27. Do you want a validation metric:** **`api_total` vs extracted base rows mismatch alerts?
+28. Should we preserve existing output XLSX files exactly (column names/order), or are we free to bypass files and ingest directly (I recommend preserving first for low-risk cutover)?
+29. Do you want a feature flag rollout (e.g.,** **`UC_ARCHIVE_USE_API=true`) per store or global?
+30. Do you want side-by-side shadow mode for a few runs (UI + API diff) before full switch?
