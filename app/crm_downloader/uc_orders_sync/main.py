@@ -2318,7 +2318,11 @@ async def _get_archive_order_code(row: Locator) -> str | None:
 
 
 async def _get_first_order_code(page: Page) -> str | None:
-    locator = page.locator(f"{ARCHIVE_TABLE_ROW_SELECTOR} td.order-col span").first
+    row_locator = page.locator(ARCHIVE_TABLE_ROW_SELECTOR)
+    with contextlib.suppress(Exception):
+        if await row_locator.count():
+            return await _get_archive_order_code(row_locator.nth(0))
+    locator = page.locator(f"{ARCHIVE_TABLE_ROW_SELECTOR} td.order-col").first
     return await _locator_text(locator)
 
 
@@ -2506,7 +2510,7 @@ async def _collect_archive_orders(
                 )
                 continue
             valid_rows.append((row, order_code))
-        row_count = raw_row_count
+        row_count = len(valid_rows)
         extract.page_count += 1
         current_footer_window = footer_window
         page_log_fields: dict[str, Any] = {
@@ -2516,6 +2520,7 @@ async def _collect_archive_orders(
             "store_code": store.store_code,
             "page_number": page_index,
             "row_count": row_count,
+            "raw_row_count": raw_row_count,
             "footer_total": extract.post_filter_footer_total,
             "footer_window": current_footer_window,
             **_stability_log_fields(stability_state),
