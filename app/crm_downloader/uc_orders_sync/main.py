@@ -340,6 +340,7 @@ class StoreOutcome:
     skip_reason: str | None = None
     warning_count: int | None = None
     rows_downloaded: int | None = None
+    rows_ingested: int | None = None
     rows_skipped_invalid: int | None = None
     rows_skipped_invalid_reasons: dict[str, int] | None = None
     staging_rows: int | None = None
@@ -524,13 +525,128 @@ def _classify_store_window_status(outcome: StoreOutcome | None) -> str:
     if outcome.status == "error":
         return "failed"
     reason_codes = set(outcome.reason_codes or [])
-    if "partial_extraction" in reason_codes:
+    if "partial_extraction" in reason_codes or "timeout_window_skipped" in reason_codes:
         return "partial"
     if "footer_baseline_unavailable" in reason_codes or outcome.status == "warning":
         return "success_with_warnings"
     if outcome.status == "ok":
         return "success"
     return "skipped"
+
+
+def _resolve_rows_downloaded(outcome: StoreOutcome | None) -> int | None:
+    if outcome is None:
+        return None
+    return outcome.base_rows_extracted if outcome.base_rows_extracted is not None else outcome.rows_downloaded
+
+
+def _resolve_rows_ingested(outcome: StoreOutcome | None) -> int | None:
+    if outcome is None:
+        return None
+    if outcome.rows_ingested is not None:
+        return outcome.rows_ingested
+    inferred = _rows_ingested_from_stage_metrics(outcome.stage_metrics or {})
+    if inferred is not None:
+        return inferred
+    return outcome.final_rows if outcome.final_rows is not None else outcome.staging_rows
+
+
+
+
+def _rows_ingested_from_stage_metrics(stage_metrics: Mapping[str, Mapping[str, Any]]) -> int | None:
+    archive_ingest = stage_metrics.get("archive_ingest") or {}
+    if not isinstance(archive_ingest, Mapping):
+        return None
+    ingest_files = archive_ingest.get("files")
+    if not isinstance(ingest_files, Mapping):
+        return None
+    parsed_total = 0
+    parsed_found = False
+    inserted_total = 0
+    inserted_found = False
+    for metrics in ingest_files.values():
+        if not isinstance(metrics, Mapping):
+            continue
+        parsed = metrics.get("parsed")
+        if isinstance(parsed, int):
+            parsed_total += parsed
+            parsed_found = True
+        inserted = metrics.get("inserted")
+        if isinstance(inserted, int):
+            inserted_total += inserted
+            inserted_found = True
+    if parsed_found:
+        return parsed_total
+    if inserted_found:
+        return inserted_total
+    return None
+
+
+def _collect_archive_warning_signals(
+    *,
+    reason_codes: Sequence[str],
+    stage_metrics: Mapping[str, Mapping[str, Any]],
+) -> tuple[int, list[dict[str, Any]], list[str]]:
+    warning_rows: list[dict[str, Any]] = []
+    warning_count = 0
+    normalized_reason_codes: set[str] = {str(code).strip() for code in reason_codes if str(code).strip()}
+
+    archive_ingest = stage_metrics.get("archive_ingest") or {}
+    if isinstance(archive_ingest, Mapping):
+        rejects = archive_ingest.get("rejects")
+        if isinstance(rejects, int) and rejects > 0:
+            warning_count += rejects
+            normalized_reason_codes.add("archive_ingest_rejects")
+        reject_rows = archive_ingest.get("reject_rows")
+        if isinstance(reject_rows, Sequence):
+            for row in reject_rows:
+                if isinstance(row, Mapping):
+                    warning_rows.append(
+                        {
+                            "source": "archive_ingest",
+                            "source_file": row.get("source_file"),
+                            "row_number": row.get("row_number"),
+                            "reason_codes": list(row.get("reason_codes") or []),
+                        }
+                    )
+
+    archive_publish = stage_metrics.get("archive_publish") or {}
+    if isinstance(archive_publish, Mapping):
+        for publish_source in ("order_details_to_orders", "payment_details_to_sales"):
+            publish_metrics = archive_publish.get(publish_source) or {}
+            if not isinstance(publish_metrics, Mapping):
+                continue
+            publish_warnings = publish_metrics.get("warnings")
+            if isinstance(publish_warnings, int) and publish_warnings > 0:
+                warning_count += publish_warnings
+            publish_reason_codes = publish_metrics.get("reason_codes")
+            if isinstance(publish_reason_codes, Mapping):
+                for code, count in publish_reason_codes.items():
+                    if not code:
+                        continue
+                    normalized_reason_codes.add(str(code))
+                    if isinstance(count, int) and count > 0:
+                        warning_count += count
+                if publish_reason_codes:
+                    warning_rows.append(
+                        {
+                            "source": publish_source,
+                            "reason_codes": dict(publish_reason_codes),
+                        }
+                    )
+            preflight_warning = publish_metrics.get("preflight_warning")
+            if preflight_warning:
+                warning_count += 1
+                normalized_reason_codes.add("preflight_coverage_warning")
+                warning_rows.append(
+                    {
+                        "source": publish_source,
+                        "warning": str(preflight_warning),
+                        "diagnostics": publish_metrics.get("preflight_diagnostics"),
+                    }
+                )
+
+    return warning_count, warning_rows, sorted(normalized_reason_codes)
 
 
 @dataclass
@@ -676,6 +792,8 @@ class UcOrdersDiscoverySummary:
                 "filename": filename,
                 "download_path": outcome.download_path if outcome else None,
                 "warning_count": outcome.warning_count if outcome else None,
+                "reason_codes": list(outcome.reason_codes) if outcome else [],
+                "warning_rows": list(outcome.warning_rows) if outcome else [],
                 "session_probe_result": outcome.session_probe_result if outcome else None,
                 "fallback_login_attempted": outcome.fallback_login_attempted if outcome else None,
                 "fallback_login_result": outcome.fallback_login_result if outcome else None,
@@ -691,7 +809,8 @@ class UcOrdersDiscoverySummary:
                 },
                 "stage_statuses": dict(outcome.stage_statuses) if outcome else {},
                 "stage_metrics": dict(outcome.stage_metrics) if outcome else {},
-                "rows_downloaded": outcome.rows_downloaded if outcome else None,
+                "rows_downloaded": _resolve_rows_downloaded(outcome),
+                "rows_ingested": _resolve_rows_ingested(outcome),
                 "rows_skipped_invalid": outcome.rows_skipped_invalid if outcome else None,
                 "rows_skipped_invalid_reasons": outcome.rows_skipped_invalid_reasons if outcome else None,
                 "pre_filter_footer_total": outcome.pre_filter_footer_total if outcome else None,
@@ -705,10 +824,15 @@ class UcOrdersDiscoverySummary:
         warnings: list[str] = []
         for store_code, outcome in self.store_outcomes.items():
             warning_count = outcome.warning_count if outcome else None
-            if warning_count is None or warning_count <= 0:
+            has_reason_codes = bool((outcome.reason_codes if outcome else []) or [])
+            if (warning_count is None or warning_count <= 0) and not has_reason_codes:
                 continue
+            count_label = warning_count if warning_count is not None and warning_count > 0 else 0
+            suffix = ""
+            if has_reason_codes:
+                suffix = f"; reason_codes={','.join(sorted(set(outcome.reason_codes)))}"
             warnings.append(
-                f"UC_STORE_WARNINGS: {store_code} reported {warning_count} row-level warning(s)"
+                f"UC_STORE_WARNINGS: {store_code} reported {count_label} row-level warning(s){suffix}"
             )
         return warnings
 
@@ -735,6 +859,7 @@ class UcOrdersDiscoverySummary:
                     "info_message": info_message,
                     "skip_reason": outcome.skip_reason if outcome else None,
                     "warning_count": outcome.warning_count if outcome else None,
+                    "reason_codes": list(outcome.reason_codes) if outcome else [],
                     "session_probe_result": outcome.session_probe_result if outcome else None,
                     "fallback_login_attempted": outcome.fallback_login_attempted if outcome else None,
                     "fallback_login_result": outcome.fallback_login_result if outcome else None,
@@ -747,13 +872,14 @@ class UcOrdersDiscoverySummary:
                     "staging_updated": outcome.staging_updated if outcome else None,
                     "final_inserted": outcome.final_inserted if outcome else None,
                     "final_updated": outcome.final_updated if outcome else None,
-                    "rows_downloaded": outcome.rows_downloaded if outcome else None,
+                    "rows_downloaded": _resolve_rows_downloaded(outcome),
+                    "rows_ingested": _resolve_rows_ingested(outcome),
                     "rows_skipped_invalid": outcome.rows_skipped_invalid if outcome else None,
                     "rows_skipped_invalid_reasons": outcome.rows_skipped_invalid_reasons if outcome else None,
-                "pre_filter_footer_total": outcome.pre_filter_footer_total if outcome else None,
-                "post_filter_footer_total": outcome.post_filter_footer_total if outcome else None,
-                "footer_baseline_source": outcome.footer_baseline_source if outcome else None,
-                "footer_baseline_stable": outcome.footer_baseline_stable if outcome else False,
+                    "pre_filter_footer_total": outcome.pre_filter_footer_total if outcome else None,
+                    "post_filter_footer_total": outcome.post_filter_footer_total if outcome else None,
+                    "footer_baseline_source": outcome.footer_baseline_source if outcome else None,
+                    "footer_baseline_stable": outcome.footer_baseline_stable if outcome else False,
                     "stage_statuses": dict(outcome.stage_statuses) if outcome else {},
                     "stage_metrics": dict(outcome.stage_metrics) if outcome else {},
                 }
@@ -1493,8 +1619,8 @@ async def _update_orders_sync_log(
 
 def _build_unified_metrics(outcome: StoreOutcome | None) -> tuple[dict[str, int | None], dict[str, int | None]]:
     primary_metrics = {
-        "primary_rows_downloaded": outcome.rows_downloaded if outcome else None,
-        "primary_rows_ingested": outcome.final_rows if outcome else None,
+        "primary_rows_downloaded": _resolve_rows_downloaded(outcome),
+        "primary_rows_ingested": _resolve_rows_ingested(outcome),
         "primary_staging_rows": outcome.staging_rows if outcome else None,
         "primary_staging_inserted": outcome.staging_inserted if outcome else None,
         "primary_staging_updated": outcome.staging_updated if outcome else None,
@@ -3382,6 +3508,7 @@ async def _run_store_discovery(
                 ingest_metrics = {
                     "files": {k: vars(v) for k, v in ingest_result.files.items()},
                     "rejects": len(ingest_result.rejects),
+                    "reject_rows": [vars(reject) for reject in ingest_result.rejects],
                 }
                 stage_metrics["archive_ingest"] = ingest_metrics
                 stage_statuses["archive_ingest"] = "success"
@@ -3486,6 +3613,9 @@ async def _run_store_discovery(
                         "payment_details_to_sales": sales_error,
                     }
 
+        warning_count, warning_rows, reason_codes = _collect_archive_warning_signals(
+            reason_codes=reason_codes, stage_metrics=stage_metrics
+        )
         status_label = "warning" if any(v == "failed" for k, v in stage_statuses.items() if k != "download") else "ok"
         baseline_source = extract.footer_baseline_source or "fallback_unknown"
         download_message = (
@@ -3521,10 +3651,13 @@ async def _run_store_discovery(
             fallback_login_result=fallback_login_result,
             download_path=str(base_path),
             rows_downloaded=row_count,
+            rows_ingested=_rows_ingested_from_stage_metrics(stage_metrics),
             stage_statuses=stage_statuses,
             stage_metrics=stage_metrics,
             archive_publish_orders=archive_publish_orders,
             archive_publish_sales=archive_publish_sales,
+            warning_count=warning_count,
+            warning_rows=warning_rows,
             reason_codes=reason_codes,
             footer_total=extract.post_filter_footer_total,
             pre_filter_footer_total=extract.pre_filter_footer_total,
@@ -3553,6 +3686,8 @@ async def _run_store_discovery(
             fallback_login_attempted=fallback_login_attempted,
             fallback_login_result=fallback_login_result,
             skip_reason="timeout",
+            reason_codes=["timeout_window_skipped"],
+            warning_count=1,
         )
         summary.record_store(store.store_code, outcome)
         log_event(

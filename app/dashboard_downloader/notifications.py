@@ -1084,15 +1084,18 @@ def _uc_warning_entries(
     for store in stores_payload:
         store_code = store.get("store_code") or "UNKNOWN"
         normalized_store = _normalize_store_code(store_code) or store_code
+        reason_codes = [str(code).strip() for code in (store.get("reason_codes") or []) if str(code).strip()]
         warning_count = None
         if warning_counts_by_store is not None:
             warning_count = warning_counts_by_store.get(normalized_store)
         if warning_count is None:
             warning_count = _coerce_int(store.get("warning_count"))
-        if warning_count is None or warning_count <= 0:
+        if (warning_count is None or warning_count <= 0) and not reason_codes:
             continue
+        count_label = warning_count if warning_count is not None and warning_count > 0 else 0
+        reason_suffix = f"; reason_codes={','.join(sorted(set(reason_codes)))}" if reason_codes else ""
         warnings.append(
-            f"UC_STORE_WARNINGS: {store_code} reported {warning_count} row-level warning(s)"
+            f"UC_STORE_WARNINGS: {store_code} reported {count_label} row-level warning(s){reason_suffix}"
         )
     return warnings
 
