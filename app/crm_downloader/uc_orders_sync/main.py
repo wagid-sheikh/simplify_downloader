@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -373,6 +374,17 @@ class ArchiveOrdersExtract:
 class ArchiveFilterFooterState:
     pre_filter_footer_window: tuple[int, int, int] | None = None
     post_filter_footer_window: tuple[int, int, int] | None = None
+
+
+@dataclass
+class ArchivePageStabilityState:
+    stable: bool
+    stability_attempts: int
+    stable_footer_window: tuple[int, int, int] | None
+    stable_signature_hash: str | None
+    last_observed_footer_window: tuple[int, int, int] | None
+    last_observed_signature_hash: str | None
+    stability_timeout_ms: int
 
 
 def _archive_extraction_gap(extract: ArchiveOrdersExtract) -> int | None:
@@ -1673,6 +1685,15 @@ async def _apply_archive_date_filter(
         logger=logger,
         pre_filter_footer_window=pre_filter_footer_window,
     )
+    post_filter_stability = await _wait_for_archive_page_stability(
+        page=page,
+        timeout_ms=max(1_000, NAV_TIMEOUT_MS // 3),
+    )
+    stabilized_footer_window = (
+        post_filter_stability.stable_footer_window
+        if post_filter_stability.stable and post_filter_stability.stable_footer_window is not None
+        else post_filter_footer_window
+    )
     log_event(
         logger=logger,
         phase="filters",
@@ -1680,10 +1701,12 @@ async def _apply_archive_date_filter(
         store_code=store.store_code,
         pre_filter_footer_window=pre_filter_footer_window,
         post_filter_footer_window=post_filter_footer_window,
+        stabilized_footer_window=stabilized_footer_window,
+        **_stability_log_fields(post_filter_stability),
     )
     return ArchiveFilterFooterState(
         pre_filter_footer_window=pre_filter_footer_window,
-        post_filter_footer_window=post_filter_footer_window,
+        post_filter_footer_window=stabilized_footer_window,
     )
 
 
@@ -2138,6 +2161,85 @@ async def _get_archive_row_signatures(page: Page) -> tuple[str, ...]:
     return tuple(signatures)
 
 
+
+
+def _archive_signature_hash(signatures: tuple[str, ...] | None) -> str | None:
+    if signatures is None:
+        return None
+    payload = "\x1f".join(signatures).encode("utf-8")
+    return hashlib.sha1(payload).hexdigest()
+
+
+async def _wait_for_archive_page_stability(
+    *,
+    page: Page,
+    timeout_ms: int,
+    sample_interval_ms: int = 300,
+    min_consecutive_samples: int = 2,
+) -> ArchivePageStabilityState:
+    deadline = asyncio.get_running_loop().time() + max(timeout_ms, 0) / 1000
+    attempts = 0
+    consecutive_stable = 0
+    previous_footer_window: tuple[int, int, int] | None = None
+    previous_signatures: tuple[str, ...] | None = None
+    previous_signature_hash: str | None = None
+
+    last_footer_window: tuple[int, int, int] | None = None
+    last_signature_hash: str | None = None
+
+    while True:
+        attempts += 1
+        footer_window = await _get_archive_footer_window(page)
+        signatures = await _get_archive_row_signatures(page)
+        signature_hash = _archive_signature_hash(signatures)
+
+        last_footer_window = footer_window
+        last_signature_hash = signature_hash
+
+        if footer_window == previous_footer_window and signatures == previous_signatures:
+            consecutive_stable += 1
+        else:
+            consecutive_stable = 1
+
+        if consecutive_stable >= min_consecutive_samples:
+            return ArchivePageStabilityState(
+                stable=True,
+                stability_attempts=attempts,
+                stable_footer_window=footer_window,
+                stable_signature_hash=signature_hash,
+                last_observed_footer_window=last_footer_window,
+                last_observed_signature_hash=last_signature_hash,
+                stability_timeout_ms=timeout_ms,
+            )
+
+        previous_footer_window = footer_window
+        previous_signatures = signatures
+        previous_signature_hash = signature_hash
+
+        if asyncio.get_running_loop().time() >= deadline:
+            return ArchivePageStabilityState(
+                stable=False,
+                stability_attempts=attempts,
+                stable_footer_window=None,
+                stable_signature_hash=None,
+                last_observed_footer_window=last_footer_window,
+                last_observed_signature_hash=last_signature_hash or previous_signature_hash,
+                stability_timeout_ms=timeout_ms,
+            )
+
+        await page.wait_for_timeout(sample_interval_ms)
+
+
+def _stability_log_fields(state: ArchivePageStabilityState) -> dict[str, Any]:
+    return {
+        "stability_attempts": state.stability_attempts,
+        "stable_footer_window": state.stable_footer_window,
+        "stable_signature_hash": state.stable_signature_hash,
+        "last_observed_footer_window": state.last_observed_footer_window,
+        "last_observed_signature_hash": state.last_observed_signature_hash,
+        "stability_timeout_ms": state.stability_timeout_ms,
+    }
+
 async def _is_button_disabled(locator: Locator) -> bool:
     if not await locator.count():
         return True
@@ -2178,7 +2280,7 @@ async def _collect_archive_orders(
     page: Page,
     store: UcStore,
     logger: JsonLogger,
-    filtered_footer_window: tuple[int, int, int] | None,
+    filtered_footer_window: tuple[int, int, int] | None = None,
 ) -> ArchiveOrdersExtract:
     extract = ArchiveOrdersExtract()
     seen_orders: set[str] = set()
@@ -2192,7 +2294,13 @@ async def _collect_archive_orders(
     while True:
         with contextlib.suppress(TimeoutError):
             await page.wait_for_selector(ARCHIVE_TABLE_ROW_SELECTOR, timeout=NAV_TIMEOUT_MS)
-        footer_window = filtered_footer_window if page_index == 1 else await _get_archive_footer_window(page)
+        stability_state = await _wait_for_archive_page_stability(
+            page=page,
+            timeout_ms=max(1_000, NAV_TIMEOUT_MS // 3),
+        )
+        footer_window = stability_state.stable_footer_window
+        if page_index == 1 and footer_window is None:
+            footer_window = filtered_footer_window
         if footer_window is not None:
             footer_total = footer_window[2]
             extract.footer_total = footer_total
@@ -2225,6 +2333,7 @@ async def _collect_archive_orders(
             row_count=row_count,
             footer_total=footer_total,
             footer_window=footer_window,
+            **_stability_log_fields(stability_state),
         )
         if row_count == 0:
             log_event(
@@ -2316,6 +2425,21 @@ async def _collect_archive_orders(
                     error=str(exc),
                 )
 
+        if not stability_state.stable:
+            partial_reason = "stability_timeout_before_pagination_decision"
+            log_event(
+                logger=logger,
+                phase="pagination",
+                status="warn",
+                message="Archive Orders page stability timed out before pagination decision",
+                store_code=store.store_code,
+                partial_reason=partial_reason,
+                extracted_rows=len(extract.base_rows),
+                page_count=extract.page_count,
+                **_stability_log_fields(stability_state),
+            )
+            break
+
         if footer_window is not None and footer_window[1] >= footer_window[2]:
             log_event(
                 logger=logger,
@@ -2326,17 +2450,7 @@ async def _collect_archive_orders(
                 footer_total=footer_window[2],
                 footer_window=footer_window,
                 total_rows=len(seen_orders),
-            )
-            break
-        if footer_window is None and footer_total is not None and len(seen_orders) >= footer_total:
-            log_event(
-                logger=logger,
-                phase="pagination",
-                message="Archive Orders footer total reached; stopping pagination",
-                store_code=store.store_code,
-                page_number=page_index,
-                footer_total=footer_total,
-                total_rows=len(seen_orders),
+                **_stability_log_fields(stability_state),
             )
             break
 
@@ -2353,23 +2467,25 @@ async def _collect_archive_orders(
                 page_number=page_index,
                 footer_window=footer_window,
                 row_signatures=pre_retry_signatures,
+                **_stability_log_fields(stability_state),
             )
 
         next_button = page.locator(ARCHIVE_NEXT_BUTTON_SELECTOR).first
         if await _is_button_disabled(next_button):
             if footer_window is not None and footer_window[1] < footer_window[2]:
-                partial_reason = "partial_extraction_next_disabled_before_footer_total"
+                partial_reason = "next_disabled_before_stable_completion"
                 log_event(
                     logger=logger,
                     phase="pagination",
                     status="warn",
-                    message="Archive Orders pagination aborted early: next button disabled before footer total",
+                    message="Archive Orders pagination aborted early: next button disabled before stable footer completion",
                     store_code=store.store_code,
                     partial_reason=partial_reason,
                     extracted_rows=len(extract.base_rows),
                     footer_total=footer_window[2],
                     page_count=extract.page_count,
                     footer_window=footer_window,
+                    **_stability_log_fields(stability_state),
                 )
                 break
             log_event(
@@ -2380,6 +2496,7 @@ async def _collect_archive_orders(
                 page_number=page_index,
                 total_rows=len(extract.base_rows),
                 footer_total=footer_total,
+                **_stability_log_fields(stability_state),
             )
             break
 
@@ -2452,9 +2569,17 @@ async def _collect_archive_orders(
                     ],
                     timeout=NAV_TIMEOUT_MS,
                 )
+        post_next_stability = await _wait_for_archive_page_stability(
+            page=page,
+            timeout_ms=max(1_000, NAV_TIMEOUT_MS // 3),
+        )
         current_page_number = await _get_archive_page_number(page)
         current_first = await _get_first_order_code(page)
-        current_footer_window = await _get_archive_footer_window(page)
+        current_footer_window = (
+            post_next_stability.stable_footer_window
+            if post_next_stability.stable
+            else post_next_stability.last_observed_footer_window
+        )
         if force_retry_navigation:
             log_event(
                 logger=logger,
@@ -2463,6 +2588,7 @@ async def _collect_archive_orders(
                 store_code=store.store_code,
                 previous_footer_window=previous_footer_window,
                 current_footer_window=current_footer_window,
+                **_stability_log_fields(post_next_stability),
             )
         progress_signals: list[bool] = []
         if previous_page_number is not None and current_page_number is not None:
@@ -2549,9 +2675,17 @@ async def _collect_archive_orders(
                         ],
                         timeout=NAV_TIMEOUT_MS,
                     )
+            retry_stability = await _wait_for_archive_page_stability(
+                page=page,
+                timeout_ms=max(1_000, NAV_TIMEOUT_MS // 3),
+            )
             current_page_number = await _get_archive_page_number(page)
             current_first = await _get_first_order_code(page)
-            current_footer_window = await _get_archive_footer_window(page)
+            current_footer_window = (
+                retry_stability.stable_footer_window
+                if retry_stability.stable
+                else retry_stability.last_observed_footer_window
+            )
             progress_signals = []
             if previous_page_number is not None and current_page_number is not None:
                 progress_signals.append(current_page_number != previous_page_number)
@@ -2577,6 +2711,7 @@ async def _collect_archive_orders(
                     current_first_order=current_first,
                     previous_footer_window=previous_footer_window,
                     current_footer_window=current_footer_window,
+                    **_stability_log_fields(retry_stability),
                 )
                 break
         page_index += 1

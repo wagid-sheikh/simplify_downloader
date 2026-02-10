@@ -279,3 +279,138 @@ async def test_get_archive_order_code_falls_back_to_nested_button_text() -> None
     order_code = await uc_main._get_archive_order_code(row)
 
     assert order_code == "UC-789"
+
+
+@pytest.mark.asyncio
+async def test_wait_for_archive_page_stability_footer_changes_then_stabilizes(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _StabilityPage:
+        def __init__(self):
+            self.timeouts: list[int] = []
+
+        async def wait_for_timeout(self, ms: int):
+            self.timeouts.append(ms)
+
+    page = _StabilityPage()
+    footer_samples = iter([(1, 30, 100), (31, 60, 100), (31, 60, 100)])
+    signature_samples = iter([("O1",), ("O31",), ("O31",)])
+
+    async def _footer(_page):
+        return next(footer_samples)
+
+    async def _signatures(_page):
+        return next(signature_samples)
+
+    monkeypatch.setattr(uc_main, "_get_archive_footer_window", _footer)
+    monkeypatch.setattr(uc_main, "_get_archive_row_signatures", _signatures)
+    state = await uc_main._wait_for_archive_page_stability(page=page, timeout_ms=2_000, sample_interval_ms=1)
+
+    assert state.stable is True
+    assert state.stable_footer_window == (31, 60, 100)
+    assert state.stability_attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_wait_for_archive_page_stability_signatures_prevent_stability(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _StabilityPage:
+        async def wait_for_timeout(self, _ms: int):
+            return None
+
+    page = _StabilityPage()
+    footer_samples = iter([(1, 30, 100), (1, 30, 100), (1, 30, 100), (1, 30, 100)])
+    signature_samples = iter([("O1",), ("O2",), ("O2",), ("O2",)])
+
+    monkeypatch.setattr(uc_main, "_get_archive_footer_window", lambda _p: asyncio.sleep(0, result=next(footer_samples)))
+    monkeypatch.setattr(uc_main, "_get_archive_row_signatures", lambda _p: asyncio.sleep(0, result=next(signature_samples)))
+
+    state = await uc_main._wait_for_archive_page_stability(page=page, timeout_ms=2_000, sample_interval_ms=1)
+
+    assert state.stable is True
+    assert state.stability_attempts == 3
+
+
+@pytest.mark.asyncio
+async def test_wait_for_archive_page_stability_timeout_returns_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _StabilityPage:
+        async def wait_for_timeout(self, _ms: int):
+            return None
+
+    page = _StabilityPage()
+    footer_samples = iter([(1, 30, 100), (31, 60, 100), (61, 90, 100)])
+    signature_samples = iter([("O1",), ("O31",), ("O61",)])
+
+    monkeypatch.setattr(uc_main, "_get_archive_footer_window", lambda _p: asyncio.sleep(0, result=next(footer_samples, (61, 90, 100))))
+    monkeypatch.setattr(uc_main, "_get_archive_row_signatures", lambda _p: asyncio.sleep(0, result=next(signature_samples, ("O61",))))
+
+    state = await uc_main._wait_for_archive_page_stability(page=page, timeout_ms=0, sample_interval_ms=1)
+
+    assert state.stable is False
+    assert state.last_observed_footer_window is not None
+    assert state.last_observed_signature_hash is not None
+
+
+@pytest.mark.asyncio
+async def test_collect_archive_orders_warns_and_exits_when_stability_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    pages = [{"order_codes": [f"O{i:03d}" for i in range(1, 31)], "footer": (1, 30, 48), "next_disabled": False}]
+    page = _FakePage(pages)
+    store = uc_main.UcStore(store_code="UCX", store_name=None, cost_center=None, sync_config={})
+    logger = JsonLogger(stream=io.StringIO(), log_file_path=None)
+
+    monkeypatch.setattr(uc_main, "_get_archive_order_code", lambda row: asyncio.sleep(0, result=row.order_code))
+    monkeypatch.setattr(uc_main, "_extract_archive_base_row", lambda **kwargs: asyncio.sleep(0, result={"order_code": kwargs["order_code"], "payment_text": "paid"}))
+    monkeypatch.setattr(uc_main, "_extract_order_details", lambda **kwargs: asyncio.sleep(0, result=([], None, None, True)))
+    monkeypatch.setattr(uc_main, "_extract_payment_details", lambda **kwargs: asyncio.sleep(0, result=[]))
+    monkeypatch.setattr(
+        uc_main,
+        "_wait_for_archive_page_stability",
+        lambda **kwargs: asyncio.sleep(
+            0,
+            result=uc_main.ArchivePageStabilityState(
+                stable=False,
+                stability_attempts=5,
+                stable_footer_window=None,
+                stable_signature_hash=None,
+                last_observed_footer_window=(1, 30, 48),
+                last_observed_signature_hash="abc",
+                stability_timeout_ms=1_000,
+            ),
+        ),
+    )
+
+    extract = await uc_main._collect_archive_orders(page=page, store=store, logger=logger)
+
+    assert extract.page_count == 1
+    assert extract.skipped_order_counters["stability_timeout_before_pagination_decision"] == 1
+
+
+@pytest.mark.asyncio
+async def test_collect_archive_orders_stable_footer_completion_does_not_click_next(monkeypatch: pytest.MonkeyPatch) -> None:
+    pages = [{"order_codes": [f"O{i:03d}" for i in range(1, 31)], "footer": (1, 30, 30), "next_disabled": False}]
+    page = _FakePage(pages)
+    store = uc_main.UcStore(store_code="UCX", store_name=None, cost_center=None, sync_config={})
+    logger = JsonLogger(stream=io.StringIO(), log_file_path=None)
+
+    monkeypatch.setattr(uc_main, "_get_archive_order_code", lambda row: asyncio.sleep(0, result=row.order_code))
+    monkeypatch.setattr(uc_main, "_extract_archive_base_row", lambda **kwargs: asyncio.sleep(0, result={"order_code": kwargs["order_code"], "payment_text": "paid"}))
+    monkeypatch.setattr(uc_main, "_extract_order_details", lambda **kwargs: asyncio.sleep(0, result=([], None, None, True)))
+    monkeypatch.setattr(uc_main, "_extract_payment_details", lambda **kwargs: asyncio.sleep(0, result=[]))
+    monkeypatch.setattr(
+        uc_main,
+        "_wait_for_archive_page_stability",
+        lambda **kwargs: asyncio.sleep(
+            0,
+            result=uc_main.ArchivePageStabilityState(
+                stable=True,
+                stability_attempts=2,
+                stable_footer_window=(1, 30, 30),
+                stable_signature_hash="sig",
+                last_observed_footer_window=(1, 30, 30),
+                last_observed_signature_hash="sig",
+                stability_timeout_ms=1_000,
+            ),
+        ),
+    )
+
+    extract = await uc_main._collect_archive_orders(page=page, store=store, logger=logger)
+
+    assert extract.page_count == 1
+    assert page.index == 0
