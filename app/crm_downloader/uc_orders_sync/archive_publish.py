@@ -134,10 +134,7 @@ def _build_join_key_variants(store_code: Any, order_code: Any) -> list[tuple[str
 
 
 async def publish_uc_archive_order_details_to_orders(
-    *,
-    database_url: str,
-    store_code: str | None = None,
-    run_id: str | None = None,
+    *, database_url: str, run_id: str, store_code: str
 ) -> PublishMetrics:
     metrics = PublishMetrics()
     metadata = sa.MetaData()
@@ -174,7 +171,18 @@ async def publish_uc_archive_order_details_to_orders(
 
         rows = (
             await session.execute(
-                details_query
+                sa.select(
+                    details.c.store_code,
+                    details.c.order_code,
+                    details.c.quantity,
+                    details.c.weight,
+                    details.c.service,
+                ).where(
+                    sa.and_(
+                        details.c.run_id == run_id,
+                        details.c.store_code == store_code,
+                    )
+                )
             )
         ).all()
 
@@ -266,10 +274,7 @@ async def publish_uc_archive_order_details_to_orders(
 
 
 async def publish_uc_archive_payments_to_sales(
-    *,
-    database_url: str,
-    store_code: str | None = None,
-    run_id: str | None = None,
+    *, database_url: str, run_id: str, store_code: str
 ) -> PublishMetrics:
     metrics = PublishMetrics()
     reasons = Counter[str]()
@@ -290,6 +295,7 @@ async def publish_uc_archive_payments_to_sales(
     archive_base = sa.Table(
         TABLE_ARCHIVE_BASE,
         metadata,
+        sa.Column("run_id", sa.Text),
         sa.Column("store_code", sa.String(8)),
         sa.Column("order_code", sa.String(24)),
         sa.Column("cost_center", sa.String(8)),
@@ -325,7 +331,22 @@ async def publish_uc_archive_payments_to_sales(
 
         payment_rows = (
             await session.execute(
-                payments_query
+                sa.select(
+                    payments.c.run_id,
+                    payments.c.run_date,
+                    payments.c.store_code,
+                    payments.c.order_code,
+                    payments.c.payment_mode,
+                    payments.c.amount,
+                    payments.c.payment_date_raw,
+                    payments.c.transaction_id,
+                    payments.c.ingest_remarks,
+                ).where(
+                    sa.and_(
+                        payments.c.run_id == run_id,
+                        payments.c.store_code == store_code,
+                    )
+                )
             )
         ).all()
 
@@ -353,7 +374,12 @@ async def publish_uc_archive_payments_to_sales(
                     orders.c.customer_name,
                     orders.c.mobile_number,
                     orders.c.ingest_remarks,
-                ).where(sa.tuple_(orders.c.store_code, orders.c.order_number).in_(list(query_keys)))
+                ).where(
+                    sa.and_(
+                        orders.c.store_code == store_code,
+                        sa.tuple_(orders.c.store_code, orders.c.order_number).in_(list(query_keys)),
+                    )
+                )
             )
             for row in order_rows:
                 normalized_parent_key = _build_join_key_variants(row.store_code, row.order_number)
@@ -363,7 +389,11 @@ async def publish_uc_archive_payments_to_sales(
 
             stg_rows = await session.execute(
                 sa.select(stg_orders.c.store_code, stg_orders.c.order_number).where(
-                    sa.tuple_(stg_orders.c.store_code, stg_orders.c.order_number).in_(list(query_keys))
+                    sa.and_(
+                        stg_orders.c.run_id == run_id,
+                        stg_orders.c.store_code == store_code,
+                        sa.tuple_(stg_orders.c.store_code, stg_orders.c.order_number).in_(list(query_keys)),
+                    )
                 )
             )
             stg_parent_keys = {
@@ -381,7 +411,13 @@ async def publish_uc_archive_payments_to_sales(
                     archive_base.c.customer_name,
                     archive_base.c.customer_phone,
                     archive_base.c.ingest_remarks,
-                ).where(sa.tuple_(archive_base.c.store_code, archive_base.c.order_code).in_(list(query_keys)))
+                ).where(
+                    sa.and_(
+                        archive_base.c.run_id == run_id,
+                        archive_base.c.store_code == store_code,
+                        sa.tuple_(archive_base.c.store_code, archive_base.c.order_code).in_(list(query_keys)),
+                    )
+                )
             )
             for row in archive_base_rows:
                 normalized_parent_key = _build_join_key_variants(row.store_code, row.order_code)
@@ -585,16 +621,16 @@ async def publish_uc_archive_payments_to_sales(
 
 
 async def publish_uc_archive_stage2_stage3(
-    *, database_url: str, store_code: str | None = None, run_id: str | None = None
+    *, database_url: str, run_id: str, store_code: str
 ) -> ArchivePublishResult:
     orders_metrics = await publish_uc_archive_order_details_to_orders(
         database_url=database_url,
-        store_code=store_code,
         run_id=run_id,
+        store_code=store_code,
     )
     sales_metrics = await publish_uc_archive_payments_to_sales(
         database_url=database_url,
-        store_code=store_code,
         run_id=run_id,
+        store_code=store_code,
     )
     return ArchivePublishResult(orders=orders_metrics, sales=sales_metrics)

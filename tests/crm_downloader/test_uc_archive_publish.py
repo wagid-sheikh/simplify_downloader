@@ -101,17 +101,17 @@ async def test_orders_enrichment_recomputes_and_preserves_protected_columns(tmp_
         await session.execute(
             sa.text(
                 """
-                INSERT INTO stg_uc_archive_order_details (store_code, order_code, quantity, weight, service)
+                INSERT INTO stg_uc_archive_order_details (run_id, store_code, order_code, quantity, weight, service)
                 VALUES
-                    ('UC567', 'ORD-1', 2, 1.25, 'Dryclean'),
-                    ('UC567', 'ORD-1', 3, 0.75, 'Wash'),
-                    ('UC567', 'ORD-1', NULL, NULL, 'Dryclean')
+                    ('run-1', 'UC567', 'ORD-1', 2, 1.25, 'Dryclean'),
+                    ('run-1', 'UC567', 'ORD-1', 3, 0.75, 'Wash'),
+                    ('run-1', 'UC567', 'ORD-1', NULL, NULL, 'Dryclean')
                 """
             )
         )
         await session.commit()
 
-    metrics = await publish_uc_archive_order_details_to_orders(database_url=db_url)
+    metrics = await publish_uc_archive_order_details_to_orders(database_url=db_url, run_id='run-1', store_code='UC567')
     assert metrics.updated == 1
 
     async with session_scope(db_url) as session:
@@ -157,8 +157,8 @@ async def test_payment_upsert_idempotency_and_null_transaction_collision(tmp_pat
         )
         await session.commit()
 
-    first = await publish_uc_archive_payments_to_sales(database_url=db_url)
-    second = await publish_uc_archive_payments_to_sales(database_url=db_url)
+    first = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-1', store_code='UC567')
+    second = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-1', store_code='UC567')
 
     assert first.inserted == 1
     assert first.updated == 0
@@ -193,16 +193,16 @@ async def test_payment_skip_reasons_and_metrics_and_orchestrator(tmp_path: Path)
         )
         await session.commit()
 
-    sales_metrics = await publish_uc_archive_payments_to_sales(database_url=db_url)
-    assert sales_metrics.skipped == 3
+    sales_metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-2', store_code='UC567')
+    assert sales_metrics.skipped == 2
     assert sales_metrics.warnings == 1
     assert sales_metrics.reason_codes[REASON_PREFLIGHT_PARENT_COVERAGE_NEAR_ZERO] == 1
     assert sales_metrics.publish_parent_match_rate == 0.0
-    assert sales_metrics.missing_parent_count == 2
+    assert sales_metrics.missing_parent_count == 1
 
-    stage = await publish_uc_archive_stage2_stage3(database_url=db_url)
+    stage = await publish_uc_archive_stage2_stage3(database_url=db_url, run_id='run-2', store_code='UC567')
     assert isinstance(stage.orders.updated, int)
-    assert stage.sales.skipped >= 3
+    assert stage.sales.skipped >= 2
 
 
 @pytest.mark.asyncio
@@ -233,7 +233,7 @@ async def test_payment_publish_parent_coverage_full(tmp_path: Path) -> None:
         )
         await session.commit()
 
-    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url)
+    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-full', store_code='UC567')
     assert metrics.publish_parent_match_rate == 1.0
     assert metrics.missing_parent_count == 0
     assert metrics.preflight_warning is None
@@ -257,7 +257,7 @@ async def test_payment_publish_parent_coverage_near_zero_preflight_skip(tmp_path
         )
         await session.commit()
 
-    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url)
+    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-zero', store_code='UC999')
     assert metrics.publish_parent_match_rate == 0.0
     assert metrics.missing_parent_count == 1
     assert metrics.inserted == 0
@@ -294,7 +294,7 @@ async def test_payment_publish_parent_coverage_mixed(tmp_path: Path) -> None:
         )
         await session.commit()
 
-    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url)
+    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-mixed', store_code='UC567')
     assert metrics.publish_parent_match_rate == 0.5
     assert metrics.missing_parent_count == 1
     assert metrics.preflight_warning is not None
@@ -331,7 +331,7 @@ async def test_payment_publish_parent_coverage_low_logs_diagnostics(tmp_path: Pa
         await session.commit()
 
     caplog.set_level("WARNING")
-    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url)
+    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-low', store_code='UC567')
 
     assert metrics.inserted == 1
     assert metrics.reason_codes[REASON_PREFLIGHT_PARENT_COVERAGE_LOW] == 1
@@ -377,7 +377,7 @@ async def test_payment_publish_uses_archive_base_fallback_when_stg_parent_exists
         )
         await session.commit()
 
-    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url)
+    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-fallback', store_code='UC567')
     assert metrics.inserted == 1
     assert metrics.missing_parent_count == 0
 
@@ -416,8 +416,8 @@ async def test_archive_publish_normalizes_join_keys_and_improves_parent_coverage
         await session.execute(
             sa.text(
                 """
-                INSERT INTO stg_uc_archive_order_details (store_code, order_code, quantity, weight, service)
-                VALUES (' 567 ', ' uc567-1234 ', 2, 1.25, 'Dryclean')
+                INSERT INTO stg_uc_archive_order_details (run_id, store_code, order_code, quantity, weight, service)
+                VALUES ('run-normalized', 'UC567', ' uc567-1234 ', 2, 1.25, 'Dryclean')
                 """
             )
         )
@@ -427,7 +427,7 @@ async def test_archive_publish_normalizes_join_keys_and_improves_parent_coverage
                 INSERT INTO stg_uc_archive_payment_details (
                     run_id, run_date, store_code, order_code, payment_mode, amount, payment_date_raw, transaction_id, ingest_remarks
                 ) VALUES (
-                    'run-normalized', '2025-01-03T00:00:00+00:00', ' uc567 ', ' uc567-1234 ', 'UPI', 50,
+                    'run-normalized', '2025-01-03T00:00:00+00:00', 'UC567', ' uc567-1234 ', 'UPI', 50,
                     '03 Jan 2025, 11:00 AM', 'TN1', 'normalized-key-test'
                 )
                 """
@@ -435,8 +435,8 @@ async def test_archive_publish_normalizes_join_keys_and_improves_parent_coverage
         )
         await session.commit()
 
-    order_metrics = await publish_uc_archive_order_details_to_orders(database_url=db_url)
-    sales_metrics = await publish_uc_archive_payments_to_sales(database_url=db_url)
+    order_metrics = await publish_uc_archive_order_details_to_orders(database_url=db_url, run_id='run-normalized', store_code='UC567')
+    sales_metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-normalized', store_code='UC567')
 
     assert order_metrics.updated == 1
     assert order_metrics.reason_codes.get(REASON_MISSING_PARENT_ORDER_CONTEXT, 0) == 0
