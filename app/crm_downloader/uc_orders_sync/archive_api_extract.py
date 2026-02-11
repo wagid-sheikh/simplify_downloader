@@ -806,22 +806,21 @@ async def collect_archive_orders_via_api(
             if not status_date:
                 status_date = booking.get("updated_at")
 
-            extract.base_rows.append(
-                {
-                    "store_code": store_code,
-                    "order_code": order_code,
-                    "pickup": _normalize_date_text(booking.get("pickupDate")),
-                    "delivery": _normalize_date_text(booking.get("dropDate")),
-                    "customer_name": booking.get("name"),
-                    "customer_phone": booking.get("mobile"),
-                    "address": booking.get("address"),
-                    "payment_text": booking.get("final_amount"),
-                    "instructions": booking.get("suggestion"),
-                    "customer_source": None,
-                    "status": status_text,
-                    "status_date": _normalize_date_text(status_date),
-                }
-            )
+            base_row = {
+                "store_code": store_code,
+                "order_code": order_code,
+                "pickup": _normalize_date_text(booking.get("pickupDate")),
+                "delivery": _normalize_date_text(booking.get("dropDate")),
+                "customer_name": booking.get("name"),
+                "customer_phone": booking.get("mobile"),
+                "address": booking.get("address"),
+                "payment_text": booking.get("final_amount"),
+                "instructions": booking.get("suggestion"),
+                "customer_source": None,
+                "status": status_text,
+                "status_date": _normalize_date_text(status_date),
+            }
+            extract.base_rows.append(base_row)
 
             extract.payment_detail_rows.extend(
                 _parse_payment_rows(
@@ -854,6 +853,16 @@ async def collect_archive_orders_via_api(
             if not detail_rows:
                 _record_skip(extract, order_code=order_code, reason="invoice_parse_no_rows")
                 continue
+            order_mode = next(
+                (
+                    str(row.get("order_mode") or "").strip()
+                    for row in detail_rows
+                    if str(row.get("order_mode") or "").strip()
+                ),
+                None,
+            )
+            if order_mode:
+                base_row["customer_source"] = order_mode
             extract.order_detail_rows.extend(detail_rows)
 
         stop_by_total_pages = isinstance(extract.total_pages, int) and page_number >= extract.total_pages
