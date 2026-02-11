@@ -31,6 +31,9 @@ from app.config import config
 from app.crm_downloader.browser import launch_browser
 from app.crm_downloader.config import default_download_dir, default_profiles_dir
 from app.crm_downloader.uc_orders_sync.archive_ingest import ingest_uc_archive_excels
+from app.crm_downloader.uc_orders_sync.archive_api_extract import (
+    collect_archive_orders_via_api,
+)
 from app.crm_downloader.uc_orders_sync.archive_publish import (
     publish_uc_archive_order_details_to_orders,
     publish_uc_archive_payments_to_sales,
@@ -3640,42 +3643,33 @@ async def _run_store_discovery(
             summary.record_store(store.store_code, outcome)
             return
 
-        filter_footer_state = await _apply_archive_date_filter(
+        download_dir = _resolve_uc_download_dir(
+            run_id, store.store_code, from_date, to_date
+        )
+        api_extract = await collect_archive_orders_via_api(
             page=page,
-            store=store,
+            store_code=store.store_code,
             logger=logger,
             from_date=from_date,
             to_date=to_date,
         )
-        if filter_footer_state is None:
-            outcome = StoreOutcome(
-                status="warning",
-                message="Archive Orders filter failed",
-                final_url=page.url,
-                storage_state=(
-                    str(storage_state_path) if storage_state_path.exists() else None
-                ),
-                login_used=login_used,
-                session_probe_result=session_probe_result,
-                fallback_login_attempted=fallback_login_attempted,
-                fallback_login_result=fallback_login_result,
-                skip_reason="date range invalid",
-            )
-            summary.record_store(store.store_code, outcome)
-            return
-
-        download_dir = _resolve_uc_download_dir(
-            run_id, store.store_code, from_date, to_date
-        )
-        extract = await _collect_archive_orders(
-            page=page,
-            store=store,
-            logger=logger,
-            post_filter_footer_window=filter_footer_state.post_filter_footer_window,
-            pre_filter_footer_total=filter_footer_state.pre_filter_footer_total,
-            post_filter_footer_total=filter_footer_state.post_filter_footer_total,
-            footer_baseline_source=filter_footer_state.footer_baseline_source,
-            footer_baseline_stable=filter_footer_state.footer_baseline_stable,
+        extract = ArchiveOrdersExtract(
+            base_rows=api_extract.base_rows,
+            order_detail_rows=api_extract.order_detail_rows,
+            payment_detail_rows=api_extract.payment_detail_rows,
+            skipped_order_codes=api_extract.skipped_order_codes,
+            skipped_order_counters=api_extract.skipped_order_counters,
+            page_count=api_extract.page_count,
+            footer_total=api_extract.api_total,
+            pre_filter_footer_total=api_extract.api_total,
+            post_filter_footer_total=api_extract.api_total,
+            post_filter_footer_window=(
+                (1, len(api_extract.base_rows), api_extract.api_total)
+                if api_extract.api_total is not None
+                else None
+            ),
+            footer_baseline_source="archive_api",
+            footer_baseline_stable=True,
         )
         row_count = len(extract.base_rows)
         rows_missing_estimate = _archive_extraction_gap(extract)
