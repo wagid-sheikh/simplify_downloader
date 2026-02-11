@@ -49,6 +49,7 @@ async def _create_tables(db_url: str) -> None:
         TABLE_ARCHIVE_ORDER_DETAILS,
         metadata,
         sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("run_id", sa.Text),
         sa.Column("store_code", sa.String(8)),
         sa.Column("order_code", sa.String(24)),
         sa.Column("quantity", sa.Numeric(12, 2)),
@@ -457,3 +458,47 @@ async def test_archive_publish_normalizes_join_keys_and_improves_parent_coverage
     assert Decimal(str(order_row.weight)) == Decimal("1.25")
     assert sales_row.store_code == "UC567"
     assert sales_row.order_number == "1234"
+
+
+@pytest.mark.asyncio
+async def test_payment_preflight_scoped_to_store_and_run_id(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_scope.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders (cost_center, store_code, order_number, order_date, customer_name, mobile_number, created_at)
+                VALUES
+                    ('CC10', 'UC610', 'ORD-MATCH', '2025-01-01T00:00:00+00:00', 'Scope User', '9999999999', '2025-01-01T00:00:00+00:00'),
+                    ('CC56', 'UC567', 'ORD-EXISTING', '2025-01-01T00:00:00+00:00', 'Other User', '8888888888', '2025-01-01T00:00:00+00:00')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_payment_details (run_id, run_date, store_code, order_code, payment_mode, amount, payment_date_raw, transaction_id)
+                VALUES
+                    ('run-uc610', '2025-01-03T00:00:00+00:00', 'UC610', 'ORD-MATCH', 'UPI', 50, '03 Jan 2025, 11:00 AM', 'T610-1'),
+                    ('run-uc610', '2025-01-03T00:00:00+00:00', 'UC610', 'ORD-MISSING', 'UPI', 60, '03 Jan 2025, 11:10 AM', 'T610-2'),
+                    ('run-uc567', '2025-01-03T00:00:00+00:00', 'UC567', 'ORD-OTHER-MISSING', 'UPI', 70, '03 Jan 2025, 11:20 AM', 'T567-1')
+                """
+            )
+        )
+        await session.commit()
+
+    metrics = await publish_uc_archive_payments_to_sales(
+        database_url=db_url,
+        store_code='UC610',
+        run_id='run-uc610',
+    )
+
+    assert metrics.publish_parent_match_rate == 0.5
+    assert metrics.preflight_warning is not None
+    assert 'UC610:ORD-MISSING' in metrics.preflight_warning
+    assert 'UC567:ORD-OTHER-MISSING' not in metrics.preflight_warning
+    assert metrics.preflight_diagnostics is not None
+    assert metrics.preflight_diagnostics['sample_missing_keys'] == ['UC610:ORD-MISSING']
+
