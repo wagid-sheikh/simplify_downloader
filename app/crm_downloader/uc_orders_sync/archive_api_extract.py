@@ -18,6 +18,7 @@ ARCHIVE_INVOICE_URL_TEMPLATE = "https://store.ucleanlaundry.com/api/v1/bookings/
 ARCHIVE_API_LIMIT = 30
 ARCHIVE_API_MAX_RETRIES = 3
 ARCHIVE_API_RETRY_BASE_SECONDS = 1.0
+ARCHIVE_REQUESTED_WITH_HEADER = "XMLHttpRequest"
 
 PAYMENT_MODE_MAP = {
     1: "UPI",
@@ -226,11 +227,34 @@ async def _api_get_json_with_retries(
     store_code: str,
     context: str,
 ) -> Mapping[str, Any] | None:
+    bearer_token = await _resolve_archive_bearer_token(page=page)
+    request_headers = _build_archive_request_headers(bearer_token=bearer_token)
     last_error: str | None = None
     for attempt in range(1, ARCHIVE_API_MAX_RETRIES + 1):
         try:
-            response = await page.request.get(url, timeout=90_000)
+            response = await page.request.get(url, timeout=90_000, headers=request_headers)
             status = response.status
+            if status == 401:
+                log_event(
+                    logger=logger,
+                    phase="archive_api",
+                    status="warn",
+                    message="Archive API request unauthorized; retrying via browser fetch",
+                    store_code=store_code,
+                    context=context,
+                    attempt=attempt,
+                    status_code=status,
+                    url=url,
+                )
+                payload = await _browser_fetch_json_with_credentials(
+                    page=page,
+                    url=url,
+                    headers=request_headers,
+                )
+                if payload is not None:
+                    return payload
+                last_error = "browser_fetch_unauthorized"
+                continue
             if status >= 500 or status == 429:
                 last_error = f"http_status_{status}"
             elif status >= 400:
@@ -266,6 +290,125 @@ async def _api_get_json_with_retries(
         url=url,
     )
     return None
+
+
+def _build_archive_request_headers(*, bearer_token: str | None) -> dict[str, str]:
+    headers: dict[str, str] = {
+        "X-Requested-With": ARCHIVE_REQUESTED_WITH_HEADER,
+    }
+    if bearer_token:
+        headers["Authorization"] = f"Bearer {bearer_token}"
+    return headers
+
+
+async def _resolve_archive_bearer_token(*, page: Page) -> str | None:
+    try:
+        candidate = await page.evaluate(
+            """
+            () => {
+              const seen = new Set();
+              const candidates = [];
+              const push = (value) => {
+                if (typeof value !== 'string') return;
+                const trimmed = value.trim();
+                if (!trimmed || seen.has(trimmed)) return;
+                seen.add(trimmed);
+                candidates.push(trimmed);
+              };
+
+              const parseStore = (store) => {
+                if (!store) return;
+                for (let i = 0; i < store.length; i += 1) {
+                  const key = store.key(i);
+                  const value = store.getItem(key);
+                  push(value);
+                  if (!value) continue;
+                  try {
+                    const parsed = JSON.parse(value);
+                    if (parsed && typeof parsed === 'object') {
+                      push(parsed.token);
+                      push(parsed.access_token);
+                      push(parsed.jwt);
+                      push(parsed.authToken);
+                      push(parsed.bearerToken);
+                    }
+                  } catch (_) {
+                    // not json
+                  }
+                }
+              };
+
+              parseStore(window.localStorage);
+              parseStore(window.sessionStorage);
+
+              const cookieText = document.cookie || '';
+              cookieText.split(';').forEach((chunk) => {
+                const [, value] = chunk.split('=');
+                if (value) push(decodeURIComponent(value));
+              });
+
+              const tokenRegexes = [
+                /(?:^|\s)Bearer\s+([A-Za-z0-9\-_.~+/]+=*)/i,
+                /^([A-Za-z0-9\-_.]+\.[A-Za-z0-9\-_.]+\.[A-Za-z0-9\-_.]+)$/,
+              ];
+
+              for (const item of candidates) {
+                for (const pattern of tokenRegexes) {
+                  const match = item.match(pattern);
+                  if (match) {
+                    return (match[1] || match[0]).trim();
+                  }
+                }
+              }
+              return null;
+            }
+            """
+        )
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    except Exception:
+        return None
+    return None
+
+
+async def _browser_fetch_json_with_credentials(
+    *,
+    page: Page,
+    url: str,
+    headers: Mapping[str, str],
+) -> Mapping[str, Any] | None:
+    try:
+        result = await page.evaluate(
+            """
+            async ({ requestUrl, requestHeaders }) => {
+              try {
+                const response = await fetch(requestUrl, {
+                  method: 'GET',
+                  headers: requestHeaders,
+                  credentials: 'include',
+                });
+                if (!response.ok) {
+                  return { ok: false, status: response.status };
+                }
+                const payload = await response.json();
+                return { ok: true, status: response.status, payload };
+              } catch (error) {
+                return { ok: false, status: 0, error: String(error) };
+              }
+            }
+            """,
+            {"requestUrl": url, "requestHeaders": dict(headers)},
+        )
+    except Exception:
+        return None
+
+    if not isinstance(result, Mapping):
+        return None
+    if not result.get("ok"):
+        return None
+
+    payload = result.get("payload")
+    return payload if isinstance(payload, Mapping) else None
 
 
 async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str, store_code: str, order_code: str, logger: JsonLogger) -> str | None:
