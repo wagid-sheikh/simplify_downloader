@@ -1,13 +1,90 @@
 from __future__ import annotations
 
+import asyncio
+import io
+import json
+
+from app.crm_downloader.uc_orders_sync import archive_api_extract
 from app.crm_downloader.uc_orders_sync.archive_api_extract import (
     ArchiveApiExtract,
-    _record_extractor_error,
     _map_status,
     _parse_invoice_order_details,
     _parse_payment_rows,
+    _record_extractor_error,
+    _resolve_archive_bearer_token,
 )
-from app.dashboard_downloader.json_logger import get_logger
+from app.dashboard_downloader.json_logger import JsonLogger, get_logger
+
+
+class _FakePage:
+    def __init__(self, evaluate_result):
+        self._evaluate_result = evaluate_result
+
+    async def evaluate(self, _script: str):
+        return self._evaluate_result
+
+
+def _read_events(raw: str) -> list[dict[str, object]]:
+    lines = [line for line in raw.splitlines() if line.strip()]
+    return [json.loads(line) for line in lines]
+
+
+def test_resolve_archive_bearer_token_logs_source_length_and_candidate_keys_once_per_store() -> None:
+    archive_api_extract._TOKEN_KEY_DEBUG_LOGGED_STORES.clear()
+    stream = io.StringIO()
+    logger = JsonLogger(run_id="test", stream=stream, log_file_path=None)
+    page = _FakePage(
+        {
+            "token": "Bearer abc.def.ghi",
+            "tokenSourceType": "localStorage_direct_key",
+            "candidateLocalStorageKeys": ["authToken", "jwt", "profile"],
+        }
+    )
+
+    token = asyncio.run(
+        _resolve_archive_bearer_token(page=page, logger=logger, store_code="UC610")
+    )
+    second_token = asyncio.run(
+        _resolve_archive_bearer_token(page=page, logger=logger, store_code="UC610")
+    )
+
+    assert token == "Bearer abc.def.ghi"
+    assert second_token == "Bearer abc.def.ghi"
+
+    events = _read_events(stream.getvalue())
+    diagnostics = [e for e in events if e.get("message") == "Resolved archive bearer token diagnostics"]
+    assert len(diagnostics) == 2
+    assert diagnostics[0]["token_source_type"] == "localStorage_direct_key"
+    assert diagnostics[0]["token_length"] == len("Bearer abc.def.ghi")
+
+    key_events = [e for e in events if e.get("message") == "Archive token key candidates detected in localStorage"]
+    assert len(key_events) == 1
+    assert key_events[0]["candidate_local_storage_keys"] == ["authToken", "jwt"]
+
+
+def test_resolve_archive_bearer_token_logs_none_source_without_token_value() -> None:
+    archive_api_extract._TOKEN_KEY_DEBUG_LOGGED_STORES.clear()
+    stream = io.StringIO()
+    logger = JsonLogger(run_id="test", stream=stream, log_file_path=None)
+    page = _FakePage(
+        {
+            "token": None,
+            "tokenSourceType": "none",
+            "candidateLocalStorageKeys": ["profileAuthState"],
+        }
+    )
+
+    token = asyncio.run(
+        _resolve_archive_bearer_token(page=page, logger=logger, store_code="UC567")
+    )
+
+    assert token is None
+
+    events = _read_events(stream.getvalue())
+    diagnostics = [e for e in events if e.get("message") == "Resolved archive bearer token diagnostics"]
+    assert len(diagnostics) == 1
+    assert diagnostics[0]["token_source_type"] == "none"
+    assert diagnostics[0]["token_length"] == 0
 
 
 def test_parse_invoice_order_details_multiline_items() -> None:
