@@ -152,6 +152,23 @@ async def publish_uc_archive_order_details_to_orders(
     orders = _orders_table(metadata)
 
     async with session_scope(database_url) as session:
+        normalized_store_scope = _normalize_store_code(store_code)
+        detail_filters: list[Any] = []
+        if normalized_store_scope:
+            detail_filters.append(details.c.store_code == normalized_store_scope)
+        if run_id:
+            detail_filters.append(details.c.run_id == run_id)
+
+        details_query = sa.select(
+            details.c.store_code,
+            details.c.order_code,
+            details.c.quantity,
+            details.c.weight,
+            details.c.service,
+        )
+        if detail_filters:
+            details_query = details_query.where(sa.and_(*detail_filters))
+
         rows = (
             await session.execute(
                 sa.select(
@@ -291,6 +308,27 @@ async def publish_uc_archive_payments_to_sales(
     sales = _sales_table(metadata)
 
     async with session_scope(database_url) as session:
+        normalized_store_scope = _normalize_store_code(store_code)
+        payment_filters: list[Any] = []
+        if normalized_store_scope:
+            payment_filters.append(payments.c.store_code == normalized_store_scope)
+        if run_id:
+            payment_filters.append(payments.c.run_id == run_id)
+
+        payments_query = sa.select(
+            payments.c.run_id,
+            payments.c.run_date,
+            payments.c.store_code,
+            payments.c.order_code,
+            payments.c.payment_mode,
+            payments.c.amount,
+            payments.c.payment_date_raw,
+            payments.c.transaction_id,
+            payments.c.ingest_remarks,
+        )
+        if payment_filters:
+            payments_query = payments_query.where(sa.and_(*payment_filters))
+
         payment_rows = (
             await session.execute(
                 sa.select(
