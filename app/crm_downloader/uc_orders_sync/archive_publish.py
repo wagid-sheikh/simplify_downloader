@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 import json
 import logging
 import os
+import re
 from decimal import Decimal
 from typing import Any
 
@@ -80,6 +81,58 @@ def _parse_payment_datetime(value: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=tz)
 
 
+def _normalize_store_code(value: Any) -> str | None:
+    if value is None:
+        return None
+    token = re.sub(r"\s+", "", str(value).strip().upper())
+    token = re.sub(r"[^A-Z0-9]", "", token)
+    if not token:
+        return None
+    if token.startswith("UC"):
+        return token
+    if token.isdigit():
+        return f"UC{token}"
+    return token
+
+
+def _normalize_order_code(value: Any) -> str | None:
+    if value is None:
+        return None
+    token = re.sub(r"\s+", "", str(value).strip().upper())
+    return token or None
+
+
+def _strip_store_prefix(order_code: str, store_code: str) -> str | None:
+    prefixes = [store_code]
+    if store_code.startswith("UC"):
+        prefixes.append(store_code[2:])
+    for prefix in prefixes:
+        if not prefix:
+            continue
+        for separator in ("-", "_", "/"):
+            marker = f"{prefix}{separator}"
+            if order_code.startswith(marker):
+                stripped = order_code[len(marker) :]
+                return stripped or None
+        if order_code == prefix:
+            return None
+    return None
+
+
+def _build_join_key_variants(store_code: Any, order_code: Any) -> list[tuple[str, str]]:
+    normalized_store_code = _normalize_store_code(store_code)
+    normalized_order_code = _normalize_order_code(order_code)
+    if not normalized_store_code or not normalized_order_code:
+        return []
+
+    variants = [normalized_order_code]
+    stripped = _strip_store_prefix(normalized_order_code, normalized_store_code)
+    if stripped:
+        variants.append(stripped)
+    deduped_variants = list(dict.fromkeys(variants))
+    return [(normalized_store_code, variant) for variant in deduped_variants]
+
+
 async def publish_uc_archive_order_details_to_orders(*, database_url: str) -> PublishMetrics:
     metrics = PublishMetrics()
     metadata = sa.MetaData()
@@ -111,14 +164,16 @@ async def publish_uc_archive_order_details_to_orders(*, database_url: str) -> Pu
         grouped: dict[tuple[str, str], dict[str, Any]] = defaultdict(
             lambda: {"pieces": Decimal("0"), "weight": Decimal("0"), "services": set()}
         )
+        key_variants_by_grouped_key: dict[tuple[str, str], list[tuple[str, str]]] = {}
         for row in rows:
-            store_code = (row.store_code or "").strip().upper()
-            order_code = (row.order_code or "").strip()
-            if not store_code or not order_code:
+            join_variants = _build_join_key_variants(row.store_code, row.order_code)
+            if not join_variants:
                 metrics.skipped += 1
                 metrics.warnings += 1
                 continue
-            group = grouped[(store_code, order_code)]
+            grouped_key = join_variants[0]
+            key_variants_by_grouped_key[grouped_key] = join_variants
+            group = grouped[grouped_key]
             if row.quantity is not None:
                 group["pieces"] += Decimal(str(row.quantity))
             if row.weight is not None:
@@ -129,20 +184,49 @@ async def publish_uc_archive_order_details_to_orders(*, database_url: str) -> Pu
         if not grouped:
             return metrics
 
-        existing_orders = {
-            (r.store_code, r.order_number): r.id
-            for r in (
-                await session.execute(
-                    sa.select(orders.c.id, orders.c.store_code, orders.c.order_number).where(
-                        sa.tuple_(orders.c.store_code, orders.c.order_number).in_(list(grouped.keys()))
-                    )
+        candidate_keys = {variant for variants in key_variants_by_grouped_key.values() for variant in variants}
+        existing_orders: dict[tuple[str, str], Any] = {}
+        order_rows = (
+            await session.execute(
+                sa.select(orders.c.id, orders.c.store_code, orders.c.order_number).where(
+                    sa.tuple_(orders.c.store_code, orders.c.order_number).in_(list(candidate_keys))
                 )
-            ).all()
+            )
+        ).all()
+        for row in order_rows:
+            normalized_parent_key = _build_join_key_variants(row.store_code, row.order_number)
+            if not normalized_parent_key:
+                continue
+            existing_orders[normalized_parent_key[0]] = row.id
+
+        matched_keys = {
+            grouped_key
+            for grouped_key, variants in key_variants_by_grouped_key.items()
+            if any(variant in existing_orders for variant in variants)
         }
+        missing_archive_keys = sorted(set(grouped.keys()) - matched_keys)
+        parent_keys = set(existing_orders.keys())
+        unmatched_parent_keys = sorted(parent_keys - set(grouped.keys()))
+        LOGGER.info(
+            "archive_publish_order_details_key_coverage %s",
+            json.dumps(
+                {
+                    "total_candidate_keys": len(grouped),
+                    "matched_keys": len(matched_keys),
+                    "sample_unmatched_archive_keys": [f"{store}:{order}" for store, order in missing_archive_keys[:5]],
+                    "sample_unmatched_parent_keys": [f"{store}:{order}" for store, order in unmatched_parent_keys[:5]],
+                },
+                sort_keys=True,
+            ),
+        )
 
         reasons = Counter[str]()
-        for key, aggregate in grouped.items():
-            order_id = existing_orders.get(key)
+        for grouped_key, aggregate in grouped.items():
+            order_id = None
+            for variant in key_variants_by_grouped_key.get(grouped_key, [grouped_key]):
+                order_id = existing_orders.get(variant)
+                if order_id is not None:
+                    break
             if order_id is None:
                 metrics.skipped += 1
                 metrics.warnings += 1
@@ -216,15 +300,17 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
             metrics.reason_codes = {}
             return metrics
 
-        order_keys = {
-            ((r.store_code or "").strip().upper(), (r.order_code or "").strip())
-            for r in payment_rows
-            if r.store_code and r.order_code
-        }
+        order_variants_by_archive_key: dict[tuple[str, str], list[tuple[str, str]]] = {}
+        for row in payment_rows:
+            join_variants = _build_join_key_variants(row.store_code, row.order_code)
+            if join_variants:
+                order_variants_by_archive_key[join_variants[0]] = join_variants
+        order_keys = set(order_variants_by_archive_key.keys())
+        query_keys = {variant for variants in order_variants_by_archive_key.values() for variant in variants}
         order_lookup: dict[tuple[str, str], Any] = {}
         stg_parent_keys: set[tuple[str, str]] = set()
         archive_base_lookup: dict[tuple[str, str], Any] = {}
-        if order_keys:
+        if query_keys:
             order_rows = await session.execute(
                 sa.select(
                     orders.c.cost_center,
@@ -234,17 +320,25 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
                     orders.c.customer_name,
                     orders.c.mobile_number,
                     orders.c.ingest_remarks,
-                ).where(sa.tuple_(orders.c.store_code, orders.c.order_number).in_(list(order_keys)))
+                ).where(sa.tuple_(orders.c.store_code, orders.c.order_number).in_(list(query_keys)))
             )
             for row in order_rows:
-                order_lookup[(row.store_code, row.order_number)] = row
+                normalized_parent_key = _build_join_key_variants(row.store_code, row.order_number)
+                if not normalized_parent_key:
+                    continue
+                order_lookup[normalized_parent_key[0]] = row
 
             stg_rows = await session.execute(
                 sa.select(stg_orders.c.store_code, stg_orders.c.order_number).where(
-                    sa.tuple_(stg_orders.c.store_code, stg_orders.c.order_number).in_(list(order_keys))
+                    sa.tuple_(stg_orders.c.store_code, stg_orders.c.order_number).in_(list(query_keys))
                 )
             )
-            stg_parent_keys = {((r.store_code or "").strip().upper(), (r.order_number or "").strip()) for r in stg_rows}
+            stg_parent_keys = {
+                normalized[0]
+                for r in stg_rows
+                for normalized in [_build_join_key_variants(r.store_code, r.order_number)]
+                if normalized
+            }
 
             archive_base_rows = await session.execute(
                 sa.select(
@@ -254,18 +348,29 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
                     archive_base.c.customer_name,
                     archive_base.c.customer_phone,
                     archive_base.c.ingest_remarks,
-                ).where(sa.tuple_(archive_base.c.store_code, archive_base.c.order_code).in_(list(order_keys)))
+                ).where(sa.tuple_(archive_base.c.store_code, archive_base.c.order_code).in_(list(query_keys)))
             )
             for row in archive_base_rows:
-                archive_base_lookup[((row.store_code or "").strip().upper(), (row.order_code or "").strip())] = row
+                normalized_parent_key = _build_join_key_variants(row.store_code, row.order_code)
+                if not normalized_parent_key:
+                    continue
+                archive_base_lookup[normalized_parent_key[0]] = row
 
-        parent_match_count = sum(1 for key in order_keys if key in order_lookup or key in stg_parent_keys)
+        matched_keys = {
+            archive_key
+            for archive_key, variants in order_variants_by_archive_key.items()
+            if any(variant in order_lookup or variant in stg_parent_keys for variant in variants)
+        }
+        parent_match_count = len(matched_keys)
         missing_parent_count = len(order_keys) - parent_match_count
         metrics.publish_parent_match_rate = (parent_match_count / len(order_keys)) if order_keys else None
         metrics.missing_parent_count = missing_parent_count
 
-        missing_keys = sorted(order_keys - set(order_lookup.keys()) - stg_parent_keys)
+        missing_keys = sorted(order_keys - matched_keys)
         sample_missing_keys = [f"{store_code}:{order_code}" for store_code, order_code in missing_keys[:5]]
+        sample_unmatched_parent_keys = [
+            f"{store_code}:{order_code}" for store_code, order_code in sorted(set(order_lookup.keys()) - order_keys)[:5]
+        ]
         coverage = Decimal(str(metrics.publish_parent_match_rate or 0)) if order_keys else Decimal("1")
         metrics.preflight_diagnostics = {
             "total_archive_payment_keys": len(order_keys),
@@ -273,7 +378,20 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
             "missing_parent_keys": missing_parent_count,
             "coverage": float(coverage),
             "sample_missing_keys": sample_missing_keys,
+            "sample_unmatched_parent_keys": sample_unmatched_parent_keys,
         }
+        LOGGER.info(
+            "archive_publish_payment_key_coverage %s",
+            json.dumps(
+                {
+                    "total_candidate_keys": len(order_keys),
+                    "matched_keys": parent_match_count,
+                    "sample_unmatched_archive_keys": sample_missing_keys,
+                    "sample_unmatched_parent_keys": sample_unmatched_parent_keys,
+                },
+                sort_keys=True,
+            ),
+        )
 
         if order_keys and parent_match_count == 0:
             metrics.skipped += len(payment_rows)
@@ -305,8 +423,15 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
 
         processed_keys: set[tuple[Any, ...]] = set()
         for row in payment_rows:
-            store_code = (row.store_code or "").strip().upper()
-            order_number = (row.order_code or "").strip()
+            join_variants = _build_join_key_variants(row.store_code, row.order_code)
+            matched_join_key: tuple[str, str] | None = None
+            for variant in join_variants:
+                if variant in order_lookup or variant in stg_parent_keys or variant in archive_base_lookup:
+                    matched_join_key = variant
+                    break
+            selected_join_key = matched_join_key or (join_variants[0] if join_variants else None)
+            store_code = selected_join_key[0] if selected_join_key else None
+            order_number = selected_join_key[1] if selected_join_key else None
             payment_mode = (row.payment_mode or "").strip()
             amount = row.amount
             txid = (row.transaction_id or "").strip()
@@ -323,9 +448,15 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
                 _append_reason(reasons, REASON_UNPARSEABLE_PAYMENT_DATE)
                 continue
 
-            parent = order_lookup.get((store_code, order_number))
-            base_parent = archive_base_lookup.get((store_code, order_number))
-            has_stg_parent = (store_code, order_number) in stg_parent_keys
+            parent = None
+            base_parent = None
+            has_stg_parent = False
+            for variant in join_variants:
+                if parent is None:
+                    parent = order_lookup.get(variant)
+                if base_parent is None:
+                    base_parent = archive_base_lookup.get(variant)
+                has_stg_parent = has_stg_parent or (variant in stg_parent_keys)
             parent_cost_center = parent.cost_center if parent is not None else None
             if not parent_cost_center and base_parent is not None and (has_stg_parent or parent is not None):
                 parent_cost_center = (base_parent.cost_center or "").strip() or None
