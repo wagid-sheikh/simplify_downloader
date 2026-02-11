@@ -4030,7 +4030,9 @@ async def _run_store_discovery(
                 sales_error: str | None = None
                 try:
                     orders_publish = await publish_uc_archive_order_details_to_orders(
-                        database_url=config.database_url
+                        database_url=config.database_url,
+                        store_code=store.store_code,
+                        run_id=run_id,
                     )
                     archive_publish_orders = {
                         "inserted": orders_publish.inserted,
@@ -4062,7 +4064,9 @@ async def _run_store_discovery(
 
                 try:
                     sales_publish = await publish_uc_archive_payments_to_sales(
-                        database_url=config.database_url
+                        database_url=config.database_url,
+                        store_code=store.store_code,
+                        run_id=run_id,
                     )
                     archive_publish_sales = {
                         "inserted": sales_publish.inserted,

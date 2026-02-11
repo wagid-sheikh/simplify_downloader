@@ -133,12 +133,18 @@ def _build_join_key_variants(store_code: Any, order_code: Any) -> list[tuple[str
     return [(normalized_store_code, variant) for variant in deduped_variants]
 
 
-async def publish_uc_archive_order_details_to_orders(*, database_url: str) -> PublishMetrics:
+async def publish_uc_archive_order_details_to_orders(
+    *,
+    database_url: str,
+    store_code: str | None = None,
+    run_id: str | None = None,
+) -> PublishMetrics:
     metrics = PublishMetrics()
     metadata = sa.MetaData()
     details = sa.Table(
         TABLE_ARCHIVE_ORDER_DETAILS,
         metadata,
+        sa.Column("run_id", sa.Text),
         sa.Column("store_code", sa.String(8)),
         sa.Column("order_code", sa.String(24)),
         sa.Column("quantity", sa.Numeric(12, 2)),
@@ -149,15 +155,26 @@ async def publish_uc_archive_order_details_to_orders(*, database_url: str) -> Pu
     orders = _orders_table(metadata)
 
     async with session_scope(database_url) as session:
+        normalized_store_scope = _normalize_store_code(store_code)
+        detail_filters: list[Any] = []
+        if normalized_store_scope:
+            detail_filters.append(details.c.store_code == normalized_store_scope)
+        if run_id:
+            detail_filters.append(details.c.run_id == run_id)
+
+        details_query = sa.select(
+            details.c.store_code,
+            details.c.order_code,
+            details.c.quantity,
+            details.c.weight,
+            details.c.service,
+        )
+        if detail_filters:
+            details_query = details_query.where(sa.and_(*detail_filters))
+
         rows = (
             await session.execute(
-                sa.select(
-                    details.c.store_code,
-                    details.c.order_code,
-                    details.c.quantity,
-                    details.c.weight,
-                    details.c.service,
-                )
+                details_query
             )
         ).all()
 
@@ -248,7 +265,12 @@ async def publish_uc_archive_order_details_to_orders(*, database_url: str) -> Pu
         return metrics
 
 
-async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishMetrics:
+async def publish_uc_archive_payments_to_sales(
+    *,
+    database_url: str,
+    store_code: str | None = None,
+    run_id: str | None = None,
+) -> PublishMetrics:
     metrics = PublishMetrics()
     reasons = Counter[str]()
     metadata = sa.MetaData()
@@ -280,19 +302,30 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
     sales = _sales_table(metadata)
 
     async with session_scope(database_url) as session:
+        normalized_store_scope = _normalize_store_code(store_code)
+        payment_filters: list[Any] = []
+        if normalized_store_scope:
+            payment_filters.append(payments.c.store_code == normalized_store_scope)
+        if run_id:
+            payment_filters.append(payments.c.run_id == run_id)
+
+        payments_query = sa.select(
+            payments.c.run_id,
+            payments.c.run_date,
+            payments.c.store_code,
+            payments.c.order_code,
+            payments.c.payment_mode,
+            payments.c.amount,
+            payments.c.payment_date_raw,
+            payments.c.transaction_id,
+            payments.c.ingest_remarks,
+        )
+        if payment_filters:
+            payments_query = payments_query.where(sa.and_(*payment_filters))
+
         payment_rows = (
             await session.execute(
-                sa.select(
-                    payments.c.run_id,
-                    payments.c.run_date,
-                    payments.c.store_code,
-                    payments.c.order_code,
-                    payments.c.payment_mode,
-                    payments.c.amount,
-                    payments.c.payment_date_raw,
-                    payments.c.transaction_id,
-                    payments.c.ingest_remarks,
-                )
+                payments_query
             )
         ).all()
 
@@ -551,7 +584,17 @@ async def publish_uc_archive_payments_to_sales(*, database_url: str) -> PublishM
     return metrics
 
 
-async def publish_uc_archive_stage2_stage3(*, database_url: str) -> ArchivePublishResult:
-    orders_metrics = await publish_uc_archive_order_details_to_orders(database_url=database_url)
-    sales_metrics = await publish_uc_archive_payments_to_sales(database_url=database_url)
+async def publish_uc_archive_stage2_stage3(
+    *, database_url: str, store_code: str | None = None, run_id: str | None = None
+) -> ArchivePublishResult:
+    orders_metrics = await publish_uc_archive_order_details_to_orders(
+        database_url=database_url,
+        store_code=store_code,
+        run_id=run_id,
+    )
+    sales_metrics = await publish_uc_archive_payments_to_sales(
+        database_url=database_url,
+        store_code=store_code,
+        run_id=run_id,
+    )
     return ArchivePublishResult(orders=orders_metrics, sales=sales_metrics)
