@@ -393,3 +393,67 @@ async def test_payment_publish_uses_archive_base_fallback_when_stg_parent_exists
     assert row.mobile_number == "7777777777"
     assert "archive-base-remark" in (row.ingest_remarks or "")
     assert "payment-remark" in (row.ingest_remarks or "")
+
+
+@pytest.mark.asyncio
+async def test_archive_publish_normalizes_join_keys_and_improves_parent_coverage(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_parent_normalized.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders (
+                    cost_center, store_code, order_number, order_date, customer_name, mobile_number, created_at
+                ) VALUES (
+                    'CC01', 'UC567', '1234', '2025-01-01T00:00:00+00:00', 'Alice', '9999999999', '2025-01-01T00:00:00+00:00'
+                )
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_order_details (store_code, order_code, quantity, weight, service)
+                VALUES (' 567 ', ' uc567-1234 ', 2, 1.25, 'Dryclean')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_payment_details (
+                    run_id, run_date, store_code, order_code, payment_mode, amount, payment_date_raw, transaction_id, ingest_remarks
+                ) VALUES (
+                    'run-normalized', '2025-01-03T00:00:00+00:00', ' uc567 ', ' uc567-1234 ', 'UPI', 50,
+                    '03 Jan 2025, 11:00 AM', 'TN1', 'normalized-key-test'
+                )
+                """
+            )
+        )
+        await session.commit()
+
+    order_metrics = await publish_uc_archive_order_details_to_orders(database_url=db_url)
+    sales_metrics = await publish_uc_archive_payments_to_sales(database_url=db_url)
+
+    assert order_metrics.updated == 1
+    assert order_metrics.reason_codes.get(REASON_MISSING_PARENT_ORDER_CONTEXT, 0) == 0
+    assert sales_metrics.publish_parent_match_rate == 1.0
+    assert sales_metrics.missing_parent_count == 0
+    assert sales_metrics.preflight_warning is None
+    assert sales_metrics.reason_codes.get(REASON_PREFLIGHT_PARENT_COVERAGE_NEAR_ZERO, 0) == 0
+    assert sales_metrics.reason_codes.get(REASON_MISSING_PARENT_ORDER_CONTEXT, 0) == 0
+
+    async with session_scope(db_url) as session:
+        order_row = (
+            await session.execute(sa.text("SELECT pieces, weight FROM orders WHERE store_code='UC567' AND order_number='1234'"))
+        ).one()
+        sales_row = (
+            await session.execute(sa.text("SELECT store_code, order_number FROM sales WHERE transaction_id='TN1'"))
+        ).one()
+
+    assert Decimal(str(order_row.pieces)) == Decimal("2")
+    assert Decimal(str(order_row.weight)) == Decimal("1.25")
+    assert sales_row.store_code == "UC567"
+    assert sales_row.order_number == "1234"
