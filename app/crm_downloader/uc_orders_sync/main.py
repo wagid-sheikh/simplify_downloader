@@ -34,6 +34,7 @@ from app.crm_downloader.uc_orders_sync.archive_ingest import ingest_uc_archive_e
 from app.crm_downloader.uc_orders_sync.archive_api_extract import (
     collect_archive_orders_via_api,
 )
+from app.crm_downloader.uc_orders_sync.ingest import ingest_uc_orders_workbook
 from app.crm_downloader.uc_orders_sync.archive_publish import (
     publish_uc_archive_order_details_to_orders,
     publish_uc_archive_payments_to_sales,
@@ -3457,6 +3458,18 @@ async def _run_store_discovery(
         session_probe_result: bool | None = None
         fallback_login_attempted = False
         fallback_login_result: bool | None = None
+        gst_ingest_stage_statuses: dict[str, str] = {"ingest": "skipped"}
+        gst_ingest_stage_metrics: dict[str, dict[str, Any]] = {}
+        gst_staging_rows: int | None = None
+        gst_final_rows: int | None = None
+        gst_staging_inserted: int | None = None
+        gst_staging_updated: int | None = None
+        gst_final_inserted: int | None = None
+        gst_final_updated: int | None = None
+        gst_rows_skipped_invalid: int | None = None
+        gst_rows_skipped_invalid_reasons: dict[str, int] | None = None
+        gst_warning_rows: list[dict[str, Any]] = []
+        gst_dropped_rows: list[dict[str, Any]] = []
 
         if storage_state_exists:
             log_event(
@@ -3657,6 +3670,80 @@ async def _run_store_discovery(
                         download_path=gst_download_path,
                         row_count=gst_row_count,
                     )
+                    if gst_download_ok and gst_download_path:
+                        if not config.database_url:
+                            gst_ingest_stage_statuses["ingest"] = "failed"
+                            gst_ingest_stage_metrics["ingest"] = {
+                                "error": "database_url is missing; GST ingest skipped"
+                            }
+                            log_event(
+                                logger=logger,
+                                phase="ingest",
+                                status="warn",
+                                message="GST ingest skipped: database_url is missing",
+                                store_code=store.store_code,
+                            )
+                        else:
+                            try:
+                                ingest_result = await ingest_uc_orders_workbook(
+                                    workbook_path=Path(gst_download_path),
+                                    store_code=store.store_code,
+                                    cost_center=store.cost_center,
+                                    run_id=run_id,
+                                    run_date=aware_now(),
+                                    database_url=config.database_url,
+                                    logger=logger,
+                                )
+                                gst_ingest_stage_statuses["ingest"] = "success"
+                                gst_ingest_stage_metrics["ingest"] = {
+                                    "staging_rows": ingest_result.staging_rows,
+                                    "final_rows": ingest_result.final_rows,
+                                    "staging_inserted": ingest_result.staging_inserted,
+                                    "staging_updated": ingest_result.staging_updated,
+                                    "final_inserted": ingest_result.final_inserted,
+                                    "final_updated": ingest_result.final_updated,
+                                    "rows_skipped_invalid": ingest_result.rows_skipped_invalid,
+                                    "rows_skipped_invalid_reasons": ingest_result.rows_skipped_invalid_reasons,
+                                }
+                                gst_staging_rows = ingest_result.staging_rows
+                                gst_final_rows = ingest_result.final_rows
+                                gst_staging_inserted = ingest_result.staging_inserted
+                                gst_staging_updated = ingest_result.staging_updated
+                                gst_final_inserted = ingest_result.final_inserted
+                                gst_final_updated = ingest_result.final_updated
+                                gst_rows_skipped_invalid = (
+                                    ingest_result.rows_skipped_invalid
+                                )
+                                gst_rows_skipped_invalid_reasons = (
+                                    ingest_result.rows_skipped_invalid_reasons
+                                )
+                                gst_warning_rows = list(ingest_result.warning_rows)
+                                gst_dropped_rows = list(ingest_result.dropped_rows)
+                                log_event(
+                                    logger=logger,
+                                    phase="ingest",
+                                    message="GST ingest completed",
+                                    store_code=store.store_code,
+                                    staging_rows=ingest_result.staging_rows,
+                                    final_rows=ingest_result.final_rows,
+                                    staging_inserted=ingest_result.staging_inserted,
+                                    staging_updated=ingest_result.staging_updated,
+                                    final_inserted=ingest_result.final_inserted,
+                                    final_updated=ingest_result.final_updated,
+                                )
+                            except Exception as exc:
+                                gst_ingest_stage_statuses["ingest"] = "failed"
+                                gst_ingest_stage_metrics["ingest"] = {
+                                    "error": str(exc)
+                                }
+                                log_event(
+                                    logger=logger,
+                                    phase="ingest",
+                                    status="warn",
+                                    message="GST ingest failed; continuing to Archive Orders",
+                                    store_code=store.store_code,
+                                    error=str(exc),
+                                )
         except Exception as exc:
             log_event(
                 logger=logger,
@@ -3683,6 +3770,18 @@ async def _run_store_discovery(
                 fallback_login_attempted=fallback_login_attempted,
                 fallback_login_result=fallback_login_result,
                 skip_reason="navigation failed",
+                staging_rows=gst_staging_rows,
+                final_rows=gst_final_rows,
+                staging_inserted=gst_staging_inserted,
+                staging_updated=gst_staging_updated,
+                final_inserted=gst_final_inserted,
+                final_updated=gst_final_updated,
+                rows_skipped_invalid=gst_rows_skipped_invalid,
+                rows_skipped_invalid_reasons=gst_rows_skipped_invalid_reasons,
+                warning_rows=gst_warning_rows,
+                dropped_rows=gst_dropped_rows,
+                stage_statuses=dict(gst_ingest_stage_statuses),
+                stage_metrics=dict(gst_ingest_stage_metrics),
             )
             summary.record_store(store.store_code, outcome)
             return
@@ -3824,11 +3923,13 @@ async def _run_store_discovery(
         archive_publish_orders: dict[str, Any] | None = None
         archive_publish_sales: dict[str, Any] | None = None
         stage_statuses: dict[str, str] = {
+            **gst_ingest_stage_statuses,
             "download": "success",
             "archive_ingest": "skipped",
             "archive_publish": "skipped",
         }
         stage_metrics: dict[str, dict[str, Any]] = {
+            **gst_ingest_stage_metrics,
             "download": {
                 "base_rows": base_count,
                 "order_details_rows": order_details_count,
@@ -4083,6 +4184,16 @@ async def _run_store_discovery(
             rows_downloaded=row_count,
             stage_statuses=stage_statuses,
             stage_metrics=stage_metrics,
+            staging_rows=gst_staging_rows,
+            final_rows=gst_final_rows,
+            staging_inserted=gst_staging_inserted,
+            staging_updated=gst_staging_updated,
+            final_inserted=gst_final_inserted,
+            final_updated=gst_final_updated,
+            rows_skipped_invalid=gst_rows_skipped_invalid,
+            rows_skipped_invalid_reasons=gst_rows_skipped_invalid_reasons,
+            warning_rows=gst_warning_rows,
+            dropped_rows=gst_dropped_rows,
             archive_publish_orders=archive_publish_orders,
             archive_publish_sales=archive_publish_sales,
             warning_count=archive_warning_count,
