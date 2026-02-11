@@ -4029,8 +4029,13 @@ async def _run_store_discovery(
                 orders_error: str | None = None
                 sales_error: str | None = None
                 try:
+                    # Keep publish per-store, but every publish query must be scoped by both
+                    # run_id + store_code to prevent this store from reading another store's
+                    # staged archive rows within the same overall pipeline run.
                     orders_publish = await publish_uc_archive_order_details_to_orders(
-                        database_url=config.database_url
+                        database_url=config.database_url,
+                        run_id=run_id,
+                        store_code=store.store_code,
                     )
                     archive_publish_orders = {
                         "inserted": orders_publish.inserted,
@@ -4061,8 +4066,13 @@ async def _run_store_discovery(
                     )
 
                 try:
+                    # Sequencing contract: publish happens immediately after this store's
+                    # ingest (not deferred globally), so strict run/store filters are required
+                    # in publish SQL to avoid cross-store contamination.
                     sales_publish = await publish_uc_archive_payments_to_sales(
-                        database_url=config.database_url
+                        database_url=config.database_url,
+                        run_id=run_id,
+                        store_code=store.store_code,
                     )
                     archive_publish_sales = {
                         "inserted": sales_publish.inserted,
