@@ -156,29 +156,31 @@ If this plan looks good, I’ll proceed with the Phase 0 scaffolding PR first.
 
 12. `payment_details` is a JSON string, not object array — should we treat parse failures as warning + keep base row, or hard-fail the order? [payment_details can be converted to our needed object. If an order does not have payment, then this payment_details is null]
 13. For multi-payment orders (e.g., UC610-0769), should we emit one payment row per payment entry exactly as-is? [for multi payment we need all rows that will go to our payment details, 1:UPI, 4:Cash, any other pament mode: "Others"]
-14. Confirm your mapping:** **`payment_mode=1 => UPI`,** **`payment_mode=4 => Cash`; do we have a full enum (2/3/5/etc.)? [we do not have full enums]
-15. If payment mode is unknown code, preferred normalized value:** **`UNKNOWN`? [It should be marked as: Others]
+14. Confirm your mapping:** **`payment_mode=1 => UPI`,** **`payment_mode=4 => Cash`; do we have a full enum (2/3/5/etc.)? [2: Debit/Credit Card, 3: Bank Transfer]
+15. If payment mode is unknown code, preferred normalized value:** **`UNKNOWN`? [It should be marked as: UNKNOWN]
 16. Should amount rounding follow API value exactly, or follow existing Decimal normalization and two-decimal storage? [Let's pull the raw data we get and save in our excels]
-17. For base row status, API gives numeric** **`status: 7`; do you want numeric or mapped text (`DELIVERED`)?
+17. For base row status, API gives numeric** **`status: 7`; do you want numeric or mapped text (`DELIVERED`)? [Text: Delivered, 0=Cancel, and any other value: Unknown]
 
 ### E) Order details source
 
-18. Is** **`generateInvoice/{id}` always available for every delivered booking?
-19. Can** **`generateInvoice` return different HTML templates by service/store?
-20. Should we parse order details from invoice HTML only, or use list API fields where possible and invoice only for line items?
-21. For orders with multiple services + multiline items (like UC610-0759), do you want one row per item line (current behavior) or one row per service block?
+18. Is** **`generateInvoice/{id}` always available for every delivered booking? [Yes]
+19. Can** **`generateInvoice` return different HTML templates by service/store? [By Service it may have more lines items]
+20. Should we parse order details from invoice HTML only, or use list API fields where possible and invoice only for line items? [only possible from HTML]
+21. For orders with multiple services + multiline items (like UC610-0759), do you want one row per item line (current behavior) or one row per service block? [one row per item]
 
 ### F) Reliability / fallback behavior
 
-22. Do you want UI scraping fallback if API fails, or fail-fast and retry run later?
-23. Retry policy preference for API errors (e.g., 429/5xx): max retries + backoff?
-24. Should partial extraction still be allowed if some invoice/detail calls fail but list pages succeed?
-25. Is it acceptable to proceed with base + payment even if some order_details are unavailable?
+22. Do you want UI scraping fallback if API fails, or fail-fast and retry run later? [No fallback to UI method]
+23. Retry policy preference for API errors (e.g., 429/5xx): max retries + backoff? [3 max retries]
+24. Should partial extraction still be allowed if some invoice/detail calls fail but list pages succeed? [yes]
+25. Is it acceptable to proceed with base + payment even if some order_details are unavailable? [yes]
 
 ### G) Operational / observability
 
-26. Should logs include API page progress (`page/totalPages`, rows fetched, parse failures) replacing current footer-based telemetry?
-27. Do you want a validation metric:** **`api_total` vs extracted base rows mismatch alerts?
-28. Should we preserve existing output XLSX files exactly (column names/order), or are we free to bypass files and ingest directly (I recommend preserving first for low-risk cutover)?
-29. Do you want a feature flag rollout (e.g.,** **`UC_ARCHIVE_USE_API=true`) per store or global?
-30. Do you want side-by-side shadow mode for a few runs (UI + API diff) before full switch?
+26. Should logs include API page progress (`page/totalPages`, rows fetched, parse failures) replacing current footer-based telemetry? [yes]
+27. Do you want a validation metric:** **`api_total` vs extracted base rows mismatch alerts? [yes]
+28. Should we preserve existing output XLSX files exactly (column names/order), or are we free to bypass files and ingest directly (I recommend preserving first for low-risk cutover)? [preserve excel files, data from API will be dumped in Excel and then from there it will be ingested into staging tables & then final tables.]
+29. Do you want a feature flag rollout (e.g.,** **`UC_ARCHIVE_USE_API=true`) per store or global?[Global]
+30. Do you want side-by-side shadow mode for a few runs (UI + API diff) before full switch? [no]
+
+Essentially regarding API driven data fetch and answers to your queries above. For testing prposes I want you develop a new code file which is totally using API driven data fetch. So in our current flow: We login, go dashboard, go GST report->download & ingest, then we go to Archive report page [& this is the time instead of UI driven data fetch, you go ahead call code from a new file and excute it. Once testing is successfull, then we will fully replce UI path for Archive ORders fetch]
