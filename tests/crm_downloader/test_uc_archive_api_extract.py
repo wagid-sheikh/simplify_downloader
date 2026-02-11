@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from app.crm_downloader.uc_orders_sync.archive_api_extract import (
+    ArchiveApiExtract,
+    _record_extractor_error,
     _map_status,
     _parse_invoice_order_details,
     _parse_payment_rows,
@@ -71,3 +73,17 @@ def test_map_status_values() -> None:
     assert _map_status(0) == "Cancelled"
     assert _map_status(99) == "Unknown"
     assert _map_status(None) == "Unknown"
+
+
+def test_record_extractor_error_tracks_counters_and_unique_reason_codes() -> None:
+    extract = ArchiveApiExtract()
+
+    _record_extractor_error(extract, reason="archive_api_page_failed")
+    _record_extractor_error(extract, reason="archive_api_page_failed")
+    _record_extractor_error(extract, reason="auth_401")
+
+    assert extract.extractor_error_counters == {
+        "archive_api_page_failed": 2,
+        "auth_401": 1,
+    }
+    assert extract.extractor_reason_codes == ["archive_api_page_failed", "auth_401"]

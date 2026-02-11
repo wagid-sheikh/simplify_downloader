@@ -806,6 +806,30 @@ def test_store_outcome_marks_warning_when_footer_baseline_unavailable() -> None:
     assert status == "success_with_warnings"
 
 
+def test_store_outcome_marks_failed_when_archive_api_auth_failure_reason_present() -> None:
+    outcome = uc_main.StoreOutcome(
+        status="warning",
+        message="auth failure",
+        reason_codes=["archive_api_auth_failure", "missing_parent_order_context"],
+    )
+
+    status = uc_main._resolve_sync_log_status(
+        outcome=outcome, download_succeeded=True, row_count=0
+    )
+
+    assert status == "failed"
+
+
+def test_classify_store_window_status_prioritizes_archive_api_auth_failure() -> None:
+    outcome = uc_main.StoreOutcome(
+        status="warning",
+        message="auth failure",
+        reason_codes=["archive_api_auth_failure", "partial_extraction"],
+    )
+
+    assert uc_main._classify_store_window_status(outcome) == "failed"
+
+
 def test_summary_overall_status_rolls_up_publish_preflight_warning() -> None:
     summary = uc_main.UcOrdersDiscoverySummary(
         run_id="run-publish-warning",
