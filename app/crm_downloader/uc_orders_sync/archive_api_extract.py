@@ -21,6 +21,7 @@ ARCHIVE_API_RETRY_BASE_SECONDS = 1.0
 ARCHIVE_REQUESTED_WITH_HEADER = "XMLHttpRequest"
 ARCHIVE_REFERER = "https://store.ucleanlaundry.com/archive"
 ARCHIVE_ACCEPT_HEADER = "application/json, text/plain, */*"
+TOKEN_KEY_PATTERN = re.compile(r"token|auth|jwt", flags=re.I)
 
 PAYMENT_MODE_MAP = {
     1: "UPI",
@@ -33,6 +34,8 @@ STATUS_MAP = {
     0: "Cancelled",
     7: "Delivered",
 }
+
+_TOKEN_KEY_DEBUG_LOGGED_STORES: set[str] = set()
 
 
 @dataclass
@@ -239,7 +242,7 @@ async def _api_get_json_with_retries(
     store_code: str,
     context: str,
 ) -> tuple[Mapping[str, Any] | None, str | None]:
-    bearer_token = await _resolve_archive_bearer_token(page=page)
+    bearer_token = await _resolve_archive_bearer_token(page=page, logger=logger, store_code=store_code)
     request_headers = _build_archive_request_headers(bearer_token=bearer_token)
     auth_header_present = "Authorization" in request_headers
     referer_set = request_headers.get("Referer") == ARCHIVE_REFERER
@@ -249,6 +252,7 @@ async def _api_get_json_with_retries(
             response = await page.request.get(url, timeout=90_000, headers=request_headers)
             status = response.status
             if status == 401:
+                fallback_status: int | None = None
                 log_event(
                     logger=logger,
                     phase="archive_api",
@@ -258,11 +262,14 @@ async def _api_get_json_with_retries(
                     context=context,
                     attempt=attempt,
                     status_code=status,
+                    primary_status_code=status,
+                    fallback_status_code=fallback_status,
+                    transport="api_request_context",
                     auth_header_present=auth_header_present,
                     referer_set=referer_set,
                     url=url,
                 )
-                payload = await _browser_fetch_json_with_credentials(
+                payload, fallback_status = await _browser_fetch_json_with_credentials(
                     page=page,
                     url=url,
                     headers=request_headers,
@@ -275,13 +282,30 @@ async def _api_get_json_with_retries(
                         store_code=store_code,
                         context=context,
                         attempt=attempt,
-                        status_code=status,
+                        status_code=fallback_status,
+                        primary_status_code=status,
+                        fallback_status_code=fallback_status,
                         auth_header_present=auth_header_present,
                         referer_set=referer_set,
                         transport="browser_fetch",
                         url=url,
                     )
                     return payload, None
+                log_event(
+                    logger=logger,
+                    phase="archive_api",
+                    status="warn",
+                    message="Archive API fallback request failed after unauthorized primary response",
+                    store_code=store_code,
+                    context=context,
+                    attempt=attempt,
+                    primary_status_code=status,
+                    fallback_status_code=fallback_status,
+                    auth_header_present=auth_header_present,
+                    transport="browser_fetch",
+                    referer_set=referer_set,
+                    url=url,
+                )
                 last_error = "browser_fetch_unauthorized"
                 continue
             if status >= 500 or status == 429:
@@ -353,71 +377,132 @@ def _build_archive_request_headers(*, bearer_token: str | None) -> dict[str, str
     return headers
 
 
-async def _resolve_archive_bearer_token(*, page: Page) -> str | None:
+async def _resolve_archive_bearer_token(*, page: Page, logger: JsonLogger, store_code: str) -> str | None:
     try:
         candidate = await page.evaluate(
             """
             () => {
-              const seen = new Set();
-              const candidates = [];
-              const push = (value) => {
-                if (typeof value !== 'string') return;
-                const trimmed = value.trim();
-                if (!trimmed || seen.has(trimmed)) return;
-                seen.add(trimmed);
-                candidates.push(trimmed);
-              };
-
-              const parseStore = (store) => {
-                if (!store) return;
-                for (let i = 0; i < store.length; i += 1) {
-                  const key = store.key(i);
-                  const value = store.getItem(key);
-                  push(value);
-                  if (!value) continue;
-                  try {
-                    const parsed = JSON.parse(value);
-                    if (parsed && typeof parsed === 'object') {
-                      push(parsed.token);
-                      push(parsed.access_token);
-                      push(parsed.jwt);
-                      push(parsed.authToken);
-                      push(parsed.bearerToken);
-                    }
-                  } catch (_) {
-                    // not json
-                  }
-                }
-              };
-
-              parseStore(window.localStorage);
-              parseStore(window.sessionStorage);
-
-              const cookieText = document.cookie || '';
-              cookieText.split(';').forEach((chunk) => {
-                const [, value] = chunk.split('=');
-                if (value) push(decodeURIComponent(value));
-              });
-
               const tokenRegexes = [
                 /(?:^|\s)Bearer\s+([A-Za-z0-9\-_.~+/]+=*)/i,
                 /^([A-Za-z0-9\-_.]+\.[A-Za-z0-9\-_.]+\.[A-Za-z0-9\-_.]+)$/,
               ];
-
-              for (const item of candidates) {
+              const keyRegex = /(token|auth|jwt)/i;
+              const parseToken = (value) => {
+                if (typeof value !== 'string') return null;
+                const trimmed = value.trim();
+                if (!trimmed) return null;
                 for (const pattern of tokenRegexes) {
-                  const match = item.match(pattern);
+                  const match = trimmed.match(pattern);
                   if (match) {
                     return (match[1] || match[0]).trim();
                   }
                 }
+                return null;
+              };
+
+              const matchingKeys = [];
+              const matchingKeySet = new Set();
+              const recordMatchingKey = (key) => {
+                if (typeof key !== 'string') return;
+                if (!keyRegex.test(key)) return;
+                if (matchingKeySet.has(key)) return;
+                matchingKeySet.add(key);
+                matchingKeys.push(key);
+              };
+
+              const deepSearchToken = (input, depth = 0) => {
+                if (!input || depth > 4) return null;
+                if (typeof input === 'string') {
+                  return parseToken(input);
+                }
+                if (Array.isArray(input)) {
+                  for (const item of input) {
+                    const nested = deepSearchToken(item, depth + 1);
+                    if (nested) return nested;
+                  }
+                  return null;
+                }
+                if (typeof input === 'object') {
+                  for (const [key, value] of Object.entries(input)) {
+                    if (keyRegex.test(key)) {
+                      const fromKey = deepSearchToken(value, depth + 1);
+                      if (fromKey) return fromKey;
+                    }
+                    const nested = deepSearchToken(value, depth + 1);
+                    if (nested) return nested;
+                  }
+                }
+                return null;
+              };
+
+              const output = {
+                token: null,
+                tokenSourceType: 'none',
+                tokenLength: 0,
+                candidateLocalStorageKeys: matchingKeys,
+              };
+
+              const store = window.localStorage;
+              if (!store) return output;
+
+              for (let i = 0; i < store.length; i += 1) {
+                const key = store.key(i);
+                recordMatchingKey(key);
+                const value = store.getItem(key);
+                const direct = parseToken(value);
+                if (direct && keyRegex.test(key)) {
+                  output.token = direct;
+                  output.tokenSourceType = 'localStorage_direct_key';
+                  output.tokenLength = direct.length;
+                  return output;
+                }
+
+                if (!value) continue;
+                try {
+                  const parsed = JSON.parse(value);
+                  const fromBlob = deepSearchToken(parsed);
+                  if (fromBlob) {
+                    output.token = fromBlob;
+                    output.tokenSourceType = 'localStorage_json_blob';
+                    output.tokenLength = fromBlob.length;
+                    return output;
+                  }
+                } catch (_) {
+                  // not json
+                }
               }
-              return null;
+              return output;
             }
             """
         )
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate.strip()
+        if isinstance(candidate, Mapping):
+            source_type = candidate.get("tokenSourceType")
+            resolved_source = source_type if source_type in {"localStorage_direct_key", "localStorage_json_blob", "none"} else "none"
+            token_value = candidate.get("token")
+            token = token_value.strip() if isinstance(token_value, str) and token_value.strip() else None
+            token_length = len(token) if token else 0
+            log_event(
+                logger=logger,
+                phase="archive_api",
+                message="Resolved archive bearer token diagnostics",
+                store_code=store_code,
+                token_source_type=resolved_source,
+                token_length=token_length,
+            )
+
+            if store_code not in _TOKEN_KEY_DEBUG_LOGGED_STORES:
+                keys = candidate.get("candidateLocalStorageKeys")
+                candidate_keys = sorted({key for key in keys if isinstance(key, str) and TOKEN_KEY_PATTERN.search(key)}) if isinstance(keys, list) else []
+                log_event(
+                    logger=logger,
+                    phase="archive_api",
+                    message="Archive token key candidates detected in localStorage",
+                    store_code=store_code,
+                    candidate_local_storage_keys=candidate_keys,
+                )
+                _TOKEN_KEY_DEBUG_LOGGED_STORES.add(store_code)
+
+            return token
     except Exception:
         return None
     return None
@@ -428,7 +513,7 @@ async def _browser_fetch_json_with_credentials(
     page: Page,
     url: str,
     headers: Mapping[str, str],
-) -> Mapping[str, Any] | None:
+) -> tuple[Mapping[str, Any] | None, int | None]:
     try:
         result = await page.evaluate(
             """
@@ -452,15 +537,17 @@ async def _browser_fetch_json_with_credentials(
             {"requestUrl": url, "requestHeaders": dict(headers)},
         )
     except Exception:
-        return None
+        return None, None
 
     if not isinstance(result, Mapping):
-        return None
+        return None, None
     if not result.get("ok"):
-        return None
+        status = result.get("status")
+        return None, status if isinstance(status, int) else None
 
     payload = result.get("payload")
-    return payload if isinstance(payload, Mapping) else None
+    status = result.get("status")
+    return (payload if isinstance(payload, Mapping) else None), (status if isinstance(status, int) else None)
 
 
 async def _browser_fetch_text_with_credentials(
@@ -468,7 +555,7 @@ async def _browser_fetch_text_with_credentials(
     page: Page,
     url: str,
     headers: Mapping[str, str],
-) -> str | None:
+) -> tuple[str | None, int | None]:
     try:
         result = await page.evaluate(
             """
@@ -492,20 +579,22 @@ async def _browser_fetch_text_with_credentials(
             {"requestUrl": url, "requestHeaders": dict(headers)},
         )
     except Exception:
-        return None
+        return None, None
 
     if not isinstance(result, Mapping):
-        return None
+        return None, None
     if not result.get("ok"):
-        return None
+        status = result.get("status")
+        return None, status if isinstance(status, int) else None
 
     payload = result.get("payload")
-    return payload if isinstance(payload, str) and payload else None
+    status = result.get("status")
+    return (payload if isinstance(payload, str) and payload else None), (status if isinstance(status, int) else None)
 
 
 async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str, store_code: str, order_code: str, logger: JsonLogger) -> str | None:
     url = ARCHIVE_INVOICE_URL_TEMPLATE.format(booking_id=booking_id)
-    bearer_token = await _resolve_archive_bearer_token(page=page)
+    bearer_token = await _resolve_archive_bearer_token(page=page, logger=logger, store_code=store_code)
     request_headers = _build_archive_request_headers(bearer_token=bearer_token)
     auth_header_present = "Authorization" in request_headers
     referer_set = request_headers.get("Referer") == ARCHIVE_REFERER
@@ -515,6 +604,7 @@ async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str,
             response = await page.request.get(url, timeout=90_000, headers=request_headers)
             status = response.status
             if status == 401:
+                fallback_status: int | None = None
                 log_event(
                     logger=logger,
                     phase="archive_api",
@@ -525,11 +615,14 @@ async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str,
                     booking_id=booking_id,
                     attempt=attempt,
                     status_code=status,
+                    primary_status_code=status,
+                    fallback_status_code=fallback_status,
+                    transport="api_request_context",
                     auth_header_present=auth_header_present,
                     referer_set=referer_set,
                     url=url,
                 )
-                invoice_payload = await _browser_fetch_text_with_credentials(
+                invoice_payload, fallback_status = await _browser_fetch_text_with_credentials(
                     page=page,
                     url=url,
                     headers=request_headers,
@@ -543,13 +636,31 @@ async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str,
                         order_code=order_code,
                         booking_id=booking_id,
                         attempt=attempt,
-                        status_code=status,
+                        status_code=fallback_status,
+                        primary_status_code=status,
+                        fallback_status_code=fallback_status,
                         auth_header_present=auth_header_present,
                         referer_set=referer_set,
                         transport="browser_fetch",
                         url=url,
                     )
                     return invoice_payload
+                log_event(
+                    logger=logger,
+                    phase="archive_api",
+                    status="warn",
+                    message="Invoice API fallback request failed after unauthorized primary response",
+                    store_code=store_code,
+                    order_code=order_code,
+                    booking_id=booking_id,
+                    attempt=attempt,
+                    primary_status_code=status,
+                    fallback_status_code=fallback_status,
+                    auth_header_present=auth_header_present,
+                    transport="browser_fetch",
+                    referer_set=referer_set,
+                    url=url,
+                )
                 last_error = "browser_fetch_unauthorized"
                 continue
             if status >= 500 or status == 429:
