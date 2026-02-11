@@ -102,6 +102,14 @@ GST_CONTAINER_SELECTORS = (
     "div[id*=gst]",
 )
 UC_MAX_WORKERS_DEFAULT = 2
+UC_ARCHIVE_EXTRACTION_MODE_API = "api"
+UC_ARCHIVE_EXTRACTION_MODE_UI = "ui"
+UC_ARCHIVE_EXTRACTION_MODE_API_WITH_UI_FALLBACK = "api_with_ui_fallback"
+UC_ARCHIVE_EXTRACTION_MODES = {
+    UC_ARCHIVE_EXTRACTION_MODE_API,
+    UC_ARCHIVE_EXTRACTION_MODE_UI,
+    UC_ARCHIVE_EXTRACTION_MODE_API_WITH_UI_FALLBACK,
+}
 GST_DATE_RANGE_READY_SELECTORS = (
     "input.search-user[placeholder*='Choose Start Date']",
     "input[placeholder='Choose Start Date - End Date']",
@@ -1053,6 +1061,7 @@ async def main(
             f"from_date ({from_date}) must be on or before to_date ({run_end_date})"
         )
     logger = get_logger(run_id=resolved_run_id)
+    archive_extraction_mode = _resolve_uc_archive_extraction_mode()
     stores = await _load_uc_order_stores(logger=logger, store_codes=store_codes)
     store_start_dates: dict[str, date] = {}
     pipeline_id: int | None = None
@@ -1109,6 +1118,13 @@ async def main(
             message="Pipeline DOM logging configuration",
             pipeline_skip_dom_logging=config.pipeline_skip_dom_logging,
         )
+        log_event(
+            logger=logger,
+            phase="init",
+            message="Resolved UC archive extraction mode for run",
+            archive_extraction_mode=archive_extraction_mode,
+            run_id=resolved_run_id,
+        )
 
         summary.store_codes = [store.store_code for store in stores]
         if not stores:
@@ -1158,6 +1174,7 @@ async def main(
                         from_date=store_start_date,
                         to_date=run_end_date,
                         download_timeout_ms=download_timeout_ms,
+                        archive_extraction_mode=archive_extraction_mode,
                     )
 
             await asyncio.gather(*[_guarded(store) for store in stores])
@@ -1319,6 +1336,18 @@ def _env_int(name: str, default: int) -> int:
 
 def _resolve_uc_max_workers() -> int:
     return max(1, _env_int("UC_MAX_WORKERS", UC_MAX_WORKERS_DEFAULT))
+
+
+def _resolve_uc_archive_extraction_mode() -> str:
+    raw_mode = (os.getenv("UC_ARCHIVE_EXTRACTION_MODE") or "").strip().lower()
+    if raw_mode in UC_ARCHIVE_EXTRACTION_MODES:
+        return raw_mode
+
+    ui_enabled = (os.getenv("UC_ARCHIVE_UI_ENABLED") or "").strip().lower()
+    if ui_enabled in {"1", "true", "yes", "on"}:
+        return UC_ARCHIVE_EXTRACTION_MODE_API_WITH_UI_FALLBACK
+
+    return UC_ARCHIVE_EXTRACTION_MODE_API
 
 
 def _resolve_uc_download_dir(
@@ -2766,6 +2795,7 @@ async def _get_archive_page_number(page: Page) -> int | None:
     return None
 
 
+# Temporary UI fallback extractor; remove after API mode is stable across multiple runs.
 async def _collect_archive_orders(
     *,
     page: Page,
@@ -3352,6 +3382,7 @@ async def _run_store_discovery(
     from_date: date,
     to_date: date,
     download_timeout_ms: int,
+    archive_extraction_mode: str,
 ) -> None:
     log_event(
         logger=logger,
@@ -3394,6 +3425,14 @@ async def _run_store_discovery(
     outcome = StoreOutcome(status="error", message="uninitialized")
 
     try:
+        log_event(
+            logger=logger,
+            phase="init",
+            message="Resolved UC archive extraction mode for store",
+            store_code=store.store_code,
+            run_id=run_id,
+            archive_extraction_mode=archive_extraction_mode,
+        )
         if from_date > to_date:
             outcome = StoreOutcome(
                 status="warning",
@@ -3651,42 +3690,80 @@ async def _run_store_discovery(
         download_dir = _resolve_uc_download_dir(
             run_id, store.store_code, from_date, to_date
         )
-        api_extract = await collect_archive_orders_via_api(
-            page=page,
-            store_code=store.store_code,
-            logger=logger,
-            from_date=from_date,
-            to_date=to_date,
-        )
-        extract = ArchiveOrdersExtract(
-            base_rows=api_extract.base_rows,
-            order_detail_rows=api_extract.order_detail_rows,
-            payment_detail_rows=api_extract.payment_detail_rows,
-            skipped_order_codes=api_extract.skipped_order_codes,
-            skipped_order_counters=api_extract.skipped_order_counters,
-            page_count=api_extract.page_count,
-            footer_total=api_extract.api_total,
-            pre_filter_footer_total=api_extract.api_total,
-            post_filter_footer_total=api_extract.api_total,
-            post_filter_footer_window=(
-                (1, len(api_extract.base_rows), api_extract.api_total)
-                if api_extract.api_total is not None
-                else None
-            ),
-            footer_baseline_source="archive_api",
-            footer_baseline_stable=True,
-        )
-        row_count = len(extract.base_rows)
-        rows_missing_estimate = _archive_extraction_gap(extract)
         reason_codes: list[str] = []
-        extractor_reason_codes = list(api_extract.extractor_reason_codes)
-        extractor_error_counters = dict(api_extract.extractor_error_counters)
+        extractor_reason_codes: list[str] = []
+        extractor_error_counters: dict[str, int] = {}
         archive_transport_failure_reasons = {
             "auth_401",
             "archive_api_transport_failed",
             "archive_api_page_failed",
             "all_pages_failed",
         }
+        if archive_extraction_mode == UC_ARCHIVE_EXTRACTION_MODE_UI:
+            log_event(
+                logger=logger,
+                phase="archive_extract",
+                message="Using Archive Orders UI extraction mode",
+                store_code=store.store_code,
+                archive_extraction_mode=archive_extraction_mode,
+            )
+            extract = await _collect_archive_orders(
+                page=page,
+                store=store,
+                logger=logger,
+            )
+        else:
+            api_extract = await collect_archive_orders_via_api(
+                page=page,
+                store_code=store.store_code,
+                logger=logger,
+                from_date=from_date,
+                to_date=to_date,
+            )
+            extractor_reason_codes = list(api_extract.extractor_reason_codes)
+            extractor_error_counters = dict(api_extract.extractor_error_counters)
+            extract = ArchiveOrdersExtract(
+                base_rows=api_extract.base_rows,
+                order_detail_rows=api_extract.order_detail_rows,
+                payment_detail_rows=api_extract.payment_detail_rows,
+                skipped_order_codes=api_extract.skipped_order_codes,
+                skipped_order_counters=api_extract.skipped_order_counters,
+                page_count=api_extract.page_count,
+                footer_total=api_extract.api_total,
+                pre_filter_footer_total=api_extract.api_total,
+                post_filter_footer_total=api_extract.api_total,
+                post_filter_footer_window=(
+                    (1, len(api_extract.base_rows), api_extract.api_total)
+                    if api_extract.api_total is not None
+                    else None
+                ),
+                footer_baseline_source="archive_api",
+                footer_baseline_stable=True,
+            )
+
+            if archive_extraction_mode == UC_ARCHIVE_EXTRACTION_MODE_API_WITH_UI_FALLBACK:
+                has_archive_transport_failure = any(
+                    code in archive_transport_failure_reasons
+                    for code in extractor_reason_codes
+                )
+                if len(extract.base_rows) == 0 and has_archive_transport_failure:
+                    log_event(
+                        logger=logger,
+                        phase="archive_extract",
+                        status="warn",
+                        message="Archive API extraction returned no rows with transport/auth failure; falling back to UI extraction",
+                        store_code=store.store_code,
+                        archive_extraction_mode=archive_extraction_mode,
+                        extractor_reason_codes=extractor_reason_codes,
+                    )
+                    extract = await _collect_archive_orders(
+                        page=page,
+                        store=store,
+                        logger=logger,
+                    )
+
+        row_count = len(extract.base_rows)
+        rows_missing_estimate = _archive_extraction_gap(extract)
         has_archive_transport_failure = any(
             code in archive_transport_failure_reasons for code in extractor_reason_codes
         )
