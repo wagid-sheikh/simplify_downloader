@@ -393,6 +393,7 @@ class StoreOutcome:
     footer_baseline_stable: bool = False
     base_rows_extracted: int | None = None
     rows_missing_estimate: int | None = None
+    archive_extractor_error_counters: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -568,6 +569,8 @@ def _classify_store_window_status(outcome: StoreOutcome | None) -> str:
     if outcome.status == "error":
         return "failed"
     reason_codes = set(outcome.reason_codes or [])
+    if "archive_api_auth_failure" in reason_codes:
+        return "failed"
     if "partial_extraction" in reason_codes:
         return "partial"
     if (
@@ -1782,6 +1785,8 @@ def _resolve_sync_log_status(
     if not has_output:
         return "skipped"
     reason_codes = set(outcome.reason_codes or [])
+    if "archive_api_auth_failure" in reason_codes:
+        return "failed"
     if "partial_extraction" in reason_codes:
         return "partial"
     if (
@@ -3674,6 +3679,26 @@ async def _run_store_discovery(
         row_count = len(extract.base_rows)
         rows_missing_estimate = _archive_extraction_gap(extract)
         reason_codes: list[str] = []
+        extractor_reason_codes = list(api_extract.extractor_reason_codes)
+        extractor_error_counters = dict(api_extract.extractor_error_counters)
+        archive_transport_failure_reasons = {
+            "auth_401",
+            "archive_api_transport_failed",
+            "archive_api_page_failed",
+            "all_pages_failed",
+        }
+        has_archive_transport_failure = any(
+            code in archive_transport_failure_reasons for code in extractor_reason_codes
+        )
+        has_archive_auth_failure = "auth_401" in extractor_reason_codes
+        archive_failure_reason_code: str | None = None
+        if len(extract.base_rows) == 0 and has_archive_transport_failure:
+            archive_failure_reason_code = (
+                "archive_api_auth_failure"
+                if has_archive_auth_failure
+                else "archive_api_transport_failure"
+            )
+            reason_codes.append(archive_failure_reason_code)
         if (
             extract.post_filter_footer_total is None
             or not extract.footer_baseline_stable
@@ -3740,10 +3765,32 @@ async def _run_store_discovery(
                 "base_rows_extracted": len(extract.base_rows),
                 "rows_missing_estimate": rows_missing_estimate,
                 "reason_codes": reason_codes,
+                "extractor_reason_codes": extractor_reason_codes,
+                "extractor_error_counters": extractor_error_counters,
             }
         }
 
-        if not config.database_url:
+        skip_archive_ingest_publish = len(extract.base_rows) == 0 and has_archive_transport_failure
+        if skip_archive_ingest_publish:
+            stage_statuses["archive_ingest"] = "failed"
+            stage_statuses["archive_publish"] = "skipped"
+            stage_metrics["archive_ingest"] = {
+                "error": "Skipped due to archive API auth/transport failure",
+                "reason_codes": extractor_reason_codes,
+                "error_counters": extractor_error_counters,
+            }
+            log_event(
+                logger=logger,
+                phase="archive_api_failure",
+                status="error",
+                message="Archive extraction failed with auth/API transport root cause",
+                store_code=store.store_code,
+                classification=archive_failure_reason_code,
+                extractor_reason_codes=extractor_reason_codes,
+                extractor_error_counters=extractor_error_counters,
+            )
+
+        elif not config.database_url:
             stage_statuses["archive_ingest"] = "failed"
             stage_statuses["archive_publish"] = "skipped"
             stage_metrics["archive_ingest"] = {
@@ -3897,6 +3944,14 @@ async def _run_store_discovery(
         for code in publish_reason_codes:
             if code not in reason_codes:
                 reason_codes.append(code)
+        for code in extractor_reason_codes:
+            if code not in reason_codes:
+                reason_codes.append(code)
+        if archive_failure_reason_code:
+            reason_codes = [
+                archive_failure_reason_code,
+                *[code for code in reason_codes if code != archive_failure_reason_code],
+            ]
         status_label = (
             "warning"
             if any(v == "failed" for k, v in stage_statuses.items() if k != "download")
@@ -3908,7 +3963,13 @@ async def _run_store_discovery(
             f"(post-filter footer total: {extract.post_filter_footer_total}); "
             f"footer baseline source: {baseline_source}"
         )
-        if "partial_extraction" in reason_codes:
+        if archive_failure_reason_code:
+            status_label = "error"
+            download_message = (
+                "Archive extraction failed due to auth/API transport failure; "
+                "archive ingest/publish skipped"
+            )
+        elif "partial_extraction" in reason_codes:
             status_label = "warning"
             download_message = (
                 f"Archive Orders extracted partially: {len(extract.base_rows)} of "
@@ -3956,6 +4017,7 @@ async def _run_store_discovery(
             footer_baseline_stable=extract.footer_baseline_stable,
             base_rows_extracted=len(extract.base_rows),
             rows_missing_estimate=rows_missing_estimate,
+            archive_extractor_error_counters=extractor_error_counters,
         )
         summary.record_store(store.store_code, outcome)
         log_event(

@@ -45,6 +45,16 @@ class ArchiveApiExtract:
     page_count: int = 0
     api_total: int | None = None
     total_pages: int | None = None
+    extractor_error_counters: dict[str, int] = field(default_factory=dict)
+    extractor_reason_codes: list[str] = field(default_factory=list)
+
+
+def _record_extractor_error(extract: ArchiveApiExtract, *, reason: str) -> None:
+    extract.extractor_error_counters[reason] = (
+        extract.extractor_error_counters.get(reason, 0) + 1
+    )
+    if reason not in extract.extractor_reason_codes:
+        extract.extractor_reason_codes.append(reason)
 
 
 def _record_skip(extract: ArchiveApiExtract, *, order_code: str, reason: str) -> None:
@@ -228,7 +238,7 @@ async def _api_get_json_with_retries(
     logger: JsonLogger,
     store_code: str,
     context: str,
-) -> Mapping[str, Any] | None:
+) -> tuple[Mapping[str, Any] | None, str | None]:
     bearer_token = await _resolve_archive_bearer_token(page=page)
     request_headers = _build_archive_request_headers(bearer_token=bearer_token)
     auth_header_present = "Authorization" in request_headers
@@ -271,7 +281,7 @@ async def _api_get_json_with_retries(
                         transport="browser_fetch",
                         url=url,
                     )
-                    return payload
+                    return payload, None
                 last_error = "browser_fetch_unauthorized"
                 continue
             if status >= 500 or status == 429:
@@ -290,7 +300,7 @@ async def _api_get_json_with_retries(
                     referer_set=referer_set,
                     url=url,
                 )
-                return None
+                return None, f"http_status_{status}"
             else:
                 payload = await response.json()
                 mapped_payload = payload if isinstance(payload, Mapping) else None
@@ -308,7 +318,7 @@ async def _api_get_json_with_retries(
                         transport="api_request_context",
                         url=url,
                     )
-                return mapped_payload
+                return mapped_payload, None
         except Exception as exc:
             last_error = str(exc)
 
@@ -327,7 +337,9 @@ async def _api_get_json_with_retries(
         referer_set=referer_set,
         url=url,
     )
-    return None
+    if last_error == "browser_fetch_unauthorized":
+        return None, "auth_401"
+    return None, "archive_api_transport_failed"
 
 
 def _build_archive_request_headers(*, bearer_token: str | None) -> dict[str, str]:
@@ -621,7 +633,7 @@ async def collect_archive_orders_via_api(
             }
         )
         url = f"{ARCHIVE_API_BASE_URL}?{query}"
-        payload = await _api_get_json_with_retries(
+        payload, failure_reason = await _api_get_json_with_retries(
             page=page,
             url=url,
             logger=logger,
@@ -630,12 +642,16 @@ async def collect_archive_orders_via_api(
         )
         if payload is None:
             _record_skip(extract, order_code=f"page:{page_number}", reason="archive_api_page_failed")
+            _record_extractor_error(extract, reason="archive_api_page_failed")
+            if failure_reason:
+                _record_extractor_error(extract, reason=failure_reason)
             break
 
         data = payload.get("data")
         pagination = payload.get("pagination") if isinstance(payload.get("pagination"), Mapping) else {}
         if not isinstance(data, list):
             _record_skip(extract, order_code=f"page:{page_number}", reason="archive_api_invalid_data")
+            _record_extractor_error(extract, reason="archive_api_invalid_data")
             break
 
         extract.page_count += 1
@@ -746,5 +762,8 @@ async def collect_archive_orders_via_api(
             extracted_base_rows=len(extract.base_rows),
             difference=extract.api_total - len(extract.base_rows),
         )
+
+    if extract.page_count == 0:
+        _record_extractor_error(extract, reason="all_pages_failed")
 
     return extract
