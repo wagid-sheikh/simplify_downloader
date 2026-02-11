@@ -19,6 +19,8 @@ ARCHIVE_API_LIMIT = 30
 ARCHIVE_API_MAX_RETRIES = 3
 ARCHIVE_API_RETRY_BASE_SECONDS = 1.0
 ARCHIVE_REQUESTED_WITH_HEADER = "XMLHttpRequest"
+ARCHIVE_REFERER = "https://store.ucleanlaundry.com/archive"
+ARCHIVE_ACCEPT_HEADER = "application/json, text/plain, */*"
 
 PAYMENT_MODE_MAP = {
     1: "UPI",
@@ -229,6 +231,8 @@ async def _api_get_json_with_retries(
 ) -> Mapping[str, Any] | None:
     bearer_token = await _resolve_archive_bearer_token(page=page)
     request_headers = _build_archive_request_headers(bearer_token=bearer_token)
+    auth_header_present = "Authorization" in request_headers
+    referer_set = request_headers.get("Referer") == ARCHIVE_REFERER
     last_error: str | None = None
     for attempt in range(1, ARCHIVE_API_MAX_RETRIES + 1):
         try:
@@ -244,6 +248,8 @@ async def _api_get_json_with_retries(
                     context=context,
                     attempt=attempt,
                     status_code=status,
+                    auth_header_present=auth_header_present,
+                    referer_set=referer_set,
                     url=url,
                 )
                 payload = await _browser_fetch_json_with_credentials(
@@ -252,6 +258,19 @@ async def _api_get_json_with_retries(
                     headers=request_headers,
                 )
                 if payload is not None:
+                    log_event(
+                        logger=logger,
+                        phase="archive_api",
+                        message="Archive API request succeeded",
+                        store_code=store_code,
+                        context=context,
+                        attempt=attempt,
+                        status_code=status,
+                        auth_header_present=auth_header_present,
+                        referer_set=referer_set,
+                        transport="browser_fetch",
+                        url=url,
+                    )
                     return payload
                 last_error = "browser_fetch_unauthorized"
                 continue
@@ -267,12 +286,29 @@ async def _api_get_json_with_retries(
                     context=context,
                     attempt=attempt,
                     status_code=status,
+                    auth_header_present=auth_header_present,
+                    referer_set=referer_set,
                     url=url,
                 )
                 return None
             else:
                 payload = await response.json()
-                return payload if isinstance(payload, Mapping) else None
+                mapped_payload = payload if isinstance(payload, Mapping) else None
+                if mapped_payload is not None:
+                    log_event(
+                        logger=logger,
+                        phase="archive_api",
+                        message="Archive API request succeeded",
+                        store_code=store_code,
+                        context=context,
+                        attempt=attempt,
+                        status_code=status,
+                        auth_header_present=auth_header_present,
+                        referer_set=referer_set,
+                        transport="api_request_context",
+                        url=url,
+                    )
+                return mapped_payload
         except Exception as exc:
             last_error = str(exc)
 
@@ -287,6 +323,8 @@ async def _api_get_json_with_retries(
         store_code=store_code,
         context=context,
         error=last_error,
+        auth_header_present=auth_header_present,
+        referer_set=referer_set,
         url=url,
     )
     return None
@@ -294,6 +332,8 @@ async def _api_get_json_with_retries(
 
 def _build_archive_request_headers(*, bearer_token: str | None) -> dict[str, str]:
     headers: dict[str, str] = {
+        "Accept": ARCHIVE_ACCEPT_HEADER,
+        "Referer": ARCHIVE_REFERER,
         "X-Requested-With": ARCHIVE_REQUESTED_WITH_HEADER,
     }
     if bearer_token:
@@ -411,13 +451,95 @@ async def _browser_fetch_json_with_credentials(
     return payload if isinstance(payload, Mapping) else None
 
 
+async def _browser_fetch_text_with_credentials(
+    *,
+    page: Page,
+    url: str,
+    headers: Mapping[str, str],
+) -> str | None:
+    try:
+        result = await page.evaluate(
+            """
+            async ({ requestUrl, requestHeaders }) => {
+              try {
+                const response = await fetch(requestUrl, {
+                  method: 'GET',
+                  headers: requestHeaders,
+                  credentials: 'include',
+                });
+                if (!response.ok) {
+                  return { ok: false, status: response.status };
+                }
+                const payload = await response.text();
+                return { ok: true, status: response.status, payload };
+              } catch (error) {
+                return { ok: false, status: 0, error: String(error) };
+              }
+            }
+            """,
+            {"requestUrl": url, "requestHeaders": dict(headers)},
+        )
+    except Exception:
+        return None
+
+    if not isinstance(result, Mapping):
+        return None
+    if not result.get("ok"):
+        return None
+
+    payload = result.get("payload")
+    return payload if isinstance(payload, str) and payload else None
+
+
 async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str, store_code: str, order_code: str, logger: JsonLogger) -> str | None:
     url = ARCHIVE_INVOICE_URL_TEMPLATE.format(booking_id=booking_id)
+    bearer_token = await _resolve_archive_bearer_token(page=page)
+    request_headers = _build_archive_request_headers(bearer_token=bearer_token)
+    auth_header_present = "Authorization" in request_headers
+    referer_set = request_headers.get("Referer") == ARCHIVE_REFERER
     last_error: str | None = None
     for attempt in range(1, ARCHIVE_API_MAX_RETRIES + 1):
         try:
-            response = await page.request.get(url, timeout=90_000)
+            response = await page.request.get(url, timeout=90_000, headers=request_headers)
             status = response.status
+            if status == 401:
+                log_event(
+                    logger=logger,
+                    phase="archive_api",
+                    status="warn",
+                    message="Invoice API request unauthorized; retrying via browser fetch",
+                    store_code=store_code,
+                    order_code=order_code,
+                    booking_id=booking_id,
+                    attempt=attempt,
+                    status_code=status,
+                    auth_header_present=auth_header_present,
+                    referer_set=referer_set,
+                    url=url,
+                )
+                invoice_payload = await _browser_fetch_text_with_credentials(
+                    page=page,
+                    url=url,
+                    headers=request_headers,
+                )
+                if invoice_payload is not None:
+                    log_event(
+                        logger=logger,
+                        phase="archive_api",
+                        message="Invoice API request succeeded",
+                        store_code=store_code,
+                        order_code=order_code,
+                        booking_id=booking_id,
+                        attempt=attempt,
+                        status_code=status,
+                        auth_header_present=auth_header_present,
+                        referer_set=referer_set,
+                        transport="browser_fetch",
+                        url=url,
+                    )
+                    return invoice_payload
+                last_error = "browser_fetch_unauthorized"
+                continue
             if status >= 500 or status == 429:
                 last_error = f"http_status_{status}"
             elif status >= 400:
@@ -431,10 +553,26 @@ async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str,
                     booking_id=booking_id,
                     attempt=attempt,
                     status_code=status,
+                    auth_header_present=auth_header_present,
+                    referer_set=referer_set,
                     url=url,
                 )
                 return None
             else:
+                log_event(
+                    logger=logger,
+                    phase="archive_api",
+                    message="Invoice API request succeeded",
+                    store_code=store_code,
+                    order_code=order_code,
+                    booking_id=booking_id,
+                    attempt=attempt,
+                    status_code=status,
+                    auth_header_present=auth_header_present,
+                    referer_set=referer_set,
+                    transport="api_request_context",
+                    url=url,
+                )
                 return await response.text()
         except Exception as exc:
             last_error = str(exc)
@@ -451,6 +589,8 @@ async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str,
         order_code=order_code,
         booking_id=booking_id,
         error=last_error,
+        auth_header_present=auth_header_present,
+        referer_set=referer_set,
         url=url,
     )
     return None
