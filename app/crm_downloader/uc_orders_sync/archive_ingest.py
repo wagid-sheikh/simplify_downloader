@@ -197,20 +197,23 @@ def _non_blank_text(value: Any, *, upper: bool = False, collapse_spaces: bool = 
     return text
 
 
-def _parse_numeric(value: Any, remarks: list[str], reason_code: str) -> Decimal | None:
+def _parse_numeric(value: Any, remarks: list[str], reason_code: str, *, null_as_zero: bool = False) -> Decimal | None:
     if value is None:
-        remarks.append(reason_code)
-        return None
+        return Decimal("0") if null_as_zero else _append_numeric_reason_and_none(remarks, reason_code)
     text = str(value).strip()
     if not text:
-        remarks.append(reason_code)
-        return None
+        return Decimal("0") if null_as_zero else _append_numeric_reason_and_none(remarks, reason_code)
     cleaned = re.sub(r"[,₹]", "", text).replace("INR", "").strip()
     try:
         return Decimal(cleaned)
     except (InvalidOperation, ValueError):
         remarks.append(reason_code)
         return None
+
+
+def _append_numeric_reason_and_none(remarks: list[str], reason_code: str) -> None:
+    remarks.append(reason_code)
+    return None
 
 
 def _date_raw(value: Any) -> str | None:
@@ -316,7 +319,8 @@ def _normalize_order_details_row(source: Mapping[str, Any], *, source_file: str,
     item_name = _non_blank_text(source.get("item_name"), collapse_spaces=True)
     if not service:
         remarks.append(f"{REASON_MISSING_REQUIRED_FIELD}:service")
-    if not item_name:
+    service_is_laundry = bool(service and service.upper().startswith("LAUNDRY"))
+    if not item_name and not service_is_laundry:
         remarks.append(f"{REASON_MISSING_REQUIRED_FIELD}:item_name")
     if cost_center is None:
         remarks.append("missing_cost_center_mapping")
@@ -336,9 +340,9 @@ def _normalize_order_details_row(source: Mapping[str, Any], *, source_file: str,
         "item_name": item_name,
         "rate": _parse_numeric(source.get("rate"), remarks, "invalid_rate"),
         "quantity": _parse_numeric(source.get("quantity"), remarks, "invalid_quantity"),
-        "weight": _parse_numeric(source.get("weight"), remarks, "invalid_weight"),
+        "weight": _parse_numeric(source.get("weight"), remarks, "invalid_weight", null_as_zero=True),
         "addons": _non_blank_text(source.get("addons"), collapse_spaces=True),
-        "amount": _parse_numeric(source.get("amount"), remarks, "invalid_amount"),
+        "amount": _parse_numeric(source.get("amount"), remarks, "invalid_amount", null_as_zero=True),
     }
     if rejects:
         return None, remarks, rejects

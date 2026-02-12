@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 import openpyxl
@@ -372,3 +373,100 @@ def test_uc_archive_payment_match_predicate_compiles_for_postgres_and_sqlite() -
     assert "IS NOT DISTINCT FROM" in postgres_sql
     assert "coalesce" not in postgres_sql.lower()
     assert "coalesce" not in sqlite_sql.lower()
+
+
+@pytest.mark.asyncio
+async def test_uc_archive_order_details_blank_weight_amount_are_zero_without_invalid_warnings(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'db_blank_numeric.sqlite'}"
+    await _create_tables(db_url)
+
+    base = _write_xlsx(
+        tmp_path / "base_blank_numeric.xlsx",
+        ["store_code", "order_code", "pickup", "delivery", "customer_name", "customer_phone", "address", "payment_text", "instructions", "customer_source", "status", "status_date"],
+        [["UC567", "ORD-20", "", "", "", "", "", "", "", "", "", ""]],
+    )
+    details = _write_xlsx(
+        tmp_path / "details_blank_numeric.xlsx",
+        ["store_code", "order_code", "order_mode", "order_datetime", "pickup_datetime", "delivery_datetime", "service", "hsn_sac", "item_name", "rate", "quantity", "weight", "addons", "amount"],
+        [["UC567", "ORD-20", "", "", "", "", "Dryclean", "", "Shirt", "10", "2", "", "", None]],
+    )
+    payments = _write_xlsx(
+        tmp_path / "payments_blank_numeric.xlsx",
+        ["store_code", "order_code", "payment_mode", "amount", "payment_date", "transaction_id"],
+        [["UC567", "ORD-20", "Cash", "20", "2025-01-01", "TX-20"]],
+    )
+
+    result = await ingest_uc_archive_excels(
+        database_url=db_url,
+        run_id="run-blank-numeric",
+        run_date=datetime(2025, 1, 7, tzinfo=timezone.utc),
+        store_code=None,
+        cost_center="CC01",
+        base_order_info_path=base,
+        order_details_path=details,
+        payment_details_path=payments,
+        logger=get_logger("test_uc_archive_blank_numeric"),
+    )
+
+    assert result.files[FILE_ORDER_DETAILS].inserted == 1
+    assert result.files[FILE_ORDER_DETAILS].warnings == 0
+
+    async with session_scope(db_url) as session:
+        row = (
+            await session.execute(
+                sa.text(
+                    "SELECT weight, amount, ingest_remarks FROM stg_uc_archive_order_details WHERE store_code='UC567' AND order_code='ORD-20'"
+                )
+            )
+        ).one()
+
+    assert Decimal(str(row.weight)) == Decimal("0")
+    assert Decimal(str(row.amount)) == Decimal("0")
+    assert row.ingest_remarks in (None, "")
+
+
+@pytest.mark.asyncio
+async def test_uc_archive_order_details_laundry_allows_blank_item_name(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'db_laundry_item_name.sqlite'}"
+    await _create_tables(db_url)
+
+    base = _write_xlsx(
+        tmp_path / "base_laundry.xlsx",
+        ["store_code", "order_code", "pickup", "delivery", "customer_name", "customer_phone", "address", "payment_text", "instructions", "customer_source", "status", "status_date"],
+        [["UC610", "ORD-30", "", "", "", "", "", "", "", "", "", ""]],
+    )
+    details = _write_xlsx(
+        tmp_path / "details_laundry.xlsx",
+        ["store_code", "order_code", "order_mode", "order_datetime", "pickup_datetime", "delivery_datetime", "service", "hsn_sac", "item_name", "rate", "quantity", "weight", "addons", "amount"],
+        [["UC610", "ORD-30", "", "", "", "", "Laundry - Wash & Fold", "", "-", "10", "1", "1", "", "10"]],
+    )
+    payments = _write_xlsx(
+        tmp_path / "payments_laundry.xlsx",
+        ["store_code", "order_code", "payment_mode", "amount", "payment_date", "transaction_id"],
+        [["UC610", "ORD-30", "Cash", "10", "2025-01-01", "TX-30"]],
+    )
+
+    result = await ingest_uc_archive_excels(
+        database_url=db_url,
+        run_id="run-laundry-item",
+        run_date=datetime(2025, 1, 7, tzinfo=timezone.utc),
+        store_code=None,
+        cost_center="CC01",
+        base_order_info_path=base,
+        order_details_path=details,
+        payment_details_path=payments,
+        logger=get_logger("test_uc_archive_laundry_item_name"),
+    )
+
+    assert result.files[FILE_ORDER_DETAILS].inserted == 1
+
+    async with session_scope(db_url) as session:
+        row = (
+            await session.execute(
+                sa.text(
+                    "SELECT ingest_remarks FROM stg_uc_archive_order_details WHERE store_code='UC610' AND order_code='ORD-30'"
+                )
+            )
+        ).one()
+
+    assert "missing_required_field:item_name" not in (row.ingest_remarks or "")
