@@ -184,3 +184,46 @@ If this plan looks good, I’ll proceed with the Phase 0 scaffolding PR first.
 30. Do you want side-by-side shadow mode for a few runs (UI + API diff) before full switch? [no]
 
 Essentially regarding API driven data fetch and answers to your queries above. For testing prposes I want you develop a new code file which is totally using API driven data fetch. So in our current flow: We login, go dashboard, go GST report->download & ingest, then we go to Archive report page [& this is the time instead of UI driven data fetch, you go ahead call code from a new file and excute it. Once testing is successfull, then we will fully replce UI path for Archive ORders fetch]
+
+---
+
+## Task stub: UC archive API-path stabilization and warning cleanup
+
+### Goal
+
+Create and execute a focused fix set for UC Archive API ingestion/publish so recent warning/failure patterns are resolved while preserving the current flow (GST UI download/ingest first, then archive via API file path).
+
+### Scope
+
+1. **Increase `orders.service_type` length to 64**
+
+   * Add DB migration to widen `orders.service_type` from `varchar(24)` to `varchar(64)`.
+   * Ensure ORM/model metadata reflects the same max length.
+   * Add/adjust regression test to prove long values (e.g., "Dry cleaning, Laundry - Wash & Fold") publish without truncation error.
+
+2. **Stop false warnings for `invalid_amount` and `invalid_weight` in `ingest_remarks`**
+
+   * In UC archive ingest rules, treat null/blank amount and weight as acceptable input.
+   * Normalize null/blank amount and weight to `0` (preserve existing numeric type handling).
+   * Suppress `invalid_amount` / `invalid_weight` ingest remarks for these null/blank cases.
+   * Keep warnings/errors only for truly malformed non-null values.
+
+3. **Relax `missing_required_field:item_name` for service-driven rows**
+
+   * Update UC archive detail validation so `item_name` can be null/"-" when service context is laundry-type (e.g., `service_type` like `Laundry%`).
+   * Remove false `missing_required_field:item_name` remarks for these accepted cases.
+   * Preserve required-field warnings for service types where `item_name` should remain mandatory.
+
+### Acceptance criteria
+
+* Archive order publish no longer fails on `service_type` length for known long service labels.
+* Ingest remarks no longer emit false `invalid_amount` / `invalid_weight` for null inputs that are converted to 0.
+* Ingest remarks no longer emit false `missing_required_field:item_name` for accepted laundry-service rows with null/"-" item names.
+* Existing UC archive output files and API-driven archive flow remain unchanged in structure and sequence.
+
+### Deliverables
+
+* Alembic migration (service_type widen).
+* Code changes in UC archive ingest/publish validators and mappings.
+* Tests covering all three fixes.
+* Run-log evidence snippet from a successful validation run.

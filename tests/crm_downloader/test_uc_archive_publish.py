@@ -502,3 +502,50 @@ async def test_payment_preflight_scoped_to_store_and_run_id(tmp_path: Path) -> N
     assert metrics.preflight_diagnostics is not None
     assert metrics.preflight_diagnostics['sample_missing_keys'] == ['UC610:ORD-MISSING']
 
+
+
+@pytest.mark.asyncio
+async def test_orders_enrichment_keeps_long_service_type_value(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_orders_long_service.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders (
+                    cost_center, store_code, order_number, order_date, customer_name, mobile_number,
+                    run_id, run_date, created_at
+                ) VALUES (
+                    'CC01', 'UC610', 'ORD-LONG-1', '2025-01-01T00:00:00+00:00', 'Alice', '9999999999',
+                    'orig-run', '2025-01-01T00:00:00+00:00', '2025-01-01T00:00:00+00:00'
+                )
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_order_details (run_id, store_code, order_code, quantity, weight, service)
+                VALUES ('run-long-service', 'UC610', 'ORD-LONG-1', 1, 1.0, 'Dry cleaning, Laundry - Wash & Fold')
+                """
+            )
+        )
+        await session.commit()
+
+    metrics = await publish_uc_archive_order_details_to_orders(
+        database_url=db_url, run_id='run-long-service', store_code='UC610'
+    )
+
+    assert metrics.updated == 1
+
+    async with session_scope(db_url) as session:
+        service_type = (
+            await session.execute(
+                sa.text(
+                    "SELECT service_type FROM orders WHERE store_code='UC610' AND order_number='ORD-LONG-1'"
+                )
+            )
+        ).scalar_one()
+
+    assert service_type == 'Dry cleaning, Laundry - Wash & Fold'
