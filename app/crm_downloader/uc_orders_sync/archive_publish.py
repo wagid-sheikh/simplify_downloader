@@ -133,6 +133,13 @@ def _build_join_key_variants(store_code: Any, order_code: Any) -> list[tuple[str
     return [(normalized_store_code, variant) for variant in deduped_variants]
 
 
+def _non_blank_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    token = str(value).strip()
+    return token or None
+
+
 async def publish_uc_archive_order_details_to_orders(
     *, database_url: str, run_id: str, store_code: str
 ) -> PublishMetrics:
@@ -147,6 +154,17 @@ async def publish_uc_archive_order_details_to_orders(
         sa.Column("quantity", sa.Numeric(12, 2)),
         sa.Column("weight", sa.Numeric(12, 3)),
         sa.Column("service", sa.Text),
+        extend_existing=True,
+    )
+    archive_base = sa.Table(
+        TABLE_ARCHIVE_BASE,
+        metadata,
+        sa.Column("store_code", sa.String(8)),
+        sa.Column("order_code", sa.String(24)),
+        sa.Column("run_date", sa.DateTime(timezone=True)),
+        sa.Column("id", sa.Integer),
+        sa.Column("customer_source", sa.String(64)),
+        sa.Column("address", sa.Text),
         extend_existing=True,
     )
     orders = _orders_table(metadata)
@@ -211,6 +229,7 @@ async def publish_uc_archive_order_details_to_orders(
 
         candidate_keys = {variant for variants in key_variants_by_grouped_key.values() for variant in variants}
         existing_orders: dict[tuple[str, str], Any] = {}
+        archive_customer_lookup: dict[tuple[str, str], dict[str, str | None]] = {}
         order_rows = (
             await session.execute(
                 sa.select(orders.c.id, orders.c.store_code, orders.c.order_number).where(
@@ -223,6 +242,37 @@ async def publish_uc_archive_order_details_to_orders(
             if not normalized_parent_key:
                 continue
             existing_orders[normalized_parent_key[0]] = row.id
+
+        if candidate_keys:
+            archive_rows = (
+                await session.execute(
+                    sa.select(
+                        archive_base.c.store_code,
+                        archive_base.c.order_code,
+                        archive_base.c.run_date,
+                        archive_base.c.id,
+                        archive_base.c.customer_source,
+                        archive_base.c.address,
+                    )
+                    .where(
+                        sa.and_(
+                            archive_base.c.store_code == store_code,
+                            sa.tuple_(archive_base.c.store_code, archive_base.c.order_code).in_(list(candidate_keys)),
+                        )
+                    )
+                    .order_by(sa.desc(archive_base.c.run_date), sa.desc(archive_base.c.id))
+                )
+            ).all()
+            for row in archive_rows:
+                normalized_parent_key = _build_join_key_variants(row.store_code, row.order_code)
+                if not normalized_parent_key:
+                    continue
+                if normalized_parent_key[0] in archive_customer_lookup:
+                    continue
+                archive_customer_lookup[normalized_parent_key[0]] = {
+                    "customer_source": _non_blank_text(row.customer_source),
+                    "customer_address": _non_blank_text(row.address),
+                }
 
         matched_keys = {
             grouped_key
@@ -258,12 +308,22 @@ async def publish_uc_archive_order_details_to_orders(
                 _append_reason(reasons, REASON_MISSING_PARENT_ORDER_CONTEXT)
                 continue
             values: dict[str, Any] = {}
+            customer_values: dict[str, str | None] | None = None
+            for variant in key_variants_by_grouped_key.get(grouped_key, [grouped_key]):
+                customer_values = archive_customer_lookup.get(variant)
+                if customer_values is not None:
+                    break
             if aggregate["pieces"] > 0:
                 values["pieces"] = aggregate["pieces"]
             if aggregate["weight"] > 0:
                 values["weight"] = aggregate["weight"]
             if aggregate["services"]:
                 values["service_type"] = ", ".join(sorted(aggregate["services"]))
+            if customer_values:
+                if customer_values.get("customer_source"):
+                    values["customer_source"] = customer_values["customer_source"]
+                if customer_values.get("customer_address"):
+                    values["customer_address"] = customer_values["customer_address"]
             if values:
                 await session.execute(sa.update(orders).where(orders.c.id == order_id).values(**values))
                 metrics.updated += 1

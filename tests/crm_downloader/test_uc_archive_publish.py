@@ -44,6 +44,8 @@ async def _create_tables(db_url: str) -> None:
         sa.Column("order_code", sa.String(24)),
         sa.Column("customer_name", sa.String(128)),
         sa.Column("customer_phone", sa.String(24)),
+        sa.Column("address", sa.Text),
+        sa.Column("customer_source", sa.String(64)),
     )
     sa.Table(
         TABLE_ARCHIVE_ORDER_DETAILS,
@@ -109,6 +111,16 @@ async def test_orders_enrichment_recomputes_and_preserves_protected_columns(tmp_
                 """
             )
         )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_orders_base (id, run_id, run_date, cost_center, store_code, order_code, customer_source, address)
+                VALUES
+                    (100, 'run-0', '2025-01-01T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', ' ', ' '),
+                    (101, 'run-1', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'Web', 'Address 1')
+                """
+            )
+        )
         await session.commit()
 
     metrics = await publish_uc_archive_order_details_to_orders(database_url=db_url, run_id='run-1', store_code='UC567')
@@ -118,7 +130,7 @@ async def test_orders_enrichment_recomputes_and_preserves_protected_columns(tmp_
         row = (
             await session.execute(
                 sa.text(
-                    "SELECT pieces, weight, service_type, customer_name, net_amount, payment_status, run_id FROM orders WHERE store_code='UC567' AND order_number='ORD-1'"
+                    "SELECT pieces, weight, service_type, customer_name, net_amount, payment_status, run_id, customer_source, customer_address FROM orders WHERE store_code='UC567' AND order_number='ORD-1'"
                 )
             )
         ).one()
@@ -129,6 +141,8 @@ async def test_orders_enrichment_recomputes_and_preserves_protected_columns(tmp_
     assert Decimal(str(row.net_amount)) == Decimal("495")
     assert row.payment_status == "Paid"
     assert row.run_id == "orig-run"
+    assert row.customer_source == "Web"
+    assert row.customer_address == "Address 1"
 
 
 @pytest.mark.asyncio
