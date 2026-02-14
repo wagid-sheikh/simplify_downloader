@@ -313,7 +313,7 @@ def _orders_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("customer_gstin", sa.String(length=32)),
         sa.Column("customer_source", sa.String(length=24)),
         sa.Column("package_flag", sa.Boolean(), nullable=False, server_default=sa.text("false")),
-        sa.Column("service_type", sa.String(length=24)),
+        sa.Column("service_type", sa.String(length=256)),
         sa.Column("customer_address", sa.Text()),
         sa.Column("pieces", sa.Numeric(12, 0)),
         sa.Column("weight", sa.Numeric(12, 2)),
