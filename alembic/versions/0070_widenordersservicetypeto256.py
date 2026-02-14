@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0070_widen_orders_service_type_to_256"
+revision = "0070_widenordersservicetypeto256"
 down_revision = "0069_widen_ordersservicetypeto64"
 branch_labels = None
 depends_on = None
