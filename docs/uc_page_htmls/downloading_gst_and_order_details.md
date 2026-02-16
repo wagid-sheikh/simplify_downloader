@@ -1084,3 +1084,149 @@ Then above command returns
 ]
 
 And from this object we are interest in "id" that will be used to invoke generateInvoice
+
+
+
+---
+
+
+
+
+
+## Project / Area
+
+* Repo:** **`simplify_downloader`
+* Pipeline:** **`app.crm_downloader.uc_orders_sync`
+* Goal discussed: introduce a** ****parallel experimental API-based UC flow** (without breaking existing production flow), compare old vs new outputs, then eventually retire old path after parity confidence.
+
+---
+
+## Business Problem You Identified
+
+* Current archive API entrypoint (`getDeliveredOrders`) only surfaces orders after a later lifecycle stage (not ideal for early order enrichment).
+* You need early availability of:
+  * customer/order details
+  * service details
+* and later availability of:
+  * payment details
+* You demonstrated a viable API chain:
+  1. `generateGST` gives early order rows
+  2. `bookings/search?query=<order_number>`gives booking** **`id`
+  3. `generateInvoice/{id}` gives full invoice HTML/details
+
+---
+
+## What Was Implemented (High-level)
+
+### 1) Existing flow kept intact
+
+No replacement/removal of legacy path:
+
+* UI GST download
+* archive API extraction
+* existing excel/ingest/publish behavior
+
+### 2) Experimental sub-path added (env-gated)
+
+After Playwright login + dashboard readiness, experimental path can run if:
+
+* `UC_GST_API_EXPERIMENT_ENABLED=true`
+
+It generates separate “exp” artifacts.
+
+### 3) Comparator module added
+
+A dedicated compare step was added to evaluate old vs new results for migration safety.
+
+---
+
+## Modules / Files Added or Updated
+
+### Added
+
+* `app/crm_downloader/uc_orders_sync/gst_api_extract.py`
+  * API extraction for GST-based experimental path
+  * booking lookup + invoice parsing
+  * experimental row models for gst/base/order/payment outputs
+* `app/crm_downloader/uc_orders_sync/extract_comparator.py`
+  * comparison summary + detailed mismatch coverage
+* `tests/crm_downloader/test_uc_extract_comparator.py`
+  * comparator behavior tests
+* `tests/crm_downloader/test_no_merge_conflict_markers.py`
+  * regression guard for unresolved merge markers in** **`uc_orders_sync`
+
+### Updated
+
+* `app/crm_downloader/uc_orders_sync/main.py`
+  * wires experimental path into orchestration
+  * writes experimental output files
+  * runs comparison and writes JSON report
+
+---
+
+## Experimental Output Files (Current)
+
+With** **`UC_GST_API_EXPERIMENT_ENABLED=true`, experimental outputs now include** ** **4 datasets** :
+
+1. `*-exp_gst_api_gst_*.xlsx`
+2. `*-exp_gst_api_base_order_info_*.xlsx`
+3. `*-exp_gst_api_order_details_*.xlsx`
+4. `*-exp_gst_api_payment_details_*.xlsx`
+
+And comparison report:
+
+* `*-exp_gst_api_compare_*.json`
+
+---
+
+## Comparison Scope (Current)
+
+Comparator now includes:
+
+* GST-level coverage + key mismatch counts
+* Base-order coverage + field mismatch counts
+* Payment-level coverage + field mismatch counts
+* Samples of missing keys in each direction
+
+(Alongside row count summaries for legacy vs candidate datasets.)
+
+---
+
+## How to Run (same script as before)
+
+Use your normal script, just turn on experimental mode:
+
+<pre class="overflow-visible! px-0!" data-start="2973" data-end="3103"><div class="contain-inline-size rounded-2xl corner-superellipse/1.1 relative bg-token-sidebar-surface-primary"><div class="sticky top-[calc(var(--sticky-padding-top)+9*var(--spacing))]"><div class="absolute end-0 bottom-0 flex h-9 items-center pe-2"><div class="bg-token-bg-elevated-secondary text-token-text-secondary flex items-center gap-4 rounded-sm px-2 font-sans text-xs"></div></div></div><div class="overflow-y-auto p-4" dir="ltr"><code class="whitespace-pre! language-bash"><span><span>UC_GST_API_EXPERIMENT_ENABLED=</span><span>true</span><span> \
+./scripts/run_local_uc_orders_sync.sh --from-date 2026-02-01 --to-date 2026-02-15
+</span></span></code></div></div></pre>
+
+---
+
+## Incident and Mitigation
+
+### Issue hit
+
+* You reported** **`IndentationError` due to unresolved merge conflict markers (`<<<<<<< ...`) in your local file after conflict-heavy PR integration.
+
+### Mitigation done
+
+* Added test:
+  * `tests/crm_downloader/test_no_merge_conflict_markers.py`
+* It fails if any conflict markers exist in:
+  * `app/crm_downloader/uc_orders_sync/**/*.py`
+
+This is a safety net for future merges/rebases.
+
+---
+
+## Important Caveat (for next session)
+
+Experimental payment rows are generated from booking-search context/status heuristics and may not be equivalent to legacy archive-payment extraction in all cases.
+So the payment comparison is end-to-end structurally, but you may still want to tighten semantic parity rules in the next iteration.
+
+---
+
+## Intent for Next Session
+
+* Continue improving API-path parity and correctness using compare JSON output as acceptance signal.
+* Once mismatch rates are acceptable, migrate from dual-run to API-primary and retire legacy pieces gradually.
