@@ -299,6 +299,8 @@ async def collect_gst_orders_via_api(
         )
         if not invoice_html:
             _record_skip(extract, order_code=order_code, reason="invoice_fetch_failed")
+            # Keep the base row so aggregate order reporting still includes the order,
+            # but skip order-detail extraction when invoice content is unavailable.
             extract.base_rows.append(base_row)
             continue
 
