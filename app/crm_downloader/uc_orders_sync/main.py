@@ -34,6 +34,12 @@ from app.crm_downloader.uc_orders_sync.archive_ingest import ingest_uc_archive_e
 from app.crm_downloader.uc_orders_sync.archive_api_extract import (
     collect_archive_orders_via_api,
 )
+from app.crm_downloader.uc_orders_sync.extract_comparator import compare_extracts
+from app.crm_downloader.uc_orders_sync.gst_api_extract import (
+    GST_API_BASE_COLUMNS,
+    GstApiExtract,
+    collect_gst_orders_via_api,
+)
 from app.crm_downloader.uc_orders_sync.ingest import ingest_uc_orders_workbook
 from app.crm_downloader.uc_orders_sync.archive_publish import (
     publish_uc_archive_order_details_to_orders,
@@ -231,6 +237,8 @@ ARCHIVE_PAYMENT_COLUMNS = [
     "payment_date",
     "transaction_id",
 ]
+EXPERIMENTAL_GST_API_ORDER_DETAIL_COLUMNS = ARCHIVE_ORDER_DETAIL_COLUMNS
+EXPERIMENTAL_GST_API_PAYMENT_COLUMNS = ARCHIVE_PAYMENT_COLUMNS
 DATE_PICKER_POPUP_SELECTORS = (
     ".calendar-body.show",
     ".calendar-body .calendar",
@@ -1346,6 +1354,33 @@ def _resolve_uc_archive_extraction_mode() -> str:
         return UC_ARCHIVE_EXTRACTION_MODE_API_WITH_UI_FALLBACK
 
     return UC_ARCHIVE_EXTRACTION_MODE_API
+
+
+def _experimental_gst_api_enabled() -> bool:
+    return (os.getenv("UC_GST_API_EXPERIMENT_ENABLED") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _format_experimental_gst_api_base_filename(
+    store_code: str, from_date: date, to_date: date
+) -> str:
+    return f"{store_code}-exp_gst_api_base_order_info_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
+
+
+def _format_experimental_gst_api_order_details_filename(
+    store_code: str, from_date: date, to_date: date
+) -> str:
+    return f"{store_code}-exp_gst_api_order_details_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
+
+
+def _format_experimental_gst_api_compare_filename(
+    store_code: str, from_date: date, to_date: date
+) -> str:
+    return f"{store_code}-exp_gst_api_compare_{from_date:%Y%m%d}_{to_date:%Y%m%d}.json"
 
 
 def _resolve_uc_download_dir(
@@ -3467,6 +3502,10 @@ async def _run_store_discovery(
         gst_rows_skipped_invalid_reasons: dict[str, int] | None = None
         gst_warning_rows: list[dict[str, Any]] = []
         gst_dropped_rows: list[dict[str, Any]] = []
+        experimental_gst_api_extract: GstApiExtract | None = None
+        experimental_gst_api_base_path: Path | None = None
+        experimental_gst_api_order_details_path: Path | None = None
+        experimental_gst_api_compare_path: Path | None = None
 
         if storage_state_exists:
             log_event(
@@ -3562,6 +3601,61 @@ async def _run_store_discovery(
                 )
                 summary.record_store(store.store_code, outcome)
                 return
+
+        if _experimental_gst_api_enabled():
+            try:
+                experimental_download_dir = _resolve_uc_download_dir(
+                    run_id, store.store_code, from_date, to_date
+                )
+                experimental_download_dir.mkdir(parents=True, exist_ok=True)
+                experimental_gst_api_extract = await collect_gst_orders_via_api(
+                    page=page,
+                    store_code=store.store_code,
+                    logger=logger,
+                    from_date=from_date,
+                    to_date=to_date,
+                )
+                experimental_gst_api_base_path = (
+                    experimental_download_dir
+                    / _format_experimental_gst_api_base_filename(
+                        store.store_code, from_date, to_date
+                    )
+                )
+                experimental_gst_api_order_details_path = (
+                    experimental_download_dir
+                    / _format_experimental_gst_api_order_details_filename(
+                        store.store_code, from_date, to_date
+                    )
+                )
+                _write_excel_rows(
+                    experimental_gst_api_base_path,
+                    experimental_gst_api_extract.base_rows,
+                    GST_API_BASE_COLUMNS,
+                )
+                _write_excel_rows(
+                    experimental_gst_api_order_details_path,
+                    experimental_gst_api_extract.order_detail_rows,
+                    EXPERIMENTAL_GST_API_ORDER_DETAIL_COLUMNS,
+                )
+                log_event(
+                    logger=logger,
+                    phase="gst_api_extract",
+                    message="Experimental GST API extraction files generated",
+                    store_code=store.store_code,
+                    base_file=str(experimental_gst_api_base_path),
+                    order_details_file=str(experimental_gst_api_order_details_path),
+                    base_rows=len(experimental_gst_api_extract.base_rows),
+                    order_detail_rows=len(experimental_gst_api_extract.order_detail_rows),
+                )
+            except Exception as exc:
+                log_event(
+                    logger=logger,
+                    phase="gst_api_extract",
+                    status="warn",
+                    message="Experimental GST API extraction failed; continuing with legacy flow",
+                    store_code=store.store_code,
+                    error=str(exc),
+                )
 
         try:
             gst_download_ok = False
@@ -4176,6 +4270,57 @@ async def _run_store_discovery(
                 "Archive Orders download complete; archive stages failed: "
                 + ", ".join(sorted(failed_stages))
             )
+        if experimental_gst_api_extract is not None:
+            try:
+                comparison_summary, comparison_details = compare_extracts(
+                    legacy_base_rows=extract.base_rows,
+                    legacy_order_detail_rows=extract.order_detail_rows,
+                    legacy_payment_rows=extract.payment_detail_rows,
+                    candidate_base_rows=experimental_gst_api_extract.base_rows,
+                    candidate_order_detail_rows=experimental_gst_api_extract.order_detail_rows,
+                    candidate_payment_rows=[],
+                )
+                if experimental_gst_api_base_path is not None:
+                    experimental_gst_api_compare_path = (
+                        experimental_gst_api_base_path.parent
+                        / _format_experimental_gst_api_compare_filename(
+                            store.store_code, from_date, to_date
+                        )
+                    )
+                    experimental_gst_api_compare_path.write_text(
+                        json.dumps(
+                            {
+                                "summary": vars(comparison_summary),
+                                "details": comparison_details,
+                            },
+                            indent=2,
+                            sort_keys=True,
+                            default=str,
+                        )
+                    )
+                log_event(
+                    logger=logger,
+                    phase="gst_api_compare",
+                    message="Experimental GST API compare complete",
+                    store_code=store.store_code,
+                    comparison_summary=vars(comparison_summary),
+                    comparison_details=comparison_details,
+                    compare_file=(
+                        str(experimental_gst_api_compare_path)
+                        if experimental_gst_api_compare_path is not None
+                        else None
+                    ),
+                )
+            except Exception as exc:
+                log_event(
+                    logger=logger,
+                    phase="gst_api_compare",
+                    status="warn",
+                    message="Experimental GST API compare failed",
+                    store_code=store.store_code,
+                    error=str(exc),
+                )
+
         outcome = StoreOutcome(
             status=status_label,
             message=download_message,
