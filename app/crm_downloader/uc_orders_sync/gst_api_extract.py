@@ -39,6 +39,7 @@ GST_API_BASE_COLUMNS = [
     "status_date",
 ]
 
+<<<<<<< codex/locate-apis-and-response-formats-in-uc_orders_sync
 GST_API_GST_COLUMNS = [
     "store_code",
     "order_number",
@@ -74,6 +75,13 @@ class GstApiExtract:
     base_rows: list[dict[str, Any]] = field(default_factory=list)
     order_detail_rows: list[dict[str, Any]] = field(default_factory=list)
     payment_detail_rows: list[dict[str, Any]] = field(default_factory=list)
+=======
+
+@dataclass
+class GstApiExtract:
+    base_rows: list[dict[str, Any]] = field(default_factory=list)
+    order_detail_rows: list[dict[str, Any]] = field(default_factory=list)
+>>>>>>> uc_ordersdetails_payment_sync
     skipped_order_codes: list[str] = field(default_factory=list)
     skipped_order_counters: dict[str, int] = field(default_factory=dict)
     booking_lookup_hits: int = 0
@@ -97,6 +105,7 @@ def _build_headers(*, bearer_token: str | None) -> dict[str, str]:
     return headers
 
 
+<<<<<<< codex/locate-apis-and-response-formats-in-uc_orders_sync
 def _coerce_text(value: Any) -> str | None:
     if value is None:
         return None
@@ -117,6 +126,8 @@ def _payment_status_suggests_settled(value: Any) -> bool:
     return True
 
 
+=======
+>>>>>>> uc_ordersdetails_payment_sync
 async def _request_json_with_retries(
     *,
     page: Page,
@@ -223,6 +234,7 @@ async def collect_gst_orders_via_api(
             continue
         seen_orders.add(order_code)
 
+<<<<<<< codex/locate-apis-and-response-formats-in-uc_orders_sync
         gst_row = {
             "store_code": store_code,
             "order_number": order_code,
@@ -243,6 +255,8 @@ async def collect_gst_orders_via_api(
         }
         extract.gst_rows.append(gst_row)
 
+=======
+>>>>>>> uc_ordersdetails_payment_sync
         base_row = {
             "store_code": store_code,
             "order_code": order_code,
@@ -276,6 +290,7 @@ async def collect_gst_orders_via_api(
             if booking_row.get("suggestions"):
                 base_row["instructions"] = booking_row.get("suggestions")
 
+<<<<<<< codex/locate-apis-and-response-formats-in-uc_orders_sync
             if _payment_status_suggests_settled(booking_row.get("payment_status")):
                 extract.payment_detail_rows.append(
                     {
@@ -290,6 +305,8 @@ async def collect_gst_orders_via_api(
                     }
                 )
 
+=======
+>>>>>>> uc_ordersdetails_payment_sync
         invoice_html = await _fetch_invoice_html_with_retries(
             page=page,
             booking_id=booking_id,
@@ -316,10 +333,15 @@ async def collect_gst_orders_via_api(
         phase="gst_api_extract",
         message="GST API experimental extraction complete",
         store_code=store_code,
+<<<<<<< codex/locate-apis-and-response-formats-in-uc_orders_sync
         gst_rows=len(extract.gst_rows),
         base_rows=len(extract.base_rows),
         order_detail_rows=len(extract.order_detail_rows),
         payment_detail_rows=len(extract.payment_detail_rows),
+=======
+        base_rows=len(extract.base_rows),
+        order_detail_rows=len(extract.order_detail_rows),
+>>>>>>> uc_ordersdetails_payment_sync
         booking_lookup_hits=extract.booking_lookup_hits,
         booking_lookup_misses=extract.booking_lookup_misses,
         skipped_order_counters=extract.skipped_order_counters,
