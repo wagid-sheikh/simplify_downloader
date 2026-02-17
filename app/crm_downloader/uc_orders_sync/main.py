@@ -66,6 +66,9 @@ from app.dashboard_downloader.run_summary import (
 )
 
 PIPELINE_NAME = "uc_orders_sync"
+STAGE_CREATED_COHORT_EXTRACT = "created_cohort_extract"
+STAGE_DELIVERY_PAYMENT_COHORT_EXTRACT = "delivery_payment_cohort_extract"
+STAGE_ORDERS_INGEST = "ingest"
 NAV_TIMEOUT_MS = 90_000
 ARCHIVE_FILTER_REFRESH_TIMEOUT_MS = 20_000
 SPINNER_CSS_SELECTORS = [".spinner", ".loading", ".loader", ".k-loading-mask"]
@@ -383,6 +386,8 @@ class StoreOutcome:
     skip_reason: str | None = None
     warning_count: int | None = None
     rows_downloaded: int | None = None
+    orders_created_in_window: int | None = None
+    payments_observed_in_delivery_window: int | None = None
     rows_skipped_invalid: int | None = None
     rows_skipped_invalid_reasons: dict[str, int] | None = None
     staging_rows: int | None = None
@@ -862,6 +867,12 @@ class UcOrdersDiscoverySummary:
                     outcome.fallback_login_result if outcome else None
                 ),
                 "row_counts": {
+                    "orders_created_in_window": (
+                        outcome.orders_created_in_window if outcome else None
+                    ),
+                    "payments_observed_in_delivery_window": (
+                        outcome.payments_observed_in_delivery_window if outcome else None
+                    ),
                     "staging_rows": outcome.staging_rows if outcome else None,
                     "final_rows": outcome.final_rows if outcome else None,
                     "staging_inserted": outcome.staging_inserted if outcome else None,
@@ -954,6 +965,12 @@ class UcOrdersDiscoverySummary:
                     "final_inserted": outcome.final_inserted if outcome else None,
                     "final_updated": outcome.final_updated if outcome else None,
                     "rows_downloaded": outcome.rows_downloaded if outcome else None,
+                    "orders_created_in_window": (
+                        outcome.orders_created_in_window if outcome else None
+                    ),
+                    "payments_observed_in_delivery_window": (
+                        outcome.payments_observed_in_delivery_window if outcome else None
+                    ),
                     "rows_skipped_invalid": (
                         outcome.rows_skipped_invalid if outcome else None
                     ),
@@ -3420,6 +3437,14 @@ async def _run_store_discovery(
     download_timeout_ms: int,
     archive_extraction_mode: str,
 ) -> None:
+    """Execute one store window using two lifecycle cohorts over the same date range.
+
+    The GST API extraction represents orders *created* in the requested [from_date, to_date]
+    window. The delivered-orders API extraction represents delivery/payment lifecycle data
+    observed in the same [from_date, to_date] window. The ranges are identical on purpose,
+    but the lifecycle semantics are intentionally different.
+    """
+
     log_event(
         logger=logger,
         phase="store",
@@ -3493,7 +3518,10 @@ async def _run_store_discovery(
         session_probe_result: bool | None = None
         fallback_login_attempted = False
         fallback_login_result: bool | None = None
-        gst_ingest_stage_statuses: dict[str, str] = {"ingest": "skipped"}
+        gst_ingest_stage_statuses: dict[str, str] = {
+            STAGE_CREATED_COHORT_EXTRACT: "skipped",
+            STAGE_ORDERS_INGEST: "skipped",
+        }
         gst_ingest_stage_metrics: dict[str, dict[str, Any]] = {}
         gst_staging_rows: int | None = None
         gst_final_rows: int | None = None
@@ -3685,6 +3713,14 @@ async def _run_store_discovery(
                 order_detail_rows=len(gst_api_extract.order_detail_rows),
                 payment_detail_rows=len(gst_api_extract.payment_detail_rows),
             )
+            gst_ingest_stage_statuses[STAGE_CREATED_COHORT_EXTRACT] = "success"
+            gst_ingest_stage_metrics[STAGE_CREATED_COHORT_EXTRACT] = {
+                "orders_created_in_window": len(gst_api_extract.base_rows),
+                "created_cohort_order_detail_rows": len(gst_api_extract.order_detail_rows),
+                "created_cohort_payment_rows": len(gst_api_extract.payment_detail_rows),
+                "skipped_order_counters": gst_api_extract.skipped_order_counters,
+                "skipped_order_codes": gst_api_extract.skipped_order_codes,
+            }
         except Exception as exc:
             log_event(
                 logger=logger,
@@ -3708,7 +3744,7 @@ async def _run_store_discovery(
                 stage_statuses=dict(gst_ingest_stage_statuses),
                 stage_metrics={
                     **gst_ingest_stage_metrics,
-                    "gst_api_extract": {"error": str(exc)},
+                    STAGE_CREATED_COHORT_EXTRACT: {"error": str(exc)},
                 },
             )
             summary.record_store(store.store_code, outcome)
@@ -3734,11 +3770,11 @@ async def _run_store_discovery(
             if (
                 gst_download_ok
                 and gst_download_path
-                and gst_ingest_stage_statuses.get("ingest") == "skipped"
+                and gst_ingest_stage_statuses.get(STAGE_ORDERS_INGEST) == "skipped"
             ):
                 if not config.database_url:
-                    gst_ingest_stage_statuses["ingest"] = "failed"
-                    gst_ingest_stage_metrics["ingest"] = {
+                    gst_ingest_stage_statuses[STAGE_ORDERS_INGEST] = "failed"
+                    gst_ingest_stage_metrics[STAGE_ORDERS_INGEST] = {
                         "error": "database_url is missing; GST ingest skipped"
                     }
                     log_event(
@@ -3759,8 +3795,8 @@ async def _run_store_discovery(
                             database_url=config.database_url,
                             logger=logger,
                         )
-                        gst_ingest_stage_statuses["ingest"] = "success"
-                        gst_ingest_stage_metrics["ingest"] = {
+                        gst_ingest_stage_statuses[STAGE_ORDERS_INGEST] = "success"
+                        gst_ingest_stage_metrics[STAGE_ORDERS_INGEST] = {
                             "staging_rows": ingest_result.staging_rows,
                             "final_rows": ingest_result.final_rows,
                             "staging_inserted": ingest_result.staging_inserted,
@@ -3795,8 +3831,8 @@ async def _run_store_discovery(
                             final_updated=ingest_result.final_updated,
                         )
                     except Exception as exc:
-                        gst_ingest_stage_statuses["ingest"] = "failed"
-                        gst_ingest_stage_metrics["ingest"] = {"error": str(exc)}
+                        gst_ingest_stage_statuses[STAGE_ORDERS_INGEST] = "failed"
+                        gst_ingest_stage_metrics[STAGE_ORDERS_INGEST] = {"error": str(exc)}
                         log_event(
                             logger=logger,
                             phase="ingest",
@@ -3828,7 +3864,7 @@ async def _run_store_discovery(
                 stage_statuses=dict(gst_ingest_stage_statuses),
                 stage_metrics={
                     **gst_ingest_stage_metrics,
-                    "gst_api_output": {"error": str(exc)},
+                    STAGE_CREATED_COHORT_EXTRACT: {"error": str(exc)},
                 },
             )
             summary.record_store(store.store_code, outcome)
@@ -3887,8 +3923,8 @@ async def _run_store_discovery(
             phase="archive_extract",
             message="Executing archive extraction",
             store_code=store.store_code,
-            archive_source="API",
-            archive_extraction_mode=archive_extraction_mode,
+            lifecycle_source="delivered_orders_api",
+            lifecycle_extraction_mode=archive_extraction_mode,
         )
         api_extract = await collect_archive_orders_via_api(
             page=page,
@@ -3981,7 +4017,7 @@ async def _run_store_discovery(
             phase="output",
             message="Archive Orders files saved",
             store_code=store.store_code,
-            archive_source="API",
+            lifecycle_source="delivered_orders_api",
             base_file=str(base_path),
             base_rows=base_count,
             order_details_file=str(order_details_path),
@@ -3994,16 +4030,18 @@ async def _run_store_discovery(
         archive_publish_sales: dict[str, Any] | None = None
         stage_statuses: dict[str, str] = {
             **gst_ingest_stage_statuses,
-            "download": "success",
+            STAGE_DELIVERY_PAYMENT_COHORT_EXTRACT: "success",
             "archive_ingest": "skipped",
             "archive_publish": "skipped",
         }
         stage_metrics: dict[str, dict[str, Any]] = {
             **gst_ingest_stage_metrics,
-            "download": {
+            STAGE_DELIVERY_PAYMENT_COHORT_EXTRACT: {
                 "base_rows": base_count,
                 "order_details_rows": order_details_count,
                 "payment_details_rows": payment_details_count,
+                "orders_created_in_window": len(gst_api_extract.base_rows) if gst_api_extract else None,
+                "payments_observed_in_delivery_window": payment_details_count,
                 "skipped_order_counters": extract.skipped_order_counters,
                 "skipped_order_codes": extract.skipped_order_codes,
                 "footer_total": extract.post_filter_footer_total,
@@ -4212,7 +4250,11 @@ async def _run_store_discovery(
             ]
         status_label = (
             "warning"
-            if any(v == "failed" for k, v in stage_statuses.items() if k != "download")
+            if any(
+                v == "failed"
+                for k, v in stage_statuses.items()
+                if k != STAGE_DELIVERY_PAYMENT_COHORT_EXTRACT
+            )
             else "ok"
         )
         baseline_source = extract.footer_baseline_source or "fallback_unknown"
@@ -4262,6 +4304,10 @@ async def _run_store_discovery(
             fallback_login_result=fallback_login_result,
             download_path=str(base_path),
             rows_downloaded=row_count,
+            orders_created_in_window=(
+                len(gst_api_extract.base_rows) if gst_api_extract is not None else None
+            ),
+            payments_observed_in_delivery_window=payment_details_count,
             stage_statuses=stage_statuses,
             stage_metrics=stage_metrics,
             staging_rows=gst_staging_rows,
