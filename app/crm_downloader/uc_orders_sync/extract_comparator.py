@@ -22,6 +22,13 @@ class ExtractComparisonSummary:
     common_base: int
 
 
+@dataclass(frozen=True)
+class MigrationThresholds:
+    gst_key_parity_min_pct: float = 95.0
+    payment_coverage_min_pct: float = 90.0
+    payment_field_mismatch_max_pct: float = 10.0
+
+
 def _build_keyed_map(rows: Iterable[Mapping[str, Any]], *, key_field: str) -> dict[str, Mapping[str, Any]]:
     keyed: dict[str, Mapping[str, Any]] = {}
     for row in rows:
@@ -49,6 +56,12 @@ def _compute_field_mismatch_counts(
     return mismatch_counts
 
 
+def _safe_pct(numerator: int, denominator: int) -> float:
+    if denominator <= 0:
+        return 100.0
+    return round((numerator / denominator) * 100.0, 2)
+
+
 def compare_extracts(
     *,
     legacy_gst_rows: list[Mapping[str, Any]],
@@ -59,7 +72,9 @@ def compare_extracts(
     candidate_base_rows: list[Mapping[str, Any]],
     candidate_order_detail_rows: list[Mapping[str, Any]],
     candidate_payment_rows: list[Mapping[str, Any]],
+    thresholds: MigrationThresholds | None = None,
 ) -> tuple[ExtractComparisonSummary, dict[str, Any]]:
+    active_thresholds = thresholds or MigrationThresholds()
     legacy_gst = _build_keyed_map(legacy_gst_rows, key_field="order_number")
     candidate_gst = _build_keyed_map(candidate_gst_rows, key_field="order_number")
     legacy_gst_codes = set(legacy_gst.keys())
@@ -92,6 +107,42 @@ def compare_extracts(
     legacy_payments = _build_keyed_map(legacy_payment_rows, key_field="order_code")
     candidate_payments = _build_keyed_map(candidate_payment_rows, key_field="order_code")
     common_payment_codes = set(legacy_payments.keys()) & set(candidate_payments.keys())
+    payment_field_mismatch_counts = _compute_field_mismatch_counts(
+        left_rows=legacy_payments,
+        right_rows=candidate_payments,
+        common_codes=common_payment_codes,
+        fields=payment_field_checks,
+    )
+    total_payment_field_mismatches = sum(payment_field_mismatch_counts.values())
+    total_payment_field_comparisons = len(common_payment_codes) * len(payment_field_checks)
+
+    gst_key_parity_pct = _safe_pct(
+        len(common_gst_codes), max(len(legacy_gst_codes), len(candidate_gst_codes))
+    )
+    payment_coverage_pct = _safe_pct(len(common_payment_codes), len(legacy_payments))
+    payment_field_mismatch_pct = _safe_pct(
+        total_payment_field_mismatches, total_payment_field_comparisons
+    )
+
+    gst_key_parity_pass = gst_key_parity_pct >= active_thresholds.gst_key_parity_min_pct
+    payment_coverage_pass = (
+        payment_coverage_pct >= active_thresholds.payment_coverage_min_pct
+    )
+    payment_mismatch_pass = (
+        payment_field_mismatch_pct
+        <= active_thresholds.payment_field_mismatch_max_pct
+    )
+
+    migration_ready = (
+        gst_key_parity_pass and payment_coverage_pass and payment_mismatch_pass
+    )
+    migration_reason_codes: list[str] = []
+    if not gst_key_parity_pass:
+        migration_reason_codes.append("below_gst_key_parity_threshold")
+    if not payment_coverage_pass:
+        migration_reason_codes.append("below_payment_coverage_threshold")
+    if not payment_mismatch_pass:
+        migration_reason_codes.append("above_payment_field_mismatch_threshold")
 
     summary = ExtractComparisonSummary(
         legacy_gst_rows=len(legacy_gst_rows),
@@ -139,5 +190,26 @@ def compare_extracts(
             "missing_in_candidate": sorted(set(legacy_payments) - set(candidate_payments))[:20],
             "missing_in_legacy": sorted(set(candidate_payments) - set(legacy_payments))[:20],
         },
+        "threshold_evaluation": {
+            "thresholds": {
+                "gst_key_parity_min_pct": active_thresholds.gst_key_parity_min_pct,
+                "payment_coverage_min_pct": active_thresholds.payment_coverage_min_pct,
+                "payment_field_mismatch_max_pct": active_thresholds.payment_field_mismatch_max_pct,
+            },
+            "metrics": {
+                "gst_key_parity_pct": gst_key_parity_pct,
+                "payment_coverage_pct": payment_coverage_pct,
+                "payment_field_mismatch_pct": payment_field_mismatch_pct,
+            },
+            "checks": {
+                "gst_key_parity_pass": gst_key_parity_pass,
+                "payment_coverage_pass": payment_coverage_pass,
+                "payment_field_mismatch_pass": payment_mismatch_pass,
+            },
+            "migration_ready": migration_ready,
+            "reason_codes": migration_reason_codes,
+        },
+        "migration_ready": migration_ready,
+        "migration_reason_codes": migration_reason_codes,
     }
     return summary, details

@@ -1,4 +1,7 @@
-from app.crm_downloader.uc_orders_sync.extract_comparator import compare_extracts
+from app.crm_downloader.uc_orders_sync.extract_comparator import (
+    MigrationThresholds,
+    compare_extracts,
+)
 
 
 def test_compare_extracts_reports_coverage_and_mismatches() -> None:
@@ -60,3 +63,42 @@ def test_compare_extracts_reports_coverage_and_mismatches() -> None:
     assert details["sample_missing_in_legacy_gst"] == ["A3"]
     assert details["sample_missing_in_candidate_base"] == ["A2"]
     assert details["sample_missing_in_legacy_base"] == ["A3"]
+
+
+def test_compare_extracts_threshold_evaluation_and_migration_signal() -> None:
+    _, details = compare_extracts(
+        legacy_gst_rows=[
+            {"order_number": "A1"},
+            {"order_number": "A2"},
+            {"order_number": "A3"},
+        ],
+        candidate_gst_rows=[
+            {"order_number": "A1"},
+        ],
+        legacy_base_rows=[{"order_code": "A1"}],
+        legacy_order_detail_rows=[],
+        legacy_payment_rows=[
+            {"order_code": "A1", "payment_mode": "UPI", "amount": 100, "payment_date": "2026-01-01"},
+            {"order_code": "A2", "payment_mode": "COD", "amount": 200, "payment_date": "2026-01-01"},
+        ],
+        candidate_base_rows=[{"order_code": "A1"}],
+        candidate_order_detail_rows=[],
+        candidate_payment_rows=[
+            {"order_code": "A1", "payment_mode": "CARD", "amount": 100, "payment_date": "2026-01-01"},
+        ],
+        thresholds=MigrationThresholds(
+            gst_key_parity_min_pct=80.0,
+            payment_coverage_min_pct=80.0,
+            payment_field_mismatch_max_pct=0.0,
+        ),
+    )
+
+    assert details["threshold_evaluation"]["metrics"]["gst_key_parity_pct"] == 33.33
+    assert details["threshold_evaluation"]["metrics"]["payment_coverage_pct"] == 50.0
+    assert details["threshold_evaluation"]["metrics"]["payment_field_mismatch_pct"] == 33.33
+    assert details["migration_ready"] is False
+    assert details["migration_reason_codes"] == [
+        "below_gst_key_parity_threshold",
+        "below_payment_coverage_threshold",
+        "above_payment_field_mismatch_threshold",
+    ]
