@@ -25,12 +25,15 @@ from app.crm_downloader.uc_orders_sync.ingest import _stg_uc_orders_table
 from app.crm_downloader.uc_orders_sync.ingest import _orders_table
 
 REASON_MISSING_PARENT_ORDER_CONTEXT = "missing_parent_order_context"
+REASON_MISSING_PARENT_INGEST_FAILURE = "missing_parent_ingest_failure"
+REASON_MISSING_PARENT_SOURCE_ABSENT = "missing_parent_source_absent"
 REASON_UNPARSEABLE_PAYMENT_DATE = "unparseable_payment_date"
 REASON_MISSING_REQUIRED_IDENTIFIERS = "missing_required_identifiers"
 REASON_PREFLIGHT_PARENT_COVERAGE_NEAR_ZERO = "preflight_parent_coverage_near_zero"
 REASON_PREFLIGHT_PARENT_COVERAGE_LOW = "preflight_parent_coverage_low"
 
 PREFLIGHT_PARENT_COVERAGE_MIN = Decimal("0.80")
+HISTORICAL_PARENT_LOOKUP_ROW_LIMIT = 5000
 
 LOGGER = logging.getLogger(__name__)
 
@@ -447,6 +450,31 @@ async def publish_uc_archive_payments_to_sales(
                     continue
                 order_lookup[normalized_parent_key[0]] = row
 
+            unresolved_query_keys = [key for key in query_keys if key not in order_lookup]
+            if unresolved_query_keys:
+                historical_order_rows = await session.execute(
+                    sa.select(
+                        orders.c.cost_center,
+                        orders.c.store_code,
+                        orders.c.order_number,
+                        orders.c.order_date,
+                        orders.c.customer_name,
+                        orders.c.mobile_number,
+                        orders.c.ingest_remarks,
+                    )
+                    .where(orders.c.store_code == store_code)
+                    .order_by(sa.desc(orders.c.created_at), sa.desc(orders.c.id))
+                    .limit(HISTORICAL_PARENT_LOOKUP_ROW_LIMIT)
+                )
+                unresolved_set = set(unresolved_query_keys)
+                for row in historical_order_rows:
+                    variants = _build_join_key_variants(row.store_code, row.order_number)
+                    if not variants:
+                        continue
+                    for variant in variants:
+                        if variant in unresolved_set and variant not in order_lookup:
+                            order_lookup[variant] = row
+
             stg_rows = await session.execute(
                 sa.select(stg_orders.c.store_code, stg_orders.c.order_number).where(
                     sa.and_(
@@ -590,16 +618,25 @@ async def publish_uc_archive_payments_to_sales(
             if not parent_cost_center and base_parent is not None and (has_stg_parent or parent is not None):
                 parent_cost_center = (base_parent.cost_center or "").strip() or None
 
+            archive_ingest_remark = (base_parent.ingest_remarks or "") if base_parent is not None else ""
+            archive_parent_ingest_failure = bool(archive_ingest_remark.strip())
+
             if parent is None and (base_parent is None or not has_stg_parent):
                 metrics.skipped += 1
                 metrics.warnings += 1
-                _append_reason(reasons, REASON_MISSING_PARENT_ORDER_CONTEXT)
+                _append_reason(
+                    reasons,
+                    REASON_MISSING_PARENT_INGEST_FAILURE if archive_parent_ingest_failure else REASON_MISSING_PARENT_SOURCE_ABSENT,
+                )
                 continue
 
             if not parent_cost_center:
                 metrics.skipped += 1
                 metrics.warnings += 1
-                _append_reason(reasons, REASON_MISSING_PARENT_ORDER_CONTEXT)
+                _append_reason(
+                    reasons,
+                    REASON_MISSING_PARENT_INGEST_FAILURE if archive_parent_ingest_failure else REASON_MISSING_PARENT_ORDER_CONTEXT,
+                )
                 continue
 
             logical_key = (parent_cost_center, order_number, payment_date, payment_mode, Decimal(str(amount)), txid)
