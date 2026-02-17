@@ -1638,12 +1638,12 @@ After login, navigate to Reports → Sales and Delivery and verify the container
 3. Confirm GST API extract files are generated and ingested without requiring UI GST navigation.
 4. Validate archive extraction and publish stages complete with no transport/auth warning spikes.
 
-### Rollback steps
+### Recovery steps
 
 1. If GST API is unavailable, treat the store run as failed and investigate API/auth transport issues.
-2. Re-run the same date window and confirm GST output is produced through the temporary UI rollback path.
+2. Restore API connectivity/authentication and re-run the same date window.
 3. Keep archive extraction mode at `api` unless archive API transport/auth failures require `api_with_ui_fallback`.
-4. Re-run the failed window once API recovery is confirmed.
+4. Validate successful ingest and publish once API recovery is confirmed.
 
 ### Acceptance criteria
 
