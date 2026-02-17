@@ -48,6 +48,53 @@ def _build_uc_workbook(path: Path, *, order_number: str = "UC-001") -> Path:
     return path
 
 
+def _build_uc_api_workbook(path: Path, *, order_number: str = "UC-API-001") -> Path:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(
+        [
+            "store_code",
+            "order_number",
+            "invoice_number",
+            "invoice_date",
+            "name",
+            "customer_phone",
+            "customer_gst",
+            "address",
+            "store_address",
+            "city_name",
+            "taxable_value",
+            "cgst",
+            "sgst",
+            "total_tax",
+            "final_amount",
+            "payment_status",
+        ]
+    )
+    ws.append(
+        [
+            "S001",
+            order_number,
+            "INV-API-1",
+            "10/01/2025",
+            "Bob",
+            "9999988887",
+            "GSTIN-API-1",
+            "Api Address",
+            "Store Address",
+            "KA",
+            "200",
+            "18",
+            "18",
+            "36",
+            "236",
+            "Paid",
+        ]
+    )
+    wb.save(path)
+    return path
+
+
 async def _create_archive_base_table(database_url: str) -> None:
     metadata = sa.MetaData()
     sa.Table(
@@ -223,3 +270,44 @@ async def test_uc_ingest_blank_archive_values_do_not_overwrite_existing_staging(
     assert stg_row.customer_address == "Existing Address"
     assert order_row.customer_source == "Counter"
     assert order_row.customer_address == "Existing Address"
+
+
+@pytest.mark.asyncio
+async def test_uc_ingest_accepts_gst_api_header_schema(tmp_path: Path) -> None:
+    db_path = tmp_path / "uc_ingest_api.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    workbook = _build_uc_api_workbook(tmp_path / "uc_api.xlsx")
+
+    result = await ingest_uc_orders_workbook(
+        workbook_path=workbook,
+        store_code="S001",
+        cost_center="C001",
+        run_id="run-api-1",
+        run_date=datetime(2025, 1, 3),
+        database_url=database_url,
+        logger=get_logger("test_uc_ingest_api"),
+    )
+
+    assert result.staging_rows == 1
+    assert result.final_rows == 1
+
+    metadata = sa.MetaData()
+    stg_table = _stg_uc_orders_table(metadata)
+    orders_table = _orders_table(metadata)
+    async with session_scope(database_url) as session:
+        stg_count = await session.execute(sa.select(sa.func.count()).select_from(stg_table))
+        orders_count = await session.execute(sa.select(sa.func.count()).select_from(orders_table))
+        stg_row = (
+            await session.execute(
+                sa.select(stg_table.c.order_number, stg_table.c.customer_name, stg_table.c.net_amount, stg_table.c.gross_amount).where(
+                    stg_table.c.order_number == "UC-API-001"
+                )
+            )
+        ).one()
+
+    assert stg_count.scalar_one() > 0
+    assert orders_count.scalar_one() > 0
+    assert stg_row.order_number == "UC-API-001"
+    assert stg_row.customer_name == "Bob"
+    assert float(stg_row.net_amount) == 200
+    assert float(stg_row.gross_amount) == 236
