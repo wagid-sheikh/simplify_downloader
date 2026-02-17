@@ -239,7 +239,6 @@ ARCHIVE_PAYMENT_COLUMNS = [
     "payment_date",
     "transaction_id",
 ]
-EXPERIMENTAL_GST_API_ORDER_DETAIL_COLUMNS = ARCHIVE_ORDER_DETAIL_COLUMNS
 DATE_PICKER_POPUP_SELECTORS = (
     ".calendar-body.show",
     ".calendar-body .calendar",
@@ -1410,43 +1409,15 @@ def _resolve_uc_archive_extraction_mode() -> str:
     return UC_ARCHIVE_EXTRACTION_MODE_API
 
 
-def _experimental_gst_api_enabled() -> bool:
-    return (os.getenv("UC_GST_API_EXPERIMENT_ENABLED") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+def _gst_api_primary_enabled() -> bool:
+    raw = (os.getenv("UC_GST_API_PRIMARY_ENABLED") or "").strip().lower()
+    if not raw:
+        return True
+    return raw not in {"0", "false", "no", "off"}
 
 
-def _format_experimental_gst_api_base_filename(
-    store_code: str, from_date: date, to_date: date
-) -> str:
-    return f"{store_code}-exp_gst_api_base_order_info_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
-
-
-def _format_experimental_gst_api_order_details_filename(
-    store_code: str, from_date: date, to_date: date
-) -> str:
-    return f"{store_code}-exp_gst_api_order_details_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
-
-
-def _format_experimental_gst_api_gst_filename(
-    store_code: str, from_date: date, to_date: date
-) -> str:
-    return f"{store_code}-exp_gst_api_gst_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
-
-
-def _format_experimental_gst_api_payment_details_filename(
-    store_code: str, from_date: date, to_date: date
-) -> str:
-    return f"{store_code}-exp_gst_api_payment_details_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
-
-
-def _format_experimental_gst_api_compare_filename(
-    store_code: str, from_date: date, to_date: date
-) -> str:
-    return f"{store_code}-exp_gst_api_compare_{from_date:%Y%m%d}_{to_date:%Y%m%d}.json"
+def _format_gst_api_compare_filename(store_code: str, from_date: date, to_date: date) -> str:
+    return f"{store_code}-gst_api_compare_{from_date:%Y%m%d}_{to_date:%Y%m%d}.json"
 
 
 def _resolve_uc_download_dir(
@@ -3568,12 +3539,13 @@ async def _run_store_discovery(
         gst_rows_skipped_invalid_reasons: dict[str, int] | None = None
         gst_warning_rows: list[dict[str, Any]] = []
         gst_dropped_rows: list[dict[str, Any]] = []
-        experimental_gst_api_extract: GstApiExtract | None = None
-        experimental_gst_api_gst_path: Path | None = None
-        experimental_gst_api_base_path: Path | None = None
-        experimental_gst_api_order_details_path: Path | None = None
-        experimental_gst_api_payment_details_path: Path | None = None
-        experimental_gst_api_compare_path: Path | None = None
+        gst_api_primary_enabled = _gst_api_primary_enabled()
+        gst_api_extract: GstApiExtract | None = None
+        gst_api_gst_path: Path | None = None
+        gst_api_base_path: Path | None = None
+        gst_api_order_details_path: Path | None = None
+        gst_api_payment_details_path: Path | None = None
+        gst_api_compare_path: Path | None = None
 
         if storage_state_exists:
             log_event(
@@ -3670,265 +3642,355 @@ async def _run_store_discovery(
                 summary.record_store(store.store_code, outcome)
                 return
 
-        if _experimental_gst_api_enabled():
-            try:
-                experimental_download_dir = _resolve_uc_download_dir(
-                    run_id, store.store_code, from_date, to_date
-                )
-                experimental_download_dir.mkdir(parents=True, exist_ok=True)
-                experimental_gst_api_extract = await collect_gst_orders_via_api(
-                    page=page,
-                    store_code=store.store_code,
-                    logger=logger,
-                    from_date=from_date,
-                    to_date=to_date,
-                )
-                experimental_gst_api_gst_path = (
-                    experimental_download_dir
-                    / _format_experimental_gst_api_gst_filename(
-                        store.store_code, from_date, to_date
-                    )
-                )
-                experimental_gst_api_base_path = (
-                    experimental_download_dir
-                    / _format_experimental_gst_api_base_filename(
-                        store.store_code, from_date, to_date
-                    )
-                )
-                experimental_gst_api_order_details_path = (
-                    experimental_download_dir
-                    / _format_experimental_gst_api_order_details_filename(
-                        store.store_code, from_date, to_date
-                    )
-                )
-                experimental_gst_api_payment_details_path = (
-                    experimental_download_dir
-                    / _format_experimental_gst_api_payment_details_filename(
-                        store.store_code, from_date, to_date
-                    )
-                )
-                _write_excel_rows(
-                    experimental_gst_api_gst_path,
-                    experimental_gst_api_extract.gst_rows,
-                    GST_API_GST_COLUMNS,
-                )
-                _write_excel_rows(
-                    experimental_gst_api_base_path,
-                    experimental_gst_api_extract.base_rows,
-                    GST_API_BASE_COLUMNS,
-                )
-                _write_excel_rows(
-                    experimental_gst_api_order_details_path,
-                    experimental_gst_api_extract.order_detail_rows,
-                    EXPERIMENTAL_GST_API_ORDER_DETAIL_COLUMNS,
-                )
-                _write_excel_rows(
-                    experimental_gst_api_payment_details_path,
-                    experimental_gst_api_extract.payment_detail_rows,
-                    GST_API_PAYMENT_COLUMNS,
-                )
-                log_event(
-                    logger=logger,
-                    phase="gst_api_extract",
-                    message="Experimental GST API extraction files generated",
-                    store_code=store.store_code,
-                    gst_file=str(experimental_gst_api_gst_path),
-                    base_file=str(experimental_gst_api_base_path),
-                    order_details_file=str(experimental_gst_api_order_details_path),
-                    payment_details_file=str(experimental_gst_api_payment_details_path),
-                    gst_rows=len(experimental_gst_api_extract.gst_rows),
-                    base_rows=len(experimental_gst_api_extract.base_rows),
-                    order_detail_rows=len(experimental_gst_api_extract.order_detail_rows),
-                    payment_detail_rows=len(experimental_gst_api_extract.payment_detail_rows),
-                )
-            except Exception as exc:
-                log_event(
-                    logger=logger,
-                    phase="gst_api_extract",
-                    status="warn",
-                    message="Experimental GST API extraction failed; continuing with legacy flow",
-                    store_code=store.store_code,
-                    error=str(exc),
-                )
+        try:
+            download_dir = _resolve_uc_download_dir(
+                run_id, store.store_code, from_date, to_date
+            )
+            download_dir.mkdir(parents=True, exist_ok=True)
+            gst_api_extract = await collect_gst_orders_via_api(
+                page=page,
+                store_code=store.store_code,
+                logger=logger,
+                from_date=from_date,
+                to_date=to_date,
+            )
+            gst_api_gst_path = (
+                download_dir / _format_gst_filename(store.store_code, from_date, to_date)
+            )
+            gst_api_base_path = (
+                download_dir
+                / _format_archive_base_filename(store.store_code, from_date, to_date)
+            )
+            gst_api_order_details_path = (
+                download_dir
+                / _format_archive_order_details_filename(store.store_code, from_date, to_date)
+            )
+            gst_api_payment_details_path = (
+                download_dir
+                / _format_archive_payment_details_filename(store.store_code, from_date, to_date)
+            )
+            _write_excel_rows(
+                gst_api_gst_path,
+                gst_api_extract.gst_rows,
+                GST_API_GST_COLUMNS,
+            )
+            _write_excel_rows(
+                gst_api_base_path,
+                gst_api_extract.base_rows,
+                GST_API_BASE_COLUMNS,
+            )
+            _write_excel_rows(
+                gst_api_order_details_path,
+                gst_api_extract.order_detail_rows,
+                ARCHIVE_ORDER_DETAIL_COLUMNS,
+            )
+            _write_excel_rows(
+                gst_api_payment_details_path,
+                gst_api_extract.payment_detail_rows,
+                GST_API_PAYMENT_COLUMNS,
+            )
+            log_event(
+                logger=logger,
+                phase="gst_api_extract",
+                message="GST API extraction files generated",
+                store_code=store.store_code,
+                gst_api_primary_enabled=gst_api_primary_enabled,
+                gst_file=str(gst_api_gst_path),
+                base_file=str(gst_api_base_path),
+                order_details_file=str(gst_api_order_details_path),
+                payment_details_file=str(gst_api_payment_details_path),
+                gst_rows=len(gst_api_extract.gst_rows),
+                base_rows=len(gst_api_extract.base_rows),
+                order_detail_rows=len(gst_api_extract.order_detail_rows),
+                payment_detail_rows=len(gst_api_extract.payment_detail_rows),
+            )
+        except Exception as exc:
+            log_event(
+                logger=logger,
+                phase="gst_api_extract",
+                status="warn",
+                message="GST API extraction failed; falling back to GST UI flow",
+                store_code=store.store_code,
+                gst_api_primary_enabled=gst_api_primary_enabled,
+                error=str(exc),
+            )
 
+        gst_ui_download_path: str | None = None
         try:
             gst_download_ok = False
             gst_download_path: str | None = None
             gst_row_count = 0
-            gst_container: Locator | None = None
-            gst_navigation_ok = await _navigate_to_gst_reports(
-                page=page, store=store, logger=logger
-            )
-            if gst_navigation_ok:
-                gst_ready, gst_container = await _wait_for_gst_report_ready(
-                    page=page,
-                    logger=logger,
-                    store=store,
-                )
-            else:
-                gst_ready = False
-
-            if not gst_ready:
-                gst_ready, gst_container = await _try_direct_gst_reports(
-                    page=page,
-                    store=store,
-                    logger=logger,
-                )
-
-            if not gst_ready or gst_container is None:
+            if gst_api_primary_enabled and gst_api_extract is not None and gst_api_gst_path is not None:
+                gst_download_path = str(gst_api_gst_path)
+                gst_download_ok = gst_api_gst_path.exists()
+                gst_row_count = len(gst_api_extract.gst_rows)
                 log_event(
                     logger=logger,
-                    phase="navigation",
-                    status="warn",
-                    message="GST report navigation failed; skipping GST download",
+                    phase="download",
+                    status=None if gst_download_ok else "warn",
+                    message=(
+                        "Using GST API primary output"
+                        if gst_download_ok
+                        else "GST API primary output missing on disk; attempting GST UI fallback"
+                    ),
                     store_code=store.store_code,
-                    current_url=page.url,
+                    download_path=gst_download_path,
+                    row_count=gst_row_count,
+                    gst_api_primary_enabled=gst_api_primary_enabled,
                 )
-            else:
-                download_dir = _resolve_uc_download_dir(
-                    run_id, store.store_code, from_date, to_date
+
+            if not gst_download_ok:
+                gst_container: Locator | None = None
+                gst_navigation_ok = await _navigate_to_gst_reports(
+                    page=page, store=store, logger=logger
                 )
-                download_dir.mkdir(parents=True, exist_ok=True)
-                (
-                    apply_ok,
-                    gst_row_count,
-                    row_visibility_issue,
-                    ui_issues,
-                    failure_reason,
-                ) = await _apply_date_range(
-                    page=page,
-                    container=gst_container,
-                    logger=logger,
-                    store=store,
-                    from_date=from_date,
-                    to_date=to_date,
-                )
-                if ui_issues:
-                    _log_ui_issues(
+                if gst_navigation_ok:
+                    gst_ready, gst_container = await _wait_for_gst_report_ready(
+                        page=page,
                         logger=logger,
                         store=store,
-                        ui_issues=ui_issues,
-                        status="warn" if not apply_ok else "info",
-                    )
-                if not apply_ok:
-                    log_event(
-                        logger=logger,
-                        phase="filters",
-                        status="warn",
-                        message="GST report date range apply failed; skipping download",
-                        store_code=store.store_code,
-                        row_count=gst_row_count,
-                        failure_reason=failure_reason,
                     )
                 else:
-                    if row_visibility_issue:
+                    gst_ready = False
+
+                if not gst_ready:
+                    gst_ready, gst_container = await _try_direct_gst_reports(
+                        page=page,
+                        store=store,
+                        logger=logger,
+                    )
+
+                if not gst_ready or gst_container is None:
+                    log_event(
+                        logger=logger,
+                        phase="navigation",
+                        status="warn",
+                        message="GST report navigation failed; skipping GST download",
+                        store_code=store.store_code,
+                        current_url=page.url,
+                    )
+                if gst_ready and gst_container is not None:
+                    download_dir = _resolve_uc_download_dir(
+                        run_id, store.store_code, from_date, to_date
+                    )
+                    download_dir.mkdir(parents=True, exist_ok=True)
+                    (
+                        apply_ok,
+                        gst_row_count,
+                        row_visibility_issue,
+                        ui_issues,
+                        failure_reason,
+                    ) = await _apply_date_range(
+                        page=page,
+                        container=gst_container,
+                        logger=logger,
+                        store=store,
+                        from_date=from_date,
+                        to_date=to_date,
+                    )
+                    if ui_issues:
+                        _log_ui_issues(
+                            logger=logger,
+                            store=store,
+                            ui_issues=ui_issues,
+                            status="warn" if not apply_ok else "info",
+                        )
+                    if not apply_ok:
                         log_event(
                             logger=logger,
                             phase="filters",
                             status="warn",
-                            message="GST report rows not visible but export may still be ready",
+                            message="GST report date range apply failed; skipping download",
                             store_code=store.store_code,
                             row_count=gst_row_count,
+                            failure_reason=failure_reason,
                         )
-                    gst_download_ok, gst_download_path, gst_message = (
-                        await _download_gst_report(
-                            page=page,
-                            logger=logger,
-                            store=store,
-                            from_date=from_date,
-                            to_date=to_date,
-                            download_dir=download_dir,
-                            download_timeout_ms=download_timeout_ms,
-                            row_count=gst_row_count,
-                        )
-                    )
-                    log_event(
-                        logger=logger,
-                        phase="download",
-                        status=None if gst_download_ok else "warn",
-                        message=(
-                            gst_message
-                            if gst_message
-                            else "GST report download complete"
-                        ),
-                        store_code=store.store_code,
-                        download_path=gst_download_path,
-                        row_count=gst_row_count,
-                    )
-                    if gst_download_ok and gst_download_path:
-                        if not config.database_url:
-                            gst_ingest_stage_statuses["ingest"] = "failed"
-                            gst_ingest_stage_metrics["ingest"] = {
-                                "error": "database_url is missing; GST ingest skipped"
-                            }
+                    else:
+                        if row_visibility_issue:
                             log_event(
                                 logger=logger,
-                                phase="ingest",
+                                phase="filters",
                                 status="warn",
-                                message="GST ingest skipped: database_url is missing",
+                                message="GST report rows not visible but export may still be ready",
                                 store_code=store.store_code,
+                                row_count=gst_row_count,
                             )
-                        else:
-                            try:
-                                ingest_result = await ingest_uc_orders_workbook(
-                                    workbook_path=Path(gst_download_path),
-                                    store_code=store.store_code,
-                                    cost_center=store.cost_center,
-                                    run_id=run_id,
-                                    run_date=aware_now(),
-                                    database_url=config.database_url,
-                                    logger=logger,
-                                )
-                                gst_ingest_stage_statuses["ingest"] = "success"
-                                gst_ingest_stage_metrics["ingest"] = {
-                                    "staging_rows": ingest_result.staging_rows,
-                                    "final_rows": ingest_result.final_rows,
-                                    "staging_inserted": ingest_result.staging_inserted,
-                                    "staging_updated": ingest_result.staging_updated,
-                                    "final_inserted": ingest_result.final_inserted,
-                                    "final_updated": ingest_result.final_updated,
-                                    "rows_skipped_invalid": ingest_result.rows_skipped_invalid,
-                                    "rows_skipped_invalid_reasons": ingest_result.rows_skipped_invalid_reasons,
-                                }
-                                gst_staging_rows = ingest_result.staging_rows
-                                gst_final_rows = ingest_result.final_rows
-                                gst_staging_inserted = ingest_result.staging_inserted
-                                gst_staging_updated = ingest_result.staging_updated
-                                gst_final_inserted = ingest_result.final_inserted
-                                gst_final_updated = ingest_result.final_updated
-                                gst_rows_skipped_invalid = (
-                                    ingest_result.rows_skipped_invalid
-                                )
-                                gst_rows_skipped_invalid_reasons = (
-                                    ingest_result.rows_skipped_invalid_reasons
-                                )
-                                gst_warning_rows = list(ingest_result.warning_rows)
-                                gst_dropped_rows = list(ingest_result.dropped_rows)
-                                log_event(
-                                    logger=logger,
-                                    phase="ingest",
-                                    message="GST ingest completed",
-                                    store_code=store.store_code,
-                                    staging_rows=ingest_result.staging_rows,
-                                    final_rows=ingest_result.final_rows,
-                                    staging_inserted=ingest_result.staging_inserted,
-                                    staging_updated=ingest_result.staging_updated,
-                                    final_inserted=ingest_result.final_inserted,
-                                    final_updated=ingest_result.final_updated,
-                                )
-                            except Exception as exc:
+                        gst_download_ok, gst_download_path, gst_message = (
+                            await _download_gst_report(
+                                page=page,
+                                logger=logger,
+                                store=store,
+                                from_date=from_date,
+                                to_date=to_date,
+                                download_dir=download_dir,
+                                download_timeout_ms=download_timeout_ms,
+                                row_count=gst_row_count,
+                            )
+                        )
+                        log_event(
+                            logger=logger,
+                            phase="download",
+                            status=None if gst_download_ok else "warn",
+                            message=(
+                                gst_message
+                                if gst_message
+                                else "GST report download complete"
+                            ),
+                            store_code=store.store_code,
+                            download_path=gst_download_path,
+                            row_count=gst_row_count,
+                        )
+                        if gst_download_ok and gst_download_path:
+                            gst_ui_download_path = gst_download_path
+                        if gst_download_ok and gst_download_path:
+                            if not config.database_url:
                                 gst_ingest_stage_statuses["ingest"] = "failed"
                                 gst_ingest_stage_metrics["ingest"] = {
-                                    "error": str(exc)
+                                    "error": "database_url is missing; GST ingest skipped"
                                 }
                                 log_event(
                                     logger=logger,
                                     phase="ingest",
                                     status="warn",
-                                    message="GST ingest failed; continuing to Archive Orders",
+                                    message="GST ingest skipped: database_url is missing",
                                     store_code=store.store_code,
-                                    error=str(exc),
                                 )
+                            else:
+                                try:
+                                    ingest_result = await ingest_uc_orders_workbook(
+                                        workbook_path=Path(gst_download_path),
+                                        store_code=store.store_code,
+                                        cost_center=store.cost_center,
+                                        run_id=run_id,
+                                        run_date=aware_now(),
+                                        database_url=config.database_url,
+                                        logger=logger,
+                                    )
+                                    gst_ingest_stage_statuses["ingest"] = "success"
+                                    gst_ingest_stage_metrics["ingest"] = {
+                                        "staging_rows": ingest_result.staging_rows,
+                                        "final_rows": ingest_result.final_rows,
+                                        "staging_inserted": ingest_result.staging_inserted,
+                                        "staging_updated": ingest_result.staging_updated,
+                                        "final_inserted": ingest_result.final_inserted,
+                                        "final_updated": ingest_result.final_updated,
+                                        "rows_skipped_invalid": ingest_result.rows_skipped_invalid,
+                                        "rows_skipped_invalid_reasons": ingest_result.rows_skipped_invalid_reasons,
+                                    }
+                                    gst_staging_rows = ingest_result.staging_rows
+                                    gst_final_rows = ingest_result.final_rows
+                                    gst_staging_inserted = ingest_result.staging_inserted
+                                    gst_staging_updated = ingest_result.staging_updated
+                                    gst_final_inserted = ingest_result.final_inserted
+                                    gst_final_updated = ingest_result.final_updated
+                                    gst_rows_skipped_invalid = (
+                                        ingest_result.rows_skipped_invalid
+                                    )
+                                    gst_rows_skipped_invalid_reasons = (
+                                        ingest_result.rows_skipped_invalid_reasons
+                                    )
+                                    gst_warning_rows = list(ingest_result.warning_rows)
+                                    gst_dropped_rows = list(ingest_result.dropped_rows)
+                                    log_event(
+                                        logger=logger,
+                                        phase="ingest",
+                                        message="GST ingest completed",
+                                        store_code=store.store_code,
+                                        staging_rows=ingest_result.staging_rows,
+                                        final_rows=ingest_result.final_rows,
+                                        staging_inserted=ingest_result.staging_inserted,
+                                        staging_updated=ingest_result.staging_updated,
+                                        final_inserted=ingest_result.final_inserted,
+                                        final_updated=ingest_result.final_updated,
+                                    )
+                                except Exception as exc:
+                                    gst_ingest_stage_statuses["ingest"] = "failed"
+                                    gst_ingest_stage_metrics["ingest"] = {
+                                        "error": str(exc)
+                                    }
+                                    log_event(
+                                        logger=logger,
+                                        phase="ingest",
+                                        status="warn",
+                                        message="GST ingest failed; continuing to Archive Orders",
+                                        store_code=store.store_code,
+                                        error=str(exc),
+                                    )
+
+            if (
+                gst_download_ok
+                and gst_download_path
+                and gst_ingest_stage_statuses.get("ingest") == "skipped"
+            ):
+                if not config.database_url:
+                    gst_ingest_stage_statuses["ingest"] = "failed"
+                    gst_ingest_stage_metrics["ingest"] = {
+                        "error": "database_url is missing; GST ingest skipped"
+                    }
+                    log_event(
+                        logger=logger,
+                        phase="ingest",
+                        status="warn",
+                        message="GST ingest skipped: database_url is missing",
+                        store_code=store.store_code,
+                    )
+                else:
+                    try:
+                        ingest_result = await ingest_uc_orders_workbook(
+                            workbook_path=Path(gst_download_path),
+                            store_code=store.store_code,
+                            cost_center=store.cost_center,
+                            run_id=run_id,
+                            run_date=aware_now(),
+                            database_url=config.database_url,
+                            logger=logger,
+                        )
+                        gst_ingest_stage_statuses["ingest"] = "success"
+                        gst_ingest_stage_metrics["ingest"] = {
+                            "staging_rows": ingest_result.staging_rows,
+                            "final_rows": ingest_result.final_rows,
+                            "staging_inserted": ingest_result.staging_inserted,
+                            "staging_updated": ingest_result.staging_updated,
+                            "final_inserted": ingest_result.final_inserted,
+                            "final_updated": ingest_result.final_updated,
+                            "rows_skipped_invalid": ingest_result.rows_skipped_invalid,
+                            "rows_skipped_invalid_reasons": ingest_result.rows_skipped_invalid_reasons,
+                        }
+                        gst_staging_rows = ingest_result.staging_rows
+                        gst_final_rows = ingest_result.final_rows
+                        gst_staging_inserted = ingest_result.staging_inserted
+                        gst_staging_updated = ingest_result.staging_updated
+                        gst_final_inserted = ingest_result.final_inserted
+                        gst_final_updated = ingest_result.final_updated
+                        gst_rows_skipped_invalid = ingest_result.rows_skipped_invalid
+                        gst_rows_skipped_invalid_reasons = (
+                            ingest_result.rows_skipped_invalid_reasons
+                        )
+                        gst_warning_rows = list(ingest_result.warning_rows)
+                        gst_dropped_rows = list(ingest_result.dropped_rows)
+                        log_event(
+                            logger=logger,
+                            phase="ingest",
+                            message="GST ingest completed",
+                            store_code=store.store_code,
+                            staging_rows=ingest_result.staging_rows,
+                            final_rows=ingest_result.final_rows,
+                            staging_inserted=ingest_result.staging_inserted,
+                            staging_updated=ingest_result.staging_updated,
+                            final_inserted=ingest_result.final_inserted,
+                            final_updated=ingest_result.final_updated,
+                        )
+                    except Exception as exc:
+                        gst_ingest_stage_statuses["ingest"] = "failed"
+                        gst_ingest_stage_metrics["ingest"] = {"error": str(exc)}
+                        log_event(
+                            logger=logger,
+                            phase="ingest",
+                            status="warn",
+                            message="GST ingest failed; continuing to Archive Orders",
+                            store_code=store.store_code,
+                            error=str(exc),
+                        )
         except Exception as exc:
             log_event(
                 logger=logger,
@@ -4364,30 +4426,30 @@ async def _run_store_discovery(
                 "Archive Orders download complete; archive stages failed: "
                 + ", ".join(sorted(failed_stages))
             )
-        if experimental_gst_api_extract is not None:
+        if gst_api_extract is not None:
             try:
                 comparison_summary, comparison_details = compare_extracts(
                     legacy_gst_rows=(
-                        _normalize_legacy_gst_rows(_read_excel_rows(Path(gst_download_path)))
-                        if gst_download_path
+                        _normalize_legacy_gst_rows(_read_excel_rows(Path(gst_ui_download_path)))
+                        if gst_ui_download_path
                         else []
                     ),
-                    candidate_gst_rows=experimental_gst_api_extract.gst_rows,
+                    candidate_gst_rows=gst_api_extract.gst_rows,
                     legacy_base_rows=extract.base_rows,
                     legacy_order_detail_rows=extract.order_detail_rows,
                     legacy_payment_rows=extract.payment_detail_rows,
-                    candidate_base_rows=experimental_gst_api_extract.base_rows,
-                    candidate_order_detail_rows=experimental_gst_api_extract.order_detail_rows,
-                    candidate_payment_rows=experimental_gst_api_extract.payment_detail_rows,
+                    candidate_base_rows=gst_api_extract.base_rows,
+                    candidate_order_detail_rows=gst_api_extract.order_detail_rows,
+                    candidate_payment_rows=gst_api_extract.payment_detail_rows,
                 )
-                if experimental_gst_api_base_path is not None:
-                    experimental_gst_api_compare_path = (
-                        experimental_gst_api_base_path.parent
-                        / _format_experimental_gst_api_compare_filename(
+                if gst_api_base_path is not None:
+                    gst_api_compare_path = (
+                        gst_api_base_path.parent
+                        / _format_gst_api_compare_filename(
                             store.store_code, from_date, to_date
                         )
                     )
-                    experimental_gst_api_compare_path.write_text(
+                    gst_api_compare_path.write_text(
                         json.dumps(
                             {
                                 "summary": vars(comparison_summary),
@@ -4401,13 +4463,13 @@ async def _run_store_discovery(
                 log_event(
                     logger=logger,
                     phase="gst_api_compare",
-                    message="Experimental GST API compare complete",
+                    message="GST API compare complete",
                     store_code=store.store_code,
                     comparison_summary=vars(comparison_summary),
                     comparison_details=comparison_details,
                     compare_file=(
-                        str(experimental_gst_api_compare_path)
-                        if experimental_gst_api_compare_path is not None
+                        str(gst_api_compare_path)
+                        if gst_api_compare_path is not None
                         else None
                     ),
                 )
@@ -4416,7 +4478,7 @@ async def _run_store_discovery(
                     logger=logger,
                     phase="gst_api_compare",
                     status="warn",
-                    message="Experimental GST API compare failed",
+                    message="GST API compare failed",
                     store_code=store.store_code,
                     error=str(exc),
                 )
