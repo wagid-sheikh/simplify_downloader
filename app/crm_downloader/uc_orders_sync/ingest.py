@@ -82,7 +82,7 @@ ORDERS_COLUMNS = [
     "run_date",
 ]
 
-HEADER_MAP: Mapping[str, str] = {
+LEGACY_HEADER_MAP: Mapping[str, str] = {
     "S.No.": "s_no",
     "Booking ID": "order_number",
     "Invoice No.": "invoice_number",
@@ -98,9 +98,29 @@ HEADER_MAP: Mapping[str, str] = {
     "Total Invoice Value": "gross_amount",
 }
 
+API_HEADER_MAP: Mapping[str, str] = {
+    "order_number": "order_number",
+    "invoice_number": "invoice_number",
+    "invoice_date": "invoice_date",
+    "name": "customer_name",
+    "customer_phone": "mobile_number",
+    "payment_status": "payment_status",
+    "customer_gst": "customer_gstin",
+    "city_name": "place_of_supply",
+    "taxable_value": "net_amount",
+    "cgst": "cgst",
+    "sgst": "sgst",
+    "final_amount": "gross_amount",
+}
+
 NUMERIC_FIELDS = {"net_amount", "cgst", "sgst", "gross_amount"}
 
-REQUIRED_HEADERS = set(HEADER_MAP.keys())
+REQUIRED_HEADERS = set(LEGACY_HEADER_MAP.keys())
+
+SUPPORTED_HEADER_MAPS: tuple[tuple[str, Mapping[str, str]], ...] = (
+    ("legacy", LEGACY_HEADER_MAP),
+    ("api", API_HEADER_MAP),
+)
 
 MOBILE_FALLBACK_NUMBER = "8888999762"
 
@@ -408,12 +428,12 @@ def _build_ingest_remarks_payload(*, warnings: list[str], failures: list[str] | 
 
 
 def _coerce_row(
-    raw: Mapping[str, Any], *, warnings: list[str], invalid_phone_numbers: set[str]
+    raw: Mapping[str, Any], *, header_map: Mapping[str, str], warnings: list[str], invalid_phone_numbers: set[str]
 ) -> tuple[Dict[str, Any], list[str], str | None]:
     row: Dict[str, Any] = {}
     row_remarks: list[str] = []
     drop_reason: str | None = None
-    for header, field in HEADER_MAP.items():
+    for header, field in header_map.items():
         row[field] = raw.get(header)
 
     row["s_no"] = _parse_s_no(row.get("s_no"), warnings=warnings, row_remarks=row_remarks)
@@ -460,12 +480,33 @@ def _read_workbook_rows(
     header_cells = list(next(sheet.iter_rows(min_row=1, max_row=1, values_only=False)))
     header_values = [cell.value for cell in header_cells]
     headers = [cell for cell in header_values if cell]
-    missing = REQUIRED_HEADERS - set(headers)
-    if missing:
-        raise ValueError(f"UC GST workbook missing expected columns: {sorted(missing)}")
+    selected_header_map: Mapping[str, str] | None = None
+    selected_missing: set[str] = set()
+    for _, header_map in SUPPORTED_HEADER_MAPS:
+        missing = set(header_map.keys()) - set(headers)
+        if not missing:
+            selected_header_map = header_map
+            selected_missing = set()
+            break
+        if not selected_header_map:
+            selected_header_map = header_map
+            selected_missing = missing
+
+    if selected_header_map is None:
+        raise ValueError("UC GST workbook has no supported header schema")
+    if selected_missing:
+        raise ValueError(f"UC GST workbook missing expected columns: {sorted(selected_missing)}")
 
     header_indices = {header: idx for idx, header in enumerate(header_values) if header}
-    invoice_date_index = header_indices.get("Invoice Date")
+    invoice_date_header = next(
+        (header for header, field in selected_header_map.items() if field == "invoice_date"),
+        None,
+    )
+    order_number_header = next(
+        (header for header, field in selected_header_map.items() if field == "order_number"),
+        None,
+    )
+    invoice_date_index = header_indices.get(invoice_date_header) if invoice_date_header else None
 
     rows: list[Dict[str, Any]] = []
     warning_rows: list[dict[str, Any]] = []
@@ -488,12 +529,15 @@ def _read_workbook_rows(
             header: row_cells[idx].value if idx < len(row_cells) else None
             for header, idx in header_indices.items()
         }
-        if invoice_date_index is not None and invoice_date_index < len(row_cells):
-            raw_row["Invoice Date"] = _invoice_date_display_value(row_cells[invoice_date_index])
+        if invoice_date_header and invoice_date_index is not None and invoice_date_index < len(row_cells):
+            raw_row[invoice_date_header] = _invoice_date_display_value(row_cells[invoice_date_index])
         normalized, row_remarks, drop_reason = _coerce_row(
-            raw_row, warnings=warnings, invalid_phone_numbers=invalid_phone_numbers
+            raw_row,
+            header_map=selected_header_map,
+            warnings=warnings,
+            invalid_phone_numbers=invalid_phone_numbers,
         )
-        order_number = _stringify_value(raw_row.get("Booking ID"))
+        order_number = _stringify_value(raw_row.get(order_number_header or "Booking ID"))
         if normalized:
             if normalized.get("ingest_remarks"):
                 warning_rows.append(
@@ -797,7 +841,7 @@ async def ingest_uc_orders_workbook(
 
 
 def _expected_headers() -> Sequence[str]:
-    return list(HEADER_MAP.keys())
+    return list(LEGACY_HEADER_MAP.keys())
 
 
 __all__ = [
