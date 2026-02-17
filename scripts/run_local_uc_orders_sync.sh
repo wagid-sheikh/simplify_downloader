@@ -39,6 +39,16 @@ PROFILES_DIR="${UC_SYNC_PATHS[1]}"
 ensure_writable_dir "${DOWNLOAD_DIR}"
 ensure_writable_dir "${PROFILES_DIR}"
 
+# UC orders sync runs API-primary by default.
+: "${UC_GST_API_PRIMARY_ENABLED:=1}"
+# Rollback switch: set to 1 only when GST API output is unavailable and temporary UI path is required.
+: "${UC_GST_UI_ROLLBACK_ENABLED:=0}"
+: "${UC_ARCHIVE_EXTRACTION_MODE:=api}"
+
+export UC_GST_API_PRIMARY_ENABLED
+export UC_GST_UI_ROLLBACK_ENABLED
+export UC_ARCHIVE_EXTRACTION_MODE
+
 CLI_ARGS=("$@")
 
 exec poetry run python -m app.crm_downloader.uc_orders_sync.main ${CLI_ARGS[@]+"${CLI_ARGS[@]}"}

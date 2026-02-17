@@ -152,3 +152,52 @@ def test_collect_gst_orders_via_api_builds_payment_rows_from_payment_details(mon
     assert extract.payment_detail_rows[1]["payment_mode"] == "UNKNOWN"
     assert extract.payment_detail_rows[1]["amount"] == 136
     assert extract.skipped_order_counters["payment_mode_unmapped"] == 1
+
+
+def test_collect_gst_orders_via_api_keeps_gst_and_base_rows_when_booking_lookup_misses(monkeypatch) -> None:
+    async def _fake_resolve_archive_bearer_token(*, page, logger, store_code):
+        return "token"
+
+    async def _fake_request_json_with_retries(*, page, method, url, headers, data):
+        return {
+            "data": [
+                {
+                    "order_number": "UC610-0003",
+                    "invoice_number": "INV-003",
+                    "invoice_date": "2026-01-03",
+                    "name": "Test User 3",
+                    "customer_phone": "9999999997",
+                    "address": "GST Address 3",
+                    "store_address": "Store Address",
+                    "city_name": "Pune",
+                    "taxable_value": 300,
+                    "cgst": 27,
+                    "sgst": 27,
+                    "total_tax": 54,
+                    "final_amount": 354,
+                    "payment_status": "Paid",
+                }
+            ]
+        }
+
+    async def _fake_resolve_booking_id_for_order(*, page, order_code, headers):
+        return None, None
+
+    monkeypatch.setattr(gst_api_extract, "_resolve_archive_bearer_token", _fake_resolve_archive_bearer_token)
+    monkeypatch.setattr(gst_api_extract, "_request_json_with_retries", _fake_request_json_with_retries)
+    monkeypatch.setattr(gst_api_extract, "_resolve_booking_id_for_order", _fake_resolve_booking_id_for_order)
+
+    extract = asyncio.run(
+        collect_gst_orders_via_api(
+            page=_FakePage(),
+            store_code="UC610",
+            logger=get_logger("test_uc_gst_api_extract"),
+            from_date=date(2026, 1, 1),
+            to_date=date(2026, 1, 31),
+        )
+    )
+
+    assert len(extract.gst_rows) == 1
+    assert len(extract.base_rows) == 1
+    assert extract.booking_lookup_misses == 1
+    assert extract.skipped_order_counters["booking_lookup_miss"] == 1

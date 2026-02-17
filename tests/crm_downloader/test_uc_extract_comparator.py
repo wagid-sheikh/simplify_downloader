@@ -127,3 +127,36 @@ def test_compare_extracts_handles_multiple_payment_rows_per_order() -> None:
     assert details["payment_coverage"]["common_payment_rows_compared"] == 2
     assert details["payment_field_mismatch_counts"]["payment_mode"] == 0
     assert details["payment_field_mismatch_counts"]["amount"] == 1
+
+
+def test_compare_extracts_marks_migration_ready_when_thresholds_are_met() -> None:
+    _, details = compare_extracts(
+        legacy_gst_rows=[
+            {"order_number": "A1"},
+            {"order_number": "A2"},
+        ],
+        candidate_gst_rows=[
+            {"order_number": "A1"},
+            {"order_number": "A2"},
+        ],
+        legacy_base_rows=[{"order_code": "A1"}, {"order_code": "A2"}],
+        legacy_order_detail_rows=[],
+        legacy_payment_rows=[
+            {"order_code": "A1", "payment_mode": "UPI", "amount": 100, "payment_date": "2026-01-01"},
+            {"order_code": "A2", "payment_mode": "Cash", "amount": 200, "payment_date": "2026-01-01"},
+        ],
+        candidate_base_rows=[{"order_code": "A1"}, {"order_code": "A2"}],
+        candidate_order_detail_rows=[],
+        candidate_payment_rows=[
+            {"order_code": "A1", "payment_mode": "UPI", "amount": 100, "payment_date": "2026-01-01"},
+            {"order_code": "A2", "payment_mode": "Cash", "amount": 200, "payment_date": "2026-01-01"},
+        ],
+        thresholds=MigrationThresholds(
+            gst_key_parity_min_pct=95.0,
+            payment_coverage_min_pct=95.0,
+            payment_field_mismatch_max_pct=5.0,
+        ),
+    )
+
+    assert details["migration_ready"] is True
+    assert details["migration_reason_codes"] == []

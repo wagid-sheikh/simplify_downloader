@@ -197,6 +197,9 @@ async def test_async_entrypoint_passes_cli_dates_to_main(
         "run_id": "run-cli",
         "from_date": date(2024, 1, 1),
         "to_date": date(2024, 1, 31),
+        "gst_key_parity_min_pct": None,
+        "payment_coverage_min_pct": None,
+        "payment_field_mismatch_max_pct": None,
     }
 
 
