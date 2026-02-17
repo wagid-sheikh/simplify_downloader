@@ -1628,3 +1628,26 @@ After login, navigate to Reports → Sales and Delivery and verify the container
 - Click Export Report to trigger an .xlsx download only after the table is refreshed for the selected range. Save the downloaded file using the naming convention:
   `{store_master.store_code}_historical_sales_report_{from-date}_to_{to-date}.xlsx`
   (where `{from-date}` and `{to-date}` are the same values used in the filters, formatted consistently for filenames, and aligned with the displayed `Dec 05, 2025 - Dec 30, 2025` text).
+
+## UC GST API-primary migration playbook
+
+### Cutover steps
+
+1. Keep `UC_GST_API_PRIMARY_ENABLED=1` and `UC_GST_UI_ROLLBACK_ENABLED=0`.
+2. Run UC orders sync for at least one full business window using `scripts/run_local_uc_orders_sync.sh` (or production runner in deployment env).
+3. Confirm GST API extract files are generated and ingested without requiring UI GST navigation.
+4. Validate archive extraction and publish stages complete with no transport/auth warning spikes.
+
+### Rollback steps
+
+1. Set `UC_GST_UI_ROLLBACK_ENABLED=1` for affected runs.
+2. Re-run the same date window and confirm GST output is produced through the temporary UI rollback path.
+3. Keep archive extraction mode at `api` unless archive API transport/auth failures require `api_with_ui_fallback`.
+4. After API recovery, reset `UC_GST_UI_ROLLBACK_ENABLED=0`.
+
+### Acceptance criteria
+
+- UC run completes successfully when GST API is healthy, without invoking GST UI navigation path.
+- GST ingest stage is successful (or explicitly skipped only when DB config is intentionally absent).
+- Archive extraction/publish stages complete with expected row parity and without merge-safety regressions.
+- `tests/crm_downloader/test_no_merge_conflict_markers.py` remains passing as a release gate.
