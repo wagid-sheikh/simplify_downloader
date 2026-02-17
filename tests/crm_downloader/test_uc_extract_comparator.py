@@ -102,3 +102,28 @@ def test_compare_extracts_threshold_evaluation_and_migration_signal() -> None:
         "below_payment_coverage_threshold",
         "above_payment_field_mismatch_threshold",
     ]
+
+
+def test_compare_extracts_handles_multiple_payment_rows_per_order() -> None:
+    _, details = compare_extracts(
+        legacy_gst_rows=[],
+        candidate_gst_rows=[],
+        legacy_base_rows=[],
+        legacy_order_detail_rows=[],
+        legacy_payment_rows=[
+            {"order_code": "A1", "payment_mode": "UPI", "amount": 50, "payment_date": "2026-01-01 10:00:00"},
+            {"order_code": "A1", "payment_mode": "Cash", "amount": 75, "payment_date": "2026-01-01 11:00:00"},
+        ],
+        candidate_base_rows=[],
+        candidate_order_detail_rows=[],
+        candidate_payment_rows=[
+            {"order_code": "A1", "payment_mode": "UPI", "amount": 50, "payment_date": "2026-01-01 10:00:00"},
+            {"order_code": "A1", "payment_mode": "Cash", "amount": 70, "payment_date": "2026-01-01 11:00:00"},
+        ],
+    )
+
+    assert details["payment_coverage"]["legacy_payment_rows"] == 2
+    assert details["payment_coverage"]["candidate_payment_rows"] == 2
+    assert details["payment_coverage"]["common_payment_rows_compared"] == 2
+    assert details["payment_field_mismatch_counts"]["payment_mode"] == 0
+    assert details["payment_field_mismatch_counts"]["amount"] == 1

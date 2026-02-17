@@ -89,3 +89,66 @@ def test_collect_gst_orders_via_api_keeps_base_row_when_invoice_fetch_fails(monk
     assert extract.base_rows[0]["address"] == "Booking Address"
     assert extract.base_rows[0]["instructions"] == "Handle carefully"
     assert extract.skipped_order_counters["invoice_fetch_failed"] == 1
+
+
+def test_collect_gst_orders_via_api_builds_payment_rows_from_payment_details(monkeypatch) -> None:
+    async def _fake_resolve_archive_bearer_token(*, page, logger, store_code):
+        return "token"
+
+    async def _fake_request_json_with_retries(*, page, method, url, headers, data):
+        if method == "POST":
+            return {
+                "data": [
+                    {
+                        "order_number": "UC610-0002",
+                        "invoice_number": "INV-002",
+                        "invoice_date": "2026-01-02",
+                        "name": "Test User 2",
+                        "customer_phone": "9999999998",
+                        "address": "GST Address 2",
+                        "store_address": "Store Address",
+                        "city_name": "Pune",
+                        "taxable_value": 200,
+                        "cgst": 18,
+                        "sgst": 18,
+                        "total_tax": 36,
+                        "final_amount": 236,
+                        "payment_status": "Paid",
+                    }
+                ]
+            }
+        return None
+
+    async def _fake_resolve_booking_id_for_order(*, page, order_code, headers):
+        return 102, {
+            "booking_code": order_code,
+            "id": 102,
+            "payment_status": "paid",
+            "payment_details": '[{"payment_mode": 1, "payment_amount": 100, "created_at": "2026-01-02 10:00:00", "transaction_id": "TXN-1"}, {"payment_mode": "99", "payment_amount": 136, "created_at": "2026-01-02 10:05:00"}]',
+        }
+
+    async def _fake_fetch_invoice_html_with_retries(*, page, booking_id, store_code, order_code, logger):
+        return "<html></html>"
+
+    monkeypatch.setattr(gst_api_extract, "_resolve_archive_bearer_token", _fake_resolve_archive_bearer_token)
+    monkeypatch.setattr(gst_api_extract, "_request_json_with_retries", _fake_request_json_with_retries)
+    monkeypatch.setattr(gst_api_extract, "_resolve_booking_id_for_order", _fake_resolve_booking_id_for_order)
+    monkeypatch.setattr(gst_api_extract, "_fetch_invoice_html_with_retries", _fake_fetch_invoice_html_with_retries)
+    monkeypatch.setattr(gst_api_extract, "_parse_invoice_order_details", lambda **kwargs: [])
+
+    extract = asyncio.run(
+        collect_gst_orders_via_api(
+            page=_FakePage(),
+            store_code="UC610",
+            logger=get_logger("test_uc_gst_api_extract"),
+            from_date=date(2026, 1, 1),
+            to_date=date(2026, 1, 31),
+        )
+    )
+
+    assert len(extract.payment_detail_rows) == 2
+    assert extract.payment_detail_rows[0]["payment_mode"] == "UPI"
+    assert extract.payment_detail_rows[0]["amount"] == 100
+    assert extract.payment_detail_rows[1]["payment_mode"] == "UNKNOWN"
+    assert extract.payment_detail_rows[1]["amount"] == 136
+    assert extract.skipped_order_counters["payment_mode_unmapped"] == 1
