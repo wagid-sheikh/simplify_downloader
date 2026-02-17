@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Mapping
@@ -23,6 +24,13 @@ GST_REFERER = "https://store.ucleanlaundry.com/gst-report"
 REQUEST_ACCEPT = "application/json, text/plain, */*"
 REQUESTED_WITH = "XMLHttpRequest"
 MAX_RETRIES = 3
+
+PAYMENT_MODE_MAP = {
+    1: "UPI",
+    2: "Debit/Credit Card",
+    3: "Bank Transfer",
+    4: "Cash",
+}
 
 GST_API_BASE_COLUMNS = [
     "store_code",
@@ -97,13 +105,6 @@ def _build_headers(*, bearer_token: str | None) -> dict[str, str]:
     return headers
 
 
-def _coerce_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    token = str(value).strip()
-    return token or None
-
-
 def _payment_status_suggests_settled(value: Any) -> bool:
     if value is None:
         return False
@@ -115,6 +116,63 @@ def _payment_status_suggests_settled(value: Any) -> bool:
     if token in {"pending", "unpaid", "0"}:
         return False
     return True
+
+
+def _build_payment_rows_from_booking(*, store_code: str, order_code: str, booking_row: Mapping[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+    payment_details = booking_row.get("payment_details")
+    if payment_details in (None, "", "null"):
+        return [], ["payment_details_missing"]
+
+    try:
+        parsed_payload = json.loads(str(payment_details))
+    except Exception:
+        return [], ["payment_details_unparseable"]
+
+    if not isinstance(parsed_payload, list):
+        return [], ["payment_details_not_list"]
+
+    rows: list[dict[str, Any]] = []
+    reason_codes: list[str] = []
+    for payment in parsed_payload:
+        if not isinstance(payment, Mapping):
+            reason_codes.append("payment_row_not_mapping")
+            continue
+
+        raw_mode = payment.get("payment_mode")
+        mode_name = "UNKNOWN"
+        try:
+            mode_name = PAYMENT_MODE_MAP.get(int(raw_mode), "UNKNOWN")
+            if mode_name == "UNKNOWN":
+                reason_codes.append("payment_mode_unmapped")
+        except (ValueError, TypeError):
+            mode_name = "UNKNOWN"
+            reason_codes.append("payment_mode_unmapped")
+
+        amount = payment.get("payment_amount")
+        payment_date = payment.get("created_at")
+        if amount in (None, ""):
+            reason_codes.append("payment_amount_missing")
+        if payment_date in (None, ""):
+            reason_codes.append("payment_date_missing")
+
+        if amount in (None, "") or payment_date in (None, ""):
+            reason_codes.append("payment_row_dropped_missing_core_fields")
+            continue
+
+        rows.append(
+            {
+                "store_code": store_code,
+                "order_code": order_code,
+                "payment_mode": mode_name,
+                "amount": amount,
+                "payment_date": payment_date,
+                "transaction_id": payment.get("transaction_id") or payment.get("txn_id"),
+            }
+        )
+
+    if not rows and parsed_payload:
+        reason_codes.append("payment_rows_all_dropped")
+    return rows, sorted(set(reason_codes))
 
 
 async def _request_json_with_retries(
@@ -276,19 +334,18 @@ async def collect_gst_orders_via_api(
             if booking_row.get("suggestions"):
                 base_row["instructions"] = booking_row.get("suggestions")
 
-            if _payment_status_suggests_settled(booking_row.get("payment_status")):
-                extract.payment_detail_rows.append(
-                    {
-                        "store_code": store_code,
-                        "order_code": order_code,
-                        "payment_mode": "UNKNOWN",
-                        "amount": booking_row.get("final_amount") or row.get("final_amount"),
-                        "payment_date": _coerce_text(booking_row.get("drop_rider_assign_at"))
-                        or _coerce_text(booking_row.get("created_at"))
-                        or _coerce_text(row.get("invoice_date")),
-                        "transaction_id": None,
-                    }
-                )
+            payment_rows, payment_reason_codes = _build_payment_rows_from_booking(
+                store_code=store_code,
+                order_code=order_code,
+                booking_row=booking_row,
+            )
+            for reason in payment_reason_codes:
+                _record_skip(extract, order_code=order_code, reason=reason)
+
+            if payment_rows:
+                extract.payment_detail_rows.extend(payment_rows)
+            elif _payment_status_suggests_settled(booking_row.get("payment_status")):
+                _record_skip(extract, order_code=order_code, reason="payment_settled_without_payment_rows")
 
         invoice_html = await _fetch_invoice_html_with_retries(
             page=page,

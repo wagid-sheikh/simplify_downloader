@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import defaultdict
 from typing import Any, Iterable, Mapping
 
 
@@ -62,6 +63,50 @@ def _safe_pct(numerator: int, denominator: int) -> float:
     return round((numerator / denominator) * 100.0, 2)
 
 
+def _normalize_token(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _build_payment_multimap(rows: Iterable[Mapping[str, Any]]) -> dict[str, list[Mapping[str, Any]]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in rows:
+        order_code = _normalize_token(row.get("order_code"))
+        if not order_code:
+            continue
+        grouped[order_code].append(row)
+    return dict(grouped)
+
+
+def _payment_row_sort_key(row: Mapping[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        _normalize_token(row.get("payment_date")),
+        _normalize_token(row.get("payment_mode")),
+        _normalize_token(row.get("amount")),
+        _normalize_token(row.get("transaction_id")),
+    )
+
+
+def _compute_payment_field_mismatch_counts(
+    *,
+    left_rows: dict[str, list[Mapping[str, Any]]],
+    right_rows: dict[str, list[Mapping[str, Any]]],
+    common_codes: set[str],
+    fields: tuple[str, ...],
+) -> tuple[dict[str, int], int]:
+    mismatch_counts: dict[str, int] = {field: 0 for field in fields}
+    comparison_count = 0
+    for code in common_codes:
+        left = sorted(left_rows.get(code) or [], key=_payment_row_sort_key)
+        right = sorted(right_rows.get(code) or [], key=_payment_row_sort_key)
+        compare_len = min(len(left), len(right))
+        for idx in range(compare_len):
+            comparison_count += len(fields)
+            for field in fields:
+                if _normalize_token(left[idx].get(field)) != _normalize_token(right[idx].get(field)):
+                    mismatch_counts[field] += 1
+    return mismatch_counts, comparison_count
+
+
 def compare_extracts(
     *,
     legacy_gst_rows: list[Mapping[str, Any]],
@@ -104,22 +149,22 @@ def compare_extracts(
     base_field_checks = ("customer_name", "customer_phone", "address", "payment_text", "status")
     payment_field_checks = ("payment_mode", "amount", "payment_date")
 
-    legacy_payments = _build_keyed_map(legacy_payment_rows, key_field="order_code")
-    candidate_payments = _build_keyed_map(candidate_payment_rows, key_field="order_code")
+    legacy_payments = _build_payment_multimap(legacy_payment_rows)
+    candidate_payments = _build_payment_multimap(candidate_payment_rows)
     common_payment_codes = set(legacy_payments.keys()) & set(candidate_payments.keys())
-    payment_field_mismatch_counts = _compute_field_mismatch_counts(
+    payment_field_mismatch_counts, total_payment_field_comparisons = _compute_payment_field_mismatch_counts(
         left_rows=legacy_payments,
         right_rows=candidate_payments,
         common_codes=common_payment_codes,
         fields=payment_field_checks,
     )
     total_payment_field_mismatches = sum(payment_field_mismatch_counts.values())
-    total_payment_field_comparisons = len(common_payment_codes) * len(payment_field_checks)
 
     gst_key_parity_pct = _safe_pct(
         len(common_gst_codes), max(len(legacy_gst_codes), len(candidate_gst_codes))
     )
-    payment_coverage_pct = _safe_pct(len(common_payment_codes), len(legacy_payments))
+    compared_payment_rows = total_payment_field_comparisons // len(payment_field_checks) if payment_field_checks else 0
+    payment_coverage_pct = _safe_pct(compared_payment_rows, len(legacy_payment_rows))
     payment_field_mismatch_pct = _safe_pct(
         total_payment_field_mismatches, total_payment_field_comparisons
     )
@@ -173,12 +218,7 @@ def compare_extracts(
             common_codes=common_codes,
             fields=base_field_checks,
         ),
-        "payment_field_mismatch_counts": _compute_field_mismatch_counts(
-            left_rows=legacy_payments,
-            right_rows=candidate_payments,
-            common_codes=common_payment_codes,
-            fields=payment_field_checks,
-        ),
+        "payment_field_mismatch_counts": payment_field_mismatch_counts,
         "sample_missing_in_candidate_gst": missing_in_candidate_gst[:20],
         "sample_missing_in_legacy_gst": missing_in_legacy_gst[:20],
         "sample_missing_in_candidate_base": missing_in_candidate[:20],
@@ -187,6 +227,9 @@ def compare_extracts(
             "legacy_order_codes": len(legacy_payments),
             "candidate_order_codes": len(candidate_payments),
             "common_order_codes": len(common_payment_codes),
+            "legacy_payment_rows": len(legacy_payment_rows),
+            "candidate_payment_rows": len(candidate_payment_rows),
+            "common_payment_rows_compared": compared_payment_rows,
             "missing_in_candidate": sorted(set(legacy_payments) - set(candidate_payments))[:20],
             "missing_in_legacy": sorted(set(candidate_payments) - set(legacy_payments))[:20],
         },
