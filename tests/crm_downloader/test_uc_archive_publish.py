@@ -15,7 +15,9 @@ from app.crm_downloader.uc_orders_sync.archive_ingest import (
     TABLE_ARCHIVE_PAYMENT_DETAILS,
 )
 from app.crm_downloader.uc_orders_sync.archive_publish import (
+    REASON_MISSING_PARENT_INGEST_FAILURE,
     REASON_MISSING_PARENT_ORDER_CONTEXT,
+    REASON_MISSING_PARENT_SOURCE_ABSENT,
     REASON_PREFLIGHT_PARENT_COVERAGE_LOW,
     REASON_PREFLIGHT_PARENT_COVERAGE_NEAR_ZERO,
     REASON_UNPARSEABLE_PAYMENT_DATE,
@@ -220,6 +222,103 @@ async def test_payment_skip_reasons_and_metrics_and_orchestrator(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_payment_publish_uses_historical_orders_when_current_run_stg_missing(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_parent_historical.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders (
+                    cost_center, store_code, order_number, order_date, customer_name, mobile_number, run_id, created_at
+                ) VALUES (
+                    'CC77', 'UC777', 'ORD-HIST', '2025-01-01T00:00:00+00:00', 'Historical User', '7000000000',
+                    'older-run', '2025-01-02T00:00:00+00:00'
+                )
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_payment_details (
+                    run_id, run_date, store_code, order_code, payment_mode, amount, payment_date_raw, transaction_id
+                ) VALUES (
+                    'run-historical', '2025-01-04T00:00:00+00:00', 'UC777', 'ORD-HIST', 'UPI', 120, '04 Jan 2025, 08:00 AM', 'THIST'
+                )
+                """
+            )
+        )
+        await session.commit()
+
+    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-historical', store_code='UC777')
+
+    assert metrics.inserted == 1
+    assert metrics.skipped == 0
+    assert metrics.reason_codes.get(REASON_MISSING_PARENT_ORDER_CONTEXT, 0) == 0
+
+    async with session_scope(db_url) as session:
+        row = (
+            await session.execute(
+                sa.text(
+                    "SELECT cost_center, store_code, order_number, payment_received FROM sales WHERE transaction_id='THIST'"
+                )
+            )
+        ).one()
+
+    assert row.cost_center == 'CC77'
+    assert row.store_code == 'UC777'
+    assert row.order_number == 'ORD-HIST'
+    assert Decimal(str(row.payment_received)) == Decimal('120')
+
+
+@pytest.mark.asyncio
+async def test_payment_publish_reason_codes_distinguish_ingest_failure_vs_absent_source(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_parent_reasons.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_orders (run_id, run_date, cost_center, store_code, order_number, invoice_date)
+                VALUES ('run-reasons', '2025-01-03T00:00:00+00:00', 'CC88', 'UC888', 'ORD-INGEST', '2025-01-02T00:00:00+00:00')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_orders_base (
+                    run_id, run_date, cost_center, store_code, order_code, ingest_remarks
+                ) VALUES (
+                    'run-reasons', '2025-01-03T00:00:00+00:00', '', 'UC888', 'ORD-INGEST', 'gst header mismatch'
+                )
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_payment_details (
+                    run_id, run_date, store_code, order_code, payment_mode, amount, payment_date_raw, transaction_id
+                ) VALUES
+                    ('run-reasons', '2025-01-03T00:00:00+00:00', 'UC888', 'ORD-INGEST', 'UPI', 90, '03 Jan 2025, 10:00 AM', 'T-INGEST'),
+                    ('run-reasons', '2025-01-03T00:00:00+00:00', 'UC888', 'ORD-ABSENT', 'UPI', 95, '03 Jan 2025, 10:05 AM', 'T-ABSENT')
+                """
+            )
+        )
+        await session.commit()
+
+    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-reasons', store_code='UC888')
+
+    assert metrics.inserted == 0
+    assert metrics.reason_codes[REASON_MISSING_PARENT_INGEST_FAILURE] == 1
+    assert metrics.reason_codes[REASON_MISSING_PARENT_SOURCE_ABSENT] == 1
+
+
+@pytest.mark.asyncio
 async def test_payment_publish_parent_coverage_full(tmp_path: Path) -> None:
     db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_parent_full.sqlite'}"
     await _create_tables(db_url)
@@ -314,7 +413,7 @@ async def test_payment_publish_parent_coverage_mixed(tmp_path: Path) -> None:
     assert metrics.preflight_warning is not None
     assert metrics.inserted == 1
     assert metrics.reason_codes[REASON_PREFLIGHT_PARENT_COVERAGE_LOW] == 1
-    assert metrics.reason_codes[REASON_MISSING_PARENT_ORDER_CONTEXT] == 1
+    assert metrics.reason_codes[REASON_MISSING_PARENT_SOURCE_ABSENT] == 1
 
 
 @pytest.mark.asyncio
@@ -349,7 +448,7 @@ async def test_payment_publish_parent_coverage_low_logs_diagnostics(tmp_path: Pa
 
     assert metrics.inserted == 1
     assert metrics.reason_codes[REASON_PREFLIGHT_PARENT_COVERAGE_LOW] == 1
-    assert metrics.reason_codes[REASON_MISSING_PARENT_ORDER_CONTEXT] == 2
+    assert metrics.reason_codes[REASON_MISSING_PARENT_SOURCE_ABSENT] == 2
     assert metrics.preflight_warning is not None
     assert "ORD-X" in metrics.preflight_warning
     assert metrics.preflight_diagnostics is not None
