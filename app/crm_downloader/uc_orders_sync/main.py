@@ -111,12 +111,8 @@ GST_CONTAINER_SELECTORS = (
 )
 UC_MAX_WORKERS_DEFAULT = 2
 UC_ARCHIVE_EXTRACTION_MODE_API = "api"
-UC_ARCHIVE_EXTRACTION_MODE_UI = "ui"
-UC_ARCHIVE_EXTRACTION_MODE_API_WITH_UI_FALLBACK = "api_with_ui_fallback"
 UC_ARCHIVE_EXTRACTION_MODES = {
     UC_ARCHIVE_EXTRACTION_MODE_API,
-    UC_ARCHIVE_EXTRACTION_MODE_UI,
-    UC_ARCHIVE_EXTRACTION_MODE_API_WITH_UI_FALLBACK,
 }
 GST_DATE_RANGE_READY_SELECTORS = (
     "input.search-user[placeholder*='Choose Start Date']",
@@ -1297,22 +1293,51 @@ def _format_gst_filename(store_code: str, from_date: date, to_date: date) -> str
     return f"{store_code}_uc_gst_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
 
 
+def _normalize_artifact_token(token: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_-]+", "_", token).strip("_")
+    return normalized or "default"
+
+
 def _format_archive_base_filename(
-    store_code: str, from_date: date, to_date: date
+    store_code: str,
+    from_date: date,
+    to_date: date,
+    *,
+    archive_source: str,
+    run_id: str,
 ) -> str:
-    return f"{store_code}-base_order_info_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
+    return (
+        f"{store_code}-{archive_source}-base_order_info_"
+        f"{from_date:%Y%m%d}_{to_date:%Y%m%d}_{_normalize_artifact_token(run_id)}.xlsx"
+    )
 
 
 def _format_archive_order_details_filename(
-    store_code: str, from_date: date, to_date: date
+    store_code: str,
+    from_date: date,
+    to_date: date,
+    *,
+    archive_source: str,
+    run_id: str,
 ) -> str:
-    return f"{store_code}-order_details_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
+    return (
+        f"{store_code}-{archive_source}-order_details_"
+        f"{from_date:%Y%m%d}_{to_date:%Y%m%d}_{_normalize_artifact_token(run_id)}.xlsx"
+    )
 
 
 def _format_archive_payment_details_filename(
-    store_code: str, from_date: date, to_date: date
+    store_code: str,
+    from_date: date,
+    to_date: date,
+    *,
+    archive_source: str,
+    run_id: str,
 ) -> str:
-    return f"{store_code}-payment_details_{from_date:%Y%m%d}_{to_date:%Y%m%d}.xlsx"
+    return (
+        f"{store_code}-{archive_source}-payment_details_"
+        f"{from_date:%Y%m%d}_{to_date:%Y%m%d}_{_normalize_artifact_token(run_id)}.xlsx"
+    )
 
 
 def _write_excel_rows(
@@ -1347,9 +1372,16 @@ def _resolve_uc_archive_extraction_mode() -> str:
     if raw_mode in UC_ARCHIVE_EXTRACTION_MODES:
         return raw_mode
 
+    if raw_mode in {"ui", "api_with_ui_fallback"}:
+        raise ValueError(
+            "UC_ARCHIVE_EXTRACTION_MODE no longer supports UI archive extraction; only 'api' is allowed."
+        )
+
     ui_enabled = (os.getenv("UC_ARCHIVE_UI_ENABLED") or "").strip().lower()
     if ui_enabled in {"1", "true", "yes", "on"}:
-        return UC_ARCHIVE_EXTRACTION_MODE_API_WITH_UI_FALLBACK
+        raise ValueError(
+            "UC_ARCHIVE_UI_ENABLED is no longer supported; archive source must be API."
+        )
 
     return UC_ARCHIVE_EXTRACTION_MODE_API
 
@@ -3591,15 +3623,33 @@ async def _run_store_discovery(
             )
             gst_api_base_path = (
                 download_dir
-                / _format_archive_base_filename(store.store_code, from_date, to_date)
+                / _format_archive_base_filename(
+                    store.store_code,
+                    from_date,
+                    to_date,
+                    archive_source="gst_api",
+                    run_id=run_id,
+                )
             )
             gst_api_order_details_path = (
                 download_dir
-                / _format_archive_order_details_filename(store.store_code, from_date, to_date)
+                / _format_archive_order_details_filename(
+                    store.store_code,
+                    from_date,
+                    to_date,
+                    archive_source="gst_api",
+                    run_id=run_id,
+                )
             )
             gst_api_payment_details_path = (
                 download_dir
-                / _format_archive_payment_details_filename(store.store_code, from_date, to_date)
+                / _format_archive_payment_details_filename(
+                    store.store_code,
+                    from_date,
+                    to_date,
+                    archive_source="gst_api",
+                    run_id=run_id,
+                )
             )
             _write_excel_rows(
                 gst_api_gst_path,
@@ -3828,68 +3878,45 @@ async def _run_store_discovery(
             "archive_api_page_failed",
             "all_pages_failed",
         }
-        if archive_extraction_mode == UC_ARCHIVE_EXTRACTION_MODE_UI:
-            log_event(
-                logger=logger,
-                phase="archive_extract",
-                message="Using Archive Orders UI extraction mode",
-                store_code=store.store_code,
-                archive_extraction_mode=archive_extraction_mode,
+        if archive_extraction_mode != UC_ARCHIVE_EXTRACTION_MODE_API:
+            raise RuntimeError(
+                "Archive UI extraction is disabled. Set UC_ARCHIVE_EXTRACTION_MODE=api."
             )
-            extract = await _collect_archive_orders(
-                page=page,
-                store=store,
-                logger=logger,
-            )
-        else:
-            api_extract = await collect_archive_orders_via_api(
-                page=page,
-                store_code=store.store_code,
-                logger=logger,
-                from_date=from_date,
-                to_date=to_date,
-            )
-            extractor_reason_codes = list(api_extract.extractor_reason_codes)
-            extractor_error_counters = dict(api_extract.extractor_error_counters)
-            extract = ArchiveOrdersExtract(
-                base_rows=api_extract.base_rows,
-                order_detail_rows=api_extract.order_detail_rows,
-                payment_detail_rows=api_extract.payment_detail_rows,
-                skipped_order_codes=api_extract.skipped_order_codes,
-                skipped_order_counters=api_extract.skipped_order_counters,
-                page_count=api_extract.page_count,
-                footer_total=api_extract.api_total,
-                pre_filter_footer_total=api_extract.api_total,
-                post_filter_footer_total=api_extract.api_total,
-                post_filter_footer_window=(
-                    (1, len(api_extract.base_rows), api_extract.api_total)
-                    if api_extract.api_total is not None
-                    else None
-                ),
-                footer_baseline_source="archive_api",
-                footer_baseline_stable=True,
-            )
-
-            if archive_extraction_mode == UC_ARCHIVE_EXTRACTION_MODE_API_WITH_UI_FALLBACK:
-                has_archive_transport_failure = any(
-                    code in archive_transport_failure_reasons
-                    for code in extractor_reason_codes
-                )
-                if len(extract.base_rows) == 0 and has_archive_transport_failure:
-                    log_event(
-                        logger=logger,
-                        phase="archive_extract",
-                        status="warn",
-                        message="Archive API extraction returned no rows with transport/auth failure; falling back to UI extraction",
-                        store_code=store.store_code,
-                        archive_extraction_mode=archive_extraction_mode,
-                        extractor_reason_codes=extractor_reason_codes,
-                    )
-                    extract = await _collect_archive_orders(
-                        page=page,
-                        store=store,
-                        logger=logger,
-                    )
+        log_event(
+            logger=logger,
+            phase="archive_extract",
+            message="Executing archive extraction",
+            store_code=store.store_code,
+            archive_source="API",
+            archive_extraction_mode=archive_extraction_mode,
+        )
+        api_extract = await collect_archive_orders_via_api(
+            page=page,
+            store_code=store.store_code,
+            logger=logger,
+            from_date=from_date,
+            to_date=to_date,
+        )
+        extractor_reason_codes = list(api_extract.extractor_reason_codes)
+        extractor_error_counters = dict(api_extract.extractor_error_counters)
+        extract = ArchiveOrdersExtract(
+            base_rows=api_extract.base_rows,
+            order_detail_rows=api_extract.order_detail_rows,
+            payment_detail_rows=api_extract.payment_detail_rows,
+            skipped_order_codes=api_extract.skipped_order_codes,
+            skipped_order_counters=api_extract.skipped_order_counters,
+            page_count=api_extract.page_count,
+            footer_total=api_extract.api_total,
+            pre_filter_footer_total=api_extract.api_total,
+            post_filter_footer_total=api_extract.api_total,
+            post_filter_footer_window=(
+                (1, len(api_extract.base_rows), api_extract.api_total)
+                if api_extract.api_total is not None
+                else None
+            ),
+            footer_baseline_source="archive_api",
+            footer_baseline_stable=True,
+        )
 
         row_count = len(extract.base_rows)
         rows_missing_estimate = _archive_extraction_gap(extract)
@@ -3914,13 +3941,25 @@ async def _run_store_discovery(
             reason_codes.append("partial_extraction")
         is_partial_extraction = "partial_extraction" in reason_codes
         base_path = download_dir / _format_archive_base_filename(
-            store.store_code, from_date, to_date
+            store.store_code,
+            from_date,
+            to_date,
+            archive_source="archive_api",
+            run_id=run_id,
         )
         order_details_path = download_dir / _format_archive_order_details_filename(
-            store.store_code, from_date, to_date
+            store.store_code,
+            from_date,
+            to_date,
+            archive_source="archive_api",
+            run_id=run_id,
         )
         payment_details_path = download_dir / _format_archive_payment_details_filename(
-            store.store_code, from_date, to_date
+            store.store_code,
+            from_date,
+            to_date,
+            archive_source="archive_api",
+            run_id=run_id,
         )
         base_count = _write_excel_rows(
             base_path, extract.base_rows, ARCHIVE_BASE_COLUMNS
@@ -3942,6 +3981,7 @@ async def _run_store_discovery(
             phase="output",
             message="Archive Orders files saved",
             store_code=store.store_code,
+            archive_source="API",
             base_file=str(base_path),
             base_rows=base_count,
             order_details_file=str(order_details_path),
