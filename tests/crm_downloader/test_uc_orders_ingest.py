@@ -10,7 +10,9 @@ import sqlalchemy as sa
 from app.common.db import session_scope
 from app.crm_downloader.uc_orders_sync import ingest as uc_ingest
 from app.crm_downloader.uc_orders_sync.ingest import (
+    _coerce_row,
     _expected_headers,
+    _parse_invoice_date_strict,
     _orders_table,
     _stg_uc_orders_table,
     ingest_uc_orders_workbook,
@@ -23,7 +25,7 @@ def _patch_uc_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(uc_ingest, "get_timezone", lambda: timezone.utc)
 
 
-def _build_uc_workbook(path: Path, *, order_number: str = "UC-001") -> Path:
+def _build_uc_workbook(path: Path, *, order_number: str = "UC-001", invoice_date: str = "10/01/2025") -> Path:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.append(list(_expected_headers()))
@@ -32,7 +34,7 @@ def _build_uc_workbook(path: Path, *, order_number: str = "UC-001") -> Path:
             1,
             order_number,
             "INV-1",
-            "10/01/2025",
+            invoice_date,
             "Alice",
             "+91 99999-88888",
             "Paid",
@@ -311,3 +313,95 @@ async def test_uc_ingest_accepts_gst_api_header_schema(tmp_path: Path) -> None:
     assert stg_row.customer_name == "Bob"
     assert float(stg_row.net_amount) == 200
     assert float(stg_row.gross_amount) == 236
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_iso"),
+    [
+        ("2025-11-21 17:30:48", "2025-11-21T17:30:48+00:00"),
+        ("2025-11-21", "2025-11-21T00:00:00+00:00"),
+        ("2025-11-21T17:30:48+05:30", "2025-11-21T17:30:48+05:30"),
+    ],
+)
+def test_parse_invoice_date_strict_accepts_expected_formats(value: str, expected_iso: str) -> None:
+    warnings: list[str] = []
+    row_remarks: list[str] = []
+
+    parsed = _parse_invoice_date_strict(value, warnings=warnings, row_remarks=row_remarks)
+
+    assert parsed is not None
+    assert parsed.isoformat() == expected_iso
+    assert warnings == []
+    assert row_remarks == []
+
+
+def test_parse_invoice_date_strict_rejects_junk_string() -> None:
+    warnings: list[str] = []
+    row_remarks: list[str] = []
+
+    parsed = _parse_invoice_date_strict("definitely-not-a-date", warnings=warnings, row_remarks=row_remarks)
+
+    assert parsed is None
+    assert len(warnings) == 1
+    assert "Invalid invoice_date format" in warnings[0]
+    assert len(row_remarks) == 1
+    assert "could not be parsed" in row_remarks[0]
+
+
+def test_coerce_row_counts_missing_invoice_date_for_junk_value() -> None:
+    warnings: list[str] = []
+    row, row_remarks, drop_reason = _coerce_row(
+        {
+            "S.No.": 1,
+            "Booking ID": "UC-INVALID-DATE",
+            "Invoice No.": "INV-INVALID",
+            "Invoice Date": "junk-date",
+            "Customer Name": "Test",
+            "Customer Ph. No.": "9999988888",
+            "Payment Status": "Paid",
+            "Customer GSTIN": "GSTIN-1",
+            "Place of Supply": "KA",
+            "Taxable Value": "10",
+            "CGST": "1",
+            "SGST": "1",
+            "Total Invoice Value": "12",
+        },
+        header_map=uc_ingest.LEGACY_HEADER_MAP,
+        warnings=warnings,
+        invalid_phone_numbers=set(),
+    )
+
+    assert row == {}
+    assert drop_reason is not None
+    assert "missing invoice_date" in drop_reason
+    assert any("Invalid invoice_date format" in warning for warning in warnings)
+    assert any("could not be parsed" in remark for remark in row_remarks)
+
+
+@pytest.mark.asyncio
+async def test_uc_ingest_flow_keeps_rows_with_new_datetime_shape(tmp_path: Path) -> None:
+    db_path = tmp_path / "uc_ingest_new_datetime.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    workbook = _build_uc_workbook(
+        tmp_path / "uc_new_datetime.xlsx",
+        order_number="UC-NEW-DT-001",
+        invoice_date="2025-11-21 17:30:48",
+    )
+
+    result = await ingest_uc_orders_workbook(
+        workbook_path=workbook,
+        store_code="S001",
+        cost_center="C001",
+        run_id="run-new-dt-1",
+        run_date=datetime(2025, 11, 22),
+        database_url=database_url,
+        logger=get_logger("test_uc_ingest_new_datetime"),
+    )
+
+    assert result.staging_rows == 1
+    assert result.rows_skipped_invalid_reasons.get("missing_invoice_date", 0) == 0
+
+    stg_table = _stg_uc_orders_table(sa.MetaData())
+    async with session_scope(database_url) as session:
+        stg_count = await session.execute(sa.select(sa.func.count()).select_from(stg_table))
+    assert stg_count.scalar_one() > 0
