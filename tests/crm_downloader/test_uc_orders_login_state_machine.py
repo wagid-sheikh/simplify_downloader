@@ -198,13 +198,6 @@ async def test_run_store_discovery_does_not_require_gst_ui_when_api_is_healthy(
     monkeypatch.setattr(uc_main, "_update_orders_sync_log", AsyncMock())
     monkeypatch.setattr(uc_main, "_assert_home_ready", AsyncMock(return_value=True))
     monkeypatch.setattr(uc_main, "_perform_login", AsyncMock(return_value=True))
-    monkeypatch.setattr(uc_main, "_gst_ui_rollback_enabled", lambda: True)
-
-    navigate_gst_mock = AsyncMock(return_value=False)
-    direct_gst_mock = AsyncMock(return_value=(False, None))
-    monkeypatch.setattr(uc_main, "_navigate_to_gst_reports", navigate_gst_mock)
-    monkeypatch.setattr(uc_main, "_try_direct_gst_reports", direct_gst_mock)
-
     monkeypatch.setattr(
         uc_main,
         "collect_gst_orders_via_api",
@@ -236,6 +229,4 @@ async def test_run_store_discovery_does_not_require_gst_ui_when_api_is_healthy(
         migration_thresholds=uc_main.MigrationThresholds(),
     )
 
-    assert navigate_gst_mock.await_count == 0
-    assert direct_gst_mock.await_count == 0
     assert summary.store_outcomes["A100"].message in {"Archive Orders navigation failed", "navigation failed"}

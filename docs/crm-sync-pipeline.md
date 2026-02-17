@@ -1633,17 +1633,17 @@ After login, navigate to Reports → Sales and Delivery and verify the container
 
 ### Cutover steps
 
-1. Keep `UC_GST_API_PRIMARY_ENABLED=1` and `UC_GST_UI_ROLLBACK_ENABLED=0`.
+1. GST extraction is API-only in uc_orders_sync.
 2. Run UC orders sync for at least one full business window using `scripts/run_local_uc_orders_sync.sh` (or production runner in deployment env).
 3. Confirm GST API extract files are generated and ingested without requiring UI GST navigation.
 4. Validate archive extraction and publish stages complete with no transport/auth warning spikes.
 
 ### Rollback steps
 
-1. Set `UC_GST_UI_ROLLBACK_ENABLED=1` for affected runs.
+1. If GST API is unavailable, treat the store run as failed and investigate API/auth transport issues.
 2. Re-run the same date window and confirm GST output is produced through the temporary UI rollback path.
 3. Keep archive extraction mode at `api` unless archive API transport/auth failures require `api_with_ui_fallback`.
-4. After API recovery, reset `UC_GST_UI_ROLLBACK_ENABLED=0`.
+4. Re-run the failed window once API recovery is confirmed.
 
 ### Acceptance criteria
 
