@@ -357,15 +357,30 @@ def _parse_invoice_date_strict(
 ) -> datetime | None:
     if value in (None, ""):
         return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=get_timezone())
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=get_timezone())
+
     value_str = str(value).strip()
     if not value_str:
         return None
+
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            parsed = datetime.strptime(value_str, fmt)
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=get_timezone())
+        except ValueError:
+            continue
+
     try:
-        parsed = datetime.strptime(value_str, "%d/%m/%Y")
-        return parsed.replace(tzinfo=get_timezone())
-    except ValueError:
-        warnings.append(f"Invalid invoice_date format (expected dd/mm/yyyy): {value_str}")
-        row_remarks.append(f"Invoice Date '{value_str}' did not match dd/mm/yyyy format (field cleared)")
+        parsed_iso = parser.isoparse(value_str)
+        return parsed_iso if parsed_iso.tzinfo else parsed_iso.replace(tzinfo=get_timezone())
+    except (TypeError, ValueError):
+        warnings.append(
+            f"Invalid invoice_date format (expected dd/mm/yyyy, yyyy-mm-dd, yyyy-mm-dd hh:mm:ss, or ISO-8601): {value_str}"
+        )
+        row_remarks.append(f"Invoice Date '{value_str}' could not be parsed (field cleared)")
         return None
 
 
