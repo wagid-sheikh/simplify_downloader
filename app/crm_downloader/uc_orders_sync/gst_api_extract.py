@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Mapping
+from urllib.parse import urlencode
 
 from playwright.async_api import Page
 
@@ -21,9 +22,11 @@ BOOKING_SEARCH_URL_TEMPLATE = (
     "?query={query}&sortQuery=&page=1&filterQuery=&type="
 )
 GST_REFERER = "https://store.ucleanlaundry.com/gst-report"
+DELIVERED_ORDERS_URL = "https://store.ucleanlaundry.com/api/v1/bookings/getDeliveredOrders"
 REQUEST_ACCEPT = "application/json, text/plain, */*"
 REQUESTED_WITH = "XMLHttpRequest"
 MAX_RETRIES = 3
+DELIVERED_ORDERS_LIMIT = 30
 
 PAYMENT_MODE_MAP = {
     1: "UPI",
@@ -86,6 +89,10 @@ class GstApiExtract:
     skipped_order_counters: dict[str, int] = field(default_factory=dict)
     booking_lookup_hits: int = 0
     booking_lookup_misses: int = 0
+    delivered_rows_scanned: int = 0
+    delivered_rows_matched_gst: int = 0
+    delivered_payment_rows_produced: int = 0
+    gst_orders_without_payments: int = 0
 
 
 def _record_skip(extract: GstApiExtract, *, order_code: str, reason: str) -> None:
@@ -104,18 +111,6 @@ def _build_headers(*, bearer_token: str | None) -> dict[str, str]:
         headers["Authorization"] = f"Bearer {bearer_token}"
     return headers
 
-
-def _payment_status_suggests_settled(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, int):
-        return value > 0
-    token = str(value).strip().lower()
-    if not token:
-        return False
-    if token in {"pending", "unpaid", "0"}:
-        return False
-    return True
 
 
 def _build_payment_rows_from_booking(*, store_code: str, order_code: str, booking_row: Mapping[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
@@ -240,6 +235,92 @@ async def _resolve_booking_id_for_order(
     return None, None
 
 
+async def _collect_gst_payment_rows_from_delivered_orders(
+    *,
+    page: Page,
+    store_code: str,
+    headers: Mapping[str, str],
+    from_date: date,
+    to_date: date,
+    gst_order_codes: set[str],
+    extract: GstApiExtract,
+) -> None:
+    page_number = 1
+    seen_payment_keys: set[tuple[Any, ...]] = set()
+    matched_orders_with_payments: set[str] = set()
+
+    while True:
+        query = urlencode(
+            {
+                "franchise": "UCLEAN",
+                "page": page_number,
+                "limit": DELIVERED_ORDERS_LIMIT,
+                "dateRange": "custom",
+                "startDate": from_date.isoformat(),
+                "endDate": to_date.isoformat(),
+                "dateType": "delivery",
+            }
+        )
+        payload = await _request_json_with_retries(
+            page=page,
+            method="GET",
+            url=f"{DELIVERED_ORDERS_URL}?{query}",
+            headers=headers,
+            data=None,
+        )
+        if not isinstance(payload, Mapping):
+            _record_skip(extract, order_code=f"page:{page_number}", reason="delivered_orders_page_failed")
+            break
+
+        data = payload.get("data")
+        if not isinstance(data, list):
+            _record_skip(extract, order_code=f"page:{page_number}", reason="delivered_orders_invalid_data")
+            break
+        if not data:
+            break
+
+        for booking in data:
+            if not isinstance(booking, Mapping):
+                continue
+            extract.delivered_rows_scanned += 1
+            order_code = str(booking.get("booking_code") or "").strip()
+            if not order_code or order_code not in gst_order_codes:
+                continue
+
+            extract.delivered_rows_matched_gst += 1
+            payment_rows, payment_reason_codes = _build_payment_rows_from_booking(
+                store_code=store_code,
+                order_code=order_code,
+                booking_row=booking,
+            )
+            for reason in payment_reason_codes:
+                _record_skip(extract, order_code=order_code, reason=reason)
+
+            appended_for_order = False
+            for row in payment_rows:
+                row_key = (
+                    row.get("store_code"),
+                    row.get("order_code"),
+                    row.get("payment_mode"),
+                    row.get("amount"),
+                    row.get("payment_date"),
+                    row.get("transaction_id"),
+                )
+                if row_key in seen_payment_keys:
+                    continue
+                seen_payment_keys.add(row_key)
+                extract.payment_detail_rows.append(row)
+                extract.delivered_payment_rows_produced += 1
+                appended_for_order = True
+
+            if appended_for_order:
+                matched_orders_with_payments.add(order_code)
+
+        page_number += 1
+
+    extract.gst_orders_without_payments = len(gst_order_codes - matched_orders_with_payments)
+
+
 async def collect_gst_orders_via_api(
     *,
     page: Page,
@@ -268,6 +349,7 @@ async def collect_gst_orders_via_api(
         _record_skip(extract, order_code=f"store:{store_code}", reason="gst_api_invalid_data")
         return extract
 
+    gst_order_codes: set[str] = set()
     seen_orders: set[str] = set()
     for row in rows:
         if not isinstance(row, Mapping):
@@ -280,6 +362,7 @@ async def collect_gst_orders_via_api(
             _record_skip(extract, order_code=order_code, reason="duplicate_order_code")
             continue
         seen_orders.add(order_code)
+        gst_order_codes.add(order_code)
 
         gst_row = {
             "store_code": store_code,
@@ -334,19 +417,6 @@ async def collect_gst_orders_via_api(
             if booking_row.get("suggestions"):
                 base_row["instructions"] = booking_row.get("suggestions")
 
-            payment_rows, payment_reason_codes = _build_payment_rows_from_booking(
-                store_code=store_code,
-                order_code=order_code,
-                booking_row=booking_row,
-            )
-            for reason in payment_reason_codes:
-                _record_skip(extract, order_code=order_code, reason=reason)
-
-            if payment_rows:
-                extract.payment_detail_rows.extend(payment_rows)
-            elif _payment_status_suggests_settled(booking_row.get("payment_status")):
-                _record_skip(extract, order_code=order_code, reason="payment_settled_without_payment_rows")
-
         invoice_html = await _fetch_invoice_html_with_retries(
             page=page,
             booking_id=booking_id,
@@ -370,6 +440,16 @@ async def collect_gst_orders_via_api(
         )
         extract.base_rows.append(base_row)
 
+    await _collect_gst_payment_rows_from_delivered_orders(
+        page=page,
+        store_code=store_code,
+        headers=headers,
+        from_date=from_date,
+        to_date=to_date,
+        gst_order_codes=gst_order_codes,
+        extract=extract,
+    )
+
     log_event(
         logger=logger,
         phase="gst_api_extract",
@@ -381,6 +461,10 @@ async def collect_gst_orders_via_api(
         payment_detail_rows=len(extract.payment_detail_rows),
         booking_lookup_hits=extract.booking_lookup_hits,
         booking_lookup_misses=extract.booking_lookup_misses,
+        delivered_rows_scanned=extract.delivered_rows_scanned,
+        delivered_rows_matched_gst=extract.delivered_rows_matched_gst,
+        delivered_payment_rows_produced=extract.delivered_payment_rows_produced,
+        gst_orders_without_payments=extract.gst_orders_without_payments,
         skipped_order_counters=extract.skipped_order_counters,
     )
     return extract
