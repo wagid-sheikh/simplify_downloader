@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import contextlib
 import hashlib
-import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -33,10 +32,6 @@ from app.crm_downloader.config import default_download_dir, default_profiles_dir
 from app.crm_downloader.uc_orders_sync.archive_ingest import ingest_uc_archive_excels
 from app.crm_downloader.uc_orders_sync.archive_api_extract import (
     collect_archive_orders_via_api,
-)
-from app.crm_downloader.uc_orders_sync.extract_comparator import (
-    MigrationThresholds,
-    compare_extracts,
 )
 from app.crm_downloader.uc_orders_sync.gst_api_extract import (
     GST_API_BASE_COLUMNS,
@@ -919,40 +914,6 @@ class UcOrdersDiscoverySummary:
             )
         return warnings
 
-    def _build_migration_confidence_summary(self) -> Dict[str, Any]:
-        stores: list[dict[str, Any]] = []
-        ready_count = 0
-        not_ready_count = 0
-        unknown_count = 0
-        for store_code in self.store_codes:
-            outcome = self.store_outcomes.get(store_code.upper())
-            compare_metrics = ((outcome.stage_metrics or {}).get("gst_api_compare") if outcome else None) or {}
-            threshold_eval = compare_metrics.get("threshold_evaluation") or {}
-            migration_ready = compare_metrics.get("migration_ready")
-            if migration_ready is True:
-                ready_count += 1
-            elif migration_ready is False:
-                not_ready_count += 1
-            else:
-                unknown_count += 1
-            stores.append(
-                {
-                    "store_code": store_code.upper(),
-                    "migration_ready": migration_ready,
-                    "reason_codes": compare_metrics.get("reason_codes") or [],
-                    "threshold_evaluation": threshold_eval,
-                }
-            )
-        return {
-            "stores": stores,
-            "counts": {
-                "ready": ready_count,
-                "not_ready": not_ready_count,
-                "unknown": unknown_count,
-            },
-        }
-
-
     def _build_notification_payload(
         self, *, finished_at: datetime, total_time_taken: str
     ) -> Dict[str, Any]:
@@ -1062,7 +1023,6 @@ class UcOrdersDiscoverySummary:
                 "total": len(self.ingest_remarks),
             },
         }
-        metrics["migration_confidence"] = self._build_migration_confidence_summary()
         metrics["notification_payload"] = self._build_notification_payload(
             finished_at=finished_at, total_time_taken=total_time_taken
         )
@@ -1092,9 +1052,6 @@ async def main(
     store_codes: Sequence[str] | None = None,
     run_orders: bool = True,
     run_sales: bool = True,
-    gst_key_parity_min_pct: float | None = None,
-    payment_coverage_min_pct: float | None = None,
-    payment_field_mismatch_max_pct: float | None = None,
 ) -> None:
     """Run the UC Archive Orders download flow."""
 
@@ -1110,11 +1067,6 @@ async def main(
         )
     logger = get_logger(run_id=resolved_run_id)
     archive_extraction_mode = _resolve_uc_archive_extraction_mode()
-    migration_thresholds = _resolve_migration_thresholds(
-        gst_key_parity_min_pct=gst_key_parity_min_pct,
-        payment_coverage_min_pct=payment_coverage_min_pct,
-        payment_field_mismatch_max_pct=payment_field_mismatch_max_pct,
-    )
     stores = await _load_uc_order_stores(logger=logger, store_codes=store_codes)
     store_start_dates: dict[str, date] = {}
     pipeline_id: int | None = None
@@ -1178,18 +1130,6 @@ async def main(
             archive_extraction_mode=archive_extraction_mode,
             run_id=resolved_run_id,
         )
-        log_event(
-            logger=logger,
-            phase="init",
-            message="Resolved UC migration readiness thresholds for run",
-            run_id=resolved_run_id,
-            migration_thresholds={
-                "gst_key_parity_min_pct": migration_thresholds.gst_key_parity_min_pct,
-                "payment_coverage_min_pct": migration_thresholds.payment_coverage_min_pct,
-                "payment_field_mismatch_max_pct": migration_thresholds.payment_field_mismatch_max_pct,
-            },
-        )
-
         summary.store_codes = [store.store_code for store in stores]
         if not stores:
             log_event(
@@ -1239,7 +1179,6 @@ async def main(
                         to_date=run_end_date,
                         download_timeout_ms=download_timeout_ms,
                         archive_extraction_mode=archive_extraction_mode,
-                        migration_thresholds=migration_thresholds,
                     )
 
             await asyncio.gather(*[_guarded(store) for store in stores])
@@ -1389,41 +1328,6 @@ def _write_excel_rows(
     return len(rows)
 
 
-def _env_float(name: str, default: float) -> float:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return default
-
-
-def _resolve_migration_thresholds(
-    *,
-    gst_key_parity_min_pct: float | None = None,
-    payment_coverage_min_pct: float | None = None,
-    payment_field_mismatch_max_pct: float | None = None,
-) -> MigrationThresholds:
-    return MigrationThresholds(
-        gst_key_parity_min_pct=(
-            gst_key_parity_min_pct
-            if gst_key_parity_min_pct is not None
-            else _env_float('UC_MIGRATION_GST_KEY_PARITY_MIN_PCT', 95.0)
-        ),
-        payment_coverage_min_pct=(
-            payment_coverage_min_pct
-            if payment_coverage_min_pct is not None
-            else _env_float('UC_MIGRATION_PAYMENT_COVERAGE_MIN_PCT', 90.0)
-        ),
-        payment_field_mismatch_max_pct=(
-            payment_field_mismatch_max_pct
-            if payment_field_mismatch_max_pct is not None
-            else _env_float('UC_MIGRATION_PAYMENT_FIELD_MISMATCH_MAX_PCT', 10.0)
-        ),
-    )
-
-
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None:
@@ -1448,10 +1352,6 @@ def _resolve_uc_archive_extraction_mode() -> str:
         return UC_ARCHIVE_EXTRACTION_MODE_API_WITH_UI_FALLBACK
 
     return UC_ARCHIVE_EXTRACTION_MODE_API
-
-
-def _format_gst_api_compare_filename(store_code: str, from_date: date, to_date: date) -> str:
-    return f"{store_code}-gst_api_compare_{from_date:%Y%m%d}_{to_date:%Y%m%d}.json"
 
 
 def _resolve_uc_download_dir(
@@ -3487,7 +3387,6 @@ async def _run_store_discovery(
     to_date: date,
     download_timeout_ms: int,
     archive_extraction_mode: str,
-    migration_thresholds: MigrationThresholds,
 ) -> None:
     log_event(
         logger=logger,
@@ -3579,7 +3478,6 @@ async def _run_store_discovery(
         gst_api_base_path: Path | None = None
         gst_api_order_details_path: Path | None = None
         gst_api_payment_details_path: Path | None = None
-        gst_api_compare_path: Path | None = None
 
         if storage_state_exists:
             log_event(
@@ -4311,94 +4209,6 @@ async def _run_store_discovery(
                 "Archive Orders download complete; archive stages failed: "
                 + ", ".join(sorted(failed_stages))
             )
-        if gst_api_extract is not None:
-            try:
-                comparison_summary, comparison_details = compare_extracts(
-                    legacy_gst_rows=gst_api_extract.gst_rows,
-                    candidate_gst_rows=gst_api_extract.gst_rows,
-                    legacy_base_rows=extract.base_rows,
-                    legacy_order_detail_rows=extract.order_detail_rows,
-                    legacy_payment_rows=extract.payment_detail_rows,
-                    candidate_base_rows=gst_api_extract.base_rows,
-                    candidate_order_detail_rows=gst_api_extract.order_detail_rows,
-                    candidate_payment_rows=gst_api_extract.payment_detail_rows,
-                    thresholds=migration_thresholds,
-                )
-                if gst_api_base_path is not None:
-                    gst_api_compare_path = (
-                        gst_api_base_path.parent
-                        / _format_gst_api_compare_filename(
-                            store.store_code, from_date, to_date
-                        )
-                    )
-                    gst_api_compare_path.write_text(
-                        json.dumps(
-                            {
-                                "summary": vars(comparison_summary),
-                                "details": comparison_details,
-                            },
-                            indent=2,
-                            sort_keys=True,
-                            default=str,
-                        )
-                    )
-                threshold_evaluation = comparison_details.get("threshold_evaluation") or {}
-                migration_ready = bool(comparison_details.get("migration_ready", False))
-                migration_reason_codes = list(
-                    comparison_details.get("migration_reason_codes") or []
-                )
-                stage_metrics["gst_api_compare"] = {
-                    "summary": vars(comparison_summary),
-                    "threshold_evaluation": threshold_evaluation,
-                    "migration_ready": migration_ready,
-                    "reason_codes": migration_reason_codes,
-                }
-                stage_statuses["gst_api_compare"] = (
-                    "success" if migration_ready else "failed"
-                )
-                if not migration_ready:
-                    status_label = "warning"
-                    for code in migration_reason_codes:
-                        if code not in reason_codes:
-                            reason_codes.append(code)
-                    log_event(
-                        logger=logger,
-                        phase="migration_guard",
-                        status="warn",
-                        message="Migration readiness thresholds failed; preserving rollback behavior",
-                        store_code=store.store_code,
-                        migration_ready=False,
-                        reason_codes=migration_reason_codes,
-                        threshold_evaluation=threshold_evaluation,
-                    )
-
-                log_event(
-                    logger=logger,
-                    phase="gst_api_compare",
-                    message="GST API compare complete",
-                    store_code=store.store_code,
-                    comparison_summary=vars(comparison_summary),
-                    comparison_details=comparison_details,
-                    compare_file=(
-                        str(gst_api_compare_path)
-                        if gst_api_compare_path is not None
-                        else None
-                    ),
-                )
-            except Exception as exc:
-                stage_statuses["gst_api_compare"] = "failed"
-                stage_metrics["gst_api_compare"] = {"error": str(exc)}
-                reason_codes.append("migration_compare_failed")
-                status_label = "warning"
-                log_event(
-                    logger=logger,
-                    phase="gst_api_compare",
-                    status="warn",
-                    message="GST API compare failed",
-                    store_code=store.store_code,
-                    error=str(exc),
-                )
-
         outcome = StoreOutcome(
             status=status_label,
             message=download_message,
@@ -7710,36 +7520,6 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="End date (YYYY-MM-DD)",
     )
-    parser.add_argument(
-        "--gst-key-parity-min-pct",
-        dest="gst_key_parity_min_pct",
-        type=float,
-        default=None,
-        help=(
-            "Minimum GST key parity percent required for migration readiness "
-            "(default from UC_MIGRATION_GST_KEY_PARITY_MIN_PCT or 95.0)"
-        ),
-    )
-    parser.add_argument(
-        "--payment-coverage-min-pct",
-        dest="payment_coverage_min_pct",
-        type=float,
-        default=None,
-        help=(
-            "Minimum payment coverage percent required for migration readiness "
-            "(default from UC_MIGRATION_PAYMENT_COVERAGE_MIN_PCT or 90.0)"
-        ),
-    )
-    parser.add_argument(
-        "--payment-field-mismatch-max-pct",
-        dest="payment_field_mismatch_max_pct",
-        type=float,
-        default=None,
-        help=(
-            "Maximum payment field mismatch percent allowed for migration readiness "
-            "(default from UC_MIGRATION_PAYMENT_FIELD_MISMATCH_MAX_PCT or 10.0)"
-        ),
-    )
     return parser
 
 
@@ -7751,9 +7531,6 @@ async def _async_entrypoint(argv: Sequence[str] | None = None) -> None:
         run_id=args.run_id,
         from_date=args.from_date,
         to_date=args.to_date,
-        gst_key_parity_min_pct=args.gst_key_parity_min_pct,
-        payment_coverage_min_pct=args.payment_coverage_min_pct,
-        payment_field_mismatch_max_pct=args.payment_field_mismatch_max_pct,
     )
 
 

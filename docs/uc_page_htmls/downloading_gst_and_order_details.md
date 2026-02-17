@@ -1160,7 +1160,7 @@ A dedicated compare step was added to evaluate old vs new results for migration 
 * `app/crm_downloader/uc_orders_sync/main.py`
   * wires experimental path into orchestration
   * writes experimental output files
-  * runs comparison and writes JSON report
+  * API-only GST extraction (no compare artifact)
 
 ---
 
@@ -1172,23 +1172,6 @@ With** **`UC_GST_API_EXPERIMENT_ENABLED=true`, experimental outputs now include*
 2. `*-exp_gst_api_base_order_info_*.xlsx`
 3. `*-exp_gst_api_order_details_*.xlsx`
 4. `*-exp_gst_api_payment_details_*.xlsx`
-
-And comparison report:
-
-* `*-exp_gst_api_compare_*.json`
-
----
-
-## Comparison Scope (Current)
-
-Comparator now includes:
-
-* GST-level coverage + key mismatch counts
-* Base-order coverage + field mismatch counts
-* Payment-level coverage + field mismatch counts
-* Samples of missing keys in each direction
-
-(Alongside row count summaries for legacy vs candidate datasets.)
 
 ---
 
