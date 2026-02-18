@@ -170,9 +170,9 @@ async def test_archive_orchestration_uses_api_only_and_produces_archive_outputs(
     assert ui_extract_mock.await_count == 0
 
     expected_files = {
-        "A100-archive_api-base_order_info_20250101_20250101_run-api-1.xlsx",
-        "A100-archive_api-order_details_20250101_20250101_run-api-1.xlsx",
-        "A100-archive_api-payment_details_20250101_20250101_run-api-1.xlsx",
+        "A100-uc_gst-base_order_info_20250101_20250101_run-api-1.xlsx",
+        "A100-uc_gst-order_details_20250101_20250101_run-api-1.xlsx",
+        "A100-uc_gst-payment_details_20250101_20250101_run-api-1.xlsx",
     }
     assert expected_files.issubset({path.name for path in tmp_path.glob("*.xlsx")})
 

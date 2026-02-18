@@ -1301,44 +1301,17 @@ def _normalize_artifact_token(token: str) -> str:
     return normalized or "default"
 
 
-def _format_archive_base_filename(
+def _format_gst_derived_filename(
     store_code: str,
     from_date: date,
     to_date: date,
     *,
-    archive_source: str,
+    artifact_type: str,
     run_id: str,
 ) -> str:
+    normalized_artifact_type = _normalize_artifact_token(artifact_type)
     return (
-        f"{store_code}-{archive_source}-base_order_info_"
-        f"{from_date:%Y%m%d}_{to_date:%Y%m%d}_{_normalize_artifact_token(run_id)}.xlsx"
-    )
-
-
-def _format_archive_order_details_filename(
-    store_code: str,
-    from_date: date,
-    to_date: date,
-    *,
-    archive_source: str,
-    run_id: str,
-) -> str:
-    return (
-        f"{store_code}-{archive_source}-order_details_"
-        f"{from_date:%Y%m%d}_{to_date:%Y%m%d}_{_normalize_artifact_token(run_id)}.xlsx"
-    )
-
-
-def _format_archive_payment_details_filename(
-    store_code: str,
-    from_date: date,
-    to_date: date,
-    *,
-    archive_source: str,
-    run_id: str,
-) -> str:
-    return (
-        f"{store_code}-{archive_source}-payment_details_"
+        f"{store_code}-uc_gst-{normalized_artifact_type}_"
         f"{from_date:%Y%m%d}_{to_date:%Y%m%d}_{_normalize_artifact_token(run_id)}.xlsx"
     )
 
@@ -3632,31 +3605,31 @@ async def _run_store_discovery(
             )
             gst_api_base_path = (
                 download_dir
-                / _format_archive_base_filename(
+                / _format_gst_derived_filename(
                     store.store_code,
                     from_date,
                     to_date,
-                    archive_source="gst_api",
+                    artifact_type="base_order_info",
                     run_id=run_id,
                 )
             )
             gst_api_order_details_path = (
                 download_dir
-                / _format_archive_order_details_filename(
+                / _format_gst_derived_filename(
                     store.store_code,
                     from_date,
                     to_date,
-                    archive_source="gst_api",
+                    artifact_type="order_details",
                     run_id=run_id,
                 )
             )
             gst_api_payment_details_path = (
                 download_dir
-                / _format_archive_payment_details_filename(
+                / _format_gst_derived_filename(
                     store.store_code,
                     from_date,
                     to_date,
-                    archive_source="gst_api",
+                    artifact_type="payment_details",
                     run_id=run_id,
                 )
             )
@@ -3686,12 +3659,12 @@ async def _run_store_discovery(
             log_event(
                 logger=logger,
                 phase="gst_api_extract",
-                message="GST API extraction files generated",
+                message="GST lifecycle extraction files generated",
                 store_code=store.store_code,
                 gst_file=str(gst_api_gst_path),
-                base_file=str(gst_api_base_path),
-                order_details_file=str(gst_api_order_details_path),
-                payment_details_file=str(gst_api_payment_details_path),
+                gst_base_order_info_file=str(gst_api_base_path),
+                gst_order_details_file=str(gst_api_order_details_path),
+                gst_payment_details_file=str(gst_api_payment_details_path),
                 gst_rows=len(gst_api_extract.gst_rows),
                 base_rows=len(gst_api_extract.base_rows),
                 order_detail_rows=len(gst_api_extract.order_detail_rows),
@@ -3901,31 +3874,31 @@ async def _run_store_discovery(
             )
             archive_api_base_path = (
                 download_dir
-                / _format_archive_base_filename(
+                / _format_gst_derived_filename(
                     store.store_code,
                     from_date,
                     to_date,
-                    archive_source="archive_api",
+                    artifact_type="base_order_info",
                     run_id=run_id,
                 )
             )
             archive_api_order_details_path = (
                 download_dir
-                / _format_archive_order_details_filename(
+                / _format_gst_derived_filename(
                     store.store_code,
                     from_date,
                     to_date,
-                    archive_source="archive_api",
+                    artifact_type="order_details",
                     run_id=run_id,
                 )
             )
             archive_api_payment_details_path = (
                 download_dir
-                / _format_archive_payment_details_filename(
+                / _format_gst_derived_filename(
                     store.store_code,
                     from_date,
                     to_date,
-                    archive_source="archive_api",
+                    artifact_type="payment_details",
                     run_id=run_id,
                 )
             )
