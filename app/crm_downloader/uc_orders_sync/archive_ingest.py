@@ -441,7 +441,14 @@ async def _ingest_file(
     rejects: list[RejectRecord] = []
     rows, header_info = _read_rows(source_path, EXPECTED_HEADERS[file_kind])
     if header_info["follow_up"]:
-        log_event(logger, "warning", "archive_ingest_header_follow_up", file=str(source_path), headers=header_info["follow_up"])
+        log_event(
+            logger=logger,
+            phase="archive_ingest",
+            status="warn",
+            message="archive_ingest_header_follow_up",
+            file=str(source_path),
+            headers=header_info["follow_up"],
+        )
         result.warnings += len(header_info["follow_up"])
     use_store = (store_code or "").strip().upper() or None
 
@@ -551,9 +558,10 @@ async def ingest_uc_archive_excels(
 
     summary = ArchiveIngestResult(files={})
     log_event(
-        logger,
-        "info",
-        "uc_archive_ingest_from_gst_staging_feed",
+        logger=logger,
+        phase="archive_ingest",
+        status="ok",
+        message="uc_archive_ingest_from_gst_staging_feed",
         base_file=str(paths[FILE_BASE]),
         order_details_file=str(paths[FILE_ORDER_DETAILS]),
         payment_details_file=str(paths[FILE_PAYMENT_DETAILS]),
