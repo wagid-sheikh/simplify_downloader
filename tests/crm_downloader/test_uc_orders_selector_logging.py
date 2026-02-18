@@ -810,7 +810,7 @@ def test_store_outcome_marks_failed_when_archive_api_auth_failure_reason_present
     outcome = uc_main.StoreOutcome(
         status="warning",
         message="auth failure",
-        reason_codes=["archive_api_auth_failure", "missing_parent_order_context"],
+        reason_codes=["archive_api_auth_failure", "gst_lifecycle_parent_order_context_missing"],
     )
 
     status = uc_main._resolve_sync_log_status(
@@ -843,10 +843,10 @@ def test_summary_overall_status_rolls_up_publish_preflight_warning() -> None:
         uc_main.StoreOutcome(
             status="ok",
             message="Archive Orders extracted 10 rows",
-            archive_publish_sales={
+            gst_publish_sales={
                 "warnings": 1,
                 "skipped": 10,
-                "reason_codes": {"preflight_parent_coverage_near_zero": 1},
+                "reason_codes": {"gst_lifecycle_parent_coverage_near_zero": 1},
             },
         ),
     )
@@ -864,10 +864,10 @@ def test_store_outcome_marks_warning_for_high_publish_skips_with_warnings() -> N
     outcome = uc_main.StoreOutcome(
         status="ok",
         message="Archive Orders extracted 10 rows",
-        archive_publish_orders={
+        gst_publish_orders={
             "warnings": 6,
             "skipped": 6,
-            "reason_codes": {"missing_parent_order_context": 6},
+            "reason_codes": {"gst_lifecycle_parent_order_context_missing": 6},
         },
     )
 
