@@ -318,12 +318,15 @@ async def test_uc_ingest_accepts_gst_api_header_schema(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("value", "expected_iso"),
     [
+        (datetime(2025, 11, 21, 17, 30, 48), "2025-11-21T17:30:48+00:00"),
+        (datetime(2025, 11, 21, 17, 30, 48, tzinfo=timezone.utc), "2025-11-21T17:30:48+00:00"),
+        ("10/01/2025", "2025-01-10T00:00:00+00:00"),
         ("2025-11-21 17:30:48", "2025-11-21T17:30:48+00:00"),
         ("2025-11-21", "2025-11-21T00:00:00+00:00"),
         ("2025-11-21T17:30:48+05:30", "2025-11-21T17:30:48+05:30"),
     ],
 )
-def test_parse_invoice_date_strict_accepts_expected_formats(value: str, expected_iso: str) -> None:
+def test_parse_invoice_date_strict_accepts_expected_formats(value: object, expected_iso: str) -> None:
     warnings: list[str] = []
     row_remarks: list[str] = []
 
@@ -348,7 +351,7 @@ def test_parse_invoice_date_strict_rejects_junk_string() -> None:
     assert "could not be parsed" in row_remarks[0]
 
 
-def test_coerce_row_counts_missing_invoice_date_for_junk_value() -> None:
+def test_coerce_row_counts_invalid_invoice_date_for_junk_value() -> None:
     warnings: list[str] = []
     row, row_remarks, drop_reason = _coerce_row(
         {
@@ -373,9 +376,38 @@ def test_coerce_row_counts_missing_invoice_date_for_junk_value() -> None:
 
     assert row == {}
     assert drop_reason is not None
-    assert "missing invoice_date" in drop_reason
+    assert "invalid invoice_date" in drop_reason
     assert any("Invalid invoice_date format" in warning for warning in warnings)
     assert any("could not be parsed" in remark for remark in row_remarks)
+
+
+def test_coerce_row_counts_missing_invoice_date_for_blank_value() -> None:
+    warnings: list[str] = []
+    row, row_remarks, drop_reason = _coerce_row(
+        {
+            "S.No.": 1,
+            "Booking ID": "UC-MISSING-DATE",
+            "Invoice No.": "INV-MISSING",
+            "Invoice Date": "   ",
+            "Customer Name": "Test",
+            "Customer Ph. No.": "9999988888",
+            "Payment Status": "Paid",
+            "Customer GSTIN": "GSTIN-1",
+            "Place of Supply": "KA",
+            "Taxable Value": "10",
+            "CGST": "1",
+            "SGST": "1",
+            "Total Invoice Value": "12",
+        },
+        header_map=uc_ingest.LEGACY_HEADER_MAP,
+        warnings=warnings,
+        invalid_phone_numbers=set(),
+    )
+
+    assert row == {}
+    assert row_remarks == []
+    assert drop_reason is not None
+    assert "missing invoice_date" in drop_reason
 
 
 @pytest.mark.asyncio
