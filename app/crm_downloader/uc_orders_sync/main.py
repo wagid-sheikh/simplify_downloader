@@ -65,6 +65,7 @@ from app.dashboard_downloader.run_summary import (
 PIPELINE_NAME = "uc_orders_sync"
 STAGE_CREATED_COHORT_EXTRACT = "created_cohort_extract"
 STAGE_ORDERS_INGEST = "ingest"
+REASON_ARCHIVE_INGEST_FAILED = "archive_ingest_failed"
 NAV_TIMEOUT_MS = 90_000
 ARCHIVE_FILTER_REFRESH_TIMEOUT_MS = 20_000
 SPINNER_CSS_SELECTORS = [".spinner", ".loading", ".loader", ".k-loading-mask"]
@@ -3898,6 +3899,13 @@ async def _run_store_discovery(
             stage_metrics["archive_ingest"] = {
                 "error": "database_url is required for archive ingest/publish"
             }
+            if REASON_ARCHIVE_INGEST_FAILED not in reason_codes:
+                reason_codes.append(REASON_ARCHIVE_INGEST_FAILED)
+            stage_metrics["gst_publish"] = {
+                "stage_marker": "skipped_due_archive_ingest_failure",
+                "reason_codes": [REASON_ARCHIVE_INGEST_FAILED],
+                "not_attempted": True,
+            }
             log_event(
                 logger=logger,
                 phase="archive_ingest",
@@ -3905,6 +3913,16 @@ async def _run_store_discovery(
                 message="UC archive ingest failed; continuing with partial success",
                 store_code=store.store_code,
                 error=stage_metrics["archive_ingest"]["error"],
+            )
+            log_event(
+                logger=logger,
+                phase="gst_publish",
+                status="warn",
+                message="GST publish not attempted because archive ingest failed",
+                store_code=store.store_code,
+                stage_marker="skipped_due_archive_ingest_failure",
+                reason_code=REASON_ARCHIVE_INGEST_FAILED,
+                not_attempted=True,
             )
         else:
             ingest_completed = False
@@ -3954,6 +3972,13 @@ async def _run_store_discovery(
                 stage_statuses["archive_ingest"] = "failed"
                 stage_statuses["gst_publish"] = "skipped"
                 stage_metrics["archive_ingest"] = {"error": str(exc)}
+                if REASON_ARCHIVE_INGEST_FAILED not in reason_codes:
+                    reason_codes.append(REASON_ARCHIVE_INGEST_FAILED)
+                stage_metrics["gst_publish"] = {
+                    "stage_marker": "skipped_due_archive_ingest_failure",
+                    "reason_codes": [REASON_ARCHIVE_INGEST_FAILED],
+                    "not_attempted": True,
+                }
                 log_event(
                     logger=logger,
                     phase="archive_ingest",
@@ -3961,6 +3986,16 @@ async def _run_store_discovery(
                     message="UC archive ingest failed; continuing with partial success",
                     store_code=store.store_code,
                     error=str(exc),
+                )
+                log_event(
+                    logger=logger,
+                    phase="gst_publish",
+                    status="warn",
+                    message="GST publish not attempted because archive ingest failed",
+                    store_code=store.store_code,
+                    stage_marker="skipped_due_archive_ingest_failure",
+                    reason_code=REASON_ARCHIVE_INGEST_FAILED,
+                    not_attempted=True,
                 )
 
             if ingest_completed:
