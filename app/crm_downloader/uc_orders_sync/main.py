@@ -66,6 +66,9 @@ PIPELINE_NAME = "uc_orders_sync"
 STAGE_CREATED_COHORT_EXTRACT = "created_cohort_extract"
 STAGE_ORDERS_INGEST = "ingest"
 REASON_ARCHIVE_INGEST_FAILED = "archive_ingest_failed"
+REASON_GST_PUBLISH_SKIPPED_DUE_INGEST_FAILURE = (
+    "gst_publish_skipped_due_ingest_failure"
+)
 NAV_TIMEOUT_MS = 90_000
 ARCHIVE_FILTER_REFRESH_TIMEOUT_MS = 20_000
 SPINNER_CSS_SELECTORS = [".spinner", ".loading", ".loader", ".k-loading-mask"]
@@ -3854,6 +3857,10 @@ async def _run_store_discovery(
             return
 
         reason_codes: list[str] = []
+
+        def _append_reason_code(code: str) -> None:
+            if code and code not in reason_codes:
+                reason_codes.append(code)
         log_event(
             logger=logger,
             phase="archive_api_extract",
@@ -3899,11 +3906,14 @@ async def _run_store_discovery(
             stage_metrics["archive_ingest"] = {
                 "error": "database_url is required for archive ingest/publish"
             }
-            if REASON_ARCHIVE_INGEST_FAILED not in reason_codes:
-                reason_codes.append(REASON_ARCHIVE_INGEST_FAILED)
+            _append_reason_code(REASON_ARCHIVE_INGEST_FAILED)
+            _append_reason_code(REASON_GST_PUBLISH_SKIPPED_DUE_INGEST_FAILURE)
             stage_metrics["gst_publish"] = {
                 "stage_marker": "skipped_due_archive_ingest_failure",
-                "reason_codes": [REASON_ARCHIVE_INGEST_FAILED],
+                "reason_codes": [
+                    REASON_ARCHIVE_INGEST_FAILED,
+                    REASON_GST_PUBLISH_SKIPPED_DUE_INGEST_FAILURE,
+                ],
                 "not_attempted": True,
             }
             log_event(
@@ -3921,7 +3931,10 @@ async def _run_store_discovery(
                 message="GST publish not attempted because archive ingest failed",
                 store_code=store.store_code,
                 stage_marker="skipped_due_archive_ingest_failure",
-                reason_code=REASON_ARCHIVE_INGEST_FAILED,
+                reason_codes=[
+                    REASON_ARCHIVE_INGEST_FAILED,
+                    REASON_GST_PUBLISH_SKIPPED_DUE_INGEST_FAILURE,
+                ],
                 not_attempted=True,
             )
         else:
@@ -3972,11 +3985,14 @@ async def _run_store_discovery(
                 stage_statuses["archive_ingest"] = "failed"
                 stage_statuses["gst_publish"] = "skipped"
                 stage_metrics["archive_ingest"] = {"error": str(exc)}
-                if REASON_ARCHIVE_INGEST_FAILED not in reason_codes:
-                    reason_codes.append(REASON_ARCHIVE_INGEST_FAILED)
+                _append_reason_code(REASON_ARCHIVE_INGEST_FAILED)
+                _append_reason_code(REASON_GST_PUBLISH_SKIPPED_DUE_INGEST_FAILURE)
                 stage_metrics["gst_publish"] = {
                     "stage_marker": "skipped_due_archive_ingest_failure",
-                    "reason_codes": [REASON_ARCHIVE_INGEST_FAILED],
+                    "reason_codes": [
+                        REASON_ARCHIVE_INGEST_FAILED,
+                        REASON_GST_PUBLISH_SKIPPED_DUE_INGEST_FAILURE,
+                    ],
                     "not_attempted": True,
                 }
                 log_event(
@@ -3994,7 +4010,10 @@ async def _run_store_discovery(
                     message="GST publish not attempted because archive ingest failed",
                     store_code=store.store_code,
                     stage_marker="skipped_due_archive_ingest_failure",
-                    reason_code=REASON_ARCHIVE_INGEST_FAILED,
+                    reason_codes=[
+                        REASON_ARCHIVE_INGEST_FAILED,
+                        REASON_GST_PUBLISH_SKIPPED_DUE_INGEST_FAILURE,
+                    ],
                     not_attempted=True,
                 )
 
@@ -4098,8 +4117,7 @@ async def _run_store_discovery(
             )
         )
         for code in publish_reason_codes:
-            if code not in reason_codes:
-                reason_codes.append(code)
+            _append_reason_code(code)
         status_label = (
             "warning"
             if any(v == "failed" for v in stage_statuses.values())

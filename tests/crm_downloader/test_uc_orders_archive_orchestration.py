@@ -163,7 +163,6 @@ async def test_archive_orchestration_uses_api_only_and_produces_archive_outputs(
         from_date=date(2025, 1, 1),
         to_date=date(2025, 1, 1),
         download_timeout_ms=1000,
-        archive_extraction_mode=uc_main.UC_ARCHIVE_EXTRACTION_MODE_API,
     )
 
     assert collect_archive_api_mock.await_count == 1
@@ -184,6 +183,105 @@ async def test_archive_orchestration_uses_api_only_and_produces_archive_outputs(
         "order_details",
         "payment_details",
     }
+
+
+@pytest.mark.asyncio
+async def test_archive_orchestration_ingest_exception_sets_reason_codes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    logger = JsonLogger(stream=io.StringIO(), log_file_path=None)
+    summary = uc_main.UcOrdersDiscoverySummary(
+        run_id="run-api-2",
+        run_env="test",
+        report_date=date(2025, 1, 1),
+        report_end_date=date(2025, 1, 1),
+        started_at=datetime.now(timezone.utc),
+        store_codes=["A101"],
+    )
+    store = uc_main.UcStore(
+        store_code="A101",
+        store_name="Store B",
+        cost_center="CC02",
+        sync_config={
+            "urls": {
+                "home": "https://example.com/home",
+                "orders_link": "https://example.com/orders",
+                "login": "https://example.com/login",
+            },
+            "username": "user",
+            "password": "pass",
+        },
+    )
+
+    (tmp_path / "A101_storage_state.json").write_text("{}")
+
+    monkeypatch.setattr(
+        uc_main,
+        "config",
+        type("_Cfg", (), {"database_url": "postgres://db", "pipeline_skip_dom_logging": True})(),
+    )
+    monkeypatch.setattr(uc_main, "default_profiles_dir", lambda: tmp_path)
+    monkeypatch.setattr(uc_main, "_resolve_uc_download_dir", lambda *_: tmp_path)
+    monkeypatch.setattr(uc_main, "_insert_orders_sync_log", AsyncMock(return_value=1))
+    monkeypatch.setattr(uc_main, "_update_orders_sync_log", AsyncMock())
+    monkeypatch.setattr(uc_main, "_assert_home_ready", AsyncMock(return_value=True))
+    monkeypatch.setattr(uc_main, "_navigate_to_gst_reports", AsyncMock(return_value=False))
+    monkeypatch.setattr(uc_main, "_try_direct_gst_reports", AsyncMock(return_value=(False, None)))
+    monkeypatch.setattr(uc_main, "_navigate_to_archive_orders", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        uc_main,
+        "collect_gst_orders_via_api",
+        AsyncMock(
+            return_value=uc_main.GstApiExtract(
+                gst_rows=[{"order_number": "UC-101"}],
+                base_rows=[{"order_code": "UC-101"}],
+                order_detail_rows=[{"order_code": "UC-101"}],
+                payment_detail_rows=[{"order_code": "UC-101"}],
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        uc_main,
+        "ingest_uc_archive_excels",
+        AsyncMock(side_effect=RuntimeError("forced ingest failure")),
+    )
+
+    publish_orders_mock = AsyncMock()
+    publish_sales_mock = AsyncMock()
+    monkeypatch.setattr(uc_main, "publish_uc_gst_order_details_to_orders", publish_orders_mock)
+    monkeypatch.setattr(uc_main, "publish_uc_gst_payments_to_sales", publish_sales_mock)
+
+    await uc_main._run_store_discovery(
+        browser=_FakeBrowser(),
+        store=store,
+        logger=logger,
+        run_env="test",
+        run_id="run-api-2",
+        run_date=datetime.now(timezone.utc),
+        summary=summary,
+        from_date=date(2025, 1, 1),
+        to_date=date(2025, 1, 1),
+        download_timeout_ms=1000,
+    )
+
+    outcome = summary.store_outcomes["A101"]
+    assert outcome.stage_statuses["archive_ingest"] == "failed"
+    assert outcome.stage_statuses["gst_publish"] == "skipped"
+    assert outcome.reason_codes
+    assert uc_main.REASON_ARCHIVE_INGEST_FAILED in outcome.reason_codes
+    assert uc_main.REASON_GST_PUBLISH_SKIPPED_DUE_INGEST_FAILURE in outcome.reason_codes
+
+    window_result = summary.window_audit[-1]
+    assert window_result["store_code"] == "A101"
+    assert window_result["reason_codes"]
+    assert uc_main.REASON_ARCHIVE_INGEST_FAILED in window_result["reason_codes"]
+    assert (
+        uc_main.REASON_GST_PUBLISH_SKIPPED_DUE_INGEST_FAILURE
+        in window_result["reason_codes"]
+    )
+
+    assert publish_orders_mock.await_count == 0
+    assert publish_sales_mock.await_count == 0
 
 
 def test_resolve_uc_archive_extraction_mode_rejects_ui_flags(
