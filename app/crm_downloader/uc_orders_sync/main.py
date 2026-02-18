@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import contextlib
 import hashlib
+import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -30,7 +31,6 @@ from app.config import config
 from app.crm_downloader.browser import launch_browser
 from app.crm_downloader.config import default_download_dir, default_profiles_dir
 from app.crm_downloader.uc_orders_sync.archive_ingest import ingest_uc_archive_excels
-from app.crm_downloader.uc_orders_sync.archive_api_extract import collect_archive_orders_via_api
 from app.crm_downloader.uc_orders_sync.gst_api_extract import (
     GST_API_BASE_COLUMNS,
     GST_API_GST_COLUMNS,
@@ -63,7 +63,6 @@ from app.dashboard_downloader.run_summary import (
 )
 
 PIPELINE_NAME = "uc_orders_sync"
-UC_ARCHIVE_EXTRACTION_MODE_API = "api"
 STAGE_CREATED_COHORT_EXTRACT = "created_cohort_extract"
 STAGE_ORDERS_INGEST = "ingest"
 NAV_TIMEOUT_MS = 90_000
@@ -1355,11 +1354,6 @@ def _validate_legacy_archive_extraction_env() -> None:
         raise ValueError(
             "UC_ARCHIVE_UI_ENABLED is no longer supported; archive extraction execution has been removed."
         )
-
-
-def _resolve_uc_archive_extraction_mode() -> str:
-    _validate_legacy_archive_extraction_env()
-    return UC_ARCHIVE_EXTRACTION_MODE_API
 
 
 def _resolve_uc_download_dir(
@@ -3394,7 +3388,6 @@ async def _run_store_discovery(
     from_date: date,
     to_date: date,
     download_timeout_ms: int,
-    archive_extraction_mode: str = UC_ARCHIVE_EXTRACTION_MODE_API,
 ) -> None:
     """Execute one store window using two lifecycle cohorts over the same date range.
 
@@ -3860,77 +3853,13 @@ async def _run_store_discovery(
             return
 
         reason_codes: list[str] = []
-        extractor_reason_codes: list[str] = []
-        extractor_error_counters: dict[str, int] = {}
-        if archive_extraction_mode != UC_ARCHIVE_EXTRACTION_MODE_API:
-            raise ValueError(f"Unsupported archive_extraction_mode: {archive_extraction_mode}")
-        try:
-            archive_api_extract = await collect_archive_orders_via_api(
-                page=page,
-                store=store,
-                logger=logger,
-                from_date=from_date,
-                to_date=to_date,
-            )
-            archive_api_base_path = (
-                download_dir
-                / _format_gst_derived_filename(
-                    store.store_code,
-                    from_date,
-                    to_date,
-                    artifact_type="base_order_info",
-                    run_id=run_id,
-                )
-            )
-            archive_api_order_details_path = (
-                download_dir
-                / _format_gst_derived_filename(
-                    store.store_code,
-                    from_date,
-                    to_date,
-                    artifact_type="order_details",
-                    run_id=run_id,
-                )
-            )
-            archive_api_payment_details_path = (
-                download_dir
-                / _format_gst_derived_filename(
-                    store.store_code,
-                    from_date,
-                    to_date,
-                    artifact_type="payment_details",
-                    run_id=run_id,
-                )
-            )
-            _write_excel_rows(
-                archive_api_base_path,
-                archive_api_extract.base_rows,
-                GST_API_BASE_COLUMNS,
-            )
-            _write_excel_rows(
-                archive_api_order_details_path,
-                archive_api_extract.order_detail_rows,
-                ARCHIVE_ORDER_DETAIL_COLUMNS,
-            )
-            _write_excel_rows(
-                archive_api_payment_details_path,
-                archive_api_extract.payment_detail_rows,
-                ARCHIVE_PAYMENT_COLUMNS,
-            )
-            staging_feed_base_path = archive_api_base_path
-            staging_feed_order_details_path = archive_api_order_details_path
-            staging_feed_payment_details_path = archive_api_payment_details_path
-            extractor_reason_codes.extend(archive_api_extract.extractor_reason_codes)
-            extractor_error_counters.update(archive_api_extract.extractor_error_counters)
-        except Exception as exc:
-            log_event(
-                logger=logger,
-                phase="archive_api_extract",
-                status="warn",
-                message="Archive API extraction failed; continuing with GST-derived staging feed",
-                store_code=store.store_code,
-                error=str(exc),
-            )
+        log_event(
+            logger=logger,
+            phase="archive_api_extract",
+            status="info",
+            message="Archive API extraction execution retired; using GST-derived staging feed",
+            store_code=store.store_code,
+        )
         rows_missing_estimate: int | None = None
         base_count = len(gst_api_extract.base_rows) if gst_api_extract else 0
         order_details_count = len(gst_api_extract.order_detail_rows) if gst_api_extract else 0
@@ -3960,8 +3889,6 @@ async def _run_store_discovery(
                 "payments_observed_in_delivery_window": payment_details_count,
                 "source": "gst_api_only",
                 "reason_codes": reason_codes,
-                "extractor_reason_codes": extractor_reason_codes,
-                "extractor_error_counters": extractor_error_counters,
             },
         }
 
@@ -4138,9 +4065,6 @@ async def _run_store_discovery(
         for code in publish_reason_codes:
             if code not in reason_codes:
                 reason_codes.append(code)
-        for code in extractor_reason_codes:
-            if code not in reason_codes:
-                reason_codes.append(code)
         status_label = (
             "warning"
             if any(v == "failed" for v in stage_statuses.values())
@@ -4200,7 +4124,7 @@ async def _run_store_discovery(
             footer_baseline_stable=False,
             base_rows_extracted=base_count,
             rows_missing_estimate=rows_missing_estimate,
-            archive_extractor_error_counters=extractor_error_counters,
+            archive_extractor_error_counters={},
         )
         summary.record_store(store.store_code, outcome)
         log_event(
@@ -4259,7 +4183,6 @@ async def _run_store_discovery(
         sync_status = _resolve_sync_log_status(
             outcome=outcome, download_succeeded=download_succeeded, row_count=row_count
         )
-        has_rows = _has_rows(row_count, outcome.staging_rows)
         no_data = not outcome.download_path and outcome.staging_rows == 0
         skip_reason: str | None = None
         if sync_status == "skipped":
@@ -4423,8 +4346,8 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
             element_count=len(visible_elements),
             elements=visible_elements[:20],
         )
-    for field in ("username", "password"):
-        selector = selectors[field]
+    for form_field in ("username", "password"):
+        selector = selectors[form_field]
         locator = page.locator(selector).first
         try:
             await locator.wait_for(state="visible", timeout=NAV_TIMEOUT_MS)
@@ -6770,7 +6693,6 @@ async def _wait_for_report_refresh(
         network_idle_reached = True
 
     export_ready = False
-    export_selector_used: str | None = None
     export_button: Locator | None = None
     for selector in GST_CONTROL_SELECTORS["export_button"]:
         export_locator = container.locator(selector)
@@ -6780,7 +6702,6 @@ async def _wait_for_report_refresh(
             export_count = 0
         if export_count > 0:
             export_button = export_locator.first
-            export_selector_used = selector
             break
 
     if export_button is not None:

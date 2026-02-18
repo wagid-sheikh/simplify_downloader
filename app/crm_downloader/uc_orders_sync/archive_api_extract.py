@@ -1,3 +1,5 @@
+"""Archive API helpers retained for shared GST invoice parsing; direct archive execution is retired."""
+
 from __future__ import annotations
 
 import asyncio
