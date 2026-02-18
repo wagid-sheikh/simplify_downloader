@@ -170,7 +170,13 @@ def _normalize_drop_reason(drop_reason: str | None) -> str:
         return "missing_order_number"
     if "missing invoice_date" in drop_reason:
         return "missing_invoice_date"
+    if "invalid invoice_date" in drop_reason:
+        return "invalid_invoice_date"
     return "missing_required_fields"
+
+
+def _normalize_naive_datetime(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=get_timezone())
 
 
 def _stg_uc_orders_table(metadata: sa.MetaData) -> sa.Table:
@@ -342,10 +348,10 @@ def _parse_datetime(
     if value in (None, ""):
         return None
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=get_timezone())
+        return _normalize_naive_datetime(value)
     try:
         parsed = parser.parse(str(value), dayfirst=dayfirst)
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=get_timezone())
+        return _normalize_naive_datetime(parsed)
     except Exception:
         warnings.append(f"Could not parse datetime for {field}: {value}")
         row_remarks.append(f"Field {field} could not be parsed from value '{value}' (field cleared)")
@@ -358,9 +364,9 @@ def _parse_invoice_date_strict(
     if value in (None, ""):
         return None
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=get_timezone())
+        return _normalize_naive_datetime(value)
     if isinstance(value, date):
-        return datetime(value.year, value.month, value.day, tzinfo=get_timezone())
+        return _normalize_naive_datetime(datetime(value.year, value.month, value.day))
 
     value_str = str(value).strip()
     if not value_str:
@@ -369,13 +375,13 @@ def _parse_invoice_date_strict(
     for fmt in ("%d/%m/%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
         try:
             parsed = datetime.strptime(value_str, fmt)
-            return parsed if parsed.tzinfo else parsed.replace(tzinfo=get_timezone())
+            return _normalize_naive_datetime(parsed)
         except ValueError:
             continue
 
     try:
         parsed_iso = parser.isoparse(value_str)
-        return parsed_iso if parsed_iso.tzinfo else parsed_iso.replace(tzinfo=get_timezone())
+        return _normalize_naive_datetime(parsed_iso)
     except (TypeError, ValueError):
         warnings.append(
             f"Invalid invoice_date format (expected dd/mm/yyyy, yyyy-mm-dd, yyyy-mm-dd hh:mm:ss, or ISO-8601): {value_str}"
@@ -458,9 +464,8 @@ def _coerce_row(
     row["invoice_number"] = _normalize_invoice_number(
         row.get("invoice_number"), warnings=warnings, row_remarks=row_remarks
     )
-    row["invoice_date"] = _parse_invoice_date_strict(
-        row.get("invoice_date"), warnings=warnings, row_remarks=row_remarks
-    )
+    raw_invoice_date = row.get("invoice_date")
+    row["invoice_date"] = _parse_invoice_date_strict(raw_invoice_date, warnings=warnings, row_remarks=row_remarks)
     for field in NUMERIC_FIELDS:
         row[field] = _parse_numeric(row.get(field), warnings=warnings, field=field, row_remarks=row_remarks)
     row["mobile_number"] = _normalize_phone(
@@ -478,7 +483,9 @@ def _coerce_row(
         drop_reason = warning
         return {}, row_remarks, drop_reason
     if row["invoice_date"] is None:
-        warning = f"Skipping row with missing invoice_date for order {row['order_number']}"
+        has_invoice_date_value = bool(str(raw_invoice_date).strip()) if raw_invoice_date is not None else False
+        reason = "invalid" if has_invoice_date_value else "missing"
+        warning = f"Skipping row with {reason} invoice_date for order {row['order_number']}"
         warnings.append(warning)
         drop_reason = warning
         return {}, row_remarks, drop_reason
