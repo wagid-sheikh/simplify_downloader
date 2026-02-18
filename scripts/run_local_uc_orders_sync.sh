@@ -25,11 +25,11 @@ ensure_writable_dir() {
 preflight_legacy_archive_extraction_env() {
   local legacy_vars=()
 
-  if [[ -v UC_ARCHIVE_EXTRACTION_MODE ]]; then
+  if [[ ${UC_ARCHIVE_EXTRACTION_MODE+x} ]]; then
     legacy_vars+=("UC_ARCHIVE_EXTRACTION_MODE")
   fi
 
-  if [[ -v UC_ARCHIVE_UI_ENABLED ]]; then
+  if [[ ${UC_ARCHIVE_UI_ENABLED+x} ]]; then
     legacy_vars+=("UC_ARCHIVE_UI_ENABLED")
   fi
 
