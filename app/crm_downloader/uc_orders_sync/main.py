@@ -36,7 +36,6 @@ from app.crm_downloader.uc_orders_sync.archive_api_extract import (
 from app.crm_downloader.uc_orders_sync.gst_api_extract import (
     GST_API_BASE_COLUMNS,
     GST_API_GST_COLUMNS,
-    GST_API_PAYMENT_COLUMNS,
     GstApiExtract,
     collect_gst_orders_via_api,
 )
@@ -3538,6 +3537,9 @@ async def _run_store_discovery(
         gst_api_base_path: Path | None = None
         gst_api_order_details_path: Path | None = None
         gst_api_payment_details_path: Path | None = None
+        staging_feed_base_path: Path | None = None
+        staging_feed_order_details_path: Path | None = None
+        staging_feed_payment_details_path: Path | None = None
 
         if storage_state_exists:
             log_event(
@@ -3697,8 +3699,11 @@ async def _run_store_discovery(
             _write_excel_rows(
                 gst_api_payment_details_path,
                 gst_api_extract.payment_detail_rows,
-                GST_API_PAYMENT_COLUMNS,
+                ARCHIVE_PAYMENT_COLUMNS,
             )
+            staging_feed_base_path = gst_api_base_path
+            staging_feed_order_details_path = gst_api_order_details_path
+            staging_feed_payment_details_path = gst_api_payment_details_path
             log_event(
                 logger=logger,
                 phase="gst_api_extract",
@@ -4093,15 +4098,30 @@ async def _run_store_discovery(
         else:
             ingest_completed = False
             try:
+                missing_staging_feed_files = [
+                    str(path)
+                    for path in (
+                        staging_feed_base_path,
+                        staging_feed_order_details_path,
+                        staging_feed_payment_details_path,
+                    )
+                    if path is None or not path.exists()
+                ]
+                if missing_staging_feed_files:
+                    raise FileNotFoundError(
+                        "GST staging feed artifacts missing before archive ingest: "
+                        + ", ".join(missing_staging_feed_files)
+                    )
+
                 ingest_result = await ingest_uc_archive_excels(
                     database_url=config.database_url,
                     run_id=run_id,
                     run_date=aware_now(),
                     store_code=store.store_code,
                     cost_center=store.cost_center,
-                    base_order_info_path=base_path,
-                    order_details_path=order_details_path,
-                    payment_details_path=payment_details_path,
+                    base_order_info_path=staging_feed_base_path,
+                    order_details_path=staging_feed_order_details_path,
+                    payment_details_path=staging_feed_payment_details_path,
                     logger=logger,
                 )
                 ingest_metrics = {
@@ -4115,7 +4135,7 @@ async def _run_store_discovery(
                     logger=logger,
                     phase="archive_ingest",
                     status="info",
-                    message="UC archive ingest completed",
+                    message="UC archive ingest completed from GST-centric staging feed",
                     store_code=store.store_code,
                     **ingest_metrics,
                 )

@@ -550,6 +550,14 @@ async def ingest_uc_archive_excels(
                 cc_lookup[sc] = resolved
 
     summary = ArchiveIngestResult(files={})
+    log_event(
+        logger,
+        "info",
+        "uc_archive_ingest_from_gst_staging_feed",
+        base_file=str(paths[FILE_BASE]),
+        order_details_file=str(paths[FILE_ORDER_DETAILS]),
+        payment_details_file=str(paths[FILE_PAYMENT_DETAILS]),
+    )
     for file_kind in [FILE_BASE, FILE_ORDER_DETAILS, FILE_PAYMENT_DETAILS]:
         file_result, file_rejects = await _ingest_file(
             database_url=database_url,
