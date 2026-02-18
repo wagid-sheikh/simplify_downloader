@@ -10,5 +10,4 @@ Use the standard runner:
 
 ## Runtime controls
 
-- `UC_ARCHIVE_EXTRACTION_MODE` (default: `api`): archive extraction mode (`api`, `ui`, `api_with_ui_fallback`).
 
