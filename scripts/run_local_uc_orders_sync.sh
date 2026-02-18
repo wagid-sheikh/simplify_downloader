@@ -22,6 +22,26 @@ ensure_writable_dir() {
   fi
 }
 
+preflight_legacy_archive_extraction_env() {
+  local legacy_vars=()
+
+  if [[ -v UC_ARCHIVE_EXTRACTION_MODE ]]; then
+    legacy_vars+=("UC_ARCHIVE_EXTRACTION_MODE")
+  fi
+
+  if [[ -v UC_ARCHIVE_UI_ENABLED ]]; then
+    legacy_vars+=("UC_ARCHIVE_UI_ENABLED")
+  fi
+
+  if (( ${#legacy_vars[@]} > 0 )); then
+    echo "Error: detected retired archive extraction env var(s): ${legacy_vars[*]}" >&2
+    echo "Remediation: remove UC_ARCHIVE_EXTRACTION_MODE and UC_ARCHIVE_UI_ENABLED from .env, shell profiles, and CI environment injectors." >&2
+    exit 1
+  fi
+}
+
+preflight_legacy_archive_extraction_env
+
 UC_SYNC_PATHS=()
 while IFS= read -r line; do
   UC_SYNC_PATHS+=("$line")
@@ -38,11 +58,6 @@ PROFILES_DIR="${UC_SYNC_PATHS[1]}"
 
 ensure_writable_dir "${DOWNLOAD_DIR}"
 ensure_writable_dir "${PROFILES_DIR}"
-
-# UC orders sync runs API-only GST extraction and API archive extraction.
-: "${UC_ARCHIVE_EXTRACTION_MODE:=api}"
-
-export UC_ARCHIVE_EXTRACTION_MODE
 
 CLI_ARGS=("$@")
 
