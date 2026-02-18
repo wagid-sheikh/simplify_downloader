@@ -382,7 +382,7 @@ def _build_archive_request_headers(*, bearer_token: str | None) -> dict[str, str
 async def _resolve_archive_bearer_token(*, page: Page, logger: JsonLogger, store_code: str) -> str | None:
     try:
         candidate = await page.evaluate(
-            """
+            r"""
             () => {
               const tokenRegexes = [
                 /(?:^|\s)Bearer\s+([A-Za-z0-9\-_.~+/]+=*)/i,
