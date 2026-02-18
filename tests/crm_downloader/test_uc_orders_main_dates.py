@@ -50,11 +50,6 @@ async def test_main_honors_explicit_from_to_dates(
     )
     monkeypatch.setattr(uc_main, "get_logger", lambda **_: _Logger())
     monkeypatch.setattr(uc_main, "log_event", lambda **_: None)
-    monkeypatch.setattr(
-        uc_main,
-        "_resolve_uc_archive_extraction_mode",
-        lambda: uc_main.UC_ARCHIVE_EXTRACTION_MODE_API,
-    )
     monkeypatch.setattr(uc_main, "_resolve_uc_max_workers", lambda: 1)
     monkeypatch.setattr(uc_main, "async_playwright", lambda: _AsyncPlaywrightContext())
     monkeypatch.setattr(uc_main, "launch_browser", lambda **_: _noop_async(_Browser()))
@@ -121,11 +116,6 @@ async def test_main_uses_dynamic_window_when_from_date_missing(
     )
     monkeypatch.setattr(uc_main, "get_logger", lambda **_: _Logger())
     monkeypatch.setattr(uc_main, "log_event", lambda **_: None)
-    monkeypatch.setattr(
-        uc_main,
-        "_resolve_uc_archive_extraction_mode",
-        lambda: uc_main.UC_ARCHIVE_EXTRACTION_MODE_API,
-    )
     monkeypatch.setattr(uc_main, "_resolve_uc_max_workers", lambda: 1)
     monkeypatch.setattr(uc_main, "async_playwright", lambda: _AsyncPlaywrightContext())
     monkeypatch.setattr(uc_main, "launch_browser", lambda **_: _noop_async(_Browser()))
