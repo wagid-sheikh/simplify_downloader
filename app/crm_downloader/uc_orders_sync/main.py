@@ -30,6 +30,7 @@ from app.config import config
 from app.crm_downloader.browser import launch_browser
 from app.crm_downloader.config import default_download_dir, default_profiles_dir
 from app.crm_downloader.uc_orders_sync.archive_ingest import ingest_uc_archive_excels
+from app.crm_downloader.uc_orders_sync.archive_api_extract import collect_archive_orders_via_api
 from app.crm_downloader.uc_orders_sync.gst_api_extract import (
     GST_API_BASE_COLUMNS,
     GST_API_GST_COLUMNS,
@@ -37,9 +38,9 @@ from app.crm_downloader.uc_orders_sync.gst_api_extract import (
     collect_gst_orders_via_api,
 )
 from app.crm_downloader.uc_orders_sync.ingest import ingest_uc_orders_workbook
-from app.crm_downloader.uc_orders_sync.archive_publish import (
-    publish_uc_archive_order_details_to_orders,
-    publish_uc_archive_payments_to_sales,
+from app.crm_downloader.uc_orders_sync.gst_publish import (
+    publish_uc_gst_order_details_to_orders,
+    publish_uc_gst_payments_to_sales,
 )
 from app.crm_downloader.orders_sync_window import (
     fetch_last_success_window_end,
@@ -62,6 +63,7 @@ from app.dashboard_downloader.run_summary import (
 )
 
 PIPELINE_NAME = "uc_orders_sync"
+UC_ARCHIVE_EXTRACTION_MODE_API = "api"
 STAGE_CREATED_COHORT_EXTRACT = "created_cohort_extract"
 STAGE_ORDERS_INGEST = "ingest"
 NAV_TIMEOUT_MS = 90_000
@@ -389,8 +391,8 @@ class StoreOutcome:
     final_updated: int | None = None
     stage_statuses: dict[str, str] = field(default_factory=dict)
     stage_metrics: dict[str, dict[str, Any]] = field(default_factory=dict)
-    archive_publish_orders: dict[str, Any] | None = None
-    archive_publish_sales: dict[str, Any] | None = None
+    gst_publish_orders: dict[str, Any] | None = None
+    gst_publish_sales: dict[str, Any] | None = None
     warning_rows: list[dict[str, Any]] = field(default_factory=list)
     dropped_rows: list[dict[str, Any]] = field(default_factory=list)
     reason_codes: list[str] = field(default_factory=list)
@@ -571,11 +573,13 @@ def _classify_store_window_status(outcome: StoreOutcome | None) -> str:
     if outcome.status == "error":
         return "failed"
     reason_codes = set(outcome.reason_codes or [])
+    if "archive_api_auth_failure" in reason_codes:
+        return "failed"
     if "partial_extraction" in reason_codes:
         return "partial"
     if (
         "footer_baseline_unavailable" in reason_codes
-        or _has_non_trivial_archive_publish_warning(outcome)
+        or _has_non_trivial_gst_publish_warning(outcome)
         or outcome.status == "warning"
     ):
         return "success_with_warnings"
@@ -584,22 +588,22 @@ def _classify_store_window_status(outcome: StoreOutcome | None) -> str:
     return "skipped"
 
 
-def _iter_archive_publish_metrics(
+def _iter_gst_publish_metrics(
     outcome: StoreOutcome | None,
 ) -> Iterable[dict[str, Any]]:
     if outcome is None:
         return ()
     publish_metrics: list[dict[str, Any]] = []
     for publish_result in (
-        outcome.archive_publish_orders,
-        outcome.archive_publish_sales,
+        outcome.gst_publish_orders,
+        outcome.gst_publish_sales,
     ):
         if isinstance(publish_result, Mapping):
             publish_metrics.append(publish_result)
     return publish_metrics
 
 
-def _iter_archive_publish_metrics_payloads(
+def _iter_gst_publish_metrics_payloads(
     *publish_results: Mapping[str, Any] | None
 ) -> Iterable[dict[str, Any]]:
     publish_metrics: list[dict[str, Any]] = []
@@ -609,36 +613,36 @@ def _iter_archive_publish_metrics_payloads(
     return publish_metrics
 
 
-def _archive_publish_warning_count(outcome: StoreOutcome | None) -> int:
-    return _archive_publish_warning_count_for_metrics(
-        outcome.archive_publish_orders if outcome else None,
-        outcome.archive_publish_sales if outcome else None,
+def _gst_publish_warning_count(outcome: StoreOutcome | None) -> int:
+    return _gst_publish_warning_count_for_metrics(
+        outcome.gst_publish_orders if outcome else None,
+        outcome.gst_publish_sales if outcome else None,
     )
 
 
-def _archive_publish_warning_count_for_metrics(
+def _gst_publish_warning_count_for_metrics(
     *publish_results: Mapping[str, Any] | None
 ) -> int:
     warning_count = 0
-    for publish_metrics in _iter_archive_publish_metrics_payloads(*publish_results):
+    for publish_metrics in _iter_gst_publish_metrics_payloads(*publish_results):
         warnings = publish_metrics.get("warnings")
         if isinstance(warnings, int) and warnings > 0:
             warning_count += warnings
     return warning_count
 
 
-def _archive_publish_reason_codes(outcome: StoreOutcome | None) -> set[str]:
-    return _archive_publish_reason_codes_for_metrics(
-        outcome.archive_publish_orders if outcome else None,
-        outcome.archive_publish_sales if outcome else None,
+def _gst_publish_reason_codes(outcome: StoreOutcome | None) -> set[str]:
+    return _gst_publish_reason_codes_for_metrics(
+        outcome.gst_publish_orders if outcome else None,
+        outcome.gst_publish_sales if outcome else None,
     )
 
 
-def _archive_publish_reason_codes_for_metrics(
+def _gst_publish_reason_codes_for_metrics(
     *publish_results: Mapping[str, Any] | None
 ) -> set[str]:
     reason_codes: set[str] = set()
-    for publish_metrics in _iter_archive_publish_metrics_payloads(*publish_results):
+    for publish_metrics in _iter_gst_publish_metrics_payloads(*publish_results):
         raw_reason_codes = publish_metrics.get("reason_codes")
         if isinstance(raw_reason_codes, Mapping):
             reason_codes.update(
@@ -647,13 +651,13 @@ def _archive_publish_reason_codes_for_metrics(
     return reason_codes
 
 
-def _has_non_trivial_archive_publish_warning(outcome: StoreOutcome | None) -> bool:
+def _has_non_trivial_gst_publish_warning(outcome: StoreOutcome | None) -> bool:
     if outcome is None:
         return False
-    publish_reason_codes = _archive_publish_reason_codes(outcome)
-    if "preflight_parent_coverage_near_zero" in publish_reason_codes:
+    publish_reason_codes = _gst_publish_reason_codes(outcome)
+    if "gst_lifecycle_parent_coverage_near_zero" in publish_reason_codes or "preflight_parent_coverage_near_zero" in publish_reason_codes:
         return True
-    for publish_metrics in _iter_archive_publish_metrics(outcome):
+    for publish_metrics in _iter_gst_publish_metrics(outcome):
         warnings = publish_metrics.get("warnings")
         skipped = publish_metrics.get("skipped")
         if (
@@ -664,6 +668,13 @@ def _has_non_trivial_archive_publish_warning(outcome: StoreOutcome | None) -> bo
         ):
             return True
     return False
+
+
+def _archive_extraction_gap(extract: ArchiveOrdersExtract) -> int:
+    baseline_total = extract.post_filter_footer_total
+    if baseline_total is None:
+        return 0
+    return max(int(baseline_total) - len(extract.base_rows), 0)
 
 
 @dataclass
@@ -862,11 +873,11 @@ class UcOrdersDiscoverySummary:
                     "staging_updated": outcome.staging_updated if outcome else None,
                     "final_inserted": outcome.final_inserted if outcome else None,
                     "final_updated": outcome.final_updated if outcome else None,
-                    "archive_publish_orders": (
-                        outcome.archive_publish_orders if outcome else None
+                    "gst_publish_orders": (
+                        outcome.gst_publish_orders if outcome else None
                     ),
-                    "archive_publish_sales": (
-                        outcome.archive_publish_sales if outcome else None
+                    "gst_publish_sales": (
+                        outcome.gst_publish_sales if outcome else None
                     ),
                 },
                 "stage_statuses": dict(outcome.stage_statuses) if outcome else {},
@@ -1363,7 +1374,7 @@ def _validate_legacy_archive_extraction_env() -> None:
     raw_mode = (os.getenv("UC_ARCHIVE_EXTRACTION_MODE") or "").strip().lower()
     if raw_mode:
         raise ValueError(
-            "UC_ARCHIVE_EXTRACTION_MODE is no longer supported; archive extraction execution has been removed."
+            "UC_ARCHIVE_EXTRACTION_MODE no longer supports UI; archive extraction execution has been removed."
         )
 
     ui_enabled = (os.getenv("UC_ARCHIVE_UI_ENABLED") or "").strip().lower()
@@ -1371,6 +1382,11 @@ def _validate_legacy_archive_extraction_env() -> None:
         raise ValueError(
             "UC_ARCHIVE_UI_ENABLED is no longer supported; archive extraction execution has been removed."
         )
+
+
+def _resolve_uc_archive_extraction_mode() -> str:
+    _validate_legacy_archive_extraction_env()
+    return UC_ARCHIVE_EXTRACTION_MODE_API
 
 
 def _resolve_uc_download_dir(
@@ -1837,11 +1853,13 @@ def _resolve_sync_log_status(
     if not has_output:
         return "skipped"
     reason_codes = set(outcome.reason_codes or [])
+    if "archive_api_auth_failure" in reason_codes:
+        return "failed"
     if "partial_extraction" in reason_codes:
         return "partial"
     if (
         "footer_baseline_unavailable" in reason_codes
-        or _has_non_trivial_archive_publish_warning(outcome)
+        or _has_non_trivial_gst_publish_warning(outcome)
         or outcome.status == "warning"
     ):
         return "success_with_warnings"
@@ -3403,6 +3421,7 @@ async def _run_store_discovery(
     from_date: date,
     to_date: date,
     download_timeout_ms: int,
+    archive_extraction_mode: str = UC_ARCHIVE_EXTRACTION_MODE_API,
 ) -> None:
     """Execute one store window using two lifecycle cohorts over the same date range.
 
@@ -3870,6 +3889,75 @@ async def _run_store_discovery(
         reason_codes: list[str] = []
         extractor_reason_codes: list[str] = []
         extractor_error_counters: dict[str, int] = {}
+        if archive_extraction_mode != UC_ARCHIVE_EXTRACTION_MODE_API:
+            raise ValueError(f"Unsupported archive_extraction_mode: {archive_extraction_mode}")
+        try:
+            archive_api_extract = await collect_archive_orders_via_api(
+                page=page,
+                store=store,
+                logger=logger,
+                from_date=from_date,
+                to_date=to_date,
+            )
+            archive_api_base_path = (
+                download_dir
+                / _format_archive_base_filename(
+                    store.store_code,
+                    from_date,
+                    to_date,
+                    archive_source="archive_api",
+                    run_id=run_id,
+                )
+            )
+            archive_api_order_details_path = (
+                download_dir
+                / _format_archive_order_details_filename(
+                    store.store_code,
+                    from_date,
+                    to_date,
+                    archive_source="archive_api",
+                    run_id=run_id,
+                )
+            )
+            archive_api_payment_details_path = (
+                download_dir
+                / _format_archive_payment_details_filename(
+                    store.store_code,
+                    from_date,
+                    to_date,
+                    archive_source="archive_api",
+                    run_id=run_id,
+                )
+            )
+            _write_excel_rows(
+                archive_api_base_path,
+                archive_api_extract.base_rows,
+                GST_API_BASE_COLUMNS,
+            )
+            _write_excel_rows(
+                archive_api_order_details_path,
+                archive_api_extract.order_detail_rows,
+                ARCHIVE_ORDER_DETAIL_COLUMNS,
+            )
+            _write_excel_rows(
+                archive_api_payment_details_path,
+                archive_api_extract.payment_detail_rows,
+                ARCHIVE_PAYMENT_COLUMNS,
+            )
+            staging_feed_base_path = archive_api_base_path
+            staging_feed_order_details_path = archive_api_order_details_path
+            staging_feed_payment_details_path = archive_api_payment_details_path
+            extractor_reason_codes.extend(archive_api_extract.extractor_reason_codes)
+            extractor_error_counters.update(archive_api_extract.extractor_error_counters)
+        except Exception as exc:
+            log_event(
+                logger=logger,
+                phase="archive_api_extract",
+                status="warn",
+                message="Archive API extraction failed; continuing with GST-derived staging feed",
+                store_code=store.store_code,
+                error=str(exc),
+            )
         rows_missing_estimate: int | None = None
         base_count = len(gst_api_extract.base_rows) if gst_api_extract else 0
         order_details_count = len(gst_api_extract.order_detail_rows) if gst_api_extract else 0
@@ -3882,12 +3970,12 @@ async def _run_store_discovery(
             orders_pulled_at=aware_now(),
         )
 
-        archive_publish_orders: dict[str, Any] | None = None
-        archive_publish_sales: dict[str, Any] | None = None
+        gst_publish_orders: dict[str, Any] | None = None
+        gst_publish_sales: dict[str, Any] | None = None
         stage_statuses: dict[str, str] = {
             **gst_ingest_stage_statuses,
             "archive_ingest": "skipped",
-            "archive_publish": "skipped",
+            "gst_publish": "skipped",
         }
         stage_metrics: dict[str, dict[str, Any]] = {
             **gst_ingest_stage_metrics,
@@ -3906,7 +3994,7 @@ async def _run_store_discovery(
 
         if not config.database_url:
             stage_statuses["archive_ingest"] = "failed"
-            stage_statuses["archive_publish"] = "skipped"
+            stage_statuses["gst_publish"] = "skipped"
             stage_metrics["archive_ingest"] = {
                 "error": "database_url is required for archive ingest/publish"
             }
@@ -3964,7 +4052,7 @@ async def _run_store_discovery(
                 )
             except Exception as exc:
                 stage_statuses["archive_ingest"] = "failed"
-                stage_statuses["archive_publish"] = "skipped"
+                stage_statuses["gst_publish"] = "skipped"
                 stage_metrics["archive_ingest"] = {"error": str(exc)}
                 log_event(
                     logger=logger,
@@ -3980,12 +4068,12 @@ async def _run_store_discovery(
                 orders_error: str | None = None
                 sales_error: str | None = None
                 try:
-                    orders_publish = await publish_uc_archive_order_details_to_orders(
+                    orders_publish = await publish_uc_gst_order_details_to_orders(
                         database_url=config.database_url,
                         run_id=run_id,
                         store_code=store.store_code,
                     )
-                    archive_publish_orders = {
+                    gst_publish_orders = {
                         "inserted": orders_publish.inserted,
                         "updated": orders_publish.updated,
                         "skipped": orders_publish.skipped,
@@ -3994,19 +4082,19 @@ async def _run_store_discovery(
                     }
                     log_event(
                         logger=logger,
-                        phase="archive_publish_orders",
+                        phase="gst_publish_orders",
                         status="info",
                         message="UC archive order-details publish completed",
                         store_code=store.store_code,
-                        metrics=archive_publish_orders,
+                        metrics=gst_publish_orders,
                     )
                 except Exception as exc:
                     publish_failed = True
                     orders_error = str(exc)
-                    archive_publish_orders = {"error": orders_error}
+                    gst_publish_orders = {"error": orders_error}
                     log_event(
                         logger=logger,
-                        phase="archive_publish_orders",
+                        phase="gst_publish_orders",
                         status="warn",
                         message="UC archive order-details publish failed; continuing to payments publish",
                         store_code=store.store_code,
@@ -4014,12 +4102,12 @@ async def _run_store_discovery(
                     )
 
                 try:
-                    sales_publish = await publish_uc_archive_payments_to_sales(
+                    sales_publish = await publish_uc_gst_payments_to_sales(
                         database_url=config.database_url,
                         run_id=run_id,
                         store_code=store.store_code,
                     )
-                    archive_publish_sales = {
+                    gst_publish_sales = {
                         "inserted": sales_publish.inserted,
                         "updated": sales_publish.updated,
                         "skipped": sales_publish.skipped,
@@ -4032,46 +4120,46 @@ async def _run_store_discovery(
                     }
                     log_event(
                         logger=logger,
-                        phase="archive_publish_sales",
+                        phase="gst_publish_sales",
                         status="warn" if sales_publish.preflight_warning else "info",
                         message="UC archive payment publish completed",
                         store_code=store.store_code,
-                        metrics=archive_publish_sales,
+                        metrics=gst_publish_sales,
                     )
                 except Exception as exc:
                     publish_failed = True
                     sales_error = str(exc)
-                    archive_publish_sales = {"error": sales_error}
+                    gst_publish_sales = {"error": sales_error}
                     log_event(
                         logger=logger,
-                        phase="archive_publish_sales",
+                        phase="gst_publish_sales",
                         status="warn",
                         message="UC archive payment publish failed; continuing with partial success",
                         store_code=store.store_code,
                         error=sales_error,
                     )
 
-                stage_statuses["archive_publish"] = (
+                stage_statuses["gst_publish"] = (
                     "failed" if publish_failed else "success"
                 )
-                stage_metrics["archive_publish"] = {
-                    "order_details_to_orders": archive_publish_orders,
-                    "payment_details_to_sales": archive_publish_sales,
+                stage_metrics["gst_publish"] = {
+                    "order_details_to_orders": gst_publish_orders,
+                    "payment_details_to_sales": gst_publish_sales,
                 }
                 if orders_error or sales_error:
-                    stage_metrics["archive_publish"]["errors"] = {
+                    stage_metrics["gst_publish"]["errors"] = {
                         "order_details_to_orders": orders_error,
                         "payment_details_to_sales": sales_error,
                     }
 
-        archive_warning_count = _archive_publish_warning_count_for_metrics(
-            archive_publish_orders,
-            archive_publish_sales,
+        archive_warning_count = _gst_publish_warning_count_for_metrics(
+            gst_publish_orders,
+            gst_publish_sales,
         )
         publish_reason_codes = sorted(
-            _archive_publish_reason_codes_for_metrics(
-                archive_publish_orders,
-                archive_publish_sales,
+            _gst_publish_reason_codes_for_metrics(
+                gst_publish_orders,
+                gst_publish_sales,
             )
         )
         for code in publish_reason_codes:
@@ -4128,8 +4216,8 @@ async def _run_store_discovery(
             rows_skipped_invalid_reasons=gst_rows_skipped_invalid_reasons,
             warning_rows=gst_warning_rows,
             dropped_rows=gst_dropped_rows,
-            archive_publish_orders=archive_publish_orders,
-            archive_publish_sales=archive_publish_sales,
+            gst_publish_orders=gst_publish_orders,
+            gst_publish_sales=gst_publish_sales,
             warning_count=archive_warning_count,
             reason_codes=reason_codes,
             footer_total=None,

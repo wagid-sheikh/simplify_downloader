@@ -14,16 +14,16 @@ from app.crm_downloader.uc_orders_sync.archive_ingest import (
     TABLE_ARCHIVE_ORDER_DETAILS,
     TABLE_ARCHIVE_PAYMENT_DETAILS,
 )
-from app.crm_downloader.uc_orders_sync.archive_publish import (
-    REASON_MISSING_PARENT_INGEST_FAILURE,
-    REASON_MISSING_PARENT_ORDER_CONTEXT,
-    REASON_MISSING_PARENT_SOURCE_ABSENT,
-    REASON_PREFLIGHT_PARENT_COVERAGE_LOW,
-    REASON_PREFLIGHT_PARENT_COVERAGE_NEAR_ZERO,
-    REASON_UNPARSEABLE_PAYMENT_DATE,
-    publish_uc_archive_order_details_to_orders,
-    publish_uc_archive_payments_to_sales,
-    publish_uc_archive_stage2_stage3,
+from app.crm_downloader.uc_orders_sync.gst_publish import (
+    REASON_GST_LIFECYCLE_PARENT_INGEST_FAILURE,
+    REASON_GST_LIFECYCLE_PARENT_ORDER_CONTEXT_MISSING,
+    REASON_GST_LIFECYCLE_PARENT_SOURCE_ABSENT,
+    REASON_GST_LIFECYCLE_PARENT_COVERAGE_LOW,
+    REASON_GST_LIFECYCLE_PARENT_COVERAGE_NEAR_ZERO,
+    REASON_GST_LIFECYCLE_UNPARSEABLE_PAYMENT_DATE,
+    publish_uc_gst_order_details_to_orders,
+    publish_uc_gst_payments_to_sales,
+    publish_uc_gst_stage2_stage3,
 )
 from app.crm_downloader.uc_orders_sync.ingest import _orders_table
 from app.crm_downloader.uc_orders_sync.ingest import _stg_uc_orders_table
@@ -125,7 +125,7 @@ async def test_orders_enrichment_recomputes_and_preserves_protected_columns(tmp_
         )
         await session.commit()
 
-    metrics = await publish_uc_archive_order_details_to_orders(database_url=db_url, run_id='run-1', store_code='UC567')
+    metrics = await publish_uc_gst_order_details_to_orders(database_url=db_url, run_id='run-1', store_code='UC567')
     assert metrics.updated == 1
 
     async with session_scope(db_url) as session:
@@ -173,8 +173,8 @@ async def test_payment_upsert_idempotency_and_null_transaction_collision(tmp_pat
         )
         await session.commit()
 
-    first = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-1', store_code='UC567')
-    second = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-1', store_code='UC567')
+    first = await publish_uc_gst_payments_to_sales(database_url=db_url, run_id='run-1', store_code='UC567')
+    second = await publish_uc_gst_payments_to_sales(database_url=db_url, run_id='run-1', store_code='UC567')
 
     assert first.inserted == 1
     assert first.updated == 0
@@ -209,14 +209,14 @@ async def test_payment_skip_reasons_and_metrics_and_orchestrator(tmp_path: Path)
         )
         await session.commit()
 
-    sales_metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-2', store_code='UC567')
+    sales_metrics = await publish_uc_gst_payments_to_sales(database_url=db_url, run_id='run-2', store_code='UC567')
     assert sales_metrics.skipped == 2
     assert sales_metrics.warnings == 1
-    assert sales_metrics.reason_codes[REASON_PREFLIGHT_PARENT_COVERAGE_NEAR_ZERO] == 1
+    assert sales_metrics.reason_codes[REASON_GST_LIFECYCLE_PARENT_COVERAGE_NEAR_ZERO] == 1
     assert sales_metrics.publish_parent_match_rate == 0.0
     assert sales_metrics.missing_parent_count == 1
 
-    stage = await publish_uc_archive_stage2_stage3(database_url=db_url, run_id='run-2', store_code='UC567')
+    stage = await publish_uc_gst_stage2_stage3(database_url=db_url, run_id='run-2', store_code='UC567')
     assert isinstance(stage.orders.updated, int)
     assert stage.sales.skipped >= 2
 
@@ -252,11 +252,11 @@ async def test_payment_publish_uses_historical_orders_when_current_run_stg_missi
         )
         await session.commit()
 
-    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-historical', store_code='UC777')
+    metrics = await publish_uc_gst_payments_to_sales(database_url=db_url, run_id='run-historical', store_code='UC777')
 
     assert metrics.inserted == 1
     assert metrics.skipped == 0
-    assert metrics.reason_codes.get(REASON_MISSING_PARENT_ORDER_CONTEXT, 0) == 0
+    assert metrics.reason_codes.get(REASON_GST_LIFECYCLE_PARENT_ORDER_CONTEXT_MISSING, 0) == 0
 
     async with session_scope(db_url) as session:
         row = (
@@ -311,11 +311,11 @@ async def test_payment_publish_reason_codes_distinguish_ingest_failure_vs_absent
         )
         await session.commit()
 
-    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-reasons', store_code='UC888')
+    metrics = await publish_uc_gst_payments_to_sales(database_url=db_url, run_id='run-reasons', store_code='UC888')
 
     assert metrics.inserted == 0
-    assert metrics.reason_codes[REASON_MISSING_PARENT_INGEST_FAILURE] == 1
-    assert metrics.reason_codes[REASON_MISSING_PARENT_SOURCE_ABSENT] == 1
+    assert metrics.reason_codes[REASON_GST_LIFECYCLE_PARENT_INGEST_FAILURE] == 1
+    assert metrics.reason_codes[REASON_GST_LIFECYCLE_PARENT_SOURCE_ABSENT] == 1
 
 
 @pytest.mark.asyncio
@@ -346,7 +346,7 @@ async def test_payment_publish_parent_coverage_full(tmp_path: Path) -> None:
         )
         await session.commit()
 
-    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-full', store_code='UC567')
+    metrics = await publish_uc_gst_payments_to_sales(database_url=db_url, run_id='run-full', store_code='UC567')
     assert metrics.publish_parent_match_rate == 1.0
     assert metrics.missing_parent_count == 0
     assert metrics.preflight_warning is None
@@ -370,13 +370,13 @@ async def test_payment_publish_parent_coverage_near_zero_preflight_skip(tmp_path
         )
         await session.commit()
 
-    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-zero', store_code='UC999')
+    metrics = await publish_uc_gst_payments_to_sales(database_url=db_url, run_id='run-zero', store_code='UC999')
     assert metrics.publish_parent_match_rate == 0.0
     assert metrics.missing_parent_count == 1
     assert metrics.inserted == 0
     assert metrics.skipped == 1
     assert metrics.warnings == 1
-    assert metrics.reason_codes[REASON_PREFLIGHT_PARENT_COVERAGE_NEAR_ZERO] == 1
+    assert metrics.reason_codes[REASON_GST_LIFECYCLE_PARENT_COVERAGE_NEAR_ZERO] == 1
     assert metrics.preflight_warning is not None
     assert "UC999:ORD-X" in metrics.preflight_warning
 
@@ -407,13 +407,13 @@ async def test_payment_publish_parent_coverage_mixed(tmp_path: Path) -> None:
         )
         await session.commit()
 
-    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-mixed', store_code='UC567')
+    metrics = await publish_uc_gst_payments_to_sales(database_url=db_url, run_id='run-mixed', store_code='UC567')
     assert metrics.publish_parent_match_rate == 0.5
     assert metrics.missing_parent_count == 1
     assert metrics.preflight_warning is not None
     assert metrics.inserted == 1
-    assert metrics.reason_codes[REASON_PREFLIGHT_PARENT_COVERAGE_LOW] == 1
-    assert metrics.reason_codes[REASON_MISSING_PARENT_SOURCE_ABSENT] == 1
+    assert metrics.reason_codes[REASON_GST_LIFECYCLE_PARENT_COVERAGE_LOW] == 1
+    assert metrics.reason_codes[REASON_GST_LIFECYCLE_PARENT_SOURCE_ABSENT] == 1
 
 
 @pytest.mark.asyncio
@@ -444,17 +444,17 @@ async def test_payment_publish_parent_coverage_low_logs_diagnostics(tmp_path: Pa
         await session.commit()
 
     caplog.set_level("WARNING")
-    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-low', store_code='UC567')
+    metrics = await publish_uc_gst_payments_to_sales(database_url=db_url, run_id='run-low', store_code='UC567')
 
     assert metrics.inserted == 1
-    assert metrics.reason_codes[REASON_PREFLIGHT_PARENT_COVERAGE_LOW] == 1
-    assert metrics.reason_codes[REASON_MISSING_PARENT_SOURCE_ABSENT] == 2
+    assert metrics.reason_codes[REASON_GST_LIFECYCLE_PARENT_COVERAGE_LOW] == 1
+    assert metrics.reason_codes[REASON_GST_LIFECYCLE_PARENT_SOURCE_ABSENT] == 2
     assert metrics.preflight_warning is not None
     assert "ORD-X" in metrics.preflight_warning
     assert metrics.preflight_diagnostics is not None
     assert metrics.preflight_diagnostics["matched_parent_keys"] == 1
 
-    warning_records = [r for r in caplog.records if "archive_publish_parent_preflight_low" in r.message]
+    warning_records = [r for r in caplog.records if "gst_publish_parent_preflight_low" in r.message]
     assert warning_records
 
 
@@ -490,7 +490,7 @@ async def test_payment_publish_uses_archive_base_fallback_when_stg_parent_exists
         )
         await session.commit()
 
-    metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-fallback', store_code='UC567')
+    metrics = await publish_uc_gst_payments_to_sales(database_url=db_url, run_id='run-fallback', store_code='UC567')
     assert metrics.inserted == 1
     assert metrics.missing_parent_count == 0
 
@@ -510,7 +510,7 @@ async def test_payment_publish_uses_archive_base_fallback_when_stg_parent_exists
 
 
 @pytest.mark.asyncio
-async def test_archive_publish_normalizes_join_keys_and_improves_parent_coverage(tmp_path: Path) -> None:
+async def test_gst_publish_normalizes_join_keys_and_improves_parent_coverage(tmp_path: Path) -> None:
     db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_parent_normalized.sqlite'}"
     await _create_tables(db_url)
 
@@ -548,16 +548,16 @@ async def test_archive_publish_normalizes_join_keys_and_improves_parent_coverage
         )
         await session.commit()
 
-    order_metrics = await publish_uc_archive_order_details_to_orders(database_url=db_url, run_id='run-normalized', store_code='UC567')
-    sales_metrics = await publish_uc_archive_payments_to_sales(database_url=db_url, run_id='run-normalized', store_code='UC567')
+    order_metrics = await publish_uc_gst_order_details_to_orders(database_url=db_url, run_id='run-normalized', store_code='UC567')
+    sales_metrics = await publish_uc_gst_payments_to_sales(database_url=db_url, run_id='run-normalized', store_code='UC567')
 
     assert order_metrics.updated == 1
-    assert order_metrics.reason_codes.get(REASON_MISSING_PARENT_ORDER_CONTEXT, 0) == 0
+    assert order_metrics.reason_codes.get(REASON_GST_LIFECYCLE_PARENT_ORDER_CONTEXT_MISSING, 0) == 0
     assert sales_metrics.publish_parent_match_rate == 1.0
     assert sales_metrics.missing_parent_count == 0
     assert sales_metrics.preflight_warning is None
-    assert sales_metrics.reason_codes.get(REASON_PREFLIGHT_PARENT_COVERAGE_NEAR_ZERO, 0) == 0
-    assert sales_metrics.reason_codes.get(REASON_MISSING_PARENT_ORDER_CONTEXT, 0) == 0
+    assert sales_metrics.reason_codes.get(REASON_GST_LIFECYCLE_PARENT_COVERAGE_NEAR_ZERO, 0) == 0
+    assert sales_metrics.reason_codes.get(REASON_GST_LIFECYCLE_PARENT_ORDER_CONTEXT_MISSING, 0) == 0
 
     async with session_scope(db_url) as session:
         order_row = (
@@ -602,7 +602,7 @@ async def test_payment_preflight_scoped_to_store_and_run_id(tmp_path: Path) -> N
         )
         await session.commit()
 
-    metrics = await publish_uc_archive_payments_to_sales(
+    metrics = await publish_uc_gst_payments_to_sales(
         database_url=db_url,
         store_code='UC610',
         run_id='run-uc610',
@@ -646,7 +646,7 @@ async def test_orders_enrichment_keeps_long_service_type_value(tmp_path: Path) -
         )
         await session.commit()
 
-    metrics = await publish_uc_archive_order_details_to_orders(
+    metrics = await publish_uc_gst_order_details_to_orders(
         database_url=db_url, run_id='run-long-service', store_code='UC610'
     )
 

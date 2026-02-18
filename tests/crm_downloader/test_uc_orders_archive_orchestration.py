@@ -131,12 +131,12 @@ async def test_archive_orchestration_uses_api_only_and_produces_archive_outputs(
     )
     monkeypatch.setattr(
         uc_main,
-        "publish_uc_archive_order_details_to_orders",
+        "publish_uc_gst_order_details_to_orders",
         AsyncMock(return_value=SimpleNamespace(inserted=1, updated=0, skipped=0, warnings=0, reason_codes=[])),
     )
     monkeypatch.setattr(
         uc_main,
-        "publish_uc_archive_payments_to_sales",
+        "publish_uc_gst_payments_to_sales",
         AsyncMock(
             return_value=SimpleNamespace(
                 inserted=1,
@@ -178,7 +178,7 @@ async def test_archive_orchestration_uses_api_only_and_produces_archive_outputs(
 
     outcome = summary.store_outcomes["A100"]
     assert outcome.stage_statuses["archive_ingest"] == "success"
-    assert outcome.stage_statuses["archive_publish"] == "success"
+    assert outcome.stage_statuses["gst_publish"] == "success"
     assert set(outcome.stage_metrics["archive_ingest"]["files"].keys()) == {
         "base",
         "order_details",
