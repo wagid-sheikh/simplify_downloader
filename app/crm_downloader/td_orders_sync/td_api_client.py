@@ -138,44 +138,63 @@ class TdApiClient:
             headers["Authorization"] = f"Bearer {token_discovery.token}"
         last_error: Exception | None = None
         status_code: int | None = None
+        token_refresh_attempted = False
         for attempt in range(self.config.max_retries + 1):
             await _StoreRateLimiter.wait_turn(self.store_code, self.config.min_interval_seconds)
-            started = time.perf_counter()
-            try:
-                response = await self.context.request.get(
-                    url,
-                    params=params,
-                    headers=headers,
-                    timeout=self.config.timeout_ms,
-                )
-                latency_ms = int((time.perf_counter() - started) * 1000)
-                status_code = response.status
-                metadata.append(
-                    build_api_request_metadata(
-                        url=str(response.url),
-                        method="GET",
-                        status=status_code,
-                        latency_ms=latency_ms,
-                        retry_count=attempt,
-                    ).as_dict()
-                )
-                if status_code < 400:
-                    return await response.json()
-                if status_code not in {408, 429, 500, 502, 503, 504}:
-                    return {}
-                last_error = RuntimeError(f"HTTP {status_code} from {endpoint}")
-            except PlaywrightError as exc:
-                latency_ms = int((time.perf_counter() - started) * 1000)
-                metadata.append(
-                    build_api_request_metadata(
-                        url=url,
-                        method="GET",
-                        status=status_code,
-                        latency_ms=latency_ms,
-                        retry_count=attempt,
-                    ).as_dict()
-                )
-                last_error = exc
+            for auth_attempt in range(2):
+                should_retry_with_refreshed_token = False
+                started = time.perf_counter()
+                try:
+                    response = await self.context.request.get(
+                        url,
+                        params=params,
+                        headers=headers,
+                        timeout=self.config.timeout_ms,
+                    )
+                    latency_ms = int((time.perf_counter() - started) * 1000)
+                    status_code = response.status
+
+                    if status_code == 401 and not token_refresh_attempted and auth_attempt == 0:
+                        token_refresh_attempted = True
+                        refreshed_discovery = await self._discover_reporting_token(force_refresh=True)
+                        refreshed_token = (refreshed_discovery.token or "").strip()
+                        if refreshed_token:
+                            headers["Authorization"] = f"Bearer {refreshed_token}"
+                        should_retry_with_refreshed_token = True
+
+                    metadata.append(
+                        build_api_request_metadata(
+                            url=str(response.url),
+                            method="GET",
+                            status=status_code,
+                            latency_ms=latency_ms,
+                            retry_count=attempt,
+                            token_refresh_attempted=token_refresh_attempted,
+                        ).as_dict()
+                    )
+
+                    if should_retry_with_refreshed_token:
+                        continue
+                    if status_code < 400:
+                        return await response.json()
+                    if status_code not in {408, 429, 500, 502, 503, 504}:
+                        return {}
+                    last_error = RuntimeError(f"HTTP {status_code} from {endpoint}")
+                    break
+                except PlaywrightError as exc:
+                    latency_ms = int((time.perf_counter() - started) * 1000)
+                    metadata.append(
+                        build_api_request_metadata(
+                            url=url,
+                            method="GET",
+                            status=status_code,
+                            latency_ms=latency_ms,
+                            retry_count=attempt,
+                            token_refresh_attempted=token_refresh_attempted,
+                        ).as_dict()
+                    )
+                    last_error = exc
+                    break
             if attempt < self.config.max_retries:
                 backoff = min(self.config.max_backoff_seconds, self.config.backoff_base_seconds * (2**attempt))
                 await asyncio.sleep(max(backoff, 0.0))
@@ -183,8 +202,8 @@ class TdApiClient:
             raise last_error
         return {}
 
-    async def _discover_reporting_token(self) -> _TokenDiscoveryResult:
-        if self._token_discovery is not None:
+    async def _discover_reporting_token(self, *, force_refresh: bool = False) -> _TokenDiscoveryResult:
+        if self._token_discovery is not None and not force_refresh:
             return self._token_discovery
 
         from_iframe = self._discover_token_from_iframe_url_query()
