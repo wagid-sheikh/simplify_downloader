@@ -436,18 +436,12 @@ async def collect_gst_orders_via_api(
         _, order_mode, _, _, _ = _extract_order_info(invoice_html, order_code)
         if order_mode:
             base_row["customer_source"] = order_mode
-<<<<<<< codex/review-uc_orders_sync-code-path-and-gaps
             gst_row["customer_source"] = order_mode
-=======
->>>>>>> uc_ordersdetails_payment_sync
 
         invoice_address = _extract_invoice_customer_address(invoice_html)
         if invoice_address:
             base_row["address"] = invoice_address
-<<<<<<< codex/review-uc_orders_sync-code-path-and-gaps
             gst_row["address"] = invoice_address
-=======
->>>>>>> uc_ordersdetails_payment_sync
 
         extract.order_detail_rows.extend(
             _parse_invoice_order_details(
