@@ -3945,6 +3945,46 @@ async def _wait_for_iframe(
     return page.frame_locator("#ifrmReport")
 
 
+async def _wait_for_report_iframe_auth_source(
+    page: Page,
+    *,
+    store: TdStore,
+    logger: JsonLogger,
+    phase: str = "api",
+    timeout_ms: int = 20_000,
+) -> bool:
+    iframe_src_locator = page.locator("#ifrmReport")
+    try:
+        await iframe_src_locator.first.wait_for(state="attached", timeout=timeout_ms)
+    except TimeoutError:
+        return False
+
+    deadline = asyncio.get_running_loop().time() + (timeout_ms / 1000.0)
+    while True:
+        iframe_src = await iframe_src_locator.first.get_attribute("src")
+        iframe_hostname = urlparse(iframe_src).hostname if iframe_src else None
+        if iframe_hostname == "reports.quickdrycleaning.com":
+            log_event(
+                logger=logger,
+                phase=phase,
+                message="Using report iframe host as API auth source-of-truth",
+                store_code=store.store_code,
+                iframe_src_hostname=iframe_hostname,
+            )
+            return True
+        if asyncio.get_running_loop().time() >= deadline:
+            log_event(
+                logger=logger,
+                phase=phase,
+                status="warn",
+                message="Report iframe host did not resolve to expected auth source",
+                store_code=store.store_code,
+                iframe_src_hostname=iframe_hostname,
+            )
+            return False
+        await asyncio.sleep(0.25)
+
+
 async def _observe_iframe_hydration(
     frame: FrameLocator, *, store: TdStore, logger: JsonLogger, timeout_ms: int = 20_000
 ) -> None:
@@ -6310,84 +6350,8 @@ async def _run_store_discovery(
             )
 
         api_fetch_result = TdApiFetchResult()
-        if source_mode != "ui":
-            try:
-                api_client = TdApiClient(
-                    store_code=store.store_code,
-                    context=context,
-                    storage_state_path=store.storage_state_path,
-                )
-                session_artifact = api_client.read_session_artifact()
-                log_event(
-                    logger=store_logger,
-                    phase="api",
-                    message="Prepared API client from per-store session artifact",
-                    store_code=store.store_code,
-                    storage_state=stored_state_path,
-                    artifact_has_cookies=bool(session_artifact.get("cookies")),
-                    artifact_has_origins=bool(session_artifact.get("origins")),
-                    source_mode=source_mode,
-                )
-                api_fetch_result = await api_client.fetch_reports(from_date=run_start_date, to_date=run_end_date)
-                api_request_metadata.extend(api_fetch_result.request_metadata)
-                log_event(
-                    logger=store_logger,
-                    phase="api",
-                    message="Fetched TD API reports",
-                    store_code=store.store_code,
-                    source_mode=source_mode,
-                    orders_rows=len(api_fetch_result.normalized_orders),
-                    sales_rows=len(api_fetch_result.normalized_sales),
-                    garments_rows=len(api_fetch_result.normalized_garments),
-                )
-            except Exception as exc:
-                log_event(
-                    logger=store_logger,
-                    phase="api",
-                    status="warn",
-                    message="TD API fetch failed; continuing according to source mode",
-                    store_code=store.store_code,
-                    source_mode=source_mode,
-                    error=str(exc),
-                )
-                if source_mode == "api_only":
-                    outcome = StoreOutcome(
-                        status="error",
-                        message=f"TD API fetch failed in api_only mode: {exc}",
-                        final_url=page.url,
-                        verification_seen=verification_seen,
-                        storage_state=stored_state_path,
-                    )
-                    return
-
         sales_only_mode = not run_orders
-        if source_mode in {"api_only", "api_primary"}:
-            orders_status = "ok" if api_fetch_result.normalized_orders else "warning"
-            sales_status = "ok" if api_fetch_result.normalized_sales else ("skipped" if not run_sales else "warning")
-            orders_report = StoreReport(
-                status=orders_status,
-                message="Orders sourced from API",
-                warning_rows=list(api_fetch_result.normalized_orders),
-                rows_downloaded=len(api_fetch_result.normalized_orders),
-                rows_ingested=0,
-                source_mode=source_mode,
-            )
-            sales_report = StoreReport(
-                status=sales_status,
-                message="Sales sourced from API" if run_sales else "Sales sync skipped by flag",
-                warning_rows=list(api_fetch_result.normalized_sales),
-                rows_downloaded=len(api_fetch_result.normalized_sales),
-                rows_ingested=0,
-                source_mode=source_mode,
-            )
-            outcome = StoreOutcome(
-                status="warning" if (orders_status == "warning" or sales_status == "warning") else "ok",
-                message="API primary path executed",
-                final_url=page.url,
-                verification_seen=verification_seen,
-                storage_state=stored_state_path,
-            )
-        elif not run_orders:
+        if not run_orders and source_mode == "ui":
             log_event(
                 logger=store_logger,
                 phase="orders",
@@ -6418,6 +6382,85 @@ async def _run_store_discovery(
 
             iframe_locator = await _wait_for_iframe(page, store=store, logger=store_logger)
             if iframe_locator is not None:
+                if source_mode != "ui":
+                    await _wait_for_report_iframe_auth_source(page, store=store, logger=store_logger)
+                    try:
+                        api_client = TdApiClient(
+                            store_code=store.store_code,
+                            context=context,
+                            storage_state_path=store.storage_state_path,
+                        )
+                        session_artifact = api_client.read_session_artifact()
+                        log_event(
+                            logger=store_logger,
+                            phase="api",
+                            message="Prepared API client from per-store session artifact",
+                            store_code=store.store_code,
+                            storage_state=stored_state_path,
+                            artifact_has_cookies=bool(session_artifact.get("cookies")),
+                            artifact_has_origins=bool(session_artifact.get("origins")),
+                            source_mode=source_mode,
+                        )
+                        api_fetch_result = await api_client.fetch_reports(from_date=run_start_date, to_date=run_end_date)
+                        api_request_metadata.extend(api_fetch_result.request_metadata)
+                        log_event(
+                            logger=store_logger,
+                            phase="api",
+                            message="Fetched TD API reports",
+                            store_code=store.store_code,
+                            source_mode=source_mode,
+                            orders_rows=len(api_fetch_result.normalized_orders),
+                            sales_rows=len(api_fetch_result.normalized_sales),
+                            garments_rows=len(api_fetch_result.normalized_garments),
+                        )
+                    except Exception as exc:
+                        log_event(
+                            logger=store_logger,
+                            phase="api",
+                            status="warn",
+                            message="TD API fetch failed; continuing according to source mode",
+                            store_code=store.store_code,
+                            source_mode=source_mode,
+                            error=str(exc),
+                        )
+                        if source_mode == "api_only":
+                            outcome = StoreOutcome(
+                                status="error",
+                                message=f"TD API fetch failed in api_only mode: {exc}",
+                                final_url=page.url,
+                                verification_seen=verification_seen,
+                                storage_state=stored_state_path,
+                            )
+                            return
+
+                    if source_mode in {"api_only", "api_primary"}:
+                        orders_status = "ok" if api_fetch_result.normalized_orders else "warning"
+                        sales_status = "ok" if api_fetch_result.normalized_sales else ("skipped" if not run_sales else "warning")
+                        orders_report = StoreReport(
+                            status=orders_status,
+                            message="Orders sourced from API",
+                            warning_rows=list(api_fetch_result.normalized_orders),
+                            rows_downloaded=len(api_fetch_result.normalized_orders),
+                            rows_ingested=0,
+                            source_mode=source_mode,
+                        )
+                        sales_report = StoreReport(
+                            status=sales_status,
+                            message="Sales sourced from API" if run_sales else "Sales sync skipped by flag",
+                            warning_rows=list(api_fetch_result.normalized_sales),
+                            rows_downloaded=len(api_fetch_result.normalized_sales),
+                            rows_ingested=0,
+                            source_mode=source_mode,
+                        )
+                        outcome = StoreOutcome(
+                            status="warning" if (orders_status == "warning" or sales_status == "warning") else "ok",
+                            message="API primary path executed",
+                            final_url=page.url,
+                            verification_seen=verification_seen,
+                            storage_state=stored_state_path,
+                        )
+                        return
+
                 if _dom_logging_enabled():
                     await _observe_iframe_hydration(iframe_locator, store=store, logger=store_logger)
                 else:
