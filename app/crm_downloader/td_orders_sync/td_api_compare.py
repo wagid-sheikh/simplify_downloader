@@ -8,6 +8,23 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import parse_qs, urlparse
 
+MISSING_KEY_PART = "<MISSING>"
+
+COMPARE_KEY_FIELDS_BY_DATASET: dict[str, tuple[str, ...]] = {
+    "orders": ("store_code", "order_number", "order_date"),
+    "sales": ("store_code", "order_number", "payment_date", "payment_mode"),
+    "garments": ("store_code", "order_number", "line_item_key"),
+}
+
+KEY_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "store_code": ("store_code", "store", "cost_center"),
+    "order_number": ("order_number", "order_no", "orderNo", "orderNumber"),
+    "order_date": ("order_date", "orderDate"),
+    "payment_date": ("payment_date", "paymentDate"),
+    "payment_mode": ("payment_mode", "paymentMode", "mode"),
+    "line_item_key": ("line_item_key", "lineItemKey", "itemKey", "line_identifier", "api_line_item_id"),
+}
+
 
 @dataclass(frozen=True)
 class CorrelationContext:
@@ -180,8 +197,51 @@ def build_api_request_metadata(
     )
 
 
-def _canonical_key(row: Mapping[str, Any], key_fields: Sequence[str]) -> str:
-    return "|".join(str(row.get(field) or "").strip() for field in key_fields)
+def _normalized_key_part(value: Any) -> str:
+    normalized = str(value).strip() if value is not None else ""
+    return normalized if normalized else MISSING_KEY_PART
+
+
+def _resolve_row_field(row: Mapping[str, Any], field: str, *, default_store_code: str | None = None) -> Any:
+    if field == "store_code" and default_store_code:
+        candidates = (*KEY_FIELD_ALIASES.get(field, (field,)),)
+        for candidate in candidates:
+            value = row.get(candidate)
+            if value is not None and str(value).strip():
+                return value
+        return default_store_code
+    for candidate in KEY_FIELD_ALIASES.get(field, (field,)):
+        value = row.get(candidate)
+        if value is not None and str(value).strip():
+            return value
+    return row.get(field)
+
+
+def _infer_default_store_code(ui_rows: Sequence[Mapping[str, Any]], api_rows: Sequence[Mapping[str, Any]]) -> str | None:
+    stores = {
+        str(_resolve_row_field(row, "store_code")).strip().upper()
+        for row in [*ui_rows, *api_rows]
+        if _resolve_row_field(row, "store_code") is not None and str(_resolve_row_field(row, "store_code")).strip()
+    }
+    return next(iter(stores)) if len(stores) == 1 else None
+
+
+def _canonical_key(
+    row: Mapping[str, Any],
+    key_fields: Sequence[str],
+    *,
+    default_store_code: str | None = None,
+) -> tuple[str, dict[str, str]]:
+    key_parts = {
+        field: _normalized_key_part(_resolve_row_field(row, field, default_store_code=default_store_code))
+        for field in key_fields
+    }
+    key = "|".join(key_parts[field] for field in key_fields)
+    return key, key_parts
+
+
+def _format_key_parts(key_parts: Mapping[str, str]) -> str:
+    return ", ".join(f"{field}={value}" for field, value in key_parts.items())
 
 
 def compare_canonical_rows(
@@ -193,17 +253,34 @@ def compare_canonical_rows(
     status_fields: Sequence[str] = ("status", "order_status"),
     sample_limit: int = 20,
 ) -> CompareMetrics:
-    ui_index = {_canonical_key(row, key_fields): row for row in ui_rows}
-    api_index = {_canonical_key(row, key_fields): row for row in api_rows}
+    ui_rows_seq = list(ui_rows)
+    api_rows_seq = list(api_rows)
+    default_store_code = _infer_default_store_code(ui_rows_seq, api_rows_seq)
+
+    ui_index: dict[str, Mapping[str, Any]] = {}
+    api_index: dict[str, Mapping[str, Any]] = {}
+    key_breakdown: dict[str, dict[str, str]] = {}
+
+    for row in ui_rows_seq:
+        key, parts = _canonical_key(row, key_fields, default_store_code=default_store_code)
+        ui_index[key] = row
+        key_breakdown.setdefault(key, parts)
+
+    for row in api_rows_seq:
+        key, parts = _canonical_key(row, key_fields, default_store_code=default_store_code)
+        api_index[key] = row
+        key_breakdown.setdefault(key, parts)
+
     keys = set(ui_index) | set(api_index)
 
-    missing_in_api = sorted(key for key in keys if key and key in ui_index and key not in api_index)
-    missing_in_ui = sorted(key for key in keys if key and key in api_index and key not in ui_index)
+    missing_in_api = sorted(key for key in keys if key in ui_index and key not in api_index)
+    missing_in_ui = sorted(key for key in keys if key in api_index and key not in ui_index)
     shared = sorted(key for key in keys if key in ui_index and key in api_index)
 
     amount_mismatches = 0
     status_mismatches = 0
     mismatch_samples: list[str] = []
+    mismatched_shared = 0
 
     for key in shared:
         ui_row = ui_index[key]
@@ -230,11 +307,19 @@ def compare_canonical_rows(
             amount_mismatches += 1
         if status_mismatch:
             status_mismatches += 1
+        if amount_mismatch or status_mismatch:
+            mismatched_shared += 1
         if (amount_mismatch or status_mismatch) and len(mismatch_samples) < sample_limit:
-            mismatch_samples.append(key)
+            mismatch_samples.append(f"shared_mismatch ({_format_key_parts(key_breakdown.get(key, {}))})")
 
-    matched_rows = len(shared) - len({*mismatch_samples})
-    sample_keys = (missing_in_api + missing_in_ui + mismatch_samples)[:sample_limit]
+    matched_rows = len(shared) - mismatched_shared
+    missing_api_samples = [
+        f"missing_in_api ({_format_key_parts(key_breakdown.get(key, {}))})" for key in missing_in_api
+    ]
+    missing_ui_samples = [
+        f"missing_in_ui ({_format_key_parts(key_breakdown.get(key, {}))})" for key in missing_in_ui
+    ]
+    sample_keys = (missing_api_samples + missing_ui_samples + mismatch_samples)[:sample_limit]
     return CompareMetrics(
         total_rows=len(keys),
         matched_rows=max(matched_rows, 0),
