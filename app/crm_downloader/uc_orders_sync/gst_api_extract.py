@@ -10,6 +10,8 @@ from urllib.parse import urlencode
 from playwright.async_api import Page
 
 from app.crm_downloader.uc_orders_sync.archive_api_extract import (
+    _extract_invoice_customer_address,
+    _extract_order_info,
     _fetch_invoice_html_with_retries,
     _parse_invoice_order_details,
     _resolve_archive_bearer_token,
@@ -430,6 +432,14 @@ async def collect_gst_orders_via_api(
             # but skip order-detail extraction when invoice content is unavailable.
             extract.base_rows.append(base_row)
             continue
+
+        _, order_mode, _, _, _ = _extract_order_info(invoice_html, order_code)
+        if order_mode:
+            base_row["customer_source"] = order_mode
+
+        invoice_address = _extract_invoice_customer_address(invoice_html)
+        if invoice_address:
+            base_row["address"] = invoice_address
 
         extract.order_detail_rows.extend(
             _parse_invoice_order_details(
