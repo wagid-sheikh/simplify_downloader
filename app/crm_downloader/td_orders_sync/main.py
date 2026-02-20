@@ -2078,6 +2078,7 @@ def _resolve_sync_log_status(
     sales_report: StoreReport | None,
     run_orders: bool,
     run_sales: bool,
+    source_mode: str = "ui",
 ) -> str:
     def _normalize_report_status(report: StoreReport | None, *, default: str) -> str:
         if report is None or not report.status:
@@ -2095,6 +2096,10 @@ def _resolve_sync_log_status(
     sales_skipped = sales_status == "skipped"
     sales_intentionally_skipped = sales_skipped and not run_sales
     has_warning = orders_status == "warning" or sales_status == "warning"
+
+    # In API shadow mode we intentionally keep the UI extraction path as the
+    # write source while API results are collected for comparison.
+    _ = source_mode
 
     if sales_status == "error" and orders_success:
         return "partial"
