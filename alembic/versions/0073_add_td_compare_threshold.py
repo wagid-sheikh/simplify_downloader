@@ -5,7 +5,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision = "0073_add_td_compare_threshold_verdicts"
+revision = "0073_add_td_compare_threshold"
 down_revision = "0072_add_td_sync_compare_log"
 branch_labels = None
 depends_on = None
