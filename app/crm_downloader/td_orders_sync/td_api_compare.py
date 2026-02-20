@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import parse_qs, urlparse
@@ -113,7 +113,7 @@ def parse_token_expiry(token: str | None) -> str | None:
     exp = payload_json.get("exp")
     if not isinstance(exp, (int, float)):
         return None
-    return datetime.fromtimestamp(exp, UTC).isoformat()
+    return datetime.fromtimestamp(exp, timezone.utc).isoformat()
 
 
 def collect_auth_diagnostics(storage_state_path: Path | None) -> AuthDiagnostics:

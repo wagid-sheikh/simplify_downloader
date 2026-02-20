@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from app.crm_downloader.td_orders_sync.main import _build_parser
-from app.crm_downloader.td_orders_sync.td_api_client import TdApiClient, _extract_rows
+from app.crm_downloader.td_orders_sync.td_api_client import TdApiClient, _extract_rows, _normalize_garment_rows
 
 
 def test_source_mode_parser_accepts_api_modes() -> None:
@@ -26,3 +26,11 @@ def test_api_client_reads_storage_state_artifact(tmp_path: Path) -> None:
     client = TdApiClient(store_code="a123", context=None, storage_state_path=artifact)  # type: ignore[arg-type]
     state = client.read_session_artifact()
     assert state["cookies"][0]["name"] == "session"
+
+
+def test_normalize_garment_rows_surfaces_ids_and_line_keys() -> None:
+    rows = _normalize_garment_rows([{"orderNo": "ORD-1", "lineItemId": "L1", "garmentId": "G1", "lineItemKey": "LK1"}])
+    assert rows[0]["order_number"] == "ORD-1"
+    assert rows[0]["api_line_item_id"] == "L1"
+    assert rows[0]["api_garment_id"] == "G1"
+    assert rows[0]["line_item_key"] == "LK1"

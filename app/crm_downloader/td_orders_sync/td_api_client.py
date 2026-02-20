@@ -213,10 +213,19 @@ def _normalize_sales_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _normalize_garment_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
-            "order_no": row.get("orderNo") or row.get("orderNumber"),
-            "invoice_no": row.get("invoiceNo"),
-            "amount": row.get("amount") or row.get("total"),
+            "order_no": row.get("orderNo") or row.get("orderNumber") or row.get("order_no"),
+            "order_number": row.get("orderNo") or row.get("orderNumber") or row.get("order_no"),
+            "api_order_id": row.get("orderId") or row.get("order_id"),
+            "api_line_item_id": row.get("lineItemId") or row.get("line_item_id") or row.get("itemId"),
+            "api_garment_id": row.get("garmentId") or row.get("garment_id"),
+            "line_item_key": row.get("lineItemKey") or row.get("itemKey") or row.get("line_item_key"),
+            "garment_name": row.get("garmentName") or row.get("garment") or row.get("itemName"),
+            "service_name": row.get("serviceName") or row.get("service") or row.get("processName"),
+            "quantity": row.get("quantity") or row.get("qty"),
+            "amount": row.get("amount") or row.get("total") or row.get("lineAmount"),
             "status": row.get("status") or row.get("stage"),
+            "updated_at": row.get("updatedAt") or row.get("updated_at"),
+            "order_date": row.get("orderDate") or row.get("order_date"),
         }
         for row in rows
     ]
