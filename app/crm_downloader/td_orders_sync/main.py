@@ -37,6 +37,7 @@ from app.crm_downloader.td_orders_sync.td_api_compare import (
     build_api_request_metadata,
     collect_auth_diagnostics,
     compare_canonical_rows,
+    COMPARE_KEY_FIELDS_BY_DATASET,
 )
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from app.dashboard_downloader.db_tables import orders_sync_log, pipelines, td_sync_compare_log
@@ -6844,7 +6845,7 @@ async def _run_store_discovery(
         compare_metrics_obj = compare_canonical_rows(
             ui_rows=ui_rows,
             api_rows=api_rows,
-            key_fields=("order_no", "order_id", "invoice_no"),
+            key_fields=COMPARE_KEY_FIELDS_BY_DATASET["orders"],
             sample_limit=WARNING_SAMPLE_LIMIT,
         )
         if source_mode == "api_shadow":

@@ -114,9 +114,9 @@ class TdApiClient:
         )
 
         return TdApiFetchResult(
-            normalized_orders=_normalize_order_rows(_extract_rows(order_payload)),
-            normalized_sales=_normalize_sales_rows(_extract_rows(sales_payload)),
-            normalized_garments=_normalize_garment_rows(_extract_rows(garments_payload)),
+            normalized_orders=_normalize_order_rows(_extract_rows(order_payload), store_code=self.store_code),
+            normalized_sales=_normalize_sales_rows(_extract_rows(sales_payload), store_code=self.store_code),
+            normalized_garments=_normalize_garment_rows(_extract_rows(garments_payload), store_code=self.store_code),
             request_metadata=metadata,
         )
 
@@ -346,47 +346,69 @@ def _extract_rows(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _normalize_order_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "order_no": row.get("orderNo") or row.get("orderNumber") or row.get("order_no"),
-            "order_id": row.get("orderId") or row.get("order_id"),
-            "invoice_no": row.get("invoiceNo") or row.get("invoice_no"),
-            "amount": row.get("amount") or row.get("netAmount") or row.get("net_amount"),
-            "status": row.get("status") or row.get("orderStatus") or row.get("order_status"),
-        }
-        for row in rows
-    ]
+def _normalize_order_rows(rows: list[dict[str, Any]], *, store_code: str) -> list[dict[str, Any]]:
+    normalized_store = store_code.upper().strip()
+    normalized_rows: list[dict[str, Any]] = []
+    for row in rows:
+        order_number = row.get("orderNo") or row.get("orderNumber") or row.get("order_no")
+        normalized_rows.append(
+            {
+                "store_code": normalized_store,
+                "order_no": order_number,
+                "order_number": order_number,
+                "order_id": row.get("orderId") or row.get("order_id"),
+                "invoice_no": row.get("invoiceNo") or row.get("invoice_no"),
+                "order_date": row.get("orderDate") or row.get("order_date"),
+                "amount": row.get("amount") or row.get("netAmount") or row.get("net_amount"),
+                "status": row.get("status") or row.get("orderStatus") or row.get("order_status"),
+            }
+        )
+    return normalized_rows
 
 
-def _normalize_sales_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "order_no": row.get("orderNo") or row.get("orderNumber") or row.get("order_no"),
-            "invoice_no": row.get("invoiceNo") or row.get("invoice_no"),
-            "amount": row.get("total") or row.get("amount") or row.get("netAmount"),
-            "status": row.get("status") or row.get("deliveryStatus"),
-        }
-        for row in rows
-    ]
+def _normalize_sales_rows(rows: list[dict[str, Any]], *, store_code: str) -> list[dict[str, Any]]:
+    normalized_store = store_code.upper().strip()
+    normalized_rows: list[dict[str, Any]] = []
+    for row in rows:
+        order_number = row.get("orderNo") or row.get("orderNumber") or row.get("order_no")
+        normalized_rows.append(
+            {
+                "store_code": normalized_store,
+                "order_no": order_number,
+                "order_number": order_number,
+                "invoice_no": row.get("invoiceNo") or row.get("invoice_no"),
+                "payment_date": row.get("paymentDate") or row.get("payment_date") or row.get("date"),
+                "payment_mode": row.get("paymentMode") or row.get("payment_mode") or row.get("mode"),
+                "amount": row.get("total") or row.get("amount") or row.get("netAmount"),
+                "status": row.get("status") or row.get("deliveryStatus"),
+            }
+        )
+    return normalized_rows
 
 
-def _normalize_garment_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "order_no": row.get("orderNo") or row.get("orderNumber") or row.get("order_no"),
-            "order_number": row.get("orderNo") or row.get("orderNumber") or row.get("order_no"),
-            "api_order_id": row.get("orderId") or row.get("order_id"),
-            "api_line_item_id": row.get("lineItemId") or row.get("line_item_id") or row.get("itemId"),
-            "api_garment_id": row.get("garmentId") or row.get("garment_id"),
-            "line_item_key": row.get("lineItemKey") or row.get("itemKey") or row.get("line_item_key"),
-            "garment_name": row.get("garmentName") or row.get("garment") or row.get("itemName"),
-            "service_name": row.get("serviceName") or row.get("service") or row.get("processName"),
-            "quantity": row.get("quantity") or row.get("qty"),
-            "amount": row.get("amount") or row.get("total") or row.get("lineAmount"),
-            "status": row.get("status") or row.get("stage"),
-            "updated_at": row.get("updatedAt") or row.get("updated_at"),
-            "order_date": row.get("orderDate") or row.get("order_date"),
-        }
-        for row in rows
-    ]
+def _normalize_garment_rows(rows: list[dict[str, Any]], *, store_code: str) -> list[dict[str, Any]]:
+    normalized_store = store_code.upper().strip()
+    normalized_rows: list[dict[str, Any]] = []
+    for row in rows:
+        order_number = row.get("orderNo") or row.get("orderNumber") or row.get("order_no")
+        line_item_key = row.get("lineItemKey") or row.get("itemKey") or row.get("line_item_key")
+        normalized_rows.append(
+            {
+                "store_code": normalized_store,
+                "order_no": order_number,
+                "order_number": order_number,
+                "api_order_id": row.get("orderId") or row.get("order_id"),
+                "api_line_item_id": row.get("lineItemId") or row.get("line_item_id") or row.get("itemId"),
+                "api_garment_id": row.get("garmentId") or row.get("garment_id"),
+                "line_item_key": line_item_key,
+                "line_identifier": line_item_key,
+                "garment_name": row.get("garmentName") or row.get("garment") or row.get("itemName"),
+                "service_name": row.get("serviceName") or row.get("service") or row.get("processName"),
+                "quantity": row.get("quantity") or row.get("qty"),
+                "amount": row.get("amount") or row.get("total") or row.get("lineAmount"),
+                "status": row.get("status") or row.get("stage"),
+                "updated_at": row.get("updatedAt") or row.get("updated_at"),
+                "order_date": row.get("orderDate") or row.get("order_date"),
+            }
+        )
+    return normalized_rows
