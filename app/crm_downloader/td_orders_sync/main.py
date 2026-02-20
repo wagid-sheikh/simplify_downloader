@@ -29,6 +29,7 @@ from app.crm_downloader.orders_sync_window import (
 )
 from app.crm_downloader.td_orders_sync.ingest import TdOrdersIngestResult, ingest_td_orders_workbook
 from app.crm_downloader.td_orders_sync.sales_ingest import TdSalesIngestResult, ingest_td_sales_workbook
+from app.crm_downloader.td_orders_sync.td_api_client import TdApiClient, TdApiFetchResult
 from app.crm_downloader.td_orders_sync.td_api_compare import (
     CorrelationContext,
     DecisionLog,
@@ -70,6 +71,7 @@ NAV_SNAPSHOT_SAMPLE_LIMIT = 3
 SALES_NAV_SAMPLE_LIMIT = 3
 ROW_SAMPLE_LIMIT = 3
 SNAPSHOT_TEXT_MAX_CHARS = 120
+TD_SOURCE_MODES = {"ui", "api_shadow", "api_primary", "api_only"}
 
 
 def _dom_logging_enabled() -> bool:
@@ -224,6 +226,7 @@ async def main(
     store_codes: Sequence[str] | None = None,
     run_orders: bool = True,
     run_sales: bool = True,
+    source_mode: str = "ui",
 ) -> None:
     """Run the TD Orders sync flow (login + iframe historical orders download)."""
 
@@ -235,6 +238,9 @@ async def main(
     if from_date and from_date > run_end_date:
         raise ValueError(f"from_date ({from_date}) must be on or before to_date ({run_end_date})")
     logger = get_logger(run_id=resolved_run_id)
+    source_mode = (source_mode or "ui").strip().lower()
+    if source_mode not in TD_SOURCE_MODES:
+        raise ValueError(f"source_mode must be one of {sorted(TD_SOURCE_MODES)}, got {source_mode!r}")
     stores = await _load_td_order_stores(logger=logger, store_codes=store_codes)
     store_start_dates: dict[str, date] = {}
     pipeline_id: int | None = None
@@ -343,6 +349,7 @@ async def main(
                     summary=summary,
                     run_orders=run_orders,
                     run_sales=run_sales,
+                    source_mode=source_mode,
                 )
 
             await browser.close()
@@ -2223,6 +2230,7 @@ def _log_td_window_summary(
     sales_report: StoreReport | None,
     run_orders: bool,
     run_sales: bool,
+    source_mode: str,
 ) -> None:
     final_status = _resolve_sync_log_status(
         orders_report=orders_report,
@@ -2250,6 +2258,7 @@ def _log_td_window_summary(
         orders_ingested_rows=_resolve_ingested_rows(orders_report),
         sales_ingested_rows=_resolve_ingested_rows(sales_report),
         final_status=final_status,
+        source_mode=source_mode,
     )
     has_downloads_or_ingest = any(
         [
@@ -5996,6 +6005,7 @@ async def _run_store_discovery(
     summary: TdOrdersDiscoverySummary,
     run_orders: bool,
     run_sales: bool,
+    source_mode: str,
 ) -> None:
     store_logger = logger.bind(store_code=store.store_code)
     correlation = _build_correlation_context(
@@ -6003,7 +6013,7 @@ async def _run_store_discovery(
         store_code=store.store_code,
         window_start=run_start_date,
         window_end=run_end_date,
-        source_mode="hybrid",
+        source_mode=source_mode,
     )
     log_event(
         logger=store_logger,
@@ -6272,8 +6282,85 @@ async def _run_store_discovery(
                 refreshed=login_performed,
             )
 
+        api_fetch_result = TdApiFetchResult()
+        if source_mode != "ui":
+            try:
+                api_client = TdApiClient(
+                    store_code=store.store_code,
+                    context=context,
+                    storage_state_path=store.storage_state_path,
+                )
+                session_artifact = api_client.read_session_artifact()
+                log_event(
+                    logger=store_logger,
+                    phase="api",
+                    message="Prepared API client from per-store session artifact",
+                    store_code=store.store_code,
+                    storage_state=stored_state_path,
+                    artifact_has_cookies=bool(session_artifact.get("cookies")),
+                    artifact_has_origins=bool(session_artifact.get("origins")),
+                    source_mode=source_mode,
+                )
+                api_fetch_result = await api_client.fetch_reports(from_date=run_start_date, to_date=run_end_date)
+                api_request_metadata.extend(api_fetch_result.request_metadata)
+                log_event(
+                    logger=store_logger,
+                    phase="api",
+                    message="Fetched TD API reports",
+                    store_code=store.store_code,
+                    source_mode=source_mode,
+                    orders_rows=len(api_fetch_result.normalized_orders),
+                    sales_rows=len(api_fetch_result.normalized_sales),
+                    garments_rows=len(api_fetch_result.normalized_garments),
+                )
+            except Exception as exc:
+                log_event(
+                    logger=store_logger,
+                    phase="api",
+                    status="warn",
+                    message="TD API fetch failed; continuing according to source mode",
+                    store_code=store.store_code,
+                    source_mode=source_mode,
+                    error=str(exc),
+                )
+                if source_mode == "api_only":
+                    outcome = StoreOutcome(
+                        status="error",
+                        message=f"TD API fetch failed in api_only mode: {exc}",
+                        final_url=page.url,
+                        verification_seen=verification_seen,
+                        storage_state=stored_state_path,
+                    )
+                    return
+
         sales_only_mode = not run_orders
-        if not run_orders:
+        if source_mode in {"api_only", "api_primary"}:
+            orders_status = "ok" if api_fetch_result.normalized_orders else "warning"
+            sales_status = "ok" if api_fetch_result.normalized_sales else ("skipped" if not run_sales else "warning")
+            orders_report = StoreReport(
+                status=orders_status,
+                message="Orders sourced from API",
+                warning_rows=list(api_fetch_result.normalized_orders),
+                rows_downloaded=len(api_fetch_result.normalized_orders),
+                rows_ingested=0,
+                source_mode=source_mode,
+            )
+            sales_report = StoreReport(
+                status=sales_status,
+                message="Sales sourced from API" if run_sales else "Sales sync skipped by flag",
+                warning_rows=list(api_fetch_result.normalized_sales),
+                rows_downloaded=len(api_fetch_result.normalized_sales),
+                rows_ingested=0,
+                source_mode=source_mode,
+            )
+            outcome = StoreOutcome(
+                status="warning" if (orders_status == "warning" or sales_status == "warning") else "ok",
+                message="API primary path executed",
+                final_url=page.url,
+                verification_seen=verification_seen,
+                storage_state=stored_state_path,
+            )
+        elif not run_orders:
             log_event(
                 logger=store_logger,
                 phase="orders",
@@ -6656,6 +6743,7 @@ async def _run_store_discovery(
             sales_report=sales_report,
             run_orders=run_orders,
             run_sales=run_sales,
+            source_mode=source_mode,
         )
         final_error_message = _resolve_sync_log_error_message(
             status=final_status,
@@ -6682,25 +6770,36 @@ async def _run_store_discovery(
             run_sales=run_sales,
         )
         ui_rows = orders_report.warning_rows if orders_report and orders_report.warning_rows else []
-        api_rows: list[dict[str, Any]] = []
+        api_rows = api_fetch_result.normalized_orders if "api_fetch_result" in locals() else []
         compare_metrics_obj = compare_canonical_rows(
             ui_rows=ui_rows,
             api_rows=api_rows,
             key_fields=("order_no", "order_id", "invoice_no"),
             sample_limit=WARNING_SAMPLE_LIMIT,
         )
-        decision = DecisionLog(
-            decision=(
-                "ui_fallback_triggered"
-                if (orders_report and orders_report.status in {"warning", "error"})
-                else "api_write_allowed"
-            ),
-            reason=(
-                (orders_report.error_message or orders_report.message or "ui extraction issue")
-                if (orders_report and orders_report.status in {"warning", "error"})
-                else "No blocking compare mismatches detected"
-            ),
-        )
+        if source_mode == "api_shadow":
+            decision = DecisionLog(
+                decision="api_shadow_compare_only",
+                reason="Shadow mode enabled: API data compared and logged without write path",
+            )
+        elif source_mode in {"api_primary", "api_only"}:
+            decision = DecisionLog(
+                decision="api_primary",
+                reason="API selected as primary source",
+            )
+        else:
+            decision = DecisionLog(
+                decision=(
+                    "ui_fallback_triggered"
+                    if (orders_report and orders_report.status in {"warning", "error"})
+                    else "api_write_allowed"
+                ),
+                reason=(
+                    (orders_report.error_message or orders_report.message or "ui extraction issue")
+                    if (orders_report and orders_report.status in {"warning", "error"})
+                    else "No blocking compare mismatches detected"
+                ),
+            )
         if orders_report:
             orders_report.compare_metrics = compare_metrics_obj.as_dict()
             orders_report.api_request_metadata = list(api_request_metadata)
@@ -6751,6 +6850,7 @@ async def _run_store_discovery(
             sales_report=sales_report,
             run_orders=run_orders,
             run_sales=run_sales,
+            source_mode=source_mode,
         )
         await _close_context(context)
 
@@ -6784,6 +6884,13 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run only the Sales sync (skip Orders)",
     )
+    parser.add_argument(
+        "--source-mode",
+        dest="source_mode",
+        choices=sorted(TD_SOURCE_MODES),
+        default="ui",
+        help="Data source mode: ui, api_shadow, api_primary, or api_only",
+    )
     return parser
 
 
@@ -6797,6 +6904,7 @@ async def _async_entrypoint(argv: Sequence[str] | None = None) -> None:
         to_date=args.to_date,
         run_orders=not args.sales_only,
         run_sales=not args.orders_only,
+        source_mode=args.source_mode,
     )
 
 
