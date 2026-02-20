@@ -30,6 +30,7 @@ from app.crm_downloader.orders_sync_window import (
 from app.crm_downloader.td_orders_sync.ingest import TdOrdersIngestResult, ingest_td_orders_workbook
 from app.crm_downloader.td_orders_sync.sales_ingest import TdSalesIngestResult, ingest_td_sales_workbook
 from app.crm_downloader.td_orders_sync.td_api_client import TdApiClient, TdApiFetchResult
+from app.crm_downloader.td_orders_sync.garment_ingest import TdGarmentIngestResult, ingest_td_garment_rows
 from app.crm_downloader.td_orders_sync.td_api_compare import (
     CorrelationContext,
     DecisionLog,
@@ -72,6 +73,25 @@ SALES_NAV_SAMPLE_LIMIT = 3
 ROW_SAMPLE_LIMIT = 3
 SNAPSHOT_TEXT_MAX_CHARS = 120
 TD_SOURCE_MODES = {"ui", "api_shadow", "api_primary", "api_only"}
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _compare_quality_passed(metrics: Mapping[str, Any]) -> bool:
+    max_missing = int(os.environ.get("TD_GARMENT_COMPARE_MAX_MISSING", "0"))
+    max_amount = int(os.environ.get("TD_GARMENT_COMPARE_MAX_AMOUNT_MISMATCH", "0"))
+    max_status = int(os.environ.get("TD_GARMENT_COMPARE_MAX_STATUS_MISMATCH", "0"))
+    return (
+        int(metrics.get("missing_in_api") or 0) <= max_missing
+        and int(metrics.get("missing_in_ui") or 0) <= max_missing
+        and int(metrics.get("amount_mismatches") or 0) <= max_amount
+        and int(metrics.get("status_mismatches") or 0) <= max_status
+    )
 
 
 def _dom_logging_enabled() -> bool:
@@ -641,6 +661,7 @@ class StoreReport:
     dropped_rows_count: int | None = None
     edited_rows_count: int | None = None
     duplicate_rows_count: int | None = None
+    garment_reconciliation: dict[str, Any] = field(default_factory=dict)
     compare_metrics: dict[str, Any] = field(default_factory=dict)
     api_request_metadata: list[dict[str, Any]] = field(default_factory=list)
     auth_diagnostics: dict[str, Any] = field(default_factory=dict)
@@ -673,6 +694,7 @@ class StoreReport:
             "dropped_rows_count": self.dropped_rows_count,
             "edited_rows_count": self.edited_rows_count,
             "duplicate_rows_count": self.duplicate_rows_count,
+            "garment_reconciliation": dict(self.garment_reconciliation),
             "compare_metrics": dict(self.compare_metrics),
             "api_request_metadata": list(self.api_request_metadata),
             "auth_diagnostics": dict(self.auth_diagnostics),
@@ -6827,6 +6849,66 @@ async def _run_store_discovery(
             compare_metrics=compare_metrics_obj.as_dict(),
             decision_log=decision.as_dict(),
         )
+
+        garment_ingest_result: TdGarmentIngestResult | None = None
+        garment_sync_enabled = _bool_env("TD_GARMENT_SYNC_ENABLED", default=False)
+        compare_ok = _compare_quality_passed(compare_metrics_obj.as_dict())
+        if (
+            garment_sync_enabled
+            and compare_ok
+            and config.database_url
+            and getattr(store, "cost_center", None)
+            and "api_fetch_result" in locals()
+            and api_fetch_result.normalized_garments
+        ):
+            try:
+                garment_ingest_result = await ingest_td_garment_rows(
+                    rows=api_fetch_result.normalized_garments,
+                    store_code=store.store_code,
+                    cost_center=store.cost_center,
+                    run_id=run_id,
+                    run_date=run_date,
+                    window_from_date=run_start_date,
+                    window_to_date=run_end_date,
+                    database_url=config.database_url,
+                )
+                log_event(
+                    logger=store_logger,
+                    phase="garment_ingest",
+                    message="TD garment sync completed",
+                    store_code=store.store_code,
+                    row_count=garment_ingest_result.row_count,
+                    duplicates=garment_ingest_result.duplicate_rows,
+                    changed_rows=garment_ingest_result.changed_rows,
+                    late_updates=garment_ingest_result.late_updates,
+                    orphan_rows=garment_ingest_result.orphan_rows,
+                )
+            except Exception as exc:
+                log_event(
+                    logger=store_logger,
+                    phase="garment_ingest",
+                    status="warn",
+                    message="TD garment sync failed",
+                    store_code=store.store_code,
+                    error=str(exc),
+                )
+        elif garment_sync_enabled and not compare_ok:
+            log_event(
+                logger=store_logger,
+                phase="garment_ingest",
+                status="warn",
+                message="Skipped TD garment sync due to compare threshold breach",
+                store_code=store.store_code,
+                compare_metrics=compare_metrics_obj.as_dict(),
+            )
+        if orders_report and garment_ingest_result:
+            orders_report.garment_reconciliation = {
+                "row_count": garment_ingest_result.row_count,
+                "duplicates": garment_ingest_result.duplicate_rows,
+                "changed_rows": garment_ingest_result.changed_rows,
+                "late_updates": garment_ingest_result.late_updates,
+                "orphan_rows": garment_ingest_result.orphan_rows,
+            }
         await _update_orders_sync_log(
             logger=store_logger,
             log_id=sync_log_id,
