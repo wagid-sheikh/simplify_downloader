@@ -131,6 +131,22 @@ def _extract_order_info(invoice_html: str, default_order_code: str) -> tuple[str
     return order_code, order_mode, order_datetime, pickup_datetime, delivery_datetime
 
 
+def _extract_invoice_customer_address(invoice_html: str) -> str | None:
+    patterns = (
+        r"Address\s*:?\s*</[^>]+>\s*<[^>]+>(.*?)</[^>]+>",
+        r"Address\s*:?\s*<span[^>]*>(.*?)</span>",
+        r"Address\s*:?\s*([^<\n\r]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, invoice_html, flags=re.I | re.S)
+        if not match:
+            continue
+        candidate = _strip_tags(match.group(1))
+        if candidate:
+            return candidate
+    return None
+
+
 def _parse_invoice_order_details(*, invoice_html: str, store_code: str, order_code: str) -> list[dict[str, Any]]:
     resolved_order_code, order_mode, order_datetime, pickup_datetime, delivery_datetime = _extract_order_info(invoice_html, order_code)
     tbody_match = re.search(r"<tbody[^>]*>(.*?)</tbody>", invoice_html, flags=re.I | re.S)
@@ -852,6 +868,9 @@ async def collect_archive_orders_via_api(
                 store_code=store_code,
                 order_code=order_code,
             )
+            invoice_address = _extract_invoice_customer_address(invoice_html)
+            if invoice_address:
+                base_row["address"] = invoice_address
             if not detail_rows:
                 _record_skip(extract, order_code=order_code, reason="invoice_parse_no_rows")
                 continue
