@@ -32,6 +32,7 @@ from app.crm_downloader.td_orders_sync.ingest import TdOrdersIngestResult, inges
 from app.crm_downloader.td_orders_sync.sales_ingest import TdSalesIngestResult, ingest_td_sales_workbook
 from app.crm_downloader.td_orders_sync.td_api_client import TdApiClient, TdApiFetchResult
 from app.crm_downloader.td_orders_sync.garment_ingest import TdGarmentIngestResult, ingest_td_garment_rows
+from app.crm_downloader.td_orders_sync.td_api_artifacts import persist_td_api_artifacts
 from app.crm_downloader.td_orders_sync.td_api_compare import (
     CorrelationContext,
     DecisionLog,
@@ -6603,6 +6604,37 @@ async def _run_store_discovery(
                         )
                         api_fetch_result = await api_client.fetch_reports(from_date=run_start_date, to_date=run_end_date)
                         api_request_metadata.extend(api_fetch_result.request_metadata)
+                        artifact_result = persist_td_api_artifacts(
+                            download_dir=download_dir,
+                            store_code=store.store_code,
+                            from_date=run_start_date,
+                            to_date=run_end_date,
+                            raw_orders=api_fetch_result.raw_orders_payload,
+                            raw_sales=api_fetch_result.raw_sales_payload,
+                            raw_garments=api_fetch_result.raw_garments_payload,
+                            canonical_orders=api_fetch_result.normalized_orders,
+                            canonical_sales=api_fetch_result.normalized_sales,
+                            canonical_garments=api_fetch_result.normalized_garments,
+                        )
+                        log_event(
+                            logger=store_logger,
+                            phase="api",
+                            message="Persisted TD API artifacts",
+                            store_code=store.store_code,
+                            source_mode=source_mode,
+                            artifact_paths=artifact_result.artifact_paths,
+                            warnings=artifact_result.warnings,
+                        )
+                        if artifact_result.warnings:
+                            log_event(
+                                logger=store_logger,
+                                phase="api",
+                                status="warn",
+                                message="TD API artifact persistence encountered warnings",
+                                store_code=store.store_code,
+                                source_mode=source_mode,
+                                warnings=artifact_result.warnings,
+                            )
                         log_event(
                             logger=store_logger,
                             phase="api",

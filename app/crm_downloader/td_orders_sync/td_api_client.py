@@ -34,6 +34,9 @@ class TdApiClientConfig:
 
 @dataclass
 class TdApiFetchResult:
+    raw_orders_payload: Any = field(default_factory=dict)
+    raw_sales_payload: Any = field(default_factory=dict)
+    raw_garments_payload: Any = field(default_factory=dict)
     normalized_orders: list[dict[str, Any]] = field(default_factory=list)
     normalized_sales: list[dict[str, Any]] = field(default_factory=list)
     normalized_garments: list[dict[str, Any]] = field(default_factory=list)
@@ -114,6 +117,9 @@ class TdApiClient:
         )
 
         return TdApiFetchResult(
+            raw_orders_payload=order_payload,
+            raw_sales_payload=sales_payload,
+            raw_garments_payload=garments_payload,
             normalized_orders=_normalize_order_rows(_extract_rows(order_payload), store_code=self.store_code),
             normalized_sales=_normalize_sales_rows(_extract_rows(sales_payload), store_code=self.store_code),
             normalized_garments=_normalize_garment_rows(_extract_rows(garments_payload), store_code=self.store_code),
