@@ -39,6 +39,9 @@ PROFILES_DIR="${TD_SYNC_PATHS[1]}"
 ensure_writable_dir "${DOWNLOAD_DIR}"
 ensure_writable_dir "${PROFILES_DIR}"
 
+echo "[alembic] Ensuring database migrations are up to date..."
+poetry run alembic upgrade head
+
 CLI_ARGS=("$@")
 
 # Example invocations (uncomment one to choose a pipeline slice)

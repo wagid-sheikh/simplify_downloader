@@ -144,7 +144,7 @@ orders_sync_log = sa.Table(
 td_sync_compare_log = sa.Table(
     "td_sync_compare_log",
     metadata,
-    sa.Column("id", sa.BigInteger()),
+    sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
     sa.Column("run_id", sa.String(length=64), nullable=False),
     sa.Column("run_env", sa.String(length=32), nullable=False),
     sa.Column("store_code", sa.String(length=8), nullable=False),
@@ -158,7 +158,10 @@ td_sync_compare_log = sa.Table(
     sa.Column("amount_mismatches", sa.BigInteger()),
     sa.Column("status_mismatches", sa.BigInteger()),
     sa.Column("sample_mismatch_keys", postgresql.JSONB(astext_type=sa.Text())),
-    sa.Column("decision", sa.String(length=64)),
+    sa.Column("decision", sa.Text()),
     sa.Column("reason", sa.Text()),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    sa.Index("ix_td_sync_compare_log_run_id_store_code", "run_id", "store_code"),
+    sa.Index("ix_td_sync_compare_log_store_code_from_date_to_date", "store_code", "from_date", "to_date"),
 )
