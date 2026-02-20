@@ -2,18 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import parse_qs, urlparse
 
-from playwright.async_api import BrowserContext, Error as PlaywrightError
+from playwright.async_api import BrowserContext, Error as PlaywrightError, Frame
 
-from app.crm_downloader.td_orders_sync.td_api_compare import build_api_request_metadata
+from app.crm_downloader.td_orders_sync.td_api_compare import build_api_request_metadata, parse_token_expiry
 
 REPORTING_API_BASE_URL = "https://reporting-api.quickdrycleaning.com"
+REPORTS_ORIGIN_HOST = "reports.quickdrycleaning.com"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -33,6 +38,13 @@ class TdApiFetchResult:
     normalized_sales: list[dict[str, Any]] = field(default_factory=list)
     normalized_garments: list[dict[str, Any]] = field(default_factory=list)
     request_metadata: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _TokenDiscoveryResult:
+    token: str | None
+    source: str | None
+    expiry: str | None
 
 
 class _StoreRateLimiter:
@@ -65,6 +77,7 @@ class TdApiClient:
         self.context = context
         self.storage_state_path = storage_state_path
         self.config = config or TdApiClientConfig()
+        self._token_discovery: _TokenDiscoveryResult | None = None
 
     def read_session_artifact(self) -> dict[str, Any]:
         if not self.storage_state_path.exists():
@@ -115,6 +128,14 @@ class TdApiClient:
         metadata: list[dict[str, Any]],
     ) -> Any:
         url = f"{REPORTING_API_BASE_URL}{endpoint}"
+        token_discovery = await self._discover_reporting_token()
+        headers = {
+            "accept": "*/*",
+            "origin": "https://reports.quickdrycleaning.com",
+            "referer": "https://reports.quickdrycleaning.com/",
+        }
+        if token_discovery.token:
+            headers["Authorization"] = f"Bearer {token_discovery.token}"
         last_error: Exception | None = None
         status_code: int | None = None
         for attempt in range(self.config.max_retries + 1):
@@ -124,11 +145,7 @@ class TdApiClient:
                 response = await self.context.request.get(
                     url,
                     params=params,
-                    headers={
-                        "accept": "*/*",
-                        "origin": "https://reports.quickdrycleaning.com",
-                        "referer": "https://reports.quickdrycleaning.com/",
-                    },
+                    headers=headers,
                     timeout=self.config.timeout_ms,
                 )
                 latency_ms = int((time.perf_counter() - started) * 1000)
@@ -165,6 +182,131 @@ class TdApiClient:
         if last_error:
             raise last_error
         return {}
+
+    async def _discover_reporting_token(self) -> _TokenDiscoveryResult:
+        if self._token_discovery is not None:
+            return self._token_discovery
+
+        from_iframe = self._discover_token_from_iframe_url_query()
+        if from_iframe.token:
+            self._token_discovery = from_iframe
+            self._log_token_diagnostics(self._token_discovery)
+            return self._token_discovery
+
+        from_runtime_storage = await self._discover_token_from_runtime_storage()
+        if from_runtime_storage.token:
+            self._token_discovery = from_runtime_storage
+            self._log_token_diagnostics(self._token_discovery)
+            return self._token_discovery
+
+        from_storage_state = self._discover_token_from_storage_state()
+        self._token_discovery = from_storage_state
+        self._log_token_diagnostics(self._token_discovery)
+        return self._token_discovery
+
+    def _discover_token_from_iframe_url_query(self) -> _TokenDiscoveryResult:
+        for page in self.context.pages:
+            for frame in page.frames:
+                frame_url = frame.url or ""
+                parsed = urlparse(frame_url)
+                if REPORTS_ORIGIN_HOST not in parsed.netloc:
+                    continue
+                token_values = parse_qs(parsed.query, keep_blank_values=False).get("token")
+                if token_values:
+                    token = (token_values[0] or "").strip()
+                    if token:
+                        return _TokenDiscoveryResult(
+                            token=token,
+                            source="iframe_url_query",
+                            expiry=parse_token_expiry(token),
+                        )
+        return _TokenDiscoveryResult(token=None, source=None, expiry=None)
+
+    async def _discover_token_from_runtime_storage(self) -> _TokenDiscoveryResult:
+        for page in self.context.pages:
+            for frame in page.frames:
+                token = await _extract_token_from_frame_storage(frame)
+                if token:
+                    return _TokenDiscoveryResult(
+                        token=token,
+                        source="runtime_storage",
+                        expiry=parse_token_expiry(token),
+                    )
+        return _TokenDiscoveryResult(token=None, source=None, expiry=None)
+
+    def _discover_token_from_storage_state(self) -> _TokenDiscoveryResult:
+        session_artifact = self.read_session_artifact()
+        origins = session_artifact.get("origins") if isinstance(session_artifact, Mapping) else None
+        if not isinstance(origins, list):
+            return _TokenDiscoveryResult(token=None, source=None, expiry=None)
+
+        for origin in origins:
+            if not isinstance(origin, Mapping):
+                continue
+            origin_url = str(origin.get("origin") or "")
+            if REPORTS_ORIGIN_HOST not in origin_url:
+                continue
+            local_storage = origin.get("localStorage")
+            if not isinstance(local_storage, list):
+                continue
+            for entry in local_storage:
+                if not isinstance(entry, Mapping):
+                    continue
+                name = str(entry.get("name") or "").lower()
+                value = str(entry.get("value") or "").strip()
+                if value and any(key in name for key in ("token", "auth", "jwt", "bearer")):
+                    return _TokenDiscoveryResult(
+                        token=value,
+                        source="storage_state",
+                        expiry=parse_token_expiry(value),
+                    )
+
+        return _TokenDiscoveryResult(token=None, source="storage_state", expiry=None)
+
+    def _log_token_diagnostics(self, result: _TokenDiscoveryResult) -> None:
+        logger.info(
+            "TD reporting token diagnostics",
+            extra={
+                "token_found": bool(result.token),
+                "token_source": result.source,
+                "token_expiry": result.expiry,
+            },
+        )
+
+
+async def _extract_token_from_frame_storage(frame: Frame) -> str | None:
+    try:
+        payload = await frame.evaluate(
+            """() => {
+                const matches = [];
+                const hasSignal = (key) => /token|auth|jwt|bearer/i.test(String(key || ""));
+                const collect = (storage) => {
+                    if (!storage) return;
+                    for (let i = 0; i < storage.length; i += 1) {
+                        const key = storage.key(i);
+                        if (!hasSignal(key)) continue;
+                        const value = storage.getItem(key);
+                        if (value) {
+                            matches.push(String(value));
+                        }
+                    }
+                };
+                collect(window.localStorage);
+                collect(window.sessionStorage);
+                return matches;
+            }"""
+        )
+    except PlaywrightError:
+        return None
+    except Exception:
+        return None
+
+    if isinstance(payload, list):
+        for candidate in payload:
+            value = str(candidate or "").strip()
+            if value:
+                return value
+    return None
 
 
 def _extract_rows(payload: Any) -> list[dict[str, Any]]:
@@ -229,4 +371,3 @@ def _normalize_garment_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
-
