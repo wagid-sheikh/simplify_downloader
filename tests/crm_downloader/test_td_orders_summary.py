@@ -175,3 +175,38 @@ def test_summary_text_filters_row_fields_and_truncates_samples() -> None:
     assert all("ingest_remarks" not in line for line in edited_lines)
     assert all("store_code=" in line and "order_number=" in line for line in edited_lines)
     assert all("…truncated" not in line for line in edited_lines)
+
+
+def test_daily_reconciliation_summary_groups_pass_and_fail() -> None:
+    summary = TdOrdersDiscoverySummary(
+        run_id="run-6", run_env="test", report_date=date(2024, 1, 6), report_end_date=date(2024, 1, 6)
+    )
+    summary.record_store(
+        "A1",
+        StoreOutcome(status="ok", message="done"),
+        orders_result=StoreReport(
+            status="ok",
+            threshold_verdict={"pass": True, "reason_codes": []},
+            api_ready=True,
+            consecutive_pass_windows=3,
+        ),
+    )
+    summary.record_store(
+        "A2",
+        StoreOutcome(status="warning", message="mismatch"),
+        orders_result=StoreReport(
+            status="warning",
+            threshold_verdict={
+                "pass": False,
+                "reason_codes": ["orders:row_count_delta_exceeded", "sales:status_mismatch_exceeded"],
+            },
+            api_ready=False,
+            consecutive_pass_windows=0,
+        ),
+    )
+
+    record = summary.build_record(finished_at=datetime(2024, 1, 6, tzinfo=timezone.utc))
+    daily = record["metrics_json"]["daily_reconciliation"]
+    assert daily["stores_passed"] == ["A1"]
+    assert daily["stores_failed"][0]["store_code"] == "A2"
+    assert "orders:row_count_delta_exceeded" in daily["top_mismatch_reasons"]
