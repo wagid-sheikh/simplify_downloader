@@ -29,8 +29,15 @@ from app.crm_downloader.orders_sync_window import (
 )
 from app.crm_downloader.td_orders_sync.ingest import TdOrdersIngestResult, ingest_td_orders_workbook
 from app.crm_downloader.td_orders_sync.sales_ingest import TdSalesIngestResult, ingest_td_sales_workbook
+from app.crm_downloader.td_orders_sync.td_api_compare import (
+    CorrelationContext,
+    DecisionLog,
+    build_api_request_metadata,
+    collect_auth_diagnostics,
+    compare_canonical_rows,
+)
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
-from app.dashboard_downloader.db_tables import orders_sync_log, pipelines
+from app.dashboard_downloader.db_tables import orders_sync_log, pipelines, td_sync_compare_log
 from app.dashboard_downloader.notifications import send_notifications_for_run
 from app.dashboard_downloader.run_summary import (
     fetch_summary_for_run,
@@ -133,6 +140,79 @@ def _format_warning_preview(summary: Mapping[str, Any]) -> str:
     if samples:
         return f"{count} warning(s) (samples: {', '.join(samples)}{suffix})"
     return f"{count} warning(s)"
+
+def _build_correlation_context(
+    *, run_id: str, store_code: str, window_start: date, window_end: date, source_mode: str
+) -> CorrelationContext:
+    return CorrelationContext(
+        run_id=run_id,
+        store_code=store_code,
+        window_start=window_start.isoformat(),
+        window_end=window_end.isoformat(),
+        source_mode=source_mode,
+    )
+
+
+def _serialize_compare_metrics(report: StoreReport | None) -> dict[str, int | list[str] | None]:
+    metrics = (report.compare_metrics if report else {}) or {}
+    return {
+        "total_rows": metrics.get("total_rows"),
+        "matched_rows": metrics.get("matched_rows"),
+        "missing_in_api": metrics.get("missing_in_api"),
+        "missing_in_ui": metrics.get("missing_in_ui"),
+        "amount_mismatches": metrics.get("amount_mismatches"),
+        "status_mismatches": metrics.get("status_mismatches"),
+        "sample_mismatch_keys": metrics.get("sample_mismatch_keys"),
+    }
+
+
+async def _insert_td_compare_log(
+    *,
+    logger: JsonLogger,
+    run_id: str,
+    run_env: str,
+    store_code: str,
+    run_start_date: date,
+    run_end_date: date,
+    source_mode: str,
+    compare_metrics: Mapping[str, Any],
+    decision_log: Mapping[str, Any],
+) -> None:
+    if not config.database_url:
+        return
+    values = {
+        "run_id": run_id,
+        "run_env": run_env,
+        "store_code": store_code,
+        "from_date": run_start_date,
+        "to_date": run_end_date,
+        "source_mode": source_mode,
+        "total_rows": compare_metrics.get("total_rows"),
+        "matched_rows": compare_metrics.get("matched_rows"),
+        "missing_in_api": compare_metrics.get("missing_in_api"),
+        "missing_in_ui": compare_metrics.get("missing_in_ui"),
+        "amount_mismatches": compare_metrics.get("amount_mismatches"),
+        "status_mismatches": compare_metrics.get("status_mismatches"),
+        "sample_mismatch_keys": compare_metrics.get("sample_mismatch_keys") or [],
+        "decision": decision_log.get("decision"),
+        "reason": decision_log.get("reason"),
+    }
+    try:
+        async with session_scope(config.database_url) as session:
+            await session.execute(sa.insert(td_sync_compare_log).values(**values))
+            await session.commit()
+    except Exception as exc:  # pragma: no cover
+        log_event(
+            logger=logger,
+            phase="compare",
+            status="warn",
+            message="Failed to persist TD compare metrics",
+            store_code=store_code,
+            error=str(exc),
+        )
+
+
+
 
 
 async def main(
@@ -554,6 +634,11 @@ class StoreReport:
     dropped_rows_count: int | None = None
     edited_rows_count: int | None = None
     duplicate_rows_count: int | None = None
+    compare_metrics: dict[str, Any] = field(default_factory=dict)
+    api_request_metadata: list[dict[str, Any]] = field(default_factory=list)
+    auth_diagnostics: dict[str, Any] = field(default_factory=dict)
+    source_mode: str = "ui"
+    decision_log: dict[str, str] = field(default_factory=dict)
     message: str | None = None
     error_message: str | None = None
     warnings: list[str] = field(default_factory=list)
@@ -581,6 +666,11 @@ class StoreReport:
             "dropped_rows_count": self.dropped_rows_count,
             "edited_rows_count": self.edited_rows_count,
             "duplicate_rows_count": self.duplicate_rows_count,
+            "compare_metrics": dict(self.compare_metrics),
+            "api_request_metadata": list(self.api_request_metadata),
+            "auth_diagnostics": dict(self.auth_diagnostics),
+            "source_mode": self.source_mode,
+            "decision_log": dict(self.decision_log),
             "message": self.message,
             "error_message": self.error_message,
             "warnings": list(self.warnings),
@@ -5908,6 +5998,13 @@ async def _run_store_discovery(
     run_sales: bool,
 ) -> None:
     store_logger = logger.bind(store_code=store.store_code)
+    correlation = _build_correlation_context(
+        run_id=run_id,
+        store_code=store.store_code,
+        window_start=run_start_date,
+        window_end=run_end_date,
+        source_mode="hybrid",
+    )
     log_event(
         logger=store_logger,
         phase="store",
@@ -5915,6 +6012,7 @@ async def _run_store_discovery(
         run_env=run_env,
         from_date=run_start_date,
         to_date=run_end_date,
+        **correlation.as_dict(),
     )
 
     sync_log_id = await _insert_orders_sync_log(
@@ -5952,6 +6050,15 @@ async def _run_store_discovery(
     probe_reason: str | None = None
     probe_result: SessionProbeResult | None = None
     sync_error_message: str | None = None
+    api_request_metadata: list[dict[str, Any]] = []
+    auth_diagnostics = collect_auth_diagnostics(store.storage_state_path if storage_state_exists else None)
+    log_event(
+        logger=store_logger,
+        phase="session",
+        message="Redacted auth/session diagnostics",
+        **correlation.as_dict(),
+        **auth_diagnostics.as_dict(),
+    )
     try:
         session_reused = False
         login_performed = False
@@ -5965,8 +6072,19 @@ async def _run_store_discovery(
                 store_code=store.store_code,
                 storage_state=str(store.storage_state_path),
             )
+            probe_started = datetime.now(timezone.utc)
             probe_result = await _probe_session(
                 page, store=store, logger=store_logger, timeout_ms=nav_timeout_ms
+            )
+            probe_latency = int((datetime.now(timezone.utc) - probe_started).total_seconds() * 1000)
+            api_request_metadata.append(
+                build_api_request_metadata(
+                    url=store.session_probe_url or store.home_url or store.default_home_url or "",
+                    method="GET",
+                    status=200 if probe_result.valid else None,
+                    latency_ms=probe_latency,
+                    retry_count=0,
+                ).as_dict()
             )
             probe_reason = probe_result.reason or "state_valid"
             verification_seen = bool(probe_result.verification_seen)
@@ -6562,6 +6680,53 @@ async def _run_store_discovery(
             sales_report=sales_report,
             run_orders=run_orders,
             run_sales=run_sales,
+        )
+        ui_rows = orders_report.warning_rows if orders_report and orders_report.warning_rows else []
+        api_rows: list[dict[str, Any]] = []
+        compare_metrics_obj = compare_canonical_rows(
+            ui_rows=ui_rows,
+            api_rows=api_rows,
+            key_fields=("order_no", "order_id", "invoice_no"),
+            sample_limit=WARNING_SAMPLE_LIMIT,
+        )
+        decision = DecisionLog(
+            decision=(
+                "ui_fallback_triggered"
+                if (orders_report and orders_report.status in {"warning", "error"})
+                else "api_write_allowed"
+            ),
+            reason=(
+                (orders_report.error_message or orders_report.message or "ui extraction issue")
+                if (orders_report and orders_report.status in {"warning", "error"})
+                else "No blocking compare mismatches detected"
+            ),
+        )
+        if orders_report:
+            orders_report.compare_metrics = compare_metrics_obj.as_dict()
+            orders_report.api_request_metadata = list(api_request_metadata)
+            orders_report.auth_diagnostics = auth_diagnostics.as_dict()
+            orders_report.source_mode = correlation.source_mode
+            orders_report.decision_log = decision.as_dict()
+        log_event(
+            logger=store_logger,
+            phase="compare",
+            message="TD UI/API compare metrics",
+            **correlation.as_dict(),
+            compare_metrics=compare_metrics_obj.as_dict(),
+            api_request_metadata=api_request_metadata,
+            auth_diagnostics=auth_diagnostics.as_dict(),
+            decision_log=decision.as_dict(),
+        )
+        await _insert_td_compare_log(
+            logger=store_logger,
+            run_id=run_id,
+            run_env=run_env,
+            store_code=store.store_code,
+            run_start_date=run_start_date,
+            run_end_date=run_end_date,
+            source_mode=correlation.source_mode,
+            compare_metrics=compare_metrics_obj.as_dict(),
+            decision_log=decision.as_dict(),
         )
         await _update_orders_sync_log(
             logger=store_logger,
