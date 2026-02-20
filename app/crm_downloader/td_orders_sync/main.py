@@ -7,6 +7,7 @@ import os
 import re
 import contextlib
 from dataclasses import asdict, dataclass, field
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from collections import defaultdict
 from pathlib import Path
@@ -83,15 +84,114 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+
+@dataclass(frozen=True)
+class CompareThresholdConfig:
+    row_count_delta_tolerance: int
+    amount_mismatch_tolerance: int
+    status_mismatch_tolerance: int
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "row_count_delta_tolerance": self.row_count_delta_tolerance,
+            "amount_mismatch_tolerance": self.amount_mismatch_tolerance,
+            "status_mismatch_tolerance": self.status_mismatch_tolerance,
+        }
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return max(int(raw.strip()), 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def _thresholds_for_dataset(dataset: str) -> CompareThresholdConfig:
+    prefix = f"TD_COMPARE_{dataset.upper()}"
+    return CompareThresholdConfig(
+        row_count_delta_tolerance=_int_env(
+            f"{prefix}_ROW_COUNT_DELTA_TOLERANCE",
+            _int_env("TD_COMPARE_ROW_COUNT_DELTA_TOLERANCE", 0),
+        ),
+        amount_mismatch_tolerance=_int_env(
+            f"{prefix}_AMOUNT_MISMATCH_TOLERANCE",
+            _int_env("TD_COMPARE_AMOUNT_MISMATCH_TOLERANCE", 0),
+        ),
+        status_mismatch_tolerance=_int_env(
+            f"{prefix}_STATUS_MISMATCH_TOLERANCE",
+            _int_env("TD_COMPARE_STATUS_MISMATCH_TOLERANCE", 0),
+        ),
+    )
+
+
+def _evaluate_thresholds(*, metrics: Mapping[str, Any], thresholds: CompareThresholdConfig, dataset: str) -> dict[str, Any]:
+    row_delta = max(int(metrics.get("total_rows") or 0) - int(metrics.get("matched_rows") or 0), 0)
+    amount_mismatches = int(metrics.get("amount_mismatches") or 0)
+    status_mismatches = int(metrics.get("status_mismatches") or 0)
+    reasons: list[str] = []
+    if row_delta > thresholds.row_count_delta_tolerance:
+        reasons.append(f"{dataset}:row_count_delta_exceeded")
+    if amount_mismatches > thresholds.amount_mismatch_tolerance:
+        reasons.append(f"{dataset}:amount_mismatch_exceeded")
+    if status_mismatches > thresholds.status_mismatch_tolerance:
+        reasons.append(f"{dataset}:status_mismatch_exceeded")
+    return {
+        "dataset": dataset,
+        "pass": not reasons,
+        "row_count_delta": row_delta,
+        "amount_mismatches": amount_mismatches,
+        "status_mismatches": status_mismatches,
+        "thresholds": thresholds.as_dict(),
+        "reasons": reasons,
+    }
+
+
+def _build_threshold_verdict(
+    *,
+    orders_metrics: Mapping[str, Any],
+    sales_metrics: Mapping[str, Any],
+    garment_metrics: Mapping[str, Any],
+    run_sales: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    datasets: dict[str, dict[str, Any]] = {
+        "orders": _evaluate_thresholds(
+            metrics=orders_metrics, thresholds=_thresholds_for_dataset("orders"), dataset="orders"
+        ),
+        "garments": _evaluate_thresholds(
+            metrics=garment_metrics, thresholds=_thresholds_for_dataset("garments"), dataset="garments"
+        ),
+    }
+    if run_sales:
+        datasets["sales"] = _evaluate_thresholds(
+            metrics=sales_metrics, thresholds=_thresholds_for_dataset("sales"), dataset="sales"
+        )
+
+    all_reasons: list[str] = []
+    for verdict in datasets.values():
+        all_reasons.extend([str(reason) for reason in verdict.get("reasons", [])])
+    top_reasons = [reason for reason, _ in Counter(all_reasons).most_common(3)]
+    overall_pass = all(bool(verdict.get("pass")) for verdict in datasets.values())
+
+    thresholds_json = {dataset: verdict["thresholds"] for dataset, verdict in datasets.items()}
+    verdict_json = {
+        "pass": overall_pass,
+        "datasets": datasets,
+        "reason_codes": all_reasons,
+        "top_reason_codes": top_reasons,
+    }
+    return thresholds_json, verdict_json
+
+
 def _compare_quality_passed(metrics: Mapping[str, Any]) -> bool:
-    max_missing = int(os.environ.get("TD_GARMENT_COMPARE_MAX_MISSING", "0"))
-    max_amount = int(os.environ.get("TD_GARMENT_COMPARE_MAX_AMOUNT_MISMATCH", "0"))
-    max_status = int(os.environ.get("TD_GARMENT_COMPARE_MAX_STATUS_MISMATCH", "0"))
+    thresholds = _thresholds_for_dataset("garments")
+    row_delta = max(int(metrics.get("total_rows") or 0) - int(metrics.get("matched_rows") or 0), 0)
     return (
-        int(metrics.get("missing_in_api") or 0) <= max_missing
-        and int(metrics.get("missing_in_ui") or 0) <= max_missing
-        and int(metrics.get("amount_mismatches") or 0) <= max_amount
-        and int(metrics.get("status_mismatches") or 0) <= max_status
+        row_delta <= thresholds.row_count_delta_tolerance
+        and int(metrics.get("amount_mismatches") or 0) <= thresholds.amount_mismatch_tolerance
+        and int(metrics.get("status_mismatches") or 0) <= thresholds.status_mismatch_tolerance
     )
 
 
@@ -200,30 +300,48 @@ async def _insert_td_compare_log(
     source_mode: str,
     compare_metrics: Mapping[str, Any],
     decision_log: Mapping[str, Any],
-) -> None:
+    thresholds_json: Mapping[str, Any],
+    threshold_verdict_json: Mapping[str, Any],
+) -> tuple[int, bool]:
     if not config.database_url:
-        return
-    values = {
-        "run_id": run_id,
-        "run_env": run_env,
-        "store_code": store_code,
-        "from_date": run_start_date,
-        "to_date": run_end_date,
-        "source_mode": source_mode,
-        "total_rows": compare_metrics.get("total_rows"),
-        "matched_rows": compare_metrics.get("matched_rows"),
-        "missing_in_api": compare_metrics.get("missing_in_api"),
-        "missing_in_ui": compare_metrics.get("missing_in_ui"),
-        "amount_mismatches": compare_metrics.get("amount_mismatches"),
-        "status_mismatches": compare_metrics.get("status_mismatches"),
-        "sample_mismatch_keys": compare_metrics.get("sample_mismatch_keys") or [],
-        "decision": decision_log.get("decision"),
-        "reason": decision_log.get("reason"),
-    }
+        return 0, False
+    api_ready_required_windows = _int_env("TD_API_READY_CONSECUTIVE_WINDOWS", 2)
     try:
         async with session_scope(config.database_url) as session:
+            previous = await session.execute(
+                sa.select(td_sync_compare_log.c.consecutive_pass_windows)
+                .where(td_sync_compare_log.c.store_code == store_code)
+                .order_by(td_sync_compare_log.c.to_date.desc(), td_sync_compare_log.c.created_at.desc())
+                .limit(1)
+            )
+            previous_consecutive = int(previous.scalar() or 0)
+            passed = bool(threshold_verdict_json.get("pass"))
+            consecutive_pass_windows = previous_consecutive + 1 if passed else 0
+            api_ready = consecutive_pass_windows >= api_ready_required_windows
+            values = {
+                "run_id": run_id,
+                "run_env": run_env,
+                "store_code": store_code,
+                "from_date": run_start_date,
+                "to_date": run_end_date,
+                "source_mode": source_mode,
+                "total_rows": compare_metrics.get("total_rows"),
+                "matched_rows": compare_metrics.get("matched_rows"),
+                "missing_in_api": compare_metrics.get("missing_in_api"),
+                "missing_in_ui": compare_metrics.get("missing_in_ui"),
+                "amount_mismatches": compare_metrics.get("amount_mismatches"),
+                "status_mismatches": compare_metrics.get("status_mismatches"),
+                "sample_mismatch_keys": compare_metrics.get("sample_mismatch_keys") or [],
+                "thresholds_json": dict(thresholds_json),
+                "threshold_verdict_json": dict(threshold_verdict_json),
+                "consecutive_pass_windows": consecutive_pass_windows,
+                "api_ready": api_ready,
+                "decision": decision_log.get("decision"),
+                "reason": decision_log.get("reason"),
+            }
             await session.execute(sa.insert(td_sync_compare_log).values(**values))
             await session.commit()
+            return consecutive_pass_windows, api_ready
     except Exception as exc:  # pragma: no cover
         log_event(
             logger=logger,
@@ -233,6 +351,7 @@ async def _insert_td_compare_log(
             store_code=store_code,
             error=str(exc),
         )
+        return 0, False
 
 
 
@@ -668,6 +787,9 @@ class StoreReport:
     auth_diagnostics: dict[str, Any] = field(default_factory=dict)
     source_mode: str = "ui"
     decision_log: dict[str, str] = field(default_factory=dict)
+    threshold_verdict: dict[str, Any] = field(default_factory=dict)
+    api_ready: bool | None = None
+    consecutive_pass_windows: int | None = None
     message: str | None = None
     error_message: str | None = None
     warnings: list[str] = field(default_factory=list)
@@ -701,6 +823,9 @@ class StoreReport:
             "auth_diagnostics": dict(self.auth_diagnostics),
             "source_mode": self.source_mode,
             "decision_log": dict(self.decision_log),
+            "threshold_verdict": dict(self.threshold_verdict),
+            "api_ready": self.api_ready,
+            "consecutive_pass_windows": self.consecutive_pass_windows,
             "message": self.message,
             "error_message": self.error_message,
             "warnings": list(self.warnings),
@@ -1339,6 +1464,9 @@ class TdOrdersDiscoverySummary:
                 "duplicate_rows": [],
                 "message": "No report recorded",
                 "error_message": None,
+                "threshold_verdict": {},
+                "api_ready": None,
+                "consecutive_pass_windows": None,
             }
         filenames = list(report.filenames) if report.filenames else [expected_filename]
         return {
@@ -1365,6 +1493,9 @@ class TdOrdersDiscoverySummary:
             "dropped_rows": list(report.dropped_rows),
             "edited_rows": list(report.edited_rows),
             "duplicate_rows": list(report.duplicate_rows),
+            "threshold_verdict": dict(report.threshold_verdict),
+            "api_ready": report.api_ready,
+            "consecutive_pass_windows": report.consecutive_pass_windows,
         }
 
     def _build_store_reports_snapshot(self) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
@@ -1468,6 +1599,7 @@ class TdOrdersDiscoverySummary:
         metrics["notification_payload"] = self._build_notification_payload(
             finished_at=finished_at, orders_snapshot=orders_snapshot, sales_snapshot=sales_snapshot
         )
+        metrics["daily_reconciliation"] = _build_daily_reconciliation_summary(self)
         return {
             "pipeline_name": PIPELINE_NAME,
             "run_id": self.run_id,
@@ -1589,9 +1721,76 @@ async def _fetch_dashboard_nav_timeout_ms(database_url: str | None) -> int:
         return DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS
 
 
+def _build_daily_reconciliation_summary(summary: TdOrdersDiscoverySummary) -> dict[str, Any]:
+    stores_passed: list[str] = []
+    stores_failed: list[dict[str, Any]] = []
+    reason_counter: Counter[str] = Counter()
+    for store_code in summary._store_codes_for_payload():
+        orders_report = summary.orders_results.get(store_code)
+        threshold_verdict = dict(orders_report.threshold_verdict) if orders_report else {}
+        passed = bool(threshold_verdict.get("pass"))
+        reason_codes = [str(code) for code in threshold_verdict.get("reason_codes") or []]
+        if passed:
+            stores_passed.append(store_code)
+            continue
+        for code in reason_codes:
+            reason_counter[code] += 1
+        stores_failed.append(
+            {
+                "store_code": store_code,
+                "api_ready": bool(orders_report.api_ready) if orders_report else False,
+                "consecutive_pass_windows": int(orders_report.consecutive_pass_windows or 0) if orders_report else 0,
+                "top_mismatch_reasons": reason_codes[:3],
+            }
+        )
+
+    return {
+        "report_date": summary.report_end_date.isoformat(),
+        "run_id": summary.run_id,
+        "stores_passed": sorted(stores_passed),
+        "stores_failed": stores_failed,
+        "top_mismatch_reasons": [reason for reason, _ in reason_counter.most_common(5)],
+    }
+
+
+def _write_daily_reconciliation_artifact(*, summary: TdOrdersDiscoverySummary, logger: JsonLogger) -> Path | None:
+    try:
+        payload = _build_daily_reconciliation_summary(summary)
+        artifact_dir = (
+            Path(config.reports_root).resolve()
+            / "td_orders_sync"
+            / "reconciliation"
+            / summary.report_end_date.strftime("%Y-%m-%d")
+        )
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        artifact_path = artifact_dir / f"{summary.run_id}.json"
+        artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        log_event(
+            logger=logger,
+            phase="reconciliation",
+            message="Wrote daily reconciliation artifact",
+            run_id=summary.run_id,
+            artifact_path=str(artifact_path),
+            passed_stores=len(payload["stores_passed"]),
+            failed_stores=len(payload["stores_failed"]),
+        )
+        return artifact_path
+    except Exception as exc:  # pragma: no cover
+        log_event(
+            logger=logger,
+            phase="reconciliation",
+            status="warn",
+            message="Failed to write daily reconciliation artifact",
+            run_id=summary.run_id,
+            error=str(exc),
+        )
+        return None
+
+
 async def _persist_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonLogger) -> bool:
     finished_at = datetime.now(timezone.utc)
     record = summary.build_record(finished_at=finished_at)
+    _write_daily_reconciliation_artifact(summary=summary, logger=logger)
     if not config.database_url:
         log_event(
             logger=logger,
@@ -6848,6 +7047,14 @@ async def _run_store_discovery(
             key_fields=COMPARE_KEY_FIELDS_BY_DATASET["orders"],
             sample_limit=WARNING_SAMPLE_LIMIT,
         )
+        sales_ui_rows = sales_report.warning_rows if sales_report and sales_report.warning_rows else []
+        sales_api_rows = api_fetch_result.normalized_sales if "api_fetch_result" in locals() else []
+        sales_compare_metrics_obj = compare_canonical_rows(
+            ui_rows=sales_ui_rows,
+            api_rows=sales_api_rows,
+            key_fields=COMPARE_KEY_FIELDS_BY_DATASET["sales"],
+            sample_limit=WARNING_SAMPLE_LIMIT,
+        )
         if source_mode == "api_shadow":
             decision = DecisionLog(
                 decision="api_shadow_compare_only",
@@ -6885,17 +7092,6 @@ async def _run_store_discovery(
             compare_metrics=compare_metrics_obj.as_dict(),
             api_request_metadata=api_request_metadata,
             auth_diagnostics=auth_diagnostics.as_dict(),
-            decision_log=decision.as_dict(),
-        )
-        await _insert_td_compare_log(
-            logger=store_logger,
-            run_id=run_id,
-            run_env=run_env,
-            store_code=store.store_code,
-            run_start_date=run_start_date,
-            run_end_date=run_end_date,
-            source_mode=correlation.source_mode,
-            compare_metrics=compare_metrics_obj.as_dict(),
             decision_log=decision.as_dict(),
         )
 
@@ -6958,6 +7154,39 @@ async def _run_store_discovery(
                 "late_updates": garment_ingest_result.late_updates,
                 "orphan_rows": garment_ingest_result.orphan_rows,
             }
+
+        garment_total_rows = len(api_fetch_result.normalized_garments) if "api_fetch_result" in locals() else 0
+        garment_matched_rows = garment_ingest_result.row_count if garment_ingest_result else (garment_total_rows if garment_total_rows == 0 else 0)
+        garment_compare_metrics = {
+            "total_rows": garment_total_rows,
+            "matched_rows": garment_matched_rows,
+            "amount_mismatches": 0,
+            "status_mismatches": 0,
+        }
+        thresholds_json, threshold_verdict = _build_threshold_verdict(
+            orders_metrics=compare_metrics_obj.as_dict(),
+            sales_metrics=sales_compare_metrics_obj.as_dict(),
+            garment_metrics=garment_compare_metrics,
+            run_sales=run_sales,
+        )
+        consecutive_pass_windows, api_ready = await _insert_td_compare_log(
+            logger=store_logger,
+            run_id=run_id,
+            run_env=run_env,
+            store_code=store.store_code,
+            run_start_date=run_start_date,
+            run_end_date=run_end_date,
+            source_mode=correlation.source_mode,
+            compare_metrics=compare_metrics_obj.as_dict(),
+            decision_log=decision.as_dict(),
+            thresholds_json=thresholds_json,
+            threshold_verdict_json=threshold_verdict,
+        )
+        if orders_report:
+            orders_report.threshold_verdict = threshold_verdict
+            orders_report.api_ready = api_ready
+            orders_report.consecutive_pass_windows = consecutive_pass_windows
+
         await _update_orders_sync_log(
             logger=store_logger,
             log_id=sync_log_id,
