@@ -10,6 +10,8 @@ from urllib.parse import urlencode
 from playwright.async_api import Page
 
 from app.crm_downloader.uc_orders_sync.archive_api_extract import (
+    _extract_invoice_customer_address,
+    _extract_order_info,
     _fetch_invoice_html_with_retries,
     _parse_invoice_order_details,
     _resolve_archive_bearer_token,
@@ -59,6 +61,7 @@ GST_API_GST_COLUMNS = [
     "customer_phone",
     "customer_gst",
     "address",
+    "customer_source",
     "store_address",
     "city_name",
     "taxable_value",
@@ -372,7 +375,8 @@ async def collect_gst_orders_via_api(
             "name": row.get("name"),
             "customer_phone": row.get("customer_phone"),
             "customer_gst": row.get("customer_gst"),
-            "address": row.get("address"),
+            "address": None,
+            "customer_source": None,
             "store_address": row.get("store_address"),
             "city_name": row.get("city_name"),
             "taxable_value": row.get("taxable_value"),
@@ -391,7 +395,7 @@ async def collect_gst_orders_via_api(
             "delivery": row.get("invoice_date"),
             "customer_name": row.get("name"),
             "customer_phone": row.get("customer_phone"),
-            "address": row.get("address"),
+            "address": None,
             "payment_text": row.get("final_amount"),
             "instructions": None,
             "customer_source": None,
@@ -412,8 +416,6 @@ async def collect_gst_orders_via_api(
 
         extract.booking_lookup_hits += 1
         if booking_row is not None:
-            if booking_row.get("address"):
-                base_row["address"] = booking_row.get("address")
             if booking_row.get("suggestions"):
                 base_row["instructions"] = booking_row.get("suggestions")
 
@@ -430,6 +432,16 @@ async def collect_gst_orders_via_api(
             # but skip order-detail extraction when invoice content is unavailable.
             extract.base_rows.append(base_row)
             continue
+
+        _, order_mode, _, _, _ = _extract_order_info(invoice_html, order_code)
+        if order_mode:
+            base_row["customer_source"] = order_mode
+            gst_row["customer_source"] = order_mode
+
+        invoice_address = _extract_invoice_customer_address(invoice_html)
+        if invoice_address:
+            base_row["address"] = invoice_address
+            gst_row["address"] = invoice_address
 
         extract.order_detail_rows.extend(
             _parse_invoice_order_details(
