@@ -461,7 +461,7 @@ async def main(
                 pipeline_id=pipeline_id,
                 store_code=store.store_code,
             )
-        store_start_dates[store.store_code] = resolve_orders_sync_start_date(
+        resolved_start_date = resolve_orders_sync_start_date(
             end_date=run_end_date,
             last_success=last_success,
             overlap_days=overlap,
@@ -469,6 +469,22 @@ async def main(
             window_days=window_size,
             from_date=from_date,
             store_start_date=None,
+        )
+        store_start_dates[store.store_code] = resolved_start_date
+        window_source = "explicit_from_date" if from_date else ("last_success_with_overlap" if last_success else "backfill_window")
+        log_event(
+            logger=logger,
+            phase="window_resolution",
+            message="Resolved TD per-store effective date window",
+            store_code=store.store_code,
+            window_start=resolved_start_date.isoformat(),
+            window_end=run_end_date.isoformat(),
+            window_source=window_source,
+            explicit_from_date=from_date.isoformat() if from_date else None,
+            last_success_window_end=last_success.isoformat() if last_success else None,
+            overlap_days=overlap,
+            backfill_days=backfill,
+            window_days=window_size,
         )
     report_start_date = from_date or (min(store_start_dates.values()) if store_start_dates else run_end_date)
     summary = TdOrdersDiscoverySummary(
@@ -6708,6 +6724,8 @@ async def _run_store_discovery(
                             orders_rows=len(api_fetch_result.orders_rows),
                             sales_rows=len(api_fetch_result.sales_rows),
                             garments_rows=len(api_fetch_result.garments_rows),
+                            orders_summary_rows_filtered=api_fetch_result.orders_summary_rows_filtered,
+                            sales_summary_rows_filtered=api_fetch_result.sales_summary_rows_filtered,
                         )
                     except Exception as exc:
                         log_event(
