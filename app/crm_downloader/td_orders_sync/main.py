@@ -32,7 +32,7 @@ from app.crm_downloader.td_orders_sync.ingest import TdOrdersIngestResult, inges
 from app.crm_downloader.td_orders_sync.sales_ingest import TdSalesIngestResult, ingest_td_sales_workbook
 from app.crm_downloader.td_orders_sync.td_api_client import TdApiClient, TdApiFetchResult
 from app.crm_downloader.td_orders_sync.garment_ingest import TdGarmentIngestResult, ingest_td_garment_rows
-from app.crm_downloader.td_orders_sync.td_api_artifacts import persist_td_api_artifacts
+from app.crm_downloader.td_orders_sync.td_api_artifacts import persist_td_api_artifacts, persist_td_compare_artifacts
 from app.crm_downloader.td_orders_sync.td_api_compare import (
     CorrelationContext,
     DecisionLog,
@@ -7137,6 +7137,23 @@ async def _run_store_discovery(
             api_request_metadata=api_request_metadata,
             auth_diagnostics=auth_diagnostics.as_dict(),
             decision_log=decision.as_dict(),
+        )
+        compare_artifact_result = persist_td_compare_artifacts(
+            download_dir=download_dir,
+            store_code=store.store_code,
+            from_date=run_start_date,
+            to_date=run_end_date,
+            orders_compare_metrics=compare_metrics_obj.as_dict(),
+            sales_compare_metrics=sales_compare_metrics_obj.as_dict(),
+        )
+        log_event(
+            logger=store_logger,
+            phase="compare",
+            message="Persisted TD compare mismatch artifacts",
+            store_code=store.store_code,
+            source_mode=source_mode,
+            artifact_paths=compare_artifact_result.artifact_paths,
+            warnings=compare_artifact_result.warnings,
         )
 
         garment_ingest_result: TdGarmentIngestResult | None = None
