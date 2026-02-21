@@ -39,6 +39,20 @@ Or run module directly:
 poetry run python -m app.crm_downloader.td_orders_sync.main --source-mode api_shadow --stores A817
 ```
 
+
+## Summary/footer row filtering rules (orders + sales)
+
+To avoid compare noise from aggregate rows returned by TD APIs, the downloader filters summary/footer rows from `orders_rows` and `sales_rows` immediately after `_extract_rows(...)`.
+
+A row is filtered when either of these heuristics matches:
+
+1. `orderNumber`/`orderNo` is empty (null/blank) **and** a label-like field (`label`, `name`, `title`, `description`, `remark`, `note`, `particular`) contains summary markers such as `Total`, `Summary`, or `Grand Total`.
+2. The row contains summary markers and aggregate-only numeric values (for example totals/tax amounts) but no stable transaction identifier (`orderNumber`, `orderNo`, `orderId`, `transactionId`, `invoiceNo`, `receiptNo`, `paymentId`).
+
+Operational visibility:
+
+- Each endpoint logs `summary_rows_filtered` via `TD API summary rows filtered` with endpoint and store code context.
+
 ## Expected observability signals
 
 In logs, verify API phase events are present for the store:
