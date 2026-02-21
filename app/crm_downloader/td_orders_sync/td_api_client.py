@@ -115,13 +115,13 @@ class TdApiClient:
 
         order_payload = await self._fetch_endpoint_rows(
             endpoint="/reports/order-report",
-            params={**common_params, "expandData": "false"},
+            params={**common_params, "expandData": "true"},
             metadata=metadata,
             errors=errors,
         )
         sales_payload = await self._fetch_endpoint_rows(
             endpoint="/sales-and-deliveries/sales",
-            params=common_params,
+            params={**common_params, "expandData": "true"},
             metadata=metadata,
             errors=errors,
         )
