@@ -45,6 +45,7 @@ class TdApiClientConfig:
     min_interval_seconds: float = float(os.environ.get("TD_API_MIN_INTERVAL_SECONDS", "0.35"))
     page: int = int(os.environ.get("TD_API_PAGE", "1"))
     page_size: int = int(os.environ.get("TD_API_PAGE_SIZE", "500"))
+    max_pages: int = max(1, int(os.environ.get("TD_API_MAX_PAGES", "100")))
 
 
 @dataclass
@@ -56,6 +57,8 @@ class TdApiFetchResult:
     sales_rows: list[dict[str, Any]] = field(default_factory=list)
     garments_rows: list[dict[str, Any]] = field(default_factory=list)
     request_metadata: list[dict[str, Any]] = field(default_factory=list)
+    orders_summary_rows_filtered: int = 0
+    sales_summary_rows_filtered: int = 0
 
 
 @dataclass(frozen=True)
@@ -170,6 +173,8 @@ class TdApiClient:
             sales_rows=sales_rows,
             garments_rows=garments_rows,
             request_metadata=metadata,
+            orders_summary_rows_filtered=orders_summary_filtered,
+            sales_summary_rows_filtered=sales_summary_filtered,
         )
 
     def _log_endpoint_total(self, *, endpoint: str, total_rows: int) -> None:
@@ -242,6 +247,19 @@ class TdApiClient:
             if total_pages_hint and page >= total_pages_hint:
                 break
             if total_rows_hint is not None and cumulative_rows >= total_rows_hint:
+                break
+            if page >= self.config.max_pages:
+                logger.warning(
+                    "TD API max page cap reached before dataset completion",
+                    extra={
+                        "store_code": self.store_code,
+                        "endpoint": endpoint,
+                        "max_pages": self.config.max_pages,
+                        "cumulative_rows": cumulative_rows,
+                        "reported_total_rows": total_rows_hint,
+                        "reported_total_pages": total_pages_hint,
+                    },
+                )
                 break
 
             page += 1
