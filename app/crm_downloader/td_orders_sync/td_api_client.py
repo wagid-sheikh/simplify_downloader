@@ -7,12 +7,17 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import date
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
+from zoneinfo import ZoneInfo
 
+from dateutil import parser
 from playwright.async_api import BrowserContext, Error as PlaywrightError, Frame
 
+from app.common.date_utils import get_timezone
 from app.crm_downloader.td_orders_sync.td_api_compare import build_api_request_metadata, parse_token_expiry
 
 REPORTING_API_BASE_URL = "https://reporting-api.quickdrycleaning.com"
@@ -482,8 +487,8 @@ def _normalize_order_rows(rows: list[dict[str, Any]], *, store_code: str) -> lis
                 "order_number": order_number,
                 "order_id": row.get("orderId") or row.get("order_id"),
                 "invoice_no": row.get("invoiceNo") or row.get("invoice_no"),
-                "order_date": row.get("orderDate") or row.get("order_date"),
-                "amount": row.get("amount") or row.get("netAmount") or row.get("net_amount"),
+                "order_date": _normalize_datetime(row.get("orderDate") or row.get("order_date")),
+                "amount": _normalize_numeric(row.get("amount") or row.get("netAmount") or row.get("net_amount")),
                 "status": row.get("status") or row.get("orderStatus") or row.get("order_status"),
             }
         )
@@ -501,9 +506,9 @@ def _normalize_sales_rows(rows: list[dict[str, Any]], *, store_code: str) -> lis
                 "order_no": order_number,
                 "order_number": order_number,
                 "invoice_no": row.get("invoiceNo") or row.get("invoice_no"),
-                "payment_date": row.get("paymentDate") or row.get("payment_date") or row.get("date"),
+                "payment_date": _normalize_datetime(row.get("paymentDate") or row.get("payment_date") or row.get("date")),
                 "payment_mode": row.get("paymentMode") or row.get("payment_mode") or row.get("mode"),
-                "amount": row.get("total") or row.get("amount") or row.get("netAmount"),
+                "amount": _normalize_numeric(row.get("total") or row.get("amount") or row.get("netAmount")),
                 "status": row.get("status") or row.get("deliveryStatus"),
             }
         )
@@ -529,10 +534,45 @@ def _normalize_garment_rows(rows: list[dict[str, Any]], *, store_code: str) -> l
                 "garment_name": row.get("garmentName") or row.get("garment") or row.get("itemName"),
                 "service_name": row.get("serviceName") or row.get("service") or row.get("processName"),
                 "quantity": row.get("quantity") or row.get("qty"),
-                "amount": row.get("amount") or row.get("total") or row.get("lineAmount"),
+                "amount": _normalize_numeric(row.get("amount") or row.get("total") or row.get("lineAmount")),
                 "status": row.get("status") or row.get("stage"),
                 "updated_at": row.get("updatedAt") or row.get("updated_at"),
-                "order_date": row.get("orderDate") or row.get("order_date"),
+                "order_date": _normalize_datetime(row.get("orderDate") or row.get("order_date")),
             }
         )
     return normalized_rows
+
+
+def _normalize_datetime(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    tz = _safe_timezone()
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = parser.parse(str(value))
+        except Exception:
+            return str(value).strip()
+    normalized = parsed if parsed.tzinfo else parsed.replace(tzinfo=tz)
+    return normalized.isoformat()
+
+
+def _safe_timezone() -> ZoneInfo:
+    try:
+        return get_timezone()
+    except Exception:
+        return ZoneInfo("Asia/Kolkata")
+
+
+def _normalize_numeric(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    try:
+        if isinstance(value, (int, float, Decimal)):
+            numeric = Decimal(str(value))
+        else:
+            numeric = Decimal(str(value).replace(",", "").strip())
+    except (InvalidOperation, ValueError):
+        return str(value).strip()
+    return f"{numeric.quantize(Decimal('0.01'))}"

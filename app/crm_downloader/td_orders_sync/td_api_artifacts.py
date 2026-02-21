@@ -84,3 +84,41 @@ def persist_td_api_artifacts(
             logger.warning(warning)
 
     return result
+
+
+def persist_td_compare_artifacts(
+    *,
+    download_dir: Path,
+    store_code: str,
+    from_date: date,
+    to_date: date,
+    orders_compare_metrics: Mapping[str, Any],
+    sales_compare_metrics: Mapping[str, Any],
+) -> TdApiArtifactPersistResult:
+    result = TdApiArtifactPersistResult()
+    store = (store_code or "").strip().upper() or "UNKNOWN"
+    window_dir = download_dir / f"{store}_td_api_{_window_token(from_date)}_{_window_token(to_date)}"
+
+    artifact_targets: list[tuple[str, Path, Any]] = [
+        (
+            "orders_compare_mismatches",
+            window_dir / "orders_compare_mismatches.json",
+            (orders_compare_metrics or {}).get("mismatch_artifacts") or {},
+        ),
+        (
+            "sales_compare_mismatches",
+            window_dir / "sales_compare_mismatches.json",
+            (sales_compare_metrics or {}).get("mismatch_artifacts") or {},
+        ),
+    ]
+
+    for key, path, payload in artifact_targets:
+        try:
+            _write_json(path, payload)
+            result.artifact_paths[key] = str(path)
+        except Exception as exc:  # pragma: no cover - defensive guard
+            warning = f"Failed to persist TD compare artifact '{key}' at {path}: {exc}"
+            result.warnings.append(warning)
+            logger.warning(warning)
+
+    return result
