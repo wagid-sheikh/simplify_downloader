@@ -1,0 +1,62 @@
+{
+  "missing_in_api": [
+    {
+      "key": "A817|T1187|2025-12-14T13:03:21+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1187",
+        "order_date": "2025-12-14T13:03:21+05:30"
+      }
+    },
+    {
+      "key": "A817|T1217|2025-12-17T11:50:42+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1217",
+        "order_date": "2025-12-17T11:50:42+05:30"
+      }
+    },
+    {
+      "key": "A817|T1246|2025-12-20T15:43:20+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1246",
+        "order_date": "2025-12-20T15:43:20+05:30"
+      }
+    },
+    {
+      "key": "A817|T1402|2026-01-08T13:12:23+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1402",
+        "order_date": "2026-01-08T13:12:23+05:30"
+      }
+    },
+    {
+      "key": "A817|T1454|2026-01-14T18:22:34+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1454",
+        "order_date": "2026-01-14T18:22:34+05:30"
+      }
+    },
+    {
+      "key": "A817|T1485|2026-01-18T19:30:58+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1485",
+        "order_date": "2026-01-18T19:30:58+05:30"
+      }
+    },
+    {
+      "key": "A817|T1679|2026-02-09T18:35:15+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1679",
+        "order_date": "2026-02-09T18:35:15+05:30"
+      }
+    }
+  ],
+  "missing_in_ui": [],
+  "value_mismatches": []
+}
