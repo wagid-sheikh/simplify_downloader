@@ -1,0 +1,94 @@
+{
+  "missing_in_api": [
+    {
+      "key": "A817|T1018|2025-11-29T19:50:22+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1018",
+        "payment_date": "2025-11-29T19:50:22+05:30"
+      }
+    },
+    {
+      "key": "A817|T1018|2026-01-30T10:04:24+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1018",
+        "payment_date": "2026-01-30T10:04:24+05:30"
+      }
+    },
+    {
+      "key": "A817|T1187|2025-12-18T10:44:14+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1187",
+        "payment_date": "2025-12-18T10:44:14+05:30"
+      }
+    },
+    {
+      "key": "A817|T1217|2025-12-20T18:38:24+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1217",
+        "payment_date": "2025-12-20T18:38:24+05:30"
+      }
+    },
+    {
+      "key": "A817|T1246|2026-01-07T19:29:33+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1246",
+        "payment_date": "2026-01-07T19:29:33+05:30"
+      }
+    },
+    {
+      "key": "A817|T1402|2026-01-20T16:31:16+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1402",
+        "payment_date": "2026-01-20T16:31:16+05:30"
+      }
+    },
+    {
+      "key": "A817|T1402|2026-02-01T14:07:52+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1402",
+        "payment_date": "2026-02-01T14:07:52+05:30"
+      }
+    },
+    {
+      "key": "A817|T1454|2026-01-20T17:01:03+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1454",
+        "payment_date": "2026-01-20T17:01:03+05:30"
+      }
+    },
+    {
+      "key": "A817|T1454|2026-02-01T13:52:21+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1454",
+        "payment_date": "2026-02-01T13:52:21+05:30"
+      }
+    },
+    {
+      "key": "A817|T1485|2026-01-31T16:09:32+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1485",
+        "payment_date": "2026-01-31T16:09:32+05:30"
+      }
+    },
+    {
+      "key": "A817|T1679|2026-02-14T15:22:22+05:30",
+      "key_components": {
+        "store_code": "A817",
+        "order_number": "T1679",
+        "payment_date": "2026-02-14T15:22:22+05:30"
+      }
+    }
+  ],
+  "missing_in_ui": [],
+  "value_mismatches": []
+}
