@@ -40,6 +40,29 @@ poetry run python -m app.crm_downloader.td_orders_sync.main --source-mode api_sh
 ```
 
 
+
+## API↔UI parity mapping reference (orders + sales)
+
+Use this table as the shared parity contract for tests and incident triage.
+
+| Dataset | API field | Canonical/UI-equivalent field | Contract |
+| --- | --- | --- | --- |
+| Orders | `orderNo` | `order_number` | Required mapped field |
+| Orders | `orderDate` | `order_date` | Required mapped field |
+| Orders | `amount` | `amount` | Required mapped field |
+| Orders | `status` | `status` | Required mapped field |
+| Orders | `bookingSlipUrl` | n/a | Allowed API-only field |
+| Orders | `storeName` | n/a | Allowed API-only field |
+| Orders | `deliveryDate` | n/a | Allowed API-only field |
+| Sales | `orderNo` | `order_number` | Required mapped field |
+| Sales | `paymentDate` | `payment_date` | Required mapped field |
+| Sales | `paymentMode` | `payment_mode` | Required mapped field |
+| Sales | `amount` | `amount` | Required mapped field |
+| Sales | `status` | `status` | Required mapped field |
+| Sales | `printer` | n/a | Allowed API-only field |
+| Sales | `storeName` | n/a | Allowed API-only field |
+| Sales | `storeId` | n/a | Allowed API-only field |
+
 ## Summary/footer row filtering rules (orders + sales)
 
 To avoid compare noise from aggregate rows returned by TD APIs, the downloader filters summary/footer rows from `orders_rows` and `sales_rows` immediately after `_extract_rows(...)`.
