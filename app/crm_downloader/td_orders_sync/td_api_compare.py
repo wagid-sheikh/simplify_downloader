@@ -103,6 +103,57 @@ class CompareMetrics:
 
 
 @dataclass(frozen=True)
+class CompareDiffRow:
+    key: str
+    key_fields: dict[str, str]
+    reason_code: str
+    ui_row: dict[str, Any] | None = None
+    api_row: dict[str, Any] | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "key": self.key,
+            "key_fields": dict(self.key_fields),
+            "reason_code": self.reason_code,
+        }
+        if self.ui_row is not None:
+            payload["ui_row"] = dict(self.ui_row)
+        if self.api_row is not None:
+            payload["api_row"] = dict(self.api_row)
+        return payload
+
+
+@dataclass(frozen=True)
+class CompareDiffReport:
+    metrics: CompareMetrics
+    missing_in_api_rows: list[CompareDiffRow]
+    missing_in_ui_rows: list[CompareDiffRow]
+    value_mismatch_rows: list[CompareDiffRow]
+
+    def summary_dict(self, *, dataset: str, key_fields: Sequence[str], row_sample_cap: int) -> dict[str, Any]:
+        return {
+            "dataset": dataset,
+            "key_fields": list(key_fields),
+            "counts": {
+                "total_rows": self.metrics.total_rows,
+                "matched_rows": self.metrics.matched_rows,
+                "missing_in_api": self.metrics.missing_in_api,
+                "missing_in_ui": self.metrics.missing_in_ui,
+                "amount_mismatches": self.metrics.amount_mismatches,
+                "status_mismatches": self.metrics.status_mismatches,
+                "value_mismatches": len(self.value_mismatch_rows),
+            },
+            "row_sample_cap": row_sample_cap,
+            "truncated": {
+                "missing_in_api": len(self.missing_in_api_rows) > row_sample_cap,
+                "missing_in_ui": len(self.missing_in_ui_rows) > row_sample_cap,
+                "value_mismatches": len(self.value_mismatch_rows) > row_sample_cap,
+            },
+            "sample_mismatch_keys": list(self.metrics.sample_mismatch_keys),
+        }
+
+
+@dataclass(frozen=True)
 class DecisionLog:
     decision: str
     reason: str
@@ -253,6 +304,25 @@ def compare_canonical_rows(
     status_fields: Sequence[str] = ("status", "order_status"),
     sample_limit: int = 20,
 ) -> CompareMetrics:
+    return compare_canonical_rows_detailed(
+        ui_rows=ui_rows,
+        api_rows=api_rows,
+        key_fields=key_fields,
+        amount_fields=amount_fields,
+        status_fields=status_fields,
+        sample_limit=sample_limit,
+    ).metrics
+
+
+def compare_canonical_rows_detailed(
+    *,
+    ui_rows: Iterable[Mapping[str, Any]],
+    api_rows: Iterable[Mapping[str, Any]],
+    key_fields: Sequence[str],
+    amount_fields: Sequence[str] = ("amount", "total", "net_amount"),
+    status_fields: Sequence[str] = ("status", "order_status"),
+    sample_limit: int = 20,
+) -> CompareDiffReport:
     ui_rows_seq = list(ui_rows)
     api_rows_seq = list(api_rows)
     default_store_code = _infer_default_store_code(ui_rows_seq, api_rows_seq)
@@ -281,6 +351,7 @@ def compare_canonical_rows(
     status_mismatches = 0
     mismatch_samples: list[str] = []
     mismatched_shared = 0
+    value_mismatch_rows: list[CompareDiffRow] = []
 
     for key in shared:
         ui_row = ui_index[key]
@@ -303,12 +374,24 @@ def compare_canonical_rows(
                     status_mismatch = True
                 break
 
+        reason_code = ""
         if amount_mismatch:
             amount_mismatches += 1
+            reason_code = "amount_mismatch"
         if status_mismatch:
             status_mismatches += 1
+            reason_code = "status_mismatch" if not reason_code else "amount_and_status_mismatch"
         if amount_mismatch or status_mismatch:
             mismatched_shared += 1
+            value_mismatch_rows.append(
+                CompareDiffRow(
+                    key=key,
+                    key_fields=dict(key_breakdown.get(key, {})),
+                    reason_code=reason_code,
+                    ui_row=dict(ui_row),
+                    api_row=dict(api_row),
+                )
+            )
         if (amount_mismatch or status_mismatch) and len(mismatch_samples) < sample_limit:
             mismatch_samples.append(f"shared_mismatch ({_format_key_parts(key_breakdown.get(key, {}))})")
 
@@ -320,7 +403,7 @@ def compare_canonical_rows(
         f"missing_in_ui ({_format_key_parts(key_breakdown.get(key, {}))})" for key in missing_in_ui
     ]
     sample_keys = (missing_api_samples + missing_ui_samples + mismatch_samples)[:sample_limit]
-    return CompareMetrics(
+    metrics = CompareMetrics(
         total_rows=len(keys),
         matched_rows=max(matched_rows, 0),
         missing_in_api=len(missing_in_api),
@@ -328,4 +411,28 @@ def compare_canonical_rows(
         amount_mismatches=amount_mismatches,
         status_mismatches=status_mismatches,
         sample_mismatch_keys=sample_keys,
+    )
+    return CompareDiffReport(
+        metrics=metrics,
+        missing_in_api_rows=[
+            CompareDiffRow(
+                key=key,
+                key_fields=dict(key_breakdown.get(key, {})),
+                reason_code="key_missing",
+                ui_row=dict(ui_index[key]),
+                api_row=None,
+            )
+            for key in missing_in_api
+        ],
+        missing_in_ui_rows=[
+            CompareDiffRow(
+                key=key,
+                key_fields=dict(key_breakdown.get(key, {})),
+                reason_code="key_missing",
+                ui_row=None,
+                api_row=dict(api_index[key]),
+            )
+            for key in missing_in_ui
+        ],
+        value_mismatch_rows=value_mismatch_rows,
     )

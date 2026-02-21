@@ -32,13 +32,13 @@ from app.crm_downloader.td_orders_sync.ingest import TdOrdersIngestResult, inges
 from app.crm_downloader.td_orders_sync.sales_ingest import TdSalesIngestResult, ingest_td_sales_workbook
 from app.crm_downloader.td_orders_sync.td_api_client import TdApiClient, TdApiFetchResult
 from app.crm_downloader.td_orders_sync.garment_ingest import TdGarmentIngestResult, ingest_td_garment_rows
-from app.crm_downloader.td_orders_sync.td_api_artifacts import persist_td_api_artifacts
+from app.crm_downloader.td_orders_sync.td_api_artifacts import persist_td_api_artifacts, persist_td_compare_artifacts
 from app.crm_downloader.td_orders_sync.td_api_compare import (
     CorrelationContext,
     DecisionLog,
     build_api_request_metadata,
     collect_auth_diagnostics,
-    compare_canonical_rows,
+    compare_canonical_rows_detailed,
     COMPARE_KEY_FIELDS_BY_DATASET,
 )
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
@@ -109,6 +109,8 @@ def _int_env(name: str, default: int) -> int:
     except (TypeError, ValueError):
         return default
 
+
+COMPARE_ARTIFACT_SAMPLE_LIMIT = _int_env("TD_COMPARE_ARTIFACT_SAMPLE_LIMIT", 200)
 
 def _thresholds_for_dataset(dataset: str) -> CompareThresholdConfig:
     prefix = f"TD_COMPARE_{dataset.upper()}"
@@ -7073,20 +7075,22 @@ async def _run_store_discovery(
         )
         ui_rows = orders_report.warning_rows if orders_report and orders_report.warning_rows else []
         api_rows = api_fetch_result.normalized_orders if "api_fetch_result" in locals() else []
-        compare_metrics_obj = compare_canonical_rows(
+        compare_report = compare_canonical_rows_detailed(
             ui_rows=ui_rows,
             api_rows=api_rows,
             key_fields=COMPARE_KEY_FIELDS_BY_DATASET["orders"],
             sample_limit=WARNING_SAMPLE_LIMIT,
         )
+        compare_metrics_obj = compare_report.metrics
         sales_ui_rows = sales_report.warning_rows if sales_report and sales_report.warning_rows else []
         sales_api_rows = api_fetch_result.normalized_sales if "api_fetch_result" in locals() else []
-        sales_compare_metrics_obj = compare_canonical_rows(
+        sales_compare_report = compare_canonical_rows_detailed(
             ui_rows=sales_ui_rows,
             api_rows=sales_api_rows,
             key_fields=COMPARE_KEY_FIELDS_BY_DATASET["sales"],
             sample_limit=WARNING_SAMPLE_LIMIT,
         )
+        sales_compare_metrics_obj = sales_compare_report.metrics
         if source_mode == "api_shadow":
             decision = DecisionLog(
                 decision="api_shadow_compare_only",
@@ -7116,6 +7120,21 @@ async def _run_store_discovery(
             orders_report.auth_diagnostics = auth_diagnostics.as_dict()
             orders_report.source_mode = correlation.source_mode
             orders_report.decision_log = decision.as_dict()
+        compare_artifact_paths: dict[str, str] = {}
+        compare_artifact_warnings: list[str] = []
+        for dataset, report in (("orders", compare_report), ("sales", sales_compare_report)):
+            compare_artifact_result = persist_td_compare_artifacts(
+                download_dir=download_dir,
+                store_code=store.store_code,
+                from_date=run_start_date,
+                to_date=run_end_date,
+                dataset=dataset,
+                diff_report=report,
+                key_fields=COMPARE_KEY_FIELDS_BY_DATASET[dataset],
+                row_sample_cap=COMPARE_ARTIFACT_SAMPLE_LIMIT,
+            )
+            compare_artifact_paths.update(compare_artifact_result.artifact_paths)
+            compare_artifact_warnings.extend(compare_artifact_result.warnings)
         log_event(
             logger=store_logger,
             phase="compare",
@@ -7125,6 +7144,16 @@ async def _run_store_discovery(
             api_request_metadata=api_request_metadata,
             auth_diagnostics=auth_diagnostics.as_dict(),
             decision_log=decision.as_dict(),
+            compare_artifact_counts={
+                "orders": compare_report.summary_dict(
+                    dataset="orders", key_fields=COMPARE_KEY_FIELDS_BY_DATASET["orders"], row_sample_cap=COMPARE_ARTIFACT_SAMPLE_LIMIT
+                ).get("counts", {}),
+                "sales": sales_compare_report.summary_dict(
+                    dataset="sales", key_fields=COMPARE_KEY_FIELDS_BY_DATASET["sales"], row_sample_cap=COMPARE_ARTIFACT_SAMPLE_LIMIT
+                ).get("counts", {}),
+            },
+            compare_artifact_paths=compare_artifact_paths,
+            compare_artifact_warnings=compare_artifact_warnings,
         )
 
         garment_ingest_result: TdGarmentIngestResult | None = None
