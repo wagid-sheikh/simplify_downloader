@@ -500,13 +500,14 @@ def _normalize_sales_rows(rows: list[dict[str, Any]], *, store_code: str) -> lis
     normalized_rows: list[dict[str, Any]] = []
     for row in rows:
         order_number = row.get("orderNo") or row.get("orderNumber") or row.get("order_no")
+        payment_date = _normalize_datetime(row.get("paymentDate") or row.get("payment_date") or row.get("date"))
         normalized_rows.append(
             {
                 "store_code": normalized_store,
                 "order_no": order_number,
                 "order_number": order_number,
                 "invoice_no": row.get("invoiceNo") or row.get("invoice_no"),
-                "payment_date": _normalize_datetime(row.get("paymentDate") or row.get("payment_date") or row.get("date")),
+                "payment_date": payment_date,
                 "payment_mode": row.get("paymentMode") or row.get("payment_mode") or row.get("mode"),
                 "amount": _normalize_numeric(row.get("total") or row.get("amount") or row.get("netAmount")),
                 "status": row.get("status") or row.get("deliveryStatus"),
