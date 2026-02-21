@@ -11,6 +11,7 @@ from app.crm_downloader.td_orders_sync.main import (
     _persist_compare_excel_artifact,
     _resolve_td_api_artifact_dir,
 )
+from app.crm_downloader.td_orders_sync.td_api_artifacts import persist_td_api_artifacts
 from app.crm_downloader.td_orders_sync.td_api_client import (
     TdApiClient,
     _extract_rows,
@@ -117,7 +118,9 @@ def test_compare_uses_identical_canonical_key_and_emits_mismatch_artifacts() -> 
 
 def test_resolve_td_api_artifact_dir_defaults_and_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("TD_API_ARTIFACT_DIR", raising=False)
-    assert _resolve_td_api_artifact_dir() == (Path("docs") / "td_api" / "artifacts").resolve()
+    from app.crm_downloader.config import default_download_dir
+
+    assert _resolve_td_api_artifact_dir() == default_download_dir().resolve()
 
     custom_dir = tmp_path / "custom-artifacts"
     monkeypatch.setenv("TD_API_ARTIFACT_DIR", str(custom_dir))
@@ -149,6 +152,28 @@ def test_compare_excel_summary_excludes_nested_mismatch_artifacts(tmp_path: Path
     summary = workbook["summary"]
     headers = [cell.value for cell in next(summary.iter_rows(min_row=1, max_row=1))]
     assert "mismatch_artifacts" not in headers
+
+
+
+
+def test_persist_td_api_artifacts_writes_excel_outputs(tmp_path: Path) -> None:
+    result = persist_td_api_artifacts(
+        download_dir=tmp_path,
+        store_code="a817",
+        from_date=date(2026, 1, 1),
+        to_date=date(2026, 1, 2),
+        raw_orders={"data": []},
+        raw_sales={"data": []},
+        raw_garments={"data": []},
+        canonical_orders=[{"order_number": "1001", "amount": "12.00"}],
+        canonical_sales=[{"order_number": "1001", "amount": "12.00"}],
+        canonical_garments=[{"order_number": "1001", "line_item_key": "L1"}],
+    )
+
+    assert "orders_excel" in result.artifact_paths
+    assert "sales_excel" in result.artifact_paths
+    assert "garments_excel" in result.artifact_paths
+    assert Path(result.artifact_paths["orders_excel"]).exists()
 
 
 class _StubResponse:

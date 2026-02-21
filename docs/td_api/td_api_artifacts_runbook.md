@@ -17,7 +17,7 @@ If you leave source mode as `ui`, TD API fetch/compare artifacts are not expecte
 TD API artifacts are written to:
 
 1. `TD_API_ARTIFACT_DIR` if provided.
-2. Otherwise, `docs/td_api/artifacts`.
+2. Otherwise, the default CRM download directory (`app/crm_downloader/data` via `default_download_dir()`).
 
 Example override:
 

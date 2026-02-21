@@ -83,7 +83,7 @@ def _resolve_td_api_artifact_dir() -> Path:
     configured = (os.environ.get("TD_API_ARTIFACT_DIR") or "").strip()
     if configured:
         return Path(configured).expanduser().resolve()
-    return (Path("docs") / "td_api" / "artifacts").resolve()
+    return default_download_dir().resolve()
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -7204,6 +7204,16 @@ async def _run_store_discovery(
             orders_compare_metrics=compare_metrics_obj.as_dict(),
             sales_compare_metrics=sales_compare_metrics_obj.as_dict(),
         )
+        compare_excel_path = (
+            download_dir
+            / f"{store.store_code.upper()}_td_api_compare_{run_start_date.strftime('%Y%m%d')}_{run_end_date.strftime('%Y%m%d')}.xlsx"
+        )
+        _persist_compare_excel_artifact(
+            artifact_path=compare_excel_path,
+            compare_metrics=compare_metrics_obj.as_dict(),
+            api_request_metadata=api_request_metadata,
+        )
+        compare_artifact_result.artifact_paths["orders_compare_excel"] = str(compare_excel_path)
         log_event(
             logger=store_logger,
             phase="compare",
