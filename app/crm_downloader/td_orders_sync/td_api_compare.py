@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -35,6 +35,7 @@ class ApiRequestMetadata:
     status: int | None
     latency_ms: int | None
     retry_count: int
+    token_refresh_attempted: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -44,6 +45,7 @@ class ApiRequestMetadata:
             "status": self.status,
             "latency_ms": self.latency_ms,
             "retry_count": self.retry_count,
+            "token_refresh_attempted": self.token_refresh_attempted,
         }
 
 
@@ -52,12 +54,14 @@ class AuthDiagnostics:
     cookies_found: bool
     token_found: bool
     token_expiry: str | None
+    token_source: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "cookies_found": self.cookies_found,
             "token_found": self.token_found,
             "token_expiry": self.token_expiry,
+            "token_source": self.token_source,
         }
 
 
@@ -70,6 +74,7 @@ class CompareMetrics:
     amount_mismatches: int
     status_mismatches: int
     sample_mismatch_keys: list[str]
+    mismatch_artifacts: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -80,6 +85,7 @@ class CompareMetrics:
             "amount_mismatches": self.amount_mismatches,
             "status_mismatches": self.status_mismatches,
             "sample_mismatch_keys": self.sample_mismatch_keys,
+            "mismatch_artifacts": self.mismatch_artifacts,
         }
 
 
@@ -120,6 +126,7 @@ def collect_auth_diagnostics(storage_state_path: Path | None) -> AuthDiagnostics
     cookies_found = False
     token_found = False
     token_expiry: str | None = None
+    token_source: str | None = None
     if not storage_state_path or not storage_state_path.exists():
         return AuthDiagnostics(cookies_found=False, token_found=False, token_expiry=None)
     try:
@@ -146,13 +153,14 @@ def collect_auth_diagnostics(storage_state_path: Path | None) -> AuthDiagnostics
                 value = entry.get("value")
                 if value and any(key in name for key in ("token", "auth", "jwt", "bearer")):
                     token_found = True
+                    token_source = f"storage_state:{name}"
                     candidate_token = str(value)
                     break
             if token_found:
                 break
 
     token_expiry = parse_token_expiry(candidate_token)
-    return AuthDiagnostics(cookies_found=cookies_found, token_found=token_found, token_expiry=token_expiry)
+    return AuthDiagnostics(cookies_found=cookies_found, token_found=token_found, token_expiry=token_expiry, token_source=token_source)
 
 
 def build_api_request_metadata(
@@ -162,6 +170,7 @@ def build_api_request_metadata(
     status: int | None,
     latency_ms: int | None,
     retry_count: int = 0,
+    token_refresh_attempted: bool = False,
 ) -> ApiRequestMetadata:
     parsed = urlparse(url)
     endpoint = parsed.path
@@ -173,11 +182,16 @@ def build_api_request_metadata(
         status=status,
         latency_ms=latency_ms,
         retry_count=max(retry_count, 0),
+        token_refresh_attempted=token_refresh_attempted,
     )
 
 
 def _canonical_key(row: Mapping[str, Any], key_fields: Sequence[str]) -> str:
     return "|".join(str(row.get(field) or "").strip() for field in key_fields)
+
+
+def _key_components(row: Mapping[str, Any], key_fields: Sequence[str]) -> dict[str, Any]:
+    return {field: row.get(field) for field in key_fields}
 
 
 def compare_canonical_rows(
@@ -200,6 +214,7 @@ def compare_canonical_rows(
     amount_mismatches = 0
     status_mismatches = 0
     mismatch_samples: list[str] = []
+    value_mismatches: list[dict[str, Any]] = []
 
     for key in shared:
         ui_row = ui_index[key]
@@ -226,11 +241,27 @@ def compare_canonical_rows(
             amount_mismatches += 1
         if status_mismatch:
             status_mismatches += 1
-        if (amount_mismatch or status_mismatch) and len(mismatch_samples) < sample_limit:
-            mismatch_samples.append(key)
+        if amount_mismatch or status_mismatch:
+            if len(mismatch_samples) < sample_limit:
+                mismatch_samples.append(key)
+            value_mismatches.append(
+                {
+                    "key": key,
+                    "key_components": _key_components(ui_row, key_fields),
+                    "amount_mismatch": amount_mismatch,
+                    "status_mismatch": status_mismatch,
+                }
+            )
 
-    matched_rows = len(shared) - len({*mismatch_samples})
+    matched_rows = len(shared) - len(value_mismatches)
     sample_keys = (missing_in_api + missing_in_ui + mismatch_samples)[:sample_limit]
+    missing_in_api_artifacts = [
+        {"key": key, "key_components": _key_components(ui_index[key], key_fields)} for key in missing_in_api
+    ]
+    missing_in_ui_artifacts = [
+        {"key": key, "key_components": _key_components(api_index[key], key_fields)} for key in missing_in_ui
+    ]
+
     return CompareMetrics(
         total_rows=len(keys),
         matched_rows=max(matched_rows, 0),
@@ -239,4 +270,9 @@ def compare_canonical_rows(
         amount_mismatches=amount_mismatches,
         status_mismatches=status_mismatches,
         sample_mismatch_keys=sample_keys,
+        mismatch_artifacts={
+            "missing_in_api": missing_in_api_artifacts,
+            "missing_in_ui": missing_in_ui_artifacts,
+            "value_mismatches": value_mismatches,
+        },
     )
