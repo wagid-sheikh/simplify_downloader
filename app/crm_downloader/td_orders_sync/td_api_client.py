@@ -18,6 +18,23 @@ REPORTS_ORIGIN_HOST = "reports.quickdrycleaning.com"
 
 logger = logging.getLogger(__name__)
 
+_SUMMARY_MARKERS = ("total", "summary", "grand total")
+_LABEL_LIKE_FIELD_SIGNALS = ("label", "name", "title", "description", "remark", "note", "particular")
+_STABLE_TRANSACTION_ID_FIELDS = (
+    "ordernumber",
+    "orderno",
+    "orderid",
+    "order_id",
+    "transactionid",
+    "transaction_id",
+    "invoiceno",
+    "invoice_no",
+    "receiptno",
+    "receipt_no",
+    "paymentid",
+    "payment_id",
+)
+
 
 @dataclass(frozen=True)
 class TdApiClientConfig:
@@ -125,9 +142,21 @@ class TdApiClient:
             errors=errors,
         )
 
-        orders_rows = _extract_rows(order_payload)
-        sales_rows = _extract_rows(sales_payload)
+        orders_rows_raw = _extract_rows(order_payload)
+        sales_rows_raw = _extract_rows(sales_payload)
         garments_rows = _extract_rows(garments_payload)
+
+        orders_rows, orders_summary_filtered = _filter_summary_rows(orders_rows_raw)
+        sales_rows, sales_summary_filtered = _filter_summary_rows(sales_rows_raw)
+
+        self._log_summary_rows_filtered(
+            endpoint="/reports/order-report",
+            summary_rows_filtered=orders_summary_filtered,
+        )
+        self._log_summary_rows_filtered(
+            endpoint="/sales-and-deliveries/sales",
+            summary_rows_filtered=sales_summary_filtered,
+        )
 
         self._log_endpoint_total(endpoint="/reports/order-report", total_rows=len(orders_rows))
         self._log_endpoint_total(endpoint="/sales-and-deliveries/sales", total_rows=len(sales_rows))
@@ -150,6 +179,16 @@ class TdApiClient:
                 "store_code": self.store_code,
                 "endpoint": endpoint,
                 "api_total_rows": total_rows,
+            },
+        )
+
+    def _log_summary_rows_filtered(self, *, endpoint: str, summary_rows_filtered: int) -> None:
+        logger.info(
+            "TD API summary rows filtered",
+            extra={
+                "store_code": self.store_code,
+                "endpoint": endpoint,
+                "summary_rows_filtered": summary_rows_filtered,
             },
         )
 
@@ -466,6 +505,105 @@ def _extract_rows(payload: Any) -> list[dict[str, Any]]:
             if isinstance(value, list):
                 return [row for row in value if isinstance(row, dict)]
     return []
+
+
+def _filter_summary_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    filtered_rows: list[dict[str, Any]] = []
+    summary_rows_filtered = 0
+    for row in rows:
+        if _is_summary_or_footer_row(row):
+            summary_rows_filtered += 1
+            continue
+        filtered_rows.append(row)
+    return filtered_rows, summary_rows_filtered
+
+
+def _is_summary_or_footer_row(row: Mapping[str, Any]) -> bool:
+    normalized_values = {str(key).strip().lower(): value for key, value in row.items()}
+    order_number = _first_non_empty_value(normalized_values, ("ordernumber", "orderno", "order_number"))
+
+    if not order_number and _label_field_contains_summary_marker(normalized_values):
+        return True
+
+    if _has_stable_transaction_identifier(normalized_values):
+        return False
+
+    if not _row_contains_summary_marker(normalized_values):
+        return False
+
+    numeric_fields = 0
+    non_numeric_non_empty_fields = 0
+    for value in normalized_values.values():
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        if _looks_numeric(text):
+            numeric_fields += 1
+        elif not _contains_summary_marker(text):
+            non_numeric_non_empty_fields += 1
+
+    return numeric_fields >= 1 and non_numeric_non_empty_fields == 0
+
+
+def _first_non_empty_value(values: Mapping[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        candidate = values.get(key)
+        text = str(candidate or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _has_stable_transaction_identifier(values: Mapping[str, Any]) -> bool:
+    for key, value in values.items():
+        if key not in _STABLE_TRANSACTION_ID_FIELDS:
+            continue
+        text = str(value or "").strip()
+        if text:
+            return True
+    return False
+
+
+def _label_field_contains_summary_marker(values: Mapping[str, Any]) -> bool:
+    for key, value in values.items():
+        if key in {"ordernumber", "orderno", "order_number"}:
+            continue
+        if not _is_label_like_key(key):
+            continue
+        if _contains_summary_marker(str(value or "")):
+            return True
+    return False
+
+
+def _row_contains_summary_marker(values: Mapping[str, Any]) -> bool:
+    for value in values.values():
+        if _contains_summary_marker(str(value or "")):
+            return True
+    return False
+
+
+def _contains_summary_marker(text: str) -> bool:
+    lowered = text.strip().lower()
+    return bool(lowered) and any(marker in lowered for marker in _SUMMARY_MARKERS)
+
+
+def _is_label_like_key(key: str) -> bool:
+    return any(signal in key for signal in _LABEL_LIKE_FIELD_SIGNALS)
+
+
+def _looks_numeric(text: str) -> bool:
+    normalized = text.replace(",", "").replace("₹", "").strip()
+    if not normalized:
+        return False
+    if normalized.startswith("(") and normalized.endswith(")"):
+        normalized = f"-{normalized[1:-1]}"
+    try:
+        float(normalized)
+    except ValueError:
+        return False
+    return True
 
 
 def _extract_total_rows_hint(payload: Any) -> int | None:

@@ -15,6 +15,7 @@ from app.crm_downloader.td_orders_sync.td_api_artifacts import persist_td_api_ar
 from app.crm_downloader.td_orders_sync.td_api_client import (
     TdApiClient,
     _extract_rows,
+    _filter_summary_rows,
 )
 from app.crm_downloader.td_orders_sync.td_api_compare import (
     COMPARE_KEY_FIELDS_BY_DATASET,
@@ -34,6 +35,25 @@ def test_extract_rows_handles_common_response_shapes() -> None:
     assert _extract_rows({"items": [{"a": 1}], "x": 1}) == [{"a": 1}]
     assert _extract_rows({"data": {"rows": [{"x": 9}]}}) == [{"x": 9}]
     assert _extract_rows({"data": "bad"}) == []
+
+
+
+
+def test_filter_summary_rows_removes_footer_like_rows() -> None:
+    rows = [
+        {"orderNumber": "A-1001", "customerName": "Alice", "totalAmount": "120.00"},
+        {"orderNumber": None, "customerName": "Total Order", "totalAmount": "120.00"},
+        {"orderNo": "S-2002", "paymentDate": "2026-01-02", "netAmount": "80.00"},
+        {"orderNo": "", "description": "Grand Total", "netAmount": "200.00", "tax": "20.00"},
+    ]
+
+    filtered_rows, summary_rows_filtered = _filter_summary_rows(rows)
+
+    assert summary_rows_filtered == 2
+    assert filtered_rows == [
+        {"orderNumber": "A-1001", "customerName": "Alice", "totalAmount": "120.00"},
+        {"orderNo": "S-2002", "paymentDate": "2026-01-02", "netAmount": "80.00"},
+    ]
 
 
 def test_api_client_reads_storage_state_artifact(tmp_path: Path) -> None:
@@ -353,3 +373,46 @@ async def test_fetch_reports_preserves_full_fidelity_rows_for_artifacts(tmp_path
     assert result.raw_orders_payload["data"][0]["ordersOnlyField"] == "keep"
     assert result.raw_sales_payload["data"][0]["salesOnlyField"] == "keep"
     assert result.raw_garments_payload["data"][0]["garmentsOnlyField"] == "keep"
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_filters_summary_rows_from_orders_and_sales(tmp_path: Path) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/reports/order-report",
+                payload={
+                    "data": [
+                        {"orderNumber": "1001", "customer": "Alice", "amount": "10.00"},
+                        {"orderNumber": "", "description": "Total", "amount": "10.00"},
+                    ],
+                    "totalPages": 1,
+                },
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales",
+                payload={
+                    "data": [
+                        {"orderNo": "S-1", "paymentDate": "2026-01-02", "netAmount": "7.00"},
+                        {"orderNo": None, "label": "Grand Total", "netAmount": "7.00", "tax": "1.00"},
+                    ],
+                    "totalPages": 1,
+                },
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [{"orderNo": "G-1", "lineItemId": "L1"}], "totalPages": 1},
+            ),
+        ]
+    )
+    context = _StubContext(request=request)
+    client = _TokenRefreshingClient(store_code="a123", context=context, storage_state_path=tmp_path / "s.json")
+
+    result = await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    assert [row["orderNumber"] for row in result.orders_rows] == ["1001"]
+    assert [row["orderNo"] for row in result.sales_rows] == ["S-1"]
+
