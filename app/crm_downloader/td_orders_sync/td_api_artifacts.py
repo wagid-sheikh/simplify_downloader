@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
+
+import openpyxl
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -41,6 +43,31 @@ def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
             handle.write("\n")
 
 
+def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: str = "rows") -> None:
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.title = sheet_name
+    if not rows:
+        worksheet.append(["note"])
+        worksheet.append(["no rows"])
+    else:
+        columns: list[str] = []
+        for row in rows:
+            for key in row.keys():
+                key_text = str(key)
+                if key_text not in columns:
+                    columns.append(key_text)
+        worksheet.append(columns)
+        for row in rows:
+            worksheet.append([row.get(column) for column in columns])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    workbook.save(path)
+
+
+def _excel_filename(store_code: str, dataset: str, from_date: date, to_date: date) -> str:
+    return f"{store_code}_td_api_{dataset}_{_window_token(from_date)}_{_window_token(to_date)}.xlsx"
+
+
 
 def persist_td_api_artifacts(
     *,
@@ -69,12 +96,17 @@ def persist_td_api_artifacts(
         ("orders_canonical", window_dir / "orders_canonical.jsonl", canonical_orders, "jsonl"),
         ("sales_canonical", window_dir / "sales_canonical.jsonl", canonical_sales, "jsonl"),
         ("garments_canonical", window_dir / "garments_canonical.jsonl", canonical_garments, "jsonl"),
+        ("orders_excel", download_dir / _excel_filename(store, "orders", from_date, to_date), canonical_orders, "xlsx"),
+        ("sales_excel", download_dir / _excel_filename(store, "sales", from_date, to_date), canonical_sales, "xlsx"),
+        ("garments_excel", download_dir / _excel_filename(store, "garments", from_date, to_date), canonical_garments, "xlsx"),
     ]
 
     for key, path, payload, kind in artifact_targets:
         try:
             if kind == "jsonl":
                 _write_jsonl(path, payload)
+            elif kind == "xlsx":
+                _write_excel(path, payload, sheet_name=key)
             else:
                 _write_json(path, payload)
             result.artifact_paths[key] = str(path)
