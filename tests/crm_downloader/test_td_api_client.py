@@ -279,3 +279,40 @@ async def test_fetch_reports_captures_non_retriable_http_errors_per_endpoint(tmp
     assert result.normalized_orders == []
     assert len(result.normalized_sales) == 1
     assert len(result.normalized_garments) == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_sets_expand_data_true_for_orders_and_sales(tmp_path: Path) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/reports/order-report",
+                payload={"data": [], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales",
+                payload={"data": [], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [], "totalPages": 1},
+            ),
+        ]
+    )
+    context = _StubContext(request=request)
+    client = _TokenRefreshingClient(store_code="a123", context=context, storage_state_path=tmp_path / "s.json")
+
+    await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    orders_call = next(call for call in request.calls if call["url"].endswith("/reports/order-report"))
+    sales_call = next(call for call in request.calls if call["url"].endswith("/sales-and-deliveries/sales"))
+    garments_call = next(call for call in request.calls if call["url"].endswith("/garments/details"))
+
+    assert orders_call["params"]["expandData"] == "true"
+    assert sales_call["params"]["expandData"] == "true"
+    assert "expandData" in orders_call["params"]
+    assert "expandData" in sales_call["params"]
+    assert "expandData" not in garments_call["params"]
