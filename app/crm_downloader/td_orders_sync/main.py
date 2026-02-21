@@ -7087,6 +7087,18 @@ async def _run_store_discovery(
             key_fields=COMPARE_KEY_FIELDS_BY_DATASET["sales"],
             sample_limit=WARNING_SAMPLE_LIMIT,
         )
+        api_garment_rows = api_fetch_result.normalized_garments if "api_fetch_result" in locals() else []
+        log_event(
+            logger=store_logger,
+            phase="compare",
+            message="TD UI/API row-count verification",
+            **correlation.as_dict(),
+            orders_ui_rows=len(ui_rows),
+            orders_api_rows=len(api_rows),
+            sales_ui_rows=len(sales_ui_rows),
+            sales_api_rows=len(sales_api_rows),
+            garments_api_rows=len(api_garment_rows),
+        )
         if source_mode == "api_shadow":
             decision = DecisionLog(
                 decision="api_shadow_compare_only",
