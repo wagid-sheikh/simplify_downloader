@@ -78,9 +78,9 @@ def persist_td_api_artifacts(
     raw_orders: Any,
     raw_sales: Any,
     raw_garments: Any,
-    orders_rows: Sequence[Mapping[str, Any]],
-    sales_rows: Sequence[Mapping[str, Any]],
-    garment_rows: Sequence[Mapping[str, Any]],
+    order_rows: Sequence[Mapping[str, Any]],
+    sale_rows: Sequence[Mapping[str, Any]],
+    garments_rows: Sequence[Mapping[str, Any]],
 ) -> TdApiArtifactPersistResult:
     result = TdApiArtifactPersistResult()
     store = (store_code or "").strip().upper() or "UNKNOWN"
@@ -93,12 +93,12 @@ def persist_td_api_artifacts(
         ("orders_raw_alias", window_dir / "orders_raw.json", raw_orders, "json"),
         ("sales_raw_alias", window_dir / "sales_raw.json", raw_sales, "json"),
         ("garments_raw_alias", window_dir / "garments_raw.json", raw_garments, "json"),
-        ("orders_rows", window_dir / "orders_rows.jsonl", orders_rows, "jsonl"),
-        ("sales_rows", window_dir / "sales_rows.jsonl", sales_rows, "jsonl"),
-        ("garments_rows", window_dir / "garments_rows.jsonl", garment_rows, "jsonl"),
-        ("orders_excel", download_dir / _excel_filename(store, "orders", from_date, to_date), orders_rows, "xlsx"),
-        ("sales_excel", download_dir / _excel_filename(store, "sales", from_date, to_date), sales_rows, "xlsx"),
-        ("garments_excel", download_dir / _excel_filename(store, "garments", from_date, to_date), garment_rows, "xlsx"),
+        ("orders_rows", window_dir / "orders_rows.jsonl", order_rows, "jsonl"),
+        ("sales_rows", window_dir / "sales_rows.jsonl", sale_rows, "jsonl"),
+        ("garments_rows", window_dir / "garments_rows.jsonl", garments_rows, "jsonl"),
+        ("orders_excel", download_dir / _excel_filename(store, "orders", from_date, to_date), order_rows, "xlsx"),
+        ("sales_excel", download_dir / _excel_filename(store, "sales", from_date, to_date), sale_rows, "xlsx"),
+        ("garments_excel", download_dir / _excel_filename(store, "garments", from_date, to_date), garments_rows, "xlsx"),
     ]
 
     for key, path, payload, kind in artifact_targets:
