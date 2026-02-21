@@ -55,6 +55,14 @@ class _TokenDiscoveryResult:
     expiry: str | None
 
 
+@dataclass(frozen=True)
+class _JsonFetchResult:
+    ok: bool
+    payload: Any
+    error: str | None = None
+    status: int | None = None
+
+
 class _StoreRateLimiter:
     _locks: dict[str, asyncio.Lock] = {}
     _next_allowed_at: dict[str, float] = {}
@@ -103,21 +111,25 @@ class TdApiClient:
             "endDate": to_date.isoformat(),
         }
         metadata: list[dict[str, Any]] = []
+        errors: dict[str, str] = {}
 
-        order_payload = await self._get_paginated_json(
+        order_payload = await self._fetch_endpoint_rows(
             endpoint="/reports/order-report",
             params={**common_params, "expandData": "false"},
             metadata=metadata,
+            errors=errors,
         )
-        sales_payload = await self._get_paginated_json(
+        sales_payload = await self._fetch_endpoint_rows(
             endpoint="/sales-and-deliveries/sales",
             params=common_params,
             metadata=metadata,
+            errors=errors,
         )
-        garments_payload = await self._get_paginated_json(
+        garments_payload = await self._fetch_endpoint_rows(
             endpoint="/garments/details",
             params=common_params,
             metadata=metadata,
+            errors=errors,
         )
 
         orders_rows = _extract_rows(order_payload)
@@ -148,12 +160,13 @@ class TdApiClient:
             },
         )
 
-    async def _get_paginated_json(
+    async def _fetch_endpoint_rows(
         self,
         *,
         endpoint: str,
         params: Mapping[str, Any],
         metadata: list[dict[str, Any]],
+        errors: dict[str, str],
     ) -> dict[str, Any]:
         page = 1
         cumulative_rows = 0
@@ -164,7 +177,13 @@ class TdApiClient:
 
         while True:
             page_params = {**dict(params), "page": page}
-            page_payload = await self._get_json(endpoint=endpoint, params=page_params, metadata=metadata)
+            page_result = await self._get_json(endpoint=endpoint, params=page_params, metadata=metadata)
+
+            if not page_result.ok:
+                errors[endpoint] = page_result.error or "unknown_error"
+                break
+
+            page_payload = page_result.payload
             page_payloads.append(page_payload)
 
             rows = _extract_rows(page_payload)
@@ -198,6 +217,7 @@ class TdApiClient:
         return {
             "data": aggregated_rows,
             "pages": page_payloads,
+            "error": errors.get(endpoint),
             "pagination": {
                 "pages_fetched": page,
                 "total_rows": cumulative_rows,
@@ -207,13 +227,23 @@ class TdApiClient:
             },
         }
 
+    async def _get_paginated_json(
+        self,
+        *,
+        endpoint: str,
+        params: Mapping[str, Any],
+        metadata: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        errors: dict[str, str] = {}
+        return await self._fetch_endpoint_rows(endpoint=endpoint, params=params, metadata=metadata, errors=errors)
+
     async def _get_json(
         self,
         *,
         endpoint: str,
         params: Mapping[str, Any],
         metadata: list[dict[str, Any]],
-    ) -> Any:
+    ) -> _JsonFetchResult:
         url = f"{REPORTING_API_BASE_URL}{endpoint}"
         token_discovery = await self._discover_reporting_token()
         headers = {
@@ -263,9 +293,14 @@ class TdApiClient:
                     if should_retry_with_refreshed_token:
                         continue
                     if status_code < 400:
-                        return await response.json()
+                        return _JsonFetchResult(ok=True, payload=await response.json(), status=status_code)
                     if status_code not in {408, 429, 500, 502, 503, 504}:
-                        return {}
+                        return _JsonFetchResult(
+                            ok=False,
+                            payload=None,
+                            error=f"http_{status_code}",
+                            status=status_code,
+                        )
                     last_error = RuntimeError(f"HTTP {status_code} from {endpoint}")
                     break
                 except PlaywrightError as exc:
@@ -285,9 +320,16 @@ class TdApiClient:
             if attempt < self.config.max_retries:
                 backoff = min(self.config.max_backoff_seconds, self.config.backoff_base_seconds * (2**attempt))
                 await asyncio.sleep(max(backoff, 0.0))
+        if status_code is not None:
+            return _JsonFetchResult(
+                ok=False,
+                payload=None,
+                error=f"http_{status_code}",
+                status=status_code,
+            )
         if last_error:
-            raise last_error
-        return {}
+            return _JsonFetchResult(ok=False, payload=None, error=type(last_error).__name__, status=None)
+        return _JsonFetchResult(ok=False, payload=None, error="unknown_error", status=None)
 
     async def _discover_reporting_token(self, *, force_refresh: bool = False) -> _TokenDiscoveryResult:
         if self._token_discovery is not None and not force_refresh:
@@ -500,13 +542,14 @@ def _normalize_sales_rows(rows: list[dict[str, Any]], *, store_code: str) -> lis
     normalized_rows: list[dict[str, Any]] = []
     for row in rows:
         order_number = row.get("orderNo") or row.get("orderNumber") or row.get("order_no")
+        payment_date = _normalize_datetime(row.get("paymentDate") or row.get("payment_date") or row.get("date"))
         normalized_rows.append(
             {
                 "store_code": normalized_store,
                 "order_no": order_number,
                 "order_number": order_number,
                 "invoice_no": row.get("invoiceNo") or row.get("invoice_no"),
-                "payment_date": _normalize_datetime(row.get("paymentDate") or row.get("payment_date") or row.get("date")),
+                "payment_date": payment_date,
                 "payment_mode": row.get("paymentMode") or row.get("payment_mode") or row.get("mode"),
                 "amount": _normalize_numeric(row.get("total") or row.get("amount") or row.get("netAmount")),
                 "status": row.get("status") or row.get("deliveryStatus"),
