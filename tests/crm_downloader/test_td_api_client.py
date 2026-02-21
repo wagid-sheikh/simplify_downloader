@@ -15,11 +15,12 @@ from app.crm_downloader.td_orders_sync.td_api_artifacts import persist_td_api_ar
 from app.crm_downloader.td_orders_sync.td_api_client import (
     TdApiClient,
     _extract_rows,
-    _normalize_garment_rows,
-    _normalize_order_rows,
-    _normalize_sales_rows,
 )
-from app.crm_downloader.td_orders_sync.td_api_compare import COMPARE_KEY_FIELDS_BY_DATASET, compare_canonical_rows
+from app.crm_downloader.td_orders_sync.td_api_compare import (
+    COMPARE_KEY_FIELDS_BY_DATASET,
+    compare_canonical_rows,
+    project_api_rows_for_compare,
+)
 
 
 def test_source_mode_parser_accepts_api_modes() -> None:
@@ -41,28 +42,6 @@ def test_api_client_reads_storage_state_artifact(tmp_path: Path) -> None:
     client = TdApiClient(store_code="a123", context=None, storage_state_path=artifact)  # type: ignore[arg-type]
     state = client.read_session_artifact()
     assert state["cookies"][0]["name"] == "session"
-
-
-def test_normalize_garment_rows_surfaces_ids_and_line_keys() -> None:
-    rows = _normalize_garment_rows([{"orderNo": "ORD-1", "lineItemId": "L1", "garmentId": "G1", "lineItemKey": "LK1"}], store_code="a123")
-    assert rows[0]["order_number"] == "ORD-1"
-    assert rows[0]["api_line_item_id"] == "L1"
-    assert rows[0]["api_garment_id"] == "G1"
-    assert rows[0]["line_item_key"] == "LK1"
-
-
-def test_api_normalizers_align_datetime_and_numeric_precision() -> None:
-    orders = _normalize_order_rows(
-        [{"orderNo": "ORD-1", "orderDate": "2026-01-02 10:00:00", "amount": "12"}], store_code="a817"
-    )
-    sales = _normalize_sales_rows(
-        [{"orderNo": "ORD-1", "paymentDate": "2026-01-02 10:00:00", "total": "12"}], store_code="a817"
-    )
-
-    assert orders[0]["order_date"].startswith("2026-01-02T10:00:00")
-    assert orders[0]["amount"] == "12.00"
-    assert sales[0]["payment_date"].startswith("2026-01-02T10:00:00")
-    assert sales[0]["amount"] == "12.00"
 
 
 def test_compare_uses_identical_canonical_key_and_emits_mismatch_artifacts() -> None:
@@ -116,6 +95,25 @@ def test_compare_uses_identical_canonical_key_and_emits_mismatch_artifacts() -> 
 
 
 
+
+
+def test_project_api_rows_for_compare_isolated_projection() -> None:
+    projected = project_api_rows_for_compare(
+        dataset="orders",
+        api_rows=[{"orderNo": "1001", "orderDate": "2026-01-02 10:00:00", "amount": "12", "status": "Delivered", "sourceOnly": "keep"}],
+        store_code="a817",
+    )
+
+    assert projected == [
+        {
+            "store_code": "A817",
+            "order_number": "1001",
+            "order_date": "2026-01-02 10:00:00",
+            "amount": "12",
+            "status": "Delivered",
+        }
+    ]
+
 def test_resolve_td_api_artifact_dir_defaults_and_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("TD_API_ARTIFACT_DIR", raising=False)
     from app.crm_downloader.config import default_download_dir
@@ -165,15 +163,18 @@ def test_persist_td_api_artifacts_writes_excel_outputs(tmp_path: Path) -> None:
         raw_orders={"data": []},
         raw_sales={"data": []},
         raw_garments={"data": []},
-        canonical_orders=[{"order_number": "1001", "amount": "12.00"}],
-        canonical_sales=[{"order_number": "1001", "amount": "12.00"}],
-        canonical_garments=[{"order_number": "1001", "line_item_key": "L1"}],
+        orders_rows=[{"order_number": "1001", "source_only": "x", "amount": "12.00"}],
+        sales_rows=[{"order_number": "1001", "sales_only": "y", "amount": "12.00"}],
+        garment_rows=[{"order_number": "1001", "garment_only": "z", "line_item_key": "L1"}],
     )
 
     assert "orders_excel" in result.artifact_paths
     assert "sales_excel" in result.artifact_paths
     assert "garments_excel" in result.artifact_paths
     assert Path(result.artifact_paths["orders_excel"]).exists()
+    orders_rows_path = Path(result.artifact_paths["orders_rows"])
+    assert orders_rows_path.exists()
+    assert '"source_only": "x"' in orders_rows_path.read_text(encoding="utf-8")
 
 
 class _StubResponse:
@@ -259,12 +260,12 @@ async def test_fetch_reports_captures_non_retriable_http_errors_per_endpoint(tmp
             _StubResponse(
                 status=200,
                 url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales",
-                payload={"data": [{"orderNo": "S-1", "paymentDate": "2026-01-02 10:00:00", "total": "10"}], "totalPages": 1},
+                payload={"data": [{"orderNo": "S-1", "paymentDate": "2026-01-02 10:00:00", "total": "10", "salesOnlyField": "survives"}], "totalPages": 1},
             ),
             _StubResponse(
                 status=200,
                 url="https://reporting-api.quickdrycleaning.com/garments/details",
-                payload={"data": [{"orderNo": "G-1", "lineItemId": "L1"}], "totalPages": 1},
+                payload={"data": [{"orderNo": "G-1", "lineItemId": "L1", "garmentOnlyField": "survives"}], "totalPages": 1},
             ),
         ]
     )
@@ -276,9 +277,11 @@ async def test_fetch_reports_captures_non_retriable_http_errors_per_endpoint(tmp
     assert result.raw_orders_payload["error"] == "http_403"
     assert result.raw_sales_payload["error"] is None
     assert result.raw_garments_payload["error"] is None
-    assert result.normalized_orders == []
-    assert len(result.normalized_sales) == 1
-    assert len(result.normalized_garments) == 1
+    assert result.orders_rows == []
+    assert len(result.sales_rows) == 1
+    assert len(result.garment_rows) == 1
+    assert result.sales_rows[0]["salesOnlyField"] == "survives"
+    assert result.garment_rows[0]["garmentOnlyField"] == "survives"
 
 
 @pytest.mark.asyncio

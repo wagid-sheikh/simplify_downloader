@@ -40,6 +40,7 @@ from app.crm_downloader.td_orders_sync.td_api_compare import (
     build_api_request_metadata,
     collect_auth_diagnostics,
     compare_canonical_rows,
+    project_api_rows_for_compare,
     COMPARE_KEY_FIELDS_BY_DATASET,
 )
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
@@ -6674,9 +6675,9 @@ async def _run_store_discovery(
                             raw_orders=api_fetch_result.raw_orders_payload,
                             raw_sales=api_fetch_result.raw_sales_payload,
                             raw_garments=api_fetch_result.raw_garments_payload,
-                            canonical_orders=api_fetch_result.normalized_orders,
-                            canonical_sales=api_fetch_result.normalized_sales,
-                            canonical_garments=api_fetch_result.normalized_garments,
+                            orders_rows=api_fetch_result.orders_rows,
+                            sales_rows=api_fetch_result.sales_rows,
+                            garment_rows=api_fetch_result.garment_rows,
                         )
                         log_event(
                             logger=store_logger,
@@ -6704,9 +6705,9 @@ async def _run_store_discovery(
                             message="Fetched TD API reports",
                             store_code=store.store_code,
                             source_mode=source_mode,
-                            orders_rows=len(api_fetch_result.normalized_orders),
-                            sales_rows=len(api_fetch_result.normalized_sales),
-                            garments_rows=len(api_fetch_result.normalized_garments),
+                            orders_rows=len(api_fetch_result.orders_rows),
+                            sales_rows=len(api_fetch_result.sales_rows),
+                            garments_rows=len(api_fetch_result.garment_rows),
                         )
                     except Exception as exc:
                         log_event(
@@ -6729,21 +6730,21 @@ async def _run_store_discovery(
                             return
 
                     if source_mode in {"api_only", "api_primary"}:
-                        orders_status = "ok" if api_fetch_result.normalized_orders else "warning"
-                        sales_status = "ok" if api_fetch_result.normalized_sales else ("skipped" if not run_sales else "warning")
+                        orders_status = "ok" if api_fetch_result.orders_rows else "warning"
+                        sales_status = "ok" if api_fetch_result.sales_rows else ("skipped" if not run_sales else "warning")
                         orders_report = StoreReport(
                             status=orders_status,
                             message="Orders sourced from API",
-                            warning_rows=list(api_fetch_result.normalized_orders),
-                            rows_downloaded=len(api_fetch_result.normalized_orders),
+                            warning_rows=list(api_fetch_result.orders_rows),
+                            rows_downloaded=len(api_fetch_result.orders_rows),
                             rows_ingested=0,
                             source_mode=source_mode,
                         )
                         sales_report = StoreReport(
                             status=sales_status,
                             message="Sales sourced from API" if run_sales else "Sales sync skipped by flag",
-                            warning_rows=list(api_fetch_result.normalized_sales),
-                            rows_downloaded=len(api_fetch_result.normalized_sales),
+                            warning_rows=list(api_fetch_result.sales_rows),
+                            rows_downloaded=len(api_fetch_result.sales_rows),
                             rows_ingested=0,
                             source_mode=source_mode,
                         )
@@ -7135,22 +7136,24 @@ async def _run_store_discovery(
             run_sales=run_sales,
         )
         ui_rows = orders_report.warning_rows if orders_report and orders_report.warning_rows else []
-        api_rows = api_fetch_result.normalized_orders if "api_fetch_result" in locals() else []
+        api_rows = api_fetch_result.orders_rows if "api_fetch_result" in locals() else []
+        compare_api_rows = project_api_rows_for_compare(dataset="orders", api_rows=api_rows, store_code=store.store_code)
         compare_metrics_obj = compare_canonical_rows(
             ui_rows=ui_rows,
-            api_rows=api_rows,
+            api_rows=compare_api_rows,
             key_fields=COMPARE_KEY_FIELDS_BY_DATASET["orders"],
             sample_limit=WARNING_SAMPLE_LIMIT,
         )
         sales_ui_rows = sales_report.warning_rows if sales_report and sales_report.warning_rows else []
-        sales_api_rows = api_fetch_result.normalized_sales if "api_fetch_result" in locals() else []
+        sales_api_rows = api_fetch_result.sales_rows if "api_fetch_result" in locals() else []
+        sales_compare_api_rows = project_api_rows_for_compare(dataset="sales", api_rows=sales_api_rows, store_code=store.store_code)
         sales_compare_metrics_obj = compare_canonical_rows(
             ui_rows=sales_ui_rows,
-            api_rows=sales_api_rows,
+            api_rows=sales_compare_api_rows,
             key_fields=COMPARE_KEY_FIELDS_BY_DATASET["sales"],
             sample_limit=WARNING_SAMPLE_LIMIT,
         )
-        api_garment_rows = api_fetch_result.normalized_garments if "api_fetch_result" in locals() else []
+        api_garment_rows = api_fetch_result.garment_rows if "api_fetch_result" in locals() else []
         log_event(
             logger=store_logger,
             phase="compare",
@@ -7238,11 +7241,11 @@ async def _run_store_discovery(
             and config.database_url
             and getattr(store, "cost_center", None)
             and "api_fetch_result" in locals()
-            and api_fetch_result.normalized_garments
+            and api_fetch_result.garment_rows
         ):
             try:
                 garment_ingest_result = await ingest_td_garment_rows(
-                    rows=api_fetch_result.normalized_garments,
+                    rows=api_fetch_result.garment_rows,
                     store_code=store.store_code,
                     cost_center=store.cost_center,
                     run_id=run_id,
@@ -7289,7 +7292,7 @@ async def _run_store_discovery(
                 "orphan_rows": garment_ingest_result.orphan_rows,
             }
 
-        garment_total_rows = len(api_fetch_result.normalized_garments) if "api_fetch_result" in locals() else 0
+        garment_total_rows = len(api_fetch_result.garment_rows) if "api_fetch_result" in locals() else 0
         garment_matched_rows = garment_ingest_result.row_count if garment_ingest_result else (garment_total_rows if garment_total_rows == 0 else 0)
         garment_compare_metrics = {
             "total_rows": garment_total_rows,

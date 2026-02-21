@@ -7,17 +7,10 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import date
-from datetime import datetime
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
-from zoneinfo import ZoneInfo
-
-from dateutil import parser
 from playwright.async_api import BrowserContext, Error as PlaywrightError, Frame
-
-from app.common.date_utils import get_timezone
 from app.crm_downloader.td_orders_sync.td_api_compare import build_api_request_metadata, parse_token_expiry
 
 REPORTING_API_BASE_URL = "https://reporting-api.quickdrycleaning.com"
@@ -42,9 +35,9 @@ class TdApiFetchResult:
     raw_orders_payload: Any = field(default_factory=dict)
     raw_sales_payload: Any = field(default_factory=dict)
     raw_garments_payload: Any = field(default_factory=dict)
-    normalized_orders: list[dict[str, Any]] = field(default_factory=list)
-    normalized_sales: list[dict[str, Any]] = field(default_factory=list)
-    normalized_garments: list[dict[str, Any]] = field(default_factory=list)
+    orders_rows: list[dict[str, Any]] = field(default_factory=list)
+    sales_rows: list[dict[str, Any]] = field(default_factory=list)
+    garment_rows: list[dict[str, Any]] = field(default_factory=list)
     request_metadata: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -144,9 +137,9 @@ class TdApiClient:
             raw_orders_payload=order_payload,
             raw_sales_payload=sales_payload,
             raw_garments_payload=garments_payload,
-            normalized_orders=_normalize_order_rows(orders_rows, store_code=self.store_code),
-            normalized_sales=_normalize_sales_rows(sales_rows, store_code=self.store_code),
-            normalized_garments=_normalize_garment_rows(garments_rows, store_code=self.store_code),
+            orders_rows=orders_rows,
+            sales_rows=sales_rows,
+            garment_rows=garments_rows,
             request_metadata=metadata,
         )
 
@@ -516,106 +509,3 @@ def _extract_pagination_candidates(payload: Any) -> dict[str, Any]:
 
     return candidates
 
-
-def _normalize_order_rows(rows: list[dict[str, Any]], *, store_code: str) -> list[dict[str, Any]]:
-    normalized_store = store_code.upper().strip()
-    normalized_rows: list[dict[str, Any]] = []
-    for row in rows:
-        order_number = row.get("orderNo") or row.get("orderNumber") or row.get("order_no")
-        normalized_rows.append(
-            {
-                "store_code": normalized_store,
-                "order_no": order_number,
-                "order_number": order_number,
-                "order_id": row.get("orderId") or row.get("order_id"),
-                "invoice_no": row.get("invoiceNo") or row.get("invoice_no"),
-                "order_date": _normalize_datetime(row.get("orderDate") or row.get("order_date")),
-                "amount": _normalize_numeric(row.get("amount") or row.get("netAmount") or row.get("net_amount")),
-                "status": row.get("status") or row.get("orderStatus") or row.get("order_status"),
-            }
-        )
-    return normalized_rows
-
-
-def _normalize_sales_rows(rows: list[dict[str, Any]], *, store_code: str) -> list[dict[str, Any]]:
-    normalized_store = store_code.upper().strip()
-    normalized_rows: list[dict[str, Any]] = []
-    for row in rows:
-        order_number = row.get("orderNo") or row.get("orderNumber") or row.get("order_no")
-        payment_date = _normalize_datetime(row.get("paymentDate") or row.get("payment_date") or row.get("date"))
-        normalized_rows.append(
-            {
-                "store_code": normalized_store,
-                "order_no": order_number,
-                "order_number": order_number,
-                "invoice_no": row.get("invoiceNo") or row.get("invoice_no"),
-                "payment_date": payment_date,
-                "payment_mode": row.get("paymentMode") or row.get("payment_mode") or row.get("mode"),
-                "amount": _normalize_numeric(row.get("total") or row.get("amount") or row.get("netAmount")),
-                "status": row.get("status") or row.get("deliveryStatus"),
-            }
-        )
-    return normalized_rows
-
-
-def _normalize_garment_rows(rows: list[dict[str, Any]], *, store_code: str) -> list[dict[str, Any]]:
-    normalized_store = store_code.upper().strip()
-    normalized_rows: list[dict[str, Any]] = []
-    for row in rows:
-        order_number = row.get("orderNo") or row.get("orderNumber") or row.get("order_no")
-        line_item_key = row.get("lineItemKey") or row.get("itemKey") or row.get("line_item_key")
-        normalized_rows.append(
-            {
-                "store_code": normalized_store,
-                "order_no": order_number,
-                "order_number": order_number,
-                "api_order_id": row.get("orderId") or row.get("order_id"),
-                "api_line_item_id": row.get("lineItemId") or row.get("line_item_id") or row.get("itemId"),
-                "api_garment_id": row.get("garmentId") or row.get("garment_id"),
-                "line_item_key": line_item_key,
-                "line_identifier": line_item_key,
-                "garment_name": row.get("garmentName") or row.get("garment") or row.get("itemName"),
-                "service_name": row.get("serviceName") or row.get("service") or row.get("processName"),
-                "quantity": row.get("quantity") or row.get("qty"),
-                "amount": _normalize_numeric(row.get("amount") or row.get("total") or row.get("lineAmount")),
-                "status": row.get("status") or row.get("stage"),
-                "updated_at": row.get("updatedAt") or row.get("updated_at"),
-                "order_date": _normalize_datetime(row.get("orderDate") or row.get("order_date")),
-            }
-        )
-    return normalized_rows
-
-
-def _normalize_datetime(value: Any) -> str | None:
-    if value in (None, ""):
-        return None
-    tz = _safe_timezone()
-    if isinstance(value, datetime):
-        parsed = value
-    else:
-        try:
-            parsed = parser.parse(str(value))
-        except Exception:
-            return str(value).strip()
-    normalized = parsed if parsed.tzinfo else parsed.replace(tzinfo=tz)
-    return normalized.isoformat()
-
-
-def _safe_timezone() -> ZoneInfo:
-    try:
-        return get_timezone()
-    except Exception:
-        return ZoneInfo("Asia/Kolkata")
-
-
-def _normalize_numeric(value: Any) -> str | None:
-    if value in (None, ""):
-        return None
-    try:
-        if isinstance(value, (int, float, Decimal)):
-            numeric = Decimal(str(value))
-        else:
-            numeric = Decimal(str(value).replace(",", "").strip())
-    except (InvalidOperation, ValueError):
-        return str(value).strip()
-    return f"{numeric.quantize(Decimal('0.01'))}"
