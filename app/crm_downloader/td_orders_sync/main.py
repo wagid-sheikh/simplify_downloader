@@ -14,6 +14,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
 from urllib.parse import urlparse, urljoin
 
 import sqlalchemy as sa
+import openpyxl
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from playwright.async_api import Browser, BrowserContext, FrameLocator, Locator, Page, TimeoutError, async_playwright
 
@@ -557,6 +558,62 @@ def _format_orders_filename(store_code: str, from_date: date, to_date: date) -> 
 
 def _format_sales_filename(store_code: str, from_date: date, to_date: date) -> str:
     return f"{store_code}_td_sales_{from_date.strftime('%Y%m%d')}_{to_date.strftime('%Y%m%d')}.xlsx"
+
+
+def _format_api_filename(store_code: str, from_date: date, to_date: date, *, artifact_type: str, ext: str = "json") -> str:
+    return f"{store_code}_td_api_{artifact_type}_{from_date.strftime('%Y%m%d')}_{to_date.strftime('%Y%m%d')}.{ext}"
+
+
+def _write_excel_artifact(path: Path, sheets: Mapping[str, Sequence[Mapping[str, Any]]]) -> None:
+    wb = openpyxl.Workbook()
+    first = True
+    for sheet_name, rows in sheets.items():
+        ws = wb.active if first else wb.create_sheet()
+        ws.title = sheet_name[:31]
+        first = False
+        row_list = list(rows)
+        if not row_list:
+            ws.append(["_empty"])
+            ws.append([""])
+            continue
+        keys: list[str] = []
+        for row in row_list:
+            for key in row.keys():
+                if key not in keys:
+                    keys.append(str(key))
+        ws.append(keys)
+        for row in row_list:
+            ws.append([json.dumps(row.get(key), ensure_ascii=False) if isinstance(row.get(key), (dict, list)) else row.get(key) for key in keys])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(path)
+
+
+def _persist_api_excel_artifacts(*, store_code: str, from_date: date, to_date: date, result: TdApiFetchResult) -> dict[str, str]:
+    base = default_download_dir()
+    paths = {
+        "orders_excel": base / _format_api_filename(store_code, from_date, to_date, artifact_type="orders", ext="xlsx"),
+        "sales_excel": base / _format_api_filename(store_code, from_date, to_date, artifact_type="sales", ext="xlsx"),
+        "garments_excel": base / _format_api_filename(store_code, from_date, to_date, artifact_type="garments", ext="xlsx"),
+    }
+    _write_excel_artifact(paths["orders_excel"], {"raw_orders": result.raw_orders, "canonical_orders": result.normalized_orders})
+    _write_excel_artifact(paths["sales_excel"], {"raw_sales": result.raw_sales, "canonical_sales": result.normalized_sales})
+    _write_excel_artifact(paths["garments_excel"], {"raw_garments": result.raw_garments, "canonical_garments": result.normalized_garments})
+    return {key: str(value) for key, value in paths.items()}
+
+
+def _persist_compare_excel_artifact(*, store_code: str, from_date: date, to_date: date, compare_metrics: Mapping[str, Any], api_request_metadata: Sequence[Mapping[str, Any]]) -> str:
+    base = default_download_dir()
+    path = base / _format_api_filename(store_code, from_date, to_date, artifact_type="compare", ext="xlsx")
+    mismatch_artifacts = compare_metrics.get("mismatch_artifacts") if isinstance(compare_metrics, Mapping) else {}
+    sheets = {
+        "summary": [compare_metrics],
+        "missing_in_api": (mismatch_artifacts or {}).get("missing_in_api", []),
+        "missing_in_ui": (mismatch_artifacts or {}).get("missing_in_ui", []),
+        "value_mismatches": (mismatch_artifacts or {}).get("value_mismatches", []),
+        "api_request_metadata": list(api_request_metadata),
+    }
+    _write_excel_artifact(path, sheets)
+    return str(path)
 
 
 async def _safe_page_title(page: Page) -> str | None:
@@ -2078,6 +2135,7 @@ def _resolve_sync_log_status(
     sales_report: StoreReport | None,
     run_orders: bool,
     run_sales: bool,
+    source_mode: str = "ui",
 ) -> str:
     def _normalize_report_status(report: StoreReport | None, *, default: str) -> str:
         if report is None or not report.status:
@@ -2095,6 +2153,10 @@ def _resolve_sync_log_status(
     sales_skipped = sales_status == "skipped"
     sales_intentionally_skipped = sales_skipped and not run_sales
     has_warning = orders_status == "warning" or sales_status == "warning"
+
+    # In API shadow mode we intentionally keep the UI extraction path as the
+    # write source while API results are collected for comparison.
+    _ = source_mode
 
     if sales_status == "error" and orders_success:
         return "partial"
@@ -6311,6 +6373,8 @@ async def _run_store_discovery(
                     store_code=store.store_code,
                     context=context,
                     storage_state_path=store.storage_state_path,
+                    report_token=None,
+                    token_source=None,
                 )
                 session_artifact = api_client.read_session_artifact()
                 log_event(
@@ -6325,6 +6389,21 @@ async def _run_store_discovery(
                 )
                 api_fetch_result = await api_client.fetch_reports(from_date=run_start_date, to_date=run_end_date)
                 api_request_metadata.extend(api_fetch_result.request_metadata)
+                api_artifact_paths = _persist_api_excel_artifacts(
+                    store_code=store.store_code,
+                    from_date=run_start_date,
+                    to_date=run_end_date,
+                    result=api_fetch_result,
+                )
+                log_event(
+                    logger=store_logger,
+                    phase="api",
+                    message="Persisted TD API artifacts",
+                    store_code=store.store_code,
+                    source_mode=source_mode,
+                    artifact_paths=api_artifact_paths,
+                    warnings=list(api_fetch_result.endpoint_errors.values()),
+                )
                 log_event(
                     logger=store_logger,
                     phase="api",
@@ -6831,12 +6910,41 @@ async def _run_store_discovery(
         log_event(
             logger=store_logger,
             phase="compare",
+            message="TD UI/API row-count verification",
+            **correlation.as_dict(),
+            orders_ui_rows=len(ui_rows),
+            orders_api_rows=len(api_rows),
+            sales_ui_rows=(len(sales_report.warning_rows) if sales_report and sales_report.warning_rows else 0),
+            sales_api_rows=(len(api_fetch_result.normalized_sales) if "api_fetch_result" in locals() else 0),
+            garments_api_rows=(len(api_fetch_result.normalized_garments) if "api_fetch_result" in locals() else 0),
+        )
+        log_event(
+            logger=store_logger,
+            phase="compare",
             message="TD UI/API compare metrics",
             **correlation.as_dict(),
             compare_metrics=compare_metrics_obj.as_dict(),
             api_request_metadata=api_request_metadata,
-            auth_diagnostics=auth_diagnostics.as_dict(),
+            auth_diagnostics={**auth_diagnostics.as_dict(), **((api_fetch_result.auth_diagnostics if "api_fetch_result" in locals() else {}) or {})},
             decision_log=decision.as_dict(),
+        )
+        compare_artifact_path = _persist_compare_excel_artifact(
+            store_code=store.store_code,
+            from_date=run_start_date,
+            to_date=run_end_date,
+            compare_metrics=compare_metrics_obj.as_dict(),
+            api_request_metadata=api_request_metadata,
+        )
+        log_event(
+            logger=store_logger,
+            phase="compare",
+            message="Persisted TD compare mismatch artifacts",
+            source_mode=source_mode,
+            artifact_paths={
+                "orders_compare_mismatches": compare_artifact_path,
+                "sales_compare_mismatches": compare_artifact_path,
+            },
+            warnings=[],
         )
         await _insert_td_compare_log(
             logger=store_logger,

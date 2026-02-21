@@ -11,7 +11,7 @@ from typing import Any, Mapping
 
 from playwright.async_api import BrowserContext, Error as PlaywrightError
 
-from app.crm_downloader.td_orders_sync.td_api_compare import build_api_request_metadata
+from app.crm_downloader.td_orders_sync.td_api_compare import build_api_request_metadata, parse_token_expiry
 
 REPORTING_API_BASE_URL = "https://reporting-api.quickdrycleaning.com"
 
@@ -25,6 +25,7 @@ class TdApiClientConfig:
     min_interval_seconds: float = float(os.environ.get("TD_API_MIN_INTERVAL_SECONDS", "0.35"))
     page: int = int(os.environ.get("TD_API_PAGE", "1"))
     page_size: int = int(os.environ.get("TD_API_PAGE_SIZE", "500"))
+    max_pages: int = int(os.environ.get("TD_API_MAX_PAGES", "100"))
 
 
 @dataclass
@@ -32,7 +33,12 @@ class TdApiFetchResult:
     normalized_orders: list[dict[str, Any]] = field(default_factory=list)
     normalized_sales: list[dict[str, Any]] = field(default_factory=list)
     normalized_garments: list[dict[str, Any]] = field(default_factory=list)
+    raw_orders: list[dict[str, Any]] = field(default_factory=list)
+    raw_sales: list[dict[str, Any]] = field(default_factory=list)
+    raw_garments: list[dict[str, Any]] = field(default_factory=list)
     request_metadata: list[dict[str, Any]] = field(default_factory=list)
+    endpoint_errors: dict[str, str] = field(default_factory=dict)
+    auth_diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 class _StoreRateLimiter:
@@ -60,11 +66,15 @@ class TdApiClient:
         context: BrowserContext,
         storage_state_path: Path,
         config: TdApiClientConfig | None = None,
+        report_token: str | None = None,
+        token_source: str | None = None,
     ) -> None:
         self.store_code = store_code.upper().strip()
         self.context = context
         self.storage_state_path = storage_state_path
         self.config = config or TdApiClientConfig()
+        self._report_token = report_token
+        self._token_source = token_source
 
     def read_session_artifact(self) -> dict[str, Any]:
         if not self.storage_state_path.exists():
@@ -83,29 +93,67 @@ class TdApiClient:
             "endDate": to_date.isoformat(),
         }
         metadata: list[dict[str, Any]] = []
+        errors: dict[str, str] = {}
 
-        order_payload = await self._get_json(
+        orders_rows = await self._fetch_endpoint_rows(
             endpoint="/reports/order-report",
             params={**common_params, "expandData": "false"},
             metadata=metadata,
+            errors=errors,
         )
-        sales_payload = await self._get_json(
+        sales_rows = await self._fetch_endpoint_rows(
             endpoint="/sales-and-deliveries/sales",
             params=common_params,
             metadata=metadata,
+            errors=errors,
         )
-        garments_payload = await self._get_json(
+        garments_rows = await self._fetch_endpoint_rows(
             endpoint="/garments/details",
             params=common_params,
             metadata=metadata,
+            errors=errors,
         )
 
         return TdApiFetchResult(
-            normalized_orders=_normalize_order_rows(_extract_rows(order_payload)),
-            normalized_sales=_normalize_sales_rows(_extract_rows(sales_payload)),
-            normalized_garments=_normalize_garment_rows(_extract_rows(garments_payload)),
+            normalized_orders=_normalize_order_rows(orders_rows),
+            normalized_sales=_normalize_sales_rows(sales_rows),
+            normalized_garments=_normalize_garment_rows(garments_rows),
+            raw_orders=orders_rows,
+            raw_sales=sales_rows,
+            raw_garments=garments_rows,
             request_metadata=metadata,
+            endpoint_errors=errors,
+            auth_diagnostics={
+                "token_found": bool(self._report_token),
+                "token_source": self._token_source,
+                "token_expiry": parse_token_expiry(self._report_token),
+            },
         )
+
+    async def _fetch_endpoint_rows(
+        self,
+        *,
+        endpoint: str,
+        params: Mapping[str, Any],
+        metadata: list[dict[str, Any]],
+        errors: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        base_page = int(params.get("page") or self.config.page)
+        for page in range(base_page, base_page + max(self.config.max_pages, 1)):
+            page_params = dict(params)
+            page_params["page"] = page
+            payload = await self._get_json(endpoint=endpoint, params=page_params, metadata=metadata)
+            if payload is None:
+                errors.setdefault(endpoint, "request_failed_or_timed_out")
+                break
+            page_rows = _extract_rows(payload)
+            if not page_rows:
+                break
+            rows.extend(page_rows)
+            if len(page_rows) < self.config.page_size:
+                break
+        return rows
 
     async def _get_json(
         self,
@@ -113,22 +161,24 @@ class TdApiClient:
         endpoint: str,
         params: Mapping[str, Any],
         metadata: list[dict[str, Any]],
-    ) -> Any:
+    ) -> Any | None:
         url = f"{REPORTING_API_BASE_URL}{endpoint}"
-        last_error: Exception | None = None
         status_code: int | None = None
         for attempt in range(self.config.max_retries + 1):
             await _StoreRateLimiter.wait_turn(self.store_code, self.config.min_interval_seconds)
             started = time.perf_counter()
             try:
+                headers = {
+                    "accept": "*/*",
+                    "origin": "https://reports.quickdrycleaning.com",
+                    "referer": "https://reports.quickdrycleaning.com/",
+                }
+                if self._report_token:
+                    headers["Authorization"] = f"Bearer {self._report_token}"
                 response = await self.context.request.get(
                     url,
                     params=params,
-                    headers={
-                        "accept": "*/*",
-                        "origin": "https://reports.quickdrycleaning.com",
-                        "referer": "https://reports.quickdrycleaning.com/",
-                    },
+                    headers=headers,
                     timeout=self.config.timeout_ms,
                 )
                 latency_ms = int((time.perf_counter() - started) * 1000)
@@ -140,14 +190,17 @@ class TdApiClient:
                         status=status_code,
                         latency_ms=latency_ms,
                         retry_count=attempt,
+                        token_refresh_attempted=False,
                     ).as_dict()
                 )
                 if status_code < 400:
                     return await response.json()
+                if status_code == 401 and self._report_token and attempt == 0:
+                    # allow one immediate retry with same token; callers may provide refreshed token upstream
+                    continue
                 if status_code not in {408, 429, 500, 502, 503, 504}:
                     return {}
-                last_error = RuntimeError(f"HTTP {status_code} from {endpoint}")
-            except PlaywrightError as exc:
+            except PlaywrightError:
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 metadata.append(
                     build_api_request_metadata(
@@ -156,15 +209,13 @@ class TdApiClient:
                         status=status_code,
                         latency_ms=latency_ms,
                         retry_count=attempt,
+                        token_refresh_attempted=False,
                     ).as_dict()
                 )
-                last_error = exc
             if attempt < self.config.max_retries:
                 backoff = min(self.config.max_backoff_seconds, self.config.backoff_base_seconds * (2**attempt))
                 await asyncio.sleep(max(backoff, 0.0))
-        if last_error:
-            raise last_error
-        return {}
+        return None
 
 
 def _extract_rows(payload: Any) -> list[dict[str, Any]]:
@@ -188,9 +239,11 @@ def _extract_rows(payload: Any) -> list[dict[str, Any]]:
 def _normalize_order_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
+            "store_code": row.get("storeCode") or row.get("store_code"),
             "order_no": row.get("orderNo") or row.get("orderNumber") or row.get("order_no"),
             "order_id": row.get("orderId") or row.get("order_id"),
             "invoice_no": row.get("invoiceNo") or row.get("invoice_no"),
+            "order_date": row.get("orderDate") or row.get("order_date"),
             "amount": row.get("amount") or row.get("netAmount") or row.get("net_amount"),
             "status": row.get("status") or row.get("orderStatus") or row.get("order_status"),
         }
@@ -201,8 +254,10 @@ def _normalize_order_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _normalize_sales_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
+            "store_code": row.get("storeCode") or row.get("store_code"),
             "order_no": row.get("orderNo") or row.get("orderNumber") or row.get("order_no"),
             "invoice_no": row.get("invoiceNo") or row.get("invoice_no"),
+            "order_date": row.get("orderDate") or row.get("order_date"),
             "amount": row.get("total") or row.get("amount") or row.get("netAmount"),
             "status": row.get("status") or row.get("deliveryStatus"),
         }
@@ -229,4 +284,3 @@ def _normalize_garment_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
-
