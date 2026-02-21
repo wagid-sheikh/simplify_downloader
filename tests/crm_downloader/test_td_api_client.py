@@ -24,6 +24,37 @@ from app.crm_downloader.td_orders_sync.td_api_compare import (
 )
 
 
+ORDERS_IGNORABLE_API_ONLY_FIELDS = {"bookingSlipUrl", "storeName", "deliveryDate"}
+SALES_IGNORABLE_API_ONLY_FIELDS = {"printer", "storeName", "storeId"}
+
+
+@pytest.fixture
+def representative_orders_api_row() -> dict[str, str]:
+    return {
+        "orderNo": "O-1001",
+        "orderDate": "2026-01-02 10:00:00",
+        "amount": "120.50",
+        "status": "Delivered",
+        "bookingSlipUrl": "https://files.example/booking-slip/O-1001",
+        "storeName": "Andheri",
+        "deliveryDate": "2026-01-03",
+    }
+
+
+@pytest.fixture
+def representative_sales_api_row() -> dict[str, str]:
+    return {
+        "orderNo": "S-2001",
+        "paymentDate": "2026-01-02 11:00:00",
+        "paymentMode": "UPI",
+        "amount": "80.00",
+        "status": "Collected",
+        "printer": "FrontDesk-01",
+        "storeName": "Andheri",
+        "storeId": "A817",
+    }
+
+
 def test_source_mode_parser_accepts_api_modes() -> None:
     parser = _build_parser()
     args = parser.parse_args(["--source-mode", "api_shadow"])
@@ -116,6 +147,102 @@ def test_compare_uses_identical_canonical_key_and_emits_mismatch_artifacts() -> 
 
 
 
+
+
+def test_orders_projection_contract_required_fields_and_allow_list(
+    representative_orders_api_row: dict[str, str],
+) -> None:
+    projected = project_api_rows_for_compare(
+        dataset="orders",
+        api_rows=[representative_orders_api_row],
+        store_code="a817",
+    )[0]
+
+    required_fields = {"store_code", "order_number", "order_date", "amount", "status"}
+    assert required_fields.issubset(projected.keys())
+    assert projected["store_code"] == "A817"
+    assert projected["order_number"] == representative_orders_api_row["orderNo"]
+    assert projected["order_date"] == representative_orders_api_row["orderDate"]
+    assert projected["amount"] == representative_orders_api_row["amount"]
+    assert projected["status"] == representative_orders_api_row["status"]
+
+    ui_equivalent_api_keys = {
+        "orderNo",
+        "orderDate",
+        "amount",
+        "status",
+    }
+    allow_list = ORDERS_IGNORABLE_API_ONLY_FIELDS
+    unmapped_required = [
+        key
+        for key in representative_orders_api_row.keys()
+        if key not in ui_equivalent_api_keys and key not in allow_list
+    ]
+    assert unmapped_required == [], f"Orders API keys require mapping or allow-listing: {unmapped_required}"
+
+
+def test_sales_projection_contract_required_fields_and_allow_list(
+    representative_sales_api_row: dict[str, str],
+) -> None:
+    projected = project_api_rows_for_compare(
+        dataset="sales",
+        api_rows=[representative_sales_api_row],
+        store_code="a817",
+    )[0]
+
+    required_fields = {"store_code", "order_number", "payment_date", "payment_mode", "amount", "status"}
+    assert required_fields.issubset(projected.keys())
+    assert projected["store_code"] == "A817"
+    assert projected["order_number"] == representative_sales_api_row["orderNo"]
+    assert projected["payment_date"] == representative_sales_api_row["paymentDate"]
+    assert projected["payment_mode"] == representative_sales_api_row["paymentMode"]
+    assert projected["amount"] == representative_sales_api_row["amount"]
+    assert projected["status"] == representative_sales_api_row["status"]
+
+    ui_equivalent_api_keys = {
+        "orderNo",
+        "paymentDate",
+        "paymentMode",
+        "amount",
+        "status",
+    }
+    allow_list = SALES_IGNORABLE_API_ONLY_FIELDS
+    unmapped_required = [
+        key
+        for key in representative_sales_api_row.keys()
+        if key not in ui_equivalent_api_keys and key not in allow_list
+    ]
+    assert unmapped_required == [], f"Sales API keys require mapping or allow-listing: {unmapped_required}"
+
+
+def test_projection_round_trip_preserves_required_contract_fields(
+    representative_orders_api_row: dict[str, str],
+    representative_sales_api_row: dict[str, str],
+) -> None:
+    orders_projected = project_api_rows_for_compare(
+        dataset="orders",
+        api_rows=[representative_orders_api_row],
+        store_code="a817",
+    )[0]
+    sales_projected = project_api_rows_for_compare(
+        dataset="sales",
+        api_rows=[representative_sales_api_row],
+        store_code="a817",
+    )[0]
+
+    orders_api_path_output = {**representative_orders_api_row, **orders_projected}
+    sales_api_path_output = {**representative_sales_api_row, **sales_projected}
+
+    assert orders_api_path_output["order_number"] == representative_orders_api_row["orderNo"]
+    assert orders_api_path_output["order_date"] == representative_orders_api_row["orderDate"]
+    assert orders_api_path_output["amount"] == representative_orders_api_row["amount"]
+    assert orders_api_path_output["status"] == representative_orders_api_row["status"]
+
+    assert sales_api_path_output["order_number"] == representative_sales_api_row["orderNo"]
+    assert sales_api_path_output["payment_date"] == representative_sales_api_row["paymentDate"]
+    assert sales_api_path_output["payment_mode"] == representative_sales_api_row["paymentMode"]
+    assert sales_api_path_output["amount"] == representative_sales_api_row["amount"]
+    assert sales_api_path_output["status"] == representative_sales_api_row["status"]
 
 def test_project_api_rows_for_compare_isolated_projection() -> None:
     projected = project_api_rows_for_compare(
@@ -415,4 +542,3 @@ async def test_fetch_reports_filters_summary_rows_from_orders_and_sales(tmp_path
 
     assert [row["orderNumber"] for row in result.orders_rows] == ["1001"]
     assert [row["orderNo"] for row in result.sales_rows] == ["S-1"]
-

@@ -340,18 +340,20 @@ def project_api_rows_for_compare(
         projected: dict[str, Any] = {}
         if normalized_store:
             projected["store_code"] = normalized_store
-        for field in ("order_number", "order_date", "payment_date", "line_item_key", "amount", "status"):
+        for field in ("order_number", "order_date", "payment_date", "payment_mode", "line_item_key", "amount", "status"):
             value = _resolve_field_value(row, field, default_store_code=normalized_store or None)
             if value is not None and str(value).strip() != "":
                 projected[field] = value
         if dataset == "orders":
             projected.pop("payment_date", None)
+            projected.pop("payment_mode", None)
             projected.pop("line_item_key", None)
         elif dataset == "sales":
             projected.pop("order_date", None)
             projected.pop("line_item_key", None)
         elif dataset == "garments":
             projected.pop("payment_date", None)
+            projected.pop("payment_mode", None)
         projected_rows.append(projected)
     return projected_rows
 
