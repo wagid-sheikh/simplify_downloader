@@ -79,6 +79,18 @@ SNAPSHOT_TEXT_MAX_CHARS = 120
 TD_SOURCE_MODES = {"ui", "api_shadow", "api_primary", "api_only"}
 
 
+def _resolve_td_api_artifact_dir() -> Path:
+    configured = (os.environ.get("TD_API_ARTIFACT_DIR") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    try:
+        return default_download_dir().resolve()
+    except NameError:  # defensive in case import gets dropped during conflict resolution
+        from app.crm_downloader.config import default_download_dir as _default_download_dir
+
+        return _default_download_dir().resolve()
+
+
 def _bool_env(name: str, default: bool = False) -> bool:
     value = os.environ.get(name)
     if value is None:
@@ -6363,7 +6375,7 @@ async def _run_store_discovery(
         return
 
     storage_state_exists = store.storage_state_path.exists()
-    download_dir = default_download_dir()
+    download_dir = _resolve_td_api_artifact_dir()
     context = await browser.new_context(
         storage_state=str(store.storage_state_path) if storage_state_exists else None,
         accept_downloads=True,
@@ -6672,6 +6684,7 @@ async def _run_store_discovery(
                             message="Persisted TD API artifacts",
                             store_code=store.store_code,
                             source_mode=source_mode,
+                            artifact_dir=str(download_dir),
                             artifact_paths=artifact_result.artifact_paths,
                             warnings=artifact_result.warnings,
                         )
@@ -7196,6 +7209,16 @@ async def _run_store_discovery(
             orders_compare_metrics=compare_metrics_obj.as_dict(),
             sales_compare_metrics=sales_compare_metrics_obj.as_dict(),
         )
+        compare_excel_path = (
+            download_dir
+            / f"{store.store_code.upper()}_td_api_compare_{run_start_date.strftime('%Y%m%d')}_{run_end_date.strftime('%Y%m%d')}.xlsx"
+        )
+        _persist_compare_excel_artifact(
+            artifact_path=compare_excel_path,
+            compare_metrics=compare_metrics_obj.as_dict(),
+            api_request_metadata=api_request_metadata,
+        )
+        compare_artifact_result.artifact_paths["orders_compare_excel"] = str(compare_excel_path)
         log_event(
             logger=store_logger,
             phase="compare",
