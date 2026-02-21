@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
 from urllib.parse import urlparse, urljoin
 
 import sqlalchemy as sa
+import openpyxl
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from playwright.async_api import Browser, BrowserContext, FrameLocator, Locator, Page, TimeoutError, async_playwright
 
@@ -288,6 +289,55 @@ def _serialize_compare_metrics(report: StoreReport | None) -> dict[str, int | li
         "status_mismatches": metrics.get("status_mismatches"),
         "sample_mismatch_keys": metrics.get("sample_mismatch_keys"),
     }
+
+
+def _persist_compare_excel_artifact(
+    *,
+    artifact_path: Path,
+    compare_metrics: Mapping[str, Any],
+    api_request_metadata: Sequence[Mapping[str, Any]],
+) -> None:
+    workbook = openpyxl.Workbook()
+
+    def _write_rows(sheet_name: str, rows: Sequence[Mapping[str, Any]]) -> None:
+        worksheet = workbook.create_sheet(title=sheet_name)
+        if not rows:
+            worksheet.append(["note"])
+            worksheet.append(["no rows"])
+            return
+
+        columns: list[str] = []
+        for row in rows:
+            for key in row.keys():
+                key_text = str(key)
+                if key_text not in columns:
+                    columns.append(key_text)
+
+        worksheet.append(columns)
+        for row in rows:
+            worksheet.append([row.get(column) for column in columns])
+
+    summary_row = {
+        "total_rows": compare_metrics.get("total_rows"),
+        "matched_rows": compare_metrics.get("matched_rows"),
+        "missing_in_api": compare_metrics.get("missing_in_api"),
+        "missing_in_ui": compare_metrics.get("missing_in_ui"),
+        "amount_mismatches": compare_metrics.get("amount_mismatches"),
+        "status_mismatches": compare_metrics.get("status_mismatches"),
+        "sample_mismatch_keys": compare_metrics.get("sample_mismatch_keys"),
+    }
+    _write_rows("summary", [summary_row])
+
+    mismatch_artifacts = compare_metrics.get("mismatch_artifacts") or {}
+    _write_rows("missing_in_api", list(mismatch_artifacts.get("missing_in_api") or []))
+    _write_rows("missing_in_ui", list(mismatch_artifacts.get("missing_in_ui") or []))
+    _write_rows("value_mismatches", list(mismatch_artifacts.get("value_mismatches") or []))
+    _write_rows("api_request_metadata", list(api_request_metadata or []))
+
+    default_sheet = workbook["Sheet"]
+    workbook.remove(default_sheet)
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    workbook.save(artifact_path)
 
 
 async def _insert_td_compare_log(
