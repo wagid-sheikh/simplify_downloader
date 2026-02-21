@@ -7,12 +7,17 @@ import os
 import time
 from dataclasses import dataclass, field
 from datetime import date
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
+from zoneinfo import ZoneInfo
 
+from dateutil import parser
 from playwright.async_api import BrowserContext, Error as PlaywrightError, Frame
 
+from app.common.date_utils import get_timezone
 from app.crm_downloader.td_orders_sync.td_api_compare import build_api_request_metadata, parse_token_expiry
 
 REPORTING_API_BASE_URL = "https://reporting-api.quickdrycleaning.com"
@@ -93,38 +98,114 @@ class TdApiClient:
 
     async def fetch_reports(self, *, from_date: date, to_date: date) -> TdApiFetchResult:
         common_params = {
-            "page": self.config.page,
             "pageSize": self.config.page_size,
             "startDate": from_date.isoformat(),
             "endDate": to_date.isoformat(),
         }
         metadata: list[dict[str, Any]] = []
 
-        order_payload = await self._get_json(
+        order_payload = await self._get_paginated_json(
             endpoint="/reports/order-report",
             params={**common_params, "expandData": "false"},
             metadata=metadata,
         )
-        sales_payload = await self._get_json(
+        sales_payload = await self._get_paginated_json(
             endpoint="/sales-and-deliveries/sales",
             params=common_params,
             metadata=metadata,
         )
-        garments_payload = await self._get_json(
+        garments_payload = await self._get_paginated_json(
             endpoint="/garments/details",
             params=common_params,
             metadata=metadata,
         )
 
+        orders_rows = _extract_rows(order_payload)
+        sales_rows = _extract_rows(sales_payload)
+        garments_rows = _extract_rows(garments_payload)
+
+        self._log_endpoint_total(endpoint="/reports/order-report", total_rows=len(orders_rows))
+        self._log_endpoint_total(endpoint="/sales-and-deliveries/sales", total_rows=len(sales_rows))
+        self._log_endpoint_total(endpoint="/garments/details", total_rows=len(garments_rows))
+
         return TdApiFetchResult(
             raw_orders_payload=order_payload,
             raw_sales_payload=sales_payload,
             raw_garments_payload=garments_payload,
-            normalized_orders=_normalize_order_rows(_extract_rows(order_payload), store_code=self.store_code),
-            normalized_sales=_normalize_sales_rows(_extract_rows(sales_payload), store_code=self.store_code),
-            normalized_garments=_normalize_garment_rows(_extract_rows(garments_payload), store_code=self.store_code),
+            normalized_orders=_normalize_order_rows(orders_rows, store_code=self.store_code),
+            normalized_sales=_normalize_sales_rows(sales_rows, store_code=self.store_code),
+            normalized_garments=_normalize_garment_rows(garments_rows, store_code=self.store_code),
             request_metadata=metadata,
         )
+
+    def _log_endpoint_total(self, *, endpoint: str, total_rows: int) -> None:
+        logger.info(
+            "TD API pagination totals",
+            extra={
+                "store_code": self.store_code,
+                "endpoint": endpoint,
+                "api_total_rows": total_rows,
+            },
+        )
+
+    async def _get_paginated_json(
+        self,
+        *,
+        endpoint: str,
+        params: Mapping[str, Any],
+        metadata: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        page = 1
+        cumulative_rows = 0
+        total_rows_hint: int | None = None
+        total_pages_hint: int | None = None
+        aggregated_rows: list[dict[str, Any]] = []
+        page_payloads: list[Any] = []
+
+        while True:
+            page_params = {**dict(params), "page": page}
+            page_payload = await self._get_json(endpoint=endpoint, params=page_params, metadata=metadata)
+            page_payloads.append(page_payload)
+
+            rows = _extract_rows(page_payload)
+            aggregated_rows.extend(rows)
+            cumulative_rows += len(rows)
+
+            total_rows_hint = _extract_total_rows_hint(page_payload) or total_rows_hint
+            total_pages_hint = _extract_total_pages_hint(page_payload) or total_pages_hint
+
+            for item in metadata:
+                query_params = item.get("query_params")
+                if item.get("endpoint") != endpoint or not isinstance(query_params, dict):
+                    continue
+                page_values = query_params.get("page")
+                if page_values != [str(page)]:
+                    continue
+                item["page_number"] = page
+                item["rows_in_page"] = len(rows)
+                item["rows_per_page"] = self.config.page_size
+                item["cumulative_rows"] = cumulative_rows
+
+            if not rows:
+                break
+            if total_pages_hint and page >= total_pages_hint:
+                break
+            if total_rows_hint is not None and cumulative_rows >= total_rows_hint:
+                break
+
+            page += 1
+
+        return {
+            "data": aggregated_rows,
+            "pages": page_payloads,
+            "pagination": {
+                "pages_fetched": page,
+                "total_rows": cumulative_rows,
+                "reported_total_rows": total_rows_hint,
+                "reported_total_pages": total_pages_hint,
+                "rows_per_page": self.config.page_size,
+            },
+        }
 
     async def _get_json(
         self,
@@ -352,6 +433,48 @@ def _extract_rows(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _extract_total_rows_hint(payload: Any) -> int | None:
+    candidates = _extract_pagination_candidates(payload)
+    for key in ("total", "totalRows", "total_rows", "totalCount", "count"):
+        value = candidates.get(key)
+        if isinstance(value, int) and value >= 0:
+            return value
+    return None
+
+
+def _extract_total_pages_hint(payload: Any) -> int | None:
+    candidates = _extract_pagination_candidates(payload)
+    for key in ("pages", "totalPages", "total_pages", "pageCount"):
+        value = candidates.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    return None
+
+
+def _extract_pagination_candidates(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+
+    candidates: dict[str, Any] = {}
+    for key in ("total", "totalRows", "total_rows", "totalCount", "count", "pages", "totalPages", "total_pages", "pageCount"):
+        if key in payload:
+            candidates[key] = payload.get(key)
+
+    nested_data = payload.get("data")
+    if isinstance(nested_data, dict):
+        for key in ("total", "totalRows", "total_rows", "totalCount", "count", "pages", "totalPages", "total_pages", "pageCount"):
+            if key in nested_data:
+                candidates[key] = nested_data.get(key)
+
+    pagination = payload.get("pagination")
+    if isinstance(pagination, dict):
+        for key in ("total", "totalRows", "total_rows", "totalCount", "count", "pages", "totalPages", "total_pages", "pageCount"):
+            if key in pagination:
+                candidates[key] = pagination.get(key)
+
+    return candidates
+
+
 def _normalize_order_rows(rows: list[dict[str, Any]], *, store_code: str) -> list[dict[str, Any]]:
     normalized_store = store_code.upper().strip()
     normalized_rows: list[dict[str, Any]] = []
@@ -364,8 +487,8 @@ def _normalize_order_rows(rows: list[dict[str, Any]], *, store_code: str) -> lis
                 "order_number": order_number,
                 "order_id": row.get("orderId") or row.get("order_id"),
                 "invoice_no": row.get("invoiceNo") or row.get("invoice_no"),
-                "order_date": row.get("orderDate") or row.get("order_date"),
-                "amount": row.get("amount") or row.get("netAmount") or row.get("net_amount"),
+                "order_date": _normalize_datetime(row.get("orderDate") or row.get("order_date")),
+                "amount": _normalize_numeric(row.get("amount") or row.get("netAmount") or row.get("net_amount")),
                 "status": row.get("status") or row.get("orderStatus") or row.get("order_status"),
             }
         )
@@ -383,9 +506,9 @@ def _normalize_sales_rows(rows: list[dict[str, Any]], *, store_code: str) -> lis
                 "order_no": order_number,
                 "order_number": order_number,
                 "invoice_no": row.get("invoiceNo") or row.get("invoice_no"),
-                "payment_date": row.get("paymentDate") or row.get("payment_date") or row.get("date"),
+                "payment_date": _normalize_datetime(row.get("paymentDate") or row.get("payment_date") or row.get("date")),
                 "payment_mode": row.get("paymentMode") or row.get("payment_mode") or row.get("mode"),
-                "amount": row.get("total") or row.get("amount") or row.get("netAmount"),
+                "amount": _normalize_numeric(row.get("total") or row.get("amount") or row.get("netAmount")),
                 "status": row.get("status") or row.get("deliveryStatus"),
             }
         )
@@ -411,10 +534,45 @@ def _normalize_garment_rows(rows: list[dict[str, Any]], *, store_code: str) -> l
                 "garment_name": row.get("garmentName") or row.get("garment") or row.get("itemName"),
                 "service_name": row.get("serviceName") or row.get("service") or row.get("processName"),
                 "quantity": row.get("quantity") or row.get("qty"),
-                "amount": row.get("amount") or row.get("total") or row.get("lineAmount"),
+                "amount": _normalize_numeric(row.get("amount") or row.get("total") or row.get("lineAmount")),
                 "status": row.get("status") or row.get("stage"),
                 "updated_at": row.get("updatedAt") or row.get("updated_at"),
-                "order_date": row.get("orderDate") or row.get("order_date"),
+                "order_date": _normalize_datetime(row.get("orderDate") or row.get("order_date")),
             }
         )
     return normalized_rows
+
+
+def _normalize_datetime(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    tz = _safe_timezone()
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = parser.parse(str(value))
+        except Exception:
+            return str(value).strip()
+    normalized = parsed if parsed.tzinfo else parsed.replace(tzinfo=tz)
+    return normalized.isoformat()
+
+
+def _safe_timezone() -> ZoneInfo:
+    try:
+        return get_timezone()
+    except Exception:
+        return ZoneInfo("Asia/Kolkata")
+
+
+def _normalize_numeric(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    try:
+        if isinstance(value, (int, float, Decimal)):
+            numeric = Decimal(str(value))
+        else:
+            numeric = Decimal(str(value).replace(",", "").strip())
+    except (InvalidOperation, ValueError):
+        return str(value).strip()
+    return f"{numeric.quantize(Decimal('0.01'))}"

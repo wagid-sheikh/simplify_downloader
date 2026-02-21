@@ -4,15 +4,21 @@ import base64
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import parse_qs, urlparse
+from zoneinfo import ZoneInfo
+
+from dateutil import parser
+
+from app.common.date_utils import get_timezone
 
 MISSING_KEY_PART = "<MISSING>"
 
 COMPARE_KEY_FIELDS_BY_DATASET: dict[str, tuple[str, ...]] = {
     "orders": ("store_code", "order_number", "order_date"),
-    "sales": ("store_code", "order_number", "payment_date", "payment_mode"),
+    "sales": ("store_code", "order_number", "payment_date"),
     "garments": ("store_code", "order_number", "line_item_key"),
 }
 
@@ -89,6 +95,7 @@ class CompareMetrics:
     amount_mismatches: int
     status_mismatches: int
     sample_mismatch_keys: list[str]
+    mismatch_artifacts: dict[str, list[dict[str, Any]]]
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -99,6 +106,7 @@ class CompareMetrics:
             "amount_mismatches": self.amount_mismatches,
             "status_mismatches": self.status_mismatches,
             "sample_mismatch_keys": self.sample_mismatch_keys,
+            "mismatch_artifacts": self.mismatch_artifacts,
         }
 
 
@@ -217,6 +225,77 @@ def _resolve_row_field(row: Mapping[str, Any], field: str, *, default_store_code
     return row.get(field)
 
 
+VALUE_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "order_number": ("Order No.", "Order Number"),
+    "order_date": ("Order Date / Time", "Order Date"),
+    "payment_date": ("Payment Date",),
+    "payment_mode": ("Payment Mode",),
+    "amount": ("Payment Received", "Amount", "Total"),
+    "status": ("Status",),
+}
+
+
+def _resolve_nested_value(row: Mapping[str, Any], field: str) -> Any:
+    values = row.get("values")
+    if not isinstance(values, Mapping):
+        return None
+    for candidate in (*KEY_FIELD_ALIASES.get(field, ()), *VALUE_FIELD_ALIASES.get(field, ())):
+        value = values.get(candidate)
+        if value is not None and str(value).strip():
+            return value
+    return None
+
+
+def _resolve_field_value(row: Mapping[str, Any], field: str, *, default_store_code: str | None = None) -> Any:
+    resolved = _resolve_row_field(row, field, default_store_code=default_store_code)
+    if resolved is not None and str(resolved).strip():
+        return resolved
+    return _resolve_nested_value(row, field)
+
+
+def _normalize_datetime_value(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    tz = _safe_timezone()
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = parser.parse(str(value))
+        except Exception:
+            return str(value).strip()
+    normalized = parsed if parsed.tzinfo else parsed.replace(tzinfo=tz)
+    return normalized.isoformat()
+
+
+def _safe_timezone() -> ZoneInfo:
+    try:
+        return get_timezone()
+    except Exception:
+        return ZoneInfo("Asia/Kolkata")
+
+
+def _normalize_numeric_value(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        if isinstance(value, (int, float, Decimal)):
+            numeric = Decimal(str(value))
+        else:
+            numeric = Decimal(str(value).replace(",", "").strip())
+    except (InvalidOperation, ValueError):
+        return str(value).strip()
+    return f"{numeric.quantize(Decimal('0.01'))}"
+
+
+def _normalized_compare_value(field: str, value: Any) -> str:
+    if field in {"order_date", "payment_date"}:
+        return _normalize_datetime_value(value)
+    if field in {"amount", "total", "net_amount", "payment_received"}:
+        return _normalize_numeric_value(value)
+    return str(value).strip()
+
+
 def _infer_default_store_code(ui_rows: Sequence[Mapping[str, Any]], api_rows: Sequence[Mapping[str, Any]]) -> str | None:
     stores = {
         str(_resolve_row_field(row, "store_code")).strip().upper()
@@ -233,7 +312,9 @@ def _canonical_key(
     default_store_code: str | None = None,
 ) -> tuple[str, dict[str, str]]:
     key_parts = {
-        field: _normalized_key_part(_resolve_row_field(row, field, default_store_code=default_store_code))
+        field: _normalized_key_part(
+            _normalized_compare_value(field, _resolve_field_value(row, field, default_store_code=default_store_code))
+        )
         for field in key_fields
     }
     key = "|".join(key_parts[field] for field in key_fields)
@@ -281,6 +362,7 @@ def compare_canonical_rows(
     status_mismatches = 0
     mismatch_samples: list[str] = []
     mismatched_shared = 0
+    value_mismatch_keys: list[str] = []
 
     for key in shared:
         ui_row = ui_index[key]
@@ -289,15 +371,15 @@ def compare_canonical_rows(
         status_mismatch = False
 
         for field in amount_fields:
-            ui_val = ui_row.get(field)
-            api_val = api_row.get(field)
+            ui_val = _resolve_field_value(ui_row, field, default_store_code=default_store_code)
+            api_val = _resolve_field_value(api_row, field, default_store_code=default_store_code)
             if ui_val is not None or api_val is not None:
-                if str(ui_val) != str(api_val):
+                if _normalized_compare_value(field, ui_val) != _normalized_compare_value(field, api_val):
                     amount_mismatch = True
                 break
         for field in status_fields:
-            ui_val = ui_row.get(field)
-            api_val = api_row.get(field)
+            ui_val = _resolve_field_value(ui_row, field, default_store_code=default_store_code)
+            api_val = _resolve_field_value(api_row, field, default_store_code=default_store_code)
             if ui_val is not None or api_val is not None:
                 if str(ui_val).strip().lower() != str(api_val).strip().lower():
                     status_mismatch = True
@@ -309,6 +391,7 @@ def compare_canonical_rows(
             status_mismatches += 1
         if amount_mismatch or status_mismatch:
             mismatched_shared += 1
+            value_mismatch_keys.append(key)
         if (amount_mismatch or status_mismatch) and len(mismatch_samples) < sample_limit:
             mismatch_samples.append(f"shared_mismatch ({_format_key_parts(key_breakdown.get(key, {}))})")
 
@@ -320,6 +403,15 @@ def compare_canonical_rows(
         f"missing_in_ui ({_format_key_parts(key_breakdown.get(key, {}))})" for key in missing_in_ui
     ]
     sample_keys = (missing_api_samples + missing_ui_samples + mismatch_samples)[:sample_limit]
+
+    mismatch_artifacts = {
+        "missing_in_api": [{"key": key, "key_components": key_breakdown.get(key, {})} for key in missing_in_api],
+        "missing_in_ui": [{"key": key, "key_components": key_breakdown.get(key, {})} for key in missing_in_ui],
+        "value_mismatches": [
+            {"key": key, "key_components": key_breakdown.get(key, {})} for key in value_mismatch_keys
+        ],
+    }
+
     return CompareMetrics(
         total_rows=len(keys),
         matched_rows=max(matched_rows, 0),
@@ -328,4 +420,5 @@ def compare_canonical_rows(
         amount_mismatches=amount_mismatches,
         status_mismatches=status_mismatches,
         sample_mismatch_keys=sample_keys,
+        mismatch_artifacts=mismatch_artifacts,
     )

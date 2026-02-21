@@ -6,7 +6,14 @@ from pathlib import Path
 import pytest
 
 from app.crm_downloader.td_orders_sync.main import _build_parser
-from app.crm_downloader.td_orders_sync.td_api_client import TdApiClient, _extract_rows, _normalize_garment_rows
+from app.crm_downloader.td_orders_sync.td_api_client import (
+    TdApiClient,
+    _extract_rows,
+    _normalize_garment_rows,
+    _normalize_order_rows,
+    _normalize_sales_rows,
+)
+from app.crm_downloader.td_orders_sync.td_api_compare import COMPARE_KEY_FIELDS_BY_DATASET, compare_canonical_rows
 
 
 def test_source_mode_parser_accepts_api_modes() -> None:
@@ -31,11 +38,74 @@ def test_api_client_reads_storage_state_artifact(tmp_path: Path) -> None:
 
 
 def test_normalize_garment_rows_surfaces_ids_and_line_keys() -> None:
-    rows = _normalize_garment_rows([{"orderNo": "ORD-1", "lineItemId": "L1", "garmentId": "G1", "lineItemKey": "LK1"}])
+    rows = _normalize_garment_rows([{"orderNo": "ORD-1", "lineItemId": "L1", "garmentId": "G1", "lineItemKey": "LK1"}], store_code="a123")
     assert rows[0]["order_number"] == "ORD-1"
     assert rows[0]["api_line_item_id"] == "L1"
     assert rows[0]["api_garment_id"] == "G1"
     assert rows[0]["line_item_key"] == "LK1"
+
+
+def test_api_normalizers_align_datetime_and_numeric_precision() -> None:
+    orders = _normalize_order_rows(
+        [{"orderNo": "ORD-1", "orderDate": "2026-01-02 10:00:00", "amount": "12"}], store_code="a817"
+    )
+    sales = _normalize_sales_rows(
+        [{"orderNo": "ORD-1", "paymentDate": "2026-01-02 10:00:00", "total": "12"}], store_code="a817"
+    )
+
+    assert orders[0]["order_date"].startswith("2026-01-02T10:00:00")
+    assert orders[0]["amount"] == "12.00"
+    assert sales[0]["payment_date"].startswith("2026-01-02T10:00:00")
+    assert sales[0]["amount"] == "12.00"
+
+
+def test_compare_uses_identical_canonical_key_and_emits_mismatch_artifacts() -> None:
+    ui_rows = [
+        {
+            "store_code": "A817",
+            "order_number": "1001",
+            "order_date": "2026-01-02 10:00:00",
+            "amount": "12",
+            "status": "Delivered",
+        },
+        {
+            "store_code": "A817",
+            "order_number": "1002",
+            "order_date": "2026-01-02 11:00:00",
+            "amount": "8",
+            "status": "Delivered",
+        },
+    ]
+    api_rows = [
+        {
+            "store_code": "A817",
+            "order_number": "1001",
+            "order_date": "2026-01-02T10:00:00+05:30",
+            "amount": "12.00",
+            "status": "delivered",
+        },
+        {
+            "store_code": "A817",
+            "order_number": "1003",
+            "order_date": "2026-01-02T11:30:00+05:30",
+            "amount": "8.00",
+            "status": "delivered",
+        },
+    ]
+
+    metrics = compare_canonical_rows(
+        ui_rows=ui_rows,
+        api_rows=api_rows,
+        key_fields=COMPARE_KEY_FIELDS_BY_DATASET["orders"],
+    ).as_dict()
+
+    assert metrics["matched_rows"] == 1
+    assert metrics["missing_in_api"] == 1
+    assert metrics["missing_in_ui"] == 1
+    assert metrics["amount_mismatches"] == 0
+    assert metrics["status_mismatches"] == 0
+    assert metrics["mismatch_artifacts"]["missing_in_api"][0]["key_components"]["order_number"] == "1002"
+    assert metrics["mismatch_artifacts"]["missing_in_ui"][0]["key_components"]["order_number"] == "1003"
 
 
 class _StubResponse:
