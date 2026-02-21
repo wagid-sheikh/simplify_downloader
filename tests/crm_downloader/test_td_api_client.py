@@ -163,9 +163,9 @@ def test_persist_td_api_artifacts_writes_excel_outputs(tmp_path: Path) -> None:
         raw_orders={"data": []},
         raw_sales={"data": []},
         raw_garments={"data": []},
-        orders_rows=[{"order_number": "1001", "source_only": "x", "amount": "12.00"}],
-        sales_rows=[{"order_number": "1001", "sales_only": "y", "amount": "12.00"}],
-        garment_rows=[{"order_number": "1001", "garment_only": "z", "line_item_key": "L1"}],
+        order_rows=[{"order_number": "1001", "source_only": "x", "amount": "12.00"}],
+        sale_rows=[{"order_number": "1001", "sales_only": "y", "amount": "12.00"}],
+        garments_rows=[{"order_number": "1001", "garment_only": "z", "line_item_key": "L1"}],
     )
 
     assert "orders_excel" in result.artifact_paths
@@ -279,9 +279,9 @@ async def test_fetch_reports_captures_non_retriable_http_errors_per_endpoint(tmp
     assert result.raw_garments_payload["error"] is None
     assert result.orders_rows == []
     assert len(result.sales_rows) == 1
-    assert len(result.garment_rows) == 1
+    assert len(result.garments_rows) == 1
     assert result.sales_rows[0]["salesOnlyField"] == "survives"
-    assert result.garment_rows[0]["garmentOnlyField"] == "survives"
+    assert result.garments_rows[0]["garmentOnlyField"] == "survives"
 
 
 @pytest.mark.asyncio
@@ -319,3 +319,37 @@ async def test_fetch_reports_sets_expand_data_true_for_orders_and_sales(tmp_path
     assert "expandData" in orders_call["params"]
     assert "expandData" in sales_call["params"]
     assert "expandData" not in garments_call["params"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_preserves_full_fidelity_rows_for_artifacts(tmp_path: Path) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/reports/order-report",
+                payload={"data": [{"orderNo": "O-1", "ordersOnlyField": "keep"}], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales",
+                payload={"data": [{"orderNo": "S-1", "salesOnlyField": "keep"}], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [{"orderNo": "G-1", "garmentsOnlyField": "keep"}], "totalPages": 1},
+            ),
+        ]
+    )
+    context = _StubContext(request=request)
+    client = _TokenRefreshingClient(store_code="a123", context=context, storage_state_path=tmp_path / "s.json")
+
+    result = await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    assert result.orders_rows[0]["ordersOnlyField"] == "keep"
+    assert result.sales_rows[0]["salesOnlyField"] == "keep"
+    assert result.garments_rows[0]["garmentsOnlyField"] == "keep"
+    assert result.raw_orders_payload["data"][0]["ordersOnlyField"] == "keep"
+    assert result.raw_sales_payload["data"][0]["salesOnlyField"] == "keep"
+    assert result.raw_garments_payload["data"][0]["garmentsOnlyField"] == "keep"

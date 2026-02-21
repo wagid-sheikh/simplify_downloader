@@ -6675,9 +6675,9 @@ async def _run_store_discovery(
                             raw_orders=api_fetch_result.raw_orders_payload,
                             raw_sales=api_fetch_result.raw_sales_payload,
                             raw_garments=api_fetch_result.raw_garments_payload,
-                            orders_rows=api_fetch_result.orders_rows,
-                            sales_rows=api_fetch_result.sales_rows,
-                            garment_rows=api_fetch_result.garment_rows,
+                            order_rows=api_fetch_result.orders_rows,
+                            sale_rows=api_fetch_result.sales_rows,
+                            garments_rows=api_fetch_result.garments_rows,
                         )
                         log_event(
                             logger=store_logger,
@@ -6707,7 +6707,7 @@ async def _run_store_discovery(
                             source_mode=source_mode,
                             orders_rows=len(api_fetch_result.orders_rows),
                             sales_rows=len(api_fetch_result.sales_rows),
-                            garments_rows=len(api_fetch_result.garment_rows),
+                            garments_rows=len(api_fetch_result.garments_rows),
                         )
                     except Exception as exc:
                         log_event(
@@ -7153,7 +7153,7 @@ async def _run_store_discovery(
             key_fields=COMPARE_KEY_FIELDS_BY_DATASET["sales"],
             sample_limit=WARNING_SAMPLE_LIMIT,
         )
-        api_garment_rows = api_fetch_result.garment_rows if "api_fetch_result" in locals() else []
+        api_garment_rows = api_fetch_result.garments_rows if "api_fetch_result" in locals() else []
         log_event(
             logger=store_logger,
             phase="compare",
@@ -7241,11 +7241,11 @@ async def _run_store_discovery(
             and config.database_url
             and getattr(store, "cost_center", None)
             and "api_fetch_result" in locals()
-            and api_fetch_result.garment_rows
+            and api_fetch_result.garments_rows
         ):
             try:
                 garment_ingest_result = await ingest_td_garment_rows(
-                    rows=api_fetch_result.garment_rows,
+                    rows=api_fetch_result.garments_rows,
                     store_code=store.store_code,
                     cost_center=store.cost_center,
                     run_id=run_id,
@@ -7292,7 +7292,7 @@ async def _run_store_discovery(
                 "orphan_rows": garment_ingest_result.orphan_rows,
             }
 
-        garment_total_rows = len(api_fetch_result.garment_rows) if "api_fetch_result" in locals() else 0
+        garment_total_rows = len(api_fetch_result.garments_rows) if "api_fetch_result" in locals() else 0
         garment_matched_rows = garment_ingest_result.row_count if garment_ingest_result else (garment_total_rows if garment_total_rows == 0 else 0)
         garment_compare_metrics = {
             "total_rows": garment_total_rows,

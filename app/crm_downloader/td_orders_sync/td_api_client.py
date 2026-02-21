@@ -37,7 +37,7 @@ class TdApiFetchResult:
     raw_garments_payload: Any = field(default_factory=dict)
     orders_rows: list[dict[str, Any]] = field(default_factory=list)
     sales_rows: list[dict[str, Any]] = field(default_factory=list)
-    garment_rows: list[dict[str, Any]] = field(default_factory=list)
+    garments_rows: list[dict[str, Any]] = field(default_factory=list)
     request_metadata: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -139,7 +139,7 @@ class TdApiClient:
             raw_garments_payload=garments_payload,
             orders_rows=orders_rows,
             sales_rows=sales_rows,
-            garment_rows=garments_rows,
+            garments_rows=garments_rows,
             request_metadata=metadata,
         )
 
@@ -508,4 +508,3 @@ def _extract_pagination_candidates(payload: Any) -> dict[str, Any]:
                 candidates[key] = pagination.get(key)
 
     return candidates
-
