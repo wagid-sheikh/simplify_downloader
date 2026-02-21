@@ -127,9 +127,6 @@
 
 If this plan looks good, I’ll proceed with the Phase 0 scaffolding PR first.
 
-
-
-
 ## All questions I have before implementation
 
 ### A) Auth / session / routing
@@ -200,14 +197,12 @@ Create and execute a focused fix set for UC Archive API ingestion/publish so rec
    * Add DB migration to widen `orders.service_type` from `varchar(24)` to `varchar(64)`.
    * Ensure ORM/model metadata reflects the same max length.
    * Add/adjust regression test to prove long values (e.g., "Dry cleaning, Laundry - Wash & Fold") publish without truncation error.
-
 2. **Stop false warnings for `invalid_amount` and `invalid_weight` in `ingest_remarks`**
 
    * In UC archive ingest rules, treat null/blank amount and weight as acceptable input.
    * Normalize null/blank amount and weight to `0` (preserve existing numeric type handling).
    * Suppress `invalid_amount` / `invalid_weight` ingest remarks for these null/blank cases.
    * Keep warnings/errors only for truly malformed non-null values.
-
 3. **Relax `missing_required_field:item_name` for service-driven rows**
 
    * Update UC archive detail validation so `item_name` can be null/"-" when service context is laundry-type (e.g., `service_type` like `Laundry%`).
@@ -227,3 +222,116 @@ Create and execute a focused fix set for UC Archive API ingestion/publish so rec
 * Code changes in UC archive ingest/publish validators and mappings.
 * Tests covering all three fixes.
 * Run-log evidence snippet from a successful validation run.
+
+
+---
+
+
+
+
+## Context Prompt:** **`td_orders_sync` TD API enhancement continuity
+
+You are continuing work on the** **`simplify_downloader` repo, specifically** **`app/crm_downloader/td_orders_sync`.
+
+### Objective
+
+Stabilize and complete TD API-driven sync/diagnostics so API modes are reliable, observable, and produce operator-friendly artifacts (especially Excel outputs), while preserving existing UI flow behavior.
+
+---
+
+### What we originally wanted
+
+1. Partial-success API fetch contract (one endpoint failure should not drop all datasets).
+2. Pagination for TD reporting endpoints.
+3. Human-friendly Excel artifacts for API outputs.
+4. Excel parity for compare/mismatch artifacts.
+5. Better auth/request diagnostics scaffolding.
+6. Rebase/conflict-safe integration into current branch.
+
+---
+
+### What has already been done (implemented)
+
+#### API data fetch and normalization
+
+* `TdApiClient.fetch_reports` fetches endpoints independently:
+  * `/reports/order-report`
+  * `/sales-and-deliveries/sales`
+  * `/garments/details`
+* Pagination added with** **`TD_API_MAX_PAGES` (default** **`100`).
+* Structured endpoint fetch response introduced in** **`td_api_client.py`:
+  * `_EndpointFetchResponse(ok, payload, error)`
+* Non-retriable HTTP errors now surface explicit endpoint errors (e.g.** **`http_403`) instead of silently looking like empty rows.
+* Duplicate** **`order_date` key in sales normalization removed.
+
+#### Artifacts (Excel)
+
+* API Excel writers exist for:
+  * orders (`*_td_api_orders_*.xlsx`)
+  * sales (`*_td_api_sales_*.xlsx`)
+  * garments (`*_td_api_garments_*.xlsx`)
+* Compare Excel writer exists for:
+  * compare (`*_td_api_compare_*.xlsx`)
+  * sheets: summary, missing_in_api, missing_in_ui, value_mismatches, api_request_metadata
+* Compare summary sheet was flattened to avoid dumping entire nested mismatch payload.
+
+#### Artifact location fix
+
+* API artifact destination now resolved by:
+  * `TD_API_ARTIFACT_DIR` env var (if set), else
+  * default:** **`docs/td_api/artifacts`
+* Added API log field** **`artifact_dir` when persisting API artifacts for operator visibility.
+
+#### Diagnostics
+
+* Request metadata includes** **`token_refresh_attempted`.
+* Auth diagnostics include token metadata (`token_found`,** **`token_source`,** **`token_expiry`).
+
+#### Conflict/rebase progress
+
+* Conflict-touch files were reconciled and committed:
+  * `app/crm_downloader/td_orders_sync/main.py`
+  * `app/crm_downloader/td_orders_sync/td_api_client.py`
+  * `app/crm_downloader/td_orders_sync/td_api_compare.py`
+
+---
+
+### Current status (“where we are at”)
+
+* Code changes for API Excel path, endpoint error signaling, compare summary flattening, and logging are in place.
+* Static compile + targeted tests previously passed:
+  * `python -m py_compile ...`
+  * `pytest -q tests/crm_downloader/test_td_api_client.py`
+* Prior observed log (`scripts/run_log.txt`) looked UC-centric and did** ****not** show TD API phase execution, so lack of TD Excel artifacts in that run may have been due to execution mode/path, not just code defects.
+
+---
+
+### Pending / next items to close
+
+1. **Runtime verification (must-do):**
+   * Run TD pipeline with explicit API mode (`--source-mode api_shadow` or** **`api_primary`) and verify logs include** **`phase="api"` +** **`artifact_dir`.
+   * Confirm files are created under** **`docs/td_api/artifacts` (or** **`TD_API_ARTIFACT_DIR` override).
+2. **Operator runbook clarity:**
+   * Document exact invocation and env vars required to produce TD API Excel artifacts.
+   * Add a short troubleshooting section: “No TD API excels generated” checklist.
+3. **Optional hardening:**
+   * Add unit tests for** **`_resolve_td_api_artifact_dir`.
+   * Add tests validating non-retriable HTTP status propagates to** **`endpoint_errors`.
+   * Add a test ensuring compare summary sheet excludes nested** **`mismatch_artifacts`.
+4. **Token refresh behavior (future):**
+   * `token_refresh_attempted` is currently scaffolding; full refresh flow remains to be implemented if required.
+
+---
+
+### Suggested immediate command checklist for next assignee
+
+* Inspect source mode usage and runtime args.
+* Execute one TD API-mode run in dev.
+* Verify:
+  * `phase="api"` log events
+  * `artifact_dir` path in logs
+  * generated** **`*_td_api_*.xlsx` files
+* If artifacts still missing, capture:
+  * full command used
+  * env vars (`TD_API_ARTIFACT_DIR`, source mode)
+  * relevant log segment around “Prepared API client” / “Persisted TD API artifacts”.
