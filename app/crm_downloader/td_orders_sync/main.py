@@ -23,7 +23,7 @@ from app.common.db import session_scope
 from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
 from app.config import config
 from app.crm_downloader.browser import launch_browser
-from app.crm_downloader.config import default_download_dir, default_profiles_dir
+from app.crm_downloader.config import default_profiles_dir
 from app.crm_downloader.orders_sync_window import (
     fetch_last_success_window_end,
     resolve_orders_sync_start_date,
@@ -77,6 +77,13 @@ SALES_NAV_SAMPLE_LIMIT = 3
 ROW_SAMPLE_LIMIT = 3
 SNAPSHOT_TEXT_MAX_CHARS = 120
 TD_SOURCE_MODES = {"ui", "api_shadow", "api_primary", "api_only"}
+
+
+def _resolve_td_api_artifact_dir() -> Path:
+    configured = (os.environ.get("TD_API_ARTIFACT_DIR") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (Path("docs") / "td_api" / "artifacts").resolve()
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -6363,7 +6370,7 @@ async def _run_store_discovery(
         return
 
     storage_state_exists = store.storage_state_path.exists()
-    download_dir = default_download_dir()
+    download_dir = _resolve_td_api_artifact_dir()
     context = await browser.new_context(
         storage_state=str(store.storage_state_path) if storage_state_exists else None,
         accept_downloads=True,
@@ -6672,6 +6679,7 @@ async def _run_store_discovery(
                             message="Persisted TD API artifacts",
                             store_code=store.store_code,
                             source_mode=source_mode,
+                            artifact_dir=str(download_dir),
                             artifact_paths=artifact_result.artifact_paths,
                             warnings=artifact_result.warnings,
                         )
