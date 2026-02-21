@@ -325,6 +325,37 @@ def _format_key_parts(key_parts: Mapping[str, str]) -> str:
     return ", ".join(f"{field}={value}" for field, value in key_parts.items())
 
 
+
+
+def project_api_rows_for_compare(
+    *,
+    dataset: str,
+    api_rows: Iterable[Mapping[str, Any]],
+    store_code: str | None = None,
+) -> list[dict[str, Any]]:
+    """Project raw API rows into compare-only canonical fields."""
+    normalized_store = (store_code or "").strip().upper()
+    projected_rows: list[dict[str, Any]] = []
+    for row in api_rows:
+        projected: dict[str, Any] = {}
+        if normalized_store:
+            projected["store_code"] = normalized_store
+        for field in ("order_number", "order_date", "payment_date", "line_item_key", "amount", "status"):
+            value = _resolve_field_value(row, field, default_store_code=normalized_store or None)
+            if value is not None and str(value).strip() != "":
+                projected[field] = value
+        if dataset == "orders":
+            projected.pop("payment_date", None)
+            projected.pop("line_item_key", None)
+        elif dataset == "sales":
+            projected.pop("order_date", None)
+            projected.pop("line_item_key", None)
+        elif dataset == "garments":
+            projected.pop("payment_date", None)
+        projected_rows.append(projected)
+    return projected_rows
+
+
 def compare_canonical_rows(
     *,
     ui_rows: Iterable[Mapping[str, Any]],
