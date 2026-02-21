@@ -23,7 +23,7 @@ from app.common.db import session_scope
 from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
 from app.config import config
 from app.crm_downloader.browser import launch_browser
-from app.crm_downloader.config import default_profiles_dir
+from app.crm_downloader.config import default_profiles_dir, default_download_dir
 from app.crm_downloader.orders_sync_window import (
     fetch_last_success_window_end,
     resolve_orders_sync_start_date,
@@ -83,7 +83,12 @@ def _resolve_td_api_artifact_dir() -> Path:
     configured = (os.environ.get("TD_API_ARTIFACT_DIR") or "").strip()
     if configured:
         return Path(configured).expanduser().resolve()
-    return default_download_dir().resolve()
+    try:
+        return default_download_dir().resolve()
+    except NameError:  # defensive in case import gets dropped during conflict resolution
+        from app.crm_downloader.config import default_download_dir as _default_download_dir
+
+        return _default_download_dir().resolve()
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
