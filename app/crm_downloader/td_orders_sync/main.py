@@ -23,7 +23,7 @@ from app.common.db import session_scope
 from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
 from app.config import config
 from app.crm_downloader.browser import launch_browser
-from app.crm_downloader.config import default_download_dir, default_profiles_dir
+from app.crm_downloader.config import default_profiles_dir
 from app.crm_downloader.orders_sync_window import (
     fetch_last_success_window_end,
     resolve_orders_sync_start_date,
