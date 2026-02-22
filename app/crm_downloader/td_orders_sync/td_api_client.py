@@ -19,7 +19,7 @@ REPORTS_ORIGIN_HOST = "reports.quickdrycleaning.com"
 logger = logging.getLogger(__name__)
 
 _SUMMARY_MARKERS = ("total", "summary", "grand total")
-_LABEL_LIKE_FIELD_SIGNALS = ("label", "name", "title", "description", "remark", "note", "particular")
+_LABEL_LIKE_FIELD_SIGNALS = ("label", "name", "title", "description", "remark", "note", "particular", "date")
 _STABLE_TRANSACTION_ID_FIELDS = (
     "ordernumber",
     "orderno",
@@ -540,7 +540,13 @@ def _is_summary_or_footer_row(row: Mapping[str, Any]) -> bool:
     normalized_values = {str(key).strip().lower(): value for key, value in row.items()}
     order_number = _first_non_empty_value(normalized_values, ("ordernumber", "orderno", "order_number"))
 
-    if not order_number and _label_field_contains_summary_marker(normalized_values):
+    # Some TD API pages emit footer rows like "Total Order" while still carrying a
+    # numeric orderNumber equal to page-row-count. Treat explicit summary labels as
+    # authoritative so these rows do not leak into compare/export datasets.
+    if _label_field_contains_summary_marker(normalized_values):
+        return True
+
+    if not order_number and _row_contains_summary_marker(normalized_values):
         return True
 
     if _has_stable_transaction_identifier(normalized_values):
