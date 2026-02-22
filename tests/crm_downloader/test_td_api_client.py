@@ -677,8 +677,10 @@ async def test_fetch_reports_refreshes_auth_once_then_reuses_for_other_endpoints
     assert len(garments_calls) == 1
     assert orders_calls[0]["headers"]["Authorization"] == "Bearer stale-token"
     assert orders_calls[1]["headers"]["Authorization"] == "Bearer fresh-token"
-    assert sales_calls[0]["headers"]["Authorization"] == "Bearer fresh-token"
-    assert garments_calls[0]["headers"]["Authorization"] == "Bearer fresh-token"
+    assert sales_calls[0]["headers"].get("Authorization") is None
+    assert garments_calls[0]["headers"].get("Authorization") is None
+    assert "token" not in sales_calls[0]["params"]
+    assert "token" not in garments_calls[0]["params"]
 
     auth_refresh_items = [
         item for item in result.request_metadata if item["endpoint"] == "/reports/order-report" and item["status"] == 401
@@ -691,14 +693,16 @@ async def test_fetch_reports_refreshes_auth_once_then_reuses_for_other_endpoints
     assert sales_metadata["query_params"]["endDate"] == ["2026-01-02"]
     assert sales_metadata["query_params"]["page"] == ["1"]
     assert sales_metadata["query_params"]["pageSize"] == ["500"]
-    assert sales_metadata["query_params"]["token"] == ["fresh-token"]
+    assert sales_metadata["query_params"].get("token") is None
+    assert sales_metadata["auth_shape"] == "har_like"
 
     garments_metadata = next(item for item in result.request_metadata if item["endpoint"] == "/garments/details" and item["status"] == 200)
     assert garments_metadata["query_params"]["startDate"] == ["2026-01-01"]
     assert garments_metadata["query_params"]["endDate"] == ["2026-01-02"]
     assert garments_metadata["query_params"]["page"] == ["1"]
     assert garments_metadata["query_params"]["pageSize"] == ["500"]
-    assert garments_metadata["query_params"]["token"] == ["fresh-token"]
+    assert garments_metadata["query_params"].get("token") is None
+    assert garments_metadata["auth_shape"] == "har_like"
 
 @pytest.mark.asyncio
 async def test_fetch_reports_captures_non_retriable_http_errors_per_endpoint(tmp_path: Path) -> None:
@@ -767,6 +771,59 @@ async def test_fetch_reports_sets_expand_data_true_for_orders_and_sales(tmp_path
     assert "expandData" in orders_call["params"]
     assert "expandData" in sales_call["params"]
     assert "expandData" not in garments_call["params"]
+
+
+@pytest.mark.asyncio
+async def test_sales_and_garments_try_har_like_before_legacy_auth_shape(tmp_path: Path) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(status=200, url="https://reporting-api.quickdrycleaning.com/reports/order-report", payload={"data": [], "totalPages": 1}),
+            _StubResponse(status=403, url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales", payload={}),
+            _StubResponse(status=200, url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales", payload={"data": [], "totalPages": 1}),
+            _StubResponse(status=403, url="https://reporting-api.quickdrycleaning.com/garments/details", payload={}),
+            _StubResponse(status=200, url="https://reporting-api.quickdrycleaning.com/garments/details", payload={"data": [], "totalPages": 1}),
+        ]
+    )
+    context = _StubContext(request=request)
+    client = _TokenRefreshingClient(store_code="a123", context=context, storage_state_path=tmp_path / "s.json")
+
+    result = await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    sales_calls = [call for call in request.calls if call["url"].endswith("/sales-and-deliveries/sales")]
+    garments_calls = [call for call in request.calls if call["url"].endswith("/garments/details")]
+    assert sales_calls[0]["headers"].get("Authorization") is None
+    assert garments_calls[0]["headers"].get("Authorization") is None
+    assert "token" not in sales_calls[0]["params"]
+    assert "token" not in garments_calls[0]["params"]
+    assert sales_calls[1]["headers"]["Authorization"] == "Bearer stale-token"
+    assert garments_calls[1]["headers"]["Authorization"] == "Bearer stale-token"
+    assert sales_calls[1]["params"]["token"] == "stale-token"
+    assert garments_calls[1]["params"]["token"] == "stale-token"
+
+    fallback_entries = [item for item in result.request_metadata if item.get("auth_shape_fallback_from_har_like")]
+    assert fallback_entries
+    assert all(item["auth_shape"] == "legacy" for item in fallback_entries)
+    assert all("auth_shape_status_delta" in item for item in fallback_entries)
+
+
+@pytest.mark.asyncio
+async def test_har_like_origin_and_referer_follow_report_iframe_context(tmp_path: Path) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(status=200, url="https://reporting-api.quickdrycleaning.com/reports/order-report", payload={"data": [], "totalPages": 1}),
+            _StubResponse(status=200, url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales", payload={"data": [], "totalPages": 1}),
+            _StubResponse(status=200, url="https://reporting-api.quickdrycleaning.com/garments/details", payload={"data": [], "totalPages": 1}),
+        ]
+    )
+    context = _StubContext(request=request)
+    iframe_src = "https://reports.quickdrycleaning.com/embed?view=sales&store=A123"
+    client = _TokenRefreshingClient(store_code="a123", context=context, storage_state_path=tmp_path / "s.json", report_iframe_src=iframe_src)
+
+    await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    sales_call = next(call for call in request.calls if call["url"].endswith("/sales-and-deliveries/sales"))
+    assert sales_call["headers"]["origin"] == "https://reports.quickdrycleaning.com"
+    assert sales_call["headers"]["referer"] == iframe_src
 
 
 @pytest.mark.asyncio
@@ -1234,6 +1291,8 @@ async def test_get_json_timeout_retries_are_bounded_for_sales_endpoint(tmp_path:
             _ReadTimeoutResponse(status=200, url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales", payload={}),
             _ReadTimeoutResponse(status=200, url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales", payload={}),
             _ReadTimeoutResponse(status=200, url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales", payload={}),
+            _ReadTimeoutResponse(status=200, url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales", payload={}),
+            _ReadTimeoutResponse(status=200, url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales", payload={}),
         ]
     )
     context = _StubContext(request=request)
@@ -1278,7 +1337,7 @@ async def test_get_json_timeout_retries_are_bounded_for_sales_endpoint(tmp_path:
 
     assert result.ok is False
     assert result.error in {"read_timeout", "total_timeout"}
-    assert len(request.calls) == client.config.timeout_retry_limit + 1
+    assert len(request.calls) == (client.config.timeout_retry_limit + 1) * 2
     timeout_metadata = [item for item in metadata if item.get("retry_reason") in {"read_timeout", "total_timeout"}]
     assert timeout_metadata
     assert max(item["retry_count"] for item in timeout_metadata) == client.config.timeout_retry_limit
