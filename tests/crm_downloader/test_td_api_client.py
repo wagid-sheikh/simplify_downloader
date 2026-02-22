@@ -189,6 +189,69 @@ def test_compare_sales_row_count_mismatch_does_not_report_missing_order() -> Non
 
 
 
+
+
+def test_compare_orders_aliases_resolve_api_native_amount_and_status_names() -> None:
+    ui_rows = [
+        {
+            "store_code": "A817",
+            "order_number": "5001",
+            "order_date": "2026-01-02 10:00:00",
+            "amount": "1200",
+            "status": "Delivered",
+        }
+    ]
+    api_rows = [
+        {
+            "store_code": "A817",
+            "order_number": "5001",
+            "order_date": "2026-01-02 10:00:00",
+            "grossAmount": 1200.0,
+            "orderStatus": "delivered",
+        }
+    ]
+
+    metrics = compare_canonical_rows(
+        ui_rows=ui_rows,
+        api_rows=api_rows,
+        key_fields=COMPARE_KEY_FIELDS_BY_DATASET["orders"],
+    ).as_dict()
+
+    assert metrics["amount_mismatches"] == 0
+    assert metrics["status_mismatches"] == 0
+
+
+def test_compare_sales_aliases_resolve_payment_received_and_order_status_names() -> None:
+    ui_rows = [
+        {
+            "store_code": "A817",
+            "order_number": "7001",
+            "payment_date": "2026-01-02 11:00:00",
+            "payment_mode": "UPI",
+            "amount": "1200",
+            "status": "Collected",
+        }
+    ]
+    api_rows = [
+        {
+            "store_code": "A817",
+            "order_number": "7001",
+            "payment_date": "2026-01-02 11:00:00",
+            "payment_mode": "UPI",
+            "paymentReceived": 1200.0,
+            "orderStatus": "collected",
+        }
+    ]
+
+    metrics = compare_canonical_rows(
+        ui_rows=ui_rows,
+        api_rows=api_rows,
+        key_fields=COMPARE_KEY_FIELDS_BY_DATASET["sales"],
+    ).as_dict()
+
+    assert metrics["amount_mismatches"] == 0
+    assert metrics["status_mismatches"] == 0
+
 def test_orders_projection_contract_required_fields_and_allow_list(
     representative_orders_api_row: dict[str, str],
 ) -> None:
