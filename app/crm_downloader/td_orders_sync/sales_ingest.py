@@ -108,6 +108,7 @@ class TdSalesIngestResult:
     rows_downloaded: int = 0
     dropped_rows: list[dict[str, Any]] = field(default_factory=list)
     warning_rows: list[dict[str, Any]] = field(default_factory=list)
+    parsed_rows: list[dict[str, Any]] = field(default_factory=list)
     edited_rows: list[dict[str, Any]] = field(default_factory=list)
     duplicate_rows: list[dict[str, Any]] = field(default_factory=list)
     rows_edited: int = 0
@@ -439,6 +440,7 @@ async def ingest_td_sales_workbook(
             rows_downloaded=rows_downloaded,
             dropped_rows=dropped_rows,
             warning_rows=warning_rows,
+            parsed_rows=rows,
         )
 
     metadata = sa.MetaData()
@@ -672,6 +674,7 @@ async def ingest_td_sales_workbook(
         rows_downloaded=rows_downloaded,
         dropped_rows=dropped_rows,
         warning_rows=warning_rows,
+        parsed_rows=rows,
         edited_rows=edited_rows,
         duplicate_rows=duplicate_rows,
         rows_edited=len(edited_rows),

@@ -880,6 +880,8 @@ class StoreReport:
     warnings: list[str] = field(default_factory=list)
     dropped_rows: list[dict[str, Any]] = field(default_factory=list)
     warning_rows: list[dict[str, Any]] = field(default_factory=list)
+    compare_rows_orders: list[dict[str, Any]] = field(default_factory=list)
+    compare_rows_sales: list[dict[str, Any]] = field(default_factory=list)
     edited_rows: list[dict[str, Any]] = field(default_factory=list)
     duplicate_rows: list[dict[str, Any]] = field(default_factory=list)
 
@@ -916,6 +918,8 @@ class StoreReport:
             "warnings": list(self.warnings),
             "dropped_rows": list(self.dropped_rows),
             "warning_rows": list(self.warning_rows),
+            "compare_rows_orders": list(self.compare_rows_orders),
+            "compare_rows_sales": list(self.compare_rows_sales),
             "edited_rows": list(self.edited_rows),
             "duplicate_rows": list(self.duplicate_rows),
         }
@@ -2480,6 +2484,28 @@ def _resolve_sync_log_message(
         return error_message or status_note
     return None
 
+
+
+
+def _resolve_compare_rows(report: StoreReport | None, *, dataset: str) -> list[dict[str, Any]]:
+    if not report:
+        return []
+    if dataset == "orders":
+        return list(report.compare_rows_orders or [])
+    if dataset == "sales":
+        return list(report.compare_rows_sales or [])
+    raise ValueError(f"Unsupported compare dataset: {dataset}")
+
+
+def _compare_row_count_diagnostics(orders_report: StoreReport | None, sales_report: StoreReport | None) -> dict[str, int]:
+    orders_rows_for_compare = len(_resolve_compare_rows(orders_report, dataset="orders"))
+    sales_rows_for_compare = len(_resolve_compare_rows(sales_report, dataset="sales"))
+    return {
+        "orders_rows_for_compare": orders_rows_for_compare,
+        "orders_warning_rows": len(orders_report.warning_rows) if orders_report and orders_report.warning_rows else 0,
+        "sales_rows_for_compare": sales_rows_for_compare,
+        "sales_warning_rows": len(sales_report.warning_rows) if sales_report and sales_report.warning_rows else 0,
+    }
 
 def _resolve_ingested_rows(report: StoreReport | None) -> int | None:
     if report is None:
@@ -6253,6 +6279,7 @@ async def _execute_sales_flow(
         warnings=sales_ingest_result.warnings if sales_ingest_result else [],
         dropped_rows=sales_ingest_result.dropped_rows if sales_ingest_result else [],
         warning_rows=sales_ingest_result.warning_rows if sales_ingest_result else [],
+        compare_rows_sales=sales_ingest_result.parsed_rows if sales_ingest_result else [],
         edited_rows=sales_ingest_result.edited_rows if sales_ingest_result else [],
         duplicate_rows=sales_ingest_result.duplicate_rows if sales_ingest_result else [],
     )
@@ -6765,6 +6792,7 @@ async def _run_store_discovery(
                             status=orders_status,
                             message="Orders sourced from API",
                             warning_rows=list(api_fetch_result.orders_rows),
+                            compare_rows_orders=list(api_fetch_result.orders_rows),
                             rows_downloaded=len(api_fetch_result.orders_rows),
                             rows_ingested=0,
                             source_mode=source_mode,
@@ -6773,6 +6801,7 @@ async def _run_store_discovery(
                             status=sales_status,
                             message="Sales sourced from API" if run_sales else "Sales sync skipped by flag",
                             warning_rows=list(api_fetch_result.sales_rows),
+                            compare_rows_sales=list(api_fetch_result.sales_rows),
                             rows_downloaded=len(api_fetch_result.sales_rows),
                             rows_ingested=0,
                             source_mode=source_mode,
@@ -6938,6 +6967,7 @@ async def _run_store_discovery(
                         ),
                         dropped_rows_count=len(ingest_result.dropped_rows) if ingest_result else None,
                         warning_rows=ingest_result.warning_rows if ingest_result else [],
+                        compare_rows_orders=ingest_result.parsed_rows if ingest_result else [],
                         dropped_rows=ingest_result.dropped_rows if ingest_result else [],
                         message=outcome_message,
                         warnings=ingest_result.warnings if ingest_result else [],
@@ -7164,9 +7194,9 @@ async def _run_store_discovery(
             run_orders=run_orders,
             run_sales=run_sales,
         )
-        ui_rows = orders_report.warning_rows if orders_report and orders_report.warning_rows else []
+        ui_rows = _resolve_compare_rows(orders_report, dataset="orders")
         api_rows = api_fetch_result.orders_rows if "api_fetch_result" in locals() else []
-        sales_ui_rows = sales_report.warning_rows if sales_report and sales_report.warning_rows else []
+        sales_ui_rows = _resolve_compare_rows(sales_report, dataset="sales")
         sales_api_rows = api_fetch_result.sales_rows if "api_fetch_result" in locals() else []
 
         if source_mode == "api_shadow" and api_all_endpoints_auth_failed:
@@ -7209,14 +7239,14 @@ async def _run_store_discovery(
                 sample_limit=WARNING_SAMPLE_LIMIT,
             )
         api_garment_rows = api_fetch_result.garments_rows if "api_fetch_result" in locals() else []
+        compare_row_counts = _compare_row_count_diagnostics(orders_report, sales_report)
         log_event(
             logger=store_logger,
             phase="compare",
             message="TD UI/API row-count verification",
             **correlation.as_dict(),
-            orders_ui_rows=len(ui_rows),
+            **compare_row_counts,
             orders_api_rows=len(api_rows),
-            sales_ui_rows=len(sales_ui_rows),
             sales_api_rows=len(sales_api_rows),
             garments_api_rows=len(api_garment_rows),
         )

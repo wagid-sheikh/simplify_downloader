@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 
-from app.crm_downloader.td_orders_sync.main import StoreOutcome, StoreReport, TdOrdersDiscoverySummary
+from app.crm_downloader.td_orders_sync.main import (
+    StoreOutcome,
+    StoreReport,
+    TdOrdersDiscoverySummary,
+    _compare_row_count_diagnostics,
+    _resolve_compare_rows,
+)
 
 
 def test_summary_text_lists_ingest_remarks() -> None:
@@ -210,3 +216,38 @@ def test_daily_reconciliation_summary_groups_pass_and_fail() -> None:
     assert daily["stores_passed"] == ["A1"]
     assert daily["stores_failed"][0]["store_code"] == "A2"
     assert "orders:row_count_delta_exceeded" in daily["top_mismatch_reasons"]
+
+
+def test_compare_rows_use_transaction_rows_not_warning_rows() -> None:
+    report = StoreReport(
+        status="ok",
+        warning_rows=[{"order_number": "W1"}],
+        compare_rows_orders=[{"order_number": "O1"}, {"order_number": "O2"}, {"order_number": "O3"}],
+    )
+
+    compare_rows = _resolve_compare_rows(report, dataset="orders")
+
+    assert len(compare_rows) == 3
+    assert len(report.warning_rows) == 1
+
+
+def test_compare_row_count_diagnostics_reports_compare_and_warning_counts() -> None:
+    orders_report = StoreReport(
+        status="ok",
+        warning_rows=[{"order_number": "W1"}],
+        compare_rows_orders=[{"order_number": "O1"}, {"order_number": "O2"}],
+    )
+    sales_report = StoreReport(
+        status="ok",
+        warning_rows=[{"order_number": "SW1"}, {"order_number": "SW2"}],
+        compare_rows_sales=[{"order_number": "S1"}, {"order_number": "S2"}, {"order_number": "S3"}],
+    )
+
+    diagnostics = _compare_row_count_diagnostics(orders_report, sales_report)
+
+    assert diagnostics == {
+        "orders_rows_for_compare": 2,
+        "orders_warning_rows": 1,
+        "sales_rows_for_compare": 3,
+        "sales_warning_rows": 2,
+    }
