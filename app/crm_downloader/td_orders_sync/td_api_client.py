@@ -614,14 +614,29 @@ class TdApiClient:
     ) -> _JsonFetchResult:
         url = f"{REPORTING_API_BASE_URL}{endpoint}"
         token_discovery = await self._discover_reporting_token()
+        iframe_token_discovery = self._discover_token_from_iframe_url_query()
         headers = {
             "accept": "*/*",
             "origin": "https://reports.quickdrycleaning.com",
             "referer": "https://reports.quickdrycleaning.com/",
         }
+        request_params = dict(params)
         token_value = (token_discovery.token or "").strip()
         if token_value:
             headers["Authorization"] = f"Bearer {token_value}"
+            request_params.setdefault("token", token_value)
+
+        if iframe_token_discovery.token and not token_value:
+            logger.warning(
+                "TD API auth regression warning: iframe token discovered but request token missing",
+                extra={
+                    "store_code": self.store_code,
+                    "endpoint": endpoint,
+                    "token_found": False,
+                    "token_source": token_discovery.source,
+                    "iframe_token_source": iframe_token_discovery.source,
+                },
+            )
 
         last_error: Exception | None = None
         status_code: int | None = None
@@ -639,7 +654,7 @@ class TdApiClient:
                 response = await asyncio.wait_for(
                     self.context.request.get(
                     url,
-                    params=params,
+                    params=request_params,
                     headers=headers,
                     timeout=resolved_connect_timeout_ms,
                     ),
@@ -665,6 +680,7 @@ class TdApiClient:
                         refreshed_token = (self._auth_state.token_discovery.token or "").strip() if self._auth_state.token_discovery else ""
                         if refreshed_token:
                             headers["Authorization"] = f"Bearer {refreshed_token}"
+                            request_params["token"] = refreshed_token
                         continue
                     return _JsonFetchResult(ok=False, payload=None, error="http_401", status=status_code, attempts=attempts)
 
@@ -743,8 +759,19 @@ class TdApiClient:
         return bool((refreshed_discovery.token or "").strip())
 
     async def _discover_reporting_token(self, *, force_refresh: bool = False) -> _TokenDiscoveryResult:
-        if self._auth_state.token_discovery is not None and not force_refresh:
-            return self._auth_state.token_discovery
+        cached_discovery = self._auth_state.token_discovery
+        if cached_discovery is not None and not force_refresh:
+            if cached_discovery.source == "iframe_url_query" and cached_discovery.token:
+                return cached_discovery
+
+            from_iframe_latest = self._discover_token_from_iframe_url_query()
+            if from_iframe_latest.token:
+                if cached_discovery.token != from_iframe_latest.token or cached_discovery.source != "iframe_url_query":
+                    self._auth_state.token_discovery = from_iframe_latest
+                    self._log_token_diagnostics(from_iframe_latest)
+                return self._auth_state.token_discovery
+
+            return cached_discovery
 
         from_iframe = self._discover_token_from_iframe_url_query()
         if from_iframe.token:
