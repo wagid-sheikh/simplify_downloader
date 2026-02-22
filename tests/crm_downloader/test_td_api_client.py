@@ -145,6 +145,45 @@ def test_compare_uses_identical_canonical_key_and_emits_mismatch_artifacts() -> 
     assert metrics["mismatch_artifacts"]["missing_in_ui"][0]["key_components"]["order_number"] == "1003"
 
 
+def test_compare_orders_missing_metrics_use_order_number_not_datetime() -> None:
+    ui_rows = [
+        {"store_code": "A817", "order_number": "1001", "order_date": "2026-01-02 10:00:00", "amount": "12"},
+    ]
+    api_rows = [
+        {"store_code": "A817", "order_number": "1001", "order_date": "2026-01-02 10:05:00", "amount": "12"},
+    ]
+
+    metrics = compare_canonical_rows(
+        ui_rows=ui_rows,
+        api_rows=api_rows,
+        key_fields=COMPARE_KEY_FIELDS_BY_DATASET["orders"],
+    ).as_dict()
+
+    assert metrics["missing_in_api"] == 0
+    assert metrics["missing_in_ui"] == 0
+
+
+def test_compare_sales_row_count_mismatch_does_not_report_missing_order() -> None:
+    ui_rows = [
+        {"store_code": "A817", "order_number": "2001", "payment_date": "2026-01-02 11:00:00", "payment_mode": "UPI"},
+        {"store_code": "A817", "order_number": "2001", "payment_date": "2026-01-02 11:01:00", "payment_mode": "Card"},
+    ]
+    api_rows = [
+        {"store_code": "A817", "order_number": "2001", "payment_date": "2026-01-02 11:02:00", "payment_mode": "UPI"},
+    ]
+
+    metrics = compare_canonical_rows(
+        ui_rows=ui_rows,
+        api_rows=api_rows,
+        key_fields=COMPARE_KEY_FIELDS_BY_DATASET["sales"],
+    ).as_dict()
+
+    assert metrics["missing_in_api"] == 0
+    assert metrics["missing_in_ui"] == 0
+    assert metrics["mismatch_artifacts"]["sales_order_row_count_mismatches"] == [
+        {"order_number": "2001", "ui_row_count": 2, "api_row_count": 1}
+    ]
+
 
 
 
