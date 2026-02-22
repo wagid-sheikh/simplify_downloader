@@ -2586,7 +2586,12 @@ def _compare_row_count_diagnostics(orders_report: StoreReport | None, sales_repo
     }
 
 
-def _dataset_completion_health(payload: Mapping[str, Any] | None, *, endpoint_error: str | None) -> dict[str, Any]:
+def _dataset_completion_health(
+    payload: Mapping[str, Any] | None,
+    *,
+    endpoint_error: str | None,
+    endpoint_health: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     pagination = (payload or {}).get("pagination") if isinstance(payload, Mapping) else {}
     pagination = pagination if isinstance(pagination, Mapping) else {}
     pages_fetched = int(pagination.get("pages_fetched") or 0)
@@ -2605,10 +2610,14 @@ def _dataset_completion_health(payload: Mapping[str, Any] | None, *, endpoint_er
     elif not readiness:
         degraded_reason = "pagination_incomplete"
 
+    health = endpoint_health if isinstance(endpoint_health, Mapping) else {}
     return {
         "ready": readiness,
         "degraded_reason": degraded_reason,
         "endpoint_error": endpoint_error,
+        "endpoint_success": bool(health.get("success")) if health else not bool(endpoint_error),
+        "endpoint_final_error_class": health.get("final_error_class") if health else endpoint_error,
+        "endpoint_attempts": int(health.get("attempts") or 0),
         "pages_fetched": pages_fetched,
         "reported_total_pages": reported_total_pages,
         "total_rows": total_rows,
@@ -7319,13 +7328,16 @@ async def _run_store_discovery(
         sales_ui_rows = _resolve_compare_rows(sales_report, dataset="sales")
         sales_api_rows = api_fetch_result_obj.sales_rows if api_fetch_result_obj else []
         endpoint_failure_summary = _endpoint_failure_summary(api_fetch_result_obj)
+        endpoint_health_summary = api_fetch_result_obj.endpoint_health if api_fetch_result_obj else {}
         orders_api_health = _dataset_completion_health(
             api_fetch_result_obj.raw_orders_payload if api_fetch_result_obj else {},
             endpoint_error=endpoint_failure_summary.get("orders"),
+            endpoint_health=endpoint_health_summary.get("/reports/order-report") if isinstance(endpoint_health_summary, Mapping) else None,
         )
         sales_api_health = _dataset_completion_health(
             api_fetch_result_obj.raw_sales_payload if api_fetch_result_obj else {},
             endpoint_error=endpoint_failure_summary.get("sales"),
+            endpoint_health=endpoint_health_summary.get("/sales-and-deliveries/sales") if isinstance(endpoint_health_summary, Mapping) else None,
         )
 
         if source_mode == "api_shadow" and api_all_endpoints_auth_failed:
@@ -7407,11 +7419,18 @@ async def _run_store_discovery(
                 decision="api_unavailable",
                 reason="All API endpoints failed auth in shadow mode",
             )
-        elif source_mode == "api_shadow" and not orders_compare_readiness:
-            degraded_reason = orders_api_health.get("degraded_reason") or "api_incomplete"
+        elif source_mode == "api_shadow" and (not orders_compare_readiness or not sales_compare_readiness):
+            readiness_gaps: list[str] = []
+            if not orders_compare_readiness:
+                readiness_gaps.append(f"orders:{orders_api_health.get('degraded_reason') or 'api_incomplete'}")
+            if not sales_compare_readiness:
+                readiness_gaps.append(f"sales:{sales_api_health.get('degraded_reason') or 'api_incomplete'}")
             decision = DecisionLog(
-                decision="orders_api_partial_unavailable",
-                reason=f"Orders API not ready for strict compare verdicting ({degraded_reason})",
+                decision="api_partial_unavailable",
+                reason=(
+                    "API shadow strict compare readiness failed "
+                    f"({'; '.join(readiness_gaps)})"
+                ),
             )
         elif source_mode == "api_shadow":
             decision = DecisionLog(
@@ -7419,10 +7438,21 @@ async def _run_store_discovery(
                 reason="Shadow mode enabled: API data compared and logged without write path",
             )
         elif source_mode in {"api_primary", "api_only"}:
-            decision = DecisionLog(
-                decision="api_primary",
-                reason="API selected as primary source",
-            )
+            if orders_compare_readiness and sales_compare_readiness:
+                decision = DecisionLog(
+                    decision="api_primary",
+                    reason="API selected as primary source (orders+sales ready)",
+                )
+            else:
+                degraded_parts: list[str] = []
+                if not orders_compare_readiness:
+                    degraded_parts.append(f"orders:{orders_api_health.get('degraded_reason') or 'api_incomplete'}")
+                if not sales_compare_readiness:
+                    degraded_parts.append(f"sales:{sales_api_health.get('degraded_reason') or 'api_incomplete'}")
+                decision = DecisionLog(
+                    decision="api_primary_degraded",
+                    reason=f"API primary requested but readiness degraded ({'; '.join(degraded_parts)})",
+                )
         else:
             decision = DecisionLog(
                 decision=(
@@ -7569,7 +7599,7 @@ async def _run_store_discovery(
         normalized_orders_verdict["compare_readiness"] = orders_compare_readiness
         if not orders_compare_readiness:
             degraded_code = "orders:api_partial_unavailable"
-            normalized_orders_verdict["pass"] = True
+            normalized_orders_verdict["pass"] = False
             normalized_orders_verdict["reason_codes"] = [degraded_code]
             normalized_orders_verdict["reasons"] = [degraded_code]
 
@@ -7580,7 +7610,7 @@ async def _run_store_discovery(
         normalized_sales_verdict["compare_readiness"] = sales_compare_readiness
         if not sales_compare_readiness:
             degraded_code = "sales:api_partial_unavailable"
-            normalized_sales_verdict["pass"] = True
+            normalized_sales_verdict["pass"] = False
             normalized_sales_verdict["reason_codes"] = [degraded_code]
             normalized_sales_verdict["reasons"] = [degraded_code]
         thresholds_json, threshold_verdict = _build_threshold_verdict(

@@ -11,6 +11,7 @@ from app.crm_downloader.td_orders_sync.main import (
     _build_parser,
     _persist_compare_excel_artifact,
     _resolve_td_api_artifact_dir,
+    _dataset_completion_health,
 )
 from app.crm_downloader.td_orders_sync.td_api_artifacts import persist_td_api_artifacts
 from app.crm_downloader.td_orders_sync.td_api_client import (
@@ -1040,6 +1041,7 @@ async def test_fetch_reports_retries_timeout_then_falls_back_page_size(tmp_path:
             page_size=500,
             page_size_fallbacks=(250, 100),
             max_retries=1,
+            orders_max_retries=1,
             min_interval_seconds=0,
             backoff_base_seconds=0,
             backoff_jitter_seconds=0,
@@ -1077,3 +1079,63 @@ async def test_fetch_reports_retries_timeout_then_falls_back_page_size(tmp_path:
     assert len(fallback_events) == 1
     assert fallback_events[0]["fallback_page_size_from"] == 500
     assert fallback_events[0]["fallback_page_size_to"] == 250
+
+
+def test_endpoint_specific_retry_profile_defaults() -> None:
+    client = TdApiClient(store_code="a123", context=None, storage_state_path=Path("/tmp/missing"))  # type: ignore[arg-type]
+    assert client._retry_profile_for_endpoint("/reports/order-report")["max_retries"] == client.config.orders_max_retries
+    assert client._retry_profile_for_endpoint("/sales-and-deliveries/sales")["max_retries"] == client.config.sales_max_retries
+    assert client._retry_profile_for_endpoint("/garments/details")["max_retries"] == client.config.garments_max_retries
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_emits_endpoint_health_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/reports/order-report",
+                payload={"data": [{"orderNumber": "1001"}], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales",
+                payload={"data": [{"orderNo": "S-1"}], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [{"orderNo": "G-1"}], "totalPages": 1},
+            ),
+        ]
+    )
+    context = _StubContext(request=request)
+    client = _TokenRefreshingClient(
+        store_code="a123",
+        context=context,
+        storage_state_path=tmp_path / "s.json",
+        config=TdApiClientConfig(min_interval_seconds=0),
+    )
+
+    async def _fake_wait_turn(_: str, __: float) -> None:
+        return None
+
+    monkeypatch.setattr("app.crm_downloader.td_orders_sync.td_api_client._StoreRateLimiter.wait_turn", _fake_wait_turn)
+
+    result = await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    assert result.endpoint_health["/reports/order-report"]["success"] is True
+    assert result.endpoint_health["/sales-and-deliveries/sales"]["success"] is True
+    assert result.endpoint_health["/garments/details"]["attempts"] >= 1
+
+
+def test_dataset_completion_health_includes_endpoint_health_fields() -> None:
+    payload = {"pagination": {"pages_fetched": 2, "reported_total_pages": 2, "total_rows": 5}}
+    health = _dataset_completion_health(
+        payload,
+        endpoint_error=None,
+        endpoint_health={"success": True, "final_error_class": None, "attempts": 4},
+    )
+    assert health["ready"] is True
+    assert health["endpoint_success"] is True
+    assert health["endpoint_attempts"] == 4
