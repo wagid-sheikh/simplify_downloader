@@ -432,6 +432,28 @@ class TdApiClient:
             page_payload = page_result.payload
             page_payloads.append(page_payload)
 
+            payload_error = self._extract_payload_error_class(page_payload)
+            if payload_error:
+                errors[endpoint] = payload_error
+                diagnostics = self._build_auth_diagnostics_payload()
+                error_diagnostics[endpoint] = diagnostics
+                endpoint_health[endpoint] = {
+                    "success": False,
+                    "final_error_class": payload_error,
+                    "attempts": endpoint_attempts,
+                }
+                logger.error(
+                    "TD API endpoint payload reported error",
+                    extra={
+                        "store_code": self.store_code,
+                        "endpoint": endpoint,
+                        "page": page,
+                        "error_class": payload_error,
+                        **diagnostics,
+                    },
+                )
+                break
+
             rows = _extract_rows(page_payload)
             aggregated_rows.extend(rows)
             cumulative_rows += len(rows)
@@ -503,6 +525,16 @@ class TdApiClient:
                 "rows_per_page": active_page_size,
             },
         }
+
+    @staticmethod
+    def _extract_payload_error_class(payload: Any) -> str | None:
+        if not isinstance(payload, Mapping):
+            return None
+        raw_error = payload.get("error")
+        if raw_error is None:
+            return None
+        error_text = str(raw_error).strip()
+        return error_text or "unknown_error"
 
     def _read_timeout_ms_for_endpoint(self, endpoint: str) -> int:
         if endpoint == "/reports/order-report":

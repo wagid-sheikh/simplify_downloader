@@ -6908,6 +6908,8 @@ async def _run_store_discovery(
                             garments_rows=len(api_fetch_result.garments_rows),
                             orders_summary_rows_filtered=api_fetch_result.orders_summary_rows_filtered,
                             sales_summary_rows_filtered=api_fetch_result.sales_summary_rows_filtered,
+                            endpoint_errors=api_fetch_result.endpoint_errors,
+                            endpoint_error_diagnostics=api_fetch_result.endpoint_error_diagnostics,
                         )
                     except Exception as exc:
                         log_event(
@@ -7505,6 +7507,8 @@ async def _run_store_discovery(
             orders_compare_ready=orders_compare_readiness,
             sales_compare_ready=sales_compare_readiness,
             endpoint_failure_summary=endpoint_failure_summary,
+            endpoint_errors=api_fetch_result_obj.endpoint_errors if api_fetch_result_obj else {},
+            endpoint_error_diagnostics=api_fetch_result_obj.endpoint_error_diagnostics if api_fetch_result_obj else {},
             orders_api_health=orders_api_health,
             sales_api_health=sales_api_health,
             api_request_metadata=api_request_metadata,
@@ -7518,6 +7522,15 @@ async def _run_store_discovery(
             to_date=run_end_date,
             orders_compare_metrics=orders_compare_metrics,
             sales_compare_metrics=sales_compare_metrics,
+            endpoint_health_summary={
+                "orders": dict(orders_api_health),
+                "sales": dict(sales_api_health),
+                "endpoint_errors": dict(api_fetch_result_obj.endpoint_errors) if api_fetch_result_obj else {},
+                "endpoint_error_diagnostics": (
+                    dict(api_fetch_result_obj.endpoint_error_diagnostics) if api_fetch_result_obj else {}
+                ),
+                "endpoint_health": dict(endpoint_health_summary) if isinstance(endpoint_health_summary, Mapping) else {},
+            },
         )
         compare_excel_path = (
             download_dir

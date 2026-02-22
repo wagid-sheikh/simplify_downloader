@@ -126,6 +126,7 @@ def persist_td_compare_artifacts(
     to_date: date,
     orders_compare_metrics: Mapping[str, Any],
     sales_compare_metrics: Mapping[str, Any],
+    endpoint_health_summary: Mapping[str, Any] | None = None,
 ) -> TdApiArtifactPersistResult:
     result = TdApiArtifactPersistResult()
     store = (store_code or "").strip().upper() or "UNKNOWN"
@@ -133,6 +134,7 @@ def persist_td_compare_artifacts(
 
     orders_metrics = orders_compare_metrics or {}
     sales_metrics = sales_compare_metrics or {}
+    endpoint_health = dict(endpoint_health_summary or {})
     artifact_targets: list[tuple[str, Path, Any]] = [
         (
             "orders_compare_mismatches",
@@ -140,6 +142,7 @@ def persist_td_compare_artifacts(
             {
                 "dataset_health": orders_metrics.get("dataset_health") or {},
                 "strict_verdict_ready": bool(orders_metrics.get("strict_verdict_ready", True)),
+                "endpoint_health_summary": endpoint_health,
                 "mismatch_artifacts": orders_metrics.get("mismatch_artifacts") or {},
             },
         ),
@@ -149,6 +152,7 @@ def persist_td_compare_artifacts(
             {
                 "dataset_health": sales_metrics.get("dataset_health") or {},
                 "strict_verdict_ready": bool(sales_metrics.get("strict_verdict_ready", True)),
+                "endpoint_health_summary": endpoint_health,
                 "mismatch_artifacts": sales_metrics.get("mismatch_artifacts") or {},
             },
         ),
