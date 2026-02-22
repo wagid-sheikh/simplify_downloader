@@ -238,6 +238,20 @@ def _truncate_text(value: str | None, *, max_chars: int = SNAPSHOT_TEXT_MAX_CHAR
     return value[: max_chars - 1] + "…"
 
 
+def _normalize_json_safe(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Mapping):
+        return {key: _normalize_json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_normalize_json_safe(item) for item in value]
+    return value
+
+
 def _summarize_text_samples(values: Sequence[str], *, limit: int = ROW_SAMPLE_LIMIT) -> dict[str, Any]:
     samples: list[str] = []
     for value in values:
@@ -1893,6 +1907,8 @@ def _write_daily_reconciliation_artifact(*, summary: TdOrdersDiscoverySummary, l
 async def _persist_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonLogger) -> bool:
     finished_at = datetime.now(timezone.utc)
     record = summary.build_record(finished_at=finished_at)
+    record["phases_json"] = _normalize_json_safe(record.get("phases_json") or {})
+    record["metrics_json"] = _normalize_json_safe(record.get("metrics_json") or {})
     _write_daily_reconciliation_artifact(summary=summary, logger=logger)
     if not config.database_url:
         log_event(
@@ -1970,8 +1986,8 @@ async def _start_run_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonL
         "report_date": summary.report_date,
         "overall_status": "running",
         "summary_text": "Run started.",
-        "phases_json": {},
-        "metrics_json": {},
+        "phases_json": _normalize_json_safe({}),
+        "metrics_json": _normalize_json_safe({}),
         "created_at": summary.started_at,
     }
     try:

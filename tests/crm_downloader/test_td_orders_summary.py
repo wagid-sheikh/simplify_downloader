@@ -10,6 +10,7 @@ from app.crm_downloader.td_orders_sync.main import (
     _build_sales_order_row_count_verdict,
     _compare_row_count_diagnostics,
     _filter_non_order_summary_rows,
+    _normalize_json_safe,
     _resolve_compare_rows,
 )
 
@@ -257,6 +258,62 @@ def test_compare_row_count_diagnostics_reports_compare_and_warning_counts() -> N
         "sales_warning_rows": 2,
     }
 
+
+
+def test_summary_record_normalizer_converts_nested_datetimes_for_jsonb() -> None:
+    summary = TdOrdersDiscoverySummary(
+        run_id="run-json",
+        run_env="test",
+        report_date=date(2024, 2, 1),
+        report_end_date=date(2024, 2, 2),
+    )
+    summary.started_at = datetime(2024, 2, 1, 8, 30, tzinfo=timezone.utc)
+    summary.phases["custom"]["ok"] += 1
+    summary.record_store(
+        "A1",
+        StoreOutcome(status="ok", message="done"),
+        orders_result=StoreReport(
+            status="ok",
+            warning_rows=[
+                {
+                    "values": {
+                        "store_code": "A1",
+                        "order_number": "1001",
+                        "nested": {
+                            "loaded_at": datetime(2024, 2, 1, 10, 0, tzinfo=timezone.utc),
+                            "service_date": date(2024, 2, 1),
+                        },
+                        "events": [
+                            {"seen_at": datetime(2024, 2, 1, 10, 5, tzinfo=timezone.utc)},
+                            date(2024, 2, 2),
+                        ],
+                    }
+                }
+            ],
+            api_request_metadata=[
+                {
+                    "requested_at": datetime(2024, 2, 1, 9, 0, tzinfo=timezone.utc),
+                    "window": {"from": date(2024, 2, 1), "to": date(2024, 2, 2)},
+                }
+            ],
+        ),
+    )
+
+    record = summary.build_record(finished_at=datetime(2024, 2, 2, 8, 30, tzinfo=timezone.utc))
+    record["phases_json"] = _normalize_json_safe(record["phases_json"])
+    record["metrics_json"] = _normalize_json_safe(record["metrics_json"])
+
+    # This mirrors JSONB-serialization behavior during run summary persistence.
+    import json
+
+    json.dumps(record["phases_json"])
+    json.dumps(record["metrics_json"])
+
+    nested = record["metrics_json"]["orders"]["stores"]["A1"]["warning_rows"][0]["values"]
+    assert nested["nested"]["loaded_at"] == "2024-02-01T10:00:00+00:00"
+    assert nested["nested"]["service_date"] == "2024-02-01"
+    assert nested["events"][0]["seen_at"] == "2024-02-01T10:05:00+00:00"
+    assert nested["events"][1] == "2024-02-02"
 
 
 def test_filter_non_order_summary_rows_removes_total_order_footer_rows() -> None:
