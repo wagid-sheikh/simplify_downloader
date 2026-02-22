@@ -201,9 +201,7 @@ class TdOrdersIngestResult:
     rows_downloaded: int = 0
     dropped_rows: list[dict[str, Any]] = field(default_factory=list)
     warning_rows: list[dict[str, Any]] = field(default_factory=list)
-    rows_downloaded: int = 0
-    dropped_rows: list[dict[str, Any]] = field(default_factory=list)
-    warning_rows: list[dict[str, Any]] = field(default_factory=list)
+    parsed_rows: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _chunked(values: Sequence[tuple[Any, ...]], chunk_size: int = 500) -> Iterable[list[tuple[Any, ...]]]:
@@ -585,6 +583,7 @@ async def ingest_td_orders_workbook(
             rows_downloaded=rows_downloaded,
             dropped_rows=dropped_rows,
             warning_rows=warning_rows,
+            parsed_rows=rows,
         )
 
     metadata = sa.MetaData()
@@ -716,6 +715,7 @@ async def ingest_td_orders_workbook(
         rows_downloaded=rows_downloaded,
         dropped_rows=dropped_rows,
         warning_rows=warning_rows,
+        parsed_rows=rows,
     )
 
 

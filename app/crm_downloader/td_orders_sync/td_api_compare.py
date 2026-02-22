@@ -325,6 +325,14 @@ def _format_key_parts(key_parts: Mapping[str, str]) -> str:
     return ", ".join(f"{field}={value}" for field, value in key_parts.items())
 
 
+def _normalized_order_number(row: Mapping[str, Any], *, default_store_code: str | None = None) -> str:
+    return _normalized_key_part(
+        _normalized_compare_value("order_number", _resolve_field_value(row, "order_number", default_store_code=default_store_code))
+    )
+
+
+def _is_sales_compare(key_fields: Sequence[str]) -> bool:
+    return "payment_date" in key_fields or "payment_mode" in key_fields
 
 
 def project_api_rows_for_compare(
@@ -386,16 +394,20 @@ def compare_canonical_rows(
         key_breakdown.setdefault(key, parts)
 
     keys = set(ui_index) | set(api_index)
+    sales_compare = _is_sales_compare(key_fields)
+    ui_order_numbers = {_normalized_order_number(row, default_store_code=default_store_code) for row in ui_rows_seq}
+    api_order_numbers = {_normalized_order_number(row, default_store_code=default_store_code) for row in api_rows_seq}
 
-    missing_in_api = sorted(key for key in keys if key in ui_index and key not in api_index)
-    missing_in_ui = sorted(key for key in keys if key in api_index and key not in ui_index)
+    missing_in_api = sorted(ui_order_numbers - api_order_numbers)
+    missing_in_ui = sorted(api_order_numbers - ui_order_numbers)
     shared = sorted(key for key in keys if key in ui_index and key in api_index)
+    shared_order_numbers = sorted(ui_order_numbers & api_order_numbers)
 
     amount_mismatches = 0
     status_mismatches = 0
     mismatch_samples: list[str] = []
-    mismatched_shared = 0
     value_mismatch_keys: list[str] = []
+    sales_order_row_count_mismatches: list[dict[str, Any]] = []
 
     for key in shared:
         ui_row = ui_index[key]
@@ -423,30 +435,59 @@ def compare_canonical_rows(
         if status_mismatch:
             status_mismatches += 1
         if amount_mismatch or status_mismatch:
-            mismatched_shared += 1
             value_mismatch_keys.append(key)
         if (amount_mismatch or status_mismatch) and len(mismatch_samples) < sample_limit:
             mismatch_samples.append(f"shared_mismatch ({_format_key_parts(key_breakdown.get(key, {}))})")
 
-    matched_rows = len(shared) - mismatched_shared
+    if sales_compare:
+        ui_sales_order_counts: dict[str, int] = {}
+        api_sales_order_counts: dict[str, int] = {}
+        for row in ui_rows_seq:
+            order_no = _normalized_order_number(row, default_store_code=default_store_code)
+            ui_sales_order_counts[order_no] = ui_sales_order_counts.get(order_no, 0) + 1
+        for row in api_rows_seq:
+            order_no = _normalized_order_number(row, default_store_code=default_store_code)
+            api_sales_order_counts[order_no] = api_sales_order_counts.get(order_no, 0) + 1
+
+        for order_no in shared_order_numbers:
+            ui_count = ui_sales_order_counts.get(order_no, 0)
+            api_count = api_sales_order_counts.get(order_no, 0)
+            if ui_count != api_count:
+                sales_order_row_count_mismatches.append(
+                    {"order_number": order_no, "ui_row_count": ui_count, "api_row_count": api_count}
+                )
+                if len(mismatch_samples) < sample_limit:
+                    mismatch_samples.append(
+                        f"sales_row_count_mismatch (order_number={order_no}, ui_rows={ui_count}, api_rows={api_count})"
+                    )
+
+    matched_rows = len(shared_order_numbers) - len(sales_order_row_count_mismatches)
     missing_api_samples = [
-        f"missing_in_api ({_format_key_parts(key_breakdown.get(key, {}))})" for key in missing_in_api
+        f"missing_in_api_order_number (order_number={order_no})" for order_no in missing_in_api
     ]
     missing_ui_samples = [
-        f"missing_in_ui ({_format_key_parts(key_breakdown.get(key, {}))})" for key in missing_in_ui
+        f"missing_in_ui_order_number (order_number={order_no})" for order_no in missing_in_ui
     ]
     sample_keys = (missing_api_samples + missing_ui_samples + mismatch_samples)[:sample_limit]
 
     mismatch_artifacts = {
-        "missing_in_api": [{"key": key, "key_components": key_breakdown.get(key, {})} for key in missing_in_api],
-        "missing_in_ui": [{"key": key, "key_components": key_breakdown.get(key, {})} for key in missing_in_ui],
+        "missing_in_api": [
+            {"order_number": order_no, "key": order_no, "key_components": {"order_number": order_no}}
+            for order_no in missing_in_api
+        ],
+        "missing_in_ui": [
+            {"order_number": order_no, "key": order_no, "key_components": {"order_number": order_no}}
+            for order_no in missing_in_ui
+        ],
         "value_mismatches": [
             {"key": key, "key_components": key_breakdown.get(key, {})} for key in value_mismatch_keys
         ],
     }
+    if sales_compare:
+        mismatch_artifacts["sales_order_row_count_mismatches"] = sales_order_row_count_mismatches
 
     return CompareMetrics(
-        total_rows=len(keys),
+        total_rows=len(ui_order_numbers | api_order_numbers),
         matched_rows=max(matched_rows, 0),
         missing_in_api=len(missing_in_api),
         missing_in_ui=len(missing_in_ui),

@@ -145,6 +145,45 @@ def test_compare_uses_identical_canonical_key_and_emits_mismatch_artifacts() -> 
     assert metrics["mismatch_artifacts"]["missing_in_ui"][0]["key_components"]["order_number"] == "1003"
 
 
+def test_compare_orders_missing_metrics_use_order_number_not_datetime() -> None:
+    ui_rows = [
+        {"store_code": "A817", "order_number": "1001", "order_date": "2026-01-02 10:00:00", "amount": "12"},
+    ]
+    api_rows = [
+        {"store_code": "A817", "order_number": "1001", "order_date": "2026-01-02 10:05:00", "amount": "12"},
+    ]
+
+    metrics = compare_canonical_rows(
+        ui_rows=ui_rows,
+        api_rows=api_rows,
+        key_fields=COMPARE_KEY_FIELDS_BY_DATASET["orders"],
+    ).as_dict()
+
+    assert metrics["missing_in_api"] == 0
+    assert metrics["missing_in_ui"] == 0
+
+
+def test_compare_sales_row_count_mismatch_does_not_report_missing_order() -> None:
+    ui_rows = [
+        {"store_code": "A817", "order_number": "2001", "payment_date": "2026-01-02 11:00:00", "payment_mode": "UPI"},
+        {"store_code": "A817", "order_number": "2001", "payment_date": "2026-01-02 11:01:00", "payment_mode": "Card"},
+    ]
+    api_rows = [
+        {"store_code": "A817", "order_number": "2001", "payment_date": "2026-01-02 11:02:00", "payment_mode": "UPI"},
+    ]
+
+    metrics = compare_canonical_rows(
+        ui_rows=ui_rows,
+        api_rows=api_rows,
+        key_fields=COMPARE_KEY_FIELDS_BY_DATASET["sales"],
+    ).as_dict()
+
+    assert metrics["missing_in_api"] == 0
+    assert metrics["missing_in_ui"] == 0
+    assert metrics["mismatch_artifacts"]["sales_order_row_count_mismatches"] == [
+        {"order_number": "2001", "ui_row_count": 2, "api_row_count": 1}
+    ]
+
 
 
 
@@ -340,6 +379,57 @@ def test_compare_excel_flattens_list_and_dict_cells(tmp_path: Path) -> None:
     row_values = [cell.value for cell in next(missing_in_api.iter_rows(min_row=2, max_row=2))]
     key_components_value = row_values[row_headers.index("key_components")]
     assert key_components_value == '{"order_number": "1002", "store_code": "A817"}'
+
+
+
+def test_compare_excel_save_succeeds_with_non_empty_sample_mismatch_keys_list(tmp_path: Path) -> None:
+    artifact_path = tmp_path / "compare.xlsx"
+    compare_metrics = {
+        "total_rows": 3,
+        "matched_rows": 1,
+        "missing_in_api": 1,
+        "missing_in_ui": 1,
+        "amount_mismatches": 1,
+        "status_mismatches": 0,
+        "sample_mismatch_keys": ["A817|1002", "A817|1003"],
+        "mismatch_artifacts": {
+            "missing_in_api": [
+                {
+                    "key": "A817|1002",
+                    "context": {"store_code": "A817", "order_number": "1002"},
+                }
+            ],
+            "missing_in_ui": [
+                {
+                    "key": "A817|1003",
+                    "context": {"store_code": "A817", "order_number": "1003"},
+                }
+            ],
+            "value_mismatches": [
+                {
+                    "key": "A817|1004",
+                    "differences": ["amount", "status"],
+                }
+            ],
+        },
+    }
+
+    _persist_compare_excel_artifact(
+        artifact_path=artifact_path,
+        compare_metrics=compare_metrics,
+        api_request_metadata=[
+            {
+                "endpoint": "/reports/order-report",
+                "request_payload": {"filters": ["orders", "delivery"]},
+            }
+        ],
+    )
+
+    import openpyxl
+
+    assert artifact_path.exists()
+    workbook = openpyxl.load_workbook(artifact_path)
+    assert workbook["summary"].max_row >= 2
 
 
 
