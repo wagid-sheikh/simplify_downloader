@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 
 from app.crm_downloader.td_orders_sync.main import (
     StoreOutcome,
@@ -260,7 +261,7 @@ def test_compare_row_count_diagnostics_reports_compare_and_warning_counts() -> N
 
 
 
-def test_summary_record_normalizer_converts_nested_datetimes_for_jsonb() -> None:
+def test_summary_record_normalizer_converts_nested_datetimes_and_decimals_for_jsonb() -> None:
     summary = TdOrdersDiscoverySummary(
         run_id="run-json",
         run_env="test",
@@ -287,6 +288,11 @@ def test_summary_record_normalizer_converts_nested_datetimes_for_jsonb() -> None
                             {"seen_at": datetime(2024, 2, 1, 10, 5, tzinfo=timezone.utc)},
                             date(2024, 2, 2),
                         ],
+                        "amounts": {
+                            "gross": Decimal("12.34"),
+                            "net": Decimal("10.00"),
+                            "line_items": [Decimal("0.99"), {"fee": Decimal("0.01")}],
+                        },
                     }
                 }
             ],
@@ -314,6 +320,10 @@ def test_summary_record_normalizer_converts_nested_datetimes_for_jsonb() -> None
     assert nested["nested"]["service_date"] == "2024-02-01"
     assert nested["events"][0]["seen_at"] == "2024-02-01T10:05:00+00:00"
     assert nested["events"][1] == "2024-02-02"
+    assert nested["amounts"]["gross"] == 12.34
+    assert nested["amounts"]["net"] == 10.0
+    assert nested["amounts"]["line_items"][0] == 0.99
+    assert nested["amounts"]["line_items"][1]["fee"] == 0.01
 
 
 def test_filter_non_order_summary_rows_removes_total_order_footer_rows() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
+from decimal import Decimal
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence
 
@@ -51,6 +52,22 @@ def _normalize_status(raw: str | None) -> str:
     if normalized == "error":
         return "error"
     return "ok"
+
+
+def _normalize_json_for_db(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value) if value.is_finite() else str(value)
+    if isinstance(value, Mapping):
+        return {key: _normalize_json_for_db(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_json_for_db(item) for item in value]
+    if isinstance(value, tuple):
+        return [_normalize_json_for_db(item) for item in value]
+    return value
 
 
 def missing_required_run_summary_columns(record: Mapping[str, Any]) -> List[str]:
@@ -311,15 +328,23 @@ class RunAggregator:
 
 
 async def insert_run_summary(database_url: str, record: Mapping[str, Any]) -> None:
+    normalized_record = dict(record)
+    normalized_record["phases_json"] = _normalize_json_for_db(record.get("phases_json") or {})
+    normalized_record["metrics_json"] = _normalize_json_for_db(record.get("metrics_json") or {})
     async with session_scope(database_url) as session:
-        await session.execute(sa.insert(pipeline_run_summaries).values(**record))
+        await session.execute(sa.insert(pipeline_run_summaries).values(**normalized_record))
         await session.commit()
 
 
 async def update_run_summary(database_url: str, run_id: str, record: Mapping[str, Any]) -> None:
+    normalized_record = dict(record)
+    normalized_record["phases_json"] = _normalize_json_for_db(record.get("phases_json") or {})
+    normalized_record["metrics_json"] = _normalize_json_for_db(record.get("metrics_json") or {})
     async with session_scope(database_url) as session:
         await session.execute(
-            sa.update(pipeline_run_summaries).where(pipeline_run_summaries.c.run_id == run_id).values(**record)
+            sa.update(pipeline_run_summaries)
+            .where(pipeline_run_summaries.c.run_id == run_id)
+            .values(**normalized_record)
         )
         await session.commit()
 
@@ -330,4 +355,3 @@ async def fetch_summary_for_run(database_url: str, run_id: str) -> Mapping[str, 
             sa.select(pipeline_run_summaries).where(pipeline_run_summaries.c.run_id == run_id).limit(1)
         )
         return result.mappings().first()
-

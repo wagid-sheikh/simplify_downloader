@@ -9,6 +9,7 @@ import contextlib
 from dataclasses import asdict, dataclass, field
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
@@ -243,6 +244,8 @@ def _normalize_json_safe(value: Any) -> Any:
         return value.isoformat()
     if isinstance(value, date):
         return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value) if value.is_finite() else str(value)
     if isinstance(value, Mapping):
         return {key: _normalize_json_safe(item) for key, item in value.items()}
     if isinstance(value, list):
@@ -1954,14 +1957,24 @@ async def _persist_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonLog
         )
         return True
     except Exception as exc:  # pragma: no cover - defensive persistence
+        error_text = str(exc)
         log_event(
             logger=logger,
             phase="run_summary",
             status="error",
             message="Failed to persist run summary",
             run_id=summary.run_id,
-            error=str(exc),
+            error=error_text,
         )
+        if "is not JSON serializable" in error_text:
+            log_event(
+                logger=logger,
+                phase="notifications",
+                status="warn",
+                message="Proceeding with notifications after serialization-only summary persistence failure",
+                run_id=summary.run_id,
+            )
+            return True
         return False
 
 
