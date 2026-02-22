@@ -76,11 +76,12 @@ def test_filter_summary_rows_removes_footer_like_rows() -> None:
         {"orderNumber": None, "customerName": "Total Order", "totalAmount": "120.00"},
         {"orderNo": "S-2002", "paymentDate": "2026-01-02", "netAmount": "80.00"},
         {"orderNo": "", "description": "Grand Total", "netAmount": "200.00", "tax": "20.00"},
+        {"orderNumber": 500, "orderDate": "Total Order", "netAmount": "200.00"},
     ]
 
     filtered_rows, summary_rows_filtered = _filter_summary_rows(rows)
 
-    assert summary_rows_filtered == 2
+    assert summary_rows_filtered == 3
     assert filtered_rows == [
         {"orderNumber": "A-1001", "customerName": "Alice", "totalAmount": "120.00"},
         {"orderNo": "S-2002", "paymentDate": "2026-01-02", "netAmount": "80.00"},
@@ -542,3 +543,78 @@ async def test_fetch_reports_filters_summary_rows_from_orders_and_sales(tmp_path
 
     assert [row["orderNumber"] for row in result.orders_rows] == ["1001"]
     assert [row["orderNo"] for row in result.sales_rows] == ["S-1"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_exposes_summary_filter_counts(tmp_path: Path) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/reports/order-report",
+                payload={
+                    "data": [
+                        {"orderNumber": "1001", "customer": "Alice", "amount": "10.00"},
+                        {"orderNumber": "", "description": "Total", "amount": "10.00"},
+                    ],
+                    "totalPages": 1,
+                },
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales",
+                payload={
+                    "data": [
+                        {"orderNo": "S-1", "paymentDate": "2026-01-02", "netAmount": "7.00"},
+                        {"orderNo": None, "label": "Grand Total", "netAmount": "7.00", "tax": "1.00"},
+                    ],
+                    "totalPages": 1,
+                },
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [{"orderNo": "G-1", "lineItemId": "L1"}], "totalPages": 1},
+            ),
+        ]
+    )
+    context = _StubContext(request=request)
+    client = _TokenRefreshingClient(store_code="a123", context=context, storage_state_path=tmp_path / "s.json")
+
+    result = await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    assert result.orders_summary_rows_filtered == 1
+    assert result.sales_summary_rows_filtered == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_honors_td_api_max_pages_cap(tmp_path: Path) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/reports/order-report",
+                payload={"data": [{"orderNumber": "1001"}], "totalPages": 3, "total": 3},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales",
+                payload={"data": [{"orderNo": "S-1"}], "totalPages": 3, "total": 3},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [{"orderNo": "G-1"}], "totalPages": 3, "total": 3},
+            ),
+        ]
+    )
+    context = _StubContext(request=request)
+    client = _TokenRefreshingClient(store_code="a123", context=context, storage_state_path=tmp_path / "s.json")
+    client.config = type(client.config)(max_pages=1)
+
+    result = await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    assert len(request.calls) == 3
+    assert result.raw_orders_payload["pagination"]["pages_fetched"] == 1
+    assert result.raw_sales_payload["pagination"]["pages_fetched"] == 1
+    assert result.raw_garments_payload["pagination"]["pages_fetched"] == 1

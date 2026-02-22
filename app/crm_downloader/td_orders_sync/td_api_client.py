@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 _SUMMARY_MARKERS = ("total", "summary", "grand total")
 _LABEL_LIKE_FIELD_SIGNALS = ("label", "name", "title", "description", "remark", "note", "particular")
+_SUMMARY_TEXT_FIELDS = ("orderdate", "paymentdate", "customername", "description", "type")
 _STABLE_TRANSACTION_ID_FIELDS = (
     "ordernumber",
     "orderno",
@@ -45,6 +46,7 @@ class TdApiClientConfig:
     min_interval_seconds: float = float(os.environ.get("TD_API_MIN_INTERVAL_SECONDS", "0.35"))
     page: int = int(os.environ.get("TD_API_PAGE", "1"))
     page_size: int = int(os.environ.get("TD_API_PAGE_SIZE", "500"))
+    max_pages: int = max(1, int(os.environ.get("TD_API_MAX_PAGES", "100")))
 
 
 @dataclass
@@ -56,6 +58,8 @@ class TdApiFetchResult:
     sales_rows: list[dict[str, Any]] = field(default_factory=list)
     garments_rows: list[dict[str, Any]] = field(default_factory=list)
     request_metadata: list[dict[str, Any]] = field(default_factory=list)
+    orders_summary_rows_filtered: int = 0
+    sales_summary_rows_filtered: int = 0
 
 
 @dataclass(frozen=True)
@@ -170,6 +174,8 @@ class TdApiClient:
             sales_rows=sales_rows,
             garments_rows=garments_rows,
             request_metadata=metadata,
+            orders_summary_rows_filtered=orders_summary_filtered,
+            sales_summary_rows_filtered=sales_summary_filtered,
         )
 
     def _log_endpoint_total(self, *, endpoint: str, total_rows: int) -> None:
@@ -242,6 +248,19 @@ class TdApiClient:
             if total_pages_hint and page >= total_pages_hint:
                 break
             if total_rows_hint is not None and cumulative_rows >= total_rows_hint:
+                break
+            if page >= self.config.max_pages:
+                logger.warning(
+                    "TD API max page cap reached before dataset completion",
+                    extra={
+                        "store_code": self.store_code,
+                        "endpoint": endpoint,
+                        "max_pages": self.config.max_pages,
+                        "cumulative_rows": cumulative_rows,
+                        "reported_total_rows": total_rows_hint,
+                        "reported_total_pages": total_pages_hint,
+                    },
+                )
                 break
 
             page += 1
@@ -522,7 +541,13 @@ def _is_summary_or_footer_row(row: Mapping[str, Any]) -> bool:
     normalized_values = {str(key).strip().lower(): value for key, value in row.items()}
     order_number = _first_non_empty_value(normalized_values, ("ordernumber", "orderno", "order_number"))
 
-    if not order_number and _label_field_contains_summary_marker(normalized_values):
+    # Some TD API pages emit footer rows like "Total Order" while still carrying a
+    # numeric orderNumber equal to page-row-count. Treat explicit summary labels as
+    # authoritative so these rows do not leak into compare/export datasets.
+    if _summary_text_field_contains_marker(normalized_values) or _label_field_contains_summary_marker(normalized_values):
+        return True
+
+    if not order_number and _row_contains_summary_marker(normalized_values):
         return True
 
     if _has_stable_transaction_identifier(normalized_values):
@@ -565,6 +590,14 @@ def _has_stable_transaction_identifier(values: Mapping[str, Any]) -> bool:
             return True
     return False
 
+
+
+
+def _summary_text_field_contains_marker(values: Mapping[str, Any]) -> bool:
+    for key in _SUMMARY_TEXT_FIELDS:
+        if _contains_summary_marker(str(values.get(key) or "")):
+            return True
+    return False
 
 def _label_field_contains_summary_marker(values: Mapping[str, Any]) -> bool:
     for key, value in values.items():
