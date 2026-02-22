@@ -4407,12 +4407,12 @@ async def _wait_for_report_iframe_auth_source(
     logger: JsonLogger,
     phase: str = "api",
     timeout_ms: int = 20_000,
-) -> bool:
+) -> tuple[bool, str | None]:
     iframe_src_locator = page.locator("#ifrmReport")
     try:
         await iframe_src_locator.first.wait_for(state="attached", timeout=timeout_ms)
     except TimeoutError:
-        return False
+        return False, None
 
     deadline = asyncio.get_running_loop().time() + (timeout_ms / 1000.0)
     while True:
@@ -4426,7 +4426,7 @@ async def _wait_for_report_iframe_auth_source(
                 store_code=store.store_code,
                 iframe_src_hostname=iframe_hostname,
             )
-            return True
+            return True, iframe_src
         if asyncio.get_running_loop().time() >= deadline:
             log_event(
                 logger=logger,
@@ -4436,7 +4436,7 @@ async def _wait_for_report_iframe_auth_source(
                 store_code=store.store_code,
                 iframe_src_hostname=iframe_hostname,
             )
-            return False
+            return False, iframe_src
         await asyncio.sleep(0.25)
 
 
@@ -6840,12 +6840,17 @@ async def _run_store_discovery(
             iframe_locator = await _wait_for_iframe(page, store=store, logger=store_logger)
             if iframe_locator is not None:
                 if source_mode != "ui":
-                    await _wait_for_report_iframe_auth_source(page, store=store, logger=store_logger)
+                    _, report_iframe_src = await _wait_for_report_iframe_auth_source(
+                        page,
+                        store=store,
+                        logger=store_logger,
+                    )
                     try:
                         api_client = TdApiClient(
                             store_code=store.store_code,
                             context=context,
                             storage_state_path=store.storage_state_path,
+                            report_iframe_src=report_iframe_src,
                         )
                         session_artifact = api_client.read_session_artifact()
                         log_event(

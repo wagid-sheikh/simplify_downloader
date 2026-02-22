@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 from playwright.async_api import BrowserContext, Error as PlaywrightError, Frame
 from app.crm_downloader.td_orders_sync.td_api_compare import build_api_request_metadata, parse_token_expiry
 
@@ -18,6 +18,8 @@ REPORTING_API_BASE_URL = "https://reporting-api.quickdrycleaning.com"
 REPORTS_ORIGIN_HOST = "reports.quickdrycleaning.com"
 
 logger = logging.getLogger(__name__)
+
+_TIMEOUT_ERROR_CLASSES = {"read_timeout", "connect_timeout", "network_timeout", "timeout", "TimeoutError", "PlaywrightError"}
 
 _SUMMARY_MARKERS = ("total", "summary", "grand total")
 _LABEL_LIKE_FIELD_SIGNALS = ("label", "name", "title", "description", "remark", "note", "particular")
@@ -52,8 +54,8 @@ class TdApiClientConfig:
     max_pages: int = max(1, int(os.environ.get("TD_API_MAX_PAGES", "100")))
     default_read_timeout_ms: int = int(os.environ.get("TD_API_READ_TIMEOUT_MS", "20000"))
     orders_read_timeout_ms: int = int(os.environ.get("TD_API_ORDERS_READ_TIMEOUT_MS", os.environ.get("TD_API_READ_TIMEOUT_MS", "20000")))
-    sales_read_timeout_ms: int = int(os.environ.get("TD_API_SALES_READ_TIMEOUT_MS", "35000"))
-    garments_read_timeout_ms: int = int(os.environ.get("TD_API_GARMENTS_READ_TIMEOUT_MS", "35000"))
+    sales_read_timeout_ms: int = int(os.environ.get("TD_API_SALES_READ_TIMEOUT_MS", "45000"))
+    garments_read_timeout_ms: int = int(os.environ.get("TD_API_GARMENTS_READ_TIMEOUT_MS", "45000"))
     orders_max_retries: int = int(os.environ.get("TD_API_ORDERS_MAX_RETRIES", os.environ.get("TD_API_MAX_RETRIES", "3")))
     sales_max_retries: int = int(os.environ.get("TD_API_SALES_MAX_RETRIES", "5"))
     garments_max_retries: int = int(os.environ.get("TD_API_GARMENTS_MAX_RETRIES", "5"))
@@ -67,6 +69,7 @@ class TdApiClientConfig:
     )
     sales_max_backoff_seconds: float = float(os.environ.get("TD_API_SALES_MAX_BACKOFF_SECONDS", "6.0"))
     garments_max_backoff_seconds: float = float(os.environ.get("TD_API_GARMENTS_MAX_BACKOFF_SECONDS", "6.0"))
+    timeout_retry_limit: int = int(os.environ.get("TD_API_TIMEOUT_RETRY_LIMIT", "2"))
     page_size_fallbacks: tuple[int, ...] = tuple(
         int(size.strip())
         for size in os.environ.get("TD_API_PAGE_SIZE_FALLBACKS", "250,100").split(",")
@@ -137,12 +140,14 @@ class TdApiClient:
         context: BrowserContext,
         storage_state_path: Path,
         config: TdApiClientConfig | None = None,
+        report_iframe_src: str | None = None,
     ) -> None:
         self.store_code = store_code.upper().strip()
         self.context = context
         self.storage_state_path = storage_state_path
         self.config = config or TdApiClientConfig()
         self._auth_state = _SharedAuthState()
+        self._report_iframe_src = (report_iframe_src or "").strip() or None
 
     def read_session_artifact(self) -> dict[str, Any]:
         if not self.storage_state_path.exists():
@@ -370,10 +375,7 @@ class TdApiClient:
             endpoint_attempts += max(int(page_result.attempts or 0), 0)
 
             if not page_result.ok:
-                if (
-                    page_result.error in {"read_timeout", "connect_timeout", "PlaywrightError", "TimeoutError", "timeout"}
-                    and page_size_index < len(available_page_sizes) - 1
-                ):
+                if page_result.error in _TIMEOUT_ERROR_CLASSES and page_size_index < len(available_page_sizes) - 1:
                     previous_page_size = active_page_size
                     page_size_index += 1
                     next_page_size = available_page_sizes[page_size_index]
@@ -614,14 +616,29 @@ class TdApiClient:
     ) -> _JsonFetchResult:
         url = f"{REPORTING_API_BASE_URL}{endpoint}"
         token_discovery = await self._discover_reporting_token()
+        iframe_token_discovery = self._discover_token_from_iframe_url_query()
         headers = {
             "accept": "*/*",
             "origin": "https://reports.quickdrycleaning.com",
             "referer": "https://reports.quickdrycleaning.com/",
         }
+        request_params = dict(params)
         token_value = (token_discovery.token or "").strip()
         if token_value:
             headers["Authorization"] = f"Bearer {token_value}"
+            request_params.setdefault("token", token_value)
+
+        if iframe_token_discovery.token and not token_value:
+            logger.warning(
+                "TD API auth regression warning: iframe token discovered but request token missing",
+                extra={
+                    "store_code": self.store_code,
+                    "endpoint": endpoint,
+                    "token_found": False,
+                    "token_source": token_discovery.source,
+                    "iframe_token_source": iframe_token_discovery.source,
+                },
+            )
 
         last_error: Exception | None = None
         status_code: int | None = None
@@ -630,16 +647,30 @@ class TdApiClient:
         resolved_max_retries = self.config.max_retries if max_retries is None else max(0, int(max_retries))
         resolved_backoff_base_seconds = self.config.backoff_base_seconds if backoff_base_seconds is None else float(backoff_base_seconds)
         resolved_max_backoff_seconds = self.config.max_backoff_seconds if max_backoff_seconds is None else float(max_backoff_seconds)
+        resolved_timeout_retry_limit = max(0, int(self.config.timeout_retry_limit))
         attempts = 0
+        timeout_failures = 0
         for attempt in range(resolved_max_retries + 1):
             attempts = attempt + 1
+            logger.info(
+                "TD API request attempt started",
+                extra={
+                    "store_code": self.store_code,
+                    "endpoint": endpoint,
+                    "attempt": attempts,
+                    "max_attempts": resolved_max_retries + 1,
+                    "connect_timeout_ms": resolved_connect_timeout_ms,
+                    "read_timeout_ms": resolved_read_timeout_ms,
+                },
+            )
             await _StoreRateLimiter.wait_turn(self.store_code, self.config.min_interval_seconds)
             started = time.perf_counter()
+            retry_reason: str | None = None
             try:
                 response = await asyncio.wait_for(
                     self.context.request.get(
                     url,
-                    params=params,
+                    params=request_params,
                     headers=headers,
                     timeout=resolved_connect_timeout_ms,
                     ),
@@ -665,6 +696,7 @@ class TdApiClient:
                         refreshed_token = (self._auth_state.token_discovery.token or "").strip() if self._auth_state.token_discovery else ""
                         if refreshed_token:
                             headers["Authorization"] = f"Bearer {refreshed_token}"
+                            request_params["token"] = refreshed_token
                         continue
                     return _JsonFetchResult(ok=False, payload=None, error="http_401", status=status_code, attempts=attempts)
 
@@ -684,15 +716,27 @@ class TdApiClient:
                         response.json(),
                         timeout=max(resolved_read_timeout_ms / 1000.0, 0.001),
                     )
+                    logger.info(
+                        "TD API request attempt succeeded",
+                        extra={
+                            "store_code": self.store_code,
+                            "endpoint": endpoint,
+                            "attempt": attempts,
+                            "max_attempts": resolved_max_retries + 1,
+                            "read_timeout_ms": resolved_read_timeout_ms,
+                        },
+                    )
                     return _JsonFetchResult(ok=True, payload=payload, status=status_code, attempts=attempts)
                 if status_code not in {408, 429, 500, 502, 503, 504}:
                     return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code, attempts=attempts)
                 last_error = RuntimeError(f"HTTP {status_code} from {endpoint}")
+                retry_reason = f"http_{status_code}"
             except asyncio.TimeoutError:
                 status_code = None
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 timed_out_on_connect = latency_ms <= resolved_connect_timeout_ms
                 timeout_class = "connect_timeout" if timed_out_on_connect else "read_timeout"
+                retry_reason = timeout_class
                 metadata.append(
                     build_api_request_metadata(
                         url=url,
@@ -707,6 +751,7 @@ class TdApiClient:
                 last_error = RuntimeError(timeout_class)
             except PlaywrightError as exc:
                 latency_ms = int((time.perf_counter() - started) * 1000)
+                retry_reason = "network_timeout"
                 metadata.append(
                     build_api_request_metadata(
                         url=url,
@@ -720,10 +765,31 @@ class TdApiClient:
                 )
                 last_error = exc
 
-            if attempt < resolved_max_retries:
+            final_error_class = retry_reason or (str(last_error) if last_error else "unknown_error")
+            logger.warning(
+                "TD API request attempt failed",
+                extra={
+                    "store_code": self.store_code,
+                    "endpoint": endpoint,
+                    "attempt": attempts,
+                    "max_attempts": resolved_max_retries + 1,
+                    "read_timeout_ms": resolved_read_timeout_ms,
+                    "retry_reason": retry_reason,
+                    "final_error_class": final_error_class,
+                },
+            )
+
+            should_retry = attempt < resolved_max_retries
+            if retry_reason in _TIMEOUT_ERROR_CLASSES:
+                timeout_failures += 1
+                should_retry = should_retry and timeout_failures <= resolved_timeout_retry_limit
+
+            if should_retry:
                 backoff = min(resolved_max_backoff_seconds, resolved_backoff_base_seconds * (2**attempt))
                 jitter = random.uniform(0.0, max(self.config.backoff_jitter_seconds, 0.0))
                 await asyncio.sleep(max(backoff + jitter, 0.0))
+            else:
+                break
 
         if status_code is not None:
             return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code, attempts=attempts)
@@ -743,14 +809,38 @@ class TdApiClient:
         return bool((refreshed_discovery.token or "").strip())
 
     async def _discover_reporting_token(self, *, force_refresh: bool = False) -> _TokenDiscoveryResult:
-        if self._auth_state.token_discovery is not None and not force_refresh:
-            return self._auth_state.token_discovery
+        cached_discovery = self._auth_state.token_discovery
+        if cached_discovery is not None and not force_refresh:
+            if cached_discovery.source == "iframe_url_query" and cached_discovery.token:
+                return cached_discovery
+
+            from_iframe_latest = self._discover_token_from_iframe_url_query()
+            if from_iframe_latest.token:
+                if cached_discovery.token != from_iframe_latest.token or cached_discovery.source != "iframe_url_query":
+                    self._auth_state.token_discovery = from_iframe_latest
+                    self._log_token_diagnostics(from_iframe_latest)
+                return self._auth_state.token_discovery
+
+            from_iframe_snapshot = self._discover_token_from_report_iframe_src()
+            if from_iframe_snapshot.token:
+                if cached_discovery.token != from_iframe_snapshot.token or cached_discovery.source != "iframe_src_snapshot":
+                    self._auth_state.token_discovery = from_iframe_snapshot
+                    self._log_token_diagnostics(from_iframe_snapshot)
+                return self._auth_state.token_discovery
+
+            return cached_discovery
 
         from_iframe = self._discover_token_from_iframe_url_query()
         if from_iframe.token:
             self._auth_state.token_discovery = from_iframe
             self._log_token_diagnostics(from_iframe)
             return from_iframe
+
+        from_iframe_snapshot = self._discover_token_from_report_iframe_src()
+        if from_iframe_snapshot.token:
+            self._auth_state.token_discovery = from_iframe_snapshot
+            self._log_token_diagnostics(from_iframe_snapshot)
+            return from_iframe_snapshot
 
         from_runtime_storage = await self._discover_token_from_runtime_storage()
         if from_runtime_storage.token:
@@ -762,6 +852,27 @@ class TdApiClient:
         self._auth_state.token_discovery = from_storage_state
         self._log_token_diagnostics(from_storage_state)
         return from_storage_state
+
+
+    def _discover_token_from_report_iframe_src(self) -> _TokenDiscoveryResult:
+        iframe_src = (self._report_iframe_src or "").strip()
+        if not iframe_src:
+            return _TokenDiscoveryResult(token=None, source=None, expiry=None)
+        parsed = urlparse(iframe_src)
+        if REPORTS_ORIGIN_HOST not in (parsed.netloc or ""):
+            return _TokenDiscoveryResult(token=None, source=None, expiry=None)
+        token_values = parse_qs(parsed.query, keep_blank_values=False).get("token")
+        if token_values:
+            token = (token_values[0] or "").strip()
+            if token:
+                decoded_token = unquote(token).strip()
+                if decoded_token:
+                    return _TokenDiscoveryResult(
+                        token=decoded_token,
+                        source="iframe_src_snapshot",
+                        expiry=parse_token_expiry(decoded_token),
+                    )
+        return _TokenDiscoveryResult(token=None, source=None, expiry=None)
 
     def _discover_token_from_iframe_url_query(self) -> _TokenDiscoveryResult:
         for page in self.context.pages:
