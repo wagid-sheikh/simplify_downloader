@@ -114,6 +114,7 @@ class _JsonFetchResult:
 class _SharedAuthState:
     token_discovery: _TokenDiscoveryResult | None = None
     refresh_attempted: bool = False
+    auth_ready_logged_endpoints: set[str] = field(default_factory=set)
 
 
 class _StoreRateLimiter:
@@ -405,6 +406,8 @@ class TdApiClient:
             },
         )
 
+        self._log_auth_context_ready_once(endpoint=endpoint)
+
         while True:
             active_page_size = available_page_sizes[page_size_index]
             page_params = self._merge_query_params(
@@ -661,6 +664,37 @@ class TdApiClient:
             "cookies_found": self._has_cookie_auth_source(),
         }
 
+    def _auth_usage_flags(
+        self,
+        *,
+        headers: Mapping[str, str],
+        request_params: Mapping[str, Any],
+        token_source: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "auth_context_used_authorization_header": bool((headers.get("Authorization") or "").strip()),
+            "auth_context_used_token_query": bool((request_params.get("token") or "").strip()),
+            "auth_context_used_token_source_known": bool(token_source),
+            "auth_context_used_cookies_present": self._has_cookie_auth_source(),
+        }
+
+    def _log_auth_context_ready_once(self, *, endpoint: str) -> None:
+        if endpoint in self._auth_state.auth_ready_logged_endpoints:
+            return
+        token_discovery = self._auth_state.token_discovery or _TokenDiscoveryResult(token=None, source=None, expiry=None)
+        logger.info(
+            "TD API auth context ready",
+            extra={
+                "store_code": self.store_code,
+                "endpoint": endpoint,
+                "token_present": bool((token_discovery.token or "").strip()),
+                "token_source": token_discovery.source,
+                "token_expiry": token_discovery.expiry,
+                "cookies_present": self._has_cookie_auth_source(),
+            },
+        )
+        self._auth_state.auth_ready_logged_endpoints.add(endpoint)
+
     async def _get_paginated_json(
         self,
         *,
@@ -705,6 +739,32 @@ class TdApiClient:
         if token_value:
             headers["Authorization"] = f"Bearer {token_value}"
             request_params["token"] = token_value
+
+        if endpoint in {"/sales-and-deliveries/sales", "/garments/details"} and not token_value:
+            fail_fast_error = "missing_auth_token_at_dispatch"
+            diagnostics = {
+                "store_code": self.store_code,
+                "endpoint": endpoint,
+                "diagnostic": fail_fast_error,
+                "token_found": False,
+                "token_source": token_discovery.source,
+                "token_expiry": token_discovery.expiry,
+                "cookies_found": self._has_cookie_auth_source(),
+            }
+            metadata.append(
+                {
+                    "endpoint": endpoint,
+                    "method": "GET",
+                    "query_params": self._metadata_query_map(request_params),
+                    "status": None,
+                    "latency_ms": 0,
+                    "retry_count": 0,
+                    "token_refresh_attempted": self._auth_state.refresh_attempted,
+                    "retry_reason": fail_fast_error,
+                }
+            )
+            logger.error("TD API fail-fast dispatch aborted due to missing token", extra=diagnostics)
+            return _JsonFetchResult(ok=False, payload=None, error=fail_fast_error, status=None, attempts=0)
 
         validation_error = self._validate_required_query_params(endpoint=endpoint, params=request_params)
         if validation_error:
@@ -757,6 +817,7 @@ class TdApiClient:
                     "connect_timeout_ms": resolved_connect_timeout_ms,
                     "read_timeout_ms": resolved_read_timeout_ms,
                     "attempt_timeout_budget_ms": attempt_budget_ms,
+                    **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
                 },
             )
             await _StoreRateLimiter.wait_turn(self.store_code, self.config.min_interval_seconds)
@@ -779,22 +840,26 @@ class TdApiClient:
                 if status_code == 401:
                     refreshed = await self._attempt_auth_refresh_once()
                     metadata.append(
-                        build_api_request_metadata(
-                            url=str(response.url),
-                            method="GET",
-                            query_params=request_params,
-                            status=status_code,
-                            latency_ms=latency_ms,
-                            retry_count=attempt,
-                            token_refresh_attempted=refreshed,
-                            retry_reason="auth_refresh" if refreshed else None,
-                        ).as_dict()
+                        {
+                            **build_api_request_metadata(
+                                url=str(response.url),
+                                method="GET",
+                                query_params=request_params,
+                                status=status_code,
+                                latency_ms=latency_ms,
+                                retry_count=attempt,
+                                token_refresh_attempted=refreshed,
+                                retry_reason="auth_refresh" if refreshed else None,
+                            ).as_dict(),
+                            **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
+                        }
                     )
                     if refreshed:
                         refreshed_token = (self._auth_state.token_discovery.token or "").strip() if self._auth_state.token_discovery else ""
                         if refreshed_token:
                             headers["Authorization"] = f"Bearer {refreshed_token}"
                             request_params["token"] = refreshed_token
+                            token_discovery = self._auth_state.token_discovery or token_discovery
                         continue
                     return _JsonFetchResult(ok=False, payload=None, error="http_401", status=status_code, attempts=attempts)
 
@@ -810,6 +875,7 @@ class TdApiClient:
                         token_refresh_attempted=self._auth_state.refresh_attempted,
                     ).as_dict(),
                         "attempt_timeout_budget_ms": attempt_budget_ms,
+                        **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
                     }
                 )
 
@@ -853,6 +919,7 @@ class TdApiClient:
                         retry_reason=timeout_class,
                     ).as_dict(),
                         "attempt_timeout_budget_ms": attempt_budget_ms,
+                        **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
                     }
                 )
                 self._increment_metric(name="timeout_class", endpoint=endpoint, timeout_class=timeout_class)
@@ -873,6 +940,7 @@ class TdApiClient:
                         retry_reason="network_timeout",
                     ).as_dict(),
                         "attempt_timeout_budget_ms": attempt_budget_ms,
+                        **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
                     }
                 )
                 last_error = exc
