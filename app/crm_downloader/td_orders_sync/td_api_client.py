@@ -89,6 +89,7 @@ class TdApiFetchResult:
     endpoint_errors: dict[str, str] = field(default_factory=dict)
     endpoint_error_diagnostics: dict[str, dict[str, Any]] = field(default_factory=dict)
     endpoint_health: dict[str, dict[str, Any]] = field(default_factory=dict)
+    metrics_counters: dict[str, int] = field(default_factory=dict)
     orders_summary_rows_filtered: int = 0
     sales_summary_rows_filtered: int = 0
 
@@ -148,6 +149,7 @@ class TdApiClient:
         self.config = config or TdApiClientConfig()
         self._auth_state = _SharedAuthState()
         self._report_iframe_src = (report_iframe_src or "").strip() or None
+        self._metrics_counters: dict[str, int] = {}
 
     def read_session_artifact(self) -> dict[str, Any]:
         if not self.storage_state_path.exists():
@@ -159,12 +161,14 @@ class TdApiClient:
         return parsed if isinstance(parsed, dict) else {}
 
     async def fetch_reports(self, *, from_date: date, to_date: date) -> TdApiFetchResult:
-        common_params = {
-            "pageSize": self.config.page_size,
-            "startDate": from_date.isoformat(),
-            "endDate": to_date.isoformat(),
-        }
+        common_params = self._build_base_query_params(
+            from_date=from_date,
+            to_date=to_date,
+            page=self.config.page,
+            page_size=self.config.page_size,
+        )
         self._auth_state = _SharedAuthState()
+        self._metrics_counters = {}
         metadata: list[dict[str, Any]] = []
         errors: dict[str, str] = {}
         error_diagnostics: dict[str, dict[str, Any]] = {}
@@ -257,9 +261,49 @@ class TdApiClient:
             endpoint_errors=errors,
             endpoint_error_diagnostics=error_diagnostics,
             endpoint_health=endpoint_health,
+            metrics_counters=dict(self._metrics_counters),
             orders_summary_rows_filtered=orders_summary_filtered,
             sales_summary_rows_filtered=sales_summary_filtered,
         )
+
+
+    @staticmethod
+    def _merge_query_params(*, base_params: Mapping[str, Any], overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        merged = dict(base_params)
+        if overrides:
+            merged.update(dict(overrides))
+        return merged
+
+    def _build_base_query_params(self, *, from_date: date, to_date: date, page: int, page_size: int) -> dict[str, Any]:
+        return {
+            "startDate": from_date.isoformat(),
+            "endDate": to_date.isoformat(),
+            "page": int(page),
+            "pageSize": int(page_size),
+        }
+
+    @staticmethod
+    def _metadata_query_map(params: Mapping[str, Any]) -> dict[str, list[str]]:
+        return {str(key): [str(value)] for key, value in params.items()}
+
+    def _validate_required_query_params(self, *, endpoint: str, params: Mapping[str, Any]) -> str | None:
+        if endpoint not in {"/sales-and-deliveries/sales", "/garments/details"}:
+            return None
+        required_keys = ("startDate", "endDate", "page", "pageSize")
+        missing = [key for key in required_keys if params.get(key) in (None, "")]
+        if missing:
+            logger.error(
+                "TD API request assembly validation failed",
+                extra={
+                    "store_code": self.store_code,
+                    "endpoint": endpoint,
+                    "required_keys": list(required_keys),
+                    "missing_keys": missing,
+                    "query_params": self._metadata_query_map(params),
+                },
+            )
+            return f"missing_required_query_params:{','.join(missing)}"
+        return None
 
     async def _auth_preflight(self, *, metadata: list[dict[str, Any]]) -> bool:
         token_discovery = await self._discover_reporting_token()
@@ -342,7 +386,10 @@ class TdApiClient:
         available_page_sizes = self._page_size_candidates(starting_page_size=active_page_size)
         page_size_index = 0
         fallback_used = False
+        fallback_attempts = 0
+        fallback_successes = 0
         endpoint_attempts = 0
+        eventual_success_recorded = False
         retry_profile = self._retry_profile_for_endpoint(endpoint)
         logger.info(
             "TD API endpoint pagination configuration",
@@ -360,13 +407,16 @@ class TdApiClient:
 
         while True:
             active_page_size = available_page_sizes[page_size_index]
-            page_params = {**dict(params), "page": page, "pageSize": active_page_size}
+            page_params = self._merge_query_params(
+                base_params=params,
+                overrides={"page": page, "pageSize": active_page_size},
+            )
             page_result = await self._get_json(
                 endpoint=endpoint,
                 params=page_params,
                 metadata=metadata,
                 connect_timeout_ms=self.config.connect_timeout_ms,
-                read_timeout_ms=self._read_timeout_ms_for_endpoint(endpoint),
+                read_timeout_ms=self._read_timeout_ms_for_endpoint(endpoint, page_size=active_page_size),
                 max_retries=retry_profile["max_retries"],
                 backoff_base_seconds=retry_profile["backoff_base_seconds"],
                 max_backoff_seconds=retry_profile["max_backoff_seconds"],
@@ -377,6 +427,7 @@ class TdApiClient:
             if not page_result.ok:
                 if page_result.error in _TIMEOUT_ERROR_CLASSES and page_size_index < len(available_page_sizes) - 1:
                     previous_page_size = active_page_size
+                    fallback_attempts += 1
                     page_size_index += 1
                     next_page_size = available_page_sizes[page_size_index]
                     fallback_used = True
@@ -384,10 +435,12 @@ class TdApiClient:
                         {
                             "endpoint": endpoint,
                             "method": "GET",
-                            "query_params": {
-                                "page": [str(page)],
-                                "pageSize": [str(previous_page_size)],
-                            },
+                            "query_params": self._metadata_query_map(
+                                self._merge_query_params(
+                                    base_params=params,
+                                    overrides={"page": page, "pageSize": previous_page_size},
+                                )
+                            ),
                             "status": page_result.status,
                             "latency_ms": None,
                             "retry_count": retry_profile["max_retries"],
@@ -433,6 +486,9 @@ class TdApiClient:
 
             page_payload = page_result.payload
             page_payloads.append(page_payload)
+            if endpoint_attempts > 1 and not eventual_success_recorded:
+                self._increment_metric(name="eventual_success_after_retry", endpoint=endpoint)
+                eventual_success_recorded = True
 
             payload_error = self._extract_payload_error_class(page_payload)
             if payload_error:
@@ -457,6 +513,8 @@ class TdApiClient:
                 break
 
             rows = _extract_rows(page_payload)
+            if fallback_used:
+                fallback_successes += 1
             aggregated_rows.extend(rows)
             cumulative_rows += len(rows)
 
@@ -513,8 +571,21 @@ class TdApiClient:
                 "fallback_used": fallback_used,
                 "final_page_size": active_page_size,
                 "available_page_sizes": available_page_sizes,
+                "fallback_attempts": fallback_attempts,
+                "fallback_successes": fallback_successes,
             },
         )
+        if fallback_attempts > 0:
+            self._increment_metric(
+                name="fallback_page_size_attempts",
+                endpoint=endpoint,
+                count=fallback_attempts,
+            )
+            self._increment_metric(
+                name="fallback_page_size_successes",
+                endpoint=endpoint,
+                count=fallback_successes,
+            )
         return {
             "data": aggregated_rows,
             "pages": page_payloads,
@@ -538,7 +609,7 @@ class TdApiClient:
         error_text = str(raw_error).strip()
         return error_text or "unknown_error"
 
-    def _read_timeout_ms_for_endpoint(self, endpoint: str) -> int:
+    def _read_timeout_ms_for_endpoint(self, endpoint: str, *, page_size: int | None = None) -> int:
         if endpoint == "/reports/order-report":
             return self.config.orders_read_timeout_ms
         if endpoint == "/sales-and-deliveries/sales":
@@ -573,6 +644,13 @@ class TdApiClient:
             if fallback_size < starting_page_size and fallback_size not in candidates:
                 candidates.append(fallback_size)
         return candidates
+
+    def _increment_metric(self, *, name: str, endpoint: str, count: int = 1, **labels: str) -> None:
+        label_components = [f"endpoint={endpoint}"]
+        for key in sorted(labels):
+            label_components.append(f"{key}={labels[key]}")
+        metric_key = f"{name}|" + "|".join(label_components)
+        self._metrics_counters[metric_key] = self._metrics_counters.get(metric_key, 0) + max(0, int(count))
 
     def _build_auth_diagnostics_payload(self) -> dict[str, Any]:
         token_discovery = self._auth_state.token_discovery or _TokenDiscoveryResult(token=None, source=None, expiry=None)
@@ -626,7 +704,23 @@ class TdApiClient:
         token_value = (token_discovery.token or "").strip()
         if token_value:
             headers["Authorization"] = f"Bearer {token_value}"
-            request_params.setdefault("token", token_value)
+            request_params["token"] = token_value
+
+        validation_error = self._validate_required_query_params(endpoint=endpoint, params=request_params)
+        if validation_error:
+            metadata.append(
+                {
+                    "endpoint": endpoint,
+                    "method": "GET",
+                    "query_params": self._metadata_query_map(request_params),
+                    "status": None,
+                    "latency_ms": 0,
+                    "retry_count": 0,
+                    "token_refresh_attempted": self._auth_state.refresh_attempted,
+                    "retry_reason": validation_error,
+                }
+            )
+            return _JsonFetchResult(ok=False, payload=None, error=validation_error, status=None, attempts=0)
 
         if iframe_token_discovery.token and not token_value:
             logger.warning(
@@ -652,6 +746,7 @@ class TdApiClient:
         timeout_failures = 0
         for attempt in range(resolved_max_retries + 1):
             attempts = attempt + 1
+            attempt_budget_ms = resolved_connect_timeout_ms + resolved_read_timeout_ms
             logger.info(
                 "TD API request attempt started",
                 extra={
@@ -661,11 +756,13 @@ class TdApiClient:
                     "max_attempts": resolved_max_retries + 1,
                     "connect_timeout_ms": resolved_connect_timeout_ms,
                     "read_timeout_ms": resolved_read_timeout_ms,
+                    "attempt_timeout_budget_ms": attempt_budget_ms,
                 },
             )
             await _StoreRateLimiter.wait_turn(self.store_code, self.config.min_interval_seconds)
             started = time.perf_counter()
             retry_reason: str | None = None
+            timed_out_during_response_read = False
             try:
                 response = await asyncio.wait_for(
                     self.context.request.get(
@@ -685,6 +782,7 @@ class TdApiClient:
                         build_api_request_metadata(
                             url=str(response.url),
                             method="GET",
+                            query_params=request_params,
                             status=status_code,
                             latency_ms=latency_ms,
                             retry_count=attempt,
@@ -701,17 +799,22 @@ class TdApiClient:
                     return _JsonFetchResult(ok=False, payload=None, error="http_401", status=status_code, attempts=attempts)
 
                 metadata.append(
-                    build_api_request_metadata(
+                    {
+                        **build_api_request_metadata(
                         url=str(response.url),
                         method="GET",
+                        query_params=request_params,
                         status=status_code,
                         latency_ms=latency_ms,
                         retry_count=attempt,
                         token_refresh_attempted=self._auth_state.refresh_attempted,
-                    ).as_dict()
+                    ).as_dict(),
+                        "attempt_timeout_budget_ms": attempt_budget_ms,
+                    }
                 )
 
                 if status_code < 400:
+                    timed_out_during_response_read = True
                     payload = await asyncio.wait_for(
                         response.json(),
                         timeout=max(resolved_read_timeout_ms / 1000.0, 0.001),
@@ -724,6 +827,7 @@ class TdApiClient:
                             "attempt": attempts,
                             "max_attempts": resolved_max_retries + 1,
                             "read_timeout_ms": resolved_read_timeout_ms,
+                            "attempt_timeout_budget_ms": attempt_budget_ms,
                         },
                     )
                     return _JsonFetchResult(ok=True, payload=payload, status=status_code, attempts=attempts)
@@ -734,34 +838,42 @@ class TdApiClient:
             except asyncio.TimeoutError:
                 status_code = None
                 latency_ms = int((time.perf_counter() - started) * 1000)
-                timed_out_on_connect = latency_ms <= resolved_connect_timeout_ms
-                timeout_class = "connect_timeout" if timed_out_on_connect else "read_timeout"
+                timeout_class = "read_timeout" if timed_out_during_response_read else "connect_timeout"
                 retry_reason = timeout_class
                 metadata.append(
-                    build_api_request_metadata(
+                    {
+                        **build_api_request_metadata(
                         url=url,
                         method="GET",
+                        query_params=request_params,
                         status=status_code,
                         latency_ms=latency_ms,
                         retry_count=attempt,
                         token_refresh_attempted=self._auth_state.refresh_attempted,
                         retry_reason=timeout_class,
-                    ).as_dict()
+                    ).as_dict(),
+                        "attempt_timeout_budget_ms": attempt_budget_ms,
+                    }
                 )
+                self._increment_metric(name="timeout_class", endpoint=endpoint, timeout_class=timeout_class)
                 last_error = RuntimeError(timeout_class)
             except PlaywrightError as exc:
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 retry_reason = "network_timeout"
                 metadata.append(
-                    build_api_request_metadata(
+                    {
+                        **build_api_request_metadata(
                         url=url,
                         method="GET",
+                        query_params=request_params,
                         status=status_code,
                         latency_ms=latency_ms,
                         retry_count=attempt,
                         token_refresh_attempted=self._auth_state.refresh_attempted,
                         retry_reason="network_timeout",
-                    ).as_dict()
+                    ).as_dict(),
+                        "attempt_timeout_budget_ms": attempt_budget_ms,
+                    }
                 )
                 last_error = exc
 
@@ -785,9 +897,11 @@ class TdApiClient:
                 should_retry = should_retry and timeout_failures <= resolved_timeout_retry_limit
 
             if should_retry:
-                backoff = min(resolved_max_backoff_seconds, resolved_backoff_base_seconds * (2**attempt))
-                jitter = random.uniform(0.0, max(self.config.backoff_jitter_seconds, 0.0))
-                await asyncio.sleep(max(backoff + jitter, 0.0))
+                backoff_ceiling = min(resolved_max_backoff_seconds, resolved_backoff_base_seconds * (2**attempt))
+                jitter_window = max(self.config.backoff_jitter_seconds, 0.0)
+                jitter = random.uniform(0.0, jitter_window if jitter_window > 0 else backoff_ceiling)
+                backoff = min(resolved_max_backoff_seconds, backoff_ceiling + jitter)
+                await asyncio.sleep(max(backoff, 0.0))
             else:
                 break
 
