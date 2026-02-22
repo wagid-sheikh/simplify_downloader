@@ -13,7 +13,7 @@ from app.crm_downloader.td_orders_sync.main import (
     _resolve_td_api_artifact_dir,
     _dataset_completion_health,
 )
-from app.crm_downloader.td_orders_sync.td_api_artifacts import persist_td_api_artifacts
+from app.crm_downloader.td_orders_sync.td_api_artifacts import persist_td_api_artifacts, persist_td_compare_artifacts
 from app.crm_downloader.td_orders_sync.td_api_client import (
     TdApiClient,
     TdApiClientConfig,
@@ -500,6 +500,25 @@ def test_compare_excel_save_succeeds_with_non_empty_sample_mismatch_keys_list(tm
 
 
 
+
+
+def test_persist_td_compare_artifacts_includes_endpoint_health_summary(tmp_path: Path) -> None:
+    result = persist_td_compare_artifacts(
+        download_dir=tmp_path,
+        store_code="a817",
+        from_date=date(2026, 1, 1),
+        to_date=date(2026, 1, 2),
+        orders_compare_metrics={"strict_verdict_ready": False, "dataset_health": {"ready": False}},
+        sales_compare_metrics={"strict_verdict_ready": True, "dataset_health": {"ready": True}},
+        endpoint_health_summary={"orders": {"ready": False, "degraded_reason": "http_401"}},
+    )
+
+    orders_payload = json.loads(Path(result.artifact_paths["orders_compare_mismatches"]).read_text(encoding="utf-8"))
+    sales_payload = json.loads(Path(result.artifact_paths["sales_compare_mismatches"]).read_text(encoding="utf-8"))
+
+    assert orders_payload["endpoint_health_summary"]["orders"]["degraded_reason"] == "http_401"
+    assert sales_payload["endpoint_health_summary"]["orders"]["ready"] is False
+
 def test_persist_td_api_artifacts_writes_excel_outputs(tmp_path: Path) -> None:
     result = persist_td_api_artifacts(
         download_dir=tmp_path,
@@ -910,6 +929,38 @@ async def test_fetch_reports_preflight_skips_endpoint_calls_when_auth_unavailabl
     }
     assert result.request_metadata[0]["outcome"] == "auth_unavailable"
 
+
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_records_payload_error_as_endpoint_error(tmp_path: Path) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/reports/order-report",
+                payload={"error": "read_timeout", "data": []},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales",
+                payload={"data": [{"orderNo": "S-1"}], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [{"orderNo": "G-1"}], "totalPages": 1},
+            ),
+        ]
+    )
+    context = _StubContext(request=request)
+    client = _TokenRefreshingClient(store_code="a123", context=context, storage_state_path=tmp_path / "s.json")
+
+    result = await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    assert result.endpoint_errors["/reports/order-report"] == "read_timeout"
+    assert result.raw_orders_payload["error"] == "read_timeout"
+    assert result.endpoint_error_diagnostics["/reports/order-report"]["token_found"] is True
 
 @pytest.mark.asyncio
 async def test_fetch_reports_propagates_page_one_401_as_endpoint_error(tmp_path: Path) -> None:
