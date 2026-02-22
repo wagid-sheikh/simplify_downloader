@@ -1159,6 +1159,15 @@ async def test_fetch_reports_retries_timeout_then_falls_back_page_size(tmp_path:
     assert len(fallback_events) == 1
     assert fallback_events[0]["fallback_page_size_from"] == 500
     assert fallback_events[0]["fallback_page_size_to"] == 250
+    fallback_query_params = fallback_events[0]["query_params"]
+    assert fallback_query_params["startDate"] == ["2026-01-01"]
+    assert fallback_query_params["endDate"] == ["2026-01-02"]
+    assert fallback_query_params["expandData"] == ["true"]
+
+    assert result.metrics_counters["timeout_class|endpoint=/reports/order-report|timeout_class=read_timeout"] == 2
+    assert result.metrics_counters["eventual_success_after_retry|endpoint=/reports/order-report"] == 1
+    assert result.metrics_counters["fallback_page_size_attempts|endpoint=/reports/order-report"] == 1
+    assert result.metrics_counters["fallback_page_size_successes|endpoint=/reports/order-report"] == 1
 
 
 def test_endpoint_specific_retry_profile_defaults() -> None:
@@ -1233,6 +1242,7 @@ async def test_get_json_timeout_retries_are_bounded_for_sales_endpoint(tmp_path:
     timeout_metadata = [item for item in metadata if item.get("retry_reason") in {"read_timeout", "connect_timeout"}]
     assert timeout_metadata
     assert max(item["retry_count"] for item in timeout_metadata) == client.config.timeout_retry_limit
+    assert all(item.get("attempt_timeout_budget_ms") == client.config.connect_timeout_ms + client.config.sales_read_timeout_ms for item in timeout_metadata)
 
 
 @pytest.mark.asyncio
