@@ -686,6 +686,20 @@ async def test_fetch_reports_refreshes_auth_once_then_reuses_for_other_endpoints
     assert len(auth_refresh_items) == 1
     assert auth_refresh_items[0]["retry_reason"] == "auth_refresh"
 
+    sales_metadata = next(item for item in result.request_metadata if item["endpoint"] == "/sales-and-deliveries/sales" and item["status"] == 200)
+    assert sales_metadata["query_params"]["startDate"] == ["2026-01-01"]
+    assert sales_metadata["query_params"]["endDate"] == ["2026-01-02"]
+    assert sales_metadata["query_params"]["page"] == ["1"]
+    assert sales_metadata["query_params"]["pageSize"] == ["500"]
+    assert sales_metadata["query_params"]["token"] == ["fresh-token"]
+
+    garments_metadata = next(item for item in result.request_metadata if item["endpoint"] == "/garments/details" and item["status"] == 200)
+    assert garments_metadata["query_params"]["startDate"] == ["2026-01-01"]
+    assert garments_metadata["query_params"]["endDate"] == ["2026-01-02"]
+    assert garments_metadata["query_params"]["page"] == ["1"]
+    assert garments_metadata["query_params"]["pageSize"] == ["500"]
+    assert garments_metadata["query_params"]["token"] == ["fresh-token"]
+
 @pytest.mark.asyncio
 async def test_fetch_reports_captures_non_retriable_http_errors_per_endpoint(tmp_path: Path) -> None:
     request = _StubRequest(
@@ -1204,7 +1218,7 @@ async def test_get_json_timeout_retries_are_bounded_for_sales_endpoint(tmp_path:
     retry_profile = client._retry_profile_for_endpoint("/sales-and-deliveries/sales")
     result = await client._get_json(
         endpoint="/sales-and-deliveries/sales",
-        params={"page": 1, "pageSize": 500},
+        params={"startDate": "2026-01-01", "endDate": "2026-01-02", "page": 1, "pageSize": 500},
         metadata=metadata,
         connect_timeout_ms=client.config.connect_timeout_ms,
         read_timeout_ms=client.config.sales_read_timeout_ms,
@@ -1219,6 +1233,26 @@ async def test_get_json_timeout_retries_are_bounded_for_sales_endpoint(tmp_path:
     timeout_metadata = [item for item in metadata if item.get("retry_reason") in {"read_timeout", "connect_timeout"}]
     assert timeout_metadata
     assert max(item["retry_count"] for item in timeout_metadata) == client.config.timeout_retry_limit
+
+
+@pytest.mark.asyncio
+async def test_get_json_fails_fast_when_sales_required_query_params_missing(tmp_path: Path) -> None:
+    request = _StubRequest(responses=[])
+    context = _StubContext(request=request)
+    client = _TokenRefreshingClient(store_code="a123", context=context, storage_state_path=tmp_path / "s.json")
+
+    metadata: list[dict[str, object]] = []
+    result = await client._get_json(
+        endpoint="/sales-and-deliveries/sales",
+        params={"page": 1, "pageSize": 500},
+        metadata=metadata,
+    )
+
+    assert result.ok is False
+    assert result.error == "missing_required_query_params:startDate,endDate"
+    assert len(request.calls) == 0
+    assert metadata[0]["endpoint"] == "/sales-and-deliveries/sales"
+    assert metadata[0]["retry_reason"] == "missing_required_query_params:startDate,endDate"
 
 
 @pytest.mark.asyncio

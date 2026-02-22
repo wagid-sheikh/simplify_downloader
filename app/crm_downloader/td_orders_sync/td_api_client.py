@@ -159,11 +159,12 @@ class TdApiClient:
         return parsed if isinstance(parsed, dict) else {}
 
     async def fetch_reports(self, *, from_date: date, to_date: date) -> TdApiFetchResult:
-        common_params = {
-            "pageSize": self.config.page_size,
-            "startDate": from_date.isoformat(),
-            "endDate": to_date.isoformat(),
-        }
+        common_params = self._build_base_query_params(
+            from_date=from_date,
+            to_date=to_date,
+            page=self.config.page,
+            page_size=self.config.page_size,
+        )
         self._auth_state = _SharedAuthState()
         metadata: list[dict[str, Any]] = []
         errors: dict[str, str] = {}
@@ -260,6 +261,45 @@ class TdApiClient:
             orders_summary_rows_filtered=orders_summary_filtered,
             sales_summary_rows_filtered=sales_summary_filtered,
         )
+
+
+    @staticmethod
+    def _merge_query_params(*, base_params: Mapping[str, Any], overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        merged = dict(base_params)
+        if overrides:
+            merged.update(dict(overrides))
+        return merged
+
+    def _build_base_query_params(self, *, from_date: date, to_date: date, page: int, page_size: int) -> dict[str, Any]:
+        return {
+            "startDate": from_date.isoformat(),
+            "endDate": to_date.isoformat(),
+            "page": int(page),
+            "pageSize": int(page_size),
+        }
+
+    @staticmethod
+    def _metadata_query_map(params: Mapping[str, Any]) -> dict[str, list[str]]:
+        return {str(key): [str(value)] for key, value in params.items()}
+
+    def _validate_required_query_params(self, *, endpoint: str, params: Mapping[str, Any]) -> str | None:
+        if endpoint not in {"/sales-and-deliveries/sales", "/garments/details"}:
+            return None
+        required_keys = ("startDate", "endDate", "page", "pageSize")
+        missing = [key for key in required_keys if params.get(key) in (None, "")]
+        if missing:
+            logger.error(
+                "TD API request assembly validation failed",
+                extra={
+                    "store_code": self.store_code,
+                    "endpoint": endpoint,
+                    "required_keys": list(required_keys),
+                    "missing_keys": missing,
+                    "query_params": self._metadata_query_map(params),
+                },
+            )
+            return f"missing_required_query_params:{','.join(missing)}"
+        return None
 
     async def _auth_preflight(self, *, metadata: list[dict[str, Any]]) -> bool:
         token_discovery = await self._discover_reporting_token()
@@ -360,7 +400,10 @@ class TdApiClient:
 
         while True:
             active_page_size = available_page_sizes[page_size_index]
-            page_params = {**dict(params), "page": page, "pageSize": active_page_size}
+            page_params = self._merge_query_params(
+                base_params=params,
+                overrides={"page": page, "pageSize": active_page_size},
+            )
             page_result = await self._get_json(
                 endpoint=endpoint,
                 params=page_params,
@@ -384,10 +427,12 @@ class TdApiClient:
                         {
                             "endpoint": endpoint,
                             "method": "GET",
-                            "query_params": {
-                                "page": [str(page)],
-                                "pageSize": [str(previous_page_size)],
-                            },
+                            "query_params": self._metadata_query_map(
+                                self._merge_query_params(
+                                    base_params=params,
+                                    overrides={"page": page, "pageSize": previous_page_size},
+                                )
+                            ),
                             "status": page_result.status,
                             "latency_ms": None,
                             "retry_count": retry_profile["max_retries"],
@@ -626,7 +671,23 @@ class TdApiClient:
         token_value = (token_discovery.token or "").strip()
         if token_value:
             headers["Authorization"] = f"Bearer {token_value}"
-            request_params.setdefault("token", token_value)
+            request_params["token"] = token_value
+
+        validation_error = self._validate_required_query_params(endpoint=endpoint, params=request_params)
+        if validation_error:
+            metadata.append(
+                {
+                    "endpoint": endpoint,
+                    "method": "GET",
+                    "query_params": self._metadata_query_map(request_params),
+                    "status": None,
+                    "latency_ms": 0,
+                    "retry_count": 0,
+                    "token_refresh_attempted": self._auth_state.refresh_attempted,
+                    "retry_reason": validation_error,
+                }
+            )
+            return _JsonFetchResult(ok=False, payload=None, error=validation_error, status=None, attempts=0)
 
         if iframe_token_discovery.token and not token_value:
             logger.warning(
@@ -685,6 +746,7 @@ class TdApiClient:
                         build_api_request_metadata(
                             url=str(response.url),
                             method="GET",
+                            query_params=request_params,
                             status=status_code,
                             latency_ms=latency_ms,
                             retry_count=attempt,
@@ -704,6 +766,7 @@ class TdApiClient:
                     build_api_request_metadata(
                         url=str(response.url),
                         method="GET",
+                        query_params=request_params,
                         status=status_code,
                         latency_ms=latency_ms,
                         retry_count=attempt,
@@ -741,6 +804,7 @@ class TdApiClient:
                     build_api_request_metadata(
                         url=url,
                         method="GET",
+                        query_params=request_params,
                         status=status_code,
                         latency_ms=latency_ms,
                         retry_count=attempt,
@@ -756,6 +820,7 @@ class TdApiClient:
                     build_api_request_metadata(
                         url=url,
                         method="GET",
+                        query_params=request_params,
                         status=status_code,
                         latency_ms=latency_ms,
                         retry_count=attempt,
