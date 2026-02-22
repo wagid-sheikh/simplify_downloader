@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 from playwright.async_api import BrowserContext, Error as PlaywrightError, Frame
 from app.crm_downloader.td_orders_sync.td_api_compare import build_api_request_metadata, parse_token_expiry
 
@@ -140,12 +140,14 @@ class TdApiClient:
         context: BrowserContext,
         storage_state_path: Path,
         config: TdApiClientConfig | None = None,
+        report_iframe_src: str | None = None,
     ) -> None:
         self.store_code = store_code.upper().strip()
         self.context = context
         self.storage_state_path = storage_state_path
         self.config = config or TdApiClientConfig()
         self._auth_state = _SharedAuthState()
+        self._report_iframe_src = (report_iframe_src or "").strip() or None
 
     def read_session_artifact(self) -> dict[str, Any]:
         if not self.storage_state_path.exists():
@@ -819,6 +821,13 @@ class TdApiClient:
                     self._log_token_diagnostics(from_iframe_latest)
                 return self._auth_state.token_discovery
 
+            from_iframe_snapshot = self._discover_token_from_report_iframe_src()
+            if from_iframe_snapshot.token:
+                if cached_discovery.token != from_iframe_snapshot.token or cached_discovery.source != "iframe_src_snapshot":
+                    self._auth_state.token_discovery = from_iframe_snapshot
+                    self._log_token_diagnostics(from_iframe_snapshot)
+                return self._auth_state.token_discovery
+
             return cached_discovery
 
         from_iframe = self._discover_token_from_iframe_url_query()
@@ -826,6 +835,12 @@ class TdApiClient:
             self._auth_state.token_discovery = from_iframe
             self._log_token_diagnostics(from_iframe)
             return from_iframe
+
+        from_iframe_snapshot = self._discover_token_from_report_iframe_src()
+        if from_iframe_snapshot.token:
+            self._auth_state.token_discovery = from_iframe_snapshot
+            self._log_token_diagnostics(from_iframe_snapshot)
+            return from_iframe_snapshot
 
         from_runtime_storage = await self._discover_token_from_runtime_storage()
         if from_runtime_storage.token:
@@ -837,6 +852,27 @@ class TdApiClient:
         self._auth_state.token_discovery = from_storage_state
         self._log_token_diagnostics(from_storage_state)
         return from_storage_state
+
+
+    def _discover_token_from_report_iframe_src(self) -> _TokenDiscoveryResult:
+        iframe_src = (self._report_iframe_src or "").strip()
+        if not iframe_src:
+            return _TokenDiscoveryResult(token=None, source=None, expiry=None)
+        parsed = urlparse(iframe_src)
+        if REPORTS_ORIGIN_HOST not in (parsed.netloc or ""):
+            return _TokenDiscoveryResult(token=None, source=None, expiry=None)
+        token_values = parse_qs(parsed.query, keep_blank_values=False).get("token")
+        if token_values:
+            token = (token_values[0] or "").strip()
+            if token:
+                decoded_token = unquote(token).strip()
+                if decoded_token:
+                    return _TokenDiscoveryResult(
+                        token=decoded_token,
+                        source="iframe_src_snapshot",
+                        expiry=parse_token_expiry(decoded_token),
+                    )
+        return _TokenDiscoveryResult(token=None, source=None, expiry=None)
 
     def _discover_token_from_iframe_url_query(self) -> _TokenDiscoveryResult:
         for page in self.context.pages:
