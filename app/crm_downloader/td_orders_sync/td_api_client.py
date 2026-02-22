@@ -19,6 +19,8 @@ REPORTS_ORIGIN_HOST = "reports.quickdrycleaning.com"
 
 logger = logging.getLogger(__name__)
 
+_TIMEOUT_ERROR_CLASSES = {"read_timeout", "connect_timeout", "network_timeout", "timeout", "TimeoutError", "PlaywrightError"}
+
 _SUMMARY_MARKERS = ("total", "summary", "grand total")
 _LABEL_LIKE_FIELD_SIGNALS = ("label", "name", "title", "description", "remark", "note", "particular")
 _SUMMARY_TEXT_FIELDS = ("orderdate", "paymentdate", "customername", "description", "type")
@@ -52,8 +54,8 @@ class TdApiClientConfig:
     max_pages: int = max(1, int(os.environ.get("TD_API_MAX_PAGES", "100")))
     default_read_timeout_ms: int = int(os.environ.get("TD_API_READ_TIMEOUT_MS", "20000"))
     orders_read_timeout_ms: int = int(os.environ.get("TD_API_ORDERS_READ_TIMEOUT_MS", os.environ.get("TD_API_READ_TIMEOUT_MS", "20000")))
-    sales_read_timeout_ms: int = int(os.environ.get("TD_API_SALES_READ_TIMEOUT_MS", "35000"))
-    garments_read_timeout_ms: int = int(os.environ.get("TD_API_GARMENTS_READ_TIMEOUT_MS", "35000"))
+    sales_read_timeout_ms: int = int(os.environ.get("TD_API_SALES_READ_TIMEOUT_MS", "45000"))
+    garments_read_timeout_ms: int = int(os.environ.get("TD_API_GARMENTS_READ_TIMEOUT_MS", "45000"))
     orders_max_retries: int = int(os.environ.get("TD_API_ORDERS_MAX_RETRIES", os.environ.get("TD_API_MAX_RETRIES", "3")))
     sales_max_retries: int = int(os.environ.get("TD_API_SALES_MAX_RETRIES", "5"))
     garments_max_retries: int = int(os.environ.get("TD_API_GARMENTS_MAX_RETRIES", "5"))
@@ -67,6 +69,7 @@ class TdApiClientConfig:
     )
     sales_max_backoff_seconds: float = float(os.environ.get("TD_API_SALES_MAX_BACKOFF_SECONDS", "6.0"))
     garments_max_backoff_seconds: float = float(os.environ.get("TD_API_GARMENTS_MAX_BACKOFF_SECONDS", "6.0"))
+    timeout_retry_limit: int = int(os.environ.get("TD_API_TIMEOUT_RETRY_LIMIT", "2"))
     page_size_fallbacks: tuple[int, ...] = tuple(
         int(size.strip())
         for size in os.environ.get("TD_API_PAGE_SIZE_FALLBACKS", "250,100").split(",")
@@ -370,10 +373,7 @@ class TdApiClient:
             endpoint_attempts += max(int(page_result.attempts or 0), 0)
 
             if not page_result.ok:
-                if (
-                    page_result.error in {"read_timeout", "connect_timeout", "PlaywrightError", "TimeoutError", "timeout"}
-                    and page_size_index < len(available_page_sizes) - 1
-                ):
+                if page_result.error in _TIMEOUT_ERROR_CLASSES and page_size_index < len(available_page_sizes) - 1:
                     previous_page_size = active_page_size
                     page_size_index += 1
                     next_page_size = available_page_sizes[page_size_index]
@@ -645,11 +645,25 @@ class TdApiClient:
         resolved_max_retries = self.config.max_retries if max_retries is None else max(0, int(max_retries))
         resolved_backoff_base_seconds = self.config.backoff_base_seconds if backoff_base_seconds is None else float(backoff_base_seconds)
         resolved_max_backoff_seconds = self.config.max_backoff_seconds if max_backoff_seconds is None else float(max_backoff_seconds)
+        resolved_timeout_retry_limit = max(0, int(self.config.timeout_retry_limit))
         attempts = 0
+        timeout_failures = 0
         for attempt in range(resolved_max_retries + 1):
             attempts = attempt + 1
+            logger.info(
+                "TD API request attempt started",
+                extra={
+                    "store_code": self.store_code,
+                    "endpoint": endpoint,
+                    "attempt": attempts,
+                    "max_attempts": resolved_max_retries + 1,
+                    "connect_timeout_ms": resolved_connect_timeout_ms,
+                    "read_timeout_ms": resolved_read_timeout_ms,
+                },
+            )
             await _StoreRateLimiter.wait_turn(self.store_code, self.config.min_interval_seconds)
             started = time.perf_counter()
+            retry_reason: str | None = None
             try:
                 response = await asyncio.wait_for(
                     self.context.request.get(
@@ -700,15 +714,27 @@ class TdApiClient:
                         response.json(),
                         timeout=max(resolved_read_timeout_ms / 1000.0, 0.001),
                     )
+                    logger.info(
+                        "TD API request attempt succeeded",
+                        extra={
+                            "store_code": self.store_code,
+                            "endpoint": endpoint,
+                            "attempt": attempts,
+                            "max_attempts": resolved_max_retries + 1,
+                            "read_timeout_ms": resolved_read_timeout_ms,
+                        },
+                    )
                     return _JsonFetchResult(ok=True, payload=payload, status=status_code, attempts=attempts)
                 if status_code not in {408, 429, 500, 502, 503, 504}:
                     return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code, attempts=attempts)
                 last_error = RuntimeError(f"HTTP {status_code} from {endpoint}")
+                retry_reason = f"http_{status_code}"
             except asyncio.TimeoutError:
                 status_code = None
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 timed_out_on_connect = latency_ms <= resolved_connect_timeout_ms
                 timeout_class = "connect_timeout" if timed_out_on_connect else "read_timeout"
+                retry_reason = timeout_class
                 metadata.append(
                     build_api_request_metadata(
                         url=url,
@@ -723,6 +749,7 @@ class TdApiClient:
                 last_error = RuntimeError(timeout_class)
             except PlaywrightError as exc:
                 latency_ms = int((time.perf_counter() - started) * 1000)
+                retry_reason = "network_timeout"
                 metadata.append(
                     build_api_request_metadata(
                         url=url,
@@ -736,10 +763,31 @@ class TdApiClient:
                 )
                 last_error = exc
 
-            if attempt < resolved_max_retries:
+            final_error_class = retry_reason or (str(last_error) if last_error else "unknown_error")
+            logger.warning(
+                "TD API request attempt failed",
+                extra={
+                    "store_code": self.store_code,
+                    "endpoint": endpoint,
+                    "attempt": attempts,
+                    "max_attempts": resolved_max_retries + 1,
+                    "read_timeout_ms": resolved_read_timeout_ms,
+                    "retry_reason": retry_reason,
+                    "final_error_class": final_error_class,
+                },
+            )
+
+            should_retry = attempt < resolved_max_retries
+            if retry_reason in _TIMEOUT_ERROR_CLASSES:
+                timeout_failures += 1
+                should_retry = should_retry and timeout_failures <= resolved_timeout_retry_limit
+
+            if should_retry:
                 backoff = min(resolved_max_backoff_seconds, resolved_backoff_base_seconds * (2**attempt))
                 jitter = random.uniform(0.0, max(self.config.backoff_jitter_seconds, 0.0))
                 await asyncio.sleep(max(backoff + jitter, 0.0))
+            else:
+                break
 
         if status_code is not None:
             return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code, attempts=attempts)

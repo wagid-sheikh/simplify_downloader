@@ -951,6 +951,11 @@ async def test_fetch_reports_records_payload_error_as_endpoint_error(tmp_path: P
                 url="https://reporting-api.quickdrycleaning.com/garments/details",
                 payload={"data": [{"orderNo": "G-1"}], "totalPages": 1},
             ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [], "totalPages": 1},
+            ),
         ]
     )
     context = _StubContext(request=request)
@@ -977,6 +982,11 @@ async def test_fetch_reports_propagates_page_one_401_as_endpoint_error(tmp_path:
                 status=200,
                 url="https://reporting-api.quickdrycleaning.com/garments/details",
                 payload={"data": [{"orderNo": "G-1"}], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [], "totalPages": 1},
             ),
         ]
     )
@@ -1081,6 +1091,11 @@ async def test_fetch_reports_retries_timeout_then_falls_back_page_size(tmp_path:
                 url="https://reporting-api.quickdrycleaning.com/garments/details",
                 payload={"data": [{"orderNo": "G-1"}], "totalPages": 1},
             ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [], "totalPages": 1},
+            ),
         ]
     )
     context = _StubContext(request=request)
@@ -1137,6 +1152,73 @@ def test_endpoint_specific_retry_profile_defaults() -> None:
     assert client._retry_profile_for_endpoint("/reports/order-report")["max_retries"] == client.config.orders_max_retries
     assert client._retry_profile_for_endpoint("/sales-and-deliveries/sales")["max_retries"] == client.config.sales_max_retries
     assert client._retry_profile_for_endpoint("/garments/details")["max_retries"] == client.config.garments_max_retries
+
+
+def test_endpoint_specific_read_timeout_defaults() -> None:
+    client = TdApiClient(store_code="a123", context=None, storage_state_path=Path("/tmp/missing"))  # type: ignore[arg-type]
+    assert client._read_timeout_ms_for_endpoint("/reports/order-report") == client.config.orders_read_timeout_ms
+    assert client._read_timeout_ms_for_endpoint("/sales-and-deliveries/sales") == client.config.sales_read_timeout_ms
+    assert client._read_timeout_ms_for_endpoint("/garments/details") == client.config.garments_read_timeout_ms
+    assert client.config.sales_read_timeout_ms == 45000
+    assert client.config.garments_read_timeout_ms == 45000
+
+
+@pytest.mark.asyncio
+async def test_get_json_timeout_retries_are_bounded_for_sales_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _StubRequest(
+        responses=[
+            _ReadTimeoutResponse(status=200, url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales", payload={}),
+            _ReadTimeoutResponse(status=200, url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales", payload={}),
+            _ReadTimeoutResponse(status=200, url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales", payload={}),
+            _ReadTimeoutResponse(status=200, url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales", payload={}),
+        ]
+    )
+    context = _StubContext(request=request)
+    client = _TokenRefreshingClient(
+        store_code="a123",
+        context=context,
+        storage_state_path=tmp_path / "s.json",
+        config=TdApiClientConfig(
+            min_interval_seconds=0,
+            max_retries=5,
+            sales_max_retries=5,
+            sales_read_timeout_ms=15,
+            timeout_retry_limit=2,
+            backoff_base_seconds=0,
+            backoff_jitter_seconds=0,
+            sales_backoff_base_seconds=0,
+            sales_max_backoff_seconds=0,
+        ),
+    )
+
+    async def _fake_sleep(_: float) -> None:
+        return None
+
+    async def _fake_wait_turn(_: str, __: float) -> None:
+        return None
+
+    monkeypatch.setattr("app.crm_downloader.td_orders_sync.td_api_client.asyncio.sleep", _fake_sleep)
+    monkeypatch.setattr("app.crm_downloader.td_orders_sync.td_api_client._StoreRateLimiter.wait_turn", _fake_wait_turn)
+
+    metadata: list[dict[str, object]] = []
+    retry_profile = client._retry_profile_for_endpoint("/sales-and-deliveries/sales")
+    result = await client._get_json(
+        endpoint="/sales-and-deliveries/sales",
+        params={"page": 1, "pageSize": 500},
+        metadata=metadata,
+        connect_timeout_ms=client.config.connect_timeout_ms,
+        read_timeout_ms=client.config.sales_read_timeout_ms,
+        max_retries=int(retry_profile["max_retries"]),
+        backoff_base_seconds=float(retry_profile["backoff_base_seconds"]),
+        max_backoff_seconds=float(retry_profile["max_backoff_seconds"]),
+    )
+
+    assert result.ok is False
+    assert result.error in {"read_timeout", "connect_timeout"}
+    assert len(request.calls) == client.config.timeout_retry_limit + 1
+    timeout_metadata = [item for item in metadata if item.get("retry_reason") in {"read_timeout", "connect_timeout"}]
+    assert timeout_metadata
+    assert max(item["retry_count"] for item in timeout_metadata) == client.config.timeout_retry_limit
 
 
 @pytest.mark.asyncio
