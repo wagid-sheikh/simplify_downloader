@@ -312,6 +312,11 @@ def _persist_compare_excel_artifact(
 ) -> None:
     workbook = openpyxl.Workbook()
 
+    def _excel_safe_cell_value(value: Any) -> Any:
+        if isinstance(value, (list, dict, tuple, set)):
+            return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        return value
+
     def _write_rows(sheet_name: str, rows: Sequence[Mapping[str, Any]]) -> None:
         worksheet = workbook.create_sheet(title=sheet_name)
         if not rows:
@@ -328,7 +333,7 @@ def _persist_compare_excel_artifact(
 
         worksheet.append(columns)
         for row in rows:
-            worksheet.append([row.get(column) for column in columns])
+            worksheet.append([_excel_safe_cell_value(row.get(column)) for column in columns])
 
     summary_row = {
         "total_rows": compare_metrics.get("total_rows"),
@@ -337,7 +342,7 @@ def _persist_compare_excel_artifact(
         "missing_in_ui": compare_metrics.get("missing_in_ui"),
         "amount_mismatches": compare_metrics.get("amount_mismatches"),
         "status_mismatches": compare_metrics.get("status_mismatches"),
-        "sample_mismatch_keys": compare_metrics.get("sample_mismatch_keys"),
+        "sample_mismatch_keys": _excel_safe_cell_value(compare_metrics.get("sample_mismatch_keys")),
     }
     _write_rows("summary", [summary_row])
 

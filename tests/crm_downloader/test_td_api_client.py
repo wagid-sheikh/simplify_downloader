@@ -300,6 +300,48 @@ def test_compare_excel_summary_excludes_nested_mismatch_artifacts(tmp_path: Path
     assert "mismatch_artifacts" not in headers
 
 
+def test_compare_excel_flattens_list_and_dict_cells(tmp_path: Path) -> None:
+    artifact_path = tmp_path / "compare.xlsx"
+    compare_metrics = {
+        "total_rows": 3,
+        "matched_rows": 1,
+        "missing_in_api": 1,
+        "missing_in_ui": 1,
+        "amount_mismatches": 0,
+        "status_mismatches": 1,
+        "sample_mismatch_keys": ["A817|1002", "A817|1003"],
+        "mismatch_artifacts": {
+            "missing_in_api": [
+                {
+                    "key": "A817|1002",
+                    "key_components": {"store_code": "A817", "order_number": "1002"},
+                }
+            ]
+        },
+    }
+
+    _persist_compare_excel_artifact(
+        artifact_path=artifact_path,
+        compare_metrics=compare_metrics,
+        api_request_metadata=[],
+    )
+
+    import openpyxl
+
+    workbook = openpyxl.load_workbook(artifact_path)
+    summary = workbook["summary"]
+    summary_headers = [cell.value for cell in next(summary.iter_rows(min_row=1, max_row=1))]
+    summary_row = [cell.value for cell in next(summary.iter_rows(min_row=2, max_row=2))]
+    sample_keys_value = summary_row[summary_headers.index("sample_mismatch_keys")]
+    assert sample_keys_value == '["A817|1002", "A817|1003"]'
+
+    missing_in_api = workbook["missing_in_api"]
+    row_headers = [cell.value for cell in next(missing_in_api.iter_rows(min_row=1, max_row=1))]
+    row_values = [cell.value for cell in next(missing_in_api.iter_rows(min_row=2, max_row=2))]
+    key_components_value = row_values[row_headers.index("key_components")]
+    assert key_components_value == '{"order_number": "1002", "store_code": "A817"}'
+
+
 
 
 def test_persist_td_api_artifacts_writes_excel_outputs(tmp_path: Path) -> None:
