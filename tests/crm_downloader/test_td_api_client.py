@@ -1045,7 +1045,7 @@ async def test_fetch_reports_records_auth_error_diagnostics_when_rows_zero_due_t
 
 
 @pytest.mark.asyncio
-async def test_get_json_classifies_connect_timeout_and_bounds_retries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_get_json_classifies_total_timeout_and_bounds_retries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     request = _StubRequest(responses=[asyncio.TimeoutError(), asyncio.TimeoutError(), asyncio.TimeoutError()])
     context = _StubContext(request=request)
     client = _TokenRefreshingClient(
@@ -1077,10 +1077,10 @@ async def test_get_json_classifies_connect_timeout_and_bounds_retries(tmp_path: 
     )
 
     assert result.ok is False
-    assert result.error == "connect_timeout"
+    assert result.error == "total_timeout"
     assert len(request.calls) == 3
     assert len(metadata) == 3
-    assert {item["retry_reason"] for item in metadata} == {"connect_timeout"}
+    assert {item["retry_reason"] for item in metadata} == {"total_timeout"}
     assert sleep_calls == [0.0, 0.0]
 
 
@@ -1177,6 +1177,46 @@ def test_endpoint_specific_retry_profile_defaults() -> None:
     assert client._retry_profile_for_endpoint("/garments/details")["max_retries"] == client.config.garments_max_retries
 
 
+
+
+def test_endpoint_specific_total_timeout_defaults() -> None:
+    client = TdApiClient(store_code="a123", context=None, storage_state_path=Path("/tmp/missing"))  # type: ignore[arg-type]
+    assert client._total_timeout_ms_for_endpoint("/reports/order-report") == client.config.orders_total_timeout_ms
+    assert client._total_timeout_ms_for_endpoint("/sales-and-deliveries/sales") == client.config.sales_total_timeout_ms
+    assert client._total_timeout_ms_for_endpoint("/garments/details") == client.config.garments_total_timeout_ms
+    assert client.config.sales_total_timeout_ms == 60000
+    assert client.config.garments_total_timeout_ms == 60000
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_uses_endpoint_specific_effective_total_timeout(tmp_path: Path) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(status=200, url="https://reporting-api.quickdrycleaning.com/reports/order-report", payload={"data": [], "totalPages": 1}),
+            _StubResponse(status=200, url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales", payload={"data": [], "totalPages": 1}),
+            _StubResponse(status=200, url="https://reporting-api.quickdrycleaning.com/garments/details", payload={"data": [], "totalPages": 1}),
+        ]
+    )
+    context = _StubContext(request=request)
+    client = _TokenRefreshingClient(
+        store_code="a123",
+        context=context,
+        storage_state_path=tmp_path / "s.json",
+        config=TdApiClientConfig(connect_timeout_ms=5000, orders_read_timeout_ms=15000, sales_read_timeout_ms=45000, garments_read_timeout_ms=45000),
+    )
+
+    await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    orders_call = next(call for call in request.calls if call["url"].endswith("/reports/order-report"))
+    sales_call = next(call for call in request.calls if call["url"].endswith("/sales-and-deliveries/sales"))
+    garments_call = next(call for call in request.calls if call["url"].endswith("/garments/details"))
+
+    assert orders_call["timeout"] == client.config.orders_total_timeout_ms
+    assert sales_call["timeout"] == client.config.sales_total_timeout_ms
+    assert garments_call["timeout"] == client.config.garments_total_timeout_ms
+    assert client.config.connect_timeout_ms + client.config.sales_read_timeout_ms == 50000
+    assert sales_call["timeout"] > client.config.connect_timeout_ms
+
 def test_endpoint_specific_read_timeout_defaults() -> None:
     client = TdApiClient(store_code="a123", context=None, storage_state_path=Path("/tmp/missing"))  # type: ignore[arg-type]
     assert client._read_timeout_ms_for_endpoint("/reports/order-report") == client.config.orders_read_timeout_ms
@@ -1237,12 +1277,13 @@ async def test_get_json_timeout_retries_are_bounded_for_sales_endpoint(tmp_path:
     )
 
     assert result.ok is False
-    assert result.error in {"read_timeout", "connect_timeout"}
+    assert result.error in {"read_timeout", "total_timeout"}
     assert len(request.calls) == client.config.timeout_retry_limit + 1
-    timeout_metadata = [item for item in metadata if item.get("retry_reason") in {"read_timeout", "connect_timeout"}]
+    timeout_metadata = [item for item in metadata if item.get("retry_reason") in {"read_timeout", "total_timeout"}]
     assert timeout_metadata
     assert max(item["retry_count"] for item in timeout_metadata) == client.config.timeout_retry_limit
-    assert all(item.get("attempt_timeout_budget_ms") == client.config.connect_timeout_ms + client.config.sales_read_timeout_ms for item in timeout_metadata)
+    assert all(item["timeout_diagnostics"]["configured"]["attempt_timeout_budget_ms"] == client.config.connect_timeout_ms + client.config.sales_read_timeout_ms for item in timeout_metadata)
+    assert all(item["timeout_diagnostics"]["effective"]["attempt_timeout_budget_ms"] == client.config.sales_total_timeout_ms for item in timeout_metadata)
 
 
 @pytest.mark.asyncio

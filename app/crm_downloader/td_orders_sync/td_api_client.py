@@ -19,7 +19,7 @@ REPORTS_ORIGIN_HOST = "reports.quickdrycleaning.com"
 
 logger = logging.getLogger(__name__)
 
-_TIMEOUT_ERROR_CLASSES = {"read_timeout", "connect_timeout", "network_timeout", "timeout", "TimeoutError", "PlaywrightError"}
+_TIMEOUT_ERROR_CLASSES = {"read_timeout", "connect_timeout", "total_timeout", "network_timeout", "timeout", "TimeoutError", "PlaywrightError"}
 
 _SUMMARY_MARKERS = ("total", "summary", "grand total")
 _LABEL_LIKE_FIELD_SIGNALS = ("label", "name", "title", "description", "remark", "note", "particular")
@@ -53,9 +53,15 @@ class TdApiClientConfig:
     page_size: int = int(os.environ.get("TD_API_PAGE_SIZE", "500"))
     max_pages: int = max(1, int(os.environ.get("TD_API_MAX_PAGES", "100")))
     default_read_timeout_ms: int = int(os.environ.get("TD_API_READ_TIMEOUT_MS", "20000"))
+    default_total_timeout_ms: int = int(os.environ.get("TD_API_TOTAL_TIMEOUT_MS", os.environ.get("TD_API_TIMEOUT_MS", "20000")))
     orders_read_timeout_ms: int = int(os.environ.get("TD_API_ORDERS_READ_TIMEOUT_MS", os.environ.get("TD_API_READ_TIMEOUT_MS", "20000")))
     sales_read_timeout_ms: int = int(os.environ.get("TD_API_SALES_READ_TIMEOUT_MS", "45000"))
     garments_read_timeout_ms: int = int(os.environ.get("TD_API_GARMENTS_READ_TIMEOUT_MS", "45000"))
+    orders_total_timeout_ms: int = int(
+        os.environ.get("TD_API_ORDERS_TOTAL_TIMEOUT_MS", os.environ.get("TD_API_TOTAL_TIMEOUT_MS", os.environ.get("TD_API_TIMEOUT_MS", "20000")))
+    )
+    sales_total_timeout_ms: int = int(os.environ.get("TD_API_SALES_TOTAL_TIMEOUT_MS", "60000"))
+    garments_total_timeout_ms: int = int(os.environ.get("TD_API_GARMENTS_TOTAL_TIMEOUT_MS", "60000"))
     orders_max_retries: int = int(os.environ.get("TD_API_ORDERS_MAX_RETRIES", os.environ.get("TD_API_MAX_RETRIES", "3")))
     sales_max_retries: int = int(os.environ.get("TD_API_SALES_MAX_RETRIES", "5"))
     garments_max_retries: int = int(os.environ.get("TD_API_GARMENTS_MAX_RETRIES", "5"))
@@ -621,6 +627,15 @@ class TdApiClient:
             return self.config.garments_read_timeout_ms
         return self.config.default_read_timeout_ms
 
+    def _total_timeout_ms_for_endpoint(self, endpoint: str) -> int:
+        if endpoint == "/reports/order-report":
+            return self.config.orders_total_timeout_ms
+        if endpoint == "/sales-and-deliveries/sales":
+            return self.config.sales_total_timeout_ms
+        if endpoint == "/garments/details":
+            return self.config.garments_total_timeout_ms
+        return self.config.default_total_timeout_ms
+
 
     def _retry_profile_for_endpoint(self, endpoint: str) -> dict[str, float | int]:
         if endpoint == "/sales-and-deliveries/sales":
@@ -798,6 +813,7 @@ class TdApiClient:
         status_code: int | None = None
         resolved_connect_timeout_ms = connect_timeout_ms or self.config.connect_timeout_ms or self.config.timeout_ms
         resolved_read_timeout_ms = read_timeout_ms or self.config.default_read_timeout_ms or self.config.timeout_ms
+        resolved_total_timeout_ms = self._total_timeout_ms_for_endpoint(endpoint)
         resolved_max_retries = self.config.max_retries if max_retries is None else max(0, int(max_retries))
         resolved_backoff_base_seconds = self.config.backoff_base_seconds if backoff_base_seconds is None else float(backoff_base_seconds)
         resolved_max_backoff_seconds = self.config.max_backoff_seconds if max_backoff_seconds is None else float(max_backoff_seconds)
@@ -806,7 +822,22 @@ class TdApiClient:
         timeout_failures = 0
         for attempt in range(resolved_max_retries + 1):
             attempts = attempt + 1
-            attempt_budget_ms = resolved_connect_timeout_ms + resolved_read_timeout_ms
+            configured_attempt_timeout_budget_ms = resolved_connect_timeout_ms + resolved_read_timeout_ms
+            effective_total_timeout_ms = max(1, max(configured_attempt_timeout_budget_ms, resolved_total_timeout_ms))
+            timeout_diagnostics = {
+                "configured": {
+                    "connect_timeout_ms": resolved_connect_timeout_ms,
+                    "read_timeout_ms": resolved_read_timeout_ms,
+                    "total_timeout_ms": resolved_total_timeout_ms,
+                    "attempt_timeout_budget_ms": configured_attempt_timeout_budget_ms,
+                },
+                "effective": {
+                    "connect_timeout_ms": resolved_connect_timeout_ms,
+                    "read_timeout_ms": resolved_read_timeout_ms,
+                    "total_timeout_ms": effective_total_timeout_ms,
+                    "attempt_timeout_budget_ms": effective_total_timeout_ms,
+                },
+            }
             logger.info(
                 "TD API request attempt started",
                 extra={
@@ -814,9 +845,7 @@ class TdApiClient:
                     "endpoint": endpoint,
                     "attempt": attempts,
                     "max_attempts": resolved_max_retries + 1,
-                    "connect_timeout_ms": resolved_connect_timeout_ms,
-                    "read_timeout_ms": resolved_read_timeout_ms,
-                    "attempt_timeout_budget_ms": attempt_budget_ms,
+                    "timeout_diagnostics": timeout_diagnostics,
                     **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
                 },
             )
@@ -830,9 +859,9 @@ class TdApiClient:
                     url,
                     params=request_params,
                     headers=headers,
-                    timeout=resolved_connect_timeout_ms,
+                    timeout=effective_total_timeout_ms,
                     ),
-                    timeout=max(resolved_connect_timeout_ms / 1000.0, 0.001),
+                    timeout=max(effective_total_timeout_ms / 1000.0, 0.001),
                 )
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 status_code = response.status
@@ -851,6 +880,7 @@ class TdApiClient:
                                 token_refresh_attempted=refreshed,
                                 retry_reason="auth_refresh" if refreshed else None,
                             ).as_dict(),
+                            "timeout_diagnostics": timeout_diagnostics,
                             **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
                         }
                     )
@@ -874,7 +904,7 @@ class TdApiClient:
                         retry_count=attempt,
                         token_refresh_attempted=self._auth_state.refresh_attempted,
                     ).as_dict(),
-                        "attempt_timeout_budget_ms": attempt_budget_ms,
+                        "timeout_diagnostics": timeout_diagnostics,
                         **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
                     }
                 )
@@ -892,8 +922,7 @@ class TdApiClient:
                             "endpoint": endpoint,
                             "attempt": attempts,
                             "max_attempts": resolved_max_retries + 1,
-                            "read_timeout_ms": resolved_read_timeout_ms,
-                            "attempt_timeout_budget_ms": attempt_budget_ms,
+                            "timeout_diagnostics": timeout_diagnostics,
                         },
                     )
                     return _JsonFetchResult(ok=True, payload=payload, status=status_code, attempts=attempts)
@@ -904,7 +933,7 @@ class TdApiClient:
             except asyncio.TimeoutError:
                 status_code = None
                 latency_ms = int((time.perf_counter() - started) * 1000)
-                timeout_class = "read_timeout" if timed_out_during_response_read else "connect_timeout"
+                timeout_class = "read_timeout" if timed_out_during_response_read else "total_timeout"
                 retry_reason = timeout_class
                 metadata.append(
                     {
@@ -918,7 +947,8 @@ class TdApiClient:
                         token_refresh_attempted=self._auth_state.refresh_attempted,
                         retry_reason=timeout_class,
                     ).as_dict(),
-                        "attempt_timeout_budget_ms": attempt_budget_ms,
+                        "timeout_type": timeout_class,
+                        "timeout_diagnostics": timeout_diagnostics,
                         **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
                     }
                 )
@@ -939,7 +969,7 @@ class TdApiClient:
                         token_refresh_attempted=self._auth_state.refresh_attempted,
                         retry_reason="network_timeout",
                     ).as_dict(),
-                        "attempt_timeout_budget_ms": attempt_budget_ms,
+                        "timeout_diagnostics": timeout_diagnostics,
                         **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
                     }
                 )
@@ -953,7 +983,8 @@ class TdApiClient:
                     "endpoint": endpoint,
                     "attempt": attempts,
                     "max_attempts": resolved_max_retries + 1,
-                    "read_timeout_ms": resolved_read_timeout_ms,
+                    "timeout_type": retry_reason,
+                    "timeout_diagnostics": timeout_diagnostics,
                     "retry_reason": retry_reason,
                     "final_error_class": final_error_class,
                 },
@@ -977,7 +1008,7 @@ class TdApiClient:
             return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code, attempts=attempts)
         if last_error:
             message = str(last_error)
-            if message in {"connect_timeout", "read_timeout"}:
+            if message in {"connect_timeout", "read_timeout", "total_timeout"}:
                 return _JsonFetchResult(ok=False, payload=None, error=message, status=None, attempts=attempts)
             return _JsonFetchResult(ok=False, payload=None, error=type(last_error).__name__, status=None, attempts=attempts)
         return _JsonFetchResult(ok=False, payload=None, error="unknown_error", status=None, attempts=attempts)
