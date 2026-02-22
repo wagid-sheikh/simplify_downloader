@@ -59,6 +59,7 @@ class ApiRequestMetadata:
     latency_ms: int | None
     retry_count: int
     token_refresh_attempted: bool
+    retry_reason: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -69,6 +70,7 @@ class ApiRequestMetadata:
             "latency_ms": self.latency_ms,
             "retry_count": self.retry_count,
             "token_refresh_attempted": self.token_refresh_attempted,
+            "retry_reason": self.retry_reason,
         }
 
 
@@ -190,6 +192,7 @@ def build_api_request_metadata(
     latency_ms: int | None,
     retry_count: int = 0,
     token_refresh_attempted: bool = False,
+    retry_reason: str | None = None,
 ) -> ApiRequestMetadata:
     parsed = urlparse(url)
     endpoint = parsed.path
@@ -202,6 +205,7 @@ def build_api_request_metadata(
         latency_ms=latency_ms,
         retry_count=max(retry_count, 0),
         token_refresh_attempted=token_refresh_attempted,
+        retry_reason=retry_reason,
     )
 
 
