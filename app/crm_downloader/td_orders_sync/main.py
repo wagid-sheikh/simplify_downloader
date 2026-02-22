@@ -2585,6 +2585,47 @@ def _compare_row_count_diagnostics(orders_report: StoreReport | None, sales_repo
         "sales_warning_rows": len(sales_report.warning_rows) if sales_report and sales_report.warning_rows else 0,
     }
 
+
+def _dataset_completion_health(payload: Mapping[str, Any] | None, *, endpoint_error: str | None) -> dict[str, Any]:
+    pagination = (payload or {}).get("pagination") if isinstance(payload, Mapping) else {}
+    pagination = pagination if isinstance(pagination, Mapping) else {}
+    pages_fetched = int(pagination.get("pages_fetched") or 0)
+    reported_total_pages = pagination.get("reported_total_pages")
+    reported_total_rows = pagination.get("reported_total_rows")
+    total_rows = int(pagination.get("total_rows") or 0)
+
+    completed_by_pages = isinstance(reported_total_pages, int) and pages_fetched >= reported_total_pages
+    completed_by_rows = isinstance(reported_total_rows, int) and total_rows >= reported_total_rows
+    no_known_totals = reported_total_pages is None and reported_total_rows is None
+    readiness = not endpoint_error and (completed_by_pages or completed_by_rows or no_known_totals)
+
+    degraded_reason: str | None = None
+    if endpoint_error:
+        degraded_reason = f"endpoint_failed:{endpoint_error}"
+    elif not readiness:
+        degraded_reason = "pagination_incomplete"
+
+    return {
+        "ready": readiness,
+        "degraded_reason": degraded_reason,
+        "endpoint_error": endpoint_error,
+        "pages_fetched": pages_fetched,
+        "reported_total_pages": reported_total_pages,
+        "total_rows": total_rows,
+        "reported_total_rows": reported_total_rows,
+    }
+
+
+def _endpoint_failure_summary(api_fetch_result: TdApiFetchResult | None) -> dict[str, Any]:
+    if api_fetch_result is None:
+        return {"orders": None, "sales": None, "garments": None}
+    endpoint_errors = api_fetch_result.endpoint_errors or {}
+    return {
+        "orders": endpoint_errors.get("/reports/order-report"),
+        "sales": endpoint_errors.get("/sales-and-deliveries/sales"),
+        "garments": endpoint_errors.get("/garments/details"),
+    }
+
 def _resolve_ingested_rows(report: StoreReport | None) -> int | None:
     if report is None:
         return None
@@ -7273,9 +7314,19 @@ async def _run_store_discovery(
             run_sales=run_sales,
         )
         ui_rows = _resolve_compare_rows(orders_report, dataset="orders")
-        api_rows = api_fetch_result.orders_rows if "api_fetch_result" in locals() else []
+        api_fetch_result_obj = api_fetch_result if "api_fetch_result" in locals() else None
+        api_rows = api_fetch_result_obj.orders_rows if api_fetch_result_obj else []
         sales_ui_rows = _resolve_compare_rows(sales_report, dataset="sales")
-        sales_api_rows = api_fetch_result.sales_rows if "api_fetch_result" in locals() else []
+        sales_api_rows = api_fetch_result_obj.sales_rows if api_fetch_result_obj else []
+        endpoint_failure_summary = _endpoint_failure_summary(api_fetch_result_obj)
+        orders_api_health = _dataset_completion_health(
+            api_fetch_result_obj.raw_orders_payload if api_fetch_result_obj else {},
+            endpoint_error=endpoint_failure_summary.get("orders"),
+        )
+        sales_api_health = _dataset_completion_health(
+            api_fetch_result_obj.raw_sales_payload if api_fetch_result_obj else {},
+            endpoint_error=endpoint_failure_summary.get("sales"),
+        )
 
         if source_mode == "api_shadow" and api_all_endpoints_auth_failed:
             compare_metrics_obj = compare_canonical_rows(
@@ -7336,7 +7387,7 @@ async def _run_store_discovery(
                 sales_ui_summary_rows_filtered=sales_summary_rows_filtered,
                 sales_api_summary_rows_filtered=sales_api_summary_rows_filtered,
             )
-        api_garment_rows = api_fetch_result.garments_rows if "api_fetch_result" in locals() else []
+        api_garment_rows = api_fetch_result_obj.garments_rows if api_fetch_result_obj else []
         compare_row_counts = _compare_row_count_diagnostics(orders_report, sales_report)
         log_event(
             logger=store_logger,
@@ -7348,10 +7399,19 @@ async def _run_store_discovery(
             sales_api_rows=len(sales_api_rows),
             garments_api_rows=len(api_garment_rows),
         )
+        orders_compare_readiness = bool(orders_api_health.get("ready"))
+        sales_compare_readiness = bool(sales_api_health.get("ready"))
+
         if source_mode == "api_shadow" and api_all_endpoints_auth_failed:
             decision = DecisionLog(
                 decision="api_unavailable",
                 reason="All API endpoints failed auth in shadow mode",
+            )
+        elif source_mode == "api_shadow" and not orders_compare_readiness:
+            degraded_reason = orders_api_health.get("degraded_reason") or "api_incomplete"
+            decision = DecisionLog(
+                decision="orders_api_partial_unavailable",
+                reason=f"Orders API not ready for strict compare verdicting ({degraded_reason})",
             )
         elif source_mode == "api_shadow":
             decision = DecisionLog(
@@ -7376,8 +7436,15 @@ async def _run_store_discovery(
                     else "No blocking compare mismatches detected"
                 ),
             )
+        orders_compare_metrics = compare_metrics_obj.as_dict()
+        sales_compare_metrics = sales_compare_metrics_obj.as_dict()
+        orders_compare_metrics["dataset_health"] = dict(orders_api_health)
+        orders_compare_metrics["strict_verdict_ready"] = orders_compare_readiness
+        sales_compare_metrics["dataset_health"] = dict(sales_api_health)
+        sales_compare_metrics["strict_verdict_ready"] = sales_compare_readiness
+
         if orders_report:
-            orders_report.compare_metrics = compare_metrics_obj.as_dict()
+            orders_report.compare_metrics = orders_compare_metrics
             orders_report.api_request_metadata = list(api_request_metadata)
             orders_report.auth_diagnostics = auth_diagnostics.as_dict()
             orders_report.source_mode = correlation.source_mode
@@ -7387,7 +7454,13 @@ async def _run_store_discovery(
             phase="compare",
             message="TD UI/API compare metrics",
             **correlation.as_dict(),
-            compare_metrics=compare_metrics_obj.as_dict(),
+            compare_metrics=orders_compare_metrics,
+            sales_compare_metrics=sales_compare_metrics,
+            orders_compare_ready=orders_compare_readiness,
+            sales_compare_ready=sales_compare_readiness,
+            endpoint_failure_summary=endpoint_failure_summary,
+            orders_api_health=orders_api_health,
+            sales_api_health=sales_api_health,
             api_request_metadata=api_request_metadata,
             auth_diagnostics=auth_diagnostics.as_dict(),
             decision_log=decision.as_dict(),
@@ -7397,8 +7470,8 @@ async def _run_store_discovery(
             store_code=store.store_code,
             from_date=run_start_date,
             to_date=run_end_date,
-            orders_compare_metrics=compare_metrics_obj.as_dict(),
-            sales_compare_metrics=sales_compare_metrics_obj.as_dict(),
+            orders_compare_metrics=orders_compare_metrics,
+            sales_compare_metrics=sales_compare_metrics,
         )
         compare_excel_path = (
             download_dir
@@ -7406,7 +7479,7 @@ async def _run_store_discovery(
         )
         _persist_compare_excel_artifact(
             artifact_path=compare_excel_path,
-            compare_metrics=compare_metrics_obj.as_dict(),
+            compare_metrics=orders_compare_metrics,
             api_request_metadata=api_request_metadata,
         )
         compare_artifact_result.artifact_paths["orders_compare_excel"] = str(compare_excel_path)
@@ -7422,7 +7495,7 @@ async def _run_store_discovery(
 
         garment_ingest_result: TdGarmentIngestResult | None = None
         garment_sync_enabled = _bool_env("TD_GARMENT_SYNC_ENABLED", default=False)
-        compare_ok = _compare_quality_passed(compare_metrics_obj.as_dict())
+        compare_ok = (not orders_compare_readiness) or _compare_quality_passed(orders_compare_metrics)
         if (
             garment_sync_enabled
             and compare_ok
@@ -7469,7 +7542,7 @@ async def _run_store_discovery(
                 status="warn",
                 message="Skipped TD garment sync due to compare threshold breach",
                 store_code=store.store_code,
-                compare_metrics=compare_metrics_obj.as_dict(),
+                compare_metrics=orders_compare_metrics,
             )
         if orders_report and garment_ingest_result:
             orders_report.garment_reconciliation = {
@@ -7493,10 +7566,23 @@ async def _run_store_discovery(
             ui_rows=normalized_orders_ui_rows,
             api_rows=normalized_orders_api_rows,
         )
+        normalized_orders_verdict["compare_readiness"] = orders_compare_readiness
+        if not orders_compare_readiness:
+            degraded_code = "orders:api_partial_unavailable"
+            normalized_orders_verdict["pass"] = True
+            normalized_orders_verdict["reason_codes"] = [degraded_code]
+            normalized_orders_verdict["reasons"] = [degraded_code]
+
         normalized_sales_verdict = _build_sales_order_row_count_verdict(
             ui_rows=normalized_sales_ui_rows,
             api_rows=normalized_sales_api_rows,
         )
+        normalized_sales_verdict["compare_readiness"] = sales_compare_readiness
+        if not sales_compare_readiness:
+            degraded_code = "sales:api_partial_unavailable"
+            normalized_sales_verdict["pass"] = True
+            normalized_sales_verdict["reason_codes"] = [degraded_code]
+            normalized_sales_verdict["reasons"] = [degraded_code]
         thresholds_json, threshold_verdict = _build_threshold_verdict(
             normalized_orders_verdict=normalized_orders_verdict,
             normalized_sales_verdict=normalized_sales_verdict,
@@ -7511,7 +7597,7 @@ async def _run_store_discovery(
             run_start_date=run_start_date,
             run_end_date=run_end_date,
             source_mode=correlation.source_mode,
-            compare_metrics=compare_metrics_obj.as_dict(),
+            compare_metrics=orders_compare_metrics,
             decision_log=decision.as_dict(),
             thresholds_json=thresholds_json,
             threshold_verdict_json=threshold_verdict,
