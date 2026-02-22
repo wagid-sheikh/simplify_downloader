@@ -6,7 +6,10 @@ from app.crm_downloader.td_orders_sync.main import (
     StoreOutcome,
     StoreReport,
     TdOrdersDiscoverySummary,
+    _build_dataset_order_set_verdict,
+    _build_sales_order_row_count_verdict,
     _compare_row_count_diagnostics,
+    _filter_non_order_summary_rows,
     _resolve_compare_rows,
 )
 
@@ -213,6 +216,8 @@ def test_daily_reconciliation_summary_groups_pass_and_fail() -> None:
 
     record = summary.build_record(finished_at=datetime(2024, 1, 6, tzinfo=timezone.utc))
     daily = record["metrics_json"]["daily_reconciliation"]
+    assert daily["passed_stores"] == ["A1"]
+    assert daily["failed_stores"][0]["store_code"] == "A2"
     assert daily["stores_passed"] == ["A1"]
     assert daily["stores_failed"][0]["store_code"] == "A2"
     assert "orders:row_count_delta_exceeded" in daily["top_mismatch_reasons"]
@@ -251,3 +256,79 @@ def test_compare_row_count_diagnostics_reports_compare_and_warning_counts() -> N
         "sales_rows_for_compare": 3,
         "sales_warning_rows": 2,
     }
+
+
+
+def test_filter_non_order_summary_rows_removes_total_order_footer_rows() -> None:
+    rows = [
+        {"Order Number": "1001", "Payment Date": "2026-02-01"},
+        {"Order Number": "1002", "Payment Date": "2026-02-01"},
+        {"Order Number": "Total Order", "Payment Date": "2026-02-01", "Amount": "200"},
+        {"Order Number": "", "label": "Total order summary", "Amount": "200"},
+    ]
+
+    filtered, filtered_count = _filter_non_order_summary_rows(rows)
+
+    assert filtered_count == 2
+    assert [row["Order Number"] for row in filtered] == ["1001", "1002"]
+
+
+def test_normalized_orders_and_sales_verdicts_pass_when_only_summary_rows_differ() -> None:
+    orders_ui = [
+        {"order_number": "1001"},
+        {"order_number": "1002"},
+        {"order_number": "Total Order", "amount": "200"},
+    ]
+    orders_api = [
+        {"order_number": "1001"},
+        {"order_number": "1002"},
+    ]
+    sales_ui = [
+        {"order_number": "1001", "payment_mode": "Cash"},
+        {"order_number": "1001", "payment_mode": "UPI"},
+        {"order_number": "1002", "payment_mode": "Cash"},
+        {"order_number": "total order", "amount": "300"},
+    ]
+    sales_api = [
+        {"order_number": "1001", "payment_mode": "Cash"},
+        {"order_number": "1001", "payment_mode": "UPI"},
+        {"order_number": "1002", "payment_mode": "Cash"},
+    ]
+
+    normalized_orders_ui, _ = _filter_non_order_summary_rows(orders_ui)
+    normalized_orders_api, _ = _filter_non_order_summary_rows(orders_api)
+    normalized_sales_ui, _ = _filter_non_order_summary_rows(sales_ui)
+    normalized_sales_api, _ = _filter_non_order_summary_rows(sales_api)
+
+    orders_verdict = _build_dataset_order_set_verdict(
+        dataset="orders",
+        ui_rows=normalized_orders_ui,
+        api_rows=normalized_orders_api,
+    )
+    sales_verdict = _build_sales_order_row_count_verdict(
+        ui_rows=normalized_sales_ui,
+        api_rows=normalized_sales_api,
+    )
+
+    assert orders_verdict["pass"] is True
+    assert orders_verdict["order_number_set_equal"] is True
+    assert sales_verdict["pass"] is True
+    assert sales_verdict["order_number_set_equal"] is True
+    assert sales_verdict["per_order_row_count_equal"] is True
+
+
+def test_sales_verdict_fails_when_per_order_row_counts_differ() -> None:
+    ui_rows = [
+        {"order_number": "1001", "payment_mode": "Cash"},
+        {"order_number": "1001", "payment_mode": "UPI"},
+    ]
+    api_rows = [
+        {"order_number": "1001", "payment_mode": "Cash"},
+    ]
+
+    verdict = _build_sales_order_row_count_verdict(ui_rows=ui_rows, api_rows=api_rows)
+
+    assert verdict["pass"] is False
+    assert verdict["order_number_set_equal"] is True
+    assert verdict["per_order_row_count_equal"] is False
+    assert "sales:per_order_row_count_mismatch" in verdict["reason_codes"]

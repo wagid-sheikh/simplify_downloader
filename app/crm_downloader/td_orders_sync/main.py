@@ -78,6 +78,7 @@ SALES_NAV_SAMPLE_LIMIT = 3
 ROW_SAMPLE_LIMIT = 3
 SNAPSHOT_TEXT_MAX_CHARS = 120
 TD_SOURCE_MODES = {"ui", "api_shadow", "api_primary", "api_only"}
+SUMMARY_ROW_MARKERS = ("total order", "grand total")
 
 
 def _resolve_td_api_artifact_dir() -> Path:
@@ -166,23 +167,19 @@ def _evaluate_thresholds(*, metrics: Mapping[str, Any], thresholds: CompareThres
 
 def _build_threshold_verdict(
     *,
-    orders_metrics: Mapping[str, Any],
-    sales_metrics: Mapping[str, Any],
+    normalized_orders_verdict: Mapping[str, Any],
+    normalized_sales_verdict: Mapping[str, Any],
     garment_metrics: Mapping[str, Any],
     run_sales: bool,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     datasets: dict[str, dict[str, Any]] = {
-        "orders": _evaluate_thresholds(
-            metrics=orders_metrics, thresholds=_thresholds_for_dataset("orders"), dataset="orders"
-        ),
+        "orders": dict(normalized_orders_verdict),
         "garments": _evaluate_thresholds(
             metrics=garment_metrics, thresholds=_thresholds_for_dataset("garments"), dataset="garments"
         ),
     }
     if run_sales:
-        datasets["sales"] = _evaluate_thresholds(
-            metrics=sales_metrics, thresholds=_thresholds_for_dataset("sales"), dataset="sales"
-        )
+        datasets["sales"] = dict(normalized_sales_verdict)
 
     all_reasons: list[str] = []
     for verdict in datasets.values():
@@ -190,7 +187,10 @@ def _build_threshold_verdict(
     top_reasons = [reason for reason, _ in Counter(all_reasons).most_common(3)]
     overall_pass = all(bool(verdict.get("pass")) for verdict in datasets.values())
 
-    thresholds_json = {dataset: verdict["thresholds"] for dataset, verdict in datasets.items()}
+    thresholds_json = {
+        dataset: verdict.get("thresholds") or {}
+        for dataset, verdict in datasets.items()
+    }
     verdict_json = {
         "pass": overall_pass,
         "datasets": datasets,
@@ -1829,6 +1829,7 @@ def _build_daily_reconciliation_summary(summary: TdOrdersDiscoverySummary) -> di
         threshold_verdict = dict(orders_report.threshold_verdict) if orders_report else {}
         passed = bool(threshold_verdict.get("pass"))
         reason_codes = [str(code) for code in threshold_verdict.get("reason_codes") or []]
+        normalized_verdicts = dict(threshold_verdict.get("datasets") or {})
         if passed:
             stores_passed.append(store_code)
             continue
@@ -1840,12 +1841,15 @@ def _build_daily_reconciliation_summary(summary: TdOrdersDiscoverySummary) -> di
                 "api_ready": bool(orders_report.api_ready) if orders_report else False,
                 "consecutive_pass_windows": int(orders_report.consecutive_pass_windows or 0) if orders_report else 0,
                 "top_mismatch_reasons": reason_codes[:3],
+                "normalized_verdicts": normalized_verdicts,
             }
         )
 
     return {
         "report_date": summary.report_end_date.isoformat(),
         "run_id": summary.run_id,
+        "passed_stores": sorted(stores_passed),
+        "failed_stores": stores_failed,
         "stores_passed": sorted(stores_passed),
         "stores_failed": stores_failed,
         "top_mismatch_reasons": [reason for reason, _ in reason_counter.most_common(5)],
@@ -1870,8 +1874,8 @@ def _write_daily_reconciliation_artifact(*, summary: TdOrdersDiscoverySummary, l
             message="Wrote daily reconciliation artifact",
             run_id=summary.run_id,
             artifact_path=str(artifact_path),
-            passed_stores=len(payload["stores_passed"]),
-            failed_stores=len(payload["stores_failed"]),
+            passed_stores=len(payload["passed_stores"]),
+            failed_stores=len(payload["failed_stores"]),
         )
         return artifact_path
     except Exception as exc:  # pragma: no cover
@@ -2505,6 +2509,70 @@ def _resolve_compare_rows(report: StoreReport | None, *, dataset: str) -> list[d
     if dataset == "sales":
         return list(report.compare_rows_sales or [])
     raise ValueError(f"Unsupported compare dataset: {dataset}")
+
+
+def _row_has_summary_marker(row: Mapping[str, Any]) -> bool:
+    for value in row.values():
+        lowered = str(value or "").strip().lower()
+        if any(marker in lowered for marker in SUMMARY_ROW_MARKERS):
+            return True
+    return False
+
+
+def _extract_order_number(row: Mapping[str, Any]) -> str:
+    for key in ("order_number", "orderNo", "orderNumber", "Order No.", "Order Number"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    values = row.get("values")
+    if isinstance(values, Mapping):
+        for key in ("order_number", "Order No.", "Order Number"):
+            value = str(values.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _filter_non_order_summary_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    filtered_rows: list[dict[str, Any]] = []
+    filtered_count = 0
+    for row in rows:
+        order_number = _extract_order_number(row).strip().lower()
+        if _row_has_summary_marker(row) or "total order" in order_number:
+            filtered_count += 1
+            continue
+        filtered_rows.append(dict(row))
+    return filtered_rows, filtered_count
+
+
+def _build_dataset_order_set_verdict(*, dataset: str, ui_rows: Sequence[Mapping[str, Any]], api_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    ui_orders = {_extract_order_number(row) for row in ui_rows if _extract_order_number(row)}
+    api_orders = {_extract_order_number(row) for row in api_rows if _extract_order_number(row)}
+    order_set_equal = ui_orders == api_orders
+    reasons = [] if order_set_equal else [f"{dataset}:order_number_set_mismatch"]
+    return {
+        "dataset": dataset,
+        "pass": order_set_equal,
+        "order_number_set_equal": order_set_equal,
+        "ui_order_count": len(ui_orders),
+        "api_order_count": len(api_orders),
+        "reason_codes": reasons,
+        "reasons": reasons,
+        "thresholds": {},
+    }
+
+
+def _build_sales_order_row_count_verdict(ui_rows: Sequence[Mapping[str, Any]], api_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    verdict = _build_dataset_order_set_verdict(dataset="sales", ui_rows=ui_rows, api_rows=api_rows)
+    ui_counts = Counter(_extract_order_number(row) for row in ui_rows if _extract_order_number(row))
+    api_counts = Counter(_extract_order_number(row) for row in api_rows if _extract_order_number(row))
+    row_count_equal = ui_counts == api_counts
+    if not row_count_equal:
+        verdict["reason_codes"] = [*verdict["reason_codes"], "sales:per_order_row_count_mismatch"]
+        verdict["reasons"] = list(verdict["reason_codes"])
+    verdict["per_order_row_count_equal"] = row_count_equal
+    verdict["pass"] = bool(verdict["order_number_set_equal"] and row_count_equal)
+    return verdict
 
 
 def _compare_row_count_diagnostics(orders_report: StoreReport | None, sales_report: StoreReport | None) -> dict[str, int]:
@@ -7233,20 +7301,40 @@ async def _run_store_discovery(
             )
             compare_api_rows = []
             sales_compare_api_rows = []
+            normalized_orders_ui_rows = []
+            normalized_orders_api_rows = []
+            normalized_sales_ui_rows = []
+            normalized_sales_api_rows = []
         else:
             compare_api_rows = project_api_rows_for_compare(dataset="orders", api_rows=api_rows, store_code=store.store_code)
+            sales_compare_api_rows = project_api_rows_for_compare(dataset="sales", api_rows=sales_api_rows, store_code=store.store_code)
+
+            normalized_orders_ui_rows, orders_summary_rows_filtered = _filter_non_order_summary_rows(ui_rows)
+            normalized_orders_api_rows, orders_api_summary_rows_filtered = _filter_non_order_summary_rows(compare_api_rows)
+            normalized_sales_ui_rows, sales_summary_rows_filtered = _filter_non_order_summary_rows(sales_ui_rows)
+            normalized_sales_api_rows, sales_api_summary_rows_filtered = _filter_non_order_summary_rows(sales_compare_api_rows)
+
             compare_metrics_obj = compare_canonical_rows(
-                ui_rows=ui_rows,
-                api_rows=compare_api_rows,
+                ui_rows=normalized_orders_ui_rows,
+                api_rows=normalized_orders_api_rows,
                 key_fields=COMPARE_KEY_FIELDS_BY_DATASET["orders"],
                 sample_limit=WARNING_SAMPLE_LIMIT,
             )
-            sales_compare_api_rows = project_api_rows_for_compare(dataset="sales", api_rows=sales_api_rows, store_code=store.store_code)
             sales_compare_metrics_obj = compare_canonical_rows(
-                ui_rows=sales_ui_rows,
-                api_rows=sales_compare_api_rows,
+                ui_rows=normalized_sales_ui_rows,
+                api_rows=normalized_sales_api_rows,
                 key_fields=COMPARE_KEY_FIELDS_BY_DATASET["sales"],
                 sample_limit=WARNING_SAMPLE_LIMIT,
+            )
+            log_event(
+                logger=store_logger,
+                phase="compare",
+                message="Filtered non-order summary rows before verdict computation",
+                store_code=store.store_code,
+                orders_ui_summary_rows_filtered=orders_summary_rows_filtered,
+                orders_api_summary_rows_filtered=orders_api_summary_rows_filtered,
+                sales_ui_summary_rows_filtered=sales_summary_rows_filtered,
+                sales_api_summary_rows_filtered=sales_api_summary_rows_filtered,
             )
         api_garment_rows = api_fetch_result.garments_rows if "api_fetch_result" in locals() else []
         compare_row_counts = _compare_row_count_diagnostics(orders_report, sales_report)
@@ -7400,9 +7488,18 @@ async def _run_store_discovery(
             "amount_mismatches": 0,
             "status_mismatches": 0,
         }
+        normalized_orders_verdict = _build_dataset_order_set_verdict(
+            dataset="orders",
+            ui_rows=normalized_orders_ui_rows,
+            api_rows=normalized_orders_api_rows,
+        )
+        normalized_sales_verdict = _build_sales_order_row_count_verdict(
+            ui_rows=normalized_sales_ui_rows,
+            api_rows=normalized_sales_api_rows,
+        )
         thresholds_json, threshold_verdict = _build_threshold_verdict(
-            orders_metrics=compare_metrics_obj.as_dict(),
-            sales_metrics=sales_compare_metrics_obj.as_dict(),
+            normalized_orders_verdict=normalized_orders_verdict,
+            normalized_sales_verdict=normalized_sales_verdict,
             garment_metrics=garment_compare_metrics,
             run_sales=run_sales,
         )
