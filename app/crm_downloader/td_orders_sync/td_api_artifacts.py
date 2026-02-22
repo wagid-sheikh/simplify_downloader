@@ -131,16 +131,26 @@ def persist_td_compare_artifacts(
     store = (store_code or "").strip().upper() or "UNKNOWN"
     window_dir = download_dir / f"{store}_td_api_{_window_token(from_date)}_{_window_token(to_date)}"
 
+    orders_metrics = orders_compare_metrics or {}
+    sales_metrics = sales_compare_metrics or {}
     artifact_targets: list[tuple[str, Path, Any]] = [
         (
             "orders_compare_mismatches",
             window_dir / "orders_compare_mismatches.json",
-            (orders_compare_metrics or {}).get("mismatch_artifacts") or {},
+            {
+                "dataset_health": orders_metrics.get("dataset_health") or {},
+                "strict_verdict_ready": bool(orders_metrics.get("strict_verdict_ready", True)),
+                "mismatch_artifacts": orders_metrics.get("mismatch_artifacts") or {},
+            },
         ),
         (
             "sales_compare_mismatches",
             window_dir / "sales_compare_mismatches.json",
-            (sales_compare_metrics or {}).get("mismatch_artifacts") or {},
+            {
+                "dataset_health": sales_metrics.get("dataset_health") or {},
+                "strict_verdict_ready": bool(sales_metrics.get("strict_verdict_ready", True)),
+                "mismatch_artifacts": sales_metrics.get("mismatch_artifacts") or {},
+            },
         ),
     ]
 
