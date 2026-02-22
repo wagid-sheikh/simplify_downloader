@@ -52,8 +52,21 @@ class TdApiClientConfig:
     max_pages: int = max(1, int(os.environ.get("TD_API_MAX_PAGES", "100")))
     default_read_timeout_ms: int = int(os.environ.get("TD_API_READ_TIMEOUT_MS", "20000"))
     orders_read_timeout_ms: int = int(os.environ.get("TD_API_ORDERS_READ_TIMEOUT_MS", os.environ.get("TD_API_READ_TIMEOUT_MS", "20000")))
-    sales_read_timeout_ms: int = int(os.environ.get("TD_API_SALES_READ_TIMEOUT_MS", os.environ.get("TD_API_READ_TIMEOUT_MS", "20000")))
-    garments_read_timeout_ms: int = int(os.environ.get("TD_API_GARMENTS_READ_TIMEOUT_MS", os.environ.get("TD_API_READ_TIMEOUT_MS", "20000")))
+    sales_read_timeout_ms: int = int(os.environ.get("TD_API_SALES_READ_TIMEOUT_MS", "35000"))
+    garments_read_timeout_ms: int = int(os.environ.get("TD_API_GARMENTS_READ_TIMEOUT_MS", "35000"))
+    orders_max_retries: int = int(os.environ.get("TD_API_ORDERS_MAX_RETRIES", os.environ.get("TD_API_MAX_RETRIES", "3")))
+    sales_max_retries: int = int(os.environ.get("TD_API_SALES_MAX_RETRIES", "5"))
+    garments_max_retries: int = int(os.environ.get("TD_API_GARMENTS_MAX_RETRIES", "5"))
+    orders_backoff_base_seconds: float = float(
+        os.environ.get("TD_API_ORDERS_BACKOFF_BASE_SECONDS", os.environ.get("TD_API_BACKOFF_BASE_SECONDS", "0.5"))
+    )
+    sales_backoff_base_seconds: float = float(os.environ.get("TD_API_SALES_BACKOFF_BASE_SECONDS", "0.75"))
+    garments_backoff_base_seconds: float = float(os.environ.get("TD_API_GARMENTS_BACKOFF_BASE_SECONDS", "0.75"))
+    orders_max_backoff_seconds: float = float(
+        os.environ.get("TD_API_ORDERS_MAX_BACKOFF_SECONDS", os.environ.get("TD_API_MAX_BACKOFF_SECONDS", "4.0"))
+    )
+    sales_max_backoff_seconds: float = float(os.environ.get("TD_API_SALES_MAX_BACKOFF_SECONDS", "6.0"))
+    garments_max_backoff_seconds: float = float(os.environ.get("TD_API_GARMENTS_MAX_BACKOFF_SECONDS", "6.0"))
     page_size_fallbacks: tuple[int, ...] = tuple(
         int(size.strip())
         for size in os.environ.get("TD_API_PAGE_SIZE_FALLBACKS", "250,100").split(",")
@@ -72,6 +85,7 @@ class TdApiFetchResult:
     request_metadata: list[dict[str, Any]] = field(default_factory=list)
     endpoint_errors: dict[str, str] = field(default_factory=dict)
     endpoint_error_diagnostics: dict[str, dict[str, Any]] = field(default_factory=dict)
+    endpoint_health: dict[str, dict[str, Any]] = field(default_factory=dict)
     orders_summary_rows_filtered: int = 0
     sales_summary_rows_filtered: int = 0
 
@@ -89,6 +103,7 @@ class _JsonFetchResult:
     payload: Any
     error: str | None = None
     status: int | None = None
+    attempts: int = 0
 
 
 @dataclass
@@ -148,6 +163,7 @@ class TdApiClient:
         metadata: list[dict[str, Any]] = []
         errors: dict[str, str] = {}
         error_diagnostics: dict[str, dict[str, Any]] = {}
+        endpoint_health: dict[str, dict[str, Any]] = {}
 
         if not await self._auth_preflight(metadata=metadata):
             errors = {
@@ -174,6 +190,10 @@ class TdApiClient:
                 request_metadata=metadata,
                 endpoint_errors=errors,
                 endpoint_error_diagnostics={endpoint: self._build_auth_diagnostics_payload() for endpoint in errors},
+                endpoint_health={
+                    endpoint: {"success": False, "final_error_class": "auth_unavailable", "attempts": 0}
+                    for endpoint in errors
+                },
             )
 
         order_payload = await self._fetch_endpoint_rows(
@@ -182,6 +202,7 @@ class TdApiClient:
             metadata=metadata,
             errors=errors,
             error_diagnostics=error_diagnostics,
+            endpoint_health=endpoint_health,
         )
         sales_payload = await self._fetch_endpoint_rows(
             endpoint="/sales-and-deliveries/sales",
@@ -189,6 +210,7 @@ class TdApiClient:
             metadata=metadata,
             errors=errors,
             error_diagnostics=error_diagnostics,
+            endpoint_health=endpoint_health,
         )
         garments_payload = await self._fetch_endpoint_rows(
             endpoint="/garments/details",
@@ -196,6 +218,7 @@ class TdApiClient:
             metadata=metadata,
             errors=errors,
             error_diagnostics=error_diagnostics,
+            endpoint_health=endpoint_health,
         )
 
         orders_rows_raw = _extract_rows(order_payload)
@@ -228,6 +251,7 @@ class TdApiClient:
             request_metadata=metadata,
             endpoint_errors=errors,
             endpoint_error_diagnostics=error_diagnostics,
+            endpoint_health=endpoint_health,
             orders_summary_rows_filtered=orders_summary_filtered,
             sales_summary_rows_filtered=sales_summary_filtered,
         )
@@ -301,6 +325,7 @@ class TdApiClient:
         metadata: list[dict[str, Any]],
         errors: dict[str, str],
         error_diagnostics: dict[str, dict[str, Any]],
+        endpoint_health: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
         page = 1
         cumulative_rows = 0
@@ -311,6 +336,22 @@ class TdApiClient:
         active_page_size = int(params.get("pageSize") or self.config.page_size)
         available_page_sizes = self._page_size_candidates(starting_page_size=active_page_size)
         page_size_index = 0
+        fallback_used = False
+        endpoint_attempts = 0
+        retry_profile = self._retry_profile_for_endpoint(endpoint)
+        logger.info(
+            "TD API endpoint pagination configuration",
+            extra={
+                "store_code": self.store_code,
+                "endpoint": endpoint,
+                "initial_page_size": active_page_size,
+                "available_page_sizes": available_page_sizes,
+                "max_retries": retry_profile["max_retries"],
+                "backoff_base_seconds": retry_profile["backoff_base_seconds"],
+                "max_backoff_seconds": retry_profile["max_backoff_seconds"],
+                "read_timeout_ms": self._read_timeout_ms_for_endpoint(endpoint),
+            },
+        )
 
         while True:
             active_page_size = available_page_sizes[page_size_index]
@@ -321,7 +362,12 @@ class TdApiClient:
                 metadata=metadata,
                 connect_timeout_ms=self.config.connect_timeout_ms,
                 read_timeout_ms=self._read_timeout_ms_for_endpoint(endpoint),
+                max_retries=retry_profile["max_retries"],
+                backoff_base_seconds=retry_profile["backoff_base_seconds"],
+                max_backoff_seconds=retry_profile["max_backoff_seconds"],
             )
+
+            endpoint_attempts += max(int(page_result.attempts or 0), 0)
 
             if not page_result.ok:
                 if (
@@ -331,6 +377,7 @@ class TdApiClient:
                     previous_page_size = active_page_size
                     page_size_index += 1
                     next_page_size = available_page_sizes[page_size_index]
+                    fallback_used = True
                     metadata.append(
                         {
                             "endpoint": endpoint,
@@ -341,17 +388,35 @@ class TdApiClient:
                             },
                             "status": page_result.status,
                             "latency_ms": None,
-                            "retry_count": self.config.max_retries,
+                            "retry_count": retry_profile["max_retries"],
                             "token_refresh_attempted": self._auth_state.refresh_attempted,
                             "retry_reason": "page_size_fallback",
                             "fallback_page_size_from": previous_page_size,
                             "fallback_page_size_to": next_page_size,
                         }
                     )
+                    logger.warning(
+                        "TD API page-size fallback triggered",
+                        extra={
+                            "store_code": self.store_code,
+                            "endpoint": endpoint,
+                            "page": page,
+                            "fallback_page_size_from": previous_page_size,
+                            "fallback_page_size_to": next_page_size,
+                            "retry_profile": retry_profile,
+                            "error_class": page_result.error,
+                        },
+                    )
                     continue
-                errors[endpoint] = page_result.error or "unknown_error"
+                final_error = page_result.error or "unknown_error"
+                errors[endpoint] = final_error
                 diagnostics = self._build_auth_diagnostics_payload()
                 error_diagnostics[endpoint] = diagnostics
+                endpoint_health[endpoint] = {
+                    "success": False,
+                    "final_error_class": final_error,
+                    "attempts": endpoint_attempts,
+                }
                 if page == 1 and page_result.status == 401:
                     logger.error(
                         "TD API endpoint unauthorized on first page",
@@ -408,6 +473,24 @@ class TdApiClient:
 
             page += 1
 
+        endpoint_health.setdefault(
+            endpoint,
+            {
+                "success": True,
+                "final_error_class": None,
+                "attempts": endpoint_attempts,
+            },
+        )
+        logger.info(
+            "TD API page-size fallback decision",
+            extra={
+                "store_code": self.store_code,
+                "endpoint": endpoint,
+                "fallback_used": fallback_used,
+                "final_page_size": active_page_size,
+                "available_page_sizes": available_page_sizes,
+            },
+        )
         return {
             "data": aggregated_rows,
             "pages": page_payloads,
@@ -429,6 +512,26 @@ class TdApiClient:
         if endpoint == "/garments/details":
             return self.config.garments_read_timeout_ms
         return self.config.default_read_timeout_ms
+
+
+    def _retry_profile_for_endpoint(self, endpoint: str) -> dict[str, float | int]:
+        if endpoint == "/sales-and-deliveries/sales":
+            return {
+                "max_retries": self.config.sales_max_retries,
+                "backoff_base_seconds": self.config.sales_backoff_base_seconds,
+                "max_backoff_seconds": self.config.sales_max_backoff_seconds,
+            }
+        if endpoint == "/garments/details":
+            return {
+                "max_retries": self.config.garments_max_retries,
+                "backoff_base_seconds": self.config.garments_backoff_base_seconds,
+                "max_backoff_seconds": self.config.garments_max_backoff_seconds,
+            }
+        return {
+            "max_retries": self.config.orders_max_retries,
+            "backoff_base_seconds": self.config.orders_backoff_base_seconds,
+            "max_backoff_seconds": self.config.orders_max_backoff_seconds,
+        }
 
     def _page_size_candidates(self, *, starting_page_size: int) -> list[int]:
         candidates = [starting_page_size]
@@ -455,12 +558,14 @@ class TdApiClient:
     ) -> dict[str, Any]:
         errors: dict[str, str] = {}
         error_diagnostics: dict[str, dict[str, Any]] = {}
+        endpoint_health: dict[str, dict[str, Any]] = {}
         return await self._fetch_endpoint_rows(
             endpoint=endpoint,
             params=params,
             metadata=metadata,
             errors=errors,
             error_diagnostics=error_diagnostics,
+            endpoint_health=endpoint_health,
         )
 
     async def _get_json(
@@ -471,6 +576,9 @@ class TdApiClient:
         metadata: list[dict[str, Any]],
         connect_timeout_ms: int | None = None,
         read_timeout_ms: int | None = None,
+        max_retries: int | None = None,
+        backoff_base_seconds: float | None = None,
+        max_backoff_seconds: float | None = None,
     ) -> _JsonFetchResult:
         url = f"{REPORTING_API_BASE_URL}{endpoint}"
         token_discovery = await self._discover_reporting_token()
@@ -487,7 +595,12 @@ class TdApiClient:
         status_code: int | None = None
         resolved_connect_timeout_ms = connect_timeout_ms or self.config.connect_timeout_ms or self.config.timeout_ms
         resolved_read_timeout_ms = read_timeout_ms or self.config.default_read_timeout_ms or self.config.timeout_ms
-        for attempt in range(self.config.max_retries + 1):
+        resolved_max_retries = self.config.max_retries if max_retries is None else max(0, int(max_retries))
+        resolved_backoff_base_seconds = self.config.backoff_base_seconds if backoff_base_seconds is None else float(backoff_base_seconds)
+        resolved_max_backoff_seconds = self.config.max_backoff_seconds if max_backoff_seconds is None else float(max_backoff_seconds)
+        attempts = 0
+        for attempt in range(resolved_max_retries + 1):
+            attempts = attempt + 1
             await _StoreRateLimiter.wait_turn(self.store_code, self.config.min_interval_seconds)
             started = time.perf_counter()
             try:
@@ -521,7 +634,7 @@ class TdApiClient:
                         if refreshed_token:
                             headers["Authorization"] = f"Bearer {refreshed_token}"
                         continue
-                    return _JsonFetchResult(ok=False, payload=None, error="http_401", status=status_code)
+                    return _JsonFetchResult(ok=False, payload=None, error="http_401", status=status_code, attempts=attempts)
 
                 metadata.append(
                     build_api_request_metadata(
@@ -539,9 +652,9 @@ class TdApiClient:
                         response.json(),
                         timeout=max(resolved_read_timeout_ms / 1000.0, 0.001),
                     )
-                    return _JsonFetchResult(ok=True, payload=payload, status=status_code)
+                    return _JsonFetchResult(ok=True, payload=payload, status=status_code, attempts=attempts)
                 if status_code not in {408, 429, 500, 502, 503, 504}:
-                    return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code)
+                    return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code, attempts=attempts)
                 last_error = RuntimeError(f"HTTP {status_code} from {endpoint}")
             except asyncio.TimeoutError:
                 status_code = None
@@ -575,19 +688,19 @@ class TdApiClient:
                 )
                 last_error = exc
 
-            if attempt < self.config.max_retries:
-                backoff = min(self.config.max_backoff_seconds, self.config.backoff_base_seconds * (2**attempt))
+            if attempt < resolved_max_retries:
+                backoff = min(resolved_max_backoff_seconds, resolved_backoff_base_seconds * (2**attempt))
                 jitter = random.uniform(0.0, max(self.config.backoff_jitter_seconds, 0.0))
                 await asyncio.sleep(max(backoff + jitter, 0.0))
 
         if status_code is not None:
-            return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code)
+            return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code, attempts=attempts)
         if last_error:
             message = str(last_error)
             if message in {"connect_timeout", "read_timeout"}:
-                return _JsonFetchResult(ok=False, payload=None, error=message, status=None)
-            return _JsonFetchResult(ok=False, payload=None, error=type(last_error).__name__, status=None)
-        return _JsonFetchResult(ok=False, payload=None, error="unknown_error", status=None)
+                return _JsonFetchResult(ok=False, payload=None, error=message, status=None, attempts=attempts)
+            return _JsonFetchResult(ok=False, payload=None, error=type(last_error).__name__, status=None, attempts=attempts)
+        return _JsonFetchResult(ok=False, payload=None, error="unknown_error", status=None, attempts=attempts)
 
     async def _attempt_auth_refresh_once(self) -> bool:
         if self._auth_state.refresh_attempted:
