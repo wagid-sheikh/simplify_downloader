@@ -6630,6 +6630,7 @@ async def _run_store_discovery(
             )
 
         api_fetch_result = TdApiFetchResult()
+        api_all_endpoints_auth_failed = False
         sales_only_mode = not run_orders
         if not run_orders and source_mode == "ui":
             log_event(
@@ -6683,6 +6684,11 @@ async def _run_store_discovery(
                         )
                         api_fetch_result = await api_client.fetch_reports(from_date=run_start_date, to_date=run_end_date)
                         api_request_metadata.extend(api_fetch_result.request_metadata)
+                        endpoint_errors = api_fetch_result.endpoint_errors or {}
+                        auth_error_codes = {"auth_unavailable", "http_401"}
+                        api_all_endpoints_auth_failed = bool(endpoint_errors) and all(
+                            str(error_code) in auth_error_codes for error_code in endpoint_errors.values()
+                        )
                         artifact_result = persist_td_api_artifacts(
                             download_dir=download_dir,
                             store_code=store.store_code,
@@ -7155,22 +7161,48 @@ async def _run_store_discovery(
         )
         ui_rows = orders_report.warning_rows if orders_report and orders_report.warning_rows else []
         api_rows = api_fetch_result.orders_rows if "api_fetch_result" in locals() else []
-        compare_api_rows = project_api_rows_for_compare(dataset="orders", api_rows=api_rows, store_code=store.store_code)
-        compare_metrics_obj = compare_canonical_rows(
-            ui_rows=ui_rows,
-            api_rows=compare_api_rows,
-            key_fields=COMPARE_KEY_FIELDS_BY_DATASET["orders"],
-            sample_limit=WARNING_SAMPLE_LIMIT,
-        )
         sales_ui_rows = sales_report.warning_rows if sales_report and sales_report.warning_rows else []
         sales_api_rows = api_fetch_result.sales_rows if "api_fetch_result" in locals() else []
-        sales_compare_api_rows = project_api_rows_for_compare(dataset="sales", api_rows=sales_api_rows, store_code=store.store_code)
-        sales_compare_metrics_obj = compare_canonical_rows(
-            ui_rows=sales_ui_rows,
-            api_rows=sales_compare_api_rows,
-            key_fields=COMPARE_KEY_FIELDS_BY_DATASET["sales"],
-            sample_limit=WARNING_SAMPLE_LIMIT,
-        )
+
+        if source_mode == "api_shadow" and api_all_endpoints_auth_failed:
+            compare_metrics_obj = compare_canonical_rows(
+                ui_rows=[],
+                api_rows=[],
+                key_fields=COMPARE_KEY_FIELDS_BY_DATASET["orders"],
+                sample_limit=WARNING_SAMPLE_LIMIT,
+            )
+            sales_compare_metrics_obj = compare_canonical_rows(
+                ui_rows=[],
+                api_rows=[],
+                key_fields=COMPARE_KEY_FIELDS_BY_DATASET["sales"],
+                sample_limit=WARNING_SAMPLE_LIMIT,
+            )
+            log_event(
+                logger=store_logger,
+                phase="compare",
+                status="warn",
+                message="Marked compare as api_unavailable because all API endpoints failed auth",
+                **correlation.as_dict(),
+                endpoint_errors=api_fetch_result.endpoint_errors,
+                endpoint_error_diagnostics=api_fetch_result.endpoint_error_diagnostics,
+            )
+            compare_api_rows = []
+            sales_compare_api_rows = []
+        else:
+            compare_api_rows = project_api_rows_for_compare(dataset="orders", api_rows=api_rows, store_code=store.store_code)
+            compare_metrics_obj = compare_canonical_rows(
+                ui_rows=ui_rows,
+                api_rows=compare_api_rows,
+                key_fields=COMPARE_KEY_FIELDS_BY_DATASET["orders"],
+                sample_limit=WARNING_SAMPLE_LIMIT,
+            )
+            sales_compare_api_rows = project_api_rows_for_compare(dataset="sales", api_rows=sales_api_rows, store_code=store.store_code)
+            sales_compare_metrics_obj = compare_canonical_rows(
+                ui_rows=sales_ui_rows,
+                api_rows=sales_compare_api_rows,
+                key_fields=COMPARE_KEY_FIELDS_BY_DATASET["sales"],
+                sample_limit=WARNING_SAMPLE_LIMIT,
+            )
         api_garment_rows = api_fetch_result.garments_rows if "api_fetch_result" in locals() else []
         log_event(
             logger=store_logger,
@@ -7183,7 +7215,12 @@ async def _run_store_discovery(
             sales_api_rows=len(sales_api_rows),
             garments_api_rows=len(api_garment_rows),
         )
-        if source_mode == "api_shadow":
+        if source_mode == "api_shadow" and api_all_endpoints_auth_failed:
+            decision = DecisionLog(
+                decision="api_unavailable",
+                reason="All API endpoints failed auth in shadow mode",
+            )
+        elif source_mode == "api_shadow":
             decision = DecisionLog(
                 decision="api_shadow_compare_only",
                 reason="Shadow mode enabled: API data compared and logged without write path",
