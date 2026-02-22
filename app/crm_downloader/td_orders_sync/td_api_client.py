@@ -16,6 +16,10 @@ from app.crm_downloader.td_orders_sync.td_api_compare import build_api_request_m
 
 REPORTING_API_BASE_URL = "https://reporting-api.quickdrycleaning.com"
 REPORTS_ORIGIN_HOST = "reports.quickdrycleaning.com"
+ORDERS_ENDPOINT = "/reports/order-report"
+SALES_ENDPOINT = "/sales-and-deliveries/sales"
+GARMENTS_ENDPOINT = "/garments/details"
+HAR_COMPATIBLE_ENDPOINTS = frozenset({SALES_ENDPOINT, GARMENTS_ENDPOINT})
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +118,15 @@ class _JsonFetchResult:
     error: str | None = None
     status: int | None = None
     attempts: int = 0
+    auth_shape: str = "legacy"
+    latency_ms: int | None = None
+
+
+@dataclass(frozen=True)
+class _AuthRequestShape:
+    name: str
+    include_authorization_header: bool
+    include_token_query: bool
 
 
 @dataclass
@@ -182,11 +195,7 @@ class TdApiClient:
         endpoint_health: dict[str, dict[str, Any]] = {}
 
         if not await self._auth_preflight(metadata=metadata):
-            errors = {
-                "/reports/order-report": "auth_unavailable",
-                "/sales-and-deliveries/sales": "auth_unavailable",
-                "/garments/details": "auth_unavailable",
-            }
+            errors = {ORDERS_ENDPOINT: "auth_unavailable", SALES_ENDPOINT: "auth_unavailable", GARMENTS_ENDPOINT: "auth_unavailable"}
             empty_payload = {
                 "data": [],
                 "pages": [],
@@ -213,7 +222,7 @@ class TdApiClient:
             )
 
         order_payload = await self._fetch_endpoint_rows(
-            endpoint="/reports/order-report",
+            endpoint=ORDERS_ENDPOINT,
             params={**common_params, "expandData": "true"},
             metadata=metadata,
             errors=errors,
@@ -221,7 +230,7 @@ class TdApiClient:
             endpoint_health=endpoint_health,
         )
         sales_payload = await self._fetch_endpoint_rows(
-            endpoint="/sales-and-deliveries/sales",
+            endpoint=SALES_ENDPOINT,
             params={**common_params, "expandData": "true"},
             metadata=metadata,
             errors=errors,
@@ -229,7 +238,7 @@ class TdApiClient:
             endpoint_health=endpoint_health,
         )
         garments_payload = await self._fetch_endpoint_rows(
-            endpoint="/garments/details",
+            endpoint=GARMENTS_ENDPOINT,
             params=common_params,
             metadata=metadata,
             errors=errors,
@@ -245,17 +254,17 @@ class TdApiClient:
         sales_rows, sales_summary_filtered = _filter_summary_rows(sales_rows_raw)
 
         self._log_summary_rows_filtered(
-            endpoint="/reports/order-report",
+            endpoint=ORDERS_ENDPOINT,
             summary_rows_filtered=orders_summary_filtered,
         )
         self._log_summary_rows_filtered(
-            endpoint="/sales-and-deliveries/sales",
+            endpoint=SALES_ENDPOINT,
             summary_rows_filtered=sales_summary_filtered,
         )
 
-        self._log_endpoint_total(endpoint="/reports/order-report", total_rows=len(orders_rows))
-        self._log_endpoint_total(endpoint="/sales-and-deliveries/sales", total_rows=len(sales_rows))
-        self._log_endpoint_total(endpoint="/garments/details", total_rows=len(garments_rows))
+        self._log_endpoint_total(endpoint=ORDERS_ENDPOINT, total_rows=len(orders_rows))
+        self._log_endpoint_total(endpoint=SALES_ENDPOINT, total_rows=len(sales_rows))
+        self._log_endpoint_total(endpoint=GARMENTS_ENDPOINT, total_rows=len(garments_rows))
 
         return TdApiFetchResult(
             raw_orders_payload=order_payload,
@@ -294,7 +303,7 @@ class TdApiClient:
         return {str(key): [str(value)] for key, value in params.items()}
 
     def _validate_required_query_params(self, *, endpoint: str, params: Mapping[str, Any]) -> str | None:
-        if endpoint not in {"/sales-and-deliveries/sales", "/garments/details"}:
+        if endpoint not in HAR_COMPATIBLE_ENDPOINTS:
             return None
         required_keys = ("startDate", "endDate", "page", "pageSize")
         missing = [key for key in required_keys if params.get(key) in (None, "")]
@@ -619,32 +628,32 @@ class TdApiClient:
         return error_text or "unknown_error"
 
     def _read_timeout_ms_for_endpoint(self, endpoint: str, *, page_size: int | None = None) -> int:
-        if endpoint == "/reports/order-report":
+        if endpoint == ORDERS_ENDPOINT:
             return self.config.orders_read_timeout_ms
-        if endpoint == "/sales-and-deliveries/sales":
+        if endpoint == SALES_ENDPOINT:
             return self.config.sales_read_timeout_ms
-        if endpoint == "/garments/details":
+        if endpoint == GARMENTS_ENDPOINT:
             return self.config.garments_read_timeout_ms
         return self.config.default_read_timeout_ms
 
     def _total_timeout_ms_for_endpoint(self, endpoint: str) -> int:
-        if endpoint == "/reports/order-report":
+        if endpoint == ORDERS_ENDPOINT:
             return self.config.orders_total_timeout_ms
-        if endpoint == "/sales-and-deliveries/sales":
+        if endpoint == SALES_ENDPOINT:
             return self.config.sales_total_timeout_ms
-        if endpoint == "/garments/details":
+        if endpoint == GARMENTS_ENDPOINT:
             return self.config.garments_total_timeout_ms
         return self.config.default_total_timeout_ms
 
 
     def _retry_profile_for_endpoint(self, endpoint: str) -> dict[str, float | int]:
-        if endpoint == "/sales-and-deliveries/sales":
+        if endpoint == SALES_ENDPOINT:
             return {
                 "max_retries": self.config.sales_max_retries,
                 "backoff_base_seconds": self.config.sales_backoff_base_seconds,
                 "max_backoff_seconds": self.config.sales_max_backoff_seconds,
             }
-        if endpoint == "/garments/details":
+        if endpoint == GARMENTS_ENDPOINT:
             return {
                 "max_retries": self.config.garments_max_retries,
                 "backoff_base_seconds": self.config.garments_backoff_base_seconds,
@@ -692,6 +701,25 @@ class TdApiClient:
             "auth_context_used_token_source_known": bool(token_source),
             "auth_context_used_cookies_present": self._has_cookie_auth_source(),
         }
+
+    def _auth_shapes_for_endpoint(self, endpoint: str) -> tuple[_AuthRequestShape, ...]:
+        if endpoint in HAR_COMPATIBLE_ENDPOINTS:
+            return (
+                _AuthRequestShape(name="har_like", include_authorization_header=False, include_token_query=False),
+                _AuthRequestShape(name="legacy", include_authorization_header=True, include_token_query=True),
+            )
+        return (_AuthRequestShape(name="legacy", include_authorization_header=True, include_token_query=True),)
+
+    def _request_context_headers(self) -> dict[str, str]:
+        headers = {"accept": "*/*", "origin": f"https://{REPORTS_ORIGIN_HOST}", "referer": f"https://{REPORTS_ORIGIN_HOST}/"}
+        iframe_src = (self._report_iframe_src or "").strip()
+        if not iframe_src:
+            return headers
+        parsed_iframe = urlparse(iframe_src)
+        if parsed_iframe.scheme and parsed_iframe.netloc:
+            headers["origin"] = f"{parsed_iframe.scheme}://{parsed_iframe.netloc}"
+            headers["referer"] = iframe_src
+        return headers
 
     def _log_auth_context_ready_once(self, *, endpoint: str) -> None:
         if endpoint in self._auth_state.auth_ready_logged_endpoints:
@@ -744,42 +772,9 @@ class TdApiClient:
         url = f"{REPORTING_API_BASE_URL}{endpoint}"
         token_discovery = await self._discover_reporting_token()
         iframe_token_discovery = self._discover_token_from_iframe_url_query()
-        headers = {
-            "accept": "*/*",
-            "origin": "https://reports.quickdrycleaning.com",
-            "referer": "https://reports.quickdrycleaning.com/",
-        }
+        request_context_headers = self._request_context_headers()
         request_params = dict(params)
         token_value = (token_discovery.token or "").strip()
-        if token_value:
-            headers["Authorization"] = f"Bearer {token_value}"
-            request_params["token"] = token_value
-
-        if endpoint in {"/sales-and-deliveries/sales", "/garments/details"} and not token_value:
-            fail_fast_error = "missing_auth_token_at_dispatch"
-            diagnostics = {
-                "store_code": self.store_code,
-                "endpoint": endpoint,
-                "diagnostic": fail_fast_error,
-                "token_found": False,
-                "token_source": token_discovery.source,
-                "token_expiry": token_discovery.expiry,
-                "cookies_found": self._has_cookie_auth_source(),
-            }
-            metadata.append(
-                {
-                    "endpoint": endpoint,
-                    "method": "GET",
-                    "query_params": self._metadata_query_map(request_params),
-                    "status": None,
-                    "latency_ms": 0,
-                    "retry_count": 0,
-                    "token_refresh_attempted": self._auth_state.refresh_attempted,
-                    "retry_reason": fail_fast_error,
-                }
-            )
-            logger.error("TD API fail-fast dispatch aborted due to missing token", extra=diagnostics)
-            return _JsonFetchResult(ok=False, payload=None, error=fail_fast_error, status=None, attempts=0)
 
         validation_error = self._validate_required_query_params(endpoint=endpoint, params=request_params)
         if validation_error:
@@ -809,6 +804,113 @@ class TdApiClient:
                 },
             )
 
+        auth_shapes = self._auth_shapes_for_endpoint(endpoint)
+        baseline_status: int | None = None
+        baseline_latency_ms: int | None = None
+        cumulative_attempts = 0
+        shape_last_result: _JsonFetchResult | None = None
+
+        for shape_index, auth_shape in enumerate(auth_shapes):
+            shape_headers = dict(request_context_headers)
+            shape_params = dict(request_params)
+            if token_value and auth_shape.include_authorization_header:
+                shape_headers["Authorization"] = f"Bearer {token_value}"
+            if token_value and auth_shape.include_token_query:
+                shape_params["token"] = token_value
+
+            if auth_shape.name == "legacy" and endpoint in HAR_COMPATIBLE_ENDPOINTS and not token_value:
+                fail_fast_error = "missing_auth_token_at_dispatch"
+                metadata.append(
+                    {
+                        "endpoint": endpoint,
+                        "method": "GET",
+                        "query_params": self._metadata_query_map(shape_params),
+                        "status": None,
+                        "latency_ms": 0,
+                        "retry_count": 0,
+                        "token_refresh_attempted": self._auth_state.refresh_attempted,
+                        "retry_reason": fail_fast_error,
+                        "auth_shape": auth_shape.name,
+                        "auth_shape_fallback_from_har_like": shape_index > 0,
+                    }
+                )
+                shape_last_result = _JsonFetchResult(ok=False, payload=None, error=fail_fast_error, status=None, attempts=0, auth_shape=auth_shape.name)
+                continue
+
+            shape_result = await self._execute_json_request_shape(
+                endpoint=endpoint,
+                url=url,
+                metadata=metadata,
+                request_params=shape_params,
+                headers=shape_headers,
+                token_discovery=token_discovery,
+                connect_timeout_ms=connect_timeout_ms,
+                read_timeout_ms=read_timeout_ms,
+                max_retries=max_retries,
+                backoff_base_seconds=backoff_base_seconds,
+                max_backoff_seconds=max_backoff_seconds,
+                auth_shape=auth_shape,
+                baseline_status=baseline_status,
+                baseline_latency_ms=baseline_latency_ms,
+                auth_shape_fallback_from_har_like=shape_index > 0,
+            )
+            cumulative_attempts += shape_result.attempts
+            shape_last_result = shape_result
+            if shape_index == 0:
+                baseline_status = shape_result.status
+                baseline_latency_ms = shape_result.latency_ms
+            if shape_result.ok or shape_index >= len(auth_shapes) - 1:
+                return _JsonFetchResult(
+                    ok=shape_result.ok,
+                    payload=shape_result.payload,
+                    error=shape_result.error,
+                    status=shape_result.status,
+                    attempts=cumulative_attempts,
+                    auth_shape=shape_result.auth_shape,
+                    latency_ms=shape_result.latency_ms,
+                )
+
+            logger.info(
+                "TD API auth shape fallback engaged",
+                extra={
+                    "store_code": self.store_code,
+                    "endpoint": endpoint,
+                    "previous_auth_shape": auth_shape.name,
+                    "next_auth_shape": auth_shapes[shape_index + 1].name,
+                    "baseline_status": baseline_status,
+                    "baseline_latency_ms": baseline_latency_ms,
+                },
+            )
+
+        return _JsonFetchResult(
+            ok=False,
+            payload=None,
+            error=(shape_last_result.error if shape_last_result else "unknown_error"),
+            status=(shape_last_result.status if shape_last_result else None),
+            attempts=cumulative_attempts,
+            auth_shape=(shape_last_result.auth_shape if shape_last_result else "legacy"),
+            latency_ms=(shape_last_result.latency_ms if shape_last_result else None),
+        )
+
+    async def _execute_json_request_shape(
+        self,
+        *,
+        endpoint: str,
+        url: str,
+        metadata: list[dict[str, Any]],
+        request_params: Mapping[str, Any],
+        headers: Mapping[str, str],
+        token_discovery: _TokenDiscoveryResult,
+        connect_timeout_ms: int | None,
+        read_timeout_ms: int | None,
+        max_retries: int | None,
+        backoff_base_seconds: float | None,
+        max_backoff_seconds: float | None,
+        auth_shape: _AuthRequestShape,
+        baseline_status: int | None,
+        baseline_latency_ms: int | None,
+        auth_shape_fallback_from_har_like: bool,
+    ) -> _JsonFetchResult:
         last_error: Exception | None = None
         status_code: int | None = None
         resolved_connect_timeout_ms = connect_timeout_ms or self.config.connect_timeout_ms or self.config.timeout_ms
@@ -846,6 +948,7 @@ class TdApiClient:
                     "attempt": attempts,
                     "max_attempts": resolved_max_retries + 1,
                     "timeout_diagnostics": timeout_diagnostics,
+                    "auth_shape": auth_shape.name,
                     **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
                 },
             )
@@ -881,17 +984,29 @@ class TdApiClient:
                                 retry_reason="auth_refresh" if refreshed else None,
                             ).as_dict(),
                             "timeout_diagnostics": timeout_diagnostics,
+                            "auth_shape": auth_shape.name,
+                            "auth_shape_fallback_from_har_like": auth_shape_fallback_from_har_like,
+                            "auth_shape_baseline_status": baseline_status,
+                            "auth_shape_baseline_latency_ms": baseline_latency_ms,
+                            "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
+                            "auth_shape_latency_delta_ms": _safe_delta(latency_ms, baseline_latency_ms),
                             **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
                         }
                     )
                     if refreshed:
                         refreshed_token = (self._auth_state.token_discovery.token or "").strip() if self._auth_state.token_discovery else ""
                         if refreshed_token:
-                            headers["Authorization"] = f"Bearer {refreshed_token}"
-                            request_params["token"] = refreshed_token
+                            mutable_headers = dict(headers)
+                            mutable_params = dict(request_params)
+                            if auth_shape.include_authorization_header:
+                                mutable_headers["Authorization"] = f"Bearer {refreshed_token}"
+                            if auth_shape.include_token_query:
+                                mutable_params["token"] = refreshed_token
+                            headers = mutable_headers
+                            request_params = mutable_params
                             token_discovery = self._auth_state.token_discovery or token_discovery
                         continue
-                    return _JsonFetchResult(ok=False, payload=None, error="http_401", status=status_code, attempts=attempts)
+                    return _JsonFetchResult(ok=False, payload=None, error="http_401", status=status_code, attempts=attempts, auth_shape=auth_shape.name, latency_ms=latency_ms)
 
                 metadata.append(
                     {
@@ -905,6 +1020,12 @@ class TdApiClient:
                         token_refresh_attempted=self._auth_state.refresh_attempted,
                     ).as_dict(),
                         "timeout_diagnostics": timeout_diagnostics,
+                        "auth_shape": auth_shape.name,
+                        "auth_shape_fallback_from_har_like": auth_shape_fallback_from_har_like,
+                        "auth_shape_baseline_status": baseline_status,
+                        "auth_shape_baseline_latency_ms": baseline_latency_ms,
+                        "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
+                        "auth_shape_latency_delta_ms": _safe_delta(latency_ms, baseline_latency_ms),
                         **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
                     }
                 )
@@ -925,9 +1046,9 @@ class TdApiClient:
                             "timeout_diagnostics": timeout_diagnostics,
                         },
                     )
-                    return _JsonFetchResult(ok=True, payload=payload, status=status_code, attempts=attempts)
+                    return _JsonFetchResult(ok=True, payload=payload, status=status_code, attempts=attempts, auth_shape=auth_shape.name, latency_ms=latency_ms)
                 if status_code not in {408, 429, 500, 502, 503, 504}:
-                    return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code, attempts=attempts)
+                    return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code, attempts=attempts, auth_shape=auth_shape.name, latency_ms=latency_ms)
                 last_error = RuntimeError(f"HTTP {status_code} from {endpoint}")
                 retry_reason = f"http_{status_code}"
             except asyncio.TimeoutError:
@@ -949,6 +1070,12 @@ class TdApiClient:
                     ).as_dict(),
                         "timeout_type": timeout_class,
                         "timeout_diagnostics": timeout_diagnostics,
+                        "auth_shape": auth_shape.name,
+                        "auth_shape_fallback_from_har_like": auth_shape_fallback_from_har_like,
+                        "auth_shape_baseline_status": baseline_status,
+                        "auth_shape_baseline_latency_ms": baseline_latency_ms,
+                        "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
+                        "auth_shape_latency_delta_ms": _safe_delta(latency_ms, baseline_latency_ms),
                         **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
                     }
                 )
@@ -970,6 +1097,12 @@ class TdApiClient:
                         retry_reason="network_timeout",
                     ).as_dict(),
                         "timeout_diagnostics": timeout_diagnostics,
+                        "auth_shape": auth_shape.name,
+                        "auth_shape_fallback_from_har_like": auth_shape_fallback_from_har_like,
+                        "auth_shape_baseline_status": baseline_status,
+                        "auth_shape_baseline_latency_ms": baseline_latency_ms,
+                        "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
+                        "auth_shape_latency_delta_ms": _safe_delta(latency_ms, baseline_latency_ms),
                         **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
                     }
                 )
@@ -1005,13 +1138,13 @@ class TdApiClient:
                 break
 
         if status_code is not None:
-            return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code, attempts=attempts)
+            return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code, attempts=attempts, auth_shape=auth_shape.name)
         if last_error:
             message = str(last_error)
             if message in {"connect_timeout", "read_timeout", "total_timeout"}:
-                return _JsonFetchResult(ok=False, payload=None, error=message, status=None, attempts=attempts)
-            return _JsonFetchResult(ok=False, payload=None, error=type(last_error).__name__, status=None, attempts=attempts)
-        return _JsonFetchResult(ok=False, payload=None, error="unknown_error", status=None, attempts=attempts)
+                return _JsonFetchResult(ok=False, payload=None, error=message, status=None, attempts=attempts, auth_shape=auth_shape.name)
+            return _JsonFetchResult(ok=False, payload=None, error=type(last_error).__name__, status=None, attempts=attempts, auth_shape=auth_shape.name)
+        return _JsonFetchResult(ok=False, payload=None, error="unknown_error", status=None, attempts=attempts, auth_shape=auth_shape.name)
 
     async def _attempt_auth_refresh_once(self) -> bool:
         if self._auth_state.refresh_attempted:
@@ -1263,6 +1396,12 @@ def _first_non_empty_value(values: Mapping[str, Any], keys: tuple[str, ...]) -> 
         if text:
             return text
     return ""
+
+
+def _safe_delta(current: int | None, baseline: int | None) -> int | None:
+    if current is None or baseline is None:
+        return None
+    return int(current) - int(baseline)
 
 
 def _has_stable_transaction_identifier(values: Mapping[str, Any]) -> bool:
