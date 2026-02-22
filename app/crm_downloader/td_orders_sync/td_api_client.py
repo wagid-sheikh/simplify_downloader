@@ -79,6 +79,12 @@ class _JsonFetchResult:
     status: int | None = None
 
 
+@dataclass
+class _SharedAuthState:
+    token_discovery: _TokenDiscoveryResult | None = None
+    refresh_attempted: bool = False
+
+
 class _StoreRateLimiter:
     _locks: dict[str, asyncio.Lock] = {}
     _next_allowed_at: dict[str, float] = {}
@@ -109,7 +115,7 @@ class TdApiClient:
         self.context = context
         self.storage_state_path = storage_state_path
         self.config = config or TdApiClientConfig()
-        self._token_discovery: _TokenDiscoveryResult | None = None
+        self._auth_state = _SharedAuthState()
 
     def read_session_artifact(self) -> dict[str, Any]:
         if not self.storage_state_path.exists():
@@ -126,6 +132,7 @@ class TdApiClient:
             "startDate": from_date.isoformat(),
             "endDate": to_date.isoformat(),
         }
+        self._auth_state = _SharedAuthState()
         metadata: list[dict[str, Any]] = []
         errors: dict[str, str] = {}
         error_diagnostics: dict[str, dict[str, Any]] = {}
@@ -215,7 +222,7 @@ class TdApiClient:
 
     async def _auth_preflight(self, *, metadata: list[dict[str, Any]]) -> bool:
         token_discovery = await self._discover_reporting_token()
-        self._token_discovery = token_discovery
+        self._auth_state.token_discovery = token_discovery
         has_cookie_auth = self._has_cookie_auth_source()
         auth_available = bool((token_discovery.token or "").strip()) or has_cookie_auth
         if auth_available:
@@ -368,7 +375,7 @@ class TdApiClient:
         }
 
     def _build_auth_diagnostics_payload(self) -> dict[str, Any]:
-        token_discovery = self._token_discovery or _TokenDiscoveryResult(token=None, source=None, expiry=None)
+        token_discovery = self._auth_state.token_discovery or _TokenDiscoveryResult(token=None, source=None, expiry=None)
         return {
             "token_found": bool((token_discovery.token or "").strip()),
             "token_source": token_discovery.source,
@@ -402,41 +409,32 @@ class TdApiClient:
     ) -> _JsonFetchResult:
         url = f"{REPORTING_API_BASE_URL}{endpoint}"
         token_discovery = await self._discover_reporting_token()
-        self._token_discovery = token_discovery
         headers = {
             "accept": "*/*",
             "origin": "https://reports.quickdrycleaning.com",
             "referer": "https://reports.quickdrycleaning.com/",
         }
-        if token_discovery.token:
-            headers["Authorization"] = f"Bearer {token_discovery.token}"
+        token_value = (token_discovery.token or "").strip()
+        if token_value:
+            headers["Authorization"] = f"Bearer {token_value}"
+
         last_error: Exception | None = None
         status_code: int | None = None
-        token_refresh_attempted = False
         for attempt in range(self.config.max_retries + 1):
             await _StoreRateLimiter.wait_turn(self.store_code, self.config.min_interval_seconds)
-            for auth_attempt in range(2):
-                should_retry_with_refreshed_token = False
-                started = time.perf_counter()
-                try:
-                    response = await self.context.request.get(
-                        url,
-                        params=params,
-                        headers=headers,
-                        timeout=self.config.timeout_ms,
-                    )
-                    latency_ms = int((time.perf_counter() - started) * 1000)
-                    status_code = response.status
+            started = time.perf_counter()
+            try:
+                response = await self.context.request.get(
+                    url,
+                    params=params,
+                    headers=headers,
+                    timeout=self.config.timeout_ms,
+                )
+                latency_ms = int((time.perf_counter() - started) * 1000)
+                status_code = response.status
 
-                    if status_code == 401 and not token_refresh_attempted and auth_attempt == 0:
-                        token_refresh_attempted = True
-                        refreshed_discovery = await self._discover_reporting_token(force_refresh=True)
-                        self._token_discovery = refreshed_discovery
-                        refreshed_token = (refreshed_discovery.token or "").strip()
-                        if refreshed_token:
-                            headers["Authorization"] = f"Bearer {refreshed_token}"
-                        should_retry_with_refreshed_token = True
-
+                if status_code == 401:
+                    refreshed = await self._attempt_auth_refresh_once()
                     metadata.append(
                         build_api_request_metadata(
                             url=str(response.url),
@@ -444,71 +442,86 @@ class TdApiClient:
                             status=status_code,
                             latency_ms=latency_ms,
                             retry_count=attempt,
-                            token_refresh_attempted=token_refresh_attempted,
+                            token_refresh_attempted=refreshed,
+                            retry_reason="auth_refresh" if refreshed else None,
                         ).as_dict()
                     )
-
-                    if should_retry_with_refreshed_token:
+                    if refreshed:
+                        refreshed_token = (self._auth_state.token_discovery.token or "").strip() if self._auth_state.token_discovery else ""
+                        if refreshed_token:
+                            headers["Authorization"] = f"Bearer {refreshed_token}"
                         continue
-                    if status_code < 400:
-                        return _JsonFetchResult(ok=True, payload=await response.json(), status=status_code)
-                    if status_code not in {408, 429, 500, 502, 503, 504}:
-                        return _JsonFetchResult(
-                            ok=False,
-                            payload=None,
-                            error=f"http_{status_code}",
-                            status=status_code,
-                        )
-                    last_error = RuntimeError(f"HTTP {status_code} from {endpoint}")
-                    break
-                except PlaywrightError as exc:
-                    latency_ms = int((time.perf_counter() - started) * 1000)
-                    metadata.append(
-                        build_api_request_metadata(
-                            url=url,
-                            method="GET",
-                            status=status_code,
-                            latency_ms=latency_ms,
-                            retry_count=attempt,
-                            token_refresh_attempted=token_refresh_attempted,
-                        ).as_dict()
-                    )
-                    last_error = exc
-                    break
+                    return _JsonFetchResult(ok=False, payload=None, error="http_401", status=status_code)
+
+                metadata.append(
+                    build_api_request_metadata(
+                        url=str(response.url),
+                        method="GET",
+                        status=status_code,
+                        latency_ms=latency_ms,
+                        retry_count=attempt,
+                        token_refresh_attempted=self._auth_state.refresh_attempted,
+                    ).as_dict()
+                )
+
+                if status_code < 400:
+                    return _JsonFetchResult(ok=True, payload=await response.json(), status=status_code)
+                if status_code not in {408, 429, 500, 502, 503, 504}:
+                    return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code)
+                last_error = RuntimeError(f"HTTP {status_code} from {endpoint}")
+            except PlaywrightError as exc:
+                latency_ms = int((time.perf_counter() - started) * 1000)
+                metadata.append(
+                    build_api_request_metadata(
+                        url=url,
+                        method="GET",
+                        status=status_code,
+                        latency_ms=latency_ms,
+                        retry_count=attempt,
+                        token_refresh_attempted=self._auth_state.refresh_attempted,
+                        retry_reason="network_timeout",
+                    ).as_dict()
+                )
+                last_error = exc
+
             if attempt < self.config.max_retries:
                 backoff = min(self.config.max_backoff_seconds, self.config.backoff_base_seconds * (2**attempt))
                 await asyncio.sleep(max(backoff, 0.0))
+
         if status_code is not None:
-            return _JsonFetchResult(
-                ok=False,
-                payload=None,
-                error=f"http_{status_code}",
-                status=status_code,
-            )
+            return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code)
         if last_error:
             return _JsonFetchResult(ok=False, payload=None, error=type(last_error).__name__, status=None)
         return _JsonFetchResult(ok=False, payload=None, error="unknown_error", status=None)
 
+    async def _attempt_auth_refresh_once(self) -> bool:
+        if self._auth_state.refresh_attempted:
+            return False
+        self._auth_state.refresh_attempted = True
+        refreshed_discovery = await self._discover_reporting_token(force_refresh=True)
+        self._auth_state.token_discovery = refreshed_discovery
+        return bool((refreshed_discovery.token or "").strip())
+
     async def _discover_reporting_token(self, *, force_refresh: bool = False) -> _TokenDiscoveryResult:
-        if self._token_discovery is not None and not force_refresh:
-            return self._token_discovery
+        if self._auth_state.token_discovery is not None and not force_refresh:
+            return self._auth_state.token_discovery
 
         from_iframe = self._discover_token_from_iframe_url_query()
         if from_iframe.token:
-            self._token_discovery = from_iframe
-            self._log_token_diagnostics(self._token_discovery)
-            return self._token_discovery
+            self._auth_state.token_discovery = from_iframe
+            self._log_token_diagnostics(from_iframe)
+            return from_iframe
 
         from_runtime_storage = await self._discover_token_from_runtime_storage()
         if from_runtime_storage.token:
-            self._token_discovery = from_runtime_storage
-            self._log_token_diagnostics(self._token_discovery)
-            return self._token_discovery
+            self._auth_state.token_discovery = from_runtime_storage
+            self._log_token_diagnostics(from_runtime_storage)
+            return from_runtime_storage
 
         from_storage_state = self._discover_token_from_storage_state()
-        self._token_discovery = from_storage_state
-        self._log_token_diagnostics(self._token_discovery)
-        return self._token_discovery
+        self._auth_state.token_discovery = from_storage_state
+        self._log_token_diagnostics(from_storage_state)
+        return from_storage_state
 
     def _discover_token_from_iframe_url_query(self) -> _TokenDiscoveryResult:
         for page in self.context.pages:

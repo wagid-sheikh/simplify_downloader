@@ -490,9 +490,15 @@ class _TokenRefreshingClient(TdApiClient):
 
     async def _discover_reporting_token(self, *, force_refresh: bool = False):  # type: ignore[override]
         self.discovery_calls.append(force_refresh)
+        if self._auth_state.token_discovery is not None and not force_refresh:
+            return self._auth_state.token_discovery
         if force_refresh:
-            return type(self)._token_result("fresh-token")
-        return type(self)._token_result("stale-token")
+            token = type(self)._token_result("fresh-token")
+            self._auth_state.token_discovery = token
+            return token
+        token = type(self)._token_result("stale-token")
+        self._auth_state.token_discovery = token
+        return token
 
     @staticmethod
     def _token_result(token: str):
@@ -524,13 +530,66 @@ async def test_get_json_retries_once_after_401_with_refreshed_token(tmp_path: Pa
     assert len(request.calls) == 2
     assert request.calls[0]["headers"].get("Authorization") == "Bearer stale-token"
     assert request.calls[1]["headers"].get("Authorization") == "Bearer fresh-token"
-    assert client.discovery_calls == [False, True]
+    assert client.discovery_calls.count(True) == 1
+    assert metadata[0]["retry_reason"] == "auth_refresh"
     assert metadata[0]["status"] == 401
     assert metadata[0]["retry_count"] == 0
     assert metadata[0]["token_refresh_attempted"] is True
     assert metadata[1]["status"] == 200
     assert metadata[1]["token_refresh_attempted"] is True
 
+
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_refreshes_auth_once_then_reuses_for_other_endpoints(tmp_path: Path) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(status=401, url="https://reporting-api.quickdrycleaning.com/reports/order-report", payload={}),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/reports/order-report",
+                payload={"data": [{"orderNumber": "1001"}], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales",
+                payload={"data": [{"orderNo": "S-1"}], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [{"orderNo": "G-1", "lineItemId": "L1"}], "totalPages": 1},
+            ),
+        ]
+    )
+    context = _StubContext(request=request)
+    client = _TokenRefreshingClient(store_code="a123", context=context, storage_state_path=tmp_path / "s.json")
+
+    result = await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    assert result.endpoint_errors == {}
+    assert result.orders_rows == [{"orderNumber": "1001"}]
+    assert len(result.sales_rows) == 1
+    assert len(result.garments_rows) == 1
+    assert client.discovery_calls.count(True) == 1
+
+    orders_calls = [call for call in request.calls if str(call["url"]).endswith("/reports/order-report")]
+    sales_calls = [call for call in request.calls if str(call["url"]).endswith("/sales-and-deliveries/sales")]
+    garments_calls = [call for call in request.calls if str(call["url"]).endswith("/garments/details")]
+    assert len(orders_calls) == 2
+    assert len(sales_calls) == 1
+    assert len(garments_calls) == 1
+    assert orders_calls[0]["headers"]["Authorization"] == "Bearer stale-token"
+    assert orders_calls[1]["headers"]["Authorization"] == "Bearer fresh-token"
+    assert sales_calls[0]["headers"]["Authorization"] == "Bearer fresh-token"
+    assert garments_calls[0]["headers"]["Authorization"] == "Bearer fresh-token"
+
+    auth_refresh_items = [
+        item for item in result.request_metadata if item["endpoint"] == "/reports/order-report" and item["status"] == 401
+    ]
+    assert len(auth_refresh_items) == 1
+    assert auth_refresh_items[0]["retry_reason"] == "auth_refresh"
 
 @pytest.mark.asyncio
 async def test_fetch_reports_captures_non_retriable_http_errors_per_endpoint(tmp_path: Path) -> None:
