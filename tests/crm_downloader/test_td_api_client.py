@@ -343,6 +343,57 @@ def test_compare_excel_flattens_list_and_dict_cells(tmp_path: Path) -> None:
 
 
 
+def test_compare_excel_save_succeeds_with_non_empty_sample_mismatch_keys_list(tmp_path: Path) -> None:
+    artifact_path = tmp_path / "compare.xlsx"
+    compare_metrics = {
+        "total_rows": 3,
+        "matched_rows": 1,
+        "missing_in_api": 1,
+        "missing_in_ui": 1,
+        "amount_mismatches": 1,
+        "status_mismatches": 0,
+        "sample_mismatch_keys": ["A817|1002", "A817|1003"],
+        "mismatch_artifacts": {
+            "missing_in_api": [
+                {
+                    "key": "A817|1002",
+                    "context": {"store_code": "A817", "order_number": "1002"},
+                }
+            ],
+            "missing_in_ui": [
+                {
+                    "key": "A817|1003",
+                    "context": {"store_code": "A817", "order_number": "1003"},
+                }
+            ],
+            "value_mismatches": [
+                {
+                    "key": "A817|1004",
+                    "differences": ["amount", "status"],
+                }
+            ],
+        },
+    }
+
+    _persist_compare_excel_artifact(
+        artifact_path=artifact_path,
+        compare_metrics=compare_metrics,
+        api_request_metadata=[
+            {
+                "endpoint": "/reports/order-report",
+                "request_payload": {"filters": ["orders", "delivery"]},
+            }
+        ],
+    )
+
+    import openpyxl
+
+    assert artifact_path.exists()
+    workbook = openpyxl.load_workbook(artifact_path)
+    assert workbook["summary"].max_row >= 2
+
+
+
 
 def test_persist_td_api_artifacts_writes_excel_outputs(tmp_path: Path) -> None:
     result = persist_td_api_artifacts(
