@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import date
 from pathlib import Path
@@ -14,6 +15,7 @@ from app.crm_downloader.td_orders_sync.main import (
 from app.crm_downloader.td_orders_sync.td_api_artifacts import persist_td_api_artifacts
 from app.crm_downloader.td_orders_sync.td_api_client import (
     TdApiClient,
+    TdApiClientConfig,
     _extract_rows,
     _filter_summary_rows,
 )
@@ -531,13 +533,23 @@ class _StubResponse:
 
 
 class _StubRequest:
-    def __init__(self, responses: list[_StubResponse]) -> None:
+    def __init__(self, responses: list[object]) -> None:
         self._responses = responses
         self.calls: list[dict[str, object]] = []
 
     async def get(self, url: str, params: object, headers: dict[str, str], timeout: int) -> _StubResponse:
         self.calls.append({"url": url, "params": params, "headers": dict(headers), "timeout": timeout})
-        return self._responses.pop(0)
+        next_item = self._responses.pop(0)
+        if isinstance(next_item, Exception):
+            raise next_item
+        return next_item
+
+
+
+
+class _ReadTimeoutResponse(_StubResponse):
+    async def json(self) -> dict[str, object]:
+        raise asyncio.TimeoutError()
 
 
 class _StubContext:
@@ -954,3 +966,114 @@ async def test_fetch_reports_records_auth_error_diagnostics_when_rows_zero_due_t
     }
     assert set(result.endpoint_error_diagnostics.keys()) == set(result.endpoint_errors.keys())
     assert all(bool(diagnostics) for diagnostics in result.endpoint_error_diagnostics.values())
+
+
+@pytest.mark.asyncio
+async def test_get_json_classifies_connect_timeout_and_bounds_retries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _StubRequest(responses=[asyncio.TimeoutError(), asyncio.TimeoutError(), asyncio.TimeoutError()])
+    context = _StubContext(request=request)
+    client = _TokenRefreshingClient(
+        store_code="a123",
+        context=context,
+        storage_state_path=tmp_path / "s.json",
+        config=TdApiClientConfig(max_retries=2, min_interval_seconds=0, backoff_base_seconds=0, backoff_jitter_seconds=0),
+    )
+
+    sleep_calls: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        sleep_calls.append(seconds)
+
+    monkeypatch.setattr("app.crm_downloader.td_orders_sync.td_api_client.asyncio.sleep", _fake_sleep)
+
+    async def _fake_wait_turn(_: str, __: float) -> None:
+        return None
+
+    monkeypatch.setattr("app.crm_downloader.td_orders_sync.td_api_client._StoreRateLimiter.wait_turn", _fake_wait_turn)
+
+    metadata: list[dict[str, object]] = []
+    result = await client._get_json(
+        endpoint="/reports/order-report",
+        params={"page": 1},
+        metadata=metadata,
+        connect_timeout_ms=10,
+        read_timeout_ms=50,
+    )
+
+    assert result.ok is False
+    assert result.error == "connect_timeout"
+    assert len(request.calls) == 3
+    assert len(metadata) == 3
+    assert {item["retry_reason"] for item in metadata} == {"connect_timeout"}
+    assert sleep_calls == [0.0, 0.0]
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_retries_timeout_then_falls_back_page_size(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    request = _StubRequest(
+        responses=[
+            _ReadTimeoutResponse(status=200, url="https://reporting-api.quickdrycleaning.com/reports/order-report", payload={}),
+            _ReadTimeoutResponse(status=200, url="https://reporting-api.quickdrycleaning.com/reports/order-report", payload={}),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/reports/order-report",
+                payload={"data": [{"orderNumber": "1001"}], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales",
+                payload={"data": [{"orderNo": "S-1"}], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [{"orderNo": "G-1"}], "totalPages": 1},
+            ),
+        ]
+    )
+    context = _StubContext(request=request)
+    client = _TokenRefreshingClient(
+        store_code="a123",
+        context=context,
+        storage_state_path=tmp_path / "s.json",
+        config=TdApiClientConfig(
+            page_size=500,
+            page_size_fallbacks=(250, 100),
+            max_retries=1,
+            min_interval_seconds=0,
+            backoff_base_seconds=0,
+            backoff_jitter_seconds=0,
+            connect_timeout_ms=100,
+            orders_read_timeout_ms=10,
+            sales_read_timeout_ms=10,
+            garments_read_timeout_ms=10,
+        ),
+    )
+
+    async def _fake_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr("app.crm_downloader.td_orders_sync.td_api_client.asyncio.sleep", _fake_sleep)
+
+    async def _fake_wait_turn(_: str, __: float) -> None:
+        return None
+
+    monkeypatch.setattr("app.crm_downloader.td_orders_sync.td_api_client._StoreRateLimiter.wait_turn", _fake_wait_turn)
+
+    result = await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    assert result.endpoint_errors == {}
+    assert result.orders_rows == [{"orderNumber": "1001"}]
+
+    order_calls = [call for call in request.calls if str(call["url"]).endswith("/reports/order-report")]
+    assert len(order_calls) == 3
+    assert [call["params"]["pageSize"] for call in order_calls] == [500, 500, 250]
+
+    fallback_events = [
+        item
+        for item in result.request_metadata
+        if item.get("endpoint") == "/reports/order-report" and item.get("retry_reason") == "page_size_fallback"
+    ]
+    assert len(fallback_events) == 1
+    assert fallback_events[0]["fallback_page_size_from"] == 500
+    assert fallback_events[0]["fallback_page_size_to"] == 250

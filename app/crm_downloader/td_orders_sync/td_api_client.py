@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import time
 from dataclasses import dataclass, field
 from datetime import date
@@ -40,13 +41,24 @@ _STABLE_TRANSACTION_ID_FIELDS = (
 @dataclass(frozen=True)
 class TdApiClientConfig:
     timeout_ms: int = int(os.environ.get("TD_API_TIMEOUT_MS", "20000"))
+    connect_timeout_ms: int = int(os.environ.get("TD_API_CONNECT_TIMEOUT_MS", "5000"))
     max_retries: int = int(os.environ.get("TD_API_MAX_RETRIES", "3"))
     backoff_base_seconds: float = float(os.environ.get("TD_API_BACKOFF_BASE_SECONDS", "0.5"))
     max_backoff_seconds: float = float(os.environ.get("TD_API_MAX_BACKOFF_SECONDS", "4.0"))
+    backoff_jitter_seconds: float = float(os.environ.get("TD_API_BACKOFF_JITTER_SECONDS", "0.25"))
     min_interval_seconds: float = float(os.environ.get("TD_API_MIN_INTERVAL_SECONDS", "0.35"))
     page: int = int(os.environ.get("TD_API_PAGE", "1"))
     page_size: int = int(os.environ.get("TD_API_PAGE_SIZE", "500"))
     max_pages: int = max(1, int(os.environ.get("TD_API_MAX_PAGES", "100")))
+    default_read_timeout_ms: int = int(os.environ.get("TD_API_READ_TIMEOUT_MS", "20000"))
+    orders_read_timeout_ms: int = int(os.environ.get("TD_API_ORDERS_READ_TIMEOUT_MS", os.environ.get("TD_API_READ_TIMEOUT_MS", "20000")))
+    sales_read_timeout_ms: int = int(os.environ.get("TD_API_SALES_READ_TIMEOUT_MS", os.environ.get("TD_API_READ_TIMEOUT_MS", "20000")))
+    garments_read_timeout_ms: int = int(os.environ.get("TD_API_GARMENTS_READ_TIMEOUT_MS", os.environ.get("TD_API_READ_TIMEOUT_MS", "20000")))
+    page_size_fallbacks: tuple[int, ...] = tuple(
+        int(size.strip())
+        for size in os.environ.get("TD_API_PAGE_SIZE_FALLBACKS", "250,100").split(",")
+        if size.strip().isdigit() and int(size.strip()) > 0
+    )
 
 
 @dataclass
@@ -296,12 +308,47 @@ class TdApiClient:
         total_pages_hint: int | None = None
         aggregated_rows: list[dict[str, Any]] = []
         page_payloads: list[Any] = []
+        active_page_size = int(params.get("pageSize") or self.config.page_size)
+        available_page_sizes = self._page_size_candidates(starting_page_size=active_page_size)
+        page_size_index = 0
 
         while True:
-            page_params = {**dict(params), "page": page}
-            page_result = await self._get_json(endpoint=endpoint, params=page_params, metadata=metadata)
+            active_page_size = available_page_sizes[page_size_index]
+            page_params = {**dict(params), "page": page, "pageSize": active_page_size}
+            page_result = await self._get_json(
+                endpoint=endpoint,
+                params=page_params,
+                metadata=metadata,
+                connect_timeout_ms=self.config.connect_timeout_ms,
+                read_timeout_ms=self._read_timeout_ms_for_endpoint(endpoint),
+            )
 
             if not page_result.ok:
+                if (
+                    page_result.error in {"read_timeout", "connect_timeout", "PlaywrightError", "TimeoutError", "timeout"}
+                    and page_size_index < len(available_page_sizes) - 1
+                ):
+                    previous_page_size = active_page_size
+                    page_size_index += 1
+                    next_page_size = available_page_sizes[page_size_index]
+                    metadata.append(
+                        {
+                            "endpoint": endpoint,
+                            "method": "GET",
+                            "query_params": {
+                                "page": [str(page)],
+                                "pageSize": [str(previous_page_size)],
+                            },
+                            "status": page_result.status,
+                            "latency_ms": None,
+                            "retry_count": self.config.max_retries,
+                            "token_refresh_attempted": self._auth_state.refresh_attempted,
+                            "retry_reason": "page_size_fallback",
+                            "fallback_page_size_from": previous_page_size,
+                            "fallback_page_size_to": next_page_size,
+                        }
+                    )
+                    continue
                 errors[endpoint] = page_result.error or "unknown_error"
                 diagnostics = self._build_auth_diagnostics_payload()
                 error_diagnostics[endpoint] = diagnostics
@@ -336,7 +383,7 @@ class TdApiClient:
                     continue
                 item["page_number"] = page
                 item["rows_in_page"] = len(rows)
-                item["rows_per_page"] = self.config.page_size
+                item["rows_per_page"] = active_page_size
                 item["cumulative_rows"] = cumulative_rows
 
             if not rows:
@@ -370,9 +417,25 @@ class TdApiClient:
                 "total_rows": cumulative_rows,
                 "reported_total_rows": total_rows_hint,
                 "reported_total_pages": total_pages_hint,
-                "rows_per_page": self.config.page_size,
+                "rows_per_page": active_page_size,
             },
         }
+
+    def _read_timeout_ms_for_endpoint(self, endpoint: str) -> int:
+        if endpoint == "/reports/order-report":
+            return self.config.orders_read_timeout_ms
+        if endpoint == "/sales-and-deliveries/sales":
+            return self.config.sales_read_timeout_ms
+        if endpoint == "/garments/details":
+            return self.config.garments_read_timeout_ms
+        return self.config.default_read_timeout_ms
+
+    def _page_size_candidates(self, *, starting_page_size: int) -> list[int]:
+        candidates = [starting_page_size]
+        for fallback_size in self.config.page_size_fallbacks:
+            if fallback_size < starting_page_size and fallback_size not in candidates:
+                candidates.append(fallback_size)
+        return candidates
 
     def _build_auth_diagnostics_payload(self) -> dict[str, Any]:
         token_discovery = self._auth_state.token_discovery or _TokenDiscoveryResult(token=None, source=None, expiry=None)
@@ -406,6 +469,8 @@ class TdApiClient:
         endpoint: str,
         params: Mapping[str, Any],
         metadata: list[dict[str, Any]],
+        connect_timeout_ms: int | None = None,
+        read_timeout_ms: int | None = None,
     ) -> _JsonFetchResult:
         url = f"{REPORTING_API_BASE_URL}{endpoint}"
         token_discovery = await self._discover_reporting_token()
@@ -420,15 +485,20 @@ class TdApiClient:
 
         last_error: Exception | None = None
         status_code: int | None = None
+        resolved_connect_timeout_ms = connect_timeout_ms or self.config.connect_timeout_ms or self.config.timeout_ms
+        resolved_read_timeout_ms = read_timeout_ms or self.config.default_read_timeout_ms or self.config.timeout_ms
         for attempt in range(self.config.max_retries + 1):
             await _StoreRateLimiter.wait_turn(self.store_code, self.config.min_interval_seconds)
             started = time.perf_counter()
             try:
-                response = await self.context.request.get(
+                response = await asyncio.wait_for(
+                    self.context.request.get(
                     url,
                     params=params,
                     headers=headers,
-                    timeout=self.config.timeout_ms,
+                    timeout=resolved_connect_timeout_ms,
+                    ),
+                    timeout=max(resolved_connect_timeout_ms / 1000.0, 0.001),
                 )
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 status_code = response.status
@@ -465,10 +535,31 @@ class TdApiClient:
                 )
 
                 if status_code < 400:
-                    return _JsonFetchResult(ok=True, payload=await response.json(), status=status_code)
+                    payload = await asyncio.wait_for(
+                        response.json(),
+                        timeout=max(resolved_read_timeout_ms / 1000.0, 0.001),
+                    )
+                    return _JsonFetchResult(ok=True, payload=payload, status=status_code)
                 if status_code not in {408, 429, 500, 502, 503, 504}:
                     return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code)
                 last_error = RuntimeError(f"HTTP {status_code} from {endpoint}")
+            except asyncio.TimeoutError:
+                status_code = None
+                latency_ms = int((time.perf_counter() - started) * 1000)
+                timed_out_on_connect = latency_ms <= resolved_connect_timeout_ms
+                timeout_class = "connect_timeout" if timed_out_on_connect else "read_timeout"
+                metadata.append(
+                    build_api_request_metadata(
+                        url=url,
+                        method="GET",
+                        status=status_code,
+                        latency_ms=latency_ms,
+                        retry_count=attempt,
+                        token_refresh_attempted=self._auth_state.refresh_attempted,
+                        retry_reason=timeout_class,
+                    ).as_dict()
+                )
+                last_error = RuntimeError(timeout_class)
             except PlaywrightError as exc:
                 latency_ms = int((time.perf_counter() - started) * 1000)
                 metadata.append(
@@ -486,11 +577,15 @@ class TdApiClient:
 
             if attempt < self.config.max_retries:
                 backoff = min(self.config.max_backoff_seconds, self.config.backoff_base_seconds * (2**attempt))
-                await asyncio.sleep(max(backoff, 0.0))
+                jitter = random.uniform(0.0, max(self.config.backoff_jitter_seconds, 0.0))
+                await asyncio.sleep(max(backoff + jitter, 0.0))
 
         if status_code is not None:
             return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code)
         if last_error:
+            message = str(last_error)
+            if message in {"connect_timeout", "read_timeout"}:
+                return _JsonFetchResult(ok=False, payload=None, error=message, status=None)
             return _JsonFetchResult(ok=False, payload=None, error=type(last_error).__name__, status=None)
         return _JsonFetchResult(ok=False, payload=None, error="unknown_error", status=None)
 
