@@ -188,6 +188,7 @@ def build_api_request_metadata(
     *,
     url: str,
     method: str,
+    query_params: Mapping[str, Any] | None = None,
     status: int | None,
     latency_ms: int | None,
     retry_count: int = 0,
@@ -196,11 +197,20 @@ def build_api_request_metadata(
 ) -> ApiRequestMetadata:
     parsed = urlparse(url)
     endpoint = parsed.path
-    query_params = {key: sorted(values) for key, values in parse_qs(parsed.query, keep_blank_values=True).items()}
+    if query_params is not None:
+        query_params_payload: dict[str, list[str]] = {}
+        for key, value in query_params.items():
+            if isinstance(value, (list, tuple, set)):
+                normalized_values = [str(item) for item in value]
+            else:
+                normalized_values = [str(value)]
+            query_params_payload[str(key)] = sorted(normalized_values)
+    else:
+        query_params_payload = {key: sorted(values) for key, values in parse_qs(parsed.query, keep_blank_values=True).items()}
     return ApiRequestMetadata(
         endpoint=endpoint,
         method=method.upper(),
-        query_params=query_params,
+        query_params=query_params_payload,
         status=status,
         latency_ms=latency_ms,
         retry_count=max(retry_count, 0),
