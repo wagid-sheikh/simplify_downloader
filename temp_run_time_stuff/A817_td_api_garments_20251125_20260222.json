@@ -1,12 +1,12 @@
 {
   "data": [],
   "pages": [],
-  "error": "TimeoutError",
+  "error": "connect_timeout",
   "pagination": {
     "pages_fetched": 1,
     "total_rows": 0,
     "reported_total_rows": null,
     "reported_total_pages": null,
-    "rows_per_page": 500
+    "rows_per_page": 100
   }
 }
