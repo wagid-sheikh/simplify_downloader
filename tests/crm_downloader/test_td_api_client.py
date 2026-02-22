@@ -618,3 +618,85 @@ async def test_fetch_reports_honors_td_api_max_pages_cap(tmp_path: Path) -> None
     assert result.raw_orders_payload["pagination"]["pages_fetched"] == 1
     assert result.raw_sales_payload["pagination"]["pages_fetched"] == 1
     assert result.raw_garments_payload["pagination"]["pages_fetched"] == 1
+
+
+class _NoTokenClient(TdApiClient):
+    async def _discover_reporting_token(self, *, force_refresh: bool = False):  # type: ignore[override]
+        from app.crm_downloader.td_orders_sync.td_api_client import _TokenDiscoveryResult
+
+        return _TokenDiscoveryResult(token=None, source=None, expiry=None)
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_preflight_skips_endpoint_calls_when_auth_unavailable(tmp_path: Path) -> None:
+    request = _StubRequest(responses=[])
+    context = _StubContext(request=request)
+    client = _NoTokenClient(store_code="a123", context=context, storage_state_path=tmp_path / "missing.json")
+
+    result = await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    assert request.calls == []
+    assert result.endpoint_errors == {
+        "/reports/order-report": "auth_unavailable",
+        "/sales-and-deliveries/sales": "auth_unavailable",
+        "/garments/details": "auth_unavailable",
+    }
+    assert result.request_metadata[0]["outcome"] == "auth_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_propagates_page_one_401_as_endpoint_error(tmp_path: Path) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(status=401, url="https://reporting-api.quickdrycleaning.com/reports/order-report", payload={}),
+            _StubResponse(status=401, url="https://reporting-api.quickdrycleaning.com/reports/order-report", payload={}),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales",
+                payload={"data": [{"orderNo": "S-1"}], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [{"orderNo": "G-1"}], "totalPages": 1},
+            ),
+        ]
+    )
+    context = _StubContext(request=request)
+    client = _TokenRefreshingClient(store_code="a123", context=context, storage_state_path=tmp_path / "s.json")
+
+    result = await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    assert result.endpoint_errors["/reports/order-report"] == "http_401"
+    assert result.raw_orders_payload["error"] == "http_401"
+    assert result.orders_rows == []
+    assert result.endpoint_error_diagnostics["/reports/order-report"]["token_found"] is True
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_records_auth_error_diagnostics_when_rows_zero_due_to_auth(tmp_path: Path) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(status=401, url="https://reporting-api.quickdrycleaning.com/reports/order-report", payload={}),
+            _StubResponse(status=401, url="https://reporting-api.quickdrycleaning.com/reports/order-report", payload={}),
+            _StubResponse(status=401, url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales", payload={}),
+            _StubResponse(status=401, url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales", payload={}),
+            _StubResponse(status=401, url="https://reporting-api.quickdrycleaning.com/garments/details", payload={}),
+            _StubResponse(status=401, url="https://reporting-api.quickdrycleaning.com/garments/details", payload={}),
+        ]
+    )
+    context = _StubContext(request=request)
+    client = _TokenRefreshingClient(store_code="a123", context=context, storage_state_path=tmp_path / "s.json")
+
+    result = await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    assert result.orders_rows == []
+    assert result.sales_rows == []
+    assert result.garments_rows == []
+    assert result.endpoint_errors == {
+        "/reports/order-report": "http_401",
+        "/sales-and-deliveries/sales": "http_401",
+        "/garments/details": "http_401",
+    }
+    assert set(result.endpoint_error_diagnostics.keys()) == set(result.endpoint_errors.keys())
+    assert all(bool(diagnostics) for diagnostics in result.endpoint_error_diagnostics.values())

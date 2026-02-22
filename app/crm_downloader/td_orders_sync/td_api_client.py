@@ -58,6 +58,8 @@ class TdApiFetchResult:
     sales_rows: list[dict[str, Any]] = field(default_factory=list)
     garments_rows: list[dict[str, Any]] = field(default_factory=list)
     request_metadata: list[dict[str, Any]] = field(default_factory=list)
+    endpoint_errors: dict[str, str] = field(default_factory=dict)
+    endpoint_error_diagnostics: dict[str, dict[str, Any]] = field(default_factory=dict)
     orders_summary_rows_filtered: int = 0
     sales_summary_rows_filtered: int = 0
 
@@ -126,24 +128,55 @@ class TdApiClient:
         }
         metadata: list[dict[str, Any]] = []
         errors: dict[str, str] = {}
+        error_diagnostics: dict[str, dict[str, Any]] = {}
+
+        if not await self._auth_preflight(metadata=metadata):
+            errors = {
+                "/reports/order-report": "auth_unavailable",
+                "/sales-and-deliveries/sales": "auth_unavailable",
+                "/garments/details": "auth_unavailable",
+            }
+            empty_payload = {
+                "data": [],
+                "pages": [],
+                "error": "auth_unavailable",
+                "pagination": {
+                    "pages_fetched": 0,
+                    "total_rows": 0,
+                    "reported_total_rows": None,
+                    "reported_total_pages": None,
+                    "rows_per_page": self.config.page_size,
+                },
+            }
+            return TdApiFetchResult(
+                raw_orders_payload=dict(empty_payload),
+                raw_sales_payload=dict(empty_payload),
+                raw_garments_payload=dict(empty_payload),
+                request_metadata=metadata,
+                endpoint_errors=errors,
+                endpoint_error_diagnostics={endpoint: self._build_auth_diagnostics_payload() for endpoint in errors},
+            )
 
         order_payload = await self._fetch_endpoint_rows(
             endpoint="/reports/order-report",
             params={**common_params, "expandData": "true"},
             metadata=metadata,
             errors=errors,
+            error_diagnostics=error_diagnostics,
         )
         sales_payload = await self._fetch_endpoint_rows(
             endpoint="/sales-and-deliveries/sales",
             params={**common_params, "expandData": "true"},
             metadata=metadata,
             errors=errors,
+            error_diagnostics=error_diagnostics,
         )
         garments_payload = await self._fetch_endpoint_rows(
             endpoint="/garments/details",
             params=common_params,
             metadata=metadata,
             errors=errors,
+            error_diagnostics=error_diagnostics,
         )
 
         orders_rows_raw = _extract_rows(order_payload)
@@ -174,9 +207,52 @@ class TdApiClient:
             sales_rows=sales_rows,
             garments_rows=garments_rows,
             request_metadata=metadata,
+            endpoint_errors=errors,
+            endpoint_error_diagnostics=error_diagnostics,
             orders_summary_rows_filtered=orders_summary_filtered,
             sales_summary_rows_filtered=sales_summary_filtered,
         )
+
+    async def _auth_preflight(self, *, metadata: list[dict[str, Any]]) -> bool:
+        token_discovery = await self._discover_reporting_token()
+        self._token_discovery = token_discovery
+        has_cookie_auth = self._has_cookie_auth_source()
+        auth_available = bool((token_discovery.token or "").strip()) or has_cookie_auth
+        if auth_available:
+            return True
+
+        metadata.append(
+            {
+                "endpoint": "auth_preflight",
+                "method": "PRECHECK",
+                "query_params": {},
+                "status": None,
+                "latency_ms": 0,
+                "retry_count": 0,
+                "token_refresh_attempted": False,
+                "outcome": "auth_unavailable",
+                "store_code": self.store_code,
+                "token_source": token_discovery.source,
+                "token_expiry": token_discovery.expiry,
+                "cookies_found": has_cookie_auth,
+            }
+        )
+        logger.error(
+            "TD API auth unavailable; skipping endpoint fetches",
+            extra={
+                "store_code": self.store_code,
+                "outcome": "auth_unavailable",
+                "token_source": token_discovery.source,
+                "token_expiry": token_discovery.expiry,
+                "cookies_found": has_cookie_auth,
+            },
+        )
+        return False
+
+    def _has_cookie_auth_source(self) -> bool:
+        session_artifact = self.read_session_artifact()
+        cookies = session_artifact.get("cookies") if isinstance(session_artifact, Mapping) else None
+        return isinstance(cookies, list) and bool(cookies)
 
     def _log_endpoint_total(self, *, endpoint: str, total_rows: int) -> None:
         logger.info(
@@ -205,6 +281,7 @@ class TdApiClient:
         params: Mapping[str, Any],
         metadata: list[dict[str, Any]],
         errors: dict[str, str],
+        error_diagnostics: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
         page = 1
         cumulative_rows = 0
@@ -219,6 +296,18 @@ class TdApiClient:
 
             if not page_result.ok:
                 errors[endpoint] = page_result.error or "unknown_error"
+                diagnostics = self._build_auth_diagnostics_payload()
+                error_diagnostics[endpoint] = diagnostics
+                if page == 1 and page_result.status == 401:
+                    logger.error(
+                        "TD API endpoint unauthorized on first page",
+                        extra={
+                            "store_code": self.store_code,
+                            "endpoint": endpoint,
+                            "status": page_result.status,
+                            **diagnostics,
+                        },
+                    )
                 break
 
             page_payload = page_result.payload
@@ -278,6 +367,15 @@ class TdApiClient:
             },
         }
 
+    def _build_auth_diagnostics_payload(self) -> dict[str, Any]:
+        token_discovery = self._token_discovery or _TokenDiscoveryResult(token=None, source=None, expiry=None)
+        return {
+            "token_found": bool((token_discovery.token or "").strip()),
+            "token_source": token_discovery.source,
+            "token_expiry": token_discovery.expiry,
+            "cookies_found": self._has_cookie_auth_source(),
+        }
+
     async def _get_paginated_json(
         self,
         *,
@@ -286,7 +384,14 @@ class TdApiClient:
         metadata: list[dict[str, Any]],
     ) -> dict[str, Any]:
         errors: dict[str, str] = {}
-        return await self._fetch_endpoint_rows(endpoint=endpoint, params=params, metadata=metadata, errors=errors)
+        error_diagnostics: dict[str, dict[str, Any]] = {}
+        return await self._fetch_endpoint_rows(
+            endpoint=endpoint,
+            params=params,
+            metadata=metadata,
+            errors=errors,
+            error_diagnostics=error_diagnostics,
+        )
 
     async def _get_json(
         self,
@@ -297,6 +402,7 @@ class TdApiClient:
     ) -> _JsonFetchResult:
         url = f"{REPORTING_API_BASE_URL}{endpoint}"
         token_discovery = await self._discover_reporting_token()
+        self._token_discovery = token_discovery
         headers = {
             "accept": "*/*",
             "origin": "https://reports.quickdrycleaning.com",
@@ -325,6 +431,7 @@ class TdApiClient:
                     if status_code == 401 and not token_refresh_attempted and auth_attempt == 0:
                         token_refresh_attempted = True
                         refreshed_discovery = await self._discover_reporting_token(force_refresh=True)
+                        self._token_discovery = refreshed_discovery
                         refreshed_token = (refreshed_discovery.token or "").strip()
                         if refreshed_token:
                             headers["Authorization"] = f"Bearer {refreshed_token}"
