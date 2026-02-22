@@ -76,11 +76,12 @@ def test_filter_summary_rows_removes_footer_like_rows() -> None:
         {"orderNumber": None, "customerName": "Total Order", "totalAmount": "120.00"},
         {"orderNo": "S-2002", "paymentDate": "2026-01-02", "netAmount": "80.00"},
         {"orderNo": "", "description": "Grand Total", "netAmount": "200.00", "tax": "20.00"},
+        {"orderNumber": 500, "orderDate": "Total Order", "netAmount": "200.00"},
     ]
 
     filtered_rows, summary_rows_filtered = _filter_summary_rows(rows)
 
-    assert summary_rows_filtered == 2
+    assert summary_rows_filtered == 3
     assert filtered_rows == [
         {"orderNumber": "A-1001", "customerName": "Alice", "totalAmount": "120.00"},
         {"orderNo": "S-2002", "paymentDate": "2026-01-02", "netAmount": "80.00"},
