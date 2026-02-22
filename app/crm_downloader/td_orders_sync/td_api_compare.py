@@ -222,7 +222,9 @@ def _resolve_row_field(row: Mapping[str, Any], field: str, *, default_store_code
             if value is not None and str(value).strip():
                 return value
         return default_store_code
-    for candidate in KEY_FIELD_ALIASES.get(field, (field,)):
+
+    candidates = (*KEY_FIELD_ALIASES.get(field, (field,)), *VALUE_FIELD_ALIASES.get(field, ()))
+    for candidate in candidates:
         value = row.get(candidate)
         if value is not None and str(value).strip():
             return value
@@ -234,9 +236,27 @@ VALUE_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "order_date": ("Order Date / Time", "Order Date"),
     "payment_date": ("Payment Date",),
     "payment_mode": ("Payment Mode",),
-    "amount": ("Payment Received", "Amount", "Total"),
-    "status": ("Status",),
+    "amount": ("Payment Received", "Amount", "Total", "paymentReceived", "grossAmount", "netAmount", "paid", "balance"),
+    "gross_amount": ("Gross Amount", "grossAmount", "Amount", "Total", "amount"),
+    "net_amount": ("Net Amount", "netAmount", "Amount", "amount"),
+    "paid": ("Paid", "paid", "Payment Received", "paymentReceived", "amount"),
+    "balance": ("Balance", "balance"),
+    "payment_received": ("Payment Received", "paymentReceived", "paid", "amount"),
+    "status": ("Status", "status", "orderStatus", "paymentStatus"),
+    "order_status": ("Order Status", "orderStatus", "Status", "status"),
 }
+
+
+def _default_amount_fields(key_fields: Sequence[str]) -> tuple[str, ...]:
+    if _is_sales_compare(key_fields):
+        return ("payment_received", "paid", "net_amount", "amount", "gross_amount", "balance")
+    return ("gross_amount", "amount", "net_amount", "paid", "payment_received", "balance")
+
+
+def _default_status_fields(key_fields: Sequence[str]) -> tuple[str, ...]:
+    if _is_sales_compare(key_fields):
+        return ("status", "order_status")
+    return ("order_status", "status")
 
 
 def _resolve_nested_value(row: Mapping[str, Any], field: str) -> Any:
@@ -295,7 +315,7 @@ def _normalize_numeric_value(value: Any) -> str:
 def _normalized_compare_value(field: str, value: Any) -> str:
     if field in {"order_date", "payment_date"}:
         return _normalize_datetime_value(value)
-    if field in {"amount", "total", "net_amount", "payment_received"}:
+    if field in {"amount", "total", "net_amount", "gross_amount", "paid", "balance", "payment_received"}:
         return _normalize_numeric_value(value)
     return str(value).strip()
 
@@ -375,8 +395,8 @@ def compare_canonical_rows(
     ui_rows: Iterable[Mapping[str, Any]],
     api_rows: Iterable[Mapping[str, Any]],
     key_fields: Sequence[str],
-    amount_fields: Sequence[str] = ("amount", "total", "net_amount"),
-    status_fields: Sequence[str] = ("status", "order_status"),
+    amount_fields: Sequence[str] | None = None,
+    status_fields: Sequence[str] | None = None,
     sample_limit: int = 20,
 ) -> CompareMetrics:
     ui_rows_seq = list(ui_rows)
@@ -399,6 +419,8 @@ def compare_canonical_rows(
 
     keys = set(ui_index) | set(api_index)
     sales_compare = _is_sales_compare(key_fields)
+    resolved_amount_fields = tuple(amount_fields) if amount_fields is not None else _default_amount_fields(key_fields)
+    resolved_status_fields = tuple(status_fields) if status_fields is not None else _default_status_fields(key_fields)
     ui_order_numbers = {_normalized_order_number(row, default_store_code=default_store_code) for row in ui_rows_seq}
     api_order_numbers = {_normalized_order_number(row, default_store_code=default_store_code) for row in api_rows_seq}
 
@@ -419,14 +441,14 @@ def compare_canonical_rows(
         amount_mismatch = False
         status_mismatch = False
 
-        for field in amount_fields:
+        for field in resolved_amount_fields:
             ui_val = _resolve_field_value(ui_row, field, default_store_code=default_store_code)
             api_val = _resolve_field_value(api_row, field, default_store_code=default_store_code)
             if ui_val is not None or api_val is not None:
                 if _normalized_compare_value(field, ui_val) != _normalized_compare_value(field, api_val):
                     amount_mismatch = True
                 break
-        for field in status_fields:
+        for field in resolved_status_fields:
             ui_val = _resolve_field_value(ui_row, field, default_store_code=default_store_code)
             api_val = _resolve_field_value(api_row, field, default_store_code=default_store_code)
             if ui_val is not None or api_val is not None:
