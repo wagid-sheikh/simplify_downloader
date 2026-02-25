@@ -87,6 +87,7 @@
           <th class="group-header" colspan="3">Collections</th>
           <th class="group-header" colspan="5">Target</th>
           <th class="group-header" rowspan="2">TS</th>
+          <th class="group-header" colspan="6">Pickup/Delivery KPI</th>
         </tr>
         <tr>
           <th>FTD</th>
@@ -100,6 +101,12 @@
           <th>TTD</th>
           <th>Delta</th>
           <th>Reqd/Day</th>
+          <th>Snap</th>
+          <th>Pk New %</th>
+          <th>Pk Existing %</th>
+          <th>Pk Total #</th>
+          <th>Pk Total %</th>
+          <th>Del TAT %</th>
         </tr>
       </thead>
       <tbody>
@@ -139,6 +146,12 @@
           <td>{{ row.delta | format_amount }}</td>
           <td>{{ row.reqd_per_day | format_amount }}</td>
           <td class="center">{{ row.orders_sync_time or "--" }}</td>
+          <td class="center">{{ row.kpi_snapshot_label or "--" }}</td>
+          <td>{{ row.pickup_new_conv_pct if row.pickup_new_conv_pct is not none else "--" }}</td>
+          <td>{{ row.pickup_existing_conv_pct if row.pickup_existing_conv_pct is not none else "--" }}</td>
+          <td>{{ row.pickup_total_count if row.pickup_total_count is not none else "--" }}</td>
+          <td>{{ row.pickup_total_conv_pct if row.pickup_total_conv_pct is not none else "--" }}</td>
+          <td>{{ row.delivery_tat_pct if row.delivery_tat_pct is not none else "--" }}</td>
         </tr>
         {% endfor %}
         <tr class="totals-row">
@@ -175,6 +188,12 @@
           <td>{{ totals.delta | format_amount }}</td>
           <td>{{ totals.reqd_per_day | format_amount }}</td>
           <td class="center">--</td>
+          <td class="center">--</td>
+          <td>--</td>
+          <td>--</td>
+          <td>--</td>
+          <td>--</td>
+          <td>--</td>
         </tr>
       </tbody>
     </table>

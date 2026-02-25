@@ -31,6 +31,12 @@ class DailySalesRow:
     delta: Decimal
     reqd_per_day: Decimal
     orders_sync_time: str | None
+    pickup_new_conv_pct: Decimal | None
+    pickup_existing_conv_pct: Decimal | None
+    pickup_total_count: int | None
+    pickup_total_conv_pct: Decimal | None
+    delivery_tat_pct: Decimal | None
+    kpi_snapshot_label: str
 
 
 @dataclass
@@ -212,6 +218,12 @@ def _totals_row(rows: Iterable[DailySalesRow]) -> DailySalesRow:
         delta=Decimal("0"),
         reqd_per_day=Decimal("0"),
         orders_sync_time=None,
+        pickup_new_conv_pct=None,
+        pickup_existing_conv_pct=None,
+        pickup_total_count=None,
+        pickup_total_conv_pct=None,
+        delivery_tat_pct=None,
+        kpi_snapshot_label="--",
     )
     for row in rows:
         totals.sales_ftd += row.sales_ftd
@@ -293,6 +305,47 @@ async def fetch_daily_sales_report(
         sa.column("order_number"),
         sa.column("is_edited_order"),
     )
+    store_master = sa.table(
+        "store_master",
+        sa.column("id"),
+        sa.column("cost_center"),
+        sa.column("sync_group"),
+    )
+    store_dashboard_summary = sa.table(
+        "store_dashboard_summary",
+        sa.column("store_id"),
+        sa.column("dashboard_date"),
+        sa.column("pickup_new_conv_pct"),
+        sa.column("pickup_existing_conv_pct"),
+        sa.column("pickup_total_count"),
+        sa.column("pickup_total_conv_pct"),
+        sa.column("delivery_tat_pct"),
+    )
+
+    report_kpi = (
+        sa.select(
+            store_dashboard_summary.c.store_id.label("store_id"),
+            store_dashboard_summary.c.pickup_new_conv_pct.label("pickup_new_conv_pct"),
+            store_dashboard_summary.c.pickup_existing_conv_pct.label("pickup_existing_conv_pct"),
+            store_dashboard_summary.c.pickup_total_count.label("pickup_total_count"),
+            store_dashboard_summary.c.pickup_total_conv_pct.label("pickup_total_conv_pct"),
+            store_dashboard_summary.c.delivery_tat_pct.label("delivery_tat_pct"),
+        )
+        .where(store_dashboard_summary.c.dashboard_date == report_date)
+        .subquery()
+    )
+    previous_kpi = (
+        sa.select(
+            store_dashboard_summary.c.store_id.label("store_id"),
+            store_dashboard_summary.c.pickup_new_conv_pct.label("pickup_new_conv_pct"),
+            store_dashboard_summary.c.pickup_existing_conv_pct.label("pickup_existing_conv_pct"),
+            store_dashboard_summary.c.pickup_total_count.label("pickup_total_count"),
+            store_dashboard_summary.c.pickup_total_conv_pct.label("pickup_total_conv_pct"),
+            store_dashboard_summary.c.delivery_tat_pct.label("delivery_tat_pct"),
+        )
+        .where(store_dashboard_summary.c.dashboard_date == (report_date - timedelta(days=1)))
+        .subquery()
+    )
 
     orders_agg = _build_orders_agg(orders, ranges)
     orders_count_agg = _build_orders_count_agg(orders, ranges)
@@ -315,6 +368,37 @@ async def fetch_daily_sales_report(
             sales_agg.c.collections_lmtd,
             targets.c.sale_target,
             orders_sync_agg.c.orders_pulled_at,
+            sa.case(
+                (
+                    store_master.c.sync_group == "TD",
+                    sa.case(
+                        (report_kpi.c.store_id.is_not(None), sa.literal("D")),
+                        (previous_kpi.c.store_id.is_not(None), sa.literal("D-1")),
+                        else_=sa.literal("--"),
+                    ),
+                ),
+                else_=None,
+            ).label("kpi_snapshot_label"),
+            sa.case(
+                (store_master.c.sync_group == "TD", sa.func.coalesce(report_kpi.c.pickup_new_conv_pct, previous_kpi.c.pickup_new_conv_pct)),
+                else_=None,
+            ).label("pickup_new_conv_pct"),
+            sa.case(
+                (store_master.c.sync_group == "TD", sa.func.coalesce(report_kpi.c.pickup_existing_conv_pct, previous_kpi.c.pickup_existing_conv_pct)),
+                else_=None,
+            ).label("pickup_existing_conv_pct"),
+            sa.case(
+                (store_master.c.sync_group == "TD", sa.func.coalesce(report_kpi.c.pickup_total_count, previous_kpi.c.pickup_total_count)),
+                else_=None,
+            ).label("pickup_total_count"),
+            sa.case(
+                (store_master.c.sync_group == "TD", sa.func.coalesce(report_kpi.c.pickup_total_conv_pct, previous_kpi.c.pickup_total_conv_pct)),
+                else_=None,
+            ).label("pickup_total_conv_pct"),
+            sa.case(
+                (store_master.c.sync_group == "TD", sa.func.coalesce(report_kpi.c.delivery_tat_pct, previous_kpi.c.delivery_tat_pct)),
+                else_=None,
+            ).label("delivery_tat_pct"),
         )
         .select_from(
             cost_center
@@ -322,6 +406,9 @@ async def fetch_daily_sales_report(
             .outerjoin(orders_count_agg, orders_count_agg.c.cost_center == cost_center.c.cost_center)
             .outerjoin(sales_agg, sales_agg.c.cost_center == cost_center.c.cost_center)
             .outerjoin(orders_sync_agg, orders_sync_agg.c.cost_center == cost_center.c.cost_center)
+            .outerjoin(store_master, store_master.c.cost_center == cost_center.c.cost_center)
+            .outerjoin(report_kpi, report_kpi.c.store_id == store_master.c.id)
+            .outerjoin(previous_kpi, previous_kpi.c.store_id == store_master.c.id)
             .outerjoin(
                 targets,
                 sa.and_(
@@ -387,6 +474,12 @@ async def fetch_daily_sales_report(
                     delta=delta,
                     reqd_per_day=reqd_per_day,
                     orders_sync_time=orders_sync_time,
+                    pickup_new_conv_pct=_decimal(entry["pickup_new_conv_pct"]) if entry["pickup_new_conv_pct"] is not None else None,
+                    pickup_existing_conv_pct=_decimal(entry["pickup_existing_conv_pct"]) if entry["pickup_existing_conv_pct"] is not None else None,
+                    pickup_total_count=int(entry["pickup_total_count"]) if entry["pickup_total_count"] is not None else None,
+                    pickup_total_conv_pct=_decimal(entry["pickup_total_conv_pct"]) if entry["pickup_total_conv_pct"] is not None else None,
+                    delivery_tat_pct=_decimal(entry["delivery_tat_pct"]) if entry["delivery_tat_pct"] is not None else None,
+                    kpi_snapshot_label=str(entry["kpi_snapshot_label"] or "--"),
                 )
             )
 
