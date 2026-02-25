@@ -187,13 +187,14 @@
           </td>
           <td>{{ totals.delta | format_amount }}</td>
           <td>{{ totals.reqd_per_day | format_amount }}</td>
+          {# KPI conversion/TAT/date totals are intentionally left blank in aggregate to avoid misleading rolled-up percentages. #}
           <td class="center">--</td>
           <td class="center">--</td>
-          <td>--</td>
-          <td>--</td>
-          <td>--</td>
-          <td>--</td>
-          <td>--</td>
+          <td class="center">--</td>
+          <td class="center">--</td>
+          <td class="center">--</td>
+          <td class="center">--</td>
+          <td class="center">--</td>
         </tr>
       </tbody>
     </table>
