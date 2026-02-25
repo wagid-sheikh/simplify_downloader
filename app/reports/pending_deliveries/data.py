@@ -20,6 +20,7 @@ class PendingDeliveryRow:
     order_number: str
     customer_name: str
     order_date: date
+    default_due_date: date
     age_days: int
     gross_amount: Decimal
     paid_amount: Decimal
@@ -295,6 +296,7 @@ async def fetch_pending_deliveries_report(
                     order_number=str(record.get("order_number") or ""),
                     customer_name=str(record.get("customer_name") or ""),
                     order_date=order_date_local,
+                    default_due_date=default_due_date_local,
                     age_days=age_days,
                     gross_amount=gross_amount,
                     paid_amount=paid_amount,

@@ -120,6 +120,7 @@
         <tr>
           <th>Age (Days)</th>
           <th>Order Date</th>
+          <th>Due Date</th>
           <th>Order No.</th>
           <th>Customer</th>
           <th class="text-right">Gross Amount</th>
@@ -133,6 +134,7 @@
         <tr class="{% if row.adjustments > 0 or row.is_edited_order or row.is_duplicate %}adjusted-row{% endif %}">
           <td>{{ row.age_days }}</td>
           <td>{{ row.order_date.strftime('%d-%b-%Y') }}</td>
+          <td>{{ row.default_due_date.strftime('%d-%b-%Y') }}</td>
           <td>{{ row.order_number }}</td>
           <td>{{ row.customer_name }}</td>
           <td class="text-right">{{ row.gross_amount | format_amount }}</td>
@@ -142,11 +144,11 @@
         {% endfor %}
         {% else %}
         <tr>
-          <td colspan="7" class="no-data">No pending deliveries in this bucket.</td>
+          <td colspan="8" class="no-data">No pending deliveries in this bucket.</td>
         </tr>
         {% endif %}
         <tr class="totals-row">
-          <td colspan="2">Totals</td>
+          <td colspan="3">Totals</td>
           <td>{{ bucket.total_count }}</td>
           <td colspan="2">&nbsp;</td>
           <td class="text-right">&nbsp;</td>

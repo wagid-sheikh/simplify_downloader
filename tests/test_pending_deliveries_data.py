@@ -114,3 +114,10 @@ async def test_fetch_pending_deliveries_package_pending_tolerance(tmp_path, monk
     assert {row.order_number for bucket in data.summary_sections[0].buckets for row in bucket.rows} == {
         "ORD-NOT-COVERED"
     }
+    included_row = next(
+        row
+        for bucket in data.summary_sections[0].buckets
+        for row in bucket.rows
+        if row.order_number == "ORD-NOT-COVERED"
+    )
+    assert included_row.default_due_date == date(2025, 5, 10)
