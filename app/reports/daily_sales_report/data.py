@@ -355,7 +355,7 @@ async def fetch_daily_sales_report(
     stmt = (
         sa.select(
             cost_center.c.cost_center,
-            cost_center.c.description,
+            sa.func.coalesce(store_master.c.store_name, cost_center.c.description).label("description"),
             cost_center.c.target_type,
             orders_agg.c.sales_ftd,
             orders_agg.c.sales_mtd,
@@ -402,6 +402,13 @@ async def fetch_daily_sales_report(
         )
         .select_from(
             cost_center
+            .outerjoin(
+                store_master,
+                sa.and_(
+                    sa.func.upper(store_master.c.store_code) == sa.func.upper(cost_center.c.cost_center),
+                    store_master.c.id.in_(sa.select(summary_store_ids.c.store_id)),
+                ),
+            )
             .outerjoin(orders_agg, orders_agg.c.cost_center == cost_center.c.cost_center)
             .outerjoin(orders_count_agg, orders_count_agg.c.cost_center == cost_center.c.cost_center)
             .outerjoin(sales_agg, sales_agg.c.cost_center == cost_center.c.cost_center)
