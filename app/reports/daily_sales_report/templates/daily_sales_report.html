@@ -76,7 +76,7 @@
   </head>
   <body>
     <div class="title">{{ company_name }}</div>
-    <div class="subtitle">Orders and Collections Report for: {{ report_date_display }}</div>
+    <div class="subtitle">Orders, Collections, and Pickup & Delivery KPIs Report for: {{ report_date_display }}</div>
 
     <table>
       <thead>
@@ -87,7 +87,7 @@
           <th class="group-header" colspan="3">Collections</th>
           <th class="group-header" colspan="5">Target</th>
           <th class="group-header" rowspan="2">TS</th>
-          <th class="group-header" colspan="6">Pickup/Delivery KPI</th>
+          <th class="group-header" colspan="6">Pickup & Delivery KPIs</th>
         </tr>
         <tr>
           <th>FTD</th>
@@ -101,12 +101,12 @@
           <th>TTD</th>
           <th>Delta</th>
           <th>Reqd/Day</th>
-          <th>Snap</th>
-          <th>Pk New %</th>
-          <th>Pk Existing %</th>
-          <th>Pk Total #</th>
-          <th>Pk Total %</th>
-          <th>Del TAT %</th>
+          <th>Pickup New Conv%</th>
+          <th>Pickup Existing Conv%</th>
+          <th>Pickup Total Count</th>
+          <th>Pickup Total Conv%</th>
+          <th>Delivery TAT%</th>
+          <th>KPI Date</th>
         </tr>
       </thead>
       <tbody>
@@ -146,12 +146,12 @@
           <td>{{ row.delta | format_amount }}</td>
           <td>{{ row.reqd_per_day | format_amount }}</td>
           <td class="center">{{ row.orders_sync_time or "--" }}</td>
-          <td class="center">{{ row.kpi_snapshot_label or "--" }}</td>
-          <td>{{ row.pickup_new_conv_pct if row.pickup_new_conv_pct is not none else "--" }}</td>
-          <td>{{ row.pickup_existing_conv_pct if row.pickup_existing_conv_pct is not none else "--" }}</td>
+          <td>{{ "%.2f" | format(row.pickup_new_conv_pct) if row.pickup_new_conv_pct is not none else "--" }}</td>
+          <td>{{ "%.2f" | format(row.pickup_existing_conv_pct) if row.pickup_existing_conv_pct is not none else "--" }}</td>
           <td>{{ row.pickup_total_count if row.pickup_total_count is not none else "--" }}</td>
-          <td>{{ row.pickup_total_conv_pct if row.pickup_total_conv_pct is not none else "--" }}</td>
-          <td>{{ row.delivery_tat_pct if row.delivery_tat_pct is not none else "--" }}</td>
+          <td>{{ "%.2f" | format(row.pickup_total_conv_pct) if row.pickup_total_conv_pct is not none else "--" }}</td>
+          <td>{{ "%.2f" | format(row.delivery_tat_pct) if row.delivery_tat_pct is not none else "--" }}</td>
+          <td class="center">{{ row.kpi_snapshot_label if row.kpi_snapshot_label in ["D", "D-1"] else "--" }}</td>
         </tr>
         {% endfor %}
         <tr class="totals-row">
