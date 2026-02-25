@@ -309,12 +309,15 @@ async def fetch_daily_sales_report(
         "store_master",
         sa.column("id"),
         sa.column("cost_center"),
+        sa.column("store_code"),
+        sa.column("store_name"),
         sa.column("sync_group"),
     )
     store_dashboard_summary = sa.table(
         "store_dashboard_summary",
         sa.column("store_id"),
         sa.column("dashboard_date"),
+        sa.column("run_date_time"),
         sa.column("pickup_new_conv_pct"),
         sa.column("pickup_existing_conv_pct"),
         sa.column("pickup_total_count"),
@@ -322,28 +325,44 @@ async def fetch_daily_sales_report(
         sa.column("delivery_tat_pct"),
     )
 
-    report_kpi = (
+    store_master_for_desc = store_master.alias("store_master_for_desc")
+    store_master_for_kpi = store_master.alias("store_master_for_kpi")
+    previous_day = report_date - timedelta(days=1)
+
+    summary_candidates = (
         sa.select(
             store_dashboard_summary.c.store_id.label("store_id"),
+            store_dashboard_summary.c.dashboard_date.label("dashboard_date"),
             store_dashboard_summary.c.pickup_new_conv_pct.label("pickup_new_conv_pct"),
             store_dashboard_summary.c.pickup_existing_conv_pct.label("pickup_existing_conv_pct"),
             store_dashboard_summary.c.pickup_total_count.label("pickup_total_count"),
             store_dashboard_summary.c.pickup_total_conv_pct.label("pickup_total_conv_pct"),
             store_dashboard_summary.c.delivery_tat_pct.label("delivery_tat_pct"),
+            sa.func.row_number()
+            .over(
+                partition_by=store_dashboard_summary.c.store_id,
+                order_by=(
+                    store_dashboard_summary.c.dashboard_date.desc(),
+                    store_dashboard_summary.c.run_date_time.desc(),
+                ),
+            )
+            .label("summary_row_number"),
         )
-        .where(store_dashboard_summary.c.dashboard_date == report_date)
+        .where(store_dashboard_summary.c.dashboard_date.in_([report_date, previous_day]))
         .subquery()
     )
-    previous_kpi = (
+
+    selected_kpi = (
         sa.select(
-            store_dashboard_summary.c.store_id.label("store_id"),
-            store_dashboard_summary.c.pickup_new_conv_pct.label("pickup_new_conv_pct"),
-            store_dashboard_summary.c.pickup_existing_conv_pct.label("pickup_existing_conv_pct"),
-            store_dashboard_summary.c.pickup_total_count.label("pickup_total_count"),
-            store_dashboard_summary.c.pickup_total_conv_pct.label("pickup_total_conv_pct"),
-            store_dashboard_summary.c.delivery_tat_pct.label("delivery_tat_pct"),
+            summary_candidates.c.store_id,
+            summary_candidates.c.dashboard_date,
+            summary_candidates.c.pickup_new_conv_pct,
+            summary_candidates.c.pickup_existing_conv_pct,
+            summary_candidates.c.pickup_total_count,
+            summary_candidates.c.pickup_total_conv_pct,
+            summary_candidates.c.delivery_tat_pct,
         )
-        .where(store_dashboard_summary.c.dashboard_date == (report_date - timedelta(days=1)))
+        .where(summary_candidates.c.summary_row_number == 1)
         .subquery()
     )
 
@@ -355,7 +374,7 @@ async def fetch_daily_sales_report(
     stmt = (
         sa.select(
             cost_center.c.cost_center,
-            sa.func.coalesce(store_master.c.store_name, cost_center.c.description).label("description"),
+            sa.func.coalesce(store_master_for_desc.c.store_name, cost_center.c.description).label("description"),
             cost_center.c.target_type,
             orders_agg.c.sales_ftd,
             orders_agg.c.sales_mtd,
@@ -370,52 +389,51 @@ async def fetch_daily_sales_report(
             orders_sync_agg.c.orders_pulled_at,
             sa.case(
                 (
-                    store_master.c.sync_group == "TD",
+                    store_master_for_kpi.c.sync_group == "TD",
                     sa.case(
-                        (report_kpi.c.store_id.is_not(None), sa.literal("D")),
-                        (previous_kpi.c.store_id.is_not(None), sa.literal("D-1")),
+                        (selected_kpi.c.dashboard_date == report_date, sa.literal("D")),
+                        (selected_kpi.c.dashboard_date == previous_day, sa.literal("D-1")),
                         else_=sa.literal("--"),
                     ),
                 ),
                 else_=None,
             ).label("kpi_snapshot_label"),
             sa.case(
-                (store_master.c.sync_group == "TD", sa.func.coalesce(report_kpi.c.pickup_new_conv_pct, previous_kpi.c.pickup_new_conv_pct)),
+                (store_master_for_kpi.c.sync_group == "TD", selected_kpi.c.pickup_new_conv_pct),
                 else_=None,
             ).label("pickup_new_conv_pct"),
             sa.case(
-                (store_master.c.sync_group == "TD", sa.func.coalesce(report_kpi.c.pickup_existing_conv_pct, previous_kpi.c.pickup_existing_conv_pct)),
+                (store_master_for_kpi.c.sync_group == "TD", selected_kpi.c.pickup_existing_conv_pct),
                 else_=None,
             ).label("pickup_existing_conv_pct"),
             sa.case(
-                (store_master.c.sync_group == "TD", sa.func.coalesce(report_kpi.c.pickup_total_count, previous_kpi.c.pickup_total_count)),
+                (store_master_for_kpi.c.sync_group == "TD", selected_kpi.c.pickup_total_count),
                 else_=None,
             ).label("pickup_total_count"),
             sa.case(
-                (store_master.c.sync_group == "TD", sa.func.coalesce(report_kpi.c.pickup_total_conv_pct, previous_kpi.c.pickup_total_conv_pct)),
+                (store_master_for_kpi.c.sync_group == "TD", selected_kpi.c.pickup_total_conv_pct),
                 else_=None,
             ).label("pickup_total_conv_pct"),
             sa.case(
-                (store_master.c.sync_group == "TD", sa.func.coalesce(report_kpi.c.delivery_tat_pct, previous_kpi.c.delivery_tat_pct)),
+                (store_master_for_kpi.c.sync_group == "TD", selected_kpi.c.delivery_tat_pct),
                 else_=None,
             ).label("delivery_tat_pct"),
         )
         .select_from(
             cost_center
             .outerjoin(
-                store_master,
+                store_master_for_desc,
                 sa.and_(
-                    sa.func.upper(store_master.c.store_code) == sa.func.upper(cost_center.c.cost_center),
-                    store_master.c.id.in_(sa.select(summary_store_ids.c.store_id)),
+                    sa.func.upper(store_master_for_desc.c.store_code) == sa.func.upper(cost_center.c.cost_center),
+                    store_master_for_desc.c.id.in_(sa.select(selected_kpi.c.store_id)),
                 ),
             )
             .outerjoin(orders_agg, orders_agg.c.cost_center == cost_center.c.cost_center)
             .outerjoin(orders_count_agg, orders_count_agg.c.cost_center == cost_center.c.cost_center)
             .outerjoin(sales_agg, sales_agg.c.cost_center == cost_center.c.cost_center)
             .outerjoin(orders_sync_agg, orders_sync_agg.c.cost_center == cost_center.c.cost_center)
-            .outerjoin(store_master, store_master.c.cost_center == cost_center.c.cost_center)
-            .outerjoin(report_kpi, report_kpi.c.store_id == store_master.c.id)
-            .outerjoin(previous_kpi, previous_kpi.c.store_id == store_master.c.id)
+            .outerjoin(store_master_for_kpi, store_master_for_kpi.c.cost_center == cost_center.c.cost_center)
+            .outerjoin(selected_kpi, selected_kpi.c.store_id == store_master_for_kpi.c.id)
             .outerjoin(
                 targets,
                 sa.and_(
