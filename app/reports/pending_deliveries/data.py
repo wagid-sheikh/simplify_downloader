@@ -79,6 +79,12 @@ def _resolve_order_date(order_date: datetime, tz) -> date:
     return order_date.astimezone(tz).date()
 
 
+def _resolve_business_date(value: datetime, tz) -> date:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=tz)
+    return value.astimezone(tz).date()
+
+
 def _bucket_age(age_days: int) -> str:
     if age_days <= 5:
         return "0-5"
@@ -226,6 +232,7 @@ async def fetch_pending_deliveries_report(
             orders.c.order_number,
             orders.c.customer_name,
             orders.c.order_date,
+            orders.c.default_due_date,
             orders.c.source_system,
             amount_expr.label("gross_amount"),
             paid_amount_expr.label("paid_amount"),
@@ -250,6 +257,7 @@ async def fetch_pending_deliveries_report(
             orders.c.order_number,
             orders.c.customer_name,
             orders.c.order_date,
+            orders.c.default_due_date,
             orders.c.source_system,
             amount_expr,
         )
@@ -268,8 +276,12 @@ async def fetch_pending_deliveries_report(
             order_date = record.get("order_date")
             if not isinstance(order_date, datetime):
                 continue
+            default_due_date = record.get("default_due_date")
+            if not isinstance(default_due_date, datetime):
+                continue
             order_date_local = _resolve_order_date(order_date, tz)
-            age_days = max(0, (report_date - order_date_local).days)
+            default_due_date_local = _resolve_business_date(default_due_date, tz)
+            age_days = max(0, (report_date - default_due_date_local).days)
             gross_amount = _decimal(record.get("gross_amount"))
             paid_amount = _decimal(record.get("paid_amount"))
             pending_amount = _decimal(record.get("pending_amount"))
