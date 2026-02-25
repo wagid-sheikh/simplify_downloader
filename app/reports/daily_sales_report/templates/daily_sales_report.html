@@ -44,6 +44,9 @@
         background: #f6f6f6;
         font-weight: 700;
       }
+      .kpi-table th {
+        background: #eceff5;
+      }
       td.label,
       th.label {
         text-align: left;
@@ -60,6 +63,11 @@
       .section-separated {
         margin-top: 20px;
       }
+      .section-divider {
+        border: 0;
+        border-top: 2px solid #c7ceda;
+        margin: 22px 0 14px;
+      }
       .compact-table th,
       .compact-table td {
         padding: 4px 6px;
@@ -68,8 +76,14 @@
         font-weight: 700;
       }
       .secondary-metric {
-        font-size: 9px;
+        font-size: 10px;
         color: #666;
+      }
+      .kpi-note {
+        text-align: center;
+        font-size: 11px;
+        margin: -2px 0 8px;
+        color: #4b5563;
       }
       .ttd-negative {
         color: #c00;
@@ -78,6 +92,26 @@
         text-align: center;
         font-weight: 600;
         margin-bottom: 8px;
+      }
+      @media print {
+        body,
+        table,
+        th,
+        td {
+          font-size: 11px;
+          line-height: 1.3;
+        }
+        .title {
+          font-size: 18px;
+        }
+        .subtitle,
+        .section-title {
+          font-size: 14px;
+        }
+        .secondary-metric,
+        .kpi-note {
+          font-size: 10px;
+        }
       }
     </style>
   </head>
@@ -186,8 +220,10 @@
       </tbody>
     </table>
 
+    <hr class="section-divider" />
     <div class="section-title section-separated">Pickup & Delivery KPIs</div>
-    <table class="compact-table">
+    <div class="kpi-note">KPI source date shown as D or D-1</div>
+    <table class="compact-table kpi-table">
       <thead>
         <tr>
           <th class="label">#</th>
