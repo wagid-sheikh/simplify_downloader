@@ -93,6 +93,23 @@
         font-weight: 600;
         margin-bottom: 8px;
       }
+      .micro-table {
+        font-size: 9px;
+        table-layout: fixed;
+      }
+      .micro-table th,
+      .micro-table td {
+        padding: 2px 4px;
+        vertical-align: top;
+      }
+      .micro-table th:first-child,
+      .micro-table td:first-child {
+        width: 24%;
+      }
+      .micro-leads-list {
+        text-align: left;
+        word-break: break-word;
+      }
       @media print {
         body,
         table,
@@ -261,6 +278,28 @@
       </tbody>
     </table>
 
+    {% if missed_leads %}
+    <div class="section-title">Missed Leads for this month</div>
+    <table class="micro-table">
+      <thead>
+        <tr>
+          <th class="label">Store + Customer Type</th>
+          <th class="label">Leads</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for group in missed_leads %}
+        <tr>
+          <td class="label">{{ group.store_name }} {{ group.customer_type }}</td>
+          <td class="micro-leads-list">
+            {% for lead in group.leads %}({{ lead.mobile_number }}, {{ lead.customer_name }}){% if not loop.last %}, {% endif %}{% endfor %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
     {% if edited_orders %}
     <div class="section-title">Edited/Underpaid Orders</div>
     {% if edited_orders_summary %}
@@ -308,36 +347,5 @@
     </table>
     {% endif %}
 
-    {% if missed_leads %}
-    <div class="section-title">Missed Leads</div>
-    <table>
-      <thead>
-        <tr>
-          <th class="label">#</th>
-          <th class="label">Store</th>
-          <th class="label">Sync Group</th>
-          <th class="label">Customer Type</th>
-          <th class="label">Customer Name</th>
-          <th class="label">Mobile Number</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% set missed_index = namespace(value=0) %}
-        {% for group in missed_leads %}
-          {% for lead in group.leads %}
-          {% set missed_index.value = missed_index.value + 1 %}
-          <tr>
-            <td>{{ missed_index.value }}</td>
-            <td class="label">{{ group.store_name }}</td>
-            <td class="label">{{ group.sync_group }}</td>
-            <td class="label">{{ group.customer_type }}</td>
-            <td class="label">{{ lead.customer_name }}</td>
-            <td class="label">{{ lead.mobile_number }}</td>
-          </tr>
-          {% endfor %}
-        {% endfor %}
-      </tbody>
-    </table>
-    {% endif %}
   </body>
 </html>

@@ -617,7 +617,6 @@ async def fetch_daily_sales_report(
         missed_leads_stmt = (
             sa.select(
                 sa.func.coalesce(store_master_primary.c.store_name, missed_leads.c.store_code).label("store_name"),
-                sa.func.coalesce(store_master_primary.c.sync_group, sa.literal("--")).label("sync_group"),
                 missed_leads.c.customer_type,
                 missed_leads.c.customer_name,
                 missed_leads.c.mobile_number,
@@ -631,21 +630,22 @@ async def fetch_daily_sales_report(
             .where(missed_leads.c.is_order_placed.is_(False))
             .where(missed_leads.c.pickup_date >= report_month_start)
             .where(missed_leads.c.pickup_date < report_next_month_start)
+            .where(store_master_primary.c.sync_group == "TD")
             .order_by(
                 sa.func.coalesce(store_master_primary.c.store_name, missed_leads.c.store_code),
                 missed_leads.c.customer_type,
+                missed_leads.c.pickup_date,
                 missed_leads.c.customer_name,
             )
         )
 
         missed_leads_grouped: list[Mapping[str, object]] = []
-        grouped_map: dict[tuple[str, str, str], list[dict[str, str]]] = {}
+        grouped_map: dict[tuple[str, str], list[dict[str, str]]] = {}
         missed_leads_result = await session.execute(missed_leads_stmt)
         for entry in missed_leads_result.mappings():
             store_name = str(entry["store_name"] or "--")
-            sync_group = str(entry["sync_group"] or "--")
             customer_type = str(entry["customer_type"] or "Unknown")
-            key = (store_name, sync_group, customer_type)
+            key = (store_name, customer_type)
             grouped_map.setdefault(key, []).append(
                 {
                     "customer_name": str(entry["customer_name"] or "--"),
@@ -653,11 +653,10 @@ async def fetch_daily_sales_report(
                 }
             )
 
-        for (store_name, sync_group, customer_type), leads in sorted(grouped_map.items()):
+        for (store_name, customer_type), leads in sorted(grouped_map.items()):
             missed_leads_grouped.append(
                 {
                     "store_name": store_name,
-                    "sync_group": sync_group,
                     "customer_type": customer_type,
                     "leads": leads,
                 }
