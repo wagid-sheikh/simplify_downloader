@@ -613,26 +613,34 @@ async def fetch_daily_sales_report(
     report_month_start = report_date.replace(day=1)
     report_next_month_start = (report_month_start + timedelta(days=32)).replace(day=1)
 
+    td_store_master_primary = (
+        sa.select(
+            store_master_primary.c.store_code,
+            store_master_primary.c.store_name,
+        )
+        .where(store_master_primary.c.sync_group == "TD")
+        .subquery()
+    )
+
     async with session_scope(database_url) as session:
         missed_leads_stmt = (
             sa.select(
-                sa.func.coalesce(store_master_primary.c.store_name, missed_leads.c.store_code).label("store_name"),
+                td_store_master_primary.c.store_name.label("store_name"),
                 missed_leads.c.customer_type,
                 missed_leads.c.customer_name,
                 missed_leads.c.mobile_number,
             )
             .select_from(
-                missed_leads.outerjoin(
-                    store_master_primary,
-                    store_master_primary.c.store_code == missed_leads.c.store_code,
+                missed_leads.join(
+                    td_store_master_primary,
+                    td_store_master_primary.c.store_code == missed_leads.c.store_code,
                 )
             )
             .where(missed_leads.c.is_order_placed.is_(False))
             .where(missed_leads.c.pickup_date >= report_month_start)
             .where(missed_leads.c.pickup_date < report_next_month_start)
-            .where(store_master_primary.c.sync_group == "TD")
             .order_by(
-                sa.func.coalesce(store_master_primary.c.store_name, missed_leads.c.store_code),
+                td_store_master_primary.c.store_name,
                 missed_leads.c.customer_type,
                 missed_leads.c.pickup_date,
                 missed_leads.c.customer_name,
