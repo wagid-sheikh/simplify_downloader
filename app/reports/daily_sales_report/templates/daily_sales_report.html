@@ -301,7 +301,7 @@
       <tbody>
         {% for group in missed_leads %}
         <tr>
-          <td class="label">{{ group.store_name }} {{ group.customer_type }}</td>
+          <td class="label">{{ group.store_name }} {{ group.customer_type }} (Missed Leads: {{ group.leads|length }})</td>
           <td class="micro-leads-list">
             {% for lead in group.leads %}({{ lead.mobile_number }}, {{ lead.customer_name }}){% if not loop.last %}, {% endif %}{% endfor %}
           </td>
