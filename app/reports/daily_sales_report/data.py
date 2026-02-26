@@ -66,7 +66,7 @@ class DailySalesReportData:
     edited_orders: List[EditedOrderRow]
     edited_orders_totals: EditedOrderRow | None
     edited_orders_summary: EditedOrdersSummary | None
-    missed_leads: List[Mapping[str, str]]
+    missed_leads: List[Mapping[str, object]]
 
 
 def _decimal(value: object | None) -> Decimal:
@@ -324,6 +324,15 @@ async def fetch_daily_sales_report(
         sa.column("pickup_total_conv_pct"),
         sa.column("delivery_tat_pct"),
     )
+    missed_leads = sa.table(
+        "missed_leads",
+        sa.column("store_code"),
+        sa.column("mobile_number"),
+        sa.column("customer_name"),
+        sa.column("customer_type"),
+        sa.column("pickup_date"),
+        sa.column("is_order_placed"),
+    )
 
     previous_day = report_date - timedelta(days=1)
 
@@ -331,6 +340,7 @@ async def fetch_daily_sales_report(
         sa.select(
             store_master.c.id.label("id"),
             store_master.c.cost_center.label("cost_center"),
+            store_master.c.store_code.label("store_code"),
             store_master.c.store_name.label("store_name"),
             store_master.c.sync_group.label("sync_group"),
             sa.func.row_number()
@@ -347,6 +357,7 @@ async def fetch_daily_sales_report(
         sa.select(
             store_master_candidates.c.id,
             store_master_candidates.c.cost_center,
+            store_master_candidates.c.store_code,
             store_master_candidates.c.store_name,
             store_master_candidates.c.sync_group,
         )
@@ -599,6 +610,59 @@ async def fetch_daily_sales_report(
             per_store_counts=[f"{store}: {count}" for store, count in sorted(per_store_counts.items())],
         )
 
+    report_month_start = report_date.replace(day=1)
+    report_next_month_start = (report_month_start + timedelta(days=32)).replace(day=1)
+
+    async with session_scope(database_url) as session:
+        missed_leads_stmt = (
+            sa.select(
+                sa.func.coalesce(store_master_primary.c.store_name, missed_leads.c.store_code).label("store_name"),
+                sa.func.coalesce(store_master_primary.c.sync_group, sa.literal("--")).label("sync_group"),
+                missed_leads.c.customer_type,
+                missed_leads.c.customer_name,
+                missed_leads.c.mobile_number,
+            )
+            .select_from(
+                missed_leads.outerjoin(
+                    store_master_primary,
+                    store_master_primary.c.store_code == missed_leads.c.store_code,
+                )
+            )
+            .where(missed_leads.c.is_order_placed.is_(False))
+            .where(missed_leads.c.pickup_date >= report_month_start)
+            .where(missed_leads.c.pickup_date < report_next_month_start)
+            .order_by(
+                sa.func.coalesce(store_master_primary.c.store_name, missed_leads.c.store_code),
+                missed_leads.c.customer_type,
+                missed_leads.c.customer_name,
+            )
+        )
+
+        missed_leads_grouped: list[Mapping[str, object]] = []
+        grouped_map: dict[tuple[str, str, str], list[dict[str, str]]] = {}
+        missed_leads_result = await session.execute(missed_leads_stmt)
+        for entry in missed_leads_result.mappings():
+            store_name = str(entry["store_name"] or "--")
+            sync_group = str(entry["sync_group"] or "--")
+            customer_type = str(entry["customer_type"] or "Unknown")
+            key = (store_name, sync_group, customer_type)
+            grouped_map.setdefault(key, []).append(
+                {
+                    "customer_name": str(entry["customer_name"] or "--"),
+                    "mobile_number": str(entry["mobile_number"] or "--"),
+                }
+            )
+
+        for (store_name, sync_group, customer_type), leads in sorted(grouped_map.items()):
+            missed_leads_grouped.append(
+                {
+                    "store_name": store_name,
+                    "sync_group": sync_group,
+                    "customer_type": customer_type,
+                    "leads": leads,
+                }
+            )
+
     return DailySalesReportData(
         report_date=report_date,
         rows=rows,
@@ -606,5 +670,5 @@ async def fetch_daily_sales_report(
         edited_orders=edited_rows,
         edited_orders_totals=edited_totals,
         edited_orders_summary=edited_orders_summary,
-        missed_leads=[],
+        missed_leads=missed_leads_grouped,
     )

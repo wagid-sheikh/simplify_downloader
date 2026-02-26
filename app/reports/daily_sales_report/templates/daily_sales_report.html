@@ -314,19 +314,27 @@
       <thead>
         <tr>
           <th class="label">#</th>
-          <th class="label">Cost Center</th>
+          <th class="label">Store</th>
+          <th class="label">Sync Group</th>
+          <th class="label">Customer Type</th>
           <th class="label">Customer Name</th>
           <th class="label">Mobile Number</th>
         </tr>
       </thead>
       <tbody>
-        {% for row in missed_leads %}
-        <tr>
-          <td>{{ loop.index }}</td>
-          <td class="label">{{ row.cost_center }}</td>
-          <td class="label">{{ row.customer_name }}</td>
-          <td class="label">{{ row.mobile_number }}</td>
-        </tr>
+        {% set missed_index = namespace(value=0) %}
+        {% for group in missed_leads %}
+          {% for lead in group.leads %}
+          {% set missed_index.value = missed_index.value + 1 %}
+          <tr>
+            <td>{{ missed_index.value }}</td>
+            <td class="label">{{ group.store_name }}</td>
+            <td class="label">{{ group.sync_group }}</td>
+            <td class="label">{{ group.customer_type }}</td>
+            <td class="label">{{ lead.customer_name }}</td>
+            <td class="label">{{ lead.mobile_number }}</td>
+          </tr>
+          {% endfor %}
         {% endfor %}
       </tbody>
     </table>
