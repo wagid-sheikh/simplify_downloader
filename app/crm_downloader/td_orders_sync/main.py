@@ -2498,6 +2498,7 @@ def _resolve_sync_log_status_note(
     outcome: StoreOutcome | None,
     run_orders: bool,
     run_sales: bool,
+    run_garment_sync: bool = False,
 ) -> str | None:
     if status not in {"skipped", "partial"}:
         return None
@@ -2522,6 +2523,9 @@ def _resolve_sync_log_status_note(
             _add(sales_report.message or "Sales completed with warnings")
     elif not run_sales:
         _add("Sales sync skipped by flag")
+
+    if not run_garment_sync:
+        _add("Garment sync skipped by flag")
 
     if outcome and outcome.status in {"warning", "error"} and outcome.message:
         _add(outcome.message)
