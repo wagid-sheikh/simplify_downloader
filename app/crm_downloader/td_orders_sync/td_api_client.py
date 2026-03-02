@@ -7,7 +7,7 @@ import os
 import random
 import time
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import parse_qs, unquote, urlparse
@@ -127,6 +127,17 @@ class _AuthRequestShape:
     name: str
     include_authorization_header: bool
     include_token_query: bool
+
+
+@dataclass(frozen=True)
+class _AuthContextValidation:
+    ready: bool
+    requires_tokenized_auth: bool
+    requires_cookie_source: bool
+    token_present: bool
+    token_expired: bool
+    cookies_present: bool
+    failure_reason: str | None = None
 
 
 @dataclass
@@ -705,10 +716,19 @@ class TdApiClient:
     def _auth_shapes_for_endpoint(self, endpoint: str) -> tuple[_AuthRequestShape, ...]:
         if endpoint in HAR_COMPATIBLE_ENDPOINTS:
             return (
-                _AuthRequestShape(name="har_like", include_authorization_header=False, include_token_query=False),
                 _AuthRequestShape(name="legacy", include_authorization_header=True, include_token_query=True),
+                _AuthRequestShape(name="har_like", include_authorization_header=False, include_token_query=False),
             )
         return (_AuthRequestShape(name="legacy", include_authorization_header=True, include_token_query=True),)
+
+    def _should_attempt_auth_shape_fallback(self, *, endpoint: str, shape_result: _JsonFetchResult) -> bool:
+        if endpoint not in HAR_COMPATIBLE_ENDPOINTS:
+            return False
+        if shape_result.ok:
+            return False
+        if shape_result.status in {401, 403}:
+            return True
+        return shape_result.error in {"http_401", "http_403"}
 
     def _request_context_headers(self) -> dict[str, str]:
         headers = {"accept": "*/*", "origin": f"https://{REPORTS_ORIGIN_HOST}", "referer": f"https://{REPORTS_ORIGIN_HOST}/"}
@@ -737,6 +757,50 @@ class TdApiClient:
             },
         )
         self._auth_state.auth_ready_logged_endpoints.add(endpoint)
+
+    @staticmethod
+    def _is_token_expired(expiry: str | None) -> bool:
+        if not expiry:
+            return False
+        try:
+            normalized = expiry.replace("Z", "+00:00")
+            parsed_expiry = datetime.fromisoformat(normalized)
+        except ValueError:
+            return False
+        if parsed_expiry.tzinfo is None:
+            parsed_expiry = parsed_expiry.replace(tzinfo=timezone.utc)
+        return parsed_expiry <= datetime.now(timezone.utc)
+
+    def _validate_auth_context_for_endpoint(
+        self,
+        *,
+        endpoint: str,
+        token_discovery: _TokenDiscoveryResult,
+    ) -> _AuthContextValidation:
+        token_present = bool((token_discovery.token or "").strip())
+        token_expired = self._is_token_expired(token_discovery.expiry)
+        cookies_present = self._has_cookie_auth_source()
+        requires_tokenized_auth = endpoint not in HAR_COMPATIBLE_ENDPOINTS
+        requires_cookie_source = endpoint in HAR_COMPATIBLE_ENDPOINTS
+
+        if requires_tokenized_auth and (not token_present or token_expired):
+            failure_reason = "token_missing_or_expired"
+        elif requires_cookie_source and not cookies_present:
+            failure_reason = "cookie_session_missing"
+        elif token_present and token_expired and not cookies_present:
+            failure_reason = "token_expired_and_cookie_session_missing"
+        else:
+            failure_reason = None
+
+        return _AuthContextValidation(
+            ready=failure_reason is None,
+            requires_tokenized_auth=requires_tokenized_auth,
+            requires_cookie_source=requires_cookie_source,
+            token_present=token_present,
+            token_expired=token_expired,
+            cookies_present=cookies_present,
+            failure_reason=failure_reason,
+        )
 
     async def _get_paginated_json(
         self,
@@ -804,7 +868,36 @@ class TdApiClient:
                 },
             )
 
+        auth_validation = self._validate_auth_context_for_endpoint(endpoint=endpoint, token_discovery=token_discovery)
+        if not auth_validation.ready:
+            await self._attempt_auth_refresh_once()
+            token_discovery = await self._discover_reporting_token(force_refresh=True)
+            token_value = (token_discovery.token or "").strip()
+            auth_validation = self._validate_auth_context_for_endpoint(endpoint=endpoint, token_discovery=token_discovery)
+
+        if not auth_validation.ready:
+            metadata.append(
+                {
+                    "endpoint": endpoint,
+                    "method": "GET",
+                    "query_params": self._metadata_query_map(request_params),
+                    "status": None,
+                    "latency_ms": 0,
+                    "retry_count": 0,
+                    "token_refresh_attempted": self._auth_state.refresh_attempted,
+                    "retry_reason": "auth_context_not_ready",
+                    "auth_context_failure_reason": auth_validation.failure_reason,
+                    "auth_context_requires_tokenized_auth": auth_validation.requires_tokenized_auth,
+                    "auth_context_requires_cookie_source": auth_validation.requires_cookie_source,
+                    "auth_context_token_present": auth_validation.token_present,
+                    "auth_context_token_expired": auth_validation.token_expired,
+                    "auth_context_cookies_present": auth_validation.cookies_present,
+                }
+            )
+            return _JsonFetchResult(ok=False, payload=None, error="auth_context_not_ready", status=None, attempts=0)
+
         auth_shapes = self._auth_shapes_for_endpoint(endpoint)
+        primary_auth_shape = auth_shapes[0].name if auth_shapes else "legacy"
         baseline_status: int | None = None
         baseline_latency_ms: int | None = None
         cumulative_attempts = 0
@@ -830,8 +923,9 @@ class TdApiClient:
                         "retry_count": 0,
                         "token_refresh_attempted": self._auth_state.refresh_attempted,
                         "retry_reason": fail_fast_error,
+                        "primary_auth_shape": primary_auth_shape,
                         "auth_shape": auth_shape.name,
-                        "auth_shape_fallback_from_har_like": shape_index > 0,
+                        "auth_shape_fallback_from_har_like": auth_shape.name != primary_auth_shape,
                     }
                 )
                 shape_last_result = _JsonFetchResult(ok=False, payload=None, error=fail_fast_error, status=None, attempts=0, auth_shape=auth_shape.name)
@@ -852,14 +946,16 @@ class TdApiClient:
                 auth_shape=auth_shape,
                 baseline_status=baseline_status,
                 baseline_latency_ms=baseline_latency_ms,
-                auth_shape_fallback_from_har_like=shape_index > 0,
+                primary_auth_shape=primary_auth_shape,
+                auth_shape_fallback_used=auth_shape.name != primary_auth_shape,
             )
             cumulative_attempts += shape_result.attempts
             shape_last_result = shape_result
             if shape_index == 0:
                 baseline_status = shape_result.status
                 baseline_latency_ms = shape_result.latency_ms
-            if shape_result.ok or shape_index >= len(auth_shapes) - 1:
+            should_fallback = self._should_attempt_auth_shape_fallback(endpoint=endpoint, shape_result=shape_result)
+            if shape_result.ok or shape_index >= len(auth_shapes) - 1 or not should_fallback:
                 return _JsonFetchResult(
                     ok=shape_result.ok,
                     payload=shape_result.payload,
@@ -871,10 +967,11 @@ class TdApiClient:
                 )
 
             logger.info(
-                "TD API auth shape fallback engaged",
+                "TD API auth shape fallback engaged from primary auth shape",
                 extra={
                     "store_code": self.store_code,
                     "endpoint": endpoint,
+                    "primary_auth_shape": primary_auth_shape,
                     "previous_auth_shape": auth_shape.name,
                     "next_auth_shape": auth_shapes[shape_index + 1].name,
                     "baseline_status": baseline_status,
@@ -909,7 +1006,8 @@ class TdApiClient:
         auth_shape: _AuthRequestShape,
         baseline_status: int | None,
         baseline_latency_ms: int | None,
-        auth_shape_fallback_from_har_like: bool,
+        primary_auth_shape: str,
+        auth_shape_fallback_used: bool,
     ) -> _JsonFetchResult:
         last_error: Exception | None = None
         status_code: int | None = None
@@ -948,7 +1046,9 @@ class TdApiClient:
                     "attempt": attempts,
                     "max_attempts": resolved_max_retries + 1,
                     "timeout_diagnostics": timeout_diagnostics,
+                    "primary_auth_shape": primary_auth_shape,
                     "auth_shape": auth_shape.name,
+                    "auth_shape_fallback_used": auth_shape_fallback_used,
                     **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
                 },
             )
@@ -981,11 +1081,13 @@ class TdApiClient:
                                 latency_ms=latency_ms,
                                 retry_count=attempt,
                                 token_refresh_attempted=refreshed,
-                                retry_reason="auth_refresh" if refreshed else None,
+                                retry_reason="http_401",
                             ).as_dict(),
                             "timeout_diagnostics": timeout_diagnostics,
+                            "primary_auth_shape": primary_auth_shape,
                             "auth_shape": auth_shape.name,
-                            "auth_shape_fallback_from_har_like": auth_shape_fallback_from_har_like,
+                            "auth_shape_fallback_used": auth_shape_fallback_used,
+                            "auth_shape_fallback_from_har_like": auth_shape_fallback_used,
                             "auth_shape_baseline_status": baseline_status,
                             "auth_shape_baseline_latency_ms": baseline_latency_ms,
                             "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
@@ -1020,8 +1122,10 @@ class TdApiClient:
                         token_refresh_attempted=self._auth_state.refresh_attempted,
                     ).as_dict(),
                         "timeout_diagnostics": timeout_diagnostics,
+                        "primary_auth_shape": primary_auth_shape,
                         "auth_shape": auth_shape.name,
-                        "auth_shape_fallback_from_har_like": auth_shape_fallback_from_har_like,
+                        "auth_shape_fallback_used": auth_shape_fallback_used,
+                        "auth_shape_fallback_from_har_like": auth_shape_fallback_used,
                         "auth_shape_baseline_status": baseline_status,
                         "auth_shape_baseline_latency_ms": baseline_latency_ms,
                         "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
@@ -1070,8 +1174,10 @@ class TdApiClient:
                     ).as_dict(),
                         "timeout_type": timeout_class,
                         "timeout_diagnostics": timeout_diagnostics,
+                        "primary_auth_shape": primary_auth_shape,
                         "auth_shape": auth_shape.name,
-                        "auth_shape_fallback_from_har_like": auth_shape_fallback_from_har_like,
+                        "auth_shape_fallback_used": auth_shape_fallback_used,
+                        "auth_shape_fallback_from_har_like": auth_shape_fallback_used,
                         "auth_shape_baseline_status": baseline_status,
                         "auth_shape_baseline_latency_ms": baseline_latency_ms,
                         "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
@@ -1097,8 +1203,10 @@ class TdApiClient:
                         retry_reason="network_timeout",
                     ).as_dict(),
                         "timeout_diagnostics": timeout_diagnostics,
+                        "primary_auth_shape": primary_auth_shape,
                         "auth_shape": auth_shape.name,
-                        "auth_shape_fallback_from_har_like": auth_shape_fallback_from_har_like,
+                        "auth_shape_fallback_used": auth_shape_fallback_used,
+                        "auth_shape_fallback_from_har_like": auth_shape_fallback_used,
                         "auth_shape_baseline_status": baseline_status,
                         "auth_shape_baseline_latency_ms": baseline_latency_ms,
                         "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
