@@ -34,7 +34,11 @@ from app.crm_downloader.td_orders_sync.ingest import TdOrdersIngestResult, inges
 from app.crm_downloader.td_orders_sync.sales_ingest import TdSalesIngestResult, ingest_td_sales_workbook
 from app.crm_downloader.td_orders_sync.td_api_client import TdApiClient, TdApiFetchResult
 from app.crm_downloader.td_orders_sync.garment_ingest import TdGarmentIngestResult, ingest_td_garment_rows
-from app.crm_downloader.td_orders_sync.td_api_artifacts import persist_td_api_artifacts, persist_td_compare_artifacts
+from app.crm_downloader.td_orders_sync.td_api_artifacts import (
+    persist_td_api_artifacts,
+    persist_td_compare_artifacts,
+    redact_sensitive_fields,
+)
 from app.crm_downloader.td_orders_sync.td_api_compare import (
     CorrelationContext,
     DecisionLog,
@@ -393,7 +397,7 @@ def _persist_compare_excel_artifact(
     _write_rows("missing_in_api", list(mismatch_artifacts.get("missing_in_api") or []))
     _write_rows("missing_in_ui", list(mismatch_artifacts.get("missing_in_ui") or []))
     _write_rows("value_mismatches", list(mismatch_artifacts.get("value_mismatches") or []))
-    _write_rows("api_request_metadata", list(api_request_metadata or []))
+    _write_rows("api_request_metadata", list(redact_sensitive_fields(list(api_request_metadata or []))))
 
     default_sheet = workbook["Sheet"]
     workbook.remove(default_sheet)
@@ -7556,7 +7560,7 @@ async def _run_store_discovery(
             endpoint_error_diagnostics=api_fetch_result_obj.endpoint_error_diagnostics if api_fetch_result_obj else {},
             orders_api_health=orders_api_health,
             sales_api_health=sales_api_health,
-            api_request_metadata=api_request_metadata,
+            api_request_metadata=redact_sensitive_fields(api_request_metadata),
             auth_diagnostics=auth_diagnostics.as_dict(),
             decision_log=decision.as_dict(),
         )
@@ -7584,7 +7588,7 @@ async def _run_store_discovery(
         _persist_compare_excel_artifact(
             artifact_path=compare_excel_path,
             compare_metrics=orders_compare_metrics,
-            api_request_metadata=api_request_metadata,
+            api_request_metadata=redact_sensitive_fields(api_request_metadata),
         )
         compare_artifact_result.artifact_paths["orders_compare_excel"] = str(compare_excel_path)
         log_event(

@@ -519,6 +519,63 @@ def test_persist_td_compare_artifacts_includes_endpoint_health_summary(tmp_path:
     assert orders_payload["endpoint_health_summary"]["orders"]["degraded_reason"] == "http_401"
     assert sales_payload["endpoint_health_summary"]["orders"]["ready"] is False
 
+
+
+def test_compare_excel_redacts_sensitive_api_request_metadata(tmp_path: Path) -> None:
+    artifact_path = tmp_path / "compare.xlsx"
+    _persist_compare_excel_artifact(
+        artifact_path=artifact_path,
+        compare_metrics={"total_rows": 1},
+        api_request_metadata=[
+            {
+                "endpoint": "/reports/order-report",
+                "query_params": {"token": ["secret-token"]},
+                "headers": {"Authorization": "Bearer abc", "cookie": "sid=123"},
+            }
+        ],
+    )
+
+    import openpyxl
+
+    workbook = openpyxl.load_workbook(artifact_path)
+    metadata_sheet = workbook["api_request_metadata"]
+    values = [cell.value for cell in next(metadata_sheet.iter_rows(min_row=2, max_row=2))]
+    serialized = " ".join(str(value) for value in values if value is not None)
+    assert "secret-token" not in serialized
+    assert "Bearer abc" not in serialized
+    assert "sid=123" not in serialized
+    assert "***REDACTED***" in serialized
+
+
+def test_persist_td_compare_artifacts_redacts_tokens_in_mismatch_payload(tmp_path: Path) -> None:
+    result = persist_td_compare_artifacts(
+        download_dir=tmp_path,
+        store_code="a817",
+        from_date=date(2026, 1, 1),
+        to_date=date(2026, 1, 2),
+        orders_compare_metrics={
+            "strict_verdict_ready": False,
+            "dataset_health": {"ready": False},
+            "mismatch_artifacts": {
+                "request_metadata": [
+                    {
+                        "query_params": {"token": ["visible-token"]},
+                        "headers": {"authorization": "Bearer not-safe"},
+                    }
+                ]
+            },
+        },
+        sales_compare_metrics={"strict_verdict_ready": True, "dataset_health": {"ready": True}},
+        endpoint_health_summary={"diagnostics": {"set-cookie": "auth=clear"}},
+    )
+
+    orders_payload_text = Path(result.artifact_paths["orders_compare_mismatches"]).read_text(encoding="utf-8")
+    assert "visible-token" not in orders_payload_text
+    assert "not-safe" not in orders_payload_text
+    assert "auth=clear" not in orders_payload_text
+    assert "***REDACTED***" in orders_payload_text
+
+
 def test_persist_td_api_artifacts_writes_excel_outputs(tmp_path: Path) -> None:
     result = persist_td_api_artifacts(
         download_dir=tmp_path,
