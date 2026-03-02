@@ -6612,6 +6612,7 @@ async def _run_store_discovery(
     probe_reason: str | None = None
     probe_result: SessionProbeResult | None = None
     sync_error_message: str | None = None
+    garment_sync_enabled = _bool_env("TD_GARMENT_SYNC_ENABLED", default=False)
     api_request_metadata: list[dict[str, Any]] = []
     auth_diagnostics = collect_auth_diagnostics(store.storage_state_path if storage_state_exists else None)
     log_event(
@@ -7589,7 +7590,6 @@ async def _run_store_discovery(
         )
 
         garment_ingest_result: TdGarmentIngestResult | None = None
-        garment_sync_enabled = _bool_env("TD_GARMENT_SYNC_ENABLED", default=False)
         compare_ok = (not orders_compare_readiness) or _compare_quality_passed(orders_compare_metrics)
         if (
             garment_sync_enabled
