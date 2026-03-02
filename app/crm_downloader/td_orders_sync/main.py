@@ -172,12 +172,23 @@ def _build_threshold_verdict(
     normalized_sales_verdict: Mapping[str, Any],
     garment_metrics: Mapping[str, Any],
     run_sales: bool,
+    run_garment_sync: bool,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    garments_verdict = _evaluate_thresholds(
+        metrics=garment_metrics, thresholds=_thresholds_for_dataset("garments"), dataset="garments"
+    )
+    garments_reasons = [str(reason) for reason in garments_verdict.get("reasons", [])]
+    if run_garment_sync:
+        garments_verdict["informational"] = False
+        garments_verdict["included_in_overall_pass"] = True
+    else:
+        garments_verdict["informational"] = True
+        garments_verdict["included_in_overall_pass"] = False
+        garments_verdict["reasons"] = [*garments_reasons, "garments:informational_when_sync_disabled"]
+
     datasets: dict[str, dict[str, Any]] = {
         "orders": dict(normalized_orders_verdict),
-        "garments": _evaluate_thresholds(
-            metrics=garment_metrics, thresholds=_thresholds_for_dataset("garments"), dataset="garments"
-        ),
+        "garments": garments_verdict,
     }
     if run_sales:
         datasets["sales"] = dict(normalized_sales_verdict)
@@ -186,7 +197,11 @@ def _build_threshold_verdict(
     for verdict in datasets.values():
         all_reasons.extend([str(reason) for reason in verdict.get("reasons", [])])
     top_reasons = [reason for reason, _ in Counter(all_reasons).most_common(3)]
-    overall_pass = all(bool(verdict.get("pass")) for verdict in datasets.values())
+    overall_pass = all(
+        bool(verdict.get("pass"))
+        for verdict in datasets.values()
+        if bool(verdict.get("included_in_overall_pass", True))
+    )
 
     thresholds_json = {
         dataset: verdict.get("thresholds") or {}
@@ -194,6 +209,7 @@ def _build_threshold_verdict(
     }
     verdict_json = {
         "pass": overall_pass,
+        "overall_pass": overall_pass,
         "datasets": datasets,
         "reason_codes": all_reasons,
         "top_reason_codes": top_reasons,
@@ -1844,7 +1860,7 @@ def _build_daily_reconciliation_summary(summary: TdOrdersDiscoverySummary) -> di
     for store_code in summary._store_codes_for_payload():
         orders_report = summary.orders_results.get(store_code)
         threshold_verdict = dict(orders_report.threshold_verdict) if orders_report else {}
-        passed = bool(threshold_verdict.get("pass"))
+        passed = bool(threshold_verdict.get("overall_pass", threshold_verdict.get("pass")))
         reason_codes = [str(code) for code in threshold_verdict.get("reason_codes") or []]
         normalized_verdicts = dict(threshold_verdict.get("datasets") or {})
         if passed:
@@ -7348,6 +7364,7 @@ async def _run_store_discovery(
             outcome=outcome,
             run_orders=run_orders,
             run_sales=run_sales,
+            run_garment_sync=garment_sync_enabled,
         )
         resolved_message = _resolve_sync_log_message(
             status=final_status, error_message=final_error_message, status_note=status_note
@@ -7357,6 +7374,7 @@ async def _run_store_discovery(
             sales_report=sales_report,
             run_orders=run_orders,
             run_sales=run_sales,
+            run_garment_sync=garment_sync_enabled,
         )
         ui_rows = _resolve_compare_rows(orders_report, dataset="orders")
         api_fetch_result_obj = api_fetch_result if "api_fetch_result" in locals() else None
@@ -7665,6 +7683,7 @@ async def _run_store_discovery(
             normalized_sales_verdict=normalized_sales_verdict,
             garment_metrics=garment_compare_metrics,
             run_sales=run_sales,
+            run_garment_sync=garment_sync_enabled,
         )
         consecutive_pass_windows, api_ready = await _insert_td_compare_log(
             logger=store_logger,

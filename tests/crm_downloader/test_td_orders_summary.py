@@ -8,6 +8,7 @@ from app.crm_downloader.td_orders_sync.main import (
     StoreReport,
     TdOrdersDiscoverySummary,
     _build_dataset_order_set_verdict,
+    _build_threshold_verdict,
     _build_sales_order_row_count_verdict,
     _compare_row_count_diagnostics,
     _filter_non_order_summary_rows,
@@ -399,3 +400,66 @@ def test_sales_verdict_fails_when_per_order_row_counts_differ() -> None:
     assert verdict["order_number_set_equal"] is True
     assert verdict["per_order_row_count_equal"] is False
     assert "sales:per_order_row_count_mismatch" in verdict["reason_codes"]
+
+
+def test_threshold_verdict_includes_garments_when_sync_enabled() -> None:
+    thresholds_json, verdict = _build_threshold_verdict(
+        normalized_orders_verdict={"pass": True, "reasons": [], "thresholds": {}},
+        normalized_sales_verdict={"pass": True, "reasons": [], "thresholds": {}},
+        garment_metrics={"total_rows": 3, "matched_rows": 0, "amount_mismatches": 0, "status_mismatches": 0},
+        run_sales=False,
+        run_garment_sync=True,
+    )
+
+    assert "garments" in thresholds_json
+    assert verdict["datasets"]["garments"]["informational"] is False
+    assert verdict["datasets"]["garments"]["included_in_overall_pass"] is True
+    assert "garments:row_count_delta_exceeded" in verdict["reason_codes"]
+    assert verdict["overall_pass"] is False
+    assert verdict["pass"] is False
+
+
+def test_threshold_verdict_marks_garments_informational_when_sync_disabled() -> None:
+    thresholds_json, verdict = _build_threshold_verdict(
+        normalized_orders_verdict={"pass": True, "reasons": [], "thresholds": {}},
+        normalized_sales_verdict={"pass": True, "reasons": [], "thresholds": {}},
+        garment_metrics={"total_rows": 4, "matched_rows": 0, "amount_mismatches": 0, "status_mismatches": 0},
+        run_sales=False,
+        run_garment_sync=False,
+    )
+
+    assert "garments" in thresholds_json
+    assert verdict["datasets"]["garments"]["informational"] is True
+    assert verdict["datasets"]["garments"]["included_in_overall_pass"] is False
+    assert "garments:row_count_delta_exceeded" in verdict["reason_codes"]
+    assert "garments:informational_when_sync_disabled" in verdict["reason_codes"]
+    assert verdict["overall_pass"] is True
+    assert verdict["pass"] is True
+
+
+def test_daily_reconciliation_uses_overall_pass_when_present() -> None:
+    summary = TdOrdersDiscoverySummary(
+        run_id="run-7", run_env="test", report_date=date(2024, 1, 7), report_end_date=date(2024, 1, 7)
+    )
+    summary.record_store(
+        "A1",
+        StoreOutcome(status="ok", message="done"),
+        orders_result=StoreReport(
+            status="ok",
+            threshold_verdict={
+                "pass": False,
+                "overall_pass": True,
+                "reason_codes": ["garments:row_count_delta_exceeded", "garments:informational_when_sync_disabled"],
+            },
+            api_ready=True,
+            consecutive_pass_windows=2,
+        ),
+    )
+
+    record = summary.build_record(finished_at=datetime(2024, 1, 7, tzinfo=timezone.utc))
+    daily = record["metrics_json"]["daily_reconciliation"]
+
+    assert daily["passed_stores"] == ["A1"]
+    assert daily["failed_stores"] == []
+    assert daily["stores_passed"] == ["A1"]
+    assert daily["stores_failed"] == []
