@@ -1927,6 +1927,101 @@ def _build_daily_reconciliation_summary(summary: TdOrdersDiscoverySummary) -> di
     }
 
 
+def _build_reconciliation_gate_failures(
+    *, store_code: str, orders_report: StoreReport | None, readiness_gate_reason: str
+) -> list[dict[str, Any]]:
+    threshold_verdict = dict(orders_report.threshold_verdict) if orders_report else {}
+    datasets = dict(threshold_verdict.get("datasets") or {})
+    reason_codes = [str(code) for code in threshold_verdict.get("reason_codes") or []]
+    failures: list[dict[str, Any]] = []
+
+    for dataset, verdict_raw in datasets.items():
+        verdict = dict(verdict_raw or {})
+        gate_name = f"{dataset} parity"
+        thresholds = dict(verdict.get("thresholds") or {})
+        observed = {
+            "row_count_delta": int(verdict.get("row_count_delta") or 0),
+            "amount_mismatches": int(verdict.get("amount_mismatches") or 0),
+            "status_mismatches": int(verdict.get("status_mismatches") or 0),
+        }
+        failures.append(
+            {
+                "store_code": store_code,
+                "gate_name": gate_name,
+                "expected_threshold": thresholds,
+                "observed_value": observed,
+                "pass": bool(verdict.get("pass")),
+            }
+        )
+
+    overall_pass = bool(threshold_verdict.get("overall_pass", threshold_verdict.get("pass")))
+    failures.append(
+        {
+            "store_code": store_code,
+            "gate_name": "tolerances",
+            "expected_threshold": "all enabled dataset tolerance checks pass",
+            "observed_value": {
+                "reason_codes": reason_codes,
+                "failed_reason_count": len(reason_codes),
+            },
+            "pass": overall_pass,
+        }
+    )
+
+    schema_reason_codes = [code for code in reason_codes if "schema" in code.lower()]
+    failures.append(
+        {
+            "store_code": store_code,
+            "gate_name": "schema checks",
+            "expected_threshold": "0 schema mismatch reason codes",
+            "observed_value": {
+                "schema_reason_count": len(schema_reason_codes),
+                "schema_reason_codes": schema_reason_codes,
+            },
+            "pass": not schema_reason_codes,
+        }
+    )
+
+    api_ready = bool(orders_report.api_ready) if orders_report else False
+    consecutive_pass_windows = int(orders_report.consecutive_pass_windows or 0) if orders_report else 0
+    if readiness_gate_reason in reason_codes or (overall_pass and not api_ready):
+        failures.append(
+            {
+                "store_code": store_code,
+                "gate_name": "promotion readiness",
+                "expected_threshold": "api_ready=true",
+                "observed_value": {
+                    "api_ready": api_ready,
+                    "consecutive_pass_windows": consecutive_pass_windows,
+                },
+                "pass": api_ready,
+            }
+        )
+
+    return failures
+
+
+def _emit_reconciliation_gate_summary_logs(*, summary: TdOrdersDiscoverySummary, logger: JsonLogger) -> None:
+    readiness_gate_reason = "shadow:consecutive_window_policy_not_met"
+    for store_code in summary._store_codes_for_payload():
+        orders_report = summary.orders_results.get(store_code)
+        gate_summaries = _build_reconciliation_gate_failures(
+            store_code=store_code,
+            orders_report=orders_report,
+            readiness_gate_reason=readiness_gate_reason,
+        )
+        if not gate_summaries:
+            continue
+        log_event(
+            logger=logger,
+            phase="reconciliation",
+            message="TD reconciliation gate summary",
+            run_id=summary.run_id,
+            store_code=store_code,
+            run_log=gate_summaries,
+        )
+
+
 def _write_daily_reconciliation_artifact(*, summary: TdOrdersDiscoverySummary, logger: JsonLogger) -> Path | None:
     try:
         payload = _build_daily_reconciliation_summary(summary)
@@ -1949,6 +2044,7 @@ def _write_daily_reconciliation_artifact(*, summary: TdOrdersDiscoverySummary, l
             failed_stores=len(payload["failed_stores"]),
             data_clean_not_promotion_ready_stores=len(payload["data_clean_not_promotion_ready_stores"]),
         )
+        _emit_reconciliation_gate_summary_logs(summary=summary, logger=logger)
         return artifact_path
     except Exception as exc:  # pragma: no cover
         log_event(
