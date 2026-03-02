@@ -55,8 +55,8 @@ def stg_td_garments_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("updated_at", sa.DateTime(timezone=True)),
         sa.Column("status", sa.String(length=32)),
         sa.Column("raw_payload", sa.JSON()),
+        sa.Column("ingest_row_seq", sa.Integer(), nullable=False),
         sa.Column("ingest_remarks", sa.Text()),
-        sa.UniqueConstraint("store_code", "line_item_uid", name="uq_stg_td_garments_store_line_item_uid"),
         sqlite_autoincrement=True,
     )
 
@@ -84,9 +84,9 @@ def order_line_items_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("order_date", sa.DateTime(timezone=True)),
         sa.Column("updated_at", sa.DateTime(timezone=True)),
         sa.Column("status", sa.String(length=32)),
+        sa.Column("ingest_row_seq", sa.Integer(), nullable=False),
         sa.Column("is_orphan", sa.Boolean(), nullable=False, server_default=sa.text("false")),
         sa.Column("ingest_remarks", sa.Text()),
-        sa.UniqueConstraint("cost_center", "line_item_uid", name="uq_order_line_items_cost_center_line_item_uid"),
         sqlite_autoincrement=True,
     )
 
@@ -100,14 +100,16 @@ def _parse_decimal(value: Any) -> Decimal | None:
         return None
 
 
-def _line_item_uid(*, cost_center: str, order_number: str, row: Mapping[str, Any], line_item_key: str) -> str:
+def _line_item_uid(
+    *, cost_center: str, order_number: str, row: Mapping[str, Any], line_item_key: str, row_seq: int
+) -> str:
     api_line_item_id = row.get("api_line_item_id") or row.get("apiLineItemId")
     if api_line_item_id:
         return str(api_line_item_id).strip()
     api_garment_id = row.get("api_garment_id") or row.get("apiGarmentId")
     if api_garment_id:
         return str(api_garment_id).strip()
-    return f"{cost_center}|{order_number}|{line_item_key}"
+    return f"{cost_center}|{order_number}|{line_item_key}|{row_seq}"
 
 
 def _line_item_key(row: Mapping[str, Any]) -> str:
@@ -154,7 +156,7 @@ async def ingest_td_garment_rows(
     warnings: list[str] = []
     normalized: list[dict[str, Any]] = []
 
-    for row in rows:
+    for row_seq, row in enumerate(rows, start=1):
         order_number = str(
             row.get("order_no")
             or row.get("order_number")
@@ -166,7 +168,13 @@ async def ingest_td_garment_rows(
             warnings.append("Skipped garment row without order number")
             continue
         line_item_key = _line_item_key(row)
-        uid = _line_item_uid(cost_center=cost_center, order_number=order_number, row=row, line_item_key=line_item_key)
+        uid = _line_item_uid(
+            cost_center=cost_center,
+            order_number=order_number,
+            row=row,
+            line_item_key=line_item_key,
+            row_seq=row_seq,
+        )
         api_order_id = str(row.get("api_order_id") or row.get("apiOrderId") or "").strip() or None
         api_line_item_id = str(row.get("api_line_item_id") or row.get("apiLineItemId") or "").strip() or None
         api_garment_id = str(row.get("api_garment_id") or row.get("apiGarmentId") or "").strip() or None
@@ -186,6 +194,7 @@ async def ingest_td_garment_rows(
                 "updated_at": row.get("updated_at") if isinstance(row.get("updated_at"), datetime) else None,
                 "status": str(row.get("status") or "").strip() or None,
                 "raw_payload": dict(row),
+                "ingest_row_seq": row_seq,
             }
         )
 
@@ -212,19 +221,6 @@ async def ingest_td_garment_rows(
         )
         order_rows = (await session.execute(order_lookup_stmt, {"cost_center": cost_center})).fetchall()
         order_map = {str(row.order_number): int(row.id) for row in order_rows if row.order_number is not None}
-
-        uids = [r["line_item_uid"] for r in normalized]
-        stg_existing_stmt = sa.select(stg_table.c.line_item_uid).where(
-            stg_table.c.store_code == store_code,
-            stg_table.c.line_item_uid.in_(uids),
-        )
-        stg_existing = {row[0] for row in (await session.execute(stg_existing_stmt)).fetchall()}
-
-        final_existing_stmt = sa.select(line_items_table.c.line_item_uid).where(
-            line_items_table.c.cost_center == cost_center,
-            line_items_table.c.line_item_uid.in_(uids),
-        )
-        final_existing = {row[0] for row in (await session.execute(final_existing_stmt)).fetchall()}
 
         orphan_rows = 0
         for row in normalized:
@@ -266,6 +262,7 @@ async def ingest_td_garment_rows(
                 "order_date": row.get("order_date"),
                 "updated_at": row.get("updated_at"),
                 "status": row.get("status"),
+                "ingest_row_seq": row["ingest_row_seq"],
                 "is_orphan": is_orphan,
                 "ingest_remarks": remarks,
             }
@@ -274,8 +271,8 @@ async def ingest_td_garment_rows(
         await session.commit()
 
     total = len(normalized)
-    stg_inserted = sum(1 for row in normalized if row["line_item_uid"] not in stg_existing)
-    final_inserted = sum(1 for row in normalized if row["line_item_uid"] not in final_existing)
+    stg_inserted = total
+    final_inserted = total
 
     return TdGarmentIngestResult(
         staging_rows=total,
@@ -286,7 +283,7 @@ async def ingest_td_garment_rows(
         final_updated=total - final_inserted,
         row_count=total,
         duplicate_rows=duplicate_rows,
-        changed_rows=total - final_inserted,
+        changed_rows=0,
         late_updates=late_updates,
         orphan_rows=orphan_rows,
         warnings=warnings,

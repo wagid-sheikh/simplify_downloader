@@ -11,7 +11,7 @@ from app.crm_downloader.td_orders_sync.main import _compare_quality_passed
 
 
 @pytest.mark.asyncio
-async def test_garment_ingest_uses_fallback_key_and_quarantines_orphans(tmp_path) -> None:
+async def test_garment_ingest_uses_row_sequence_fallback_uid_and_quarantines_orphans(tmp_path) -> None:
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'garments.db'}"
     async with session_scope(db_url) as session:
         await session.execute(
@@ -51,15 +51,15 @@ async def test_garment_ingest_uses_fallback_key_and_quarantines_orphans(tmp_path
         orphan_count = (
             await session.execute(sa.text("SELECT COUNT(*) FROM order_line_items WHERE is_orphan = 1"))
         ).scalar_one()
-        fallback_uid = (
+        uids = (
             await session.execute(
                 sa.text(
                     "SELECT line_item_uid FROM order_line_items WHERE order_number='ORD-1'"
                 )
             )
-        ).scalar_one()
+        ).scalars().all()
     assert orphan_count == 1
-    assert fallback_uid == "A001|ORD-1|LI-1"
+    assert uids == ["A001|ORD-1|LI-1|1"]
 
 
 @pytest.mark.asyncio
@@ -151,3 +151,65 @@ def test_compare_threshold_helper(monkeypatch: pytest.MonkeyPatch) -> None:
             "status_mismatches": 0,
         }
     )
+
+
+@pytest.mark.asyncio
+async def test_garment_ingest_preserves_multiplicity_without_line_item_uid_uniqueness(tmp_path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path / 'garments_multiplicity.db'}"
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                CREATE TABLE orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    cost_center TEXT,
+                    order_number TEXT
+                )
+                """
+            )
+        )
+        await session.execute(
+            sa.text("INSERT INTO orders (cost_center, order_number) VALUES ('A001','ORD-DUPE')")
+        )
+        await session.commit()
+
+    rows = [
+        {"order_number": "ORD-DUPE", "line_item_key": "LI-1", "garment_name": "Shirt", "amount": "50"},
+        {"order_number": "ORD-DUPE", "line_item_key": "LI-1", "garment_name": "Shirt", "amount": "50"},
+    ]
+
+    result = await ingest_td_garment_rows(
+        rows=rows,
+        store_code="S001",
+        cost_center="A001",
+        run_id="run-dup",
+        run_date=datetime.utcnow(),
+        window_from_date=date(2025, 1, 1),
+        window_to_date=date(2025, 1, 5),
+        database_url=db_url,
+    )
+
+    assert result.row_count == 2
+    assert result.staging_inserted == 2
+    assert result.final_inserted == 2
+
+    async with session_scope(db_url) as session:
+        line_item_uids = (
+            await session.execute(
+                sa.text(
+                    "SELECT line_item_uid FROM order_line_items "
+                    "WHERE order_number='ORD-DUPE' ORDER BY ingest_row_seq"
+                )
+            )
+        ).scalars().all()
+        sequences = (
+            await session.execute(
+                sa.text(
+                    "SELECT ingest_row_seq FROM order_line_items "
+                    "WHERE order_number='ORD-DUPE' ORDER BY ingest_row_seq"
+                )
+            )
+        ).scalars().all()
+
+    assert line_item_uids == ["A001|ORD-DUPE|LI-1|1", "A001|ORD-DUPE|LI-1|2"]
+    assert sequences == [1, 2]
