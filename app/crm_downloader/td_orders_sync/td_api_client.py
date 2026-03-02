@@ -705,10 +705,19 @@ class TdApiClient:
     def _auth_shapes_for_endpoint(self, endpoint: str) -> tuple[_AuthRequestShape, ...]:
         if endpoint in HAR_COMPATIBLE_ENDPOINTS:
             return (
-                _AuthRequestShape(name="har_like", include_authorization_header=False, include_token_query=False),
                 _AuthRequestShape(name="legacy", include_authorization_header=True, include_token_query=True),
+                _AuthRequestShape(name="har_like", include_authorization_header=False, include_token_query=False),
             )
         return (_AuthRequestShape(name="legacy", include_authorization_header=True, include_token_query=True),)
+
+    def _should_attempt_auth_shape_fallback(self, *, endpoint: str, shape_result: _JsonFetchResult) -> bool:
+        if endpoint not in HAR_COMPATIBLE_ENDPOINTS:
+            return False
+        if shape_result.ok:
+            return False
+        if shape_result.status in {401, 403}:
+            return True
+        return shape_result.error in {"http_401", "http_403"}
 
     def _request_context_headers(self) -> dict[str, str]:
         headers = {"accept": "*/*", "origin": f"https://{REPORTS_ORIGIN_HOST}", "referer": f"https://{REPORTS_ORIGIN_HOST}/"}
@@ -805,6 +814,7 @@ class TdApiClient:
             )
 
         auth_shapes = self._auth_shapes_for_endpoint(endpoint)
+        primary_auth_shape = auth_shapes[0].name if auth_shapes else "legacy"
         baseline_status: int | None = None
         baseline_latency_ms: int | None = None
         cumulative_attempts = 0
@@ -830,8 +840,9 @@ class TdApiClient:
                         "retry_count": 0,
                         "token_refresh_attempted": self._auth_state.refresh_attempted,
                         "retry_reason": fail_fast_error,
+                        "primary_auth_shape": primary_auth_shape,
                         "auth_shape": auth_shape.name,
-                        "auth_shape_fallback_from_har_like": shape_index > 0,
+                        "auth_shape_fallback_from_har_like": auth_shape.name != primary_auth_shape,
                     }
                 )
                 shape_last_result = _JsonFetchResult(ok=False, payload=None, error=fail_fast_error, status=None, attempts=0, auth_shape=auth_shape.name)
@@ -852,14 +863,16 @@ class TdApiClient:
                 auth_shape=auth_shape,
                 baseline_status=baseline_status,
                 baseline_latency_ms=baseline_latency_ms,
-                auth_shape_fallback_from_har_like=shape_index > 0,
+                primary_auth_shape=primary_auth_shape,
+                auth_shape_fallback_used=auth_shape.name != primary_auth_shape,
             )
             cumulative_attempts += shape_result.attempts
             shape_last_result = shape_result
             if shape_index == 0:
                 baseline_status = shape_result.status
                 baseline_latency_ms = shape_result.latency_ms
-            if shape_result.ok or shape_index >= len(auth_shapes) - 1:
+            should_fallback = self._should_attempt_auth_shape_fallback(endpoint=endpoint, shape_result=shape_result)
+            if shape_result.ok or shape_index >= len(auth_shapes) - 1 or not should_fallback:
                 return _JsonFetchResult(
                     ok=shape_result.ok,
                     payload=shape_result.payload,
@@ -871,10 +884,11 @@ class TdApiClient:
                 )
 
             logger.info(
-                "TD API auth shape fallback engaged",
+                "TD API auth shape fallback engaged from primary auth shape",
                 extra={
                     "store_code": self.store_code,
                     "endpoint": endpoint,
+                    "primary_auth_shape": primary_auth_shape,
                     "previous_auth_shape": auth_shape.name,
                     "next_auth_shape": auth_shapes[shape_index + 1].name,
                     "baseline_status": baseline_status,
@@ -909,7 +923,8 @@ class TdApiClient:
         auth_shape: _AuthRequestShape,
         baseline_status: int | None,
         baseline_latency_ms: int | None,
-        auth_shape_fallback_from_har_like: bool,
+        primary_auth_shape: str,
+        auth_shape_fallback_used: bool,
     ) -> _JsonFetchResult:
         last_error: Exception | None = None
         status_code: int | None = None
@@ -948,7 +963,9 @@ class TdApiClient:
                     "attempt": attempts,
                     "max_attempts": resolved_max_retries + 1,
                     "timeout_diagnostics": timeout_diagnostics,
+                    "primary_auth_shape": primary_auth_shape,
                     "auth_shape": auth_shape.name,
+                    "auth_shape_fallback_used": auth_shape_fallback_used,
                     **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
                 },
             )
@@ -984,8 +1001,10 @@ class TdApiClient:
                                 retry_reason="auth_refresh" if refreshed else None,
                             ).as_dict(),
                             "timeout_diagnostics": timeout_diagnostics,
+                            "primary_auth_shape": primary_auth_shape,
                             "auth_shape": auth_shape.name,
-                            "auth_shape_fallback_from_har_like": auth_shape_fallback_from_har_like,
+                            "auth_shape_fallback_used": auth_shape_fallback_used,
+                            "auth_shape_fallback_from_har_like": auth_shape_fallback_used,
                             "auth_shape_baseline_status": baseline_status,
                             "auth_shape_baseline_latency_ms": baseline_latency_ms,
                             "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
@@ -1020,8 +1039,10 @@ class TdApiClient:
                         token_refresh_attempted=self._auth_state.refresh_attempted,
                     ).as_dict(),
                         "timeout_diagnostics": timeout_diagnostics,
+                        "primary_auth_shape": primary_auth_shape,
                         "auth_shape": auth_shape.name,
-                        "auth_shape_fallback_from_har_like": auth_shape_fallback_from_har_like,
+                        "auth_shape_fallback_used": auth_shape_fallback_used,
+                        "auth_shape_fallback_from_har_like": auth_shape_fallback_used,
                         "auth_shape_baseline_status": baseline_status,
                         "auth_shape_baseline_latency_ms": baseline_latency_ms,
                         "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
@@ -1070,8 +1091,10 @@ class TdApiClient:
                     ).as_dict(),
                         "timeout_type": timeout_class,
                         "timeout_diagnostics": timeout_diagnostics,
+                        "primary_auth_shape": primary_auth_shape,
                         "auth_shape": auth_shape.name,
-                        "auth_shape_fallback_from_har_like": auth_shape_fallback_from_har_like,
+                        "auth_shape_fallback_used": auth_shape_fallback_used,
+                        "auth_shape_fallback_from_har_like": auth_shape_fallback_used,
                         "auth_shape_baseline_status": baseline_status,
                         "auth_shape_baseline_latency_ms": baseline_latency_ms,
                         "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
@@ -1097,8 +1120,10 @@ class TdApiClient:
                         retry_reason="network_timeout",
                     ).as_dict(),
                         "timeout_diagnostics": timeout_diagnostics,
+                        "primary_auth_shape": primary_auth_shape,
                         "auth_shape": auth_shape.name,
-                        "auth_shape_fallback_from_har_like": auth_shape_fallback_from_har_like,
+                        "auth_shape_fallback_used": auth_shape_fallback_used,
+                        "auth_shape_fallback_from_har_like": auth_shape_fallback_used,
                         "auth_shape_baseline_status": baseline_status,
                         "auth_shape_baseline_latency_ms": baseline_latency_ms,
                         "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
