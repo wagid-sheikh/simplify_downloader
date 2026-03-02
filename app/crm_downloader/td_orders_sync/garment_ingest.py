@@ -23,7 +23,7 @@ class TdGarmentIngestResult:
     final_inserted: int
     final_updated: int
     row_count: int
-    duplicate_rows: int
+    source_id_duplicate_rows: int
     changed_rows: int
     late_updates: int
     orphan_rows: int
@@ -198,7 +198,19 @@ async def ingest_td_garment_rows(
             }
         )
 
-    duplicate_rows = sum(max(0, c - 1) for c in Counter([r["line_item_uid"] for r in normalized]).values())
+    duplicate_line_item_rows = sum(
+        max(0, count - 1)
+        for count in Counter(
+            [str(r["api_line_item_id"]).strip() for r in normalized if r.get("api_line_item_id")]
+        ).values()
+    )
+    duplicate_garment_rows = sum(
+        max(0, count - 1)
+        for count in Counter(
+            [str(r["api_garment_id"]).strip() for r in normalized if r.get("api_garment_id")]
+        ).values()
+    )
+    source_id_duplicate_rows = duplicate_line_item_rows + duplicate_garment_rows
     late_updates = sum(
         1
         for r in normalized
@@ -206,7 +218,7 @@ async def ingest_td_garment_rows(
     )
 
     if not normalized:
-        return TdGarmentIngestResult(0, 0, 0, 0, 0, 0, 0, duplicate_rows, 0, late_updates, 0, warnings)
+        return TdGarmentIngestResult(0, 0, 0, 0, 0, 0, 0, source_id_duplicate_rows, 0, late_updates, 0, warnings)
 
     async with session_scope(database_url) as session:
         bind = session.bind
@@ -282,7 +294,7 @@ async def ingest_td_garment_rows(
         final_inserted=final_inserted,
         final_updated=total - final_inserted,
         row_count=total,
-        duplicate_rows=duplicate_rows,
+        source_id_duplicate_rows=source_id_duplicate_rows,
         changed_rows=0,
         late_updates=late_updates,
         orphan_rows=orphan_rows,
