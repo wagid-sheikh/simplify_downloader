@@ -677,10 +677,10 @@ async def test_fetch_reports_refreshes_auth_once_then_reuses_for_other_endpoints
     assert len(garments_calls) == 1
     assert orders_calls[0]["headers"]["Authorization"] == "Bearer stale-token"
     assert orders_calls[1]["headers"]["Authorization"] == "Bearer fresh-token"
-    assert sales_calls[0]["headers"].get("Authorization") is None
-    assert garments_calls[0]["headers"].get("Authorization") is None
-    assert "token" not in sales_calls[0]["params"]
-    assert "token" not in garments_calls[0]["params"]
+    assert sales_calls[0]["headers"]["Authorization"] == "Bearer fresh-token"
+    assert garments_calls[0]["headers"]["Authorization"] == "Bearer fresh-token"
+    assert sales_calls[0]["params"]["token"] == "fresh-token"
+    assert garments_calls[0]["params"]["token"] == "fresh-token"
 
     auth_refresh_items = [
         item for item in result.request_metadata if item["endpoint"] == "/reports/order-report" and item["status"] == 401
@@ -693,16 +693,20 @@ async def test_fetch_reports_refreshes_auth_once_then_reuses_for_other_endpoints
     assert sales_metadata["query_params"]["endDate"] == ["2026-01-02"]
     assert sales_metadata["query_params"]["page"] == ["1"]
     assert sales_metadata["query_params"]["pageSize"] == ["500"]
-    assert sales_metadata["query_params"].get("token") is None
-    assert sales_metadata["auth_shape"] == "har_like"
+    assert sales_metadata["query_params"]["token"] == ["fresh-token"]
+    assert sales_metadata["auth_shape"] == "legacy"
+    assert sales_metadata["primary_auth_shape"] == "legacy"
+    assert sales_metadata["auth_shape_fallback_from_har_like"] is False
 
     garments_metadata = next(item for item in result.request_metadata if item["endpoint"] == "/garments/details" and item["status"] == 200)
     assert garments_metadata["query_params"]["startDate"] == ["2026-01-01"]
     assert garments_metadata["query_params"]["endDate"] == ["2026-01-02"]
     assert garments_metadata["query_params"]["page"] == ["1"]
     assert garments_metadata["query_params"]["pageSize"] == ["500"]
-    assert garments_metadata["query_params"].get("token") is None
-    assert garments_metadata["auth_shape"] == "har_like"
+    assert garments_metadata["query_params"]["token"] == ["fresh-token"]
+    assert garments_metadata["auth_shape"] == "legacy"
+    assert garments_metadata["primary_auth_shape"] == "legacy"
+    assert garments_metadata["auth_shape_fallback_from_har_like"] is False
 
 @pytest.mark.asyncio
 async def test_fetch_reports_captures_non_retriable_http_errors_per_endpoint(tmp_path: Path) -> None:
@@ -774,7 +778,7 @@ async def test_fetch_reports_sets_expand_data_true_for_orders_and_sales(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_sales_and_garments_try_har_like_before_legacy_auth_shape(tmp_path: Path) -> None:
+async def test_sales_and_garments_try_legacy_before_har_like_auth_shape(tmp_path: Path) -> None:
     request = _StubRequest(
         responses=[
             _StubResponse(status=200, url="https://reporting-api.quickdrycleaning.com/reports/order-report", payload={"data": [], "totalPages": 1}),
@@ -791,18 +795,20 @@ async def test_sales_and_garments_try_har_like_before_legacy_auth_shape(tmp_path
 
     sales_calls = [call for call in request.calls if call["url"].endswith("/sales-and-deliveries/sales")]
     garments_calls = [call for call in request.calls if call["url"].endswith("/garments/details")]
-    assert sales_calls[0]["headers"].get("Authorization") is None
-    assert garments_calls[0]["headers"].get("Authorization") is None
-    assert "token" not in sales_calls[0]["params"]
-    assert "token" not in garments_calls[0]["params"]
-    assert sales_calls[1]["headers"]["Authorization"] == "Bearer stale-token"
-    assert garments_calls[1]["headers"]["Authorization"] == "Bearer stale-token"
-    assert sales_calls[1]["params"]["token"] == "stale-token"
-    assert garments_calls[1]["params"]["token"] == "stale-token"
+    assert sales_calls[0]["headers"]["Authorization"] == "Bearer stale-token"
+    assert garments_calls[0]["headers"]["Authorization"] == "Bearer stale-token"
+    assert sales_calls[0]["params"]["token"] == "stale-token"
+    assert garments_calls[0]["params"]["token"] == "stale-token"
+    assert sales_calls[1]["headers"].get("Authorization") is None
+    assert garments_calls[1]["headers"].get("Authorization") is None
+    assert "token" not in sales_calls[1]["params"]
+    assert "token" not in garments_calls[1]["params"]
 
     fallback_entries = [item for item in result.request_metadata if item.get("auth_shape_fallback_from_har_like")]
     assert fallback_entries
-    assert all(item["auth_shape"] == "legacy" for item in fallback_entries)
+    assert all(item["auth_shape"] == "har_like" for item in fallback_entries)
+    assert all(item["primary_auth_shape"] == "legacy" for item in fallback_entries)
+    assert all(item.get("auth_shape_fallback_used") is True for item in fallback_entries)
     assert all("auth_shape_status_delta" in item for item in fallback_entries)
 
 
@@ -1337,10 +1343,12 @@ async def test_get_json_timeout_retries_are_bounded_for_sales_endpoint(tmp_path:
 
     assert result.ok is False
     assert result.error in {"read_timeout", "total_timeout"}
-    assert len(request.calls) == (client.config.timeout_retry_limit + 1) * 2
+    assert len(request.calls) == (client.config.timeout_retry_limit + 1)
     timeout_metadata = [item for item in metadata if item.get("retry_reason") in {"read_timeout", "total_timeout"}]
     assert timeout_metadata
     assert max(item["retry_count"] for item in timeout_metadata) == client.config.timeout_retry_limit
+    assert all(item["primary_auth_shape"] == "legacy" for item in timeout_metadata)
+    assert all(item["auth_shape_fallback_from_har_like"] is False for item in timeout_metadata)
     assert all(item["timeout_diagnostics"]["configured"]["attempt_timeout_budget_ms"] == client.config.connect_timeout_ms + client.config.sales_read_timeout_ms for item in timeout_metadata)
     assert all(item["timeout_diagnostics"]["effective"]["attempt_timeout_budget_ms"] == client.config.sales_total_timeout_ms for item in timeout_metadata)
 
