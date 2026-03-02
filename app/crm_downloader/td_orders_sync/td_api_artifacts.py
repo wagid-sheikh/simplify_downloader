@@ -11,6 +11,28 @@ from typing import Any, Mapping, Sequence
 
 logger = logging.getLogger(__name__)
 
+_SENSITIVE_FIELD_NAMES = {"token", "authorization", "cookie", "set-cookie"}
+_REDACTED = "***REDACTED***"
+
+
+def redact_sensitive_fields(payload: Any) -> Any:
+    def _is_sensitive_field(key: Any) -> bool:
+        return str(key).strip().lower() in _SENSITIVE_FIELD_NAMES
+
+    if isinstance(payload, Mapping):
+        redacted: dict[str, Any] = {}
+        for key, value in payload.items():
+            key_text = str(key)
+            redacted[key_text] = _REDACTED if _is_sensitive_field(key) else redact_sensitive_fields(value)
+        return redacted
+    if isinstance(payload, list):
+        return [redact_sensitive_fields(item) for item in payload]
+    if isinstance(payload, tuple):
+        return tuple(redact_sensitive_fields(item) for item in payload)
+    if isinstance(payload, set):
+        return {redact_sensitive_fields(item) for item in payload}
+    return payload
+
 
 @dataclass
 class TdApiArtifactPersistResult:
@@ -31,7 +53,7 @@ def _raw_filename(store_code: str, dataset: str, from_date: date, to_date: date)
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(redact_sensitive_fields(payload), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 
@@ -39,7 +61,7 @@ def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
-            handle.write(json.dumps(dict(row), ensure_ascii=False, sort_keys=True))
+            handle.write(json.dumps(redact_sensitive_fields(dict(row)), ensure_ascii=False, sort_keys=True))
             handle.write("\n")
 
 
