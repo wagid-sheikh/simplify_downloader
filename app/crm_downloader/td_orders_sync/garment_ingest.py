@@ -101,10 +101,12 @@ def _parse_decimal(value: Any) -> Decimal | None:
 
 
 def _line_item_uid(*, cost_center: str, order_number: str, row: Mapping[str, Any], line_item_key: str) -> str:
-    if row.get("api_line_item_id"):
-        return str(row["api_line_item_id"]).strip()
-    if row.get("api_garment_id"):
-        return str(row["api_garment_id"]).strip()
+    api_line_item_id = row.get("api_line_item_id") or row.get("apiLineItemId")
+    if api_line_item_id:
+        return str(api_line_item_id).strip()
+    api_garment_id = row.get("api_garment_id") or row.get("apiGarmentId")
+    if api_garment_id:
+        return str(api_garment_id).strip()
     return f"{cost_center}|{order_number}|{line_item_key}"
 
 
@@ -113,8 +115,8 @@ def _line_item_key(row: Mapping[str, Any]) -> str:
         value = row.get(key)
         if value and str(value).strip():
             return str(value).strip()
-    garment = str(row.get("garment_name") or row.get("garment") or "").strip()
-    service = str(row.get("service_name") or row.get("service") or "").strip()
+    garment = str(row.get("garment_name") or row.get("sub_garment") or row.get("subGarment") or row.get("garment") or "").strip()
+    service = str(row.get("service_name") or row.get("service") or row.get("primary_service") or row.get("primaryService") or "").strip()
     return f"{garment}|{service}".strip("|") or "unknown"
 
 
@@ -153,22 +155,31 @@ async def ingest_td_garment_rows(
     normalized: list[dict[str, Any]] = []
 
     for row in rows:
-        order_number = str(row.get("order_no") or row.get("order_number") or "").strip()
+        order_number = str(
+            row.get("order_no")
+            or row.get("order_number")
+            or row.get("orderNo")
+            or row.get("orderNumber")
+            or ""
+        ).strip()
         if not order_number:
             warnings.append("Skipped garment row without order number")
             continue
         line_item_key = _line_item_key(row)
         uid = _line_item_uid(cost_center=cost_center, order_number=order_number, row=row, line_item_key=line_item_key)
+        api_order_id = str(row.get("api_order_id") or row.get("apiOrderId") or "").strip() or None
+        api_line_item_id = str(row.get("api_line_item_id") or row.get("apiLineItemId") or "").strip() or None
+        api_garment_id = str(row.get("api_garment_id") or row.get("apiGarmentId") or "").strip() or None
         normalized.append(
             {
                 "order_number": order_number,
                 "line_item_key": line_item_key,
                 "line_item_uid": uid,
-                "api_order_id": str(row.get("api_order_id") or "").strip() or None,
-                "api_line_item_id": str(row.get("api_line_item_id") or "").strip() or None,
-                "api_garment_id": str(row.get("api_garment_id") or "").strip() or None,
-                "garment_name": str(row.get("garment_name") or "").strip() or None,
-                "service_name": str(row.get("service_name") or "").strip() or None,
+                "api_order_id": api_order_id,
+                "api_line_item_id": api_line_item_id,
+                "api_garment_id": api_garment_id,
+                "garment_name": str(row.get("garment_name") or row.get("sub_garment") or row.get("subGarment") or row.get("garment") or "").strip() or None,
+                "service_name": str(row.get("service_name") or row.get("service") or row.get("primary_service") or row.get("primaryService") or "").strip() or None,
                 "quantity": _parse_decimal(row.get("quantity")),
                 "amount": _parse_decimal(row.get("amount")),
                 "order_date": row.get("order_date") if isinstance(row.get("order_date"), datetime) else None,
