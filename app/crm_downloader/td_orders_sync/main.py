@@ -2498,7 +2498,7 @@ def _resolve_sync_log_status_note(
     outcome: StoreOutcome | None,
     run_orders: bool,
     run_sales: bool,
-    run_garment_sync: bool = False,
+    run_garment_sync: bool = True,
 ) -> str | None:
     if status not in {"skipped", "partial"}:
         return None

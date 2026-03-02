@@ -425,7 +425,7 @@ def test_threshold_verdict_marks_garments_informational_when_sync_disabled() -> 
         normalized_sales_verdict={"pass": True, "reasons": [], "thresholds": {}},
         garment_metrics={"total_rows": 4, "matched_rows": 0, "amount_mismatches": 0, "status_mismatches": 0},
         run_sales=False,
-        run_garment_sync=False,
+        run_garment_sync=True,
     )
 
     assert "garments" in thresholds_json
