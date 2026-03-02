@@ -7384,7 +7384,6 @@ async def _run_store_discovery(
             sales_report=sales_report,
             run_orders=run_orders,
             run_sales=run_sales,
-            run_garment_sync=garment_sync_enabled,
         )
         ui_rows = _resolve_compare_rows(orders_report, dataset="orders")
         api_fetch_result_obj = api_fetch_result if "api_fetch_result" in locals() else None
