@@ -7759,7 +7759,8 @@ async def _run_store_discovery(
                     message="TD garment sync completed",
                     store_code=store.store_code,
                     row_count=garment_ingest_result.row_count,
-                    duplicates=garment_ingest_result.duplicate_rows,
+                    source_id_duplicates=garment_ingest_result.source_id_duplicate_rows,
+                    metric_definition="Counts unexpected duplicate occurrences of non-empty source IDs (api_line_item_id/api_garment_id); repeated same-item orders without source IDs are not counted.",
                     changed_rows=garment_ingest_result.changed_rows,
                     late_updates=garment_ingest_result.late_updates,
                     orphan_rows=garment_ingest_result.orphan_rows,
@@ -7785,7 +7786,8 @@ async def _run_store_discovery(
         if orders_report and garment_ingest_result:
             orders_report.garment_reconciliation = {
                 "row_count": garment_ingest_result.row_count,
-                "duplicates": garment_ingest_result.duplicate_rows,
+                "source_id_duplicates": garment_ingest_result.source_id_duplicate_rows,
+                "metric_definition": "Counts unexpected duplicate occurrences of non-empty source IDs (api_line_item_id/api_garment_id); historical 'duplicates' values were based on synthetic line_item_uid frequency and are not directly comparable.",
                 "changed_rows": garment_ingest_result.changed_rows,
                 "late_updates": garment_ingest_result.late_updates,
                 "orphan_rows": garment_ingest_result.orphan_rows,
