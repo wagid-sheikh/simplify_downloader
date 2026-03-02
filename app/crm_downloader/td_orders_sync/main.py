@@ -2414,7 +2414,12 @@ def _build_unified_metrics(
     sales_report: StoreReport | None,
     run_orders: bool,
     run_sales: bool,
+    run_garment_sync: bool | None = None,
 ) -> tuple[dict[str, int | None], dict[str, int | None]]:
+    # `run_garment_sync` is accepted for forward/backward compatibility with
+    # callers that assemble unified metrics alongside garment-sync settings.
+    # Garment metrics are tracked in td_compare_log rather than orders_sync_log.
+    _ = run_garment_sync
     primary_metrics = _build_report_metrics(orders_report if run_orders else None)
     secondary_metrics = _build_report_metrics(sales_report if run_sales else None)
     return _prefix_metrics("primary_", primary_metrics), _prefix_metrics("secondary_", secondary_metrics)
