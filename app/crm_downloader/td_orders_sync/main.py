@@ -1858,37 +1858,71 @@ async def _fetch_dashboard_nav_timeout_ms(database_url: str | None) -> int:
 
 
 def _build_daily_reconciliation_summary(summary: TdOrdersDiscoverySummary) -> dict[str, Any]:
+    readiness_gate_reason = "shadow:consecutive_window_policy_not_met"
+
+    def _resolve_failure_type(*, reason_codes: Sequence[str], decision: str | None) -> str:
+        endpoint_reason_markers = (
+            ":api_partial_unavailable",
+            ":api_unavailable",
+            ":auth_failure",
+        )
+        if decision in {"api_unavailable", "api_partial_unavailable"} or any(
+            marker in reason for marker in endpoint_reason_markers for reason in reason_codes
+        ):
+            return "endpoint_failure"
+        return "data_mismatch"
+
     stores_passed: list[str] = []
     stores_failed: list[dict[str, Any]] = []
     reason_counter: Counter[str] = Counter()
+    data_clean_not_ready_stores: list[str] = []
     for store_code in summary._store_codes_for_payload():
         orders_report = summary.orders_results.get(store_code)
         threshold_verdict = dict(orders_report.threshold_verdict) if orders_report else {}
-        passed = bool(threshold_verdict.get("overall_pass", threshold_verdict.get("pass")))
+        data_clean = bool(threshold_verdict.get("overall_pass", threshold_verdict.get("pass")))
+        api_ready = bool(orders_report.api_ready) if orders_report else False
+        consecutive_pass_windows = int(orders_report.consecutive_pass_windows or 0) if orders_report else 0
         reason_codes = [str(code) for code in threshold_verdict.get("reason_codes") or []]
+        decision_log = dict(orders_report.decision_log) if orders_report else {}
+        failure_type: str | None = None
+
+        if data_clean and not api_ready:
+            failure_type = "readiness_gate"
+            reason_codes = [*reason_codes, readiness_gate_reason]
+        elif not data_clean:
+            failure_type = _resolve_failure_type(reason_codes=reason_codes, decision=decision_log.get("decision"))
+
         normalized_verdicts = dict(threshold_verdict.get("datasets") or {})
-        if passed:
+        if failure_type is None:
             stores_passed.append(store_code)
             continue
+
+        if failure_type == "readiness_gate":
+            data_clean_not_ready_stores.append(store_code)
+
         for code in reason_codes:
             reason_counter[code] += 1
         stores_failed.append(
             {
                 "store_code": store_code,
-                "api_ready": bool(orders_report.api_ready) if orders_report else False,
-                "consecutive_pass_windows": int(orders_report.consecutive_pass_windows or 0) if orders_report else 0,
+                "failure_type": failure_type,
+                "reason_codes": reason_codes,
+                "api_ready": api_ready,
+                "consecutive_pass_windows": consecutive_pass_windows,
                 "top_mismatch_reasons": reason_codes[:3],
                 "normalized_verdicts": normalized_verdicts,
             }
         )
 
     return {
+        "report_name": "td_orders_shadow_readiness_reconciliation",
         "report_date": summary.report_end_date.isoformat(),
         "run_id": summary.run_id,
         "passed_stores": sorted(stores_passed),
         "failed_stores": stores_failed,
         "stores_passed": sorted(stores_passed),
         "stores_failed": stores_failed,
+        "data_clean_not_promotion_ready_stores": sorted(data_clean_not_ready_stores),
         "top_mismatch_reasons": [reason for reason, _ in reason_counter.most_common(5)],
     }
 
@@ -1903,16 +1937,17 @@ def _write_daily_reconciliation_artifact(*, summary: TdOrdersDiscoverySummary, l
             / summary.report_end_date.strftime("%Y-%m-%d")
         )
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        artifact_path = artifact_dir / f"{summary.run_id}.json"
+        artifact_path = artifact_dir / f"{summary.run_id}-shadow-readiness-reconciliation.json"
         artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         log_event(
             logger=logger,
             phase="reconciliation",
-            message="Wrote daily reconciliation artifact",
+            message="Wrote TD shadow readiness reconciliation artifact (includes data-clean but promotion-gated stores)",
             run_id=summary.run_id,
             artifact_path=str(artifact_path),
             passed_stores=len(payload["passed_stores"]),
             failed_stores=len(payload["failed_stores"]),
+            data_clean_not_promotion_ready_stores=len(payload["data_clean_not_promotion_ready_stores"]),
         )
         return artifact_path
     except Exception as exc:  # pragma: no cover
