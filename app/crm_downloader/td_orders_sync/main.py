@@ -7111,24 +7111,174 @@ async def _run_store_discovery(
                             return
 
                     if source_mode in {"api_only", "api_primary"}:
+                        api_orders_ingest_result: TdOrdersIngestResult | None = None
+                        api_sales_ingest_result: TdSalesIngestResult | None = None
+                        api_orders_warning_summary: dict[str, Any] | None = None
+                        api_sales_warning_summary: dict[str, Any] | None = None
+                        orders_excel_path = Path(artifact_result.artifact_paths.get("orders_excel", ""))
+                        sales_excel_path = Path(artifact_result.artifact_paths.get("sales_excel", ""))
+
+                        if config.database_url:
+                            if not store.cost_center:
+                                log_event(
+                                    logger=store_logger,
+                                    phase="ingest",
+                                    status="error",
+                                    message="Missing cost_center for TD store; cannot ingest API orders/sales",
+                                    store_code=store.store_code,
+                                    source_mode=source_mode,
+                                )
+                                outcome = StoreOutcome(
+                                    status="error",
+                                    message="Missing cost_center for TD store; cannot ingest API orders/sales",
+                                    final_url=page.url,
+                                    verification_seen=verification_seen,
+                                    storage_state=stored_state_path,
+                                )
+                                return
+
+                            if api_fetch_result.orders_rows and not orders_excel_path.exists():
+                                raise RuntimeError("Orders API artifact workbook missing; cannot ingest API orders")
+                            if run_sales and api_fetch_result.sales_rows and not sales_excel_path.exists():
+                                raise RuntimeError("Sales API artifact workbook missing; cannot ingest API sales")
+
+                            if api_fetch_result.orders_rows and orders_excel_path.exists():
+                                api_orders_ingest_result = await ingest_td_orders_workbook(
+                                    workbook_path=orders_excel_path,
+                                    store_code=store.store_code,
+                                    cost_center=store.cost_center or "",
+                                    run_id=run_id,
+                                    run_date=run_date,
+                                    database_url=config.database_url,
+                                    logger=store_logger,
+                                )
+                                summary.add_ingest_remarks(api_orders_ingest_result.ingest_remarks)
+                                if api_orders_ingest_result.warnings:
+                                    api_orders_warning_summary = _summarize_warnings(api_orders_ingest_result.warnings)
+                                    log_event(
+                                        logger=store_logger,
+                                        phase="ingest",
+                                        status="warn",
+                                        message="TD API Orders workbook ingested with warnings",
+                                        store_code=store.store_code,
+                                        source_mode=source_mode,
+                                        warning_count=api_orders_warning_summary["count"],
+                                        warning_samples=api_orders_warning_summary["samples"],
+                                        warnings_truncated=api_orders_warning_summary["truncated"],
+                                        staging_rows=api_orders_ingest_result.staging_rows,
+                                        final_rows=api_orders_ingest_result.final_rows,
+                                    )
+                                else:
+                                    log_event(
+                                        logger=store_logger,
+                                        phase="ingest",
+                                        message="TD API Orders workbook ingested",
+                                        store_code=store.store_code,
+                                        source_mode=source_mode,
+                                        staging_rows=api_orders_ingest_result.staging_rows,
+                                        final_rows=api_orders_ingest_result.final_rows,
+                                    )
+
+                            if run_sales and api_fetch_result.sales_rows and sales_excel_path.exists():
+                                api_sales_ingest_result = await ingest_td_sales_workbook(
+                                    workbook_path=sales_excel_path,
+                                    store_code=store.store_code,
+                                    cost_center=store.cost_center or "",
+                                    run_id=run_id,
+                                    run_date=run_date,
+                                    database_url=config.database_url,
+                                    logger=store_logger,
+                                )
+                                summary.add_ingest_remarks(api_sales_ingest_result.ingest_remarks)
+                                if api_sales_ingest_result.warnings:
+                                    api_sales_warning_summary = _summarize_warnings(api_sales_ingest_result.warnings)
+                                    log_event(
+                                        logger=store_logger,
+                                        phase="sales_ingest",
+                                        status="warn",
+                                        message="TD API Sales workbook ingested with warnings",
+                                        store_code=store.store_code,
+                                        source_mode=source_mode,
+                                        warning_count=api_sales_warning_summary["count"],
+                                        warning_samples=api_sales_warning_summary["samples"],
+                                        warnings_truncated=api_sales_warning_summary["truncated"],
+                                        staging_rows=api_sales_ingest_result.staging_rows,
+                                        final_rows=api_sales_ingest_result.final_rows,
+                                    )
+                                else:
+                                    log_event(
+                                        logger=store_logger,
+                                        phase="sales_ingest",
+                                        message="TD API Sales workbook ingested",
+                                        store_code=store.store_code,
+                                        source_mode=source_mode,
+                                        staging_rows=api_sales_ingest_result.staging_rows,
+                                        final_rows=api_sales_ingest_result.final_rows,
+                                    )
+                        else:
+                            log_event(
+                                logger=store_logger,
+                                phase="ingest",
+                                status="warn",
+                                message="Skipping TD API orders/sales ingestion because database_url is missing",
+                                store_code=store.store_code,
+                                source_mode=source_mode,
+                            )
+
                         orders_status = "ok" if api_fetch_result.orders_rows else "warning"
+                        if api_orders_ingest_result and api_orders_ingest_result.warnings:
+                            orders_status = "warning"
+
                         sales_status = "ok" if api_fetch_result.sales_rows else ("skipped" if not run_sales else "warning")
+                        if api_sales_ingest_result and api_sales_ingest_result.warnings:
+                            sales_status = "warning"
+
                         orders_report = StoreReport(
                             status=orders_status,
-                            message="Orders sourced from API",
-                            warning_rows=list(api_fetch_result.orders_rows),
-                            compare_rows_orders=list(api_fetch_result.orders_rows),
+                            message=(
+                                "Orders sourced from API and ingested"
+                                if config.database_url
+                                else "Orders sourced from API"
+                            ),
+                            warning_rows=(
+                                api_orders_ingest_result.warning_rows
+                                if api_orders_ingest_result
+                                else list(api_fetch_result.orders_rows)
+                            ),
+                            compare_rows_orders=(
+                                api_orders_ingest_result.parsed_rows
+                                if api_orders_ingest_result
+                                else list(api_fetch_result.orders_rows)
+                            ),
                             rows_downloaded=len(api_fetch_result.orders_rows),
-                            rows_ingested=0,
+                            rows_ingested=(api_orders_ingest_result.final_rows if api_orders_ingest_result else 0),
+                            staging_rows=(api_orders_ingest_result.staging_rows if api_orders_ingest_result else None),
+                            final_rows=(api_orders_ingest_result.final_rows if api_orders_ingest_result else None),
+                            warnings=(api_orders_ingest_result.warnings if api_orders_ingest_result else []),
                             source_mode=source_mode,
                         )
                         sales_report = StoreReport(
                             status=sales_status,
-                            message="Sales sourced from API" if run_sales else "Sales sync skipped by flag",
-                            warning_rows=list(api_fetch_result.sales_rows),
-                            compare_rows_sales=list(api_fetch_result.sales_rows),
+                            message=(
+                                "Sales sourced from API and ingested"
+                                if (run_sales and config.database_url)
+                                else ("Sales sourced from API" if run_sales else "Sales sync skipped by flag")
+                            ),
+                            warning_rows=(
+                                api_sales_ingest_result.warning_rows
+                                if api_sales_ingest_result
+                                else list(api_fetch_result.sales_rows)
+                            ),
+                            compare_rows_sales=(
+                                api_sales_ingest_result.parsed_rows
+                                if api_sales_ingest_result
+                                else list(api_fetch_result.sales_rows)
+                            ),
                             rows_downloaded=len(api_fetch_result.sales_rows),
-                            rows_ingested=0,
+                            rows_ingested=(api_sales_ingest_result.final_rows if api_sales_ingest_result else 0),
+                            staging_rows=(api_sales_ingest_result.staging_rows if api_sales_ingest_result else None),
+                            final_rows=(api_sales_ingest_result.final_rows if api_sales_ingest_result else None),
+                            warnings=(api_sales_ingest_result.warnings if api_sales_ingest_result else []),
                             source_mode=source_mode,
                         )
                         outcome = StoreOutcome(
