@@ -186,8 +186,20 @@ def _build_sales_agg(sales: sa.Table, ranges: dict[str, datetime]) -> sa.Subquer
     def _sum_when(condition: sa.ColumnElement[bool]) -> sa.ColumnElement:
         return sa.func.coalesce(sa.func.sum(sa.case((condition, sales.c.payment_received), else_=0)), 0)
 
-    def _count_when(condition: sa.ColumnElement[bool]) -> sa.ColumnElement:
-        return sa.func.coalesce(sa.func.sum(sa.case((condition, 1), else_=0)), 0)
+    valid_order_number = sa.and_(
+        sales.c.order_number.is_not(None),
+        sa.func.trim(sales.c.order_number) != "",
+    )
+
+    def _count_distinct_orders_when(condition: sa.ColumnElement[bool]) -> sa.ColumnElement:
+        return sa.func.count(
+            sa.distinct(
+                sa.case(
+                    (sa.and_(condition, valid_order_number), sales.c.order_number),
+                    else_=None,
+                )
+            )
+        )
 
     return (
         sa.select(
@@ -198,11 +210,17 @@ def _build_sales_agg(sales: sa.Table, ranges: dict[str, datetime]) -> sa.Subquer
             .label("collections_mtd"),
             _sum_when(sa.and_(sales.c.payment_date >= ranges["lmt_start"], sales.c.payment_date < ranges["lmt_end"]))
             .label("collections_lmtd"),
-            _count_when(sa.and_(sales.c.payment_date >= ranges["start_day"], sales.c.payment_date < ranges["next_day"]))
+            _count_distinct_orders_when(
+                sa.and_(sales.c.payment_date >= ranges["start_day"], sales.c.payment_date < ranges["next_day"])
+            )
             .label("collections_count_ftd"),
-            _count_when(sa.and_(sales.c.payment_date >= ranges["start_month"], sales.c.payment_date < ranges["next_day"]))
+            _count_distinct_orders_when(
+                sa.and_(sales.c.payment_date >= ranges["start_month"], sales.c.payment_date < ranges["next_day"])
+            )
             .label("collections_count_mtd"),
-            _count_when(sa.and_(sales.c.payment_date >= ranges["lmt_start"], sales.c.payment_date < ranges["lmt_end"]))
+            _count_distinct_orders_when(
+                sa.and_(sales.c.payment_date >= ranges["lmt_start"], sales.c.payment_date < ranges["lmt_end"])
+            )
             .label("collections_count_lmtd"),
         )
         .group_by(sales.c.cost_center)
