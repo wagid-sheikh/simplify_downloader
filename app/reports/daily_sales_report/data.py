@@ -25,6 +25,9 @@ class DailySalesRow:
     collections_ftd: Decimal
     collections_mtd: Decimal
     collections_lmtd: Decimal
+    collections_count_ftd: int
+    collections_count_mtd: int
+    collections_count_lmtd: int
     target: Decimal
     achieved: Decimal
     ttd: Decimal
@@ -183,6 +186,9 @@ def _build_sales_agg(sales: sa.Table, ranges: dict[str, datetime]) -> sa.Subquer
     def _sum_when(condition: sa.ColumnElement[bool]) -> sa.ColumnElement:
         return sa.func.coalesce(sa.func.sum(sa.case((condition, sales.c.payment_received), else_=0)), 0)
 
+    def _count_when(condition: sa.ColumnElement[bool]) -> sa.ColumnElement:
+        return sa.func.coalesce(sa.func.sum(sa.case((condition, 1), else_=0)), 0)
+
     return (
         sa.select(
             sales.c.cost_center.label("cost_center"),
@@ -192,6 +198,12 @@ def _build_sales_agg(sales: sa.Table, ranges: dict[str, datetime]) -> sa.Subquer
             .label("collections_mtd"),
             _sum_when(sa.and_(sales.c.payment_date >= ranges["lmt_start"], sales.c.payment_date < ranges["lmt_end"]))
             .label("collections_lmtd"),
+            _count_when(sa.and_(sales.c.payment_date >= ranges["start_day"], sales.c.payment_date < ranges["next_day"]))
+            .label("collections_count_ftd"),
+            _count_when(sa.and_(sales.c.payment_date >= ranges["start_month"], sales.c.payment_date < ranges["next_day"]))
+            .label("collections_count_mtd"),
+            _count_when(sa.and_(sales.c.payment_date >= ranges["lmt_start"], sales.c.payment_date < ranges["lmt_end"]))
+            .label("collections_count_lmtd"),
         )
         .group_by(sales.c.cost_center)
         .subquery()
@@ -212,6 +224,9 @@ def _totals_row(rows: Iterable[DailySalesRow]) -> DailySalesRow:
         collections_ftd=Decimal("0"),
         collections_mtd=Decimal("0"),
         collections_lmtd=Decimal("0"),
+        collections_count_ftd=0,
+        collections_count_mtd=0,
+        collections_count_lmtd=0,
         target=Decimal("0"),
         achieved=Decimal("0"),
         ttd=Decimal("0"),
@@ -235,6 +250,9 @@ def _totals_row(rows: Iterable[DailySalesRow]) -> DailySalesRow:
         totals.collections_ftd += row.collections_ftd
         totals.collections_mtd += row.collections_mtd
         totals.collections_lmtd += row.collections_lmtd
+        totals.collections_count_ftd += row.collections_count_ftd
+        totals.collections_count_mtd += row.collections_count_mtd
+        totals.collections_count_lmtd += row.collections_count_lmtd
         totals.target += row.target
         totals.achieved += row.achieved
         totals.delta += row.delta
@@ -421,6 +439,9 @@ async def fetch_daily_sales_report(
             sales_agg.c.collections_ftd,
             sales_agg.c.collections_mtd,
             sales_agg.c.collections_lmtd,
+            sales_agg.c.collections_count_ftd,
+            sales_agg.c.collections_count_mtd,
+            sales_agg.c.collections_count_lmtd,
             targets.c.sale_target,
             orders_sync_agg.c.orders_pulled_at,
             sa.case(
@@ -490,6 +511,9 @@ async def fetch_daily_sales_report(
             collections_ftd = _decimal(entry["collections_ftd"])
             collections_mtd = _decimal(entry["collections_mtd"])
             collections_lmtd = _decimal(entry["collections_lmtd"])
+            collections_count_ftd = int(entry["collections_count_ftd"] or 0)
+            collections_count_mtd = int(entry["collections_count_mtd"] or 0)
+            collections_count_lmtd = int(entry["collections_count_lmtd"] or 0)
             target = _decimal(entry["sale_target"])
             achieved = sales_mtd
             if target_type == "none":
@@ -522,6 +546,9 @@ async def fetch_daily_sales_report(
                     collections_ftd=collections_ftd,
                     collections_mtd=collections_mtd,
                     collections_lmtd=collections_lmtd,
+                    collections_count_ftd=collections_count_ftd,
+                    collections_count_mtd=collections_count_mtd,
+                    collections_count_lmtd=collections_count_lmtd,
                     target=target,
                     achieved=achieved,
                     ttd=ttd,

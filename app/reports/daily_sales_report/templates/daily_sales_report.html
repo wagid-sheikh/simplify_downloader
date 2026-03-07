@@ -197,9 +197,18 @@
               {{ lmtd_count }} @ ₹{% if lmtd_count %}{{ (row.sales_lmtd / lmtd_count) | round(0) }}{% else %}0{% endif %}
             </div>
           </td>
-          <td>{{ row.collections_ftd | format_amount }}</td>
-          <td>{{ row.collections_mtd | format_amount }}</td>
-          <td>{{ row.collections_lmtd | format_amount }}</td>
+          <td>
+            <div>{{ row.collections_ftd | format_amount }}</div>
+            <div class="secondary-metric">{{ row.collections_count_ftd or 0 }} orders</div>
+          </td>
+          <td>
+            <div>{{ row.collections_mtd | format_amount }}</div>
+            <div class="secondary-metric">{{ row.collections_count_mtd or 0 }} orders</div>
+          </td>
+          <td>
+            <div>{{ row.collections_lmtd | format_amount }}</div>
+            <div class="secondary-metric">{{ row.collections_count_lmtd or 0 }} orders</div>
+          </td>
           <td>{{ row.target | format_amount }}</td>
           <td>{{ row.achieved | format_amount }}</td>
           <td class="{% if row.ttd < 0 %}ttd-negative{% endif %}">
@@ -233,9 +242,18 @@
               {{ totals_lmtd_count }} @ ₹{% if totals_lmtd_count %}{{ (totals.sales_lmtd / totals_lmtd_count) | round(0) }}{% else %}0{% endif %}
             </div>
           </td>
-          <td>{{ totals.collections_ftd | format_amount }}</td>
-          <td>{{ totals.collections_mtd | format_amount }}</td>
-          <td>{{ totals.collections_lmtd | format_amount }}</td>
+          <td>
+            <div>{{ totals.collections_ftd | format_amount }}</div>
+            <div class="secondary-metric">{{ totals.collections_count_ftd or 0 }} orders</div>
+          </td>
+          <td>
+            <div>{{ totals.collections_mtd | format_amount }}</div>
+            <div class="secondary-metric">{{ totals.collections_count_mtd or 0 }} orders</div>
+          </td>
+          <td>
+            <div>{{ totals.collections_lmtd | format_amount }}</div>
+            <div class="secondary-metric">{{ totals.collections_count_lmtd or 0 }} orders</div>
+          </td>
           <td>{{ totals.target | format_amount }}</td>
           <td>{{ totals.achieved | format_amount }}</td>
           <td class="{% if totals.ttd < 0 %}ttd-negative{% endif %}">
