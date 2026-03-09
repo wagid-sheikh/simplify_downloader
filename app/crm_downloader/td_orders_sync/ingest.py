@@ -177,6 +177,50 @@ DATE_FIELDS = {
 }
 
 REQUIRED_HEADERS = set(HEADER_MAP.keys())
+ROW_FIELD_ALIASES: Mapping[str, tuple[str, ...]] = {
+    "Order Date / Time": ("order_date", "Order Date", "orderDate"),
+    "Order No.": ("order_number", "Order Number", "orderNo", "orderNumber"),
+    "Customer Code": ("customer_code", "customerCode"),
+    "Name": ("customer_name", "customerName"),
+    "Address": ("customer_address", "customerAddress"),
+    "Phone": ("mobile_number", "mobileNumber"),
+    "Preference": ("preference",),
+    "Due Date": ("due_date", "dueDate"),
+    "Last Activity": ("last_activity", "lastActivity"),
+    "Pcs.": ("pieces", "pcs", "pieces"),
+    "Weight": ("weight",),
+    "Gross Amount": ("gross_amount", "grossAmount", "amount"),
+    "Discount": ("discount",),
+    "Tax": ("tax_amount", "tax", "taxAmount"),
+    "Net Amount": ("net_amount", "netAmount"),
+    "Advance": ("advance",),
+    "Paid": ("paid",),
+    "Adjustment": ("adjustment", "adjustments"),
+    "Balance": ("balance",),
+    "Advance Received": ("advance_received", "advanceReceived"),
+    "Advance Used": ("advance_used", "advanceUsed"),
+    "Booked By": ("booked_by", "bookedBy"),
+    "Workshop Note": ("workshop_note", "workshopNote"),
+    "Order Note": ("order_note", "orderNote"),
+    "Home Delivery": ("home_delivery", "homeDelivery"),
+    "Area Location": ("area_location", "areaLocation"),
+    "Garments Inspected By": ("garments_inspected_by", "garmentsInspectedBy"),
+    "Customer GSTIN": ("customer_gstin", "customerGstin", "gstin"),
+    "Registration Source": ("registration_source", "registrationSource"),
+    "Order From POS": ("order_from_pos", "orderFromPos"),
+    "Package": ("package",),
+    "Package Type": ("package_type", "packageType"),
+    "Package Name": ("package_name", "packageName"),
+    "Feedback": ("feedback",),
+    "Tags": ("tags",),
+    "Comment": ("comment",),
+    "Primary Services": ("primary_service", "primaryService"),
+    "Top Up/Extra Service": ("topup_service", "topupService"),
+    "Order Status": ("order_status", "orderStatus"),
+    "Last Payment Activity": ("last_payment_activity", "lastPaymentActivity"),
+    "Package Payment Info": ("package_payment_info", "packagePaymentInfo"),
+    "Coupon Code": ("coupon_code", "couponCode"),
+}
 
 
 def _stringify_value(value: Any) -> str:
@@ -525,6 +569,66 @@ def _read_workbook_rows(
     return rows, warning_rows, dropped_rows, rows_downloaded
 
 
+def _coerce_input_row(raw: Mapping[str, Any]) -> Dict[str, Any]:
+    if any(header in raw for header in HEADER_MAP):
+        return {header: raw.get(header) for header in HEADER_MAP}
+
+    coerced: Dict[str, Any] = {}
+    for header, aliases in ROW_FIELD_ALIASES.items():
+        value = None
+        for alias in aliases:
+            if alias in raw and raw.get(alias) not in (None, ""):
+                value = raw.get(alias)
+                break
+        coerced[header] = value
+    return coerced
+
+
+def _read_input_rows(
+    input_rows: Sequence[Mapping[str, Any]], *, tz: ZoneInfo, warnings: list[str], store_code: str
+) -> tuple[list[Dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int]:
+    rows: list[Dict[str, Any]] = []
+    warning_rows: list[dict[str, Any]] = []
+    dropped_rows: list[dict[str, Any]] = []
+    invalid_phone_numbers: set[str] = set()
+    headers = list(HEADER_MAP.keys())
+    rows_downloaded = len(input_rows)
+
+    for payload in input_rows:
+        raw_row = _coerce_input_row(payload)
+        normalized, row_remarks, drop_reason = _coerce_row(
+            raw_row, tz=tz, warnings=warnings, invalid_phone_numbers=invalid_phone_numbers
+        )
+        order_number = _stringify_value(raw_row.get("Order No."))
+        if normalized:
+            if normalized.get("ingest_remarks"):
+                warning_rows.append(
+                    {
+                        "store_code": store_code,
+                        "order_number": order_number,
+                        "headers": headers,
+                        "values": {header: _stringify_value(raw_row.get(header)) for header in headers},
+                        "remarks": normalized.get("ingest_remarks"),
+                        "ingest_remarks": normalized.get("ingest_remarks"),
+                    }
+                )
+            rows.append(normalized)
+        else:
+            dropped_rows.append(
+                {
+                    "store_code": store_code,
+                    "order_number": order_number,
+                    "headers": headers,
+                    "values": {header: _stringify_value(raw_row.get(header)) for header in headers},
+                    "remarks": drop_reason or "; ".join(row_remarks) or "Row dropped due to missing required values",
+                    "ingest_remarks": drop_reason
+                    or "; ".join(row_remarks)
+                    or "Row dropped due to missing required values",
+                }
+            )
+    return rows, warning_rows, dropped_rows, rows_downloaded
+
+
 def _make_insert(table: sa.Table, values: Mapping[str, Any], *, use_sqlite: bool) -> sa.sql.dml.Insert:
     insert_fn = sqlite_insert if use_sqlite else pg_insert
     insert = insert_fn(table).values(**values)
@@ -553,6 +657,67 @@ async def ingest_td_orders_workbook(
     rows, warning_rows, dropped_rows, rows_downloaded = _read_workbook_rows(
         workbook_path, tz=tz, warnings=warnings, logger=logger, store_code=store_code
     )
+    return await _ingest_td_orders_rows(
+        rows=rows,
+        warning_rows=warning_rows,
+        dropped_rows=dropped_rows,
+        rows_downloaded=rows_downloaded,
+        store_code=store_code,
+        cost_center=cost_center,
+        run_id=run_id,
+        run_date=run_date,
+        database_url=database_url,
+        logger=logger,
+        warnings=warnings,
+        workbook_path=workbook_path,
+    )
+
+
+async def ingest_td_orders_rows(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    store_code: str,
+    cost_center: str,
+    run_id: str,
+    run_date: datetime,
+    database_url: str,
+    logger: JsonLogger,
+) -> TdOrdersIngestResult:
+    tz = get_timezone()
+    warnings: list[str] = []
+    parsed_rows, warning_rows, dropped_rows, rows_downloaded = _read_input_rows(
+        rows, tz=tz, warnings=warnings, store_code=store_code
+    )
+    return await _ingest_td_orders_rows(
+        rows=parsed_rows,
+        warning_rows=warning_rows,
+        dropped_rows=dropped_rows,
+        rows_downloaded=rows_downloaded,
+        store_code=store_code,
+        cost_center=cost_center,
+        run_id=run_id,
+        run_date=run_date,
+        database_url=database_url,
+        logger=logger,
+        warnings=warnings,
+    )
+
+
+async def _ingest_td_orders_rows(
+    *,
+    rows: list[Dict[str, Any]],
+    warning_rows: list[dict[str, Any]],
+    dropped_rows: list[dict[str, Any]],
+    rows_downloaded: int,
+    store_code: str,
+    cost_center: str,
+    run_id: str,
+    run_date: datetime,
+    database_url: str,
+    logger: JsonLogger,
+    warnings: list[str],
+    workbook_path: Path | None = None,
+) -> TdOrdersIngestResult:
     remark_entries = [
         {
             "store_code": store_code,
@@ -569,7 +734,7 @@ async def ingest_td_orders_workbook(
             status="warn",
             message="No rows parsed from TD Orders workbook",
             store_code=store_code,
-            workbook=str(workbook_path),
+            workbook=str(workbook_path) if workbook_path else "<rows>",
         )
         return TdOrdersIngestResult(
             staging_rows=0,
@@ -726,6 +891,7 @@ def _expected_headers() -> Sequence[str]:
 __all__ = [
     "TdOrdersIngestResult",
     "ingest_td_orders_workbook",
+    "ingest_td_orders_rows",
     "_stg_td_orders_table",
     "_orders_table",
     "_expected_headers",
