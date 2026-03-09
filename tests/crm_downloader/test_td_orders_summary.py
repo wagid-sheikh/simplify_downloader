@@ -97,6 +97,10 @@ def test_summary_records_orders_and_sales_results() -> None:
     assert sales_metrics["overall_status"] == "success"
     assert orders_metrics["stores"]["A1"]["filenames"] == ["orders_A1.xlsx"]
     assert sales_metrics["stores"]["A1"]["final_rows"] == 3
+    notification_store = record["metrics_json"]["notification_payload"]["stores"][0]
+    assert notification_store["data_source_decision"] == "ui"
+    assert notification_store["ingest_status"] == "success"
+    assert notification_store["failure_stage"] is None
 
     text_lines = summary.summary_text(finished_at=datetime(2024, 1, 3, tzinfo=timezone.utc)).splitlines()
     assert "**Per Store Orders Metrics:**" in text_lines
@@ -224,6 +228,34 @@ def test_daily_reconciliation_summary_groups_pass_and_fail() -> None:
     assert daily["stores_passed"] == ["A1"]
     assert daily["stores_failed"][0]["store_code"] == "A2"
     assert "orders:row_count_delta_exceeded" in daily["top_mismatch_reasons"]
+
+
+def test_api_primary_decision_can_coexist_with_ingest_failure_stage() -> None:
+    summary = TdOrdersDiscoverySummary(
+        run_id="run-7", run_env="test", report_date=date(2024, 1, 7), report_end_date=date(2024, 1, 7)
+    )
+    summary.record_store(
+        "A1",
+        StoreOutcome(status="error", message="Orders ingest failed"),
+        orders_result=StoreReport(
+            status="error",
+            source_mode="api_primary",
+            decision_log={"decision": "api_primary", "reason": "API selected as primary source"},
+            rows_downloaded=8,
+            error_message="orders ingest failed due to schema mismatch",
+        ),
+    )
+
+    record = summary.build_record(finished_at=datetime(2024, 1, 7, tzinfo=timezone.utc))
+    store_summary = record["metrics_json"]["stores_summary"]["stores"]["A1"]
+    notification_store = record["metrics_json"]["notification_payload"]["stores"][0]
+
+    assert store_summary["data_source_decision"] == "api_primary"
+    assert store_summary["ingest_status"] == "failed"
+    assert store_summary["failure_stage"] == "ingest"
+    assert notification_store["data_source_decision"] == "api_primary"
+    assert notification_store["ingest_status"] == "failed"
+    assert notification_store["failure_stage"] == "ingest"
 
 
 def test_compare_rows_use_transaction_rows_not_warning_rows() -> None:

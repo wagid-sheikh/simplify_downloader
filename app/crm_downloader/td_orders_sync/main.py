@@ -906,6 +906,9 @@ class TdStore:
 class StoreOutcome:
     status: str
     message: str
+    data_source_decision: str | None = None
+    ingest_status: str | None = None
+    failure_stage: str | None = None
     final_url: str | None = None
     iframe_attached: bool | None = None
     verification_seen: bool | None = None
@@ -1047,6 +1050,21 @@ class TdOrdersDiscoverySummary:
         orders_result: StoreReport | None = None,
         sales_result: StoreReport | None = None,
     ) -> None:
+        resolved_data_source_decision = outcome.data_source_decision or _resolve_data_source_decision(
+            source_mode=(orders_result.source_mode if orders_result else "ui"),
+            report=orders_result,
+        )
+        resolved_ingest_status = outcome.ingest_status or _resolve_store_ingest_status(
+            orders_report=orders_result,
+            sales_report=sales_result,
+        )
+        resolved_failure_stage = outcome.failure_stage or _resolve_failure_stage(
+            orders_report=orders_result,
+            sales_report=sales_result,
+        )
+        outcome.data_source_decision = resolved_data_source_decision
+        outcome.ingest_status = resolved_ingest_status
+        outcome.failure_stage = resolved_failure_stage
         self.store_outcomes[store_code] = outcome
         resolved_orders = orders_result or StoreReport(
             status=outcome.status,
@@ -1585,6 +1603,21 @@ class TdOrdersDiscoverySummary:
                 "status": outcome.status if outcome else "error",
                 "message": outcome.message if outcome else "No outcome recorded",
                 "error_message": outcome.message if outcome and outcome.status in {"warning", "error"} else None,
+                "data_source_decision": (
+                    outcome.data_source_decision
+                    if outcome and outcome.data_source_decision
+                    else _resolve_data_source_decision(source_mode=orders_report.source_mode if orders_report else "ui", report=orders_report)
+                ),
+                "ingest_status": (
+                    outcome.ingest_status
+                    if outcome and outcome.ingest_status
+                    else _resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report)
+                ),
+                "failure_stage": (
+                    outcome.failure_stage
+                    if outcome and outcome.failure_stage
+                    else _resolve_failure_stage(orders_report=orders_report, sales_report=sales_report)
+                ),
                 "orders": self._build_report_summary(
                     code, orders_report, expected_filename=self._expected_orders_filename(code)
                 ),
@@ -1714,6 +1747,21 @@ class TdOrdersDiscoverySummary:
                     "store_code": code,
                     "status": outcome.status if outcome else None,
                     "message": outcome.message if outcome else None,
+                    "data_source_decision": (
+                        outcome.data_source_decision
+                        if outcome and outcome.data_source_decision
+                        else _resolve_data_source_decision(source_mode=orders_report.get("source_mode") or "ui", report=None)
+                    ),
+                    "ingest_status": (
+                        outcome.ingest_status if outcome and outcome.ingest_status else _resolve_store_ingest_status(
+                            orders_report=self.orders_results.get(code), sales_report=self.sales_results.get(code)
+                        )
+                    ),
+                    "failure_stage": (
+                        outcome.failure_stage if outcome and outcome.failure_stage else _resolve_failure_stage(
+                            orders_report=self.orders_results.get(code), sales_report=self.sales_results.get(code)
+                        )
+                    ),
                     "orders": orders_report,
                     "sales": sales_report,
                 }
@@ -2487,6 +2535,15 @@ async def _flush_deferred_orders_sync_logs(
             run_orders=summary.run_orders,
             run_sales=summary.run_sales,
         )
+        log_event(
+            logger=logger,
+            phase="orders_sync_log",
+            message="Resolved TD outcome dimensions for deferred orders sync log update",
+            store_code=entry.store.store_code,
+            data_source_decision=_resolve_data_source_decision(source_mode=orders_report.source_mode if orders_report else "ui", report=orders_report),
+            ingest_status=_resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report),
+            failure_stage=_resolve_failure_stage(orders_report=orders_report, sales_report=sales_report),
+        )
         await _update_orders_sync_log(
             logger=logger,
             log_id=log_id,
@@ -2869,6 +2926,39 @@ def _resolve_ingest_status(report: StoreReport | None, *, run_report: bool) -> s
     return "error"
 
 
+def _resolve_data_source_decision(*, source_mode: str, report: StoreReport | None) -> str:
+    if report and report.decision_log.get("decision") in {"api_primary", "api_primary_degraded"}:
+        return "api_primary"
+    if source_mode in {"api_primary", "api_only"}:
+        return "api_primary"
+    if source_mode == "api_shadow":
+        return "api_shadow"
+    return "ui"
+
+
+def _resolve_store_ingest_status(*, orders_report: StoreReport | None, sales_report: StoreReport | None) -> str:
+    reports = [report for report in (orders_report, sales_report) if report is not None]
+    if reports and all(report.status in {"ok", "warning"} for report in reports):
+        return "success"
+    return "failed"
+
+
+def _resolve_failure_stage(*, orders_report: StoreReport | None, sales_report: StoreReport | None) -> str | None:
+    reports = [report for report in (orders_report, sales_report) if report is not None and report.status == "error"]
+    if not reports:
+        return None
+
+    for report in reports:
+        decision = str((report.decision_log or {}).get("decision") or "").strip().lower()
+        if decision in {"api_unavailable", "api_partial_unavailable", "api_primary_degraded"}:
+            return "compare"
+        if (report.rows_downloaded or 0) <= 0 and not report.downloaded_path:
+            return "fetch"
+        if report.error_message:
+            return "ingest"
+    return "publish"
+
+
 def _merge_outcome_status(current: str, incoming: str | None) -> str:
     if incoming == "error":
         return "error"
@@ -2913,6 +3003,9 @@ def _log_td_window_summary(
     run_sales: bool,
     source_mode: str,
 ) -> None:
+    data_source_decision = _resolve_data_source_decision(source_mode=source_mode, report=orders_report)
+    ingest_status = _resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report)
+    failure_stage = _resolve_failure_stage(orders_report=orders_report, sales_report=sales_report)
     final_status = _resolve_sync_log_status(
         orders_report=orders_report,
         sales_report=sales_report,
@@ -2940,6 +3033,9 @@ def _log_td_window_summary(
         sales_ingested_rows=_resolve_ingested_rows(sales_report),
         final_status=final_status,
         source_mode=source_mode,
+        data_source_decision=data_source_decision,
+        ingest_status=ingest_status,
+        failure_stage=failure_stage,
     )
     has_downloads_or_ingest = any(
         [
@@ -7692,6 +7788,15 @@ async def _run_store_discovery(
             sales_report=sales_report,
             run_orders=run_orders,
             run_sales=run_sales,
+        )
+        log_event(
+            logger=store_logger,
+            phase="orders_sync_log",
+            message="Resolved TD outcome dimensions for orders sync log update",
+            store_code=store.store_code,
+            data_source_decision=_resolve_data_source_decision(source_mode=source_mode, report=orders_report),
+            ingest_status=_resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report),
+            failure_stage=_resolve_failure_stage(orders_report=orders_report, sales_report=sales_report),
         )
         ui_rows = _resolve_compare_rows(orders_report, dataset="orders")
         api_fetch_result_obj = api_fetch_result if "api_fetch_result" in locals() else None
