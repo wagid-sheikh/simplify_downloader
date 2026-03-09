@@ -83,6 +83,12 @@ SALES_NAV_SAMPLE_LIMIT = 3
 ROW_SAMPLE_LIMIT = 3
 SNAPSHOT_TEXT_MAX_CHARS = 120
 TD_SOURCE_MODES = {"ui", "api_shadow", "api_primary", "api_only"}
+INGEST_SOURCE_BY_MODE: Mapping[str, str] = {
+    "ui": "ui_workbook",
+    "api_shadow": "ui_workbook",
+    "api_primary": "api_rows",
+    "api_only": "api_rows",
+}
 SUMMARY_ROW_MARKERS = ("total order", "grand total")
 
 
@@ -103,6 +109,18 @@ def _bool_env(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _ingest_source_for_mode(source_mode: str) -> str:
+    return INGEST_SOURCE_BY_MODE.get(source_mode, "ui_workbook")
+
+
+def _ensure_ui_workbook_ingest_allowed(*, source_mode: str, dataset: str) -> None:
+    if _ingest_source_for_mode(source_mode) != "ui_workbook":
+        raise RuntimeError(
+            f"Workbook ingest for {dataset} is not allowed when source_mode={source_mode!r}; "
+            f"expected API rows ingestion"
+        )
 
 
 
@@ -497,6 +515,14 @@ async def main(
     source_mode = (source_mode or "ui").strip().lower()
     if source_mode not in TD_SOURCE_MODES:
         raise ValueError(f"source_mode must be one of {sorted(TD_SOURCE_MODES)}, got {source_mode!r}")
+    ingest_source = _ingest_source_for_mode(source_mode)
+    log_event(
+        logger=logger,
+        phase="ingest",
+        message="Resolved TD ingest source for mode",
+        source_mode=source_mode,
+        ingest_source=ingest_source,
+    )
     stores = await _load_td_order_stores(logger=logger, store_codes=store_codes)
     store_start_dates: dict[str, date] = {}
     pipeline_id: int | None = None
@@ -6391,6 +6417,7 @@ async def _execute_sales_flow(
     summary: TdOrdersDiscoverySummary,
     sales_only_mode: bool = False,
     sync_log_id: int | None = None,
+    source_mode: str = "ui",
 ) -> StoreReport:
     sales_status: str | None = None
     sales_message: str | None = None
@@ -6452,6 +6479,7 @@ async def _execute_sales_flow(
                         sales_message = "Missing cost_center for TD store; cannot ingest sales"
                     else:
                         try:
+                            _ensure_ui_workbook_ingest_allowed(source_mode=source_mode, dataset="sales")
                             sales_ingest_result = await ingest_td_sales_workbook(
                                 workbook_path=Path(sales_detail),
                                 store_code=store.store_code,
@@ -7337,6 +7365,7 @@ async def _run_store_discovery(
                             )
                             return
                         try:
+                            _ensure_ui_workbook_ingest_allowed(source_mode=source_mode, dataset="orders")
                             ingest_result = await ingest_td_orders_workbook(
                                 workbook_path=Path(detail),
                                 store_code=store.store_code,
@@ -7454,6 +7483,7 @@ async def _run_store_discovery(
                             summary=summary,
                             sales_only_mode=sales_only_mode,
                             sync_log_id=sync_log_id,
+                            source_mode=source_mode,
                         )
                         sales_status = sales_report.status
                         sales_message = sales_report.message
@@ -7541,6 +7571,7 @@ async def _run_store_discovery(
                 summary=summary,
                 sales_only_mode=sales_only_mode,
                 sync_log_id=sync_log_id,
+                source_mode=source_mode,
             )
         elif sales_report is None:
             log_event(
