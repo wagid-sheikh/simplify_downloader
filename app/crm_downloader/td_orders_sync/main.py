@@ -6595,9 +6595,12 @@ async def _execute_sales_flow(
                                     logger=logger,
                                     phase="sales_ingest",
                                     status="warn",
-                                    message="TD Sales workbook ingested with warnings",
+                                    message="TD Sales workbook ingested with warnings (warning_count is unique-value based)",
                                     store_code=store.store_code,
                                     warning_count=sales_warning_summary["count"],
+                                    phone_fallback_rows=sales_ingest_result.phone_fallback_rows,
+                                    phone_fallback_unique_values=sales_ingest_result.phone_fallback_unique_values,
+                                    phone_fallback_top_invalid_values=sales_ingest_result.phone_fallback_top_invalid_values,
                                     warning_samples=sales_warning_summary["samples"],
                                     warnings_truncated=sales_warning_summary["truncated"],
                                     staging_rows=sales_ingest_result.staging_rows,
@@ -6620,6 +6623,9 @@ async def _execute_sales_flow(
                                     store_code=store.store_code,
                                     staging_rows=sales_ingest_result.staging_rows,
                                     final_rows=sales_ingest_result.final_rows,
+                                    phone_fallback_rows=sales_ingest_result.phone_fallback_rows,
+                                    phone_fallback_unique_values=sales_ingest_result.phone_fallback_unique_values,
+                                    phone_fallback_top_invalid_values=sales_ingest_result.phone_fallback_top_invalid_values,
                                 )
                             summary.add_ingest_remarks(sales_ingest_result.ingest_remarks)
                         except Exception as exc:
@@ -7275,10 +7281,13 @@ async def _run_store_discovery(
                                         logger=store_logger,
                                         phase="ingest",
                                         status="warn",
-                                        message="TD API Orders rows ingested with warnings",
+                                        message="TD API Orders rows ingested with warnings (warning_count is unique-value based)",
                                         store_code=store.store_code,
                                         source_mode=source_mode,
                                         warning_count=api_orders_warning_summary["count"],
+                                        phone_fallback_rows=api_orders_ingest_result.phone_fallback_rows,
+                                        phone_fallback_unique_values=api_orders_ingest_result.phone_fallback_unique_values,
+                                        phone_fallback_top_invalid_values=api_orders_ingest_result.phone_fallback_top_invalid_values,
                                         warning_samples=api_orders_warning_summary["samples"],
                                         warnings_truncated=api_orders_warning_summary["truncated"],
                                         staging_rows=api_orders_ingest_result.staging_rows,
@@ -7293,6 +7302,9 @@ async def _run_store_discovery(
                                         source_mode=source_mode,
                                         staging_rows=api_orders_ingest_result.staging_rows,
                                         final_rows=api_orders_ingest_result.final_rows,
+                                        phone_fallback_rows=api_orders_ingest_result.phone_fallback_rows,
+                                        phone_fallback_unique_values=api_orders_ingest_result.phone_fallback_unique_values,
+                                        phone_fallback_top_invalid_values=api_orders_ingest_result.phone_fallback_top_invalid_values,
                                     )
 
                             if run_sales and api_fetch_result.sales_rows:
@@ -7312,10 +7324,13 @@ async def _run_store_discovery(
                                         logger=store_logger,
                                         phase="sales_ingest",
                                         status="warn",
-                                        message="TD API Sales rows ingested with warnings",
+                                        message="TD API Sales rows ingested with warnings (warning_count is unique-value based)",
                                         store_code=store.store_code,
                                         source_mode=source_mode,
                                         warning_count=api_sales_warning_summary["count"],
+                                        phone_fallback_rows=api_sales_ingest_result.phone_fallback_rows,
+                                        phone_fallback_unique_values=api_sales_ingest_result.phone_fallback_unique_values,
+                                        phone_fallback_top_invalid_values=api_sales_ingest_result.phone_fallback_top_invalid_values,
                                         warning_samples=api_sales_warning_summary["samples"],
                                         warnings_truncated=api_sales_warning_summary["truncated"],
                                         staging_rows=api_sales_ingest_result.staging_rows,
@@ -7330,6 +7345,9 @@ async def _run_store_discovery(
                                         source_mode=source_mode,
                                         staging_rows=api_sales_ingest_result.staging_rows,
                                         final_rows=api_sales_ingest_result.final_rows,
+                                        phone_fallback_rows=api_sales_ingest_result.phone_fallback_rows,
+                                        phone_fallback_unique_values=api_sales_ingest_result.phone_fallback_unique_values,
+                                        phone_fallback_top_invalid_values=api_sales_ingest_result.phone_fallback_top_invalid_values,
                                     )
                         else:
                             log_event(
@@ -7477,9 +7495,12 @@ async def _run_store_discovery(
                                     logger=store_logger,
                                     phase="ingest",
                                     status="warn",
-                                    message="TD Orders workbook ingested with warnings",
+                                    message="TD Orders workbook ingested with warnings (warning_count is unique-value based)",
                                     store_code=store.store_code,
                                     warning_count=orders_warning_summary["count"],
+                                    phone_fallback_rows=ingest_result.phone_fallback_rows,
+                                    phone_fallback_unique_values=ingest_result.phone_fallback_unique_values,
+                                    phone_fallback_top_invalid_values=ingest_result.phone_fallback_top_invalid_values,
                                     warning_samples=orders_warning_summary["samples"],
                                     warnings_truncated=orders_warning_summary["truncated"],
                                     staging_rows=ingest_result.staging_rows,
@@ -7493,6 +7514,9 @@ async def _run_store_discovery(
                                     store_code=store.store_code,
                                     staging_rows=ingest_result.staging_rows,
                                     final_rows=ingest_result.final_rows,
+                                    phone_fallback_rows=ingest_result.phone_fallback_rows,
+                                    phone_fallback_unique_values=ingest_result.phone_fallback_unique_values,
+                                    phone_fallback_top_invalid_values=ingest_result.phone_fallback_top_invalid_values,
                                 )
                             summary.add_ingest_remarks(ingest_result.ingest_remarks)
                         except Exception as exc:
