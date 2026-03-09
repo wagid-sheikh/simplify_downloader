@@ -30,8 +30,8 @@ from app.crm_downloader.orders_sync_window import (
     resolve_orders_sync_start_date,
     resolve_window_settings,
 )
-from app.crm_downloader.td_orders_sync.ingest import TdOrdersIngestResult, ingest_td_orders_workbook
-from app.crm_downloader.td_orders_sync.sales_ingest import TdSalesIngestResult, ingest_td_sales_workbook
+from app.crm_downloader.td_orders_sync.ingest import TdOrdersIngestResult, ingest_td_orders_rows, ingest_td_orders_workbook
+from app.crm_downloader.td_orders_sync.sales_ingest import TdSalesIngestResult, ingest_td_sales_rows, ingest_td_sales_workbook
 from app.crm_downloader.td_orders_sync.td_api_client import TdApiClient, TdApiFetchResult
 from app.crm_downloader.td_orders_sync.garment_ingest import TdGarmentIngestResult, ingest_td_garment_rows
 from app.crm_downloader.td_orders_sync.td_api_artifacts import (
@@ -83,6 +83,12 @@ SALES_NAV_SAMPLE_LIMIT = 3
 ROW_SAMPLE_LIMIT = 3
 SNAPSHOT_TEXT_MAX_CHARS = 120
 TD_SOURCE_MODES = {"ui", "api_shadow", "api_primary", "api_only"}
+INGEST_SOURCE_BY_MODE: Mapping[str, str] = {
+    "ui": "ui_workbook",
+    "api_shadow": "ui_workbook",
+    "api_primary": "api_rows",
+    "api_only": "api_rows",
+}
 SUMMARY_ROW_MARKERS = ("total order", "grand total")
 
 
@@ -103,6 +109,18 @@ def _bool_env(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _ingest_source_for_mode(source_mode: str) -> str:
+    return INGEST_SOURCE_BY_MODE.get(source_mode, "ui_workbook")
+
+
+def _ensure_ui_workbook_ingest_allowed(*, source_mode: str, dataset: str) -> None:
+    if _ingest_source_for_mode(source_mode) != "ui_workbook":
+        raise RuntimeError(
+            f"Workbook ingest for {dataset} is not allowed when source_mode={source_mode!r}; "
+            f"expected API rows ingestion"
+        )
 
 
 
@@ -497,6 +515,14 @@ async def main(
     source_mode = (source_mode or "ui").strip().lower()
     if source_mode not in TD_SOURCE_MODES:
         raise ValueError(f"source_mode must be one of {sorted(TD_SOURCE_MODES)}, got {source_mode!r}")
+    ingest_source = _ingest_source_for_mode(source_mode)
+    log_event(
+        logger=logger,
+        phase="ingest",
+        message="Resolved TD ingest source for mode",
+        source_mode=source_mode,
+        ingest_source=ingest_source,
+    )
     stores = await _load_td_order_stores(logger=logger, store_codes=store_codes)
     store_start_dates: dict[str, date] = {}
     pipeline_id: int | None = None
@@ -6391,6 +6417,7 @@ async def _execute_sales_flow(
     summary: TdOrdersDiscoverySummary,
     sales_only_mode: bool = False,
     sync_log_id: int | None = None,
+    source_mode: str = "ui",
 ) -> StoreReport:
     sales_status: str | None = None
     sales_message: str | None = None
@@ -6452,6 +6479,7 @@ async def _execute_sales_flow(
                         sales_message = "Missing cost_center for TD store; cannot ingest sales"
                     else:
                         try:
+                            _ensure_ui_workbook_ingest_allowed(source_mode=source_mode, dataset="sales")
                             sales_ingest_result = await ingest_td_sales_workbook(
                                 workbook_path=Path(sales_detail),
                                 store_code=store.store_code,
@@ -7115,9 +7143,6 @@ async def _run_store_discovery(
                         api_sales_ingest_result: TdSalesIngestResult | None = None
                         api_orders_warning_summary: dict[str, Any] | None = None
                         api_sales_warning_summary: dict[str, Any] | None = None
-                        orders_excel_path = Path(artifact_result.artifact_paths.get("orders_excel", ""))
-                        sales_excel_path = Path(artifact_result.artifact_paths.get("sales_excel", ""))
-
                         if config.database_url:
                             if not store.cost_center:
                                 log_event(
@@ -7137,14 +7162,9 @@ async def _run_store_discovery(
                                 )
                                 return
 
-                            if api_fetch_result.orders_rows and not orders_excel_path.exists():
-                                raise RuntimeError("Orders API artifact workbook missing; cannot ingest API orders")
-                            if run_sales and api_fetch_result.sales_rows and not sales_excel_path.exists():
-                                raise RuntimeError("Sales API artifact workbook missing; cannot ingest API sales")
-
-                            if api_fetch_result.orders_rows and orders_excel_path.exists():
-                                api_orders_ingest_result = await ingest_td_orders_workbook(
-                                    workbook_path=orders_excel_path,
+                            if api_fetch_result.orders_rows:
+                                api_orders_ingest_result = await ingest_td_orders_rows(
+                                    rows=api_fetch_result.orders_rows,
                                     store_code=store.store_code,
                                     cost_center=store.cost_center or "",
                                     run_id=run_id,
@@ -7159,7 +7179,7 @@ async def _run_store_discovery(
                                         logger=store_logger,
                                         phase="ingest",
                                         status="warn",
-                                        message="TD API Orders workbook ingested with warnings",
+                                        message="TD API Orders rows ingested with warnings",
                                         store_code=store.store_code,
                                         source_mode=source_mode,
                                         warning_count=api_orders_warning_summary["count"],
@@ -7172,16 +7192,16 @@ async def _run_store_discovery(
                                     log_event(
                                         logger=store_logger,
                                         phase="ingest",
-                                        message="TD API Orders workbook ingested",
+                                        message="TD API Orders rows ingested",
                                         store_code=store.store_code,
                                         source_mode=source_mode,
                                         staging_rows=api_orders_ingest_result.staging_rows,
                                         final_rows=api_orders_ingest_result.final_rows,
                                     )
 
-                            if run_sales and api_fetch_result.sales_rows and sales_excel_path.exists():
-                                api_sales_ingest_result = await ingest_td_sales_workbook(
-                                    workbook_path=sales_excel_path,
+                            if run_sales and api_fetch_result.sales_rows:
+                                api_sales_ingest_result = await ingest_td_sales_rows(
+                                    rows=api_fetch_result.sales_rows,
                                     store_code=store.store_code,
                                     cost_center=store.cost_center or "",
                                     run_id=run_id,
@@ -7196,7 +7216,7 @@ async def _run_store_discovery(
                                         logger=store_logger,
                                         phase="sales_ingest",
                                         status="warn",
-                                        message="TD API Sales workbook ingested with warnings",
+                                        message="TD API Sales rows ingested with warnings",
                                         store_code=store.store_code,
                                         source_mode=source_mode,
                                         warning_count=api_sales_warning_summary["count"],
@@ -7209,7 +7229,7 @@ async def _run_store_discovery(
                                     log_event(
                                         logger=store_logger,
                                         phase="sales_ingest",
-                                        message="TD API Sales workbook ingested",
+                                        message="TD API Sales rows ingested",
                                         store_code=store.store_code,
                                         source_mode=source_mode,
                                         staging_rows=api_sales_ingest_result.staging_rows,
@@ -7345,6 +7365,7 @@ async def _run_store_discovery(
                             )
                             return
                         try:
+                            _ensure_ui_workbook_ingest_allowed(source_mode=source_mode, dataset="orders")
                             ingest_result = await ingest_td_orders_workbook(
                                 workbook_path=Path(detail),
                                 store_code=store.store_code,
@@ -7462,6 +7483,7 @@ async def _run_store_discovery(
                             summary=summary,
                             sales_only_mode=sales_only_mode,
                             sync_log_id=sync_log_id,
+                            source_mode=source_mode,
                         )
                         sales_status = sales_report.status
                         sales_message = sales_report.message
@@ -7549,6 +7571,7 @@ async def _run_store_discovery(
                 summary=summary,
                 sales_only_mode=sales_only_mode,
                 sync_log_id=sync_log_id,
+                source_mode=source_mode,
             )
         elif sales_report is None:
             log_event(

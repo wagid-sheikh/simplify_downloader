@@ -69,8 +69,10 @@ def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: s
     workbook = openpyxl.Workbook()
     worksheet = workbook.active
     worksheet.title = sheet_name
+    worksheet.append(["note"])
+    worksheet.append(["Diagnostic artifact only - not an ingest source"])
     if not rows:
-        worksheet.append(["note"])
+        worksheet.append(["status"])
         worksheet.append(["no rows"])
     else:
         columns: list[str] = []
@@ -87,7 +89,7 @@ def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: s
 
 
 def _excel_filename(store_code: str, dataset: str, from_date: date, to_date: date) -> str:
-    return f"{store_code}_td_api_{dataset}_{_window_token(from_date)}_{_window_token(to_date)}.xlsx"
+    return f"{store_code}_td_api_{dataset}_{_window_token(from_date)}_{_window_token(to_date)}_diagnostic.xlsx"
 
 
 
