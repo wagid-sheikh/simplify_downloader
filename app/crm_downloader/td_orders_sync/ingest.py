@@ -183,7 +183,7 @@ ROW_FIELD_ALIASES: Mapping[str, tuple[str, ...]] = {
     "Customer Code": ("customer_code", "customerCode"),
     "Name": ("customer_name", "customerName"),
     "Address": ("customer_address", "customerAddress"),
-    "Phone": ("mobile_number", "mobileNumber"),
+    "Phone": ("mobile_number", "mobileNumber", "customerPhone"),
     "Preference": ("preference",),
     "Due Date": ("due_date", "dueDate"),
     "Last Activity": ("last_activity", "lastActivity"),
