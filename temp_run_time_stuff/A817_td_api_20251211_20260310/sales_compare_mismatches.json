@@ -1,0 +1,66 @@
+{
+  "dataset_health": {
+    "ready": true,
+    "degraded_reason": null,
+    "endpoint_error": null,
+    "endpoint_success": true,
+    "endpoint_final_error_class": null,
+    "endpoint_attempts": 2,
+    "pages_fetched": 2,
+    "reported_total_pages": null,
+    "total_rows": 944,
+    "reported_total_rows": 942
+  },
+  "strict_verdict_ready": true,
+  "endpoint_health_summary": {
+    "orders": {
+      "ready": true,
+      "degraded_reason": null,
+      "endpoint_error": null,
+      "endpoint_success": true,
+      "endpoint_final_error_class": null,
+      "endpoint_attempts": 2,
+      "pages_fetched": 2,
+      "reported_total_pages": null,
+      "total_rows": 785,
+      "reported_total_rows": 783
+    },
+    "sales": {
+      "ready": true,
+      "degraded_reason": null,
+      "endpoint_error": null,
+      "endpoint_success": true,
+      "endpoint_final_error_class": null,
+      "endpoint_attempts": 2,
+      "pages_fetched": 2,
+      "reported_total_pages": null,
+      "total_rows": 944,
+      "reported_total_rows": 942
+    },
+    "endpoint_errors": {},
+    "endpoint_error_diagnostics": {},
+    "endpoint_health": {
+      "/reports/order-report": {
+        "success": true,
+        "final_error_class": null,
+        "attempts": 2
+      },
+      "/sales-and-deliveries/sales": {
+        "success": true,
+        "final_error_class": null,
+        "attempts": 2
+      },
+      "/garments/details": {
+        "success": true,
+        "final_error_class": null,
+        "attempts": 13
+      }
+    }
+  },
+  "mismatch_artifacts": {
+    "missing_in_api": [],
+    "missing_in_ui": [],
+    "value_mismatches": [],
+    "sales_order_row_count_mismatches": []
+  }
+}
