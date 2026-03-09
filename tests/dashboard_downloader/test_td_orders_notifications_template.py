@@ -58,6 +58,9 @@ def _sample_run_data(*, summary_text: str = "") -> dict[str, object]:
             {
                 "store_code": "A1",
                 "status": "ok",
+                "data_source_decision": "api_primary",
+                "ingest_status": "failed",
+                "failure_stage": "ingest",
                 "orders": {
                     "status": "ok",
                     "rows_downloaded": 12,
@@ -124,6 +127,9 @@ def _sample_run_data(*, summary_text: str = "") -> dict[str, object]:
             {
                 "store_code": "A2",
                 "status": "error",
+                "data_source_decision": "ui",
+                "ingest_status": "failed",
+                "failure_stage": "fetch",
                 "orders": {
                     "status": "error",
                     "rows_downloaded": 0,
@@ -166,6 +172,9 @@ def test_td_context_prefers_structured_summary_text() -> None:
     assert context["started_at_formatted"] == "05-01-2024 10:30:00"
     assert context["orders_status"] == "success_with_warnings"
     assert context["sales_status"] == "success_with_warnings"
+    assert context["stores"][0]["data_source_decision"] == "api_primary"
+    assert context["stores"][0]["ingest_status"] == "failed"
+    assert context["stores"][0]["failure_stage"] == "ingest"
 
 
 def test_td_template_renders_payload_without_false_failure_note() -> None:
@@ -182,6 +191,9 @@ def test_td_template_renders_payload_without_false_failure_note() -> None:
 
     assert "TD Orders & Sales Run Summary" in body
     assert "rows_downloaded: 12" in body
+    assert "data_source_decision: api_primary" in body
+    assert "ingest_status: failed" in body
+    assert "failure_stage: ingest" in body
     assert "rows_ingested: 10" in body
     assert "warning_count: 1" in body
     assert "edited_count: 1" in body
