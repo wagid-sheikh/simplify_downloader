@@ -15,12 +15,30 @@ from app.crm_downloader.td_orders_sync.sales_ingest import (
     TdSalesIngestResult,
     _expected_headers,
     _orders_table,
+    _coerce_input_row,
     _sales_table,
     _stg_td_sales_table,
     ingest_td_sales_rows,
     ingest_td_sales_workbook,
 )
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger
+
+
+def test_coerce_input_row_maps_customer_mobile_alias() -> None:
+    raw = {
+        "orderNo": "SAL-API-ALIAS",
+        "orderDate": "2025-05-10",
+        "paymentDate": "2025-05-11 09:30",
+        "customerMobile": "+91 88889-99762",
+    }
+
+    coerced = _coerce_input_row(raw)
+
+    assert coerced["Order Number"] == "SAL-API-ALIAS"
+    assert coerced["Order Date"] == "2025-05-10"
+    assert coerced["Payment Date"] == "2025-05-11 09:30"
+    assert coerced["Customer Mobile No."] == "+91 88889-99762"
+
 
 
 async def _create_tables(database_url: str) -> None:

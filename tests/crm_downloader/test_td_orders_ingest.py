@@ -13,12 +13,28 @@ from app.common.db import session_scope
 from app.crm_downloader.td_orders_sync.ingest import (
     TdOrdersIngestResult,
     _expected_headers,
+    _coerce_input_row,
     _orders_table,
     _stg_td_orders_table,
     ingest_td_orders_rows,
     ingest_td_orders_workbook,
 )
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger
+
+
+def test_coerce_input_row_maps_customer_phone_alias() -> None:
+    raw = {
+        "orderNo": "ORD-API-ALIAS",
+        "orderDate": "2025-05-10 09:30",
+        "customerPhone": "+91 88889-99762",
+    }
+
+    coerced = _coerce_input_row(raw)
+
+    assert coerced["Order No."] == "ORD-API-ALIAS"
+    assert coerced["Order Date / Time"] == "2025-05-10 09:30"
+    assert coerced["Phone"] == "+91 88889-99762"
+
 
 
 def _build_sample_workbook(path: Path) -> Path:
