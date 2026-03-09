@@ -17,6 +17,7 @@ from app.crm_downloader.td_orders_sync.sales_ingest import (
     _orders_table,
     _sales_table,
     _stg_td_sales_table,
+    ingest_td_sales_rows,
     ingest_td_sales_workbook,
 )
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger
@@ -171,6 +172,50 @@ async def _insert_order(
             )
         )
         await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_sales_ingest_rows_api_payload(tmp_path: Path) -> None:
+    db_path = tmp_path / "sales_rows.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    await _create_tables(database_url)
+    tz = ZoneInfo("Asia/Kolkata")
+    run_date = datetime(2025, 5, 20, 12, 0, tzinfo=tz)
+    await _insert_order(
+        database_url,
+        store_code="A668",
+        cost_center="UN3668",
+        order_number="SAL-API-001",
+        gross_amount=Decimal("1000"),
+        order_date=run_date,
+    )
+    logger = get_logger(run_id="test_run")
+    rows = [
+        {
+            "orderNo": "SAL-API-001",
+            "orderDate": "2025-05-10",
+            "paymentDate": "2025-05-11 09:30",
+            "customerName": "Alice",
+            "mobileNumber": "+91 99999-88888",
+            "paymentReceived": "1000",
+            "paymentMode": "UPI",
+        }
+    ]
+
+    result = await ingest_td_sales_rows(
+        rows=rows,
+        store_code="A668",
+        cost_center="UN3668",
+        run_id="test_run",
+        run_date=run_date,
+        database_url=database_url,
+        logger=logger,
+    )
+
+    assert result.staging_rows == 1
+    assert result.final_rows == 1
+    assert result.rows_downloaded == 1
+    assert result.warnings == []
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,7 @@ from app.crm_downloader.td_orders_sync.ingest import (
     _expected_headers,
     _orders_table,
     _stg_td_orders_table,
+    ingest_td_orders_rows,
     ingest_td_orders_workbook,
 )
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger
@@ -386,6 +387,44 @@ def _create_tables(database_url: str) -> None:
     engine = sa.create_engine(database_url.replace("+aiosqlite", ""))
     metadata.create_all(engine)
     engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_ingest_td_orders_rows_api_payload(tmp_path: Path) -> None:
+    db_path = tmp_path / "orders_rows.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    run_date = datetime(2025, 5, 20, 12, 0, tzinfo=tz)
+    logger = get_logger(run_id="test_run")
+    rows = [
+        {
+            "orderNo": "ORD-API-001",
+            "orderDate": "2025-05-10 09:30",
+            "customerCode": "C001",
+            "customerName": "Alice",
+            "mobileNumber": "+91 99999-88888",
+            "grossAmount": "1200",
+            "netAmount": "1100",
+            "paid": "500",
+        }
+    ]
+
+    result = await ingest_td_orders_rows(
+        rows=rows,
+        store_code="A668",
+        cost_center="UN3668",
+        run_id="test_run",
+        run_date=run_date,
+        database_url=database_url,
+        logger=logger,
+    )
+
+    assert result.staging_rows == 1
+    assert result.final_rows == 1
+    assert result.rows_downloaded == 1
+    assert result.warnings == []
 
 
 @pytest.mark.asyncio

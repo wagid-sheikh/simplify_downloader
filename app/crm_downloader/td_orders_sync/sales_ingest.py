@@ -84,6 +84,23 @@ HEADER_MAP: Mapping[str, str] = {
 NUMERIC_FIELDS = {"payment_received", "adjustments", "balance"}
 DATE_FIELDS = {"order_date", "payment_date"}
 REQUIRED_HEADERS = set(HEADER_MAP.keys())
+ROW_FIELD_ALIASES: Mapping[str, tuple[str, ...]] = {
+    "Order Date": ("order_date", "orderDate", "Order Date / Time"),
+    "Payment Date": ("payment_date", "paymentDate"),
+    "Order Number": ("order_number", "orderNo", "orderNumber", "Order No."),
+    "Customer Code": ("customer_code", "customerCode"),
+    "Customer Name": ("customer_name", "customerName", "Name"),
+    "Customer Address": ("customer_address", "customerAddress", "Address"),
+    "Customer Mobile No.": ("mobile_number", "mobileNumber", "Phone"),
+    "Payment Received": ("payment_received", "paymentReceived", "paid", "amount"),
+    "Adjustments": ("adjustments", "adjustment"),
+    "Balance": ("balance",),
+    "Accept By": ("accepted_by", "acceptedBy"),
+    "Payment Mode": ("payment_mode", "paymentMode"),
+    "Online TransactionID": ("transaction_id", "transactionId"),
+    "Payment Made At": ("payment_made_at", "paymentMadeAt"),
+    "Type": ("order_type", "orderType"),
+}
 
 
 def _stringify_value(value: Any) -> str:
@@ -389,6 +406,67 @@ def _read_workbook_rows(
     return rows, warning_rows, dropped_rows, rows_downloaded
 
 
+def _coerce_input_row(raw: Mapping[str, Any]) -> Dict[str, Any]:
+    if any(header in raw for header in HEADER_MAP):
+        return {header: raw.get(header) for header in HEADER_MAP}
+
+    coerced: Dict[str, Any] = {}
+    for header, aliases in ROW_FIELD_ALIASES.items():
+        value = None
+        for alias in aliases:
+            if alias in raw and raw.get(alias) not in (None, ""):
+                value = raw.get(alias)
+                break
+        coerced[header] = value
+    return coerced
+
+
+def _read_input_rows(
+    input_rows: Sequence[Mapping[str, Any]], *, tz: ZoneInfo, warnings: list[str], store_code: str
+) -> tuple[list[Dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int]:
+    rows: list[Dict[str, Any]] = []
+    warning_rows: list[dict[str, Any]] = []
+    dropped_rows: list[dict[str, Any]] = []
+    invalid_phone_numbers: set[str] = set()
+    headers = list(HEADER_MAP.keys())
+    rows_downloaded = len(input_rows)
+
+    for payload in input_rows:
+        raw_row = _coerce_input_row(payload)
+        normalized, row_remarks, drop_reason = _coerce_row(
+            raw_row, tz=tz, warnings=warnings, invalid_phone_numbers=invalid_phone_numbers
+        )
+        order_number = _stringify_value(raw_row.get("Order Number"))
+        if normalized:
+            normalized["_remarks"] = row_remarks
+            if row_remarks:
+                warning_rows.append(
+                    {
+                        "store_code": store_code,
+                        "order_number": order_number,
+                        "headers": headers,
+                        "values": {header: _stringify_value(raw_row.get(header)) for header in headers},
+                        "remarks": "; ".join(row_remarks),
+                        "ingest_remarks": "; ".join(row_remarks),
+                    }
+                )
+            rows.append(normalized)
+        else:
+            dropped_rows.append(
+                {
+                    "store_code": store_code,
+                    "order_number": order_number,
+                    "headers": headers,
+                    "values": {header: _stringify_value(raw_row.get(header)) for header in headers},
+                    "remarks": drop_reason or "; ".join(row_remarks) or "Row dropped due to missing required values",
+                    "ingest_remarks": drop_reason
+                    or "; ".join(row_remarks)
+                    or "Row dropped due to missing required values",
+                }
+            )
+    return rows, warning_rows, dropped_rows, rows_downloaded
+
+
 def _make_insert(table: sa.Table, values: Mapping[str, Any], *, use_sqlite: bool) -> sa.sql.dml.Insert:
     insert_fn = sqlite_insert if use_sqlite else pg_insert
     insert = insert_fn(table).values(**values)
@@ -417,6 +495,67 @@ async def ingest_td_sales_workbook(
     rows, warning_rows, dropped_rows, rows_downloaded = _read_workbook_rows(
         workbook_path, tz=tz, warnings=warnings, store_code=store_code
     )
+    return await _ingest_td_sales_rows(
+        rows=rows,
+        warning_rows=warning_rows,
+        dropped_rows=dropped_rows,
+        rows_downloaded=rows_downloaded,
+        store_code=store_code,
+        cost_center=cost_center,
+        run_id=run_id,
+        run_date=run_date,
+        database_url=database_url,
+        logger=logger,
+        warnings=warnings,
+        workbook_path=workbook_path,
+    )
+
+
+async def ingest_td_sales_rows(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    store_code: str,
+    cost_center: str,
+    run_id: str,
+    run_date: datetime,
+    database_url: str,
+    logger: JsonLogger,
+) -> TdSalesIngestResult:
+    tz = get_timezone()
+    warnings: list[str] = []
+    parsed_rows, warning_rows, dropped_rows, rows_downloaded = _read_input_rows(
+        rows, tz=tz, warnings=warnings, store_code=store_code
+    )
+    return await _ingest_td_sales_rows(
+        rows=parsed_rows,
+        warning_rows=warning_rows,
+        dropped_rows=dropped_rows,
+        rows_downloaded=rows_downloaded,
+        store_code=store_code,
+        cost_center=cost_center,
+        run_id=run_id,
+        run_date=run_date,
+        database_url=database_url,
+        logger=logger,
+        warnings=warnings,
+    )
+
+
+async def _ingest_td_sales_rows(
+    *,
+    rows: list[Dict[str, Any]],
+    warning_rows: list[dict[str, Any]],
+    dropped_rows: list[dict[str, Any]],
+    rows_downloaded: int,
+    store_code: str,
+    cost_center: str,
+    run_id: str,
+    run_date: datetime,
+    database_url: str,
+    logger: JsonLogger,
+    warnings: list[str],
+    workbook_path: Path | None = None,
+) -> TdSalesIngestResult:
     header_labels = list(HEADER_MAP.keys())
 
     if not rows:
@@ -426,7 +565,7 @@ async def ingest_td_sales_workbook(
             status="warn",
             message="No rows parsed from TD Sales workbook",
             store_code=store_code,
-            workbook=str(workbook_path),
+            workbook=str(workbook_path) if workbook_path else "<rows>",
         )
         return TdSalesIngestResult(
             staging_rows=0,
@@ -689,6 +828,7 @@ def _expected_headers() -> Sequence[str]:
 __all__ = [
     "TdSalesIngestResult",
     "ingest_td_sales_workbook",
+    "ingest_td_sales_rows",
     "_orders_table",
     "_stg_td_sales_table",
     "_sales_table",
