@@ -108,21 +108,10 @@ def persist_td_api_artifacts(
 ) -> TdApiArtifactPersistResult:
     result = TdApiArtifactPersistResult()
     store = (store_code or "").strip().upper() or "UNKNOWN"
-    window_dir = download_dir / f"{store}_td_api_{_window_token(from_date)}_{_window_token(to_date)}"
-
     artifact_targets: list[tuple[str, Path, Any, str]] = [
         ("orders_raw", download_dir / _raw_filename(store, "orders", from_date, to_date), raw_orders, "json"),
         ("sales_raw", download_dir / _raw_filename(store, "sales", from_date, to_date), raw_sales, "json"),
         ("garments_raw", download_dir / _raw_filename(store, "garments", from_date, to_date), raw_garments, "json"),
-        ("orders_raw_alias", window_dir / "orders_raw.json", raw_orders, "json"),
-        ("sales_raw_alias", window_dir / "sales_raw.json", raw_sales, "json"),
-        ("garments_raw_alias", window_dir / "garments_raw.json", raw_garments, "json"),
-        ("orders_rows", window_dir / "orders_rows.jsonl", order_rows, "jsonl"),
-        ("sales_rows", window_dir / "sales_rows.jsonl", sale_rows, "jsonl"),
-        ("garments_rows", window_dir / "garments_rows.jsonl", garments_rows, "jsonl"),
-        ("orders_excel", download_dir / _excel_filename(store, "orders", from_date, to_date), order_rows, "xlsx"),
-        ("sales_excel", download_dir / _excel_filename(store, "sales", from_date, to_date), sale_rows, "xlsx"),
-        ("garments_excel", download_dir / _excel_filename(store, "garments", from_date, to_date), garments_rows, "xlsx"),
     ]
 
     for key, path, payload, kind in artifact_targets:
@@ -152,43 +141,14 @@ def persist_td_compare_artifacts(
     sales_compare_metrics: Mapping[str, Any],
     endpoint_health_summary: Mapping[str, Any] | None = None,
 ) -> TdApiArtifactPersistResult:
-    result = TdApiArtifactPersistResult()
-    store = (store_code or "").strip().upper() or "UNKNOWN"
-    window_dir = download_dir / f"{store}_td_api_{_window_token(from_date)}_{_window_token(to_date)}"
+    _ = (
+        download_dir,
+        store_code,
+        from_date,
+        to_date,
+        orders_compare_metrics,
+        sales_compare_metrics,
+        endpoint_health_summary,
+    )
+    return TdApiArtifactPersistResult()
 
-    orders_metrics = orders_compare_metrics or {}
-    sales_metrics = sales_compare_metrics or {}
-    endpoint_health = dict(endpoint_health_summary or {})
-    artifact_targets: list[tuple[str, Path, Any]] = [
-        (
-            "orders_compare_mismatches",
-            window_dir / "orders_compare_mismatches.json",
-            {
-                "dataset_health": orders_metrics.get("dataset_health") or {},
-                "strict_verdict_ready": bool(orders_metrics.get("strict_verdict_ready", True)),
-                "endpoint_health_summary": endpoint_health,
-                "mismatch_artifacts": orders_metrics.get("mismatch_artifacts") or {},
-            },
-        ),
-        (
-            "sales_compare_mismatches",
-            window_dir / "sales_compare_mismatches.json",
-            {
-                "dataset_health": sales_metrics.get("dataset_health") or {},
-                "strict_verdict_ready": bool(sales_metrics.get("strict_verdict_ready", True)),
-                "endpoint_health_summary": endpoint_health,
-                "mismatch_artifacts": sales_metrics.get("mismatch_artifacts") or {},
-            },
-        ),
-    ]
-
-    for key, path, payload in artifact_targets:
-        try:
-            _write_json(path, payload)
-            result.artifact_paths[key] = str(path)
-        except Exception as exc:  # pragma: no cover - defensive guard
-            warning = f"Failed to persist TD compare artifact '{key}' at {path}: {exc}"
-            result.warnings.append(warning)
-            logger.warning(warning)
-
-    return result
