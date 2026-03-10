@@ -2097,39 +2097,14 @@ def _emit_reconciliation_gate_summary_logs(*, summary: TdOrdersDiscoverySummary,
 
 
 def _write_daily_reconciliation_artifact(*, summary: TdOrdersDiscoverySummary, logger: JsonLogger) -> Path | None:
-    try:
-        payload = _build_daily_reconciliation_summary(summary)
-        artifact_dir = (
-            Path(config.reports_root).resolve()
-            / "td_orders_sync"
-            / "reconciliation"
-            / summary.report_end_date.strftime("%Y-%m-%d")
-        )
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        artifact_path = artifact_dir / f"{summary.run_id}-shadow-readiness-reconciliation.json"
-        artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        log_event(
-            logger=logger,
-            phase="reconciliation",
-            message="Wrote TD shadow readiness reconciliation artifact (includes data-clean but promotion-gated stores)",
-            run_id=summary.run_id,
-            artifact_path=str(artifact_path),
-            passed_stores=len(payload["passed_stores"]),
-            failed_stores=len(payload["failed_stores"]),
-            data_clean_not_promotion_ready_stores=len(payload["data_clean_not_promotion_ready_stores"]),
-        )
-        _emit_reconciliation_gate_summary_logs(summary=summary, logger=logger)
-        return artifact_path
-    except Exception as exc:  # pragma: no cover
-        log_event(
-            logger=logger,
-            phase="reconciliation",
-            status="warn",
-            message="Failed to write daily reconciliation artifact",
-            run_id=summary.run_id,
-            error=str(exc),
-        )
-        return None
+    log_event(
+        logger=logger,
+        phase="reconciliation",
+        message="Skipping TD shadow readiness reconciliation artifact persistence",
+        run_id=summary.run_id,
+    )
+    _emit_reconciliation_gate_summary_logs(summary=summary, logger=logger)
+    return None
 
 
 async def _persist_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonLogger) -> bool:
@@ -8014,16 +7989,6 @@ async def _run_store_discovery(
                 "endpoint_health": dict(endpoint_health_summary) if isinstance(endpoint_health_summary, Mapping) else {},
             },
         )
-        compare_excel_path = (
-            download_dir
-            / f"{store.store_code.upper()}_td_api_compare_{run_start_date.strftime('%Y%m%d')}_{run_end_date.strftime('%Y%m%d')}.xlsx"
-        )
-        _persist_compare_excel_artifact(
-            artifact_path=compare_excel_path,
-            compare_metrics=orders_compare_metrics,
-            api_request_metadata=redact_sensitive_fields(api_request_metadata),
-        )
-        compare_artifact_result.artifact_paths["orders_compare_excel"] = str(compare_excel_path)
         log_event(
             logger=store_logger,
             phase="compare",
