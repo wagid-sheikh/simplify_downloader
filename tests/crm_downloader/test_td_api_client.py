@@ -13,7 +13,7 @@ from app.crm_downloader.td_orders_sync.main import (
     _resolve_td_api_artifact_dir,
     _dataset_completion_health,
 )
-from app.crm_downloader.td_orders_sync.td_api_artifacts import persist_td_api_artifacts, persist_td_compare_artifacts
+from app.crm_downloader.td_orders_sync.td_api_artifacts import _write_excel, persist_td_api_artifacts, persist_td_compare_artifacts
 from app.crm_downloader.td_orders_sync.td_api_client import (
     TdApiClient,
     TdApiClientConfig,
@@ -617,6 +617,79 @@ def test_persist_td_api_artifacts_human_readable_export_toggle(tmp_path: Path, m
     assert Path(enabled_result.artifact_paths["sales_excel"]).exists()
     assert Path(enabled_result.artifact_paths["garments_excel"]).exists()
     assert Path(enabled_result.artifact_paths["orders_raw"]).exists()
+
+
+def test_td_api_artifact_write_excel_serializes_nested_non_scalar_values(tmp_path: Path) -> None:
+    artifact_path = tmp_path / "td-artifact.xlsx"
+    _write_excel(
+        artifact_path,
+        [
+            {
+                "plain": "ok",
+                "nested": {1: "one", "items": ["a", {2: "two"}]},
+                "tuple_value": ("x", {3: "three"}),
+                "set_value": {"b", "a"},
+            }
+        ],
+    )
+
+    import openpyxl
+
+    workbook = openpyxl.load_workbook(artifact_path)
+    sheet = workbook["rows"]
+    headers = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+    values = [cell.value for cell in next(sheet.iter_rows(min_row=2, max_row=2))]
+
+    nested_text = values[headers.index("nested")]
+    tuple_text = values[headers.index("tuple_value")]
+    set_text = values[headers.index("set_value")]
+
+    assert nested_text == '{"1": "one", "items": ["a", {"2": "two"}]}'
+    assert tuple_text == '["x", {"3": "three"}]'
+    assert set_text == '["a", "b"]'
+
+
+def test_td_api_artifact_write_excel_sanitizes_control_characters_and_reopens(tmp_path: Path) -> None:
+    artifact_path = tmp_path / "td-control-chars.xlsx"
+    _write_excel(
+        artifact_path,
+        [{"notes": "hello\x00world\x01!", "payload": {"text": "a\x0bb\x0cc"}}],
+    )
+
+    import openpyxl
+
+    workbook = openpyxl.load_workbook(artifact_path)
+    sheet = workbook["rows"]
+    headers = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+    values = [cell.value for cell in next(sheet.iter_rows(min_row=2, max_row=2))]
+
+    assert values[headers.index("notes")] == "helloworld!"
+    assert values[headers.index("payload")] == '{"text": "abc"}'
+
+
+def test_td_api_artifact_write_excel_strips_xml_noncharacters(tmp_path: Path) -> None:
+    artifact_path = tmp_path / "td-invalid-xml.xlsx"
+    _write_excel(
+        artifact_path,
+        [{"notes": "prefixmiddle￿suffix", "payload": {"text": "ok￿done"}}],
+    )
+
+    import openpyxl
+
+    workbook = openpyxl.load_workbook(artifact_path)
+    sheet = workbook["rows"]
+    headers = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+    values = [cell.value for cell in next(sheet.iter_rows(min_row=2, max_row=2))]
+
+    assert values[headers.index("notes")] == "prefixmiddlesuffix"
+    assert values[headers.index("payload")] == '{"text": "okdone"}'
+
+    empty_artifact_path = tmp_path / "td-empty.xlsx"
+    _write_excel(empty_artifact_path, [])
+    empty_workbook = openpyxl.load_workbook(empty_artifact_path)
+    empty_sheet = empty_workbook["rows"]
+    assert [cell.value for cell in next(empty_sheet.iter_rows(min_row=1, max_row=1))] == ["status"]
+    assert [cell.value for cell in next(empty_sheet.iter_rows(min_row=2, max_row=2))] == ["no rows"]
 
 
 class _StubResponse:

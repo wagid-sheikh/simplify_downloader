@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 
 import openpyxl
 from dataclasses import dataclass, field
@@ -12,8 +11,6 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 logger = logging.getLogger(__name__)
-
-_ILLEGAL_XLSX_CHARS_RE = re.compile(r"[\000-\010]|[\013-\014]|[\016-\037]")
 
 _SENSITIVE_FIELD_NAMES = {"token", "authorization", "cookie", "set-cookie"}
 _REDACTED = "***REDACTED***"
@@ -76,6 +73,25 @@ def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: s
     worksheet = workbook.active
     worksheet.title = sheet_name
 
+    def _sanitize_excel_string(value: str) -> str:
+        def _is_valid_xml_char(char: str) -> bool:
+            codepoint = ord(char)
+            if codepoint in {0x9, 0xA, 0xD}:
+                return True
+            if codepoint < 0x20:
+                return False
+            if 0x7F <= codepoint <= 0x9F:
+                return False
+            if 0xD800 <= codepoint <= 0xDFFF:
+                return False
+            if 0xFDD0 <= codepoint <= 0xFDEF:
+                return False
+            if codepoint & 0xFFFF in {0xFFFE, 0xFFFF}:
+                return False
+            return codepoint <= 0x10FFFF
+
+        return "".join(char for char in value if _is_valid_xml_char(char))
+
     def _json_compatible(value: Any) -> Any:
         if isinstance(value, Mapping):
             return {str(key): _json_compatible(nested_value) for key, nested_value in value.items()}
@@ -84,18 +100,23 @@ def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: s
         if isinstance(value, set):
             normalized_items = [_json_compatible(item) for item in value]
             return sorted(normalized_items, key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True))
+        if isinstance(value, str):
+            return _sanitize_excel_string(value)
         return value
 
-    def _excel_safe_cell_value(value: Any) -> Any:
+    def _serialize_excel_cell_value(value: Any) -> Any:
         if isinstance(value, (Mapping, list, tuple, set)):
-            return json.dumps(_json_compatible(value), ensure_ascii=False, sort_keys=True)
+            value = json.dumps(_json_compatible(value), ensure_ascii=False, sort_keys=True)
         if isinstance(value, str):
-            return _ILLEGAL_XLSX_CHARS_RE.sub("", value)
+            return _sanitize_excel_string(value)
         return value
+
+    def _append_serialized_row(values: Sequence[Any]) -> None:
+        worksheet.append([_serialize_excel_cell_value(value) for value in values])
 
     if not rows:
-        worksheet.append(["status"])
-        worksheet.append(["no rows"])
+        _append_serialized_row(["status"])
+        _append_serialized_row(["no rows"])
     else:
         columns: list[str] = []
         for row in rows:
@@ -103,9 +124,9 @@ def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: s
                 key_text = str(key)
                 if key_text not in columns:
                     columns.append(key_text)
-        worksheet.append(columns)
+        _append_serialized_row(columns)
         for row in rows:
-            worksheet.append([_excel_safe_cell_value(row.get(column)) for column in columns])
+            _append_serialized_row([row.get(column) for column in columns])
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(path)
 
