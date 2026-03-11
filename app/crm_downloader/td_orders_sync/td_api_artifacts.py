@@ -96,7 +96,7 @@ def _excel_filename(store_code: str, dataset: str, from_date: date, to_date: dat
 
 
 def _human_readable_export_enabled() -> bool:
-    return (os.environ.get("TD_API_HUMAN_READABLE_EXPORT") or "").strip().lower() in {"1", "true", "yes", "on"}
+    return (os.environ.get("TD_API_HUMAN_READABLE_EXPORT") or "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
 
