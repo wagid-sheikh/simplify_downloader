@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 
 import openpyxl
 from dataclasses import dataclass, field
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 logger = logging.getLogger(__name__)
+
+_ILLEGAL_XLSX_CHARS_RE = re.compile(r"[\000-\010]|[\013-\014]|[\016-\037]")
 
 _SENSITIVE_FIELD_NAMES = {"token", "authorization", "cookie", "set-cookie"}
 _REDACTED = "***REDACTED***"
@@ -72,8 +75,24 @@ def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: s
     workbook = openpyxl.Workbook()
     worksheet = workbook.active
     worksheet.title = sheet_name
-    worksheet.append(["note"])
-    worksheet.append(["Diagnostic artifact only - not an ingest source"])
+
+    def _json_compatible(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {str(key): _json_compatible(nested_value) for key, nested_value in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_json_compatible(item) for item in value]
+        if isinstance(value, set):
+            normalized_items = [_json_compatible(item) for item in value]
+            return sorted(normalized_items, key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True))
+        return value
+
+    def _excel_safe_cell_value(value: Any) -> Any:
+        if isinstance(value, (Mapping, list, tuple, set)):
+            return json.dumps(_json_compatible(value), ensure_ascii=False, sort_keys=True)
+        if isinstance(value, str):
+            return _ILLEGAL_XLSX_CHARS_RE.sub("", value)
+        return value
+
     if not rows:
         worksheet.append(["status"])
         worksheet.append(["no rows"])
@@ -86,13 +105,13 @@ def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: s
                     columns.append(key_text)
         worksheet.append(columns)
         for row in rows:
-            worksheet.append([row.get(column) for column in columns])
+            worksheet.append([_excel_safe_cell_value(row.get(column)) for column in columns])
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(path)
 
 
 def _excel_filename(store_code: str, dataset: str, from_date: date, to_date: date) -> str:
-    return f"{store_code}_td_api_{dataset}_{_window_token(from_date)}_{_window_token(to_date)}_diagnostic.xlsx"
+    return f"{store_code}_td_api_{dataset}_{_window_token(from_date)}_{_window_token(to_date)}.xlsx"
 
 
 def _human_readable_export_enabled() -> bool:
