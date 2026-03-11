@@ -7169,6 +7169,8 @@ async def _run_store_discovery(
                             source_mode=source_mode,
                             artifact_dir=str(download_dir),
                             artifact_paths=artifact_result.artifact_paths,
+                            human_readable_export_enabled=artifact_result.human_readable_export_enabled,
+                            human_readable_artifact_paths=artifact_result.human_readable_artifact_paths,
                             warnings=artifact_result.warnings,
                         )
                         if artifact_result.warnings:

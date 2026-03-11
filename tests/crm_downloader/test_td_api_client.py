@@ -576,13 +576,13 @@ def test_persist_td_compare_artifacts_redacts_tokens_in_mismatch_payload(tmp_pat
     assert "***REDACTED***" in orders_payload_text
 
 
-def test_persist_td_api_artifacts_writes_excel_outputs(tmp_path: Path) -> None:
-    result = persist_td_api_artifacts(
+def test_persist_td_api_artifacts_human_readable_export_toggle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    base_kwargs = dict(
         download_dir=tmp_path,
         store_code="a817",
         from_date=date(2026, 1, 1),
         to_date=date(2026, 1, 2),
-        raw_orders={"data": []},
+        raw_orders={"token": "secret", "data": []},
         raw_sales={"data": []},
         raw_garments={"data": []},
         order_rows=[{"order_number": "1001", "source_only": "x", "amount": "12.00"}],
@@ -590,13 +590,33 @@ def test_persist_td_api_artifacts_writes_excel_outputs(tmp_path: Path) -> None:
         garments_rows=[{"order_number": "1001", "garment_only": "z", "line_item_key": "L1"}],
     )
 
-    assert "orders_excel" in result.artifact_paths
-    assert "sales_excel" in result.artifact_paths
-    assert "garments_excel" in result.artifact_paths
-    assert Path(result.artifact_paths["orders_excel"]).exists()
-    orders_rows_path = Path(result.artifact_paths["orders_rows"])
-    assert orders_rows_path.exists()
-    assert '"source_only": "x"' in orders_rows_path.read_text(encoding="utf-8")
+    monkeypatch.delenv("TD_API_HUMAN_READABLE_EXPORT", raising=False)
+    disabled_result = persist_td_api_artifacts(**base_kwargs)
+
+    assert disabled_result.human_readable_export_enabled is False
+    assert disabled_result.human_readable_artifact_paths == []
+    assert "orders_excel" not in disabled_result.artifact_paths
+    assert "sales_excel" not in disabled_result.artifact_paths
+    assert "garments_excel" not in disabled_result.artifact_paths
+
+    orders_raw_path = Path(disabled_result.artifact_paths["orders_raw"])
+    assert orders_raw_path.exists()
+    orders_raw_text = orders_raw_path.read_text(encoding="utf-8")
+    assert "***REDACTED***" in orders_raw_text
+    assert "secret" not in orders_raw_text
+
+    monkeypatch.setenv("TD_API_HUMAN_READABLE_EXPORT", "true")
+    enabled_result = persist_td_api_artifacts(**base_kwargs)
+
+    assert enabled_result.human_readable_export_enabled is True
+    assert len(enabled_result.human_readable_artifact_paths) == 3
+    assert "orders_excel" in enabled_result.artifact_paths
+    assert "sales_excel" in enabled_result.artifact_paths
+    assert "garments_excel" in enabled_result.artifact_paths
+    assert Path(enabled_result.artifact_paths["orders_excel"]).exists()
+    assert Path(enabled_result.artifact_paths["sales_excel"]).exists()
+    assert Path(enabled_result.artifact_paths["garments_excel"]).exists()
+    assert Path(enabled_result.artifact_paths["orders_raw"]).exists()
 
 
 class _StubResponse:
