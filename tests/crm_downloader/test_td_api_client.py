@@ -3,6 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import date
+import logging
+from datetime import datetime, timezone
+from decimal import Decimal
+import math
 from pathlib import Path
 
 import pytest
@@ -691,6 +695,152 @@ def test_td_api_artifact_write_excel_strips_xml_noncharacters(tmp_path: Path) ->
     assert [cell.value for cell in next(empty_sheet.iter_rows(min_row=1, max_row=1))] == ["status"]
     assert [cell.value for cell in next(empty_sheet.iter_rows(min_row=2, max_row=2))] == ["no rows"]
 
+
+def test_td_api_artifact_write_excel_coerces_problematic_scalar_types(tmp_path: Path) -> None:
+    artifact_path = tmp_path / "td-coerced-scalars.xlsx"
+    _write_excel(
+        artifact_path,
+        [
+            {
+                "tz_dt": datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+                "nan_value": math.nan,
+                "inf_value": math.inf,
+                "neg_inf_value": -math.inf,
+                "decimal_value": Decimal("123.4500"),
+                "bytes_value": b"hello\xffworld",
+                "unknown": Path("alpha\x00beta"),
+            }
+        ],
+    )
+
+    import openpyxl
+
+    workbook = openpyxl.load_workbook(artifact_path)
+    sheet = workbook["rows"]
+    headers = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+    values = [cell.value for cell in next(sheet.iter_rows(min_row=2, max_row=2))]
+
+    assert values[headers.index("tz_dt")] == "2026-01-02T03:04:05+00:00"
+    assert values[headers.index("nan_value")] == "NaN"
+    assert values[headers.index("inf_value")] == "Infinity"
+    assert values[headers.index("neg_inf_value")] == "-Infinity"
+    assert values[headers.index("decimal_value")] == "123.4500"
+    assert values[headers.index("bytes_value")] == "hello�world"
+    assert values[headers.index("unknown")] == "alphabeta"
+
+
+def test_td_api_artifact_write_excel_logs_coercion_type_summary(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    artifact_path = tmp_path / "td-coercion-logging.xlsx"
+    caplog.set_level(logging.DEBUG, logger="app.crm_downloader.td_orders_sync.td_api_artifacts")
+
+    _write_excel(
+        artifact_path,
+        [
+            {
+                "d1": Decimal("1"),
+                "d2": Decimal("2"),
+                "b1": b"x",
+                "dt": datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            }
+        ],
+    )
+
+    messages = [record for record in caplog.records if "Excel cell serialization coerced" in record.message]
+    assert len(messages) == 1
+    assert "type counts={'Decimal': 2, 'bytes': 1, 'datetime': 1}" in messages[0].message
+
+
+
+
+def test_td_api_artifact_write_excel_uses_atomic_replace(tmp_path: Path) -> None:
+    artifact_path = tmp_path / "td-atomic.xlsx"
+    _write_excel(artifact_path, [{"value": "first"}])
+
+    original_bytes = artifact_path.read_bytes()
+
+    from app.crm_downloader.td_orders_sync import td_api_artifacts
+
+    real_replace = Path.replace
+
+    def _failing_replace(self: Path, target: Path) -> Path:
+        if self.name.endswith(".tmp.xlsx") and Path(target) == artifact_path:
+            raise OSError("replace failed")
+        return real_replace(self, target)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(Path, "replace", _failing_replace)
+    try:
+        with pytest.raises(OSError, match="replace failed"):
+            td_api_artifacts._write_excel(artifact_path, [{"value": "second"}])
+    finally:
+        monkeypatch.undo()
+
+    assert artifact_path.exists()
+    assert artifact_path.read_bytes() == original_bytes
+    assert not artifact_path.with_name(f"{artifact_path.name}.tmp.xlsx").exists()
+
+
+
+
+def test_persist_td_api_artifacts_skips_invalid_excel_and_surfaces_validation_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.crm_downloader.td_orders_sync import td_api_artifacts
+
+    def _raise_validate(path: Path) -> None:
+        raise ValueError(f"missing required OOXML entries: xl/workbook.xml ({path.name})")
+
+    monkeypatch.setenv("TD_API_HUMAN_READABLE_EXPORT", "true")
+    monkeypatch.setattr(td_api_artifacts, "_validate_xlsx", _raise_validate)
+
+    result = persist_td_api_artifacts(
+        download_dir=tmp_path,
+        store_code="a817",
+        from_date=date(2026, 1, 1),
+        to_date=date(2026, 1, 2),
+        raw_orders={"data": []},
+        raw_sales={"data": []},
+        raw_garments={"data": []},
+        order_rows=[{"order_number": "1001"}],
+        sale_rows=[{"order_number": "1001"}],
+        garments_rows=[{"order_number": "1001"}],
+    )
+
+    assert "orders_excel" not in result.artifact_paths
+    assert "sales_excel" not in result.artifact_paths
+    assert "garments_excel" not in result.artifact_paths
+    assert any("missing required OOXML entries" in warning for warning in result.warnings)
+
+def test_persist_td_api_artifacts_unlinks_target_when_excel_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "A817_td_api_orders_20260101_20260102.xlsx"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("stale", encoding="utf-8")
+
+    from app.crm_downloader.td_orders_sync import td_api_artifacts
+
+    def _raise_write_excel(path: Path, rows, *, sheet_name: str = "rows") -> None:  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    monkeypatch.setenv("TD_API_HUMAN_READABLE_EXPORT", "true")
+    monkeypatch.setattr(td_api_artifacts, "_write_excel", _raise_write_excel)
+
+    result = persist_td_api_artifacts(
+        download_dir=tmp_path,
+        store_code="a817",
+        from_date=date(2026, 1, 1),
+        to_date=date(2026, 1, 2),
+        raw_orders={"data": []},
+        raw_sales={"data": []},
+        raw_garments={"data": []},
+        order_rows=[{"order_number": "1001"}],
+        sale_rows=[{"order_number": "1001"}],
+        garments_rows=[{"order_number": "1001"}],
+    )
+
+    assert not target.exists()
+    assert any("orders_excel" in warning for warning in result.warnings)
 
 class _StubResponse:
     def __init__(self, *, status: int, url: str, payload: dict[str, object]) -> None:
