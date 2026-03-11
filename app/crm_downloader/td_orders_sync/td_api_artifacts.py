@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import zipfile
 
 import openpyxl
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -91,6 +93,21 @@ def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: s
     workbook = openpyxl.Workbook()
     worksheet = workbook.active
     worksheet.title = sheet_name
+    max_coercion_debug_entries = 20
+    coerced_type_counts: dict[str, int] = {}
+    coerced_type_order: list[str] = []
+    total_coercions = 0
+
+    def _record_coercion(value: Any) -> None:
+        nonlocal total_coercions
+        total_coercions += 1
+        if len(coerced_type_order) >= max_coercion_debug_entries:
+            return
+        type_name = type(value).__name__
+        if type_name not in coerced_type_counts:
+            coerced_type_order.append(type_name)
+            coerced_type_counts[type_name] = 0
+        coerced_type_counts[type_name] += 1
 
     def _sanitize_excel_string(value: str) -> str:
         def _is_valid_xml_char(char: str) -> bool:
@@ -121,11 +138,34 @@ def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: s
             return sorted(normalized_items, key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True))
         if isinstance(value, str):
             return _sanitize_excel_string(value)
-        return value
+        return _coerce_scalar_for_excel(value)
+
+    def _coerce_scalar_for_excel(value: Any) -> Any:
+        if isinstance(value, datetime) and value.tzinfo is not None and value.utcoffset() is not None:
+            _record_coercion(value)
+            return value.isoformat()
+        if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+            _record_coercion(value)
+            if math.isnan(value):
+                return "NaN"
+            if value > 0:
+                return "Infinity"
+            return "-Infinity"
+        if isinstance(value, Decimal):
+            _record_coercion(value)
+            return str(value)
+        if isinstance(value, bytes):
+            _record_coercion(value)
+            return value.decode("utf-8", errors="replace")
+        if value is None or isinstance(value, (bool, int, float, date, str)):
+            return value
+        _record_coercion(value)
+        return _sanitize_excel_string(str(value))
 
     def _serialize_excel_cell_value(value: Any) -> Any:
         if isinstance(value, (Mapping, list, tuple, set)):
             value = json.dumps(_json_compatible(value), ensure_ascii=False, sort_keys=True)
+        value = _coerce_scalar_for_excel(value)
         if isinstance(value, str):
             return _sanitize_excel_string(value)
         return value
@@ -158,6 +198,13 @@ def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: s
         if temp_path.exists():
             temp_path.unlink()
         raise
+    if total_coercions:
+        logger.debug(
+            "Excel cell serialization coerced %s values; first %s type counts=%s",
+            total_coercions,
+            max_coercion_debug_entries,
+            {type_name: coerced_type_counts[type_name] for type_name in coerced_type_order},
+        )
 
 
 def _excel_filename(store_code: str, dataset: str, from_date: date, to_date: date) -> str:

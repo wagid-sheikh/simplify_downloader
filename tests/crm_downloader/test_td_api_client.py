@@ -3,6 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import date
+import logging
+from datetime import datetime, timezone
+from decimal import Decimal
+import math
 from pathlib import Path
 
 import pytest
@@ -690,6 +694,60 @@ def test_td_api_artifact_write_excel_strips_xml_noncharacters(tmp_path: Path) ->
     empty_sheet = empty_workbook["rows"]
     assert [cell.value for cell in next(empty_sheet.iter_rows(min_row=1, max_row=1))] == ["status"]
     assert [cell.value for cell in next(empty_sheet.iter_rows(min_row=2, max_row=2))] == ["no rows"]
+
+
+def test_td_api_artifact_write_excel_coerces_problematic_scalar_types(tmp_path: Path) -> None:
+    artifact_path = tmp_path / "td-coerced-scalars.xlsx"
+    _write_excel(
+        artifact_path,
+        [
+            {
+                "tz_dt": datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+                "nan_value": math.nan,
+                "inf_value": math.inf,
+                "neg_inf_value": -math.inf,
+                "decimal_value": Decimal("123.4500"),
+                "bytes_value": b"hello\xffworld",
+                "unknown": Path("alpha\x00beta"),
+            }
+        ],
+    )
+
+    import openpyxl
+
+    workbook = openpyxl.load_workbook(artifact_path)
+    sheet = workbook["rows"]
+    headers = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+    values = [cell.value for cell in next(sheet.iter_rows(min_row=2, max_row=2))]
+
+    assert values[headers.index("tz_dt")] == "2026-01-02T03:04:05+00:00"
+    assert values[headers.index("nan_value")] == "NaN"
+    assert values[headers.index("inf_value")] == "Infinity"
+    assert values[headers.index("neg_inf_value")] == "-Infinity"
+    assert values[headers.index("decimal_value")] == "123.4500"
+    assert values[headers.index("bytes_value")] == "hello�world"
+    assert values[headers.index("unknown")] == "alphabeta"
+
+
+def test_td_api_artifact_write_excel_logs_coercion_type_summary(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    artifact_path = tmp_path / "td-coercion-logging.xlsx"
+    caplog.set_level(logging.DEBUG, logger="app.crm_downloader.td_orders_sync.td_api_artifacts")
+
+    _write_excel(
+        artifact_path,
+        [
+            {
+                "d1": Decimal("1"),
+                "d2": Decimal("2"),
+                "b1": b"x",
+                "dt": datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+            }
+        ],
+    )
+
+    messages = [record for record in caplog.records if "Excel cell serialization coerced" in record.message]
+    assert len(messages) == 1
+    assert "type counts={'Decimal': 2, 'bytes': 1, 'datetime': 1}" in messages[0].message
 
 
 
