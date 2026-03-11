@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 
 import openpyxl
 from dataclasses import dataclass, field
@@ -12,8 +11,6 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 logger = logging.getLogger(__name__)
-
-_ILLEGAL_XLSX_CHARS_RE = re.compile(r"[\000-\010]|[\013-\014]|[\016-\037]")
 
 _SENSITIVE_FIELD_NAMES = {"token", "authorization", "cookie", "set-cookie"}
 _REDACTED = "***REDACTED***"
@@ -77,7 +74,23 @@ def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: s
     worksheet.title = sheet_name
 
     def _sanitize_excel_string(value: str) -> str:
-        return _ILLEGAL_XLSX_CHARS_RE.sub("", value)
+        def _is_valid_xml_char(char: str) -> bool:
+            codepoint = ord(char)
+            if codepoint in {0x9, 0xA, 0xD}:
+                return True
+            if codepoint < 0x20:
+                return False
+            if 0x7F <= codepoint <= 0x9F:
+                return False
+            if 0xD800 <= codepoint <= 0xDFFF:
+                return False
+            if 0xFDD0 <= codepoint <= 0xFDEF:
+                return False
+            if codepoint & 0xFFFF in {0xFFFE, 0xFFFF}:
+                return False
+            return codepoint <= 0x10FFFF
+
+        return "".join(char for char in value if _is_valid_xml_char(char))
 
     def _json_compatible(value: Any) -> Any:
         if isinstance(value, Mapping):

@@ -666,6 +666,24 @@ def test_td_api_artifact_write_excel_sanitizes_control_characters_and_reopens(tm
     assert values[headers.index("notes")] == "helloworld!"
     assert values[headers.index("payload")] == '{"text": "abc"}'
 
+
+def test_td_api_artifact_write_excel_strips_xml_noncharacters(tmp_path: Path) -> None:
+    artifact_path = tmp_path / "td-invalid-xml.xlsx"
+    _write_excel(
+        artifact_path,
+        [{"notes": "prefixmiddle￿suffix", "payload": {"text": "ok￿done"}}],
+    )
+
+    import openpyxl
+
+    workbook = openpyxl.load_workbook(artifact_path)
+    sheet = workbook["rows"]
+    headers = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+    values = [cell.value for cell in next(sheet.iter_rows(min_row=2, max_row=2))]
+
+    assert values[headers.index("notes")] == "prefixmiddlesuffix"
+    assert values[headers.index("payload")] == '{"text": "okdone"}'
+
     empty_artifact_path = tmp_path / "td-empty.xlsx"
     _write_excel(empty_artifact_path, [])
     empty_workbook = openpyxl.load_workbook(empty_artifact_path)
