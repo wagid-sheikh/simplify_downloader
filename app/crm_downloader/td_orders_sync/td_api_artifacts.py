@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 
 import openpyxl
 from dataclasses import dataclass, field
@@ -37,6 +38,8 @@ def redact_sensitive_fields(payload: Any) -> Any:
 @dataclass
 class TdApiArtifactPersistResult:
     artifact_paths: dict[str, str] = field(default_factory=dict)
+    human_readable_export_enabled: bool = False
+    human_readable_artifact_paths: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
 
@@ -92,6 +95,10 @@ def _excel_filename(store_code: str, dataset: str, from_date: date, to_date: dat
     return f"{store_code}_td_api_{dataset}_{_window_token(from_date)}_{_window_token(to_date)}_diagnostic.xlsx"
 
 
+def _human_readable_export_enabled() -> bool:
+    return (os.environ.get("TD_API_HUMAN_READABLE_EXPORT") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 
 def persist_td_api_artifacts(
     *,
@@ -106,7 +113,8 @@ def persist_td_api_artifacts(
     sale_rows: Sequence[Mapping[str, Any]],
     garments_rows: Sequence[Mapping[str, Any]],
 ) -> TdApiArtifactPersistResult:
-    result = TdApiArtifactPersistResult()
+    human_readable_export_enabled = _human_readable_export_enabled()
+    result = TdApiArtifactPersistResult(human_readable_export_enabled=human_readable_export_enabled)
     store = (store_code or "").strip().upper() or "UNKNOWN"
     artifact_targets: list[tuple[str, Path, Any, str]] = [
         ("orders_raw", download_dir / _raw_filename(store, "orders", from_date, to_date), raw_orders, "json"),
@@ -127,6 +135,27 @@ def persist_td_api_artifacts(
             warning = f"Failed to persist TD API artifact '{key}' at {path}: {exc}"
             result.warnings.append(warning)
             logger.warning(warning)
+
+    if human_readable_export_enabled:
+        diagnostic_targets: list[tuple[str, Path, Sequence[Mapping[str, Any]], str]] = [
+            ("orders_excel", download_dir / _excel_filename(store, "orders", from_date, to_date), order_rows, "orders"),
+            ("sales_excel", download_dir / _excel_filename(store, "sales", from_date, to_date), sale_rows, "sales"),
+            (
+                "garments_excel",
+                download_dir / _excel_filename(store, "garments", from_date, to_date),
+                garments_rows,
+                "garments",
+            ),
+        ]
+        for key, path, rows, sheet_name in diagnostic_targets:
+            try:
+                _write_excel(path, rows, sheet_name=sheet_name)
+                result.artifact_paths[key] = str(path)
+                result.human_readable_artifact_paths.append(str(path))
+            except Exception as exc:  # pragma: no cover - defensive guard
+                warning = f"Failed to persist TD API artifact '{key}' at {path}: {exc}"
+                result.warnings.append(warning)
+                logger.warning(warning)
 
     return result
 
@@ -151,4 +180,3 @@ def persist_td_compare_artifacts(
         endpoint_health_summary,
     )
     return TdApiArtifactPersistResult()
-
