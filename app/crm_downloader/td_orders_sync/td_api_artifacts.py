@@ -72,8 +72,6 @@ def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: s
     workbook = openpyxl.Workbook()
     worksheet = workbook.active
     worksheet.title = sheet_name
-    worksheet.append(["note"])
-    worksheet.append(["Diagnostic artifact only - not an ingest source"])
     if not rows:
         worksheet.append(["status"])
         worksheet.append(["no rows"])

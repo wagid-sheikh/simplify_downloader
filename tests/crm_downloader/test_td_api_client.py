@@ -576,6 +576,31 @@ def test_persist_td_compare_artifacts_redacts_tokens_in_mismatch_payload(tmp_pat
     assert "***REDACTED***" in orders_payload_text
 
 
+def test_persist_td_api_artifacts_excel_headers_start_on_first_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TD_API_HUMAN_READABLE_EXPORT", "true")
+    result = persist_td_api_artifacts(
+        download_dir=tmp_path,
+        store_code="a817",
+        from_date=date(2026, 1, 1),
+        to_date=date(2026, 1, 2),
+        raw_orders={"data": []},
+        raw_sales={"data": []},
+        raw_garments={"data": []},
+        order_rows=[{"order_number": "1001", "amount": "12.00"}],
+        sale_rows=[],
+        garments_rows=[],
+    )
+
+    import openpyxl
+
+    workbook = openpyxl.load_workbook(result.artifact_paths["orders_excel"])
+    worksheet = workbook["orders"]
+    first_row = [cell.value for cell in next(worksheet.iter_rows(min_row=1, max_row=1))]
+    second_row = [cell.value for cell in next(worksheet.iter_rows(min_row=2, max_row=2))]
+
+    assert first_row == ["order_number", "amount"]
+    assert second_row == ["1001", "12.00"]
+
 def test_persist_td_api_artifacts_human_readable_export_toggle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     base_kwargs = dict(
         download_dir=tmp_path,
