@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import zipfile
 
 import openpyxl
 from dataclasses import dataclass, field
@@ -128,7 +129,19 @@ def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: s
         for row in rows:
             _append_serialized_row([row.get(column) for column in columns])
     path.parent.mkdir(parents=True, exist_ok=True)
-    workbook.save(path)
+    temp_path = path.with_name(f"{path.name}.tmp.xlsx")
+    try:
+        workbook.save(temp_path)
+        if temp_path.stat().st_size == 0:
+            raise ValueError(f"Temporary Excel artifact is empty: {temp_path}")
+        with zipfile.ZipFile(temp_path, "r") as zip_handle:
+            if zip_handle.testzip() is not None:
+                raise ValueError(f"Temporary Excel artifact failed zip integrity check: {temp_path}")
+        temp_path.replace(path)
+    except Exception:
+        if temp_path.exists():
+            temp_path.unlink()
+        raise
 
 
 def _excel_filename(store_code: str, dataset: str, from_date: date, to_date: date) -> str:
@@ -172,6 +185,8 @@ def persist_td_api_artifacts(
                 _write_json(path, payload)
             result.artifact_paths[key] = str(path)
         except Exception as exc:  # pragma: no cover - defensive guard
+            if kind == "xlsx" and path.exists():
+                path.unlink()
             warning = f"Failed to persist TD API artifact '{key}' at {path}: {exc}"
             result.warnings.append(warning)
             logger.warning(warning)
@@ -193,6 +208,8 @@ def persist_td_api_artifacts(
                 result.artifact_paths[key] = str(path)
                 result.human_readable_artifact_paths.append(str(path))
             except Exception as exc:  # pragma: no cover - defensive guard
+                if path.exists():
+                    path.unlink()
                 warning = f"Failed to persist TD API artifact '{key}' at {path}: {exc}"
                 result.warnings.append(warning)
                 logger.warning(warning)

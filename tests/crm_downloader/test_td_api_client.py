@@ -692,6 +692,67 @@ def test_td_api_artifact_write_excel_strips_xml_noncharacters(tmp_path: Path) ->
     assert [cell.value for cell in next(empty_sheet.iter_rows(min_row=2, max_row=2))] == ["no rows"]
 
 
+
+
+def test_td_api_artifact_write_excel_uses_atomic_replace(tmp_path: Path) -> None:
+    artifact_path = tmp_path / "td-atomic.xlsx"
+    _write_excel(artifact_path, [{"value": "first"}])
+
+    original_bytes = artifact_path.read_bytes()
+
+    from app.crm_downloader.td_orders_sync import td_api_artifacts
+
+    real_replace = Path.replace
+
+    def _failing_replace(self: Path, target: Path) -> Path:
+        if self.name.endswith(".tmp.xlsx") and Path(target) == artifact_path:
+            raise OSError("replace failed")
+        return real_replace(self, target)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(Path, "replace", _failing_replace)
+    try:
+        with pytest.raises(OSError, match="replace failed"):
+            td_api_artifacts._write_excel(artifact_path, [{"value": "second"}])
+    finally:
+        monkeypatch.undo()
+
+    assert artifact_path.exists()
+    assert artifact_path.read_bytes() == original_bytes
+    assert not artifact_path.with_name(f"{artifact_path.name}.tmp.xlsx").exists()
+
+
+def test_persist_td_api_artifacts_unlinks_target_when_excel_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "A817_td_api_orders_20260101_20260102.xlsx"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("stale", encoding="utf-8")
+
+    from app.crm_downloader.td_orders_sync import td_api_artifacts
+
+    def _raise_write_excel(path: Path, rows, *, sheet_name: str = "rows") -> None:  # type: ignore[no-untyped-def]
+        raise RuntimeError("boom")
+
+    monkeypatch.setenv("TD_API_HUMAN_READABLE_EXPORT", "true")
+    monkeypatch.setattr(td_api_artifacts, "_write_excel", _raise_write_excel)
+
+    result = persist_td_api_artifacts(
+        download_dir=tmp_path,
+        store_code="a817",
+        from_date=date(2026, 1, 1),
+        to_date=date(2026, 1, 2),
+        raw_orders={"data": []},
+        raw_sales={"data": []},
+        raw_garments={"data": []},
+        order_rows=[{"order_number": "1001"}],
+        sale_rows=[{"order_number": "1001"}],
+        garments_rows=[{"order_number": "1001"}],
+    )
+
+    assert not target.exists()
+    assert any("orders_excel" in warning for warning in result.warnings)
+
 class _StubResponse:
     def __init__(self, *, status: int, url: str, payload: dict[str, object]) -> None:
         self.status = status
