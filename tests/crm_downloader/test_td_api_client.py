@@ -722,6 +722,37 @@ def test_td_api_artifact_write_excel_uses_atomic_replace(tmp_path: Path) -> None
     assert not artifact_path.with_name(f"{artifact_path.name}.tmp.xlsx").exists()
 
 
+
+
+def test_persist_td_api_artifacts_skips_invalid_excel_and_surfaces_validation_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.crm_downloader.td_orders_sync import td_api_artifacts
+
+    def _raise_validate(path: Path) -> None:
+        raise ValueError(f"missing required OOXML entries: xl/workbook.xml ({path.name})")
+
+    monkeypatch.setenv("TD_API_HUMAN_READABLE_EXPORT", "true")
+    monkeypatch.setattr(td_api_artifacts, "_validate_xlsx", _raise_validate)
+
+    result = persist_td_api_artifacts(
+        download_dir=tmp_path,
+        store_code="a817",
+        from_date=date(2026, 1, 1),
+        to_date=date(2026, 1, 2),
+        raw_orders={"data": []},
+        raw_sales={"data": []},
+        raw_garments={"data": []},
+        order_rows=[{"order_number": "1001"}],
+        sale_rows=[{"order_number": "1001"}],
+        garments_rows=[{"order_number": "1001"}],
+    )
+
+    assert "orders_excel" not in result.artifact_paths
+    assert "sales_excel" not in result.artifact_paths
+    assert "garments_excel" not in result.artifact_paths
+    assert any("missing required OOXML entries" in warning for warning in result.warnings)
+
 def test_persist_td_api_artifacts_unlinks_target_when_excel_write_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

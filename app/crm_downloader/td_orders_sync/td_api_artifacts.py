@@ -69,6 +69,24 @@ def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
             handle.write("\n")
 
 
+def _validate_xlsx(path: Path) -> None:
+    required_entries = {"[Content_Types].xml", "xl/workbook.xml"}
+    try:
+        with zipfile.ZipFile(path, "r") as zip_handle:
+            first_corrupt_entry = zip_handle.testzip()
+            if first_corrupt_entry is not None:
+                raise ValueError(f"zip integrity check failed at entry '{first_corrupt_entry}'")
+            available_entries = set(zip_handle.namelist())
+    except zipfile.BadZipFile as exc:
+        raise ValueError(f"not a valid ZIP-based OOXML workbook: {exc}") from exc
+
+    missing_entries = sorted(required_entries - available_entries)
+    if missing_entries:
+        raise ValueError(
+            "missing required OOXML entries: " + ", ".join(missing_entries)
+        )
+
+
 def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: str = "rows") -> None:
     workbook = openpyxl.Workbook()
     worksheet = workbook.active
@@ -134,9 +152,7 @@ def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: s
         workbook.save(temp_path)
         if temp_path.stat().st_size == 0:
             raise ValueError(f"Temporary Excel artifact is empty: {temp_path}")
-        with zipfile.ZipFile(temp_path, "r") as zip_handle:
-            if zip_handle.testzip() is not None:
-                raise ValueError(f"Temporary Excel artifact failed zip integrity check: {temp_path}")
+        _validate_xlsx(temp_path)
         temp_path.replace(path)
     except Exception:
         if temp_path.exists():
@@ -205,6 +221,7 @@ def persist_td_api_artifacts(
         for key, path, rows, sheet_name in diagnostic_targets:
             try:
                 _write_excel(path, rows, sheet_name=sheet_name)
+                _validate_xlsx(path)
                 result.artifact_paths[key] = str(path)
                 result.human_readable_artifact_paths.append(str(path))
             except Exception as exc:  # pragma: no cover - defensive guard
