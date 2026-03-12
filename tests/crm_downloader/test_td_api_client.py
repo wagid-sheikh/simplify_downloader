@@ -580,6 +580,103 @@ def test_persist_td_compare_artifacts_redacts_tokens_in_mismatch_payload(tmp_pat
     assert "***REDACTED***" in orders_payload_text
 
 
+
+def test_persist_td_api_artifacts_excel_rows_match_input_without_injected_columns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TD_API_HUMAN_READABLE_EXPORT", "true")
+    order_rows = [
+        {"order_number": "1001", "amount": "12.00", "nested": {"a": 1}, "notes": "hello\x00world"},
+        {"order_number": "1002", "amount": "25.25", "nested": ["x", 2], "notes": "ok"},
+    ]
+    sale_rows = [{"sale_id": "S1", "amount": "10.00", "status": "Collected"}]
+    garments_rows = [{"garment_id": "G1", "qty": 2, "meta": {"color": "blue"}}]
+
+    result = persist_td_api_artifacts(
+        download_dir=tmp_path,
+        store_code="a817",
+        from_date=date(2026, 1, 1),
+        to_date=date(2026, 1, 2),
+        raw_orders={"data": []},
+        raw_sales={"data": []},
+        raw_garments={"data": []},
+        order_rows=order_rows,
+        sale_rows=sale_rows,
+        garments_rows=garments_rows,
+    )
+
+    import openpyxl
+
+    workbook = openpyxl.load_workbook(result.artifact_paths["orders_excel"])
+    sheet = workbook["orders"]
+    headers = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+    values_row1 = [cell.value for cell in next(sheet.iter_rows(min_row=2, max_row=2))]
+    values_row2 = [cell.value for cell in next(sheet.iter_rows(min_row=3, max_row=3))]
+
+    assert headers == ["order_number", "amount", "nested", "notes"]
+    assert values_row1 == ["1001", "12.00", '{"a": 1}', "helloworld"]
+    assert values_row2 == ["1002", "25.25", '["x", 2]', "ok"]
+
+
+def test_persist_td_api_artifacts_rejects_compare_and_metadata_payload_shapes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TD_API_HUMAN_READABLE_EXPORT", "true")
+
+    result_mapping_payload = persist_td_api_artifacts(
+        download_dir=tmp_path,
+        store_code="a817",
+        from_date=date(2026, 1, 1),
+        to_date=date(2026, 1, 2),
+        raw_orders={"data": []},
+        raw_sales={"data": []},
+        raw_garments={"data": []},
+        order_rows={"compare_metrics": {"matched_rows": 1}},  # type: ignore[arg-type]
+        sale_rows=[{"sale_id": "S1"}],
+        garments_rows=[{"garment_id": "G1"}],
+    )
+
+    assert "orders_excel" not in result_mapping_payload.artifact_paths
+    assert any("API artifact purity violation" in warning for warning in result_mapping_payload.warnings)
+
+    result_row_envelope = persist_td_api_artifacts(
+        download_dir=tmp_path,
+        store_code="a817",
+        from_date=date(2026, 1, 1),
+        to_date=date(2026, 1, 2),
+        raw_orders={"data": []},
+        raw_sales={"data": []},
+        raw_garments={"data": []},
+        order_rows=[{"api_request_metadata": [{"url": "x"}], "order_number": "1001"}],
+        sale_rows=[{"sale_id": "S1"}],
+        garments_rows=[{"garment_id": "G1"}],
+    )
+
+    assert "orders_excel" not in result_row_envelope.artifact_paths
+    assert any("API artifact purity violation" in warning for warning in result_row_envelope.warnings)
+
+
+def test_persist_td_api_artifacts_excel_contains_only_rows_sheet(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TD_API_HUMAN_READABLE_EXPORT", "true")
+
+    result = persist_td_api_artifacts(
+        download_dir=tmp_path,
+        store_code="a817",
+        from_date=date(2026, 1, 1),
+        to_date=date(2026, 1, 2),
+        raw_orders={"data": []},
+        raw_sales={"data": []},
+        raw_garments={"data": []},
+        order_rows=[{"order_number": "1001"}],
+        sale_rows=[{"sale_id": "S1"}],
+        garments_rows=[{"garment_id": "G1"}],
+    )
+
+    import openpyxl
+
+    orders_workbook = openpyxl.load_workbook(result.artifact_paths["orders_excel"])
+    sales_workbook = openpyxl.load_workbook(result.artifact_paths["sales_excel"])
+
+    assert orders_workbook.sheetnames == ["orders"]
+    assert sales_workbook.sheetnames == ["sales"]
+    assert "api_request_metadata" not in orders_workbook.sheetnames
+    assert "compare_metrics" not in orders_workbook.sheetnames
 def test_persist_td_api_artifacts_human_readable_export_toggle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     base_kwargs = dict(
         download_dir=tmp_path,
@@ -594,7 +691,7 @@ def test_persist_td_api_artifacts_human_readable_export_toggle(tmp_path: Path, m
         garments_rows=[{"order_number": "1001", "garment_only": "z", "line_item_key": "L1"}],
     )
 
-    monkeypatch.delenv("TD_API_HUMAN_READABLE_EXPORT", raising=False)
+    monkeypatch.setenv("TD_API_HUMAN_READABLE_EXPORT", "false")
     disabled_result = persist_td_api_artifacts(**base_kwargs)
 
     assert disabled_result.human_readable_export_enabled is False

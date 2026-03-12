@@ -24,3 +24,8 @@
   - no `archive_publish_orders` truncation warnings
   - no temporary TD store restriction warning unless env var is set intentionally
 - Apply Alembic migrations before the next production run.
+
+
+## API artifact purity note
+- TD API Excel artifacts (`*_td_api_orders_*.xlsx`, `*_td_api_sales_*.xlsx`, `*_td_api_garments_*.xlsx`) are raw API snapshot exports and must be generated only from the corresponding API row lists.
+- Compare outputs (compare metrics, mismatch artifacts, endpoint health, and request metadata diagnostics) are separate artifact paths and must never be merged into API snapshot Excel files.

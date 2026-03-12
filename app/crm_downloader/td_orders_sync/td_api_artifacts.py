@@ -17,6 +17,53 @@ logger = logging.getLogger(__name__)
 
 _SENSITIVE_FIELD_NAMES = {"token", "authorization", "cookie", "set-cookie"}
 _REDACTED = "***REDACTED***"
+_FORBIDDEN_API_ARTIFACT_ENVELOPE_KEYS = {
+    "mismatch_artifacts",
+    "api_request_metadata",
+    "compare_metrics",
+    "summary",
+    "endpoint_health",
+}
+
+
+def _validate_artifact_rows_payload(rows: Any, *, artifact_key: str) -> Sequence[Mapping[str, Any]]:
+    """Validate API artifact row payload purity before Excel serialization.
+
+    API snapshot Excel artifacts must receive only row lists (`Sequence[Mapping[str, Any]]`) and
+    must not receive compare/diagnostic wrapper structures.
+    """
+
+    if isinstance(rows, (str, bytes, bytearray)) or not isinstance(rows, Sequence):
+        raise TypeError(
+            f"API artifact purity violation for '{artifact_key}': expected Sequence[Mapping[str, Any]], "
+            f"got {type(rows).__name__}."
+        )
+    if isinstance(rows, Mapping):
+        overlapping_keys = sorted(_FORBIDDEN_API_ARTIFACT_ENVELOPE_KEYS.intersection({str(key) for key in rows.keys()}))
+        if overlapping_keys:
+            raise ValueError(
+                f"API artifact purity violation for '{artifact_key}': wrapper/envelope payload keys are not allowed "
+                f"({', '.join(overlapping_keys)}). Pass raw row dicts only."
+            )
+        raise TypeError(
+            f"API artifact purity violation for '{artifact_key}': expected Sequence[Mapping[str, Any]], got Mapping."
+        )
+
+    validated_rows: list[Mapping[str, Any]] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, Mapping):
+            raise TypeError(
+                f"API artifact purity violation for '{artifact_key}': row at index {index} must be Mapping[str, Any], "
+                f"got {type(row).__name__}."
+            )
+        forbidden_keys = sorted(_FORBIDDEN_API_ARTIFACT_ENVELOPE_KEYS.intersection({str(key) for key in row.keys()}))
+        if forbidden_keys:
+            raise ValueError(
+                f"API artifact purity violation for '{artifact_key}': row at index {index} contains envelope keys "
+                f"({', '.join(forbidden_keys)}). Pass raw API rows only."
+            )
+        validated_rows.append(row)
+    return validated_rows
 
 
 def redact_sensitive_fields(payload: Any) -> Any:
@@ -90,6 +137,16 @@ def _validate_xlsx(path: Path) -> None:
 
 
 def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: str = "rows") -> None:
+    """Write a single-sheet API snapshot workbook from raw API row dictionaries only.
+
+    Contract:
+    - input must already be a pure `Sequence[Mapping[str, Any]]`
+    - row/column structure is preserved from source row dicts (no additional computed columns)
+    - only serialization-safe coercions are applied (nested JSON stringification, XML char
+      sanitization, and scalar coercions required for Excel compatibility)
+    """
+
+    rows = _validate_artifact_rows_payload(rows, artifact_key=sheet_name)
     workbook = openpyxl.Workbook()
     worksheet = workbook.active
     worksheet.title = sheet_name
@@ -229,6 +286,16 @@ def persist_td_api_artifacts(
     sale_rows: Sequence[Mapping[str, Any]],
     garments_rows: Sequence[Mapping[str, Any]],
 ) -> TdApiArtifactPersistResult:
+    """Persist TD API artifacts.
+
+    Purity contract for human-readable Excel snapshots:
+    - `orders_excel` must be written only from `order_rows`
+    - `sales_excel` must be written only from `sale_rows`
+    - `garments_excel` must be written only from `garments_rows`
+    - compare metrics, mismatch artifacts, request metadata, endpoint diagnostics, and any
+      other UI-derived or wrapped payloads must never be passed into these row parameters.
+    """
+
     human_readable_export_enabled = _human_readable_export_enabled()
     result = TdApiArtifactPersistResult(human_readable_export_enabled=human_readable_export_enabled)
     store = (store_code or "").strip().upper() or "UNKNOWN"
@@ -267,7 +334,8 @@ def persist_td_api_artifacts(
         ]
         for key, path, rows, sheet_name in diagnostic_targets:
             try:
-                _write_excel(path, rows, sheet_name=sheet_name)
+                pure_rows = _validate_artifact_rows_payload(rows, artifact_key=key)
+                _write_excel(path, pure_rows, sheet_name=sheet_name)
                 _validate_xlsx(path)
                 result.artifact_paths[key] = str(path)
                 result.human_readable_artifact_paths.append(str(path))
