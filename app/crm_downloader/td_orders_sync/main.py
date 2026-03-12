@@ -124,6 +124,36 @@ def _ensure_ui_workbook_ingest_allowed(*, source_mode: str, dataset: str) -> Non
         )
 
 
+def _log_dashboard_context_trial_event(
+    *,
+    logger: JsonLogger,
+    store_code: str,
+    source_mode: str,
+    status: str,
+    message: str,
+    trial_attempted: bool,
+    trial_success: bool,
+    fallback_used: bool,
+    runtime_delta_ms: int | None,
+    context_source: str,
+    **extra: Any,
+) -> None:
+    log_event(
+        logger=logger,
+        phase="api",
+        status=status,
+        message=message,
+        store_code=store_code,
+        source_mode=source_mode,
+        trial_attempted=trial_attempted,
+        trial_success=trial_success,
+        fallback_used=fallback_used,
+        runtime_delta_ms=runtime_delta_ms,
+        context_source=context_source,
+        **extra,
+    )
+
+
 
 @dataclass(frozen=True)
 class CompareThresholdConfig:
@@ -7386,12 +7416,12 @@ async def _run_store_discovery(
                 if dashboard_trial_auth.ready:
                     dashboard_trial_success = True
                     api_context_source = "dashboard_only"
-                    log_event(
+                    _log_dashboard_context_trial_event(
                         logger=store_logger,
-                        phase="api",
-                        message="Dashboard-only API auth context trial succeeded",
                         store_code=store.store_code,
                         source_mode=source_mode,
+                        status="ok",
+                        message="Dashboard-only API auth context trial succeeded",
                         trial_attempted=True,
                         trial_success=True,
                         fallback_used=False,
@@ -7406,13 +7436,12 @@ async def _run_store_discovery(
                     dashboard_trial_fallback_used = True
                     api_context_source = "iframe_fallback"
                     dashboard_trial_failure_reason = dashboard_trial_auth.failure_reason or "auth_context_not_ready"
-                    log_event(
+                    _log_dashboard_context_trial_event(
                         logger=store_logger,
-                        phase="api",
-                        status="warn",
-                        message="Dashboard-only API auth context trial failed; activating iframe fallback",
                         store_code=store.store_code,
                         source_mode=source_mode,
+                        status="warn",
+                        message="Dashboard-only API auth context trial failed; activating iframe fallback",
                         trial_attempted=True,
                         trial_success=False,
                         fallback_used=True,
@@ -7427,13 +7456,12 @@ async def _run_store_discovery(
                 dashboard_trial_fallback_used = True
                 api_context_source = "iframe_fallback"
                 dashboard_trial_failure_reason = f"trial_exception:{exc}"
-                log_event(
+                _log_dashboard_context_trial_event(
                     logger=store_logger,
-                    phase="api",
-                    status="warn",
-                    message="Dashboard-only API auth context trial failed with exception; activating iframe fallback",
                     store_code=store.store_code,
                     source_mode=source_mode,
+                    status="warn",
+                    message="Dashboard-only API auth context trial failed with exception; activating iframe fallback",
                     trial_attempted=True,
                     trial_success=False,
                     fallback_used=True,
