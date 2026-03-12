@@ -66,7 +66,8 @@ TEMP_ENABLED_STORES = {code.strip().upper() for code in os.environ.get("TD_ORDER
 REPORT_REQUEST_MAX_TIMEOUT_MS = 60_000
 REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS = 20.0
 REPORT_REQUEST_REFRESH_INTERVAL_SECONDS = 15.0
-PENDING_MIN_POLL_SECONDS = 135
+PENDING_ETA_CUSHION_MIN_SECONDS = 5
+PENDING_ETA_CUSHION_MAX_SECONDS = 15
 STABLE_LOCATOR_STRATEGIES = {
     "container_locator_strategy": "heading_preferred_wrapper",
     "range_match_strategy": "date_range_text_pattern",
@@ -5921,6 +5922,7 @@ async def _wait_for_report_request_download_link(
     pending_attempts = 0
     download_strategy: str | None = None
     last_refresh_attempt_at = 0.0
+    last_status_for_deadline_extension: str | None = None
     selected_row_state: str | None = None
     selection_source: str | None = None
     last_matched_range_text: str | None = None
@@ -6019,14 +6021,23 @@ async def _wait_for_report_request_download_link(
                 if matched_status:
                     eta_seconds = _parse_eta_seconds(matched_status)
                     pending_eta_seconds = None
+                    should_consider_extension = matched_status != last_status_for_deadline_extension
                     if "pending" in matched_status.lower():
-                        pending_eta_seconds = max(eta_seconds or 0, PENDING_MIN_POLL_SECONDS)
-                        desired_deadline = start_time + pending_eta_seconds
+                        if eta_seconds is not None:
+                            eta_cushion_seconds = min(
+                                max(int(round(eta_seconds * 0.1)), PENDING_ETA_CUSHION_MIN_SECONDS),
+                                PENDING_ETA_CUSHION_MAX_SECONDS,
+                            )
+                            pending_eta_seconds = eta_seconds + eta_cushion_seconds
+                            desired_deadline = start_time + pending_eta_seconds
+                        else:
+                            desired_deadline = None
                     else:
                         desired_deadline = start_time + eta_seconds if eta_seconds is not None else None
-                    if desired_deadline and desired_deadline > deadline:
+                    if should_consider_extension and desired_deadline and desired_deadline > deadline:
                         deadline = desired_deadline
                         poll_timeout_ms = int((deadline - start_time) * 1000)
+                        last_status_for_deadline_extension = matched_status
                         eta_payload = {
                             "logger": logger,
                             "phase": "iframe",
