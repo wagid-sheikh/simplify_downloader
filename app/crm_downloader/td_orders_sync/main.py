@@ -762,19 +762,33 @@ def _coerce_dict(value: Any) -> Dict[str, Any]:
     return {}
 
 
+def _coerce_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, (tuple, list)):
+        for item in value:
+            coerced = _coerce_text(item)
+            if coerced:
+                return coerced
+        return None
+    return str(value).strip() or None
+
+
 def _get_nested_str(mapping: Mapping[str, Any], path: Sequence[str]) -> str | None:
     current: Any = mapping
     for key in path:
         if not isinstance(current, Mapping):
-            return None, None
+            return None
         current = current.get(key)
     if current is None:
-        return None, None
-    return str(current).strip() or None
+        return None
+    return _coerce_text(current)
 
 
-def _normalize_id_selector(selector: str) -> str:
-    selector = selector.strip()
+def _normalize_id_selector(selector: Any) -> str:
+    selector = _coerce_text(selector) or ""
     prefixes = ("#", ".", "[", "text=", "css=", "xpath=", "role=", "id=")
     if selector.startswith(prefixes):
         return selector
@@ -897,8 +911,8 @@ class TdStore:
 
     @property
     def reports_nav_selector(self) -> str:
-        raw = _get_nested_str(self.sync_config, ("selectors", "reports_nav")) or self.sync_config.get(
-            "reports_nav_selector"
+        raw = _get_nested_str(self.sync_config, ("selectors", "reports_nav")) or _coerce_text(
+            self.sync_config.get("reports_nav_selector")
         )
         return _normalize_id_selector(raw or "#achrOrderReport")
 
