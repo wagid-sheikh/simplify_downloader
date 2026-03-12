@@ -107,3 +107,30 @@ async def test_auth_source_unexpected_host_warns_and_falls_back(monkeypatch: pyt
     logs = _read_logs(output)
     assert any(log.get("message") == "Fast-path iframe auth source unavailable; using fallback polling" for log in logs)
     assert any(log.get("message") == "auth_source_fallback_unavailable" for log in logs)
+
+
+def test_dashboard_context_trial_event_includes_required_fields() -> None:
+    output = io.StringIO()
+    logger = JsonLogger(stream=output, log_file_path=None)
+
+    td_orders_main._log_dashboard_context_trial_event(
+        logger=logger,
+        store_code="A1",
+        source_mode="api_only",
+        status="ok",
+        message="trial",
+        trial_attempted=True,
+        trial_success=True,
+        fallback_used=False,
+        runtime_delta_ms=123,
+        context_source="dashboard_only",
+    )
+
+    logs = _read_logs(output)
+    assert len(logs) == 1
+    event = logs[0]
+    assert event["trial_attempted"] is True
+    assert event["trial_success"] is True
+    assert event["fallback_used"] is False
+    assert event["runtime_delta_ms"] == 123
+    assert event["context_source"] == "dashboard_only"
