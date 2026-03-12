@@ -20,6 +20,9 @@ ORDERS_ENDPOINT = "/reports/order-report"
 SALES_ENDPOINT = "/sales-and-deliveries/sales"
 GARMENTS_ENDPOINT = "/garments/details"
 HAR_COMPATIBLE_ENDPOINTS = frozenset({SALES_ENDPOINT, GARMENTS_ENDPOINT})
+# Readiness contract for dashboard-only trial is endpoint-specific:
+# - orders endpoint requires tokenized auth
+# - sales + garments endpoints can run with cookie-backed HAR-like auth
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +124,8 @@ class TdApiAuthPreparationResult:
     token_source: str | None
     token_expiry: str | None
     cookies_present: bool
+    auth_contract: str
+    endpoint_auth_requirements: dict[str, tuple[str, ...]]
     endpoint_readiness: dict[str, bool]
     endpoint_failure_reasons: dict[str, str]
     failure_reason: str | None
@@ -318,6 +323,7 @@ class TdApiClient:
     async def prepare_auth_context(self) -> TdApiAuthPreparationResult:
         token_discovery = await self._discover_reporting_token()
         self._auth_state.token_discovery = token_discovery
+        endpoint_auth_requirements = self._endpoint_auth_requirements()
         endpoint_readiness: dict[str, bool] = {}
         endpoint_failure_reasons: dict[str, str] = {}
         for endpoint in (ORDERS_ENDPOINT, SALES_ENDPOINT, GARMENTS_ENDPOINT):
@@ -335,10 +341,20 @@ class TdApiClient:
             token_source=token_discovery.source,
             token_expiry=token_discovery.expiry,
             cookies_present=self._has_cookie_auth_source(),
+            auth_contract="endpoint_specific",
+            endpoint_auth_requirements=endpoint_auth_requirements,
             endpoint_readiness=endpoint_readiness,
             endpoint_failure_reasons=endpoint_failure_reasons,
             failure_reason=failure_reason,
         )
+
+    @staticmethod
+    def _endpoint_auth_requirements() -> dict[str, tuple[str, ...]]:
+        return {
+            ORDERS_ENDPOINT: ("token",),
+            SALES_ENDPOINT: ("cookie_session",),
+            GARMENTS_ENDPOINT: ("cookie_session",),
+        }
 
 
     @staticmethod
@@ -983,8 +999,9 @@ class TdApiClient:
         token_present = bool((token_discovery.token or "").strip())
         token_expired = self._is_token_expired(token_discovery.expiry)
         cookies_present = self._has_cookie_auth_source()
-        requires_tokenized_auth = endpoint not in HAR_COMPATIBLE_ENDPOINTS
-        requires_cookie_source = endpoint in HAR_COMPATIBLE_ENDPOINTS
+        endpoint_requirements = self._endpoint_auth_requirements()
+        requires_tokenized_auth = "token" in endpoint_requirements.get(endpoint, ())
+        requires_cookie_source = "cookie_session" in endpoint_requirements.get(endpoint, ())
 
         if requires_tokenized_auth and (not token_present or token_expired):
             failure_reason = "token_missing_or_expired"
