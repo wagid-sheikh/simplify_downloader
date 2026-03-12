@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
+import app.crm_downloader.td_orders_sync.main as td_orders_main
 from app.crm_downloader.td_orders_sync.main import (
     StoreOutcome,
     StoreReport,
@@ -434,7 +435,21 @@ def test_sales_verdict_fails_when_per_order_row_counts_differ() -> None:
     assert "sales:per_order_row_count_mismatch" in verdict["reason_codes"]
 
 
-def test_threshold_verdict_includes_garments_when_sync_enabled() -> None:
+def test_threshold_verdict_includes_garments_when_sync_enabled(monkeypatch) -> None:
+    class _Thresholds:
+        row_count_delta_tolerance = 0
+        amount_mismatch_tolerance = 0
+        status_mismatch_tolerance = 0
+
+        def as_dict(self) -> dict[str, int]:
+            return {
+                "row_count_delta_tolerance": self.row_count_delta_tolerance,
+                "amount_mismatch_tolerance": self.amount_mismatch_tolerance,
+                "status_mismatch_tolerance": self.status_mismatch_tolerance,
+            }
+
+    monkeypatch.setattr(td_orders_main, "_thresholds_for_dataset", lambda _dataset: _Thresholds())
+
     thresholds_json, verdict = _build_threshold_verdict(
         normalized_orders_verdict={"pass": True, "reasons": [], "thresholds": {}},
         normalized_sales_verdict={"pass": True, "reasons": [], "thresholds": {}},
@@ -451,13 +466,27 @@ def test_threshold_verdict_includes_garments_when_sync_enabled() -> None:
     assert verdict["pass"] is False
 
 
-def test_threshold_verdict_marks_garments_informational_when_sync_disabled() -> None:
+def test_threshold_verdict_marks_garments_informational_when_sync_disabled(monkeypatch) -> None:
+    class _Thresholds:
+        row_count_delta_tolerance = 0
+        amount_mismatch_tolerance = 0
+        status_mismatch_tolerance = 0
+
+        def as_dict(self) -> dict[str, int]:
+            return {
+                "row_count_delta_tolerance": self.row_count_delta_tolerance,
+                "amount_mismatch_tolerance": self.amount_mismatch_tolerance,
+                "status_mismatch_tolerance": self.status_mismatch_tolerance,
+            }
+
+    monkeypatch.setattr(td_orders_main, "_thresholds_for_dataset", lambda _dataset: _Thresholds())
+
     thresholds_json, verdict = _build_threshold_verdict(
         normalized_orders_verdict={"pass": True, "reasons": [], "thresholds": {}},
         normalized_sales_verdict={"pass": True, "reasons": [], "thresholds": {}},
         garment_metrics={"total_rows": 4, "matched_rows": 0, "amount_mismatches": 0, "status_mismatches": 0},
         run_sales=False,
-        run_garment_sync=True,
+        run_garment_sync=False,
     )
 
     assert "garments" in thresholds_json
