@@ -44,6 +44,16 @@ poetry run alembic upgrade head
 
 CLI_ARGS=("$@")
 
+log_effective_td_run_config() {
+  local key="$1"
+  local value="${!key-<unset>}"
+  echo "[td-run-config] ${key}=${value}"
+}
+
+log_effective_td_run_config "TD_SOURCE_MODE"
+log_effective_td_run_config "TD_API_TRY_DASHBOARD_ONLY_CONTEXT"
+log_effective_td_run_config "TD_API_TRY_ORDERS_COOKIE_SHAPE"
+
 # Example invocations (uncomment one to choose a pipeline slice)
 exec poetry run python -m app.crm_downloader.td_orders_sync.main ${CLI_ARGS[@]+"${CLI_ARGS[@]}"}
 # exec poetry run python -m app.crm_downloader.td_orders_sync.main --orders-only ${CLI_ARGS[@]+"${CLI_ARGS[@]}"}
