@@ -154,6 +154,62 @@ def _log_dashboard_context_trial_event(
     )
 
 
+async def _prehydrate_dashboard_auth_context(*, page: Page, store: TdStore, logger: JsonLogger) -> None:
+    probe_urls = (
+        "https://reporting-api.quickdrycleaning.com/reports/order-report?page=1&pageSize=1",
+        "https://reports.quickdrycleaning.com/",
+    )
+    try:
+        observed: list[str] = []
+
+        def _listener(request: Any) -> None:
+            try:
+                req_url = str(getattr(request, "url", "") or "")
+            except Exception:
+                req_url = ""
+            if "reporting-api.quickdrycleaning.com" in req_url or "reports.quickdrycleaning.com" in req_url:
+                observed.append(req_url)
+
+        page.on("request", _listener)
+        try:
+            await page.evaluate(
+                """async (urls) => {
+                    for (const url of urls) {
+                        try {
+                            await fetch(url, { method: 'GET', credentials: 'include', mode: 'cors' });
+                        } catch (err) {
+                            // best-effort only
+                        }
+                    }
+                    return true;
+                }""",
+                probe_urls,
+            )
+            await page.wait_for_timeout(800)
+        finally:
+            with contextlib.suppress(Exception):
+                page.remove_listener("request", _listener)
+
+        log_event(
+            logger=logger,
+            phase="api",
+            message="Executed dashboard auth pre-hydration probes",
+            store_code=store.store_code,
+            probe_urls=list(probe_urls),
+            observed_reporting_requests=observed[:5],
+            observed_reporting_request_count=len(observed),
+        )
+    except Exception as exc:
+        log_event(
+            logger=logger,
+            phase="api",
+            status="warn",
+            message="Dashboard auth pre-hydration probe failed",
+            store_code=store.store_code,
+            error=str(exc),
+        )
+
+
 
 @dataclass(frozen=True)
 class CompareThresholdConfig:
@@ -7506,6 +7562,7 @@ async def _run_store_discovery(
                     storage_state_path=store.storage_state_path,
                     report_iframe_src=None,
                 )
+                await _prehydrate_dashboard_auth_context(page=page, store=store, logger=store_logger)
                 dashboard_trial_auth = await dashboard_trial_client.prepare_auth_context()
                 dashboard_trial_elapsed_ms = int((datetime.now(timezone.utc) - dashboard_trial_started).total_seconds() * 1000)
                 endpoint_auth_asymmetry = (
