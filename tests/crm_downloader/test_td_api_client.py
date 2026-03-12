@@ -1292,7 +1292,7 @@ async def test_sales_and_garments_try_legacy_before_har_like_auth_shape(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_orders_cookie_shape_trial_success_skips_token_fallback(tmp_path: Path) -> None:
+async def test_orders_cookie_shape_experiment_disabled_uses_legacy_tokenized_auth(tmp_path: Path) -> None:
     request = _StubRequest(
         responses=[
             _StubResponse(
@@ -1322,16 +1322,16 @@ async def test_orders_cookie_shape_trial_success_skips_token_fallback(tmp_path: 
 
     orders_calls = [call for call in request.calls if call["url"].endswith("/reports/order-report")]
     assert len(orders_calls) == 1
-    assert "Authorization" not in orders_calls[0]["headers"]
-    assert "token" not in orders_calls[0]["params"]
-    assert result.orders_cookie_shape_attempted is True
-    assert result.orders_cookie_shape_success is True
+    assert orders_calls[0]["headers"]["Authorization"] == "Bearer stale-token"
+    assert orders_calls[0]["params"]["token"] == "stale-token"
+    assert result.orders_cookie_shape_attempted is False
+    assert result.orders_cookie_shape_success is False
     assert result.orders_cookie_shape_failure_reason is None
     assert result.orders_cookie_shape_fallback_used is False
 
 
 @pytest.mark.asyncio
-async def test_orders_auth_shape_plan_logs_har_like_first_when_api_only_enabled(
+async def test_orders_auth_shape_plan_logs_legacy_only_when_cookie_shape_experiment_disabled(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     request = _StubRequest(
@@ -1363,18 +1363,17 @@ async def test_orders_auth_shape_plan_logs_har_like_first_when_api_only_enabled(
 
     await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
 
-    auth_shape_plan_records = [record for record in caplog.records if record.message == "TD API orders fetch auth-shape plan"]
-    assert len(auth_shape_plan_records) == 1
-    assert auth_shape_plan_records[0].orders_auth_shapes[0] == "har_like"
-    assert auth_shape_plan_records[0].orders_cookie_shape_trial_enabled is True
+    gate_state_records = [record for record in caplog.records if record.message == "orders_cookie_shape_gate_state"]
+    assert len(gate_state_records) == 1
+    assert gate_state_records[0].orders_auth_shapes == ["legacy"]
+    assert gate_state_records[0].orders_cookie_shape_trial_enabled is False
 
 
 
 @pytest.mark.asyncio
-async def test_orders_cookie_shape_trial_failure_falls_back_to_legacy(tmp_path: Path) -> None:
+async def test_orders_cookie_shape_experiment_disabled_does_not_attempt_har_like(tmp_path: Path) -> None:
     request = _StubRequest(
         responses=[
-            _StubResponse(status=401, url="https://reporting-api.quickdrycleaning.com/reports/order-report", payload={}),
             _StubResponse(
                 status=200,
                 url="https://reporting-api.quickdrycleaning.com/reports/order-report",
@@ -1401,16 +1400,14 @@ async def test_orders_cookie_shape_trial_failure_falls_back_to_legacy(tmp_path: 
     result = await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
 
     orders_calls = [call for call in request.calls if call["url"].endswith("/reports/order-report")]
-    assert len(orders_calls) == 2
-    assert "Authorization" not in orders_calls[0]["headers"]
-    assert "token" not in orders_calls[0]["params"]
-    assert orders_calls[1]["headers"]["Authorization"] == "Bearer stale-token"
-    assert orders_calls[1]["params"]["token"] == "stale-token"
-    assert result.orders_cookie_shape_attempted is True
+    assert len(orders_calls) == 1
+    assert orders_calls[0]["headers"]["Authorization"] == "Bearer stale-token"
+    assert orders_calls[0]["params"]["token"] == "stale-token"
+    assert result.orders_cookie_shape_attempted is False
     assert result.orders_cookie_shape_success is False
-    assert result.orders_cookie_shape_failure_reason == "auth_rejection"
-    assert result.orders_cookie_shape_status_code == 401
-    assert result.orders_cookie_shape_fallback_used is True
+    assert result.orders_cookie_shape_failure_reason is None
+    assert result.orders_cookie_shape_status_code is None
+    assert result.orders_cookie_shape_fallback_used is False
 
 @pytest.mark.asyncio
 async def test_har_like_origin_and_referer_follow_report_iframe_context(tmp_path: Path) -> None:

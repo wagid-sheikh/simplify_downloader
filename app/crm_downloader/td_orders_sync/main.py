@@ -124,127 +124,6 @@ def _ensure_ui_workbook_ingest_allowed(*, source_mode: str, dataset: str) -> Non
         )
 
 
-def _log_dashboard_context_trial_event(
-    *,
-    logger: JsonLogger,
-    store_code: str,
-    source_mode: str,
-    status: str,
-    message: str,
-    trial_attempted: bool,
-    trial_success: bool,
-    fallback_used: bool,
-    runtime_delta_ms: int | None,
-    context_source: str,
-    orders_cookie_shape_attempted: bool = False,
-    orders_cookie_shape_success: bool = False,
-    orders_cookie_shape_failure_reason: str | None = None,
-    orders_cookie_shape_fallback_used: bool = False,
-    orders_cookie_shape_runtime_delta_ms: int | None = None,
-    **extra: Any,
-) -> None:
-    log_event(
-        logger=logger,
-        phase="api",
-        status=status,
-        message=message,
-        store_code=store_code,
-        source_mode=source_mode,
-        trial_attempted=trial_attempted,
-        trial_success=trial_success,
-        fallback_used=fallback_used,
-        runtime_delta_ms=runtime_delta_ms,
-        context_source=context_source,
-        orders_cookie_shape_attempted=orders_cookie_shape_attempted,
-        orders_cookie_shape_success=orders_cookie_shape_success,
-        orders_cookie_shape_failure_reason=orders_cookie_shape_failure_reason,
-        orders_cookie_shape_fallback_used=orders_cookie_shape_fallback_used,
-        orders_cookie_shape_runtime_delta_ms=orders_cookie_shape_runtime_delta_ms,
-        **extra,
-    )
-
-
-async def _prehydrate_dashboard_auth_context(*, page: Page, store: TdStore, logger: JsonLogger) -> None:
-    probe_urls = (
-        "https://reporting-api.quickdrycleaning.com/reports/order-report?page=1&pageSize=1",
-        "https://reports.quickdrycleaning.com/",
-    )
-    try:
-        observed: list[str] = []
-
-        def _listener(request: Any) -> None:
-            try:
-                req_url = str(getattr(request, "url", "") or "")
-            except Exception:
-                req_url = ""
-            if "reporting-api.quickdrycleaning.com" in req_url or "reports.quickdrycleaning.com" in req_url:
-                observed.append(req_url)
-
-        page.on("request", _listener)
-        try:
-            await page.evaluate(
-                """async (urls) => {
-                    for (const url of urls) {
-                        try {
-                            await fetch(url, { method: 'GET', credentials: 'include', mode: 'cors' });
-                        } catch (err) {
-                            // best-effort only
-                        }
-                    }
-                    return true;
-                }""",
-                probe_urls,
-            )
-            await page.wait_for_timeout(800)
-        finally:
-            with contextlib.suppress(Exception):
-                page.remove_listener("request", _listener)
-
-        log_event(
-            logger=logger,
-            phase="api",
-            message="Executed dashboard auth pre-hydration probes",
-            store_code=store.store_code,
-            probe_urls=list(probe_urls),
-            observed_reporting_requests=observed[:5],
-            observed_reporting_request_count=len(observed),
-        )
-    except Exception as exc:
-        log_event(
-            logger=logger,
-            phase="api",
-            status="warn",
-            message="Dashboard auth pre-hydration probe failed",
-            store_code=store.store_code,
-            error=str(exc),
-        )
-
-
-
-@dataclass(frozen=True)
-class CompareThresholdConfig:
-    row_count_delta_tolerance: int
-    amount_mismatch_tolerance: int
-    status_mismatch_tolerance: int
-
-    def as_dict(self) -> dict[str, int]:
-        return {
-            "row_count_delta_tolerance": self.row_count_delta_tolerance,
-            "amount_mismatch_tolerance": self.amount_mismatch_tolerance,
-            "status_mismatch_tolerance": self.status_mismatch_tolerance,
-        }
-
-
-def _int_env(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return max(int(raw.strip()), 0)
-    except (TypeError, ValueError):
-        return default
-
-
 def _thresholds_for_dataset(dataset: str) -> CompareThresholdConfig:
     prefix = f"TD_COMPARE_{dataset.upper()}"
     return CompareThresholdConfig(
@@ -7554,98 +7433,7 @@ async def _run_store_discovery(
         api_fetch_result = TdApiFetchResult()
         api_all_endpoints_auth_failed = False
         api_context_source = "iframe"
-        dashboard_trial_attempted = False
-        dashboard_trial_success = False
-        dashboard_trial_fallback_used = False
-        dashboard_trial_failure_reason: str | None = None
-        dashboard_trial_elapsed_ms: int | None = None
         sales_only_mode = not run_orders
-        dashboard_only_context_trial_enabled = _bool_env("TD_API_TRY_DASHBOARD_ONLY_CONTEXT", default=True)
-        dashboard_only_context_trial_eligible = source_mode == "api_only" and dashboard_only_context_trial_enabled
-        if dashboard_only_context_trial_eligible:
-            dashboard_trial_attempted = True
-            dashboard_trial_started = datetime.now(timezone.utc)
-            try:
-                dashboard_trial_client = TdApiClient(
-                    store_code=store.store_code,
-                    context=context,
-                    storage_state_path=store.storage_state_path,
-                    report_iframe_src=None,
-                )
-                await _prehydrate_dashboard_auth_context(page=page, store=store, logger=store_logger)
-                dashboard_trial_auth = await dashboard_trial_client.prepare_auth_context()
-                dashboard_trial_elapsed_ms = int((datetime.now(timezone.utc) - dashboard_trial_started).total_seconds() * 1000)
-                endpoint_auth_asymmetry = (
-                    not dashboard_trial_auth.endpoint_readiness.get("/reports/order-report", False)
-                    and dashboard_trial_auth.endpoint_readiness.get("/sales-and-deliveries/sales", False)
-                    and dashboard_trial_auth.endpoint_readiness.get("/garments/details", False)
-                )
-                if dashboard_trial_auth.ready:
-                    dashboard_trial_success = True
-                    api_context_source = "dashboard_only"
-                    _log_dashboard_context_trial_event(
-                        logger=store_logger,
-                        store_code=store.store_code,
-                        source_mode=source_mode,
-                        status="ok",
-                        message="Dashboard-only API auth context trial succeeded",
-                        trial_attempted=True,
-                        trial_success=True,
-                        fallback_used=False,
-                        runtime_delta_ms=dashboard_trial_elapsed_ms,
-                        context_source=api_context_source,
-                        token_present=dashboard_trial_auth.token_present,
-                        token_source=dashboard_trial_auth.token_source,
-                        token_expiry=dashboard_trial_auth.token_expiry,
-                        cookies_present=dashboard_trial_auth.cookies_present,
-                        auth_contract=dashboard_trial_auth.auth_contract,
-                        endpoint_auth_requirements=dashboard_trial_auth.endpoint_auth_requirements,
-                    )
-                else:
-                    dashboard_trial_fallback_used = True
-                    api_context_source = "iframe_fallback"
-                    dashboard_trial_failure_reason = dashboard_trial_auth.failure_reason or "auth_context_not_ready"
-                    _log_dashboard_context_trial_event(
-                        logger=store_logger,
-                        store_code=store.store_code,
-                        source_mode=source_mode,
-                        status="warn",
-                        message="Dashboard-only API auth context trial failed; activating iframe fallback",
-                        trial_attempted=True,
-                        trial_success=False,
-                        fallback_used=True,
-                        runtime_delta_ms=dashboard_trial_elapsed_ms,
-                        context_source=api_context_source,
-                        failure_reason=dashboard_trial_failure_reason,
-                        auth_contract=dashboard_trial_auth.auth_contract,
-                        endpoint_auth_requirements=dashboard_trial_auth.endpoint_auth_requirements,
-                        endpoint_auth_asymmetry=endpoint_auth_asymmetry,
-                        endpoint_auth_asymmetry_note=(
-                            "orders_requires_token_while_sales_and_garments_accept_cookie_session"
-                            if endpoint_auth_asymmetry
-                            else None
-                        ),
-                        endpoint_readiness=dashboard_trial_auth.endpoint_readiness,
-                        endpoint_failure_reasons=dashboard_trial_auth.endpoint_failure_reasons,
-                    )
-            except Exception as exc:
-                dashboard_trial_elapsed_ms = int((datetime.now(timezone.utc) - dashboard_trial_started).total_seconds() * 1000)
-                dashboard_trial_fallback_used = True
-                api_context_source = "iframe_fallback"
-                dashboard_trial_failure_reason = f"trial_exception:{exc}"
-                _log_dashboard_context_trial_event(
-                    logger=store_logger,
-                    store_code=store.store_code,
-                    source_mode=source_mode,
-                    status="warn",
-                    message="Dashboard-only API auth context trial failed with exception; activating iframe fallback",
-                    trial_attempted=True,
-                    trial_success=False,
-                    fallback_used=True,
-                    runtime_delta_ms=dashboard_trial_elapsed_ms,
-                    context_source=api_context_source,
-                    failure_reason=dashboard_trial_failure_reason,
-                )
 
         if not run_orders and source_mode == "ui":
             log_event(
@@ -7658,40 +7446,36 @@ async def _run_store_discovery(
         else:
             iframe_locator: FrameLocator | None = None
             iframe_src: str | None = None
-            if dashboard_trial_success:
-                iframe_locator = page.frame_locator("html")
-            else:
-                container_ready = await _navigate_to_orders_container(
-                    page,
-                    store=store,
-                    logger=store_logger,
-                    nav_selector=nav_selector,
-                    nav_timeout_ms=nav_timeout_ms,
-                    capture_left_nav=True,
-                    nav_snapshot_context="orders_iframe",
-                    sales_only_mode=sales_only_mode,
+            container_ready = await _navigate_to_orders_container(
+                page,
+                store=store,
+                logger=store_logger,
+                nav_selector=nav_selector,
+                nav_timeout_ms=nav_timeout_ms,
+                capture_left_nav=True,
+                nav_snapshot_context="orders_iframe",
+                sales_only_mode=sales_only_mode,
+            )
+            if not container_ready:
+                outcome = StoreOutcome(
+                    status="error",
+                    message="Orders container did not load from Reports navigation",
+                    final_url=page.url,
+                    verification_seen=verification_seen,
+                    storage_state=stored_state_path,
                 )
-                if not container_ready:
-                    outcome = StoreOutcome(
-                        status="error",
-                        message="Orders container did not load from Reports navigation",
-                        final_url=page.url,
-                        verification_seen=verification_seen,
-                        storage_state=stored_state_path,
-                    )
-                    return
+                return
 
-                iframe_locator, iframe_src = await _wait_for_iframe(page, store=store, logger=store_logger)
+            iframe_locator, iframe_src = await _wait_for_iframe(page, store=store, logger=store_logger)
             if iframe_locator is not None:
                 if source_mode != "ui":
                     report_iframe_src: str | None = None
-                    if not dashboard_trial_success:
-                        report_iframe_src = await _resolve_report_iframe_auth_source_for_api(
-                            page,
-                            store=store,
-                            logger=store_logger,
-                            initial_iframe_src=iframe_src,
-                        )
+                    report_iframe_src = await _resolve_report_iframe_auth_source_for_api(
+                        page,
+                        store=store,
+                        logger=store_logger,
+                        initial_iframe_src=iframe_src,
+                    )
                     try:
                         api_client = TdApiClient(
                             store_code=store.store_code,

@@ -98,7 +98,7 @@ class TdApiClientConfig:
     garments_api_only_timeout_retry_limit: int = int(os.environ.get("TD_API_GARMENTS_API_ONLY_TIMEOUT_RETRY_LIMIT", "1"))
     garments_api_only_backoff_base_seconds: float = float(os.environ.get("TD_API_GARMENTS_API_ONLY_BACKOFF_BASE_SECONDS", "0.4"))
     garments_api_only_max_backoff_seconds: float = float(os.environ.get("TD_API_GARMENTS_API_ONLY_MAX_BACKOFF_SECONDS", "2.5"))
-    try_orders_cookie_shape: bool = os.environ.get("TD_API_TRY_ORDERS_COOKIE_SHAPE", "true").strip().lower() in {"1", "true", "yes", "on"}
+    try_orders_cookie_shape: bool = os.environ.get("TD_API_TRY_ORDERS_COOKIE_SHAPE", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -414,7 +414,9 @@ class TdApiClient:
         }
 
     def _orders_cookie_shape_trial_enabled(self) -> bool:
-        return self.config.source_mode == "api_only" and bool(self.config.try_orders_cookie_shape)
+        # Orders must continue using iframe-derived tokenized auth as the stable path.
+        # Keep cookie-shape experimentation disabled during rollback cleanup.
+        return False
 
     @staticmethod
     def _merge_query_params(*, base_params: Mapping[str, Any], overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
