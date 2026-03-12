@@ -7508,6 +7508,11 @@ async def _run_store_discovery(
                 )
                 dashboard_trial_auth = await dashboard_trial_client.prepare_auth_context()
                 dashboard_trial_elapsed_ms = int((datetime.now(timezone.utc) - dashboard_trial_started).total_seconds() * 1000)
+                endpoint_auth_asymmetry = (
+                    not dashboard_trial_auth.endpoint_readiness.get("/reports/order-report", False)
+                    and dashboard_trial_auth.endpoint_readiness.get("/sales-and-deliveries/sales", False)
+                    and dashboard_trial_auth.endpoint_readiness.get("/garments/details", False)
+                )
                 if dashboard_trial_auth.ready:
                     dashboard_trial_success = True
                     api_context_source = "dashboard_only"
@@ -7526,6 +7531,8 @@ async def _run_store_discovery(
                         token_source=dashboard_trial_auth.token_source,
                         token_expiry=dashboard_trial_auth.token_expiry,
                         cookies_present=dashboard_trial_auth.cookies_present,
+                        auth_contract=dashboard_trial_auth.auth_contract,
+                        endpoint_auth_requirements=dashboard_trial_auth.endpoint_auth_requirements,
                     )
                 else:
                     dashboard_trial_fallback_used = True
@@ -7543,6 +7550,14 @@ async def _run_store_discovery(
                         runtime_delta_ms=dashboard_trial_elapsed_ms,
                         context_source=api_context_source,
                         failure_reason=dashboard_trial_failure_reason,
+                        auth_contract=dashboard_trial_auth.auth_contract,
+                        endpoint_auth_requirements=dashboard_trial_auth.endpoint_auth_requirements,
+                        endpoint_auth_asymmetry=endpoint_auth_asymmetry,
+                        endpoint_auth_asymmetry_note=(
+                            "orders_requires_token_while_sales_and_garments_accept_cookie_session"
+                            if endpoint_auth_asymmetry
+                            else None
+                        ),
                         endpoint_readiness=dashboard_trial_auth.endpoint_readiness,
                         endpoint_failure_reasons=dashboard_trial_auth.endpoint_failure_reasons,
                     )

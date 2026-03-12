@@ -1846,3 +1846,37 @@ def test_dataset_completion_health_includes_endpoint_health_fields() -> None:
     assert health["ready"] is True
     assert health["endpoint_success"] is True
     assert health["endpoint_attempts"] == 4
+
+
+@pytest.mark.asyncio
+async def test_prepare_auth_context_dashboard_trial_cookie_only_marks_orders_not_ready(tmp_path: Path) -> None:
+    artifact = tmp_path / "store-state.json"
+    artifact.write_text(
+        json.dumps({"cookies": [{"name": "sessionid", "domain": ".quickdrycleaning.com"}], "origins": []}),
+        encoding="utf-8",
+    )
+    client = TdApiClient(store_code="a817", context=None, storage_state_path=artifact)  # type: ignore[arg-type]
+
+    async def _tokenless_discovery() -> object:
+        return type("TokenDiscovery", (), {"token": None, "source": None, "expiry": None})()
+
+    client._discover_reporting_token = _tokenless_discovery  # type: ignore[method-assign]
+
+    auth_result = await client.prepare_auth_context()
+
+    assert auth_result.ready is False
+    assert auth_result.cookies_present is True
+    assert auth_result.token_present is False
+    assert auth_result.auth_contract == "endpoint_specific"
+    assert auth_result.endpoint_auth_requirements == {
+        "/reports/order-report": ("token",),
+        "/sales-and-deliveries/sales": ("cookie_session",),
+        "/garments/details": ("cookie_session",),
+    }
+    assert auth_result.endpoint_readiness == {
+        "/reports/order-report": False,
+        "/sales-and-deliveries/sales": True,
+        "/garments/details": True,
+    }
+    assert auth_result.endpoint_failure_reasons == {"/reports/order-report": "token_missing_or_expired"}
+    assert auth_result.failure_reason == "/reports/order-report:token_missing_or_expired"
