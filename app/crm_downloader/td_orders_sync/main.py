@@ -112,6 +112,19 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _int_env(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    stripped = value.strip()
+    if not stripped:
+        return default
+    try:
+        return int(stripped)
+    except ValueError:
+        return default
+
+
 def _ingest_source_for_mode(source_mode: str) -> str:
     return INGEST_SOURCE_BY_MODE.get(source_mode, "ui_workbook")
 
