@@ -7157,6 +7157,8 @@ async def _run_store_discovery(
                             raw_orders=api_fetch_result.raw_orders_payload,
                             raw_sales=api_fetch_result.raw_sales_payload,
                             raw_garments=api_fetch_result.raw_garments_payload,
+                            # API snapshot purity contract: only raw API row collections belong
+                            # in these Excel snapshot inputs (never compare/diagnostic payloads).
                             order_rows=api_fetch_result.orders_rows,
                             sale_rows=api_fetch_result.sales_rows,
                             garments_rows=api_fetch_result.garments_rows,
