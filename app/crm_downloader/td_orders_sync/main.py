@@ -7494,7 +7494,7 @@ async def _run_store_discovery(
         dashboard_trial_failure_reason: str | None = None
         dashboard_trial_elapsed_ms: int | None = None
         sales_only_mode = not run_orders
-        dashboard_only_context_trial_enabled = _bool_env("TD_API_TRY_DASHBOARD_ONLY_CONTEXT", default=False)
+        dashboard_only_context_trial_enabled = _bool_env("TD_API_TRY_DASHBOARD_ONLY_CONTEXT", default=True)
         dashboard_only_context_trial_eligible = source_mode == "api_only" and dashboard_only_context_trial_enabled
         if dashboard_only_context_trial_eligible:
             dashboard_trial_attempted = True
