@@ -1331,6 +1331,46 @@ async def test_orders_cookie_shape_trial_success_skips_token_fallback(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_orders_auth_shape_plan_logs_har_like_first_when_api_only_enabled(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/reports/order-report",
+                payload={"data": [{"orderNumber": "1001"}], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales",
+                payload={"data": [], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [], "totalPages": 1},
+            ),
+        ]
+    )
+    context = _StubContext(request=request)
+    state_path = tmp_path / "s.json"
+    state_path.write_text(json.dumps({"cookies": [{"name": "sid"}], "origins": []}), encoding="utf-8")
+    config = TdApiClientConfig(source_mode="api_only", try_orders_cookie_shape=True)
+    client = _TokenRefreshingClient(store_code="a123", context=context, storage_state_path=state_path, config=config)
+
+    caplog.set_level(logging.INFO, logger="app.crm_downloader.td_orders_sync.td_api_client")
+
+    await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    auth_shape_plan_records = [record for record in caplog.records if record.message == "TD API orders fetch auth-shape plan"]
+    assert len(auth_shape_plan_records) == 1
+    assert auth_shape_plan_records[0].orders_auth_shapes[0] == "har_like"
+    assert auth_shape_plan_records[0].orders_cookie_shape_trial_enabled is True
+
+
+
+@pytest.mark.asyncio
 async def test_orders_cookie_shape_trial_failure_falls_back_to_legacy(tmp_path: Path) -> None:
     request = _StubRequest(
         responses=[

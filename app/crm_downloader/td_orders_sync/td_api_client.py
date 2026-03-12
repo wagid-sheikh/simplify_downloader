@@ -186,6 +186,7 @@ class _SharedAuthState:
     orders_cookie_shape_failure_reason: str | None = None
     orders_cookie_shape_status_code: int | None = None
     orders_cookie_shape_runtime_delta_ms: int | None = None
+    orders_fetch_auth_shapes_logged: bool = False
 
 
 class _StoreRateLimiter:
@@ -279,6 +280,8 @@ class TdApiClient:
                 orders_cookie_shape_runtime_delta_ms=self._auth_state.orders_cookie_shape_runtime_delta_ms,
             )
 
+        self._log_orders_fetch_auth_shapes_once()
+
         order_payload = await self._fetch_endpoint_rows(
             endpoint=ORDERS_ENDPOINT,
             params={**common_params, "expandData": "true"},
@@ -344,6 +347,22 @@ class TdApiClient:
             orders_cookie_shape_status_code=self._auth_state.orders_cookie_shape_status_code,
             orders_cookie_shape_fallback_used=self._auth_state.orders_cookie_shape_attempted and not self._auth_state.orders_cookie_shape_success,
             orders_cookie_shape_runtime_delta_ms=self._auth_state.orders_cookie_shape_runtime_delta_ms,
+        )
+
+    def _log_orders_fetch_auth_shapes_once(self) -> None:
+        if self._auth_state.orders_fetch_auth_shapes_logged:
+            return
+        self._auth_state.orders_fetch_auth_shapes_logged = True
+        logger.info(
+            "TD API orders fetch auth-shape plan",
+            extra={
+                "store_code": self.store_code,
+                "endpoint": ORDERS_ENDPOINT,
+                "config_source_mode": self.config.source_mode,
+                "config_try_orders_cookie_shape": self.config.try_orders_cookie_shape,
+                "orders_cookie_shape_trial_enabled": self._orders_cookie_shape_trial_enabled(),
+                "orders_auth_shapes": [shape.name for shape in self._auth_shapes_for_endpoint(ORDERS_ENDPOINT)],
+            },
         )
 
     async def prepare_auth_context(self) -> TdApiAuthPreparationResult:
