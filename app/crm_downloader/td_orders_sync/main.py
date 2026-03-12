@@ -240,6 +240,17 @@ def _build_threshold_verdict(
     return thresholds_json, verdict_json
 
 
+
+
+def _resolve_store_concurrency_settings(*, source_mode: str) -> tuple[int, bool]:
+    configured_concurrency = max(_int_env("TD_API_ONLY_STORE_CONCURRENCY", 1), 1)
+    allow_non_api_only = _bool_env("TD_ENABLE_NON_API_ONLY_STORE_CONCURRENCY", default=False)
+    should_enable = source_mode == "api_only" or allow_non_api_only
+    if not should_enable:
+        return 1, False
+    return configured_concurrency, configured_concurrency > 1
+
+
 def _compare_quality_passed(metrics: Mapping[str, Any]) -> bool:
     thresholds = _thresholds_for_dataset("garments")
     row_delta = max(int(metrics.get("total_rows") or 0) - int(metrics.get("matched_rows") or 0), 0)
@@ -631,27 +642,94 @@ async def main(
                 )
             return
 
+        store_concurrency, store_concurrency_enabled = _resolve_store_concurrency_settings(source_mode=source_mode)
+        log_event(
+            logger=logger,
+            phase="store",
+            message="Resolved TD store concurrency settings",
+            source_mode=source_mode,
+            configured_concurrency=store_concurrency,
+            concurrency_enabled=store_concurrency_enabled,
+            allow_non_api_only_concurrency=_bool_env("TD_ENABLE_NON_API_ONLY_STORE_CONCURRENCY", default=False),
+        )
+
         async with async_playwright() as p:
             browser = await launch_browser(playwright=p, logger=logger)
-            for store in stores:
-                store_start_date = store_start_dates.get(store.store_code, summary.report_date)
-                await _run_store_discovery(
-                    browser=browser,
-                    store=store,
-                    logger=logger,
-                    run_env=resolved_env,
-                    run_id=resolved_run_id,
-                    run_date=resolved_run_date,
-                    run_start_date=store_start_date,
-                    run_end_date=run_end_date,
-                    nav_timeout_ms=nav_timeout_ms,
-                    summary=summary,
-                    run_orders=run_orders,
-                    run_sales=run_sales,
-                    source_mode=source_mode,
-                )
+            try:
+                if store_concurrency_enabled:
+                    semaphore = asyncio.Semaphore(store_concurrency)
+                    tasks = [
+                        _run_store_discovery_worker(
+                            browser=browser,
+                            store=store,
+                            logger=logger,
+                            run_env=resolved_env,
+                            run_id=resolved_run_id,
+                            run_date=resolved_run_date,
+                            run_start_date=store_start_dates.get(store.store_code, summary.report_date),
+                            run_end_date=run_end_date,
+                            nav_timeout_ms=nav_timeout_ms,
+                            summary=summary,
+                            run_orders=run_orders,
+                            run_sales=run_sales,
+                            source_mode=source_mode,
+                            semaphore=semaphore,
+                        )
+                        for store in stores
+                    ]
+                    worker_results = await asyncio.gather(*tasks, return_exceptions=True)
+                else:
+                    worker_results = []
+                    for store in stores:
+                        payload = await _run_store_discovery_worker(
+                            browser=browser,
+                            store=store,
+                            logger=logger,
+                            run_env=resolved_env,
+                            run_id=resolved_run_id,
+                            run_date=resolved_run_date,
+                            run_start_date=store_start_dates.get(store.store_code, summary.report_date),
+                            run_end_date=run_end_date,
+                            nav_timeout_ms=nav_timeout_ms,
+                            summary=summary,
+                            run_orders=run_orders,
+                            run_sales=run_sales,
+                            source_mode=source_mode,
+                            semaphore=None,
+                        )
+                        worker_results.append(payload)
 
-            await browser.close()
+                payload_by_store: dict[str, StoreExecutionPayload] = {}
+                for result in worker_results:
+                    if isinstance(result, Exception):
+                        log_event(
+                            logger=logger,
+                            phase="store",
+                            status="error",
+                            message="Unhandled TD store worker exception",
+                            run_id=resolved_run_id,
+                            error=str(result),
+                        )
+                        continue
+                    payload_by_store[result.store.store_code] = result
+
+                for store in stores:
+                    payload = payload_by_store.get(store.store_code)
+                    if payload is None:
+                        outcome = StoreOutcome(status="error", message="Store worker did not return a payload")
+                        summary.record_store(store.store_code, outcome)
+                        continue
+                    if payload.outcome is None:
+                        message = payload.error or "Store worker completed without outcome"
+                        payload.outcome = StoreOutcome(status="error", message=message)
+                    summary.record_store(
+                        store.store_code,
+                        payload.outcome,
+                        orders_result=payload.orders_report,
+                        sales_result=payload.sales_report,
+                    )
+            finally:
+                await browser.close()
 
         log_event(
             logger=logger,
@@ -936,6 +1014,19 @@ class DeferredOrdersSyncLog:
     run_id: str
     run_start_date: date
     run_end_date: date
+
+
+@dataclass
+class StoreExecutionPayload:
+    store: "TdStore"
+    run_start_date: date
+    run_end_date: date
+    outcome: StoreOutcome | None = None
+    orders_report: "StoreReport" | None = None
+    sales_report: "StoreReport" | None = None
+    error: str | None = None
+    queue_wait_ms: int = 0
+    duration_ms: int = 0
 
 
 @dataclass
@@ -6882,6 +6973,94 @@ async def _wait_for_otp_verification(
     return False, True
 
 
+async def _run_store_discovery_worker(
+    *,
+    browser: Browser,
+    store: TdStore,
+    logger: JsonLogger,
+    run_env: str,
+    run_id: str,
+    run_date: datetime,
+    run_start_date: date,
+    run_end_date: date,
+    nav_timeout_ms: int,
+    summary: TdOrdersDiscoverySummary,
+    run_orders: bool,
+    run_sales: bool,
+    source_mode: str,
+    semaphore: asyncio.Semaphore | None,
+) -> StoreExecutionPayload:
+    queued_at = datetime.now(timezone.utc)
+    if semaphore is not None:
+        await semaphore.acquire()
+    queue_wait_ms = int((datetime.now(timezone.utc) - queued_at).total_seconds() * 1000)
+    started_at = datetime.now(timezone.utc)
+    store_logger = logger.bind(store_code=store.store_code)
+    log_event(
+        logger=store_logger,
+        phase="store",
+        message="TD store worker start",
+        run_id=run_id,
+        from_date=run_start_date,
+        to_date=run_end_date,
+        queue_wait_ms=queue_wait_ms,
+        concurrency_limited=semaphore is not None,
+    )
+    try:
+        payload = await _run_store_discovery(
+            browser=browser,
+            store=store,
+            logger=logger,
+            run_env=run_env,
+            run_id=run_id,
+            run_date=run_date,
+            run_start_date=run_start_date,
+            run_end_date=run_end_date,
+            nav_timeout_ms=nav_timeout_ms,
+            summary=summary,
+            run_orders=run_orders,
+            run_sales=run_sales,
+            source_mode=source_mode,
+        )
+        payload.queue_wait_ms = queue_wait_ms
+        payload.duration_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
+        log_event(
+            logger=store_logger,
+            phase="store",
+            message="TD store worker complete",
+            run_id=run_id,
+            queue_wait_ms=queue_wait_ms,
+            duration_ms=payload.duration_ms,
+            status=(payload.outcome.status if payload.outcome else "error"),
+        )
+        return payload
+    except Exception as exc:
+        duration_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
+        log_event(
+            logger=store_logger,
+            phase="store",
+            status="error",
+            message="TD store worker failed",
+            run_id=run_id,
+            queue_wait_ms=queue_wait_ms,
+            duration_ms=duration_ms,
+            error=str(exc),
+        )
+        return StoreExecutionPayload(
+            store=store,
+            run_start_date=run_start_date,
+            run_end_date=run_end_date,
+            outcome=StoreOutcome(status="error", message=str(exc), failure_stage="store_worker"),
+            error=str(exc),
+            queue_wait_ms=queue_wait_ms,
+            duration_ms=duration_ms,
+        )
+    finally:
+        if semaphore is not None:
+            semaphore.release()
+
+
+
 async def _run_store_discovery(
     *,
     browser: Browser,
@@ -6897,7 +7076,7 @@ async def _run_store_discovery(
     run_orders: bool,
     run_sales: bool,
     source_mode: str,
-) -> None:
+) -> StoreExecutionPayload:
     store_logger = logger.bind(store_code=store.store_code)
     correlation = _build_correlation_context(
         run_id=run_id,
@@ -6926,14 +7105,21 @@ async def _run_store_discovery(
         run_end_date=run_end_date,
     )
     if sync_log_id is None:
+        message = "Hard error: orders sync log row missing; aborting store discovery"
         log_event(
             logger=store_logger,
             phase="orders_sync_log",
             status="error",
-            message="Hard error: orders sync log row missing; aborting store discovery",
+            message=message,
             run_id=run_id,
         )
-        return
+        return StoreExecutionPayload(
+            store=store,
+            run_start_date=run_start_date,
+            run_end_date=run_end_date,
+            outcome=StoreOutcome(status="error", message=message, failure_stage="orders_sync_log"),
+            error=message,
+        )
 
     storage_state_exists = store.storage_state_path.exists()
     download_dir = _resolve_td_api_artifact_dir()
@@ -8218,12 +8404,6 @@ async def _run_store_discovery(
             primary_metrics=primary_metrics,
             secondary_metrics=secondary_metrics,
         )
-        summary.record_store(
-            store.store_code,
-            outcome,
-            orders_result=orders_report,
-            sales_result=sales_report,
-        )
         _log_td_window_summary(
             logger=store_logger,
             store_code=store.store_code,
@@ -8236,6 +8416,14 @@ async def _run_store_discovery(
             source_mode=source_mode,
         )
         await _close_context(context)
+        return StoreExecutionPayload(
+            store=store,
+            run_start_date=run_start_date,
+            run_end_date=run_end_date,
+            outcome=outcome,
+            orders_report=orders_report,
+            sales_report=sales_report,
+        )
 
 
 async def _close_context(context: BrowserContext | None) -> None:
