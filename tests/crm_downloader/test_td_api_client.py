@@ -1289,6 +1289,89 @@ async def test_sales_and_garments_try_legacy_before_har_like_auth_shape(tmp_path
     assert all("auth_shape_status_delta" in item for item in fallback_entries)
 
 
+
+
+@pytest.mark.asyncio
+async def test_orders_cookie_shape_trial_success_skips_token_fallback(tmp_path: Path) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/reports/order-report",
+                payload={"data": [{"orderNumber": "1001"}], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales",
+                payload={"data": [], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [], "totalPages": 1},
+            ),
+        ]
+    )
+    context = _StubContext(request=request)
+    state_path = tmp_path / "s.json"
+    state_path.write_text(json.dumps({"cookies": [{"name": "sid"}], "origins": []}), encoding="utf-8")
+    config = TdApiClientConfig(source_mode="api_only", try_orders_cookie_shape=True)
+    client = _TokenRefreshingClient(store_code="a123", context=context, storage_state_path=state_path, config=config)
+
+    result = await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    orders_calls = [call for call in request.calls if call["url"].endswith("/reports/order-report")]
+    assert len(orders_calls) == 1
+    assert "Authorization" not in orders_calls[0]["headers"]
+    assert "token" not in orders_calls[0]["params"]
+    assert result.orders_cookie_shape_attempted is True
+    assert result.orders_cookie_shape_success is True
+    assert result.orders_cookie_shape_failure_reason is None
+    assert result.orders_cookie_shape_fallback_used is False
+
+
+@pytest.mark.asyncio
+async def test_orders_cookie_shape_trial_failure_falls_back_to_legacy(tmp_path: Path) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(status=401, url="https://reporting-api.quickdrycleaning.com/reports/order-report", payload={}),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/reports/order-report",
+                payload={"data": [{"orderNumber": "1001"}], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales",
+                payload={"data": [], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [], "totalPages": 1},
+            ),
+        ]
+    )
+    context = _StubContext(request=request)
+    state_path = tmp_path / "s.json"
+    state_path.write_text(json.dumps({"cookies": [{"name": "sid"}], "origins": []}), encoding="utf-8")
+    config = TdApiClientConfig(source_mode="api_only", try_orders_cookie_shape=True)
+    client = _TokenRefreshingClient(store_code="a123", context=context, storage_state_path=state_path, config=config)
+
+    result = await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    orders_calls = [call for call in request.calls if call["url"].endswith("/reports/order-report")]
+    assert len(orders_calls) == 2
+    assert "Authorization" not in orders_calls[0]["headers"]
+    assert "token" not in orders_calls[0]["params"]
+    assert orders_calls[1]["headers"]["Authorization"] == "Bearer stale-token"
+    assert orders_calls[1]["params"]["token"] == "stale-token"
+    assert result.orders_cookie_shape_attempted is True
+    assert result.orders_cookie_shape_success is False
+    assert result.orders_cookie_shape_failure_reason == "auth_rejection"
+    assert result.orders_cookie_shape_status_code == 401
+    assert result.orders_cookie_shape_fallback_used is True
+
 @pytest.mark.asyncio
 async def test_har_like_origin_and_referer_follow_report_iframe_context(tmp_path: Path) -> None:
     request = _StubRequest(

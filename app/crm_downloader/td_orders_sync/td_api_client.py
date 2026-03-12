@@ -98,6 +98,7 @@ class TdApiClientConfig:
     garments_api_only_timeout_retry_limit: int = int(os.environ.get("TD_API_GARMENTS_API_ONLY_TIMEOUT_RETRY_LIMIT", "1"))
     garments_api_only_backoff_base_seconds: float = float(os.environ.get("TD_API_GARMENTS_API_ONLY_BACKOFF_BASE_SECONDS", "0.4"))
     garments_api_only_max_backoff_seconds: float = float(os.environ.get("TD_API_GARMENTS_API_ONLY_MAX_BACKOFF_SECONDS", "2.5"))
+    try_orders_cookie_shape: bool = os.environ.get("TD_API_TRY_ORDERS_COOKIE_SHAPE", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -115,6 +116,12 @@ class TdApiFetchResult:
     metrics_counters: dict[str, int] = field(default_factory=dict)
     orders_summary_rows_filtered: int = 0
     sales_summary_rows_filtered: int = 0
+    orders_cookie_shape_attempted: bool = False
+    orders_cookie_shape_success: bool = False
+    orders_cookie_shape_failure_reason: str | None = None
+    orders_cookie_shape_status_code: int | None = None
+    orders_cookie_shape_fallback_used: bool = False
+    orders_cookie_shape_runtime_delta_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -174,6 +181,11 @@ class _SharedAuthState:
     effective_token_discovery: _TokenDiscoveryResult | None = None
     refresh_attempted: bool = False
     auth_ready_logged_endpoints: set[str] = field(default_factory=set)
+    orders_cookie_shape_attempted: bool = False
+    orders_cookie_shape_success: bool = False
+    orders_cookie_shape_failure_reason: str | None = None
+    orders_cookie_shape_status_code: int | None = None
+    orders_cookie_shape_runtime_delta_ms: int | None = None
 
 
 class _StoreRateLimiter:
@@ -259,6 +271,12 @@ class TdApiClient:
                     endpoint: {"success": False, "final_error_class": "auth_unavailable", "attempts": 0}
                     for endpoint in errors
                 },
+                orders_cookie_shape_attempted=self._auth_state.orders_cookie_shape_attempted,
+                orders_cookie_shape_success=self._auth_state.orders_cookie_shape_success,
+                orders_cookie_shape_failure_reason=self._auth_state.orders_cookie_shape_failure_reason,
+                orders_cookie_shape_status_code=self._auth_state.orders_cookie_shape_status_code,
+                orders_cookie_shape_fallback_used=self._auth_state.orders_cookie_shape_attempted and not self._auth_state.orders_cookie_shape_success,
+                orders_cookie_shape_runtime_delta_ms=self._auth_state.orders_cookie_shape_runtime_delta_ms,
             )
 
         order_payload = await self._fetch_endpoint_rows(
@@ -320,6 +338,12 @@ class TdApiClient:
             metrics_counters=dict(self._metrics_counters),
             orders_summary_rows_filtered=orders_summary_filtered,
             sales_summary_rows_filtered=sales_summary_filtered,
+            orders_cookie_shape_attempted=self._auth_state.orders_cookie_shape_attempted,
+            orders_cookie_shape_success=self._auth_state.orders_cookie_shape_success,
+            orders_cookie_shape_failure_reason=self._auth_state.orders_cookie_shape_failure_reason,
+            orders_cookie_shape_status_code=self._auth_state.orders_cookie_shape_status_code,
+            orders_cookie_shape_fallback_used=self._auth_state.orders_cookie_shape_attempted and not self._auth_state.orders_cookie_shape_success,
+            orders_cookie_shape_runtime_delta_ms=self._auth_state.orders_cookie_shape_runtime_delta_ms,
         )
 
     async def prepare_auth_context(self) -> TdApiAuthPreparationResult:
@@ -358,6 +382,8 @@ class TdApiClient:
             GARMENTS_ENDPOINT: ("cookie_session",),
         }
 
+    def _orders_cookie_shape_trial_enabled(self) -> bool:
+        return self.config.source_mode == "api_only" and bool(self.config.try_orders_cookie_shape)
 
     @staticmethod
     def _merge_query_params(*, base_params: Mapping[str, Any], overrides: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -958,6 +984,11 @@ class TdApiClient:
         }
 
     def _auth_shapes_for_endpoint(self, endpoint: str) -> tuple[_AuthRequestShape, ...]:
+        if endpoint == ORDERS_ENDPOINT and self._orders_cookie_shape_trial_enabled():
+            return (
+                _AuthRequestShape(name="har_like", include_authorization_header=False, include_token_query=False),
+                _AuthRequestShape(name="legacy", include_authorization_header=True, include_token_query=True),
+            )
         if endpoint in HAR_COMPATIBLE_ENDPOINTS:
             return (
                 _AuthRequestShape(name="legacy", include_authorization_header=True, include_token_query=True),
@@ -966,13 +997,25 @@ class TdApiClient:
         return (_AuthRequestShape(name="legacy", include_authorization_header=True, include_token_query=True),)
 
     def _should_attempt_auth_shape_fallback(self, *, endpoint: str, shape_result: _JsonFetchResult) -> bool:
-        if endpoint not in HAR_COMPATIBLE_ENDPOINTS:
-            return False
         if shape_result.ok:
+            return False
+        if endpoint == ORDERS_ENDPOINT and self._orders_cookie_shape_trial_enabled():
+            return True
+        if endpoint not in HAR_COMPATIBLE_ENDPOINTS:
             return False
         if shape_result.status in {401, 403}:
             return True
         return shape_result.error in {"http_401", "http_403"}
+
+    @staticmethod
+    def _orders_cookie_shape_failure_reason_for_result(result: _JsonFetchResult) -> str:
+        if result.status in {401, 403} or result.error in {"http_401", "http_403", "auth_context_not_ready", "missing_auth_token_at_dispatch"}:
+            return "auth_rejection"
+        if (result.error or "").lower() in {"valueerror", "jsondecodeerror"}:
+            return "parse_error"
+        if result.status is not None:
+            return f"http_{result.status}"
+        return result.error or "unknown_error"
 
     def _request_context_headers(self) -> dict[str, str]:
         headers = {"accept": "*/*", "origin": f"https://{REPORTS_ORIGIN_HOST}", "referer": f"https://{REPORTS_ORIGIN_HOST}/"}
@@ -1027,7 +1070,11 @@ class TdApiClient:
         cookies_present = self._has_cookie_auth_source()
         endpoint_requirements = self._endpoint_auth_requirements()
         requires_tokenized_auth = "token" in endpoint_requirements.get(endpoint, ())
+        if endpoint == ORDERS_ENDPOINT and self._orders_cookie_shape_trial_enabled():
+            requires_tokenized_auth = False
         requires_cookie_source = "cookie_session" in endpoint_requirements.get(endpoint, ())
+        if endpoint == ORDERS_ENDPOINT and self._orders_cookie_shape_trial_enabled():
+            requires_cookie_source = True
 
         if requires_tokenized_auth and (not token_present or token_expired):
             failure_reason = "token_missing_or_expired"
@@ -1179,6 +1226,10 @@ class TdApiClient:
                 shape_last_result = _JsonFetchResult(ok=False, payload=None, error=fail_fast_error, status=None, attempts=0, auth_shape=auth_shape.name)
                 continue
 
+            shape_max_retries = max_retries
+            if endpoint == ORDERS_ENDPOINT and auth_shape.name == "har_like" and self._orders_cookie_shape_trial_enabled():
+                shape_max_retries = 0
+
             shape_result = await self._execute_json_request_shape(
                 endpoint=endpoint,
                 url=url,
@@ -1188,7 +1239,7 @@ class TdApiClient:
                 token_discovery=token_discovery,
                 connect_timeout_ms=connect_timeout_ms,
                 read_timeout_ms=read_timeout_ms,
-                max_retries=max_retries,
+                max_retries=shape_max_retries,
                 backoff_base_seconds=backoff_base_seconds,
                 max_backoff_seconds=max_backoff_seconds,
                 timeout_retry_limit=timeout_retry_limit,
@@ -1200,6 +1251,15 @@ class TdApiClient:
             )
             cumulative_attempts += shape_result.attempts
             shape_last_result = shape_result
+            if endpoint == ORDERS_ENDPOINT and auth_shape.name == "har_like" and self._orders_cookie_shape_trial_enabled():
+                self._auth_state.orders_cookie_shape_attempted = True
+                self._auth_state.orders_cookie_shape_success = bool(shape_result.ok)
+                self._auth_state.orders_cookie_shape_status_code = shape_result.status
+                self._auth_state.orders_cookie_shape_runtime_delta_ms = shape_result.latency_ms
+                self._auth_state.orders_cookie_shape_failure_reason = (
+                    None if shape_result.ok else self._orders_cookie_shape_failure_reason_for_result(shape_result)
+                )
+
             if shape_index == 0:
                 baseline_status = shape_result.status
                 baseline_latency_ms = shape_result.latency_ms

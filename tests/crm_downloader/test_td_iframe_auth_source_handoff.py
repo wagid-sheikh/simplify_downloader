@@ -124,6 +124,11 @@ def test_dashboard_context_trial_event_includes_required_fields() -> None:
         fallback_used=False,
         runtime_delta_ms=123,
         context_source="dashboard_only",
+        orders_cookie_shape_attempted=True,
+        orders_cookie_shape_success=False,
+        orders_cookie_shape_failure_reason="auth_rejection",
+        orders_cookie_shape_fallback_used=True,
+        orders_cookie_shape_runtime_delta_ms=87,
     )
 
     logs = _read_logs(output)
@@ -134,3 +139,8 @@ def test_dashboard_context_trial_event_includes_required_fields() -> None:
     assert event["fallback_used"] is False
     assert event["runtime_delta_ms"] == 123
     assert event["context_source"] == "dashboard_only"
+    assert event["orders_cookie_shape_attempted"] is True
+    assert event["orders_cookie_shape_success"] is False
+    assert event["orders_cookie_shape_failure_reason"] == "auth_rejection"
+    assert event["orders_cookie_shape_fallback_used"] is True
+    assert event["orders_cookie_shape_runtime_delta_ms"] == 87
