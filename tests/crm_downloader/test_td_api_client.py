@@ -879,7 +879,7 @@ def test_td_api_artifact_write_excel_uses_atomic_replace(tmp_path: Path) -> None
 
     assert artifact_path.exists()
     assert artifact_path.read_bytes() == original_bytes
-    assert not artifact_path.with_name(f"{artifact_path.name}.tmp.xlsx").exists()
+    assert not list(tmp_path.glob("*.tmp.xlsx"))
 
 
 
