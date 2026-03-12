@@ -243,7 +243,7 @@ def _build_threshold_verdict(
 
 
 def _resolve_store_concurrency_settings(*, source_mode: str) -> tuple[int, bool]:
-    configured_concurrency = max(_int_env("TD_API_ONLY_STORE_CONCURRENCY", 1), 1)
+    configured_concurrency = max(_int_env("TD_API_ONLY_STORE_CONCURRENCY", 2), 2)
     allow_non_api_only = _bool_env("TD_ENABLE_NON_API_ONLY_STORE_CONCURRENCY", default=False)
     should_enable = source_mode == "api_only" or allow_non_api_only
     if not should_enable:
@@ -650,7 +650,7 @@ async def main(
             source_mode=source_mode,
             configured_concurrency=store_concurrency,
             concurrency_enabled=store_concurrency_enabled,
-            allow_non_api_only_concurrency=_bool_env("TD_ENABLE_NON_API_ONLY_STORE_CONCURRENCY", default=False),
+            allow_non_api_only_concurrency=_bool_env("TD_ENABLE_NON_API_ONLY_STORE_CONCURRENCY", default=True),
         )
 
         async with async_playwright() as p:
