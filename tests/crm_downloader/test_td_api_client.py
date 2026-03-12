@@ -1055,6 +1055,30 @@ class _TokenRefreshingClient(TdApiClient):
         return _TokenDiscoveryResult(token=token, source="test", expiry=None)
 
 
+class _LateTokenDiscoveryClient(TdApiClient):
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self.discovery_calls = 0
+
+    async def _discover_reporting_token(self, *, force_refresh: bool = False):  # type: ignore[override]
+        from app.crm_downloader.td_orders_sync.td_api_client import _TokenDiscoveryResult
+
+        self.discovery_calls += 1
+        if force_refresh:
+            token_result = _TokenDiscoveryResult(token="dispatch-token", source="runtime_storage", expiry=None, detail="late-discovery")
+            self._auth_state.token_discovery = token_result
+            return token_result
+
+        if self.discovery_calls == 1:
+            token_result = _TokenDiscoveryResult(token=None, source=None, expiry=None)
+            self._auth_state.token_discovery = token_result
+            return token_result
+
+        token_result = _TokenDiscoveryResult(token="dispatch-token", source="runtime_storage", expiry=None, detail="late-discovery")
+        self._auth_state.token_discovery = token_result
+        return token_result
+
+
 @pytest.mark.asyncio
 async def test_get_json_retries_once_after_401_with_refreshed_token(tmp_path: Path) -> None:
     request = _StubRequest(
@@ -1079,7 +1103,7 @@ async def test_get_json_retries_once_after_401_with_refreshed_token(tmp_path: Pa
     assert request.calls[0]["headers"].get("Authorization") == "Bearer stale-token"
     assert request.calls[1]["headers"].get("Authorization") == "Bearer fresh-token"
     assert client.discovery_calls.count(True) == 1
-    assert metadata[0]["retry_reason"] == "auth_refresh"
+    assert metadata[0]["retry_reason"] == "http_401"
     assert metadata[0]["status"] == 401
     assert metadata[0]["retry_count"] == 0
     assert metadata[0]["token_refresh_attempted"] is True
@@ -1558,6 +1582,43 @@ async def test_fetch_reports_records_auth_error_diagnostics_when_rows_zero_due_t
     }
     assert set(result.endpoint_error_diagnostics.keys()) == set(result.endpoint_errors.keys())
     assert all(bool(diagnostics) for diagnostics in result.endpoint_error_diagnostics.values())
+
+
+@pytest.mark.asyncio
+async def test_fetch_reports_uses_effective_dispatch_token_for_auth_diagnostics(tmp_path: Path) -> None:
+    request = _StubRequest(
+        responses=[
+            _StubResponse(status=401, url="https://reporting-api.quickdrycleaning.com/reports/order-report", payload={}),
+            _StubResponse(status=401, url="https://reporting-api.quickdrycleaning.com/reports/order-report", payload={}),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/sales-and-deliveries/sales",
+                payload={"data": [{"orderNo": "S-1"}], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [{"orderNo": "G-1"}], "totalPages": 1},
+            ),
+            _StubResponse(
+                status=200,
+                url="https://reporting-api.quickdrycleaning.com/garments/details",
+                payload={"data": [], "totalPages": 1},
+            ),
+        ]
+    )
+    context = _StubContext(request=request)
+    storage_state_path = tmp_path / "s.json"
+    storage_state_path.write_text(json.dumps({"cookies": [{"name": "sessionid"}], "origins": []}), encoding="utf-8")
+    client = _LateTokenDiscoveryClient(store_code="a123", context=context, storage_state_path=storage_state_path)
+
+    result = await client.fetch_reports(from_date=date(2026, 1, 1), to_date=date(2026, 1, 2))
+
+    assert result.endpoint_errors["/reports/order-report"] == "http_401"
+    auth_diagnostics = result.endpoint_error_diagnostics["/reports/order-report"]
+    assert auth_diagnostics["token_found"] is True
+    assert auth_diagnostics["token_source"] == "runtime_storage"
+    assert auth_diagnostics["token_source_detail"] == "late-discovery"
 
 
 @pytest.mark.asyncio

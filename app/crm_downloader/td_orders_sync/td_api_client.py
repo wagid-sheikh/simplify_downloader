@@ -171,6 +171,7 @@ class _AuthContextValidation:
 @dataclass
 class _SharedAuthState:
     token_discovery: _TokenDiscoveryResult | None = None
+    effective_token_discovery: _TokenDiscoveryResult | None = None
     refresh_attempted: bool = False
     auth_ready_logged_endpoints: set[str] = field(default_factory=set)
 
@@ -913,7 +914,11 @@ class TdApiClient:
         self._metrics_counters[metric_key] = self._metrics_counters.get(metric_key, 0) + max(0, int(count))
 
     def _build_auth_diagnostics_payload(self) -> dict[str, Any]:
-        token_discovery = self._auth_state.token_discovery or _TokenDiscoveryResult(token=None, source=None, expiry=None)
+        token_discovery = (
+            self._auth_state.effective_token_discovery
+            or self._auth_state.token_discovery
+            or _TokenDiscoveryResult(token=None, source=None, expiry=None)
+        )
         return {
             "token_found": bool((token_discovery.token or "").strip()),
             "token_source": token_discovery.source,
@@ -921,6 +926,19 @@ class TdApiClient:
             "token_expiry": token_discovery.expiry,
             "cookies_found": self._has_cookie_auth_source(),
         }
+
+    def _record_effective_token_discovery(
+        self,
+        *,
+        token_discovery: _TokenDiscoveryResult,
+        headers: Mapping[str, str],
+        request_params: Mapping[str, Any],
+    ) -> None:
+        authorization_header = (headers.get("Authorization") or "").strip()
+        query_token = (request_params.get("token") or "").strip()
+        if not authorization_header and not query_token:
+            return
+        self._auth_state.effective_token_discovery = token_discovery
 
     def _auth_usage_flags(
         self,
@@ -1139,6 +1157,7 @@ class TdApiClient:
                 shape_headers["Authorization"] = f"Bearer {token_value}"
             if token_value and auth_shape.include_token_query:
                 shape_params["token"] = token_value
+            self._record_effective_token_discovery(token_discovery=token_discovery, headers=shape_headers, request_params=shape_params)
 
             if auth_shape.name == "legacy" and endpoint in HAR_COMPATIBLE_ENDPOINTS and not token_value:
                 fail_fast_error = "missing_auth_token_at_dispatch"
@@ -1287,6 +1306,7 @@ class TdApiClient:
                     **self._auth_usage_flags(headers=headers, request_params=request_params, token_discovery=token_discovery),
                 },
             )
+            self._record_effective_token_discovery(token_discovery=token_discovery, headers=headers, request_params=request_params)
             await _StoreRateLimiter.wait_turn(self.store_code, self.config.min_interval_seconds)
             started = time.perf_counter()
             retry_reason: str | None = None
@@ -1342,6 +1362,11 @@ class TdApiClient:
                             headers = mutable_headers
                             request_params = mutable_params
                             token_discovery = self._auth_state.token_discovery or token_discovery
+                            self._record_effective_token_discovery(
+                                token_discovery=token_discovery,
+                                headers=headers,
+                                request_params=request_params,
+                            )
                         continue
                     return _JsonFetchResult(ok=False, payload=None, error="http_401", status=status_code, attempts=attempts, auth_shape=auth_shape.name, latency_ms=latency_ms)
 
