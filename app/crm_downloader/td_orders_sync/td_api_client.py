@@ -186,7 +186,6 @@ class _SharedAuthState:
     orders_cookie_shape_failure_reason: str | None = None
     orders_cookie_shape_status_code: int | None = None
     orders_cookie_shape_runtime_delta_ms: int | None = None
-    orders_fetch_auth_shapes_logged: bool = False
 
 
 class _StoreRateLimiter:
@@ -223,6 +222,8 @@ class TdApiClient:
         self._auth_state = _SharedAuthState()
         self._report_iframe_src = (report_iframe_src or "").strip() or None
         self._metrics_counters: dict[str, int] = {}
+        self._orders_cookie_shape_gate_state_logged = False
+        self._orders_cookie_shape_gate_state_metadata_added = False
 
     def read_session_artifact(self) -> dict[str, Any]:
         if not self.storage_state_path.exists():
@@ -280,7 +281,7 @@ class TdApiClient:
                 orders_cookie_shape_runtime_delta_ms=self._auth_state.orders_cookie_shape_runtime_delta_ms,
             )
 
-        self._log_orders_fetch_auth_shapes_once()
+        self._log_orders_cookie_shape_gate_state_once()
 
         order_payload = await self._fetch_endpoint_rows(
             endpoint=ORDERS_ENDPOINT,
@@ -349,21 +350,32 @@ class TdApiClient:
             orders_cookie_shape_runtime_delta_ms=self._auth_state.orders_cookie_shape_runtime_delta_ms,
         )
 
-    def _log_orders_fetch_auth_shapes_once(self) -> None:
-        if self._auth_state.orders_fetch_auth_shapes_logged:
+    def _orders_cookie_shape_gate_state_payload(self) -> dict[str, Any]:
+        return {
+            "config_source_mode": self.config.source_mode,
+            "config_try_orders_cookie_shape": self.config.try_orders_cookie_shape,
+            "orders_cookie_shape_trial_enabled": self._orders_cookie_shape_trial_enabled(),
+            "orders_auth_shapes": [shape.name for shape in self._auth_shapes_for_endpoint(ORDERS_ENDPOINT)],
+        }
+
+    def _log_orders_cookie_shape_gate_state_once(self) -> None:
+        if self._orders_cookie_shape_gate_state_logged:
             return
-        self._auth_state.orders_fetch_auth_shapes_logged = True
+        self._orders_cookie_shape_gate_state_logged = True
         logger.info(
-            "TD API orders fetch auth-shape plan",
+            "orders_cookie_shape_gate_state",
             extra={
                 "store_code": self.store_code,
                 "endpoint": ORDERS_ENDPOINT,
-                "config_source_mode": self.config.source_mode,
-                "config_try_orders_cookie_shape": self.config.try_orders_cookie_shape,
-                "orders_cookie_shape_trial_enabled": self._orders_cookie_shape_trial_enabled(),
-                "orders_auth_shapes": [shape.name for shape in self._auth_shapes_for_endpoint(ORDERS_ENDPOINT)],
+                **self._orders_cookie_shape_gate_state_payload(),
             },
         )
+
+    def _orders_cookie_shape_gate_state_metadata_for_endpoint(self, *, endpoint: str) -> dict[str, Any]:
+        if endpoint != ORDERS_ENDPOINT or self._orders_cookie_shape_gate_state_metadata_added:
+            return {}
+        self._orders_cookie_shape_gate_state_metadata_added = True
+        return self._orders_cookie_shape_gate_state_payload()
 
     async def prepare_auth_context(self) -> TdApiAuthPreparationResult:
         token_discovery = await self._discover_reporting_token()
@@ -1147,6 +1159,7 @@ class TdApiClient:
         timeout_retry_limit: int | None = None,
     ) -> _JsonFetchResult:
         url = f"{REPORTING_API_BASE_URL}{endpoint}"
+        orders_gate_state_metadata = self._orders_cookie_shape_gate_state_metadata_for_endpoint(endpoint=endpoint)
         token_discovery = await self._discover_reporting_token()
         iframe_token_discovery = self._discover_token_from_iframe_url_query()
         request_context_headers = self._request_context_headers()
@@ -1165,6 +1178,7 @@ class TdApiClient:
                     "retry_count": 0,
                     "token_refresh_attempted": self._auth_state.refresh_attempted,
                     "retry_reason": validation_error,
+                    **orders_gate_state_metadata,
                 }
             )
             return _JsonFetchResult(ok=False, payload=None, error=validation_error, status=None, attempts=0)
@@ -1205,6 +1219,7 @@ class TdApiClient:
                     "auth_context_token_present": auth_validation.token_present,
                     "auth_context_token_expired": auth_validation.token_expired,
                     "auth_context_cookies_present": auth_validation.cookies_present,
+                    **orders_gate_state_metadata,
                 }
             )
             return _JsonFetchResult(ok=False, payload=None, error="auth_context_not_ready", status=None, attempts=0)
@@ -1240,6 +1255,7 @@ class TdApiClient:
                         "primary_auth_shape": primary_auth_shape,
                         "auth_shape": auth_shape.name,
                         "auth_shape_fallback_from_har_like": auth_shape.name != primary_auth_shape,
+                        **orders_gate_state_metadata,
                     }
                 )
                 shape_last_result = _JsonFetchResult(ok=False, payload=None, error=fail_fast_error, status=None, attempts=0, auth_shape=auth_shape.name)
@@ -1267,6 +1283,7 @@ class TdApiClient:
                 baseline_latency_ms=baseline_latency_ms,
                 primary_auth_shape=primary_auth_shape,
                 auth_shape_fallback_used=auth_shape.name != primary_auth_shape,
+                orders_gate_state_metadata=orders_gate_state_metadata,
             )
             cumulative_attempts += shape_result.attempts
             shape_last_result = shape_result
@@ -1337,6 +1354,7 @@ class TdApiClient:
         baseline_latency_ms: int | None,
         primary_auth_shape: str,
         auth_shape_fallback_used: bool,
+        orders_gate_state_metadata: Mapping[str, Any],
     ) -> _JsonFetchResult:
         last_error: Exception | None = None
         status_code: int | None = None
@@ -1427,6 +1445,7 @@ class TdApiClient:
                             "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
                             "auth_shape_latency_delta_ms": _safe_delta(latency_ms, baseline_latency_ms),
                             **self._auth_usage_flags(headers=headers, request_params=request_params, token_discovery=token_discovery),
+                            **orders_gate_state_metadata,
                         }
                     )
                     if refreshed:
@@ -1470,6 +1489,7 @@ class TdApiClient:
                         "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
                         "auth_shape_latency_delta_ms": _safe_delta(latency_ms, baseline_latency_ms),
                         **self._auth_usage_flags(headers=headers, request_params=request_params, token_discovery=token_discovery),
+                        **orders_gate_state_metadata,
                     }
                 )
 
@@ -1522,6 +1542,7 @@ class TdApiClient:
                         "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
                         "auth_shape_latency_delta_ms": _safe_delta(latency_ms, baseline_latency_ms),
                         **self._auth_usage_flags(headers=headers, request_params=request_params, token_discovery=token_discovery),
+                        **orders_gate_state_metadata,
                     }
                 )
                 self._increment_metric(name="timeout_class", endpoint=endpoint, timeout_class=timeout_class)
@@ -1551,6 +1572,7 @@ class TdApiClient:
                         "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
                         "auth_shape_latency_delta_ms": _safe_delta(latency_ms, baseline_latency_ms),
                         **self._auth_usage_flags(headers=headers, request_params=request_params, token_discovery=token_discovery),
+                        **orders_gate_state_metadata,
                     }
                 )
                 last_error = exc
