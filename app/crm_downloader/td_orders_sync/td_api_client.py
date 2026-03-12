@@ -115,6 +115,18 @@ class TdApiFetchResult:
 
 
 @dataclass(frozen=True)
+class TdApiAuthPreparationResult:
+    ready: bool
+    token_present: bool
+    token_source: str | None
+    token_expiry: str | None
+    cookies_present: bool
+    endpoint_readiness: dict[str, bool]
+    endpoint_failure_reasons: dict[str, str]
+    failure_reason: str | None
+
+
+@dataclass(frozen=True)
 class _TokenDiscoveryResult:
     token: str | None
     source: str | None
@@ -301,6 +313,31 @@ class TdApiClient:
             metrics_counters=dict(self._metrics_counters),
             orders_summary_rows_filtered=orders_summary_filtered,
             sales_summary_rows_filtered=sales_summary_filtered,
+        )
+
+    async def prepare_auth_context(self) -> TdApiAuthPreparationResult:
+        token_discovery = await self._discover_reporting_token()
+        self._auth_state.token_discovery = token_discovery
+        endpoint_readiness: dict[str, bool] = {}
+        endpoint_failure_reasons: dict[str, str] = {}
+        for endpoint in (ORDERS_ENDPOINT, SALES_ENDPOINT, GARMENTS_ENDPOINT):
+            validation = self._validate_auth_context_for_endpoint(endpoint=endpoint, token_discovery=token_discovery)
+            endpoint_readiness[endpoint] = validation.ready
+            if validation.failure_reason:
+                endpoint_failure_reasons[endpoint] = validation.failure_reason
+        ready = all(endpoint_readiness.values())
+        failure_reason = ";".join(
+            f"{endpoint}:{reason}" for endpoint, reason in endpoint_failure_reasons.items() if reason
+        ) or None
+        return TdApiAuthPreparationResult(
+            ready=ready,
+            token_present=bool((token_discovery.token or "").strip()),
+            token_source=token_discovery.source,
+            token_expiry=token_discovery.expiry,
+            cookies_present=self._has_cookie_auth_source(),
+            endpoint_readiness=endpoint_readiness,
+            endpoint_failure_reasons=endpoint_failure_reasons,
+            failure_reason=failure_reason,
         )
 
 

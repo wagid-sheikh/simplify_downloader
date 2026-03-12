@@ -7362,7 +7362,86 @@ async def _run_store_discovery(
 
         api_fetch_result = TdApiFetchResult()
         api_all_endpoints_auth_failed = False
+        api_context_source = "iframe"
+        dashboard_trial_attempted = False
+        dashboard_trial_success = False
+        dashboard_trial_fallback_used = False
+        dashboard_trial_failure_reason: str | None = None
+        dashboard_trial_elapsed_ms: int | None = None
         sales_only_mode = not run_orders
+        dashboard_only_context_trial_enabled = _bool_env("TD_API_TRY_DASHBOARD_ONLY_CONTEXT", default=False)
+        dashboard_only_context_trial_eligible = source_mode == "api_only" and dashboard_only_context_trial_enabled
+        if dashboard_only_context_trial_eligible:
+            dashboard_trial_attempted = True
+            dashboard_trial_started = datetime.now(timezone.utc)
+            try:
+                dashboard_trial_client = TdApiClient(
+                    store_code=store.store_code,
+                    context=context,
+                    storage_state_path=store.storage_state_path,
+                    report_iframe_src=None,
+                )
+                dashboard_trial_auth = await dashboard_trial_client.prepare_auth_context()
+                dashboard_trial_elapsed_ms = int((datetime.now(timezone.utc) - dashboard_trial_started).total_seconds() * 1000)
+                if dashboard_trial_auth.ready:
+                    dashboard_trial_success = True
+                    api_context_source = "dashboard_only"
+                    log_event(
+                        logger=store_logger,
+                        phase="api",
+                        message="Dashboard-only API auth context trial succeeded",
+                        store_code=store.store_code,
+                        source_mode=source_mode,
+                        trial_attempted=True,
+                        trial_success=True,
+                        fallback_used=False,
+                        runtime_delta_ms=dashboard_trial_elapsed_ms,
+                        context_source=api_context_source,
+                        token_present=dashboard_trial_auth.token_present,
+                        token_source=dashboard_trial_auth.token_source,
+                        token_expiry=dashboard_trial_auth.token_expiry,
+                        cookies_present=dashboard_trial_auth.cookies_present,
+                    )
+                else:
+                    dashboard_trial_fallback_used = True
+                    api_context_source = "iframe_fallback"
+                    dashboard_trial_failure_reason = dashboard_trial_auth.failure_reason or "auth_context_not_ready"
+                    log_event(
+                        logger=store_logger,
+                        phase="api",
+                        status="warn",
+                        message="Dashboard-only API auth context trial failed; activating iframe fallback",
+                        store_code=store.store_code,
+                        source_mode=source_mode,
+                        trial_attempted=True,
+                        trial_success=False,
+                        fallback_used=True,
+                        runtime_delta_ms=dashboard_trial_elapsed_ms,
+                        context_source=api_context_source,
+                        failure_reason=dashboard_trial_failure_reason,
+                        endpoint_readiness=dashboard_trial_auth.endpoint_readiness,
+                        endpoint_failure_reasons=dashboard_trial_auth.endpoint_failure_reasons,
+                    )
+            except Exception as exc:
+                dashboard_trial_elapsed_ms = int((datetime.now(timezone.utc) - dashboard_trial_started).total_seconds() * 1000)
+                dashboard_trial_fallback_used = True
+                api_context_source = "iframe_fallback"
+                dashboard_trial_failure_reason = f"trial_exception:{exc}"
+                log_event(
+                    logger=store_logger,
+                    phase="api",
+                    status="warn",
+                    message="Dashboard-only API auth context trial failed with exception; activating iframe fallback",
+                    store_code=store.store_code,
+                    source_mode=source_mode,
+                    trial_attempted=True,
+                    trial_success=False,
+                    fallback_used=True,
+                    runtime_delta_ms=dashboard_trial_elapsed_ms,
+                    context_source=api_context_source,
+                    failure_reason=dashboard_trial_failure_reason,
+                )
+
         if not run_orders and source_mode == "ui":
             log_event(
                 logger=store_logger,
@@ -7372,35 +7451,42 @@ async def _run_store_discovery(
             )
             orders_report = StoreReport(status="skipped", message="Orders sync skipped by flag")
         else:
-            container_ready = await _navigate_to_orders_container(
-                page,
-                store=store,
-                logger=store_logger,
-                nav_selector=nav_selector,
-                nav_timeout_ms=nav_timeout_ms,
-                capture_left_nav=True,
-                nav_snapshot_context="orders_iframe",
-                sales_only_mode=sales_only_mode,
-            )
-            if not container_ready:
-                outcome = StoreOutcome(
-                    status="error",
-                    message="Orders container did not load from Reports navigation",
-                    final_url=page.url,
-                    verification_seen=verification_seen,
-                    storage_state=stored_state_path,
+            iframe_locator: FrameLocator | None = None
+            iframe_src: str | None = None
+            if dashboard_trial_success:
+                iframe_locator = page.frame_locator("html")
+            else:
+                container_ready = await _navigate_to_orders_container(
+                    page,
+                    store=store,
+                    logger=store_logger,
+                    nav_selector=nav_selector,
+                    nav_timeout_ms=nav_timeout_ms,
+                    capture_left_nav=True,
+                    nav_snapshot_context="orders_iframe",
+                    sales_only_mode=sales_only_mode,
                 )
-                return
+                if not container_ready:
+                    outcome = StoreOutcome(
+                        status="error",
+                        message="Orders container did not load from Reports navigation",
+                        final_url=page.url,
+                        verification_seen=verification_seen,
+                        storage_state=stored_state_path,
+                    )
+                    return
 
-            iframe_locator, iframe_src = await _wait_for_iframe(page, store=store, logger=store_logger)
+                iframe_locator, iframe_src = await _wait_for_iframe(page, store=store, logger=store_logger)
             if iframe_locator is not None:
                 if source_mode != "ui":
-                    report_iframe_src = await _resolve_report_iframe_auth_source_for_api(
-                        page,
-                        store=store,
-                        logger=store_logger,
-                        initial_iframe_src=iframe_src,
-                    )
+                    report_iframe_src: str | None = None
+                    if not dashboard_trial_success:
+                        report_iframe_src = await _resolve_report_iframe_auth_source_for_api(
+                            page,
+                            store=store,
+                            logger=store_logger,
+                            initial_iframe_src=iframe_src,
+                        )
                     try:
                         api_client = TdApiClient(
                             store_code=store.store_code,
@@ -7418,6 +7504,7 @@ async def _run_store_discovery(
                             artifact_has_cookies=bool(session_artifact.get("cookies")),
                             artifact_has_origins=bool(session_artifact.get("origins")),
                             source_mode=source_mode,
+                            context_source=api_context_source,
                         )
                         api_fetch_result = await api_client.fetch_reports(from_date=run_start_date, to_date=run_end_date)
                         api_request_metadata.extend(api_fetch_result.request_metadata)
@@ -7446,6 +7533,7 @@ async def _run_store_discovery(
                             message="Persisted TD API artifacts",
                             store_code=store.store_code,
                             source_mode=source_mode,
+                            context_source=api_context_source,
                             artifact_dir=str(download_dir),
                             artifact_paths=artifact_result.artifact_paths,
                             human_readable_export_enabled=artifact_result.human_readable_export_enabled,
@@ -7460,6 +7548,7 @@ async def _run_store_discovery(
                                 message="TD API artifact persistence encountered warnings",
                                 store_code=store.store_code,
                                 source_mode=source_mode,
+                                context_source=api_context_source,
                                 warnings=artifact_result.warnings,
                             )
                         log_event(
@@ -7468,6 +7557,7 @@ async def _run_store_discovery(
                             message="Fetched TD API reports",
                             store_code=store.store_code,
                             source_mode=source_mode,
+                            context_source=api_context_source,
                             orders_rows=len(api_fetch_result.orders_rows),
                             sales_rows=len(api_fetch_result.sales_rows),
                             garments_rows=len(api_fetch_result.garments_rows),
@@ -7484,6 +7574,7 @@ async def _run_store_discovery(
                             message="TD API fetch failed; continuing according to source mode",
                             store_code=store.store_code,
                             source_mode=source_mode,
+                            context_source=api_context_source,
                             error=str(exc),
                         )
                         if source_mode == "api_only":
