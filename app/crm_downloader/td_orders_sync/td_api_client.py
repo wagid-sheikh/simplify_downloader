@@ -85,6 +85,16 @@ class TdApiClientConfig:
         for size in os.environ.get("TD_API_PAGE_SIZE_FALLBACKS", "250,100").split(",")
         if size.strip().isdigit() and int(size.strip()) > 0
     )
+    source_mode: str = os.environ.get("TD_SOURCE_MODE", "ui").strip().lower()
+    garments_latency_threshold_ms: int = int(os.environ.get("TD_API_GARMENTS_LATENCY_THRESHOLD_MS", "8000"))
+    garments_max_wall_time_ms: int = int(os.environ.get("TD_API_GARMENTS_MAX_WALL_TIME_MS", "120000"))
+    garments_max_timeout_pages: int = int(os.environ.get("TD_API_GARMENTS_MAX_TIMEOUT_PAGES", "2"))
+    garments_api_only_read_timeout_ms: int = int(os.environ.get("TD_API_GARMENTS_API_ONLY_READ_TIMEOUT_MS", "25000"))
+    garments_api_only_total_timeout_ms: int = int(os.environ.get("TD_API_GARMENTS_API_ONLY_TOTAL_TIMEOUT_MS", "35000"))
+    garments_api_only_max_retries: int = int(os.environ.get("TD_API_GARMENTS_API_ONLY_MAX_RETRIES", "2"))
+    garments_api_only_timeout_retry_limit: int = int(os.environ.get("TD_API_GARMENTS_API_ONLY_TIMEOUT_RETRY_LIMIT", "1"))
+    garments_api_only_backoff_base_seconds: float = float(os.environ.get("TD_API_GARMENTS_API_ONLY_BACKOFF_BASE_SECONDS", "0.4"))
+    garments_api_only_max_backoff_seconds: float = float(os.environ.get("TD_API_GARMENTS_API_ONLY_MAX_BACKOFF_SECONDS", "2.5"))
 
 
 @dataclass
@@ -403,6 +413,8 @@ class TdApiClient:
         error_diagnostics: dict[str, dict[str, Any]],
         endpoint_health: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
+        is_garments_endpoint = endpoint == GARMENTS_ENDPOINT
+        endpoint_started_at = time.perf_counter()
         page = 1
         cumulative_rows = 0
         total_rows_hint: int | None = None
@@ -418,6 +430,13 @@ class TdApiClient:
         endpoint_attempts = 0
         eventual_success_recorded = False
         retry_profile = self._retry_profile_for_endpoint(endpoint)
+        garments_latency_distribution_ms: list[int] = []
+        garments_timeout_count = 0
+        garments_retry_count = 0
+        garments_fallback_count = 0
+        garments_adaptive_downgrades = 0
+        garments_degraded_reason: str | None = None
+
         logger.info(
             "TD API endpoint pagination configuration",
             extra={
@@ -426,6 +445,7 @@ class TdApiClient:
                 "initial_page_size": active_page_size,
                 "available_page_sizes": available_page_sizes,
                 "max_retries": retry_profile["max_retries"],
+                "timeout_retry_limit": retry_profile["timeout_retry_limit"],
                 "backoff_base_seconds": retry_profile["backoff_base_seconds"],
                 "max_backoff_seconds": retry_profile["max_backoff_seconds"],
                 "read_timeout_ms": self._read_timeout_ms_for_endpoint(endpoint),
@@ -435,6 +455,24 @@ class TdApiClient:
         self._log_auth_context_ready_once(endpoint=endpoint)
 
         while True:
+            if is_garments_endpoint and self.config.garments_max_wall_time_ms > 0:
+                elapsed_wall_time_ms = int((time.perf_counter() - endpoint_started_at) * 1000)
+                if elapsed_wall_time_ms >= self.config.garments_max_wall_time_ms:
+                    garments_degraded_reason = "garments_wall_time_budget_exhausted"
+                    errors[endpoint] = garments_degraded_reason
+                    logger.warning(
+                        "TD API garments fetch degraded due to wall-time budget",
+                        extra={
+                            "store_code": self.store_code,
+                            "endpoint": endpoint,
+                            "degraded_reason": garments_degraded_reason,
+                            "garments_elapsed_wall_time_ms": elapsed_wall_time_ms,
+                            "garments_max_wall_time_ms": self.config.garments_max_wall_time_ms,
+                            "page": page,
+                        },
+                    )
+                    break
+
             active_page_size = available_page_sizes[page_size_index]
             page_params = self._merge_query_params(
                 base_params=params,
@@ -449,17 +487,30 @@ class TdApiClient:
                 max_retries=retry_profile["max_retries"],
                 backoff_base_seconds=retry_profile["backoff_base_seconds"],
                 max_backoff_seconds=retry_profile["max_backoff_seconds"],
+                timeout_retry_limit=retry_profile["timeout_retry_limit"],
             )
 
             endpoint_attempts += max(int(page_result.attempts or 0), 0)
+            if is_garments_endpoint:
+                garments_retry_count += max(int(page_result.attempts or 0) - 1, 0)
+                if page_result.error in _TIMEOUT_ERROR_CLASSES:
+                    garments_timeout_count += 1
 
             if not page_result.ok:
+                timeout_degradation_reached = (
+                    is_garments_endpoint
+                    and page_result.error in _TIMEOUT_ERROR_CLASSES
+                    and self.config.garments_max_timeout_pages > 0
+                    and garments_timeout_count >= self.config.garments_max_timeout_pages
+                )
                 if page_result.error in _TIMEOUT_ERROR_CLASSES and page_size_index < len(available_page_sizes) - 1:
                     previous_page_size = active_page_size
                     fallback_attempts += 1
                     page_size_index += 1
                     next_page_size = available_page_sizes[page_size_index]
                     fallback_used = True
+                    if is_garments_endpoint:
+                        garments_fallback_count += 1
                     metadata.append(
                         {
                             "endpoint": endpoint,
@@ -492,7 +543,23 @@ class TdApiClient:
                         },
                     )
                     continue
+
                 final_error = page_result.error or "unknown_error"
+                if timeout_degradation_reached:
+                    garments_degraded_reason = "garments_timeout_budget_exhausted"
+                    final_error = garments_degraded_reason
+                    logger.warning(
+                        "TD API garments fetch degraded due to timeout budget",
+                        extra={
+                            "store_code": self.store_code,
+                            "endpoint": endpoint,
+                            "degraded_reason": garments_degraded_reason,
+                            "garments_timeout_count": garments_timeout_count,
+                            "garments_timeout_budget": self.config.garments_max_timeout_pages,
+                            "page": page,
+                        },
+                    )
+
                 errors[endpoint] = final_error
                 diagnostics = self._build_auth_diagnostics_payload()
                 error_diagnostics[endpoint] = diagnostics
@@ -547,6 +614,33 @@ class TdApiClient:
             aggregated_rows.extend(rows)
             cumulative_rows += len(rows)
 
+            if is_garments_endpoint and page_result.latency_ms is not None:
+                garments_latency_distribution_ms.append(max(int(page_result.latency_ms), 0))
+                latency_threshold_ms = max(int(self.config.garments_latency_threshold_ms), 0)
+                if (
+                    latency_threshold_ms > 0
+                    and int(page_result.latency_ms) >= latency_threshold_ms
+                    and page_size_index < len(available_page_sizes) - 1
+                ):
+                    previous_page_size = active_page_size
+                    page_size_index += 1
+                    fallback_used = True
+                    fallback_attempts += 1
+                    garments_fallback_count += 1
+                    garments_adaptive_downgrades += 1
+                    logger.info(
+                        "TD API garments adaptive page-size downgrade applied",
+                        extra={
+                            "store_code": self.store_code,
+                            "endpoint": endpoint,
+                            "page": page,
+                            "latency_ms": page_result.latency_ms,
+                            "latency_threshold_ms": latency_threshold_ms,
+                            "adaptive_page_size_from": previous_page_size,
+                            "adaptive_page_size_to": available_page_sizes[page_size_index],
+                        },
+                    )
+
             total_rows_hint = _extract_total_rows_hint(page_payload) or total_rows_hint
             total_pages_hint = _extract_total_pages_hint(page_payload) or total_pages_hint
 
@@ -592,18 +686,48 @@ class TdApiClient:
                 "attempts": endpoint_attempts,
             },
         )
+
+        total_wall_time_ms = int((time.perf_counter() - endpoint_started_at) * 1000)
         logger.info(
             "TD API page-size fallback decision",
             extra={
                 "store_code": self.store_code,
                 "endpoint": endpoint,
                 "fallback_used": fallback_used,
-                "final_page_size": active_page_size,
+                "final_page_size": available_page_sizes[page_size_index],
                 "available_page_sizes": available_page_sizes,
                 "fallback_attempts": fallback_attempts,
                 "fallback_successes": fallback_successes,
             },
         )
+
+        if is_garments_endpoint:
+            latency_p50 = _percentile(garments_latency_distribution_ms, 50)
+            latency_p95 = _percentile(garments_latency_distribution_ms, 95)
+            latency_max = max(garments_latency_distribution_ms) if garments_latency_distribution_ms else 0
+            logger.info(
+                "TD API garments compact metrics summary",
+                extra={
+                    "store_code": self.store_code,
+                    "endpoint": endpoint,
+                    "garments_metrics_before_page_size": int(params.get("pageSize") or self.config.page_size),
+                    "garments_metrics_before_max_retries": retry_profile["max_retries"],
+                    "garments_metrics_before_timeout_retry_limit": retry_profile["timeout_retry_limit"],
+                    "garments_metrics_after_page_size": available_page_sizes[page_size_index],
+                    "garments_metrics_after_rows": cumulative_rows,
+                    "garments_fetch_total_wall_time_ms": total_wall_time_ms,
+                    "garments_page_latency_p50_ms": latency_p50,
+                    "garments_page_latency_p95_ms": latency_p95,
+                    "garments_page_latency_max_ms": latency_max,
+                    "garments_timeout_count": garments_timeout_count,
+                    "garments_retry_count": garments_retry_count,
+                    "garments_page_size_fallback_count": garments_fallback_count,
+                    "garments_adaptive_downgrade_count": garments_adaptive_downgrades,
+                    "garments_degraded_reason": garments_degraded_reason or errors.get(endpoint),
+                    "source_mode": self.config.source_mode,
+                },
+            )
+
         if fallback_attempts > 0:
             self._increment_metric(
                 name="fallback_page_size_attempts",
@@ -620,11 +744,11 @@ class TdApiClient:
             "pages": page_payloads,
             "error": errors.get(endpoint),
             "pagination": {
-                "pages_fetched": page,
+                "pages_fetched": len(page_payloads),
                 "total_rows": cumulative_rows,
                 "reported_total_rows": total_rows_hint,
                 "reported_total_pages": total_pages_hint,
-                "rows_per_page": active_page_size,
+                "rows_per_page": available_page_sizes[page_size_index],
             },
         }
 
@@ -644,6 +768,8 @@ class TdApiClient:
         if endpoint == SALES_ENDPOINT:
             return self.config.sales_read_timeout_ms
         if endpoint == GARMENTS_ENDPOINT:
+            if self.config.source_mode == "api_only":
+                return max(1, self.config.garments_api_only_read_timeout_ms)
             return self.config.garments_read_timeout_ms
         return self.config.default_read_timeout_ms
 
@@ -653,6 +779,8 @@ class TdApiClient:
         if endpoint == SALES_ENDPOINT:
             return self.config.sales_total_timeout_ms
         if endpoint == GARMENTS_ENDPOINT:
+            if self.config.source_mode == "api_only":
+                return max(1, self.config.garments_api_only_total_timeout_ms)
             return self.config.garments_total_timeout_ms
         return self.config.default_total_timeout_ms
 
@@ -663,17 +791,27 @@ class TdApiClient:
                 "max_retries": self.config.sales_max_retries,
                 "backoff_base_seconds": self.config.sales_backoff_base_seconds,
                 "max_backoff_seconds": self.config.sales_max_backoff_seconds,
+                "timeout_retry_limit": max(0, self.config.timeout_retry_limit),
             }
         if endpoint == GARMENTS_ENDPOINT:
+            if self.config.source_mode == "api_only":
+                return {
+                    "max_retries": max(0, self.config.garments_api_only_max_retries),
+                    "backoff_base_seconds": max(0.0, self.config.garments_api_only_backoff_base_seconds),
+                    "max_backoff_seconds": max(0.0, self.config.garments_api_only_max_backoff_seconds),
+                    "timeout_retry_limit": max(0, self.config.garments_api_only_timeout_retry_limit),
+                }
             return {
                 "max_retries": self.config.garments_max_retries,
                 "backoff_base_seconds": self.config.garments_backoff_base_seconds,
                 "max_backoff_seconds": self.config.garments_max_backoff_seconds,
+                "timeout_retry_limit": max(0, self.config.timeout_retry_limit),
             }
         return {
             "max_retries": self.config.orders_max_retries,
             "backoff_base_seconds": self.config.orders_backoff_base_seconds,
             "max_backoff_seconds": self.config.orders_max_backoff_seconds,
+            "timeout_retry_limit": max(0, self.config.timeout_retry_limit),
         }
 
     def _page_size_candidates(self, *, starting_page_size: int) -> list[int]:
@@ -832,6 +970,7 @@ class TdApiClient:
         max_retries: int | None = None,
         backoff_base_seconds: float | None = None,
         max_backoff_seconds: float | None = None,
+        timeout_retry_limit: int | None = None,
     ) -> _JsonFetchResult:
         url = f"{REPORTING_API_BASE_URL}{endpoint}"
         token_discovery = await self._discover_reporting_token()
@@ -943,6 +1082,7 @@ class TdApiClient:
                 max_retries=max_retries,
                 backoff_base_seconds=backoff_base_seconds,
                 max_backoff_seconds=max_backoff_seconds,
+                timeout_retry_limit=timeout_retry_limit,
                 auth_shape=auth_shape,
                 baseline_status=baseline_status,
                 baseline_latency_ms=baseline_latency_ms,
@@ -1003,6 +1143,7 @@ class TdApiClient:
         max_retries: int | None,
         backoff_base_seconds: float | None,
         max_backoff_seconds: float | None,
+        timeout_retry_limit: int | None,
         auth_shape: _AuthRequestShape,
         baseline_status: int | None,
         baseline_latency_ms: int | None,
@@ -1017,7 +1158,11 @@ class TdApiClient:
         resolved_max_retries = self.config.max_retries if max_retries is None else max(0, int(max_retries))
         resolved_backoff_base_seconds = self.config.backoff_base_seconds if backoff_base_seconds is None else float(backoff_base_seconds)
         resolved_max_backoff_seconds = self.config.max_backoff_seconds if max_backoff_seconds is None else float(max_backoff_seconds)
-        resolved_timeout_retry_limit = max(0, int(self.config.timeout_retry_limit))
+        resolved_timeout_retry_limit = (
+            max(0, int(self.config.timeout_retry_limit))
+            if timeout_retry_limit is None
+            else max(0, int(timeout_retry_limit))
+        )
         attempts = 0
         timeout_failures = 0
         for attempt in range(resolved_max_retries + 1):
@@ -1510,6 +1655,15 @@ def _safe_delta(current: int | None, baseline: int | None) -> int | None:
     if current is None or baseline is None:
         return None
     return int(current) - int(baseline)
+
+
+def _percentile(values: list[int], percentile: int) -> int:
+    if not values:
+        return 0
+    sorted_values = sorted(int(value) for value in values)
+    pct = min(100, max(0, int(percentile)))
+    index = int(round((pct / 100) * (len(sorted_values) - 1)))
+    return sorted_values[index]
 
 
 def _has_stable_transaction_identifier(values: Mapping[str, Any]) -> bool:
