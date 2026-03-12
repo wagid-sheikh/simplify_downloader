@@ -108,6 +108,37 @@ def test_api_client_reads_storage_state_artifact(tmp_path: Path) -> None:
     assert state["cookies"][0]["name"] == "session"
 
 
+def test_storage_state_token_discovery_supports_json_wrapped_values_without_iframe(tmp_path: Path) -> None:
+    artifact = tmp_path / "store-state.json"
+    wrapped_token = "header.payload.signature"
+    artifact.write_text(
+        json.dumps(
+            {
+                "cookies": [{"name": "sessionid", "domain": ".quickdrycleaning.com"}],
+                "origins": [
+                    {
+                        "origin": "https://reports.quickdrycleaning.com",
+                        "localStorage": [
+                            {
+                                "name": "bootstrap_blob",
+                                "value": json.dumps({"auth": {"reportingToken": wrapped_token}}),
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = TdApiClient(store_code="a123", context=None, storage_state_path=artifact)  # type: ignore[arg-type]
+
+    discovered = client._discover_token_from_storage_state()
+
+    assert discovered.token == wrapped_token
+    assert discovered.source == "storage_state"
+    assert discovered.detail is not None
+
+
 def test_compare_uses_identical_canonical_key_and_emits_mismatch_artifacts() -> None:
     ui_rows = [
         {

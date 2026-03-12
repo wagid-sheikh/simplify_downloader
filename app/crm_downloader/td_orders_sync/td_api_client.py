@@ -136,6 +136,7 @@ class _TokenDiscoveryResult:
     token: str | None
     source: str | None
     expiry: str | None
+    detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -415,6 +416,7 @@ class TdApiClient:
                 "outcome": "auth_unavailable",
                 "store_code": self.store_code,
                 "token_source": token_discovery.source,
+                "token_source_detail": token_discovery.detail,
                 "token_expiry": token_discovery.expiry,
                 "cookies_found": has_cookie_auth,
             }
@@ -425,6 +427,7 @@ class TdApiClient:
                 "store_code": self.store_code,
                 "outcome": "auth_unavailable",
                 "token_source": token_discovery.source,
+                "token_source_detail": token_discovery.detail,
                 "token_expiry": token_discovery.expiry,
                 "cookies_found": has_cookie_auth,
             },
@@ -914,6 +917,7 @@ class TdApiClient:
         return {
             "token_found": bool((token_discovery.token or "").strip()),
             "token_source": token_discovery.source,
+            "token_source_detail": token_discovery.detail,
             "token_expiry": token_discovery.expiry,
             "cookies_found": self._has_cookie_auth_source(),
         }
@@ -923,12 +927,15 @@ class TdApiClient:
         *,
         headers: Mapping[str, str],
         request_params: Mapping[str, Any],
-        token_source: str | None,
+        token_discovery: _TokenDiscoveryResult,
     ) -> dict[str, Any]:
         return {
             "auth_context_used_authorization_header": bool((headers.get("Authorization") or "").strip()),
             "auth_context_used_token_query": bool((request_params.get("token") or "").strip()),
-            "auth_context_used_token_source_known": bool(token_source),
+            "auth_context_used_token_source_known": bool(token_discovery.source),
+            "auth_context_token_source": token_discovery.source,
+            "auth_context_token_source_detail": token_discovery.detail,
+            "auth_context_token_source_is_iframe": bool((token_discovery.source or "").startswith("iframe")),
             "auth_context_used_cookies_present": self._has_cookie_auth_source(),
         }
 
@@ -971,6 +978,7 @@ class TdApiClient:
                 "endpoint": endpoint,
                 "token_present": bool((token_discovery.token or "").strip()),
                 "token_source": token_discovery.source,
+                "token_source_detail": token_discovery.detail,
                 "token_expiry": token_discovery.expiry,
                 "cookies_present": self._has_cookie_auth_source(),
             },
@@ -1276,7 +1284,7 @@ class TdApiClient:
                     "primary_auth_shape": primary_auth_shape,
                     "auth_shape": auth_shape.name,
                     "auth_shape_fallback_used": auth_shape_fallback_used,
-                    **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
+                    **self._auth_usage_flags(headers=headers, request_params=request_params, token_discovery=token_discovery),
                 },
             )
             await _StoreRateLimiter.wait_turn(self.store_code, self.config.min_interval_seconds)
@@ -1319,7 +1327,7 @@ class TdApiClient:
                             "auth_shape_baseline_latency_ms": baseline_latency_ms,
                             "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
                             "auth_shape_latency_delta_ms": _safe_delta(latency_ms, baseline_latency_ms),
-                            **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
+                            **self._auth_usage_flags(headers=headers, request_params=request_params, token_discovery=token_discovery),
                         }
                     )
                     if refreshed:
@@ -1357,7 +1365,7 @@ class TdApiClient:
                         "auth_shape_baseline_latency_ms": baseline_latency_ms,
                         "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
                         "auth_shape_latency_delta_ms": _safe_delta(latency_ms, baseline_latency_ms),
-                        **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
+                        **self._auth_usage_flags(headers=headers, request_params=request_params, token_discovery=token_discovery),
                     }
                 )
 
@@ -1409,7 +1417,7 @@ class TdApiClient:
                         "auth_shape_baseline_latency_ms": baseline_latency_ms,
                         "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
                         "auth_shape_latency_delta_ms": _safe_delta(latency_ms, baseline_latency_ms),
-                        **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
+                        **self._auth_usage_flags(headers=headers, request_params=request_params, token_discovery=token_discovery),
                     }
                 )
                 self._increment_metric(name="timeout_class", endpoint=endpoint, timeout_class=timeout_class)
@@ -1438,7 +1446,7 @@ class TdApiClient:
                         "auth_shape_baseline_latency_ms": baseline_latency_ms,
                         "auth_shape_status_delta": _safe_delta(status_code, baseline_status),
                         "auth_shape_latency_delta_ms": _safe_delta(latency_ms, baseline_latency_ms),
-                        **self._auth_usage_flags(headers=headers, request_params=request_params, token_source=token_discovery.source),
+                        **self._auth_usage_flags(headers=headers, request_params=request_params, token_discovery=token_discovery),
                     }
                 )
                 last_error = exc
@@ -1552,6 +1560,7 @@ class TdApiClient:
                         token=decoded_token,
                         source="iframe_src_snapshot",
                         expiry=parse_token_expiry(decoded_token),
+                        detail="iframe_src_query:token",
                     )
         return _TokenDiscoveryResult(token=None, source=None, expiry=None)
 
@@ -1570,18 +1579,20 @@ class TdApiClient:
                             token=token,
                             source="iframe_url_query",
                             expiry=parse_token_expiry(token),
+                            detail=f"frame_url_query:{parsed.netloc}",
                         )
         return _TokenDiscoveryResult(token=None, source=None, expiry=None)
 
     async def _discover_token_from_runtime_storage(self) -> _TokenDiscoveryResult:
         for page in self.context.pages:
             for frame in page.frames:
-                token = await _extract_token_from_frame_storage(frame)
+                token, detail = await _extract_token_from_frame_storage(frame)
                 if token:
                     return _TokenDiscoveryResult(
                         token=token,
                         source="runtime_storage",
                         expiry=parse_token_expiry(token),
+                        detail=detail,
                     )
         return _TokenDiscoveryResult(token=None, source=None, expiry=None)
 
@@ -1603,13 +1614,15 @@ class TdApiClient:
             for entry in local_storage:
                 if not isinstance(entry, Mapping):
                     continue
-                name = str(entry.get("name") or "").lower()
+                name = str(entry.get("name") or "")
                 value = str(entry.get("value") or "").strip()
-                if value and any(key in name for key in ("token", "auth", "jwt", "bearer")):
+                token, detail = _extract_token_candidate(value, key_hint=name)
+                if token:
                     return _TokenDiscoveryResult(
-                        token=value,
+                        token=token,
                         source="storage_state",
-                        expiry=parse_token_expiry(value),
+                        expiry=parse_token_expiry(token),
+                        detail=f"localStorage:{detail or name}",
                     )
 
         return _TokenDiscoveryResult(token=None, source="storage_state", expiry=None)
@@ -1620,25 +1633,28 @@ class TdApiClient:
             extra={
                 "token_found": bool(result.token),
                 "token_source": result.source,
+                "token_source_detail": result.detail,
                 "token_expiry": result.expiry,
             },
         )
 
 
-async def _extract_token_from_frame_storage(frame: Frame) -> str | None:
+async def _extract_token_from_frame_storage(frame: Frame) -> tuple[str | None, str | None]:
     try:
         payload = await frame.evaluate(
             """() => {
                 const matches = [];
-                const hasSignal = (key) => /token|auth|jwt|bearer/i.test(String(key || ""));
                 const collect = (storage) => {
                     if (!storage) return;
                     for (let i = 0; i < storage.length; i += 1) {
                         const key = storage.key(i);
-                        if (!hasSignal(key)) continue;
                         const value = storage.getItem(key);
                         if (value) {
-                            matches.push(String(value));
+                            matches.push({
+                                key: String(key || ""),
+                                value: String(value),
+                                storageType: storage === window.localStorage ? "localStorage" : "sessionStorage",
+                            });
                         }
                     }
                 };
@@ -1648,16 +1664,80 @@ async def _extract_token_from_frame_storage(frame: Frame) -> str | None:
             }"""
         )
     except PlaywrightError:
-        return None
+        return None, None
     except Exception:
-        return None
+        return None, None
 
     if isinstance(payload, list):
         for candidate in payload:
-            value = str(candidate or "").strip()
-            if value:
-                return value
-    return None
+            if not isinstance(candidate, Mapping):
+                continue
+            key = str(candidate.get("key") or "")
+            value = str(candidate.get("value") or "").strip()
+            storage_type = str(candidate.get("storageType") or "storage")
+            token, detail = _extract_token_candidate(value, key_hint=key)
+            if token:
+                return token, f"{storage_type}:{detail or key}"
+    return None, None
+
+
+def _extract_token_candidate(raw_value: str, *, key_hint: str = "", depth: int = 0) -> tuple[str | None, str | None]:
+    value = (raw_value or "").strip()
+    if not value:
+        return None, None
+
+    normalized_key = key_hint.lower().strip()
+    key_has_signal = any(signal in normalized_key for signal in ("token", "auth", "jwt", "bearer"))
+
+    parsed = _try_json_loads(value)
+    if parsed is not None and depth < 4:
+        token, detail = _extract_token_from_json_obj(parsed, path=key_hint or "json", depth=depth + 1)
+        if token:
+            return token, detail
+
+    if key_has_signal:
+        return value, f"raw:{key_hint or 'signaled_key'}"
+
+    return None, None
+
+
+def _extract_token_from_json_obj(value: Any, *, path: str, depth: int) -> tuple[str | None, str | None]:
+    if depth > 4:
+        return None, None
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            key_text = str(key or "")
+            current_path = f"{path}.{key_text}" if path else key_text
+            if isinstance(item, str):
+                token, detail = _extract_token_candidate(item, key_hint=key_text, depth=depth + 1)
+                if token:
+                    return token, detail or current_path
+            else:
+                token, detail = _extract_token_from_json_obj(item, path=current_path, depth=depth + 1)
+                if token:
+                    return token, detail or current_path
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            current_path = f"{path}[{index}]"
+            if isinstance(item, str):
+                token, detail = _extract_token_candidate(item, key_hint=current_path, depth=depth + 1)
+                if token:
+                    return token, detail or current_path
+            else:
+                token, detail = _extract_token_from_json_obj(item, path=current_path, depth=depth + 1)
+                if token:
+                    return token, detail or current_path
+    return None, None
+
+
+def _try_json_loads(value: str) -> Any | None:
+    stripped = value.strip()
+    if not stripped or stripped[0] not in '{["':
+        return None
+    try:
+        return json.loads(stripped)
+    except Exception:
+        return None
 
 
 def _extract_rows(payload: Any) -> list[dict[str, Any]]:
