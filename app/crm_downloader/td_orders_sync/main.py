@@ -136,6 +136,11 @@ def _log_dashboard_context_trial_event(
     fallback_used: bool,
     runtime_delta_ms: int | None,
     context_source: str,
+    orders_cookie_shape_attempted: bool = False,
+    orders_cookie_shape_success: bool = False,
+    orders_cookie_shape_failure_reason: str | None = None,
+    orders_cookie_shape_fallback_used: bool = False,
+    orders_cookie_shape_runtime_delta_ms: int | None = None,
     **extra: Any,
 ) -> None:
     log_event(
@@ -150,6 +155,11 @@ def _log_dashboard_context_trial_event(
         fallback_used=fallback_used,
         runtime_delta_ms=runtime_delta_ms,
         context_source=context_source,
+        orders_cookie_shape_attempted=orders_cookie_shape_attempted,
+        orders_cookie_shape_success=orders_cookie_shape_success,
+        orders_cookie_shape_failure_reason=orders_cookie_shape_failure_reason,
+        orders_cookie_shape_fallback_used=orders_cookie_shape_fallback_used,
+        orders_cookie_shape_runtime_delta_ms=orders_cookie_shape_runtime_delta_ms,
         **extra,
     )
 
@@ -7753,6 +7763,11 @@ async def _run_store_discovery(
                             store_code=store.store_code,
                             source_mode=source_mode,
                             context_source=api_context_source,
+                            orders_cookie_shape_attempted=api_fetch_result.orders_cookie_shape_attempted,
+                            orders_cookie_shape_success=api_fetch_result.orders_cookie_shape_success,
+                            orders_cookie_shape_failure_reason=api_fetch_result.orders_cookie_shape_failure_reason,
+                            orders_cookie_shape_fallback_used=api_fetch_result.orders_cookie_shape_fallback_used,
+                            orders_cookie_shape_runtime_delta_ms=api_fetch_result.orders_cookie_shape_runtime_delta_ms,
                             orders_rows=len(api_fetch_result.orders_rows),
                             sales_rows=len(api_fetch_result.sales_rows),
                             garments_rows=len(api_fetch_result.garments_rows),
@@ -7770,6 +7785,11 @@ async def _run_store_discovery(
                             store_code=store.store_code,
                             source_mode=source_mode,
                             context_source=api_context_source,
+                            orders_cookie_shape_attempted=api_fetch_result.orders_cookie_shape_attempted,
+                            orders_cookie_shape_success=api_fetch_result.orders_cookie_shape_success,
+                            orders_cookie_shape_failure_reason=api_fetch_result.orders_cookie_shape_failure_reason,
+                            orders_cookie_shape_fallback_used=api_fetch_result.orders_cookie_shape_fallback_used,
+                            orders_cookie_shape_runtime_delta_ms=api_fetch_result.orders_cookie_shape_runtime_delta_ms,
                             error=str(exc),
                         )
                         if source_mode == "api_only":
