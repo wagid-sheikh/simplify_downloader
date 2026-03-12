@@ -766,10 +766,10 @@ def _get_nested_str(mapping: Mapping[str, Any], path: Sequence[str]) -> str | No
     current: Any = mapping
     for key in path:
         if not isinstance(current, Mapping):
-            return None
+            return None, None
         current = current.get(key)
     if current is None:
-        return None
+        return None, None
     return str(current).strip() or None
 
 
@@ -2261,7 +2261,7 @@ async def _fetch_pipeline_id(*, database_url: str, pipeline_name: str, logger: J
             pipeline_name=pipeline_name,
             error=str(exc),
         )
-        return None
+        return None, None
     if not pipeline_id:
         log_event(
             logger=logger,
@@ -2292,7 +2292,7 @@ async def _insert_orders_sync_log(
             message="Skipping orders sync log insert because database_url is missing",
             store_code=store.store_code,
         )
-        return None
+        return None, None
 
     pipeline_id = await _fetch_pipeline_id(
         database_url=config.database_url, pipeline_name=PIPELINE_NAME, logger=logger
@@ -4614,7 +4614,7 @@ async def _wait_for_iframe(
     logger: JsonLogger,
     require_src: bool = False,
     phase: str = "orders",
-) -> FrameLocator | None:
+) -> tuple[FrameLocator | None, str | None]:
     page_title = await _safe_page_title(page)
     try:
         await page.wait_for_selector("#ifrmReport", state="attached", timeout=20_000)
@@ -4629,7 +4629,7 @@ async def _wait_for_iframe(
             page_title=page_title,
             iframe_attached=False,
         )
-        return None
+        return None, None
 
     iframe_src = None
     try:
@@ -4650,7 +4650,7 @@ async def _wait_for_iframe(
             page_title=page_title,
             iframe_attached=True,
         )
-        return None
+        return None, None
 
     iframe_src_length = len(iframe_src) if iframe_src else None
     iframe_src_prefix = iframe_src[:64] if iframe_src else None
@@ -4668,7 +4668,7 @@ async def _wait_for_iframe(
         iframe_src_length=iframe_src_length,
         iframe_attached=True,
     )
-    return page.frame_locator("#ifrmReport")
+    return page.frame_locator("#ifrmReport"), iframe_src
 
 
 async def _wait_for_report_iframe_auth_source(
@@ -4677,8 +4677,11 @@ async def _wait_for_report_iframe_auth_source(
     store: TdStore,
     logger: JsonLogger,
     phase: str = "api",
-    timeout_ms: int = 20_000,
+    timeout_ms: int | None = None,
 ) -> tuple[bool, str | None]:
+    if timeout_ms is None:
+        timeout_ms = _int_env("TD_API_AUTH_SOURCE_TIMEOUT_MS", 5_000)
+
     iframe_src_locator = page.locator("#ifrmReport")
     try:
         await iframe_src_locator.first.wait_for(state="attached", timeout=timeout_ms)
@@ -4709,6 +4712,68 @@ async def _wait_for_report_iframe_auth_source(
             )
             return False, iframe_src
         await asyncio.sleep(0.25)
+
+
+async def _resolve_report_iframe_auth_source_for_api(
+    page: Page,
+    *,
+    store: TdStore,
+    logger: JsonLogger,
+    initial_iframe_src: str | None,
+    phase: str = "api",
+    poll_timeout_ms: int | None = None,
+) -> str | None:
+    iframe_src = (initial_iframe_src or "").strip()
+    iframe_hostname = urlparse(iframe_src).hostname if iframe_src else None
+
+    if iframe_hostname == "reports.quickdrycleaning.com":
+        log_event(
+            logger=logger,
+            phase=phase,
+            message="auth_source_fast_path",
+            store_code=store.store_code,
+            iframe_src_hostname=iframe_hostname,
+        )
+        return iframe_src
+
+    if iframe_src and iframe_hostname != "reports.quickdrycleaning.com":
+        log_event(
+            logger=logger,
+            phase=phase,
+            status="warn",
+            message="Fast-path iframe auth source unavailable; using fallback polling",
+            store_code=store.store_code,
+            iframe_src_hostname=iframe_hostname,
+            auth_source_resolution="auth_source_fallback_unavailable",
+            auth_source_fast_path_src_present=True,
+        )
+
+    auth_source_ok, report_iframe_src = await _wait_for_report_iframe_auth_source(
+        page,
+        store=store,
+        logger=logger,
+        phase=phase,
+        timeout_ms=poll_timeout_ms,
+    )
+    resolved_hostname = urlparse(report_iframe_src).hostname if report_iframe_src else None
+    if auth_source_ok:
+        log_event(
+            logger=logger,
+            phase=phase,
+            message="auth_source_polled",
+            store_code=store.store_code,
+            iframe_src_hostname=resolved_hostname,
+        )
+    else:
+        log_event(
+            logger=logger,
+            phase=phase,
+            status="warn",
+            message="auth_source_fallback_unavailable",
+            store_code=store.store_code,
+            iframe_src_hostname=resolved_hostname,
+        )
+    return report_iframe_src
 
 
 async def _observe_iframe_hydration(
@@ -6512,7 +6577,7 @@ async def _execute_sales_flow(
         page, store=store, logger=logger, nav_timeout_ms=nav_timeout_ms, sales_only_mode=sales_only_mode
     )
     if sales_nav_ready:
-        sales_iframe = await _wait_for_iframe(page, store=store, logger=logger, require_src=True, phase="sales")
+        sales_iframe, _ = await _wait_for_iframe(page, store=store, logger=logger, require_src=True, phase="sales")
         if sales_iframe is not None:
             if _dom_logging_enabled():
                 await _observe_iframe_hydration(sales_iframe, store=store, logger=logger, timeout_ms=nav_timeout_ms)
@@ -7127,13 +7192,14 @@ async def _run_store_discovery(
                 )
                 return
 
-            iframe_locator = await _wait_for_iframe(page, store=store, logger=store_logger)
+            iframe_locator, iframe_src = await _wait_for_iframe(page, store=store, logger=store_logger)
             if iframe_locator is not None:
                 if source_mode != "ui":
-                    _, report_iframe_src = await _wait_for_report_iframe_auth_source(
+                    report_iframe_src = await _resolve_report_iframe_auth_source_for_api(
                         page,
                         store=store,
                         logger=store_logger,
+                        initial_iframe_src=iframe_src,
                     )
                     try:
                         api_client = TdApiClient(
