@@ -135,6 +135,23 @@ def _validate_xlsx(path: Path) -> None:
             "missing required OOXML entries: " + ", ".join(missing_entries)
         )
 
+    # Excel is stricter than a simple ZIP/XML integrity check. Re-opening with openpyxl
+    # gives us an additional sanity gate before we publish artifacts to users.
+    try:
+        workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    except Exception as exc:
+        raise ValueError(f"failed openpyxl round-trip validation: {exc}") from exc
+
+    try:
+        if not workbook.sheetnames:
+            raise ValueError("workbook has no worksheets")
+        # Touch at least one row in each sheet to force XML parsing of worksheet payloads.
+        for sheet_name in workbook.sheetnames:
+            sheet = workbook[sheet_name]
+            _ = next(sheet.iter_rows(min_row=1, max_row=1), None)
+    finally:
+        workbook.close()
+
 
 def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: str = "rows") -> None:
     """Write a single-sheet API snapshot workbook from raw API row dictionaries only.

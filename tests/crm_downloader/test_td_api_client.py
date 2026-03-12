@@ -17,7 +17,12 @@ from app.crm_downloader.td_orders_sync.main import (
     _resolve_td_api_artifact_dir,
     _dataset_completion_health,
 )
-from app.crm_downloader.td_orders_sync.td_api_artifacts import _write_excel, persist_td_api_artifacts, persist_td_compare_artifacts
+from app.crm_downloader.td_orders_sync.td_api_artifacts import (
+    _validate_xlsx,
+    _write_excel,
+    persist_td_api_artifacts,
+    persist_td_compare_artifacts,
+)
 from app.crm_downloader.td_orders_sync.td_api_client import (
     TdApiClient,
     TdApiClientConfig,
@@ -876,6 +881,26 @@ def test_td_api_artifact_write_excel_uses_atomic_replace(tmp_path: Path) -> None
     assert artifact_path.read_bytes() == original_bytes
     assert not artifact_path.with_name(f"{artifact_path.name}.tmp.xlsx").exists()
 
+
+
+
+def test_td_api_artifact_validate_xlsx_detects_openpyxl_roundtrip_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    artifact_path = tmp_path / "td-roundtrip.xlsx"
+    _write_excel(artifact_path, [{"value": "ok"}])
+
+    import openpyxl
+
+    real_load_workbook = openpyxl.load_workbook
+
+    def _failing_load_workbook(*args, **kwargs):  # type: ignore[no-untyped-def]
+        if Path(args[0]) == artifact_path:
+            raise ValueError("simulated parser failure")
+        return real_load_workbook(*args, **kwargs)
+
+    monkeypatch.setattr(openpyxl, "load_workbook", _failing_load_workbook)
+
+    with pytest.raises(ValueError, match="failed openpyxl round-trip validation"):
+        _validate_xlsx(artifact_path)
 
 
 
