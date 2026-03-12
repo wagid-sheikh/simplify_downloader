@@ -4,6 +4,7 @@ import json
 import logging
 import math
 import os
+import tempfile
 import zipfile
 
 import openpyxl
@@ -261,7 +262,13 @@ def _write_excel(path: Path, rows: Sequence[Mapping[str, Any]], *, sheet_name: s
         for row in rows:
             _append_serialized_row([row.get(column) for column in columns])
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(f"{path.name}.tmp.xlsx")
+    with tempfile.NamedTemporaryFile(
+        mode="wb",
+        suffix=f".{path.name}.tmp.xlsx",
+        dir=path.parent,
+        delete=False,
+    ) as temp_handle:
+        temp_path = Path(temp_handle.name)
     try:
         workbook.save(temp_path)
         if temp_path.stat().st_size == 0:
