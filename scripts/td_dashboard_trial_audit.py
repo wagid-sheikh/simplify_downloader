@@ -15,6 +15,14 @@ REQUIRED_KEYS = (
     "context_source",
 )
 VALID_CONTEXT_SOURCES = {"dashboard_only", "iframe_fallback"}
+GARMENTS_ENDPOINT = "/garments/details"
+GARMENTS_HEALTH_KEYS = (
+    "pages_attempted",
+    "timeout_count",
+    "retry_success_count",
+    "final_row_count",
+    "orphan_rows",
+)
 
 
 def _load_events(path: Path) -> list[dict[str, object]]:
@@ -56,6 +64,28 @@ def _pct(part: int, total: int) -> float:
     return round((part / total) * 100, 2)
 
 
+def _int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    return 0
+
+
+def _extract_garments_degrade_reason(event: dict[str, object]) -> str | None:
+    endpoint_errors = event.get("endpoint_errors")
+    if isinstance(endpoint_errors, dict):
+        reason = endpoint_errors.get(GARMENTS_ENDPOINT)
+        if isinstance(reason, str) and reason.strip():
+            return reason
+    endpoint_failure_summary = event.get("endpoint_failure_summary")
+    if isinstance(endpoint_failure_summary, dict):
+        reason = endpoint_failure_summary.get("garments")
+        if isinstance(reason, str) and reason.strip():
+            return reason
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Audit dashboard-only trial logs from run_log.txt")
     parser.add_argument("--run-log", default="temp_run_time_stuff/run_log.txt")
@@ -72,6 +102,24 @@ def main() -> int:
         type=int,
         default=5,
         help="Only include the most recent N run_ids in the multi-run summary",
+    )
+    parser.add_argument(
+        "--max-repeated-garments-degrade-events",
+        type=int,
+        default=1,
+        help="Maximum allowed garments endpoint degrade events per store in the rolling window",
+    )
+    parser.add_argument(
+        "--max-orphan-drift",
+        type=int,
+        default=10,
+        help="Maximum allowed orphan_rows drift (max-min) per store in the rolling window",
+    )
+    parser.add_argument(
+        "--min-health-samples",
+        type=int,
+        default=2,
+        help="Minimum garments health samples per store required to evaluate trend stability",
     )
     args = parser.parse_args()
 
@@ -95,9 +143,23 @@ def main() -> int:
     filtered_events = [e for e in trial_events if e.get("run_id") in run_id_set]
 
     by_store: dict[str, list[dict[str, object]]] = defaultdict(list)
+    garments_degrade_reasons: dict[str, list[str]] = defaultdict(list)
+    garments_health_by_store: dict[str, list[dict[str, int]]] = defaultdict(list)
     for event in filtered_events:
         store = str(event.get("store_code") or "UNKNOWN")
         by_store[store].append(event)
+
+    for event in events:
+        run_id = event.get("run_id")
+        if run_id not in run_id_set:
+            continue
+        store = str(event.get("store_code") or "UNKNOWN")
+        degrade_reason = _extract_garments_degrade_reason(event)
+        if degrade_reason:
+            garments_degrade_reasons[store].append(degrade_reason)
+        garments_health = event.get("garments_health")
+        if isinstance(garments_health, dict):
+            garments_health_by_store[store].append({key: _int(garments_health.get(key)) for key in GARMENTS_HEALTH_KEYS})
 
     print(f"Runs analyzed ({len(run_ids)}): {', '.join(run_ids)}")
     print("\nPer-store trial payload key verification")
@@ -118,6 +180,14 @@ def main() -> int:
     print("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
 
     store_gate_pass_count = 0
+    trend_gate_by_store: dict[str, bool] = {}
+    print("\nPer-store garments health trend (rolling window)")
+    print(
+        "| store | health_samples | degrade_events | degrade_reasons | pages_attempted_avg | "
+        "timeout_count_avg | retry_success_count_avg | final_row_count_avg | orphan_rows_latest | orphan_rows_drift | trend_gate |"
+    )
+    print("|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---|")
+
     for store in sorted(by_store):
         store_events = by_store[store]
         attempts = sum(1 for e in store_events if _bool(e.get("trial_attempted")))
@@ -134,18 +204,52 @@ def main() -> int:
         if success_rate >= args.min_store_success_rate:
             store_gate_pass_count += 1
 
+        store_health = garments_health_by_store.get(store, [])
+        health_samples = len(store_health)
+        degrade_reasons = garments_degrade_reasons.get(store, [])
+        degrade_count = len(degrade_reasons)
+        pages_avg = round(mean([sample["pages_attempted"] for sample in store_health]), 2) if store_health else 0.0
+        timeout_avg = round(mean([sample["timeout_count"] for sample in store_health]), 2) if store_health else 0.0
+        retry_success_avg = round(mean([sample["retry_success_count"] for sample in store_health]), 2) if store_health else 0.0
+        final_row_avg = round(mean([sample["final_row_count"] for sample in store_health]), 2) if store_health else 0.0
+        orphan_values = [sample["orphan_rows"] for sample in store_health]
+        orphan_latest = orphan_values[-1] if orphan_values else 0
+        orphan_drift = (max(orphan_values) - min(orphan_values)) if orphan_values else 0
+        trend_gate_passed = (
+            health_samples >= args.min_health_samples
+            and degrade_count <= args.max_repeated_garments_degrade_events
+            and orphan_drift <= args.max_orphan_drift
+        )
+        trend_gate_by_store[store] = trend_gate_passed
+
         print(
             f"| {store} | {attempts} | {success} | {fallback} | {success_rate} | {fallback_rate} | "
             f"{runtime_avg} | {runtime_min} | {runtime_max} |"
+        )
+        print(
+            f"| {store} | {health_samples} | {degrade_count} | {', '.join(sorted(set(degrade_reasons))) or '-'} | "
+            f"{pages_avg} | {timeout_avg} | {retry_success_avg} | {final_row_avg} | {orphan_latest} | {orphan_drift} | {trend_gate_passed} |"
         )
 
     print("\nPromotion gate evaluation")
     print(f"- Minimum successful stores required: {args.min_successful_stores}")
     print(f"- Minimum per-store success rate required: {args.min_store_success_rate}%")
     print(f"- Stores meeting success-rate requirement: {store_gate_pass_count}")
+    print(f"- Max repeated garments degrade events allowed: {args.max_repeated_garments_degrade_events}")
+    print(f"- Max orphan drift allowed: {args.max_orphan_drift}")
+    print(f"- Min garments health samples required: {args.min_health_samples}")
+
+    stores_failing_trend_gate = sorted(store for store, passed in trend_gate_by_store.items() if not passed)
 
     if store_gate_pass_count < args.min_successful_stores:
         print("Gate NOT met: keep default path unchanged.")
+        return 1
+    if stores_failing_trend_gate:
+        print(
+            "Gate NOT met: garments stability criteria failed for stores "
+            + ", ".join(stores_failing_trend_gate)
+            + "."
+        )
         return 1
 
     print("Gate met: eligible for default-path promotion.")
