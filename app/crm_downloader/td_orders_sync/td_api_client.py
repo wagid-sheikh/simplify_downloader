@@ -470,6 +470,10 @@ class TdApiClient:
         garments_latency_distribution_ms: list[int] = []
         garments_timeout_count = 0
         garments_retry_count = 0
+        garments_retry_success_count = 0
+        garments_pages_attempted = 0
+        garments_pages_succeeded = 0
+        garments_page_success_rate = 0.0
         garments_fallback_count = 0
         garments_adaptive_downgrades = 0
         garments_degraded_reason: str | None = None
@@ -529,9 +533,20 @@ class TdApiClient:
 
             endpoint_attempts += max(int(page_result.attempts or 0), 0)
             if is_garments_endpoint:
+                garments_pages_attempted += 1
                 garments_retry_count += max(int(page_result.attempts or 0) - 1, 0)
                 if page_result.error in _TIMEOUT_ERROR_CLASSES:
                     garments_timeout_count += 1
+                if page_result.ok:
+                    garments_pages_succeeded += 1
+                    if int(page_result.attempts or 0) > 1:
+                        garments_retry_success_count += 1
+
+            garments_page_success_rate = (
+                round((garments_pages_succeeded / garments_pages_attempted), 4)
+                if garments_pages_attempted > 0
+                else 0.0
+            )
 
             if not page_result.ok:
                 timeout_degradation_reached = (
@@ -604,6 +619,11 @@ class TdApiClient:
                     "success": False,
                     "final_error_class": final_error,
                     "attempts": endpoint_attempts,
+                    "pages_attempted": garments_pages_attempted if is_garments_endpoint else None,
+                    "timeout_count": garments_timeout_count if is_garments_endpoint else None,
+                    "retry_count": garments_retry_count if is_garments_endpoint else None,
+                    "retry_success_count": garments_retry_success_count if is_garments_endpoint else None,
+                    "page_success_rate": garments_page_success_rate if is_garments_endpoint else None,
                 }
                 if page == 1 and page_result.status == 401:
                     logger.error(
@@ -721,6 +741,11 @@ class TdApiClient:
                 "success": True,
                 "final_error_class": None,
                 "attempts": endpoint_attempts,
+                "pages_attempted": garments_pages_attempted if is_garments_endpoint else None,
+                "timeout_count": garments_timeout_count if is_garments_endpoint else None,
+                "retry_count": garments_retry_count if is_garments_endpoint else None,
+                "retry_success_count": garments_retry_success_count if is_garments_endpoint else None,
+                "page_success_rate": garments_page_success_rate if is_garments_endpoint else None,
             },
         )
 
@@ -758,6 +783,9 @@ class TdApiClient:
                     "garments_page_latency_max_ms": latency_max,
                     "garments_timeout_count": garments_timeout_count,
                     "garments_retry_count": garments_retry_count,
+                    "garments_retry_success_count": garments_retry_success_count,
+                    "garments_pages_attempted": garments_pages_attempted,
+                    "garments_page_success_rate": garments_page_success_rate,
                     "garments_page_size_fallback_count": garments_fallback_count,
                     "garments_adaptive_downgrade_count": garments_adaptive_downgrades,
                     "garments_degraded_reason": garments_degraded_reason or errors.get(endpoint),

@@ -291,6 +291,101 @@ def _compare_quality_passed(metrics: Mapping[str, Any]) -> bool:
     )
 
 
+def _build_garments_health_summary(
+    *,
+    api_fetch_result: TdApiFetchResult | None,
+    garment_ingest_result: TdGarmentIngestResult | None,
+) -> dict[str, int | float]:
+    endpoint_health = dict((api_fetch_result.endpoint_health or {}).get("/garments/details") or {}) if api_fetch_result else {}
+    pages_attempted = int(endpoint_health.get("pages_attempted") or 0)
+    timeout_count = int(endpoint_health.get("timeout_count") or 0)
+    retry_success_count = int(endpoint_health.get("retry_success_count") or 0)
+    row_count = int(garment_ingest_result.row_count or 0) if garment_ingest_result else 0
+    orphan_rows = int(garment_ingest_result.orphan_rows or 0) if garment_ingest_result else 0
+    return {
+        "pages_attempted": pages_attempted,
+        "timeout_count": timeout_count,
+        "retry_success_count": retry_success_count,
+        "final_row_count": row_count,
+        "orphan_rows": orphan_rows,
+    }
+
+
+async def _evaluate_garment_orphan_alert(
+    *,
+    store_code: str,
+    garments_health_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    orphan_rows = int(garments_health_summary.get("orphan_rows") or 0)
+    absolute_threshold = _int_env("TD_GARMENT_ORPHAN_ALERT_THRESHOLD", 25)
+    baseline_windows = _int_env("TD_GARMENT_ORPHAN_BASELINE_WINDOWS", 5)
+    delta_threshold = _int_env("TD_GARMENT_ORPHAN_BASELINE_DELTA", 10)
+
+    if orphan_rows >= absolute_threshold:
+        return {
+            "triggered": True,
+            "reason": "garments_orphan_rows_above_threshold",
+            "orphan_rows": orphan_rows,
+            "absolute_threshold": absolute_threshold,
+            "baseline_avg_orphan_rows": None,
+            "baseline_sample_size": 0,
+            "delta_vs_baseline": None,
+            "delta_threshold": delta_threshold,
+        }
+
+    if not config.database_url or baseline_windows <= 0:
+        return {
+            "triggered": False,
+            "reason": None,
+            "orphan_rows": orphan_rows,
+            "absolute_threshold": absolute_threshold,
+            "baseline_avg_orphan_rows": None,
+            "baseline_sample_size": 0,
+            "delta_vs_baseline": None,
+            "delta_threshold": delta_threshold,
+        }
+
+    baseline_values: list[int] = []
+    try:
+        async with session_scope(config.database_url) as session:
+            result = await session.execute(
+                sa.select(td_sync_compare_log.c.threshold_verdict_json)
+                .where(td_sync_compare_log.c.store_code == store_code)
+                .order_by(td_sync_compare_log.c.to_date.desc(), td_sync_compare_log.c.created_at.desc())
+                .limit(baseline_windows)
+            )
+            for row in result.fetchall():
+                payload = row[0]
+                if not isinstance(payload, Mapping):
+                    continue
+                datasets = payload.get("datasets")
+                if not isinstance(datasets, Mapping):
+                    continue
+                garments = datasets.get("garments")
+                if not isinstance(garments, Mapping):
+                    continue
+                historical_orphans = garments.get("orphan_rows")
+                if historical_orphans is None:
+                    continue
+                baseline_values.append(int(historical_orphans))
+    except Exception:
+        baseline_values = []
+
+    baseline_avg = (sum(baseline_values) / len(baseline_values)) if baseline_values else None
+    delta_vs_baseline = (orphan_rows - baseline_avg) if baseline_avg is not None else None
+    triggered = bool(delta_vs_baseline is not None and delta_vs_baseline >= delta_threshold)
+    return {
+        "triggered": triggered,
+        "reason": "garments_orphan_rows_above_baseline" if triggered else None,
+        "orphan_rows": orphan_rows,
+        "absolute_threshold": absolute_threshold,
+        "baseline_avg_orphan_rows": round(baseline_avg, 2) if baseline_avg is not None else None,
+        "baseline_sample_size": len(baseline_values),
+        "delta_vs_baseline": round(delta_vs_baseline, 2) if delta_vs_baseline is not None else None,
+        "delta_threshold": delta_threshold,
+    }
+
+
 def _dom_logging_enabled() -> bool:
     return not config.pipeline_skip_dom_logging
 
@@ -8460,6 +8555,23 @@ async def _run_store_discovery(
                 "orphan_rows": garment_ingest_result.orphan_rows,
             }
 
+        garments_health_summary = _build_garments_health_summary(
+            api_fetch_result=api_fetch_result_obj,
+            garment_ingest_result=garment_ingest_result,
+        )
+        log_event(
+            logger=store_logger,
+            phase="garment_ingest",
+            message="TD garments endpoint health summary",
+            store_code=store.store_code,
+            garments_health=garments_health_summary,
+        )
+        if orders_report:
+            orders_report.garment_reconciliation = {
+                **dict(orders_report.garment_reconciliation),
+                **garments_health_summary,
+            }
+
         garment_total_rows = len(api_fetch_result.garments_rows) if "api_fetch_result" in locals() else 0
         garment_matched_rows = garment_ingest_result.row_count if garment_ingest_result else (garment_total_rows if garment_total_rows == 0 else 0)
         garment_compare_metrics = {
@@ -8497,6 +8609,47 @@ async def _run_store_discovery(
             run_sales=run_sales,
             run_garment_sync=garment_sync_enabled,
         )
+        threshold_verdict_datasets = dict(threshold_verdict.get("datasets") or {})
+        garment_dataset_verdict = dict(threshold_verdict_datasets.get("garments") or {})
+        garment_dataset_verdict.update(
+            {
+                "orphan_rows": garments_health_summary["orphan_rows"],
+                "pages_attempted": garments_health_summary["pages_attempted"],
+                "timeout_count": garments_health_summary["timeout_count"],
+                "retry_success_count": garments_health_summary["retry_success_count"],
+                "final_row_count": garments_health_summary["final_row_count"],
+            }
+        )
+
+        orphan_alert = await _evaluate_garment_orphan_alert(
+            store_code=store.store_code,
+            garments_health_summary=garments_health_summary,
+        )
+        if orphan_alert.get("triggered"):
+            garment_dataset_verdict["pass"] = False
+            garment_reasons = [str(reason) for reason in garment_dataset_verdict.get("reasons", [])]
+            alert_reason = str(orphan_alert.get("reason") or "garments_orphan_rows_alert")
+            if alert_reason not in garment_reasons:
+                garment_reasons.append(alert_reason)
+            garment_dataset_verdict["reasons"] = garment_reasons
+            threshold_reason_codes = [str(code) for code in threshold_verdict.get("reason_codes") or []]
+            if alert_reason not in threshold_reason_codes:
+                threshold_verdict["reason_codes"] = [*threshold_reason_codes, alert_reason]
+            threshold_verdict["pass"] = False
+            threshold_verdict["overall_pass"] = False
+            log_event(
+                logger=store_logger,
+                phase="reconciliation",
+                status="warn",
+                message="TD garments orphan-row drift alert triggered",
+                store_code=store.store_code,
+                orphan_alert=orphan_alert,
+                compare_ok=compare_ok,
+            )
+
+        garment_dataset_verdict["orphan_alert"] = orphan_alert
+        threshold_verdict_datasets["garments"] = garment_dataset_verdict
+        threshold_verdict["datasets"] = threshold_verdict_datasets
         consecutive_pass_windows, api_ready = await _insert_td_compare_log(
             logger=store_logger,
             run_id=run_id,
