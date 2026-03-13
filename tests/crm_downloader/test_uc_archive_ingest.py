@@ -229,6 +229,59 @@ async def test_uc_archive_rejects_and_warning_remarks(tmp_path: Path) -> None:
     assert row.payment_mode == "UNKNOWN"
 
 
+
+@pytest.mark.asyncio
+async def test_uc_archive_warning_breakdown_and_samples_include_row_locators(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'db_warning_samples.sqlite'}"
+    await _create_tables(db_url)
+
+    base = _write_xlsx(
+        tmp_path / "base_warning_samples.xlsx",
+        ["store_code", "order_code", "pickup", "delivery", "customer_name", "customer_phone", "address", "payment_text", "instructions", "customer_source", "status", "status_date"],
+        [["UC567", "ORD-W1", "", "", "", "12", "", "", "", "", "Pickup Pending", ""]],
+    )
+    details = _write_xlsx(
+        tmp_path / "details_warning_samples.xlsx",
+        ["store_code", "order_code", "order_mode", "order_datetime", "pickup_datetime", "delivery_datetime", "service", "hsn_sac", "item_name", "rate", "quantity", "weight", "addons", "amount"],
+        [["UC567", "ORD-W1", "", "", "", "", "", "", "", "bad", "", "", "", ""]],
+    )
+    payments = _write_xlsx(
+        tmp_path / "payments_warning_samples.xlsx",
+        ["store_code", "order_code", "payment_mode", "amount", "payment_date", "transaction_id"],
+        [["UC567", "ORD-W1", "UPI / Wallet", "bad", "-", ""]],
+    )
+
+    result = await ingest_uc_archive_excels(
+        database_url=db_url,
+        run_id="run-warning-samples",
+        run_date=datetime(2025, 1, 7, tzinfo=timezone.utc),
+        store_code=None,
+        cost_center=None,
+        base_order_info_path=base,
+        order_details_path=details,
+        payment_details_path=payments,
+        logger=get_logger("test_uc_archive_warning_samples"),
+    )
+
+    base_result = result.files[FILE_BASE]
+    assert base_result.warning_breakdown["normalization_applied"] >= 1
+    assert base_result.warning_breakdown["other"] >= 1
+    assert base_result.warning_samples["normalization_applied"][0]["store_code"] == "UC567"
+    assert base_result.warning_samples["normalization_applied"][0]["source_file"] == "base_warning_samples.xlsx"
+    assert base_result.warning_samples["normalization_applied"][0]["row_locator"] == "row:2"
+
+    details_result = result.files[FILE_ORDER_DETAILS]
+    assert details_result.warning_breakdown["missing_required_field"] >= 1
+    assert details_result.warning_breakdown["parse_fallback"] >= 1
+    assert details_result.warning_breakdown["missing_optional_field"] >= 1
+    assert all("row_locator" in sample for sample in details_result.warning_samples["parse_fallback"])
+
+    payments_result = result.files[FILE_PAYMENT_DETAILS]
+    assert payments_result.warning_breakdown["normalization_applied"] >= 1
+    assert payments_result.warning_breakdown["parse_fallback"] >= 1
+    assert payments_result.warning_breakdown["missing_optional_field"] >= 1
+    assert payments_result.warning_samples["parse_fallback"][0]["source_file"] == "payments_warning_samples.xlsx"
+
 @pytest.mark.asyncio
 async def test_uc_archive_payment_idempotency_with_blank_transaction_id(tmp_path: Path) -> None:
     db_url = f"sqlite+aiosqlite:///{tmp_path/'db3.sqlite'}"
