@@ -750,11 +750,11 @@ async def test_line_item_publish_assigns_serials_and_single_row_defaults(tmp_pat
         """))
         await session.execute(sa.text("""
             INSERT INTO stg_uc_archive_order_details
-            (id, run_id, run_date, cost_center, store_code, order_code, service, item_name, rate, quantity, amount, order_datetime_raw, line_hash, ingest_remarks)
+            (id, run_id, run_date, cost_center, store_code, order_code, service, item_name, rate, quantity, weight, amount, order_datetime_raw, line_hash, ingest_remarks)
             VALUES
-                (1, 'run-li', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'Dryclean', 'Shirt', 50, 1, 50, '03 Jan 2025, 10:30 AM', 'bhash', 'r1'),
-                (2, 'run-li', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'Wash', 'Pants', 70, 2, 140, '03 Jan 2025, 10:30 AM', 'ahash', 'r2'),
-                (3, 'run-li', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-2', 'Iron', 'Kurta', 30, 1, 30, '03 Jan 2025, 10:30 AM', NULL, 'r3')
+                (1, 'run-li', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'Dryclean', 'Shirt', 50, 1, 0.5, 50, '03 Jan 2025, 10:30 AM', 'bhash', 'r1'),
+                (2, 'run-li', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'Wash', 'Pants', 70, 2, 0.75, 140, '03 Jan 2025, 10:30 AM', 'ahash', 'r2'),
+                (3, 'run-li', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-2', 'Iron', 'Kurta', 30, 1, NULL, 30, '03 Jan 2025, 10:30 AM', NULL, 'r3')
         """))
         await session.commit()
 
@@ -763,7 +763,7 @@ async def test_line_item_publish_assigns_serials_and_single_row_defaults(tmp_pat
 
     async with session_scope(db_url) as session:
         rows = (await session.execute(sa.text("""
-            SELECT order_number, order_id, line_item_key, line_item_uid, is_orphan
+            SELECT order_number, order_id, line_item_key, line_item_uid, is_orphan, weight
             FROM order_line_items
             ORDER BY order_number, order_id
         """))).all()
@@ -772,6 +772,8 @@ async def test_line_item_publish_assigns_serials_and_single_row_defaults(tmp_pat
     assert rows[0].line_item_key == 'ahash'
     assert rows[2].line_item_key == 'Kurta|Iron|30.00'
     assert rows[2].line_item_uid.endswith('|1')
+    assert Decimal(str(rows[0].weight)) == Decimal('0.75')
+    assert rows[2].weight is None
     assert all(not r.is_orphan for r in rows)
 
 
