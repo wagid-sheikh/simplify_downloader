@@ -4069,6 +4069,7 @@ async def _run_store_discovery(
                         "skipped": line_items_publish.skipped,
                         "warnings": line_items_publish.warnings,
                         "reason_codes": line_items_publish.reason_codes,
+                        "line_item_serial_validation": line_items_publish.line_item_serial_validation,
                     }
                     log_event(
                         logger=logger,

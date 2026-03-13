@@ -51,6 +51,116 @@ class PublishMetrics:
     preflight_warning: str | None = None
     preflight_diagnostics: dict[str, Any] | None = None
     post_publish_verification: dict[str, int] | None = None
+    line_item_serial_validation: dict[str, Any] | None = None
+
+
+def _build_line_item_serial_validation_query() -> sa.TextClause:
+    return sa.text(
+        """
+        WITH scoped AS (
+            SELECT order_number, order_id
+            FROM order_line_items
+            WHERE run_id = :run_id
+              AND store_code = :store_code
+        ),
+        per_order AS (
+            SELECT
+                order_number,
+                MIN(order_id) AS min_order_id,
+                MAX(order_id) AS max_order_id,
+                COUNT(*) AS line_count
+            FROM scoped
+            GROUP BY order_number
+        ),
+        duplicates AS (
+            SELECT order_number, order_id, COUNT(*) AS duplicate_count
+            FROM scoped
+            GROUP BY order_number, order_id
+            HAVING COUNT(*) > 1
+        )
+        SELECT
+            (SELECT COUNT(*) FROM scoped) AS scoped_rows,
+            COALESCE(SUM(CASE WHEN min_order_id <> 1 THEN 1 ELSE 0 END), 0) AS min_order_id_not_1_orders,
+            (SELECT COUNT(DISTINCT order_number) FROM duplicates) AS duplicate_order_number_order_id_orders,
+            COALESCE(SUM(CASE WHEN line_count = 1 AND min_order_id <> 1 THEN 1 ELSE 0 END), 0) AS single_line_order_id_not_1_orders
+        FROM per_order
+        """
+    )
+
+
+def _build_line_item_serial_validation_sample_queries(
+    sample_limit: int,
+) -> dict[str, sa.TextClause]:
+    return {
+        "min_order_id_not_1": sa.text(
+            """
+            SELECT order_number, MIN(order_id) AS min_order_id, COUNT(*) AS line_count
+            FROM order_line_items
+            WHERE run_id = :run_id
+              AND store_code = :store_code
+            GROUP BY order_number
+            HAVING MIN(order_id) <> 1
+            ORDER BY min_order_id ASC, line_count DESC, order_number ASC
+            LIMIT :sample_limit
+            """
+        ),
+        "duplicate_order_number_order_id": sa.text(
+            """
+            SELECT order_number, order_id, COUNT(*) AS duplicate_count
+            FROM order_line_items
+            WHERE run_id = :run_id
+              AND store_code = :store_code
+            GROUP BY order_number, order_id
+            HAVING COUNT(*) > 1
+            ORDER BY duplicate_count DESC, order_number ASC, order_id ASC
+            LIMIT :sample_limit
+            """
+        ),
+        "max_order_id_outliers": sa.text(
+            """
+            SELECT order_number, MAX(order_id) AS max_order_id, MIN(order_id) AS min_order_id, COUNT(*) AS line_count
+            FROM order_line_items
+            WHERE run_id = :run_id
+              AND store_code = :store_code
+            GROUP BY order_number
+            ORDER BY max_order_id DESC, line_count DESC, order_number ASC
+            LIMIT :sample_limit
+            """
+        ),
+    }
+
+
+async def _collect_line_item_serial_validation(
+    *,
+    session: Any,
+    run_id: str,
+    store_code: str,
+    sample_limit: int = 5,
+) -> dict[str, Any]:
+    scoped_params = {"run_id": run_id, "store_code": store_code}
+    summary = (
+        await session.execute(_build_line_item_serial_validation_query(), scoped_params)
+    ).mappings().one()
+
+    sample_queries = _build_line_item_serial_validation_sample_queries(sample_limit)
+    sample_params = {**scoped_params, "sample_limit": sample_limit}
+    samples = {
+        key: [dict(row) for row in (await session.execute(query, sample_params)).mappings().all()]
+        for key, query in sample_queries.items()
+    }
+
+    return {
+        "scoped_rows": int(summary["scoped_rows"] or 0),
+        "orders_with_min_order_id_not_1": int(summary["min_order_id_not_1_orders"] or 0),
+        "orders_with_duplicate_order_number_order_id": int(
+            summary["duplicate_order_number_order_id_orders"] or 0
+        ),
+        "single_line_orders_with_order_id_not_1": int(
+            summary["single_line_order_id_not_1_orders"] or 0
+        ),
+        "sample_limit": sample_limit,
+        "samples": samples,
+    }
 
 
 def _build_payment_post_publish_verification_query() -> sa.TextClause:
@@ -1046,6 +1156,21 @@ async def publish_uc_gst_order_details_to_line_items(
                 else:
                     await session.execute(sa.insert(line_items).values(**payload))
                     metrics.inserted += 1
+
+        metrics.line_item_serial_validation = await _collect_line_item_serial_validation(
+            session=session,
+            run_id=run_id,
+            store_code=store_code,
+        )
+        LOGGER.info(
+            "GST line-item serial validation completed",
+            extra={
+                "phase": "gst_publish_order_line_items_validation",
+                "run_id": run_id,
+                "store_code": store_code,
+                "validation": metrics.line_item_serial_validation,
+            },
+        )
 
         await session.commit()
     return metrics

@@ -813,6 +813,46 @@ async def test_line_item_publish_assigns_serials_and_single_row_defaults(tmp_pat
     assert all(not r.is_orphan for r in rows)
 
 
+
+
+@pytest.mark.asyncio
+async def test_line_item_publish_emits_serial_validation_metrics(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_line_items_validation.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO orders (id, cost_center, store_code, order_number, order_date, customer_name, mobile_number, created_at)
+            VALUES
+                (201, 'CC01', 'UC567', 'ORD-10', '2025-01-01T00:00:00+00:00', 'Alice', '9999999999', '2025-01-01T00:00:00+00:00'),
+                (202, 'CC01', 'UC567', 'ORD-11', '2025-01-01T00:00:00+00:00', 'Bob', '8888888888', '2025-01-01T00:00:00+00:00')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO stg_uc_archive_order_details
+            (id, run_id, run_date, cost_center, store_code, order_code, service, item_name, rate, quantity, amount, order_datetime_raw, line_hash, ingest_remarks)
+            VALUES
+                (11, 'run-validation', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-10', 'Dryclean', 'Shirt', 50, 1, 50, '03 Jan 2025, 10:30 AM', 'h1', 'r1'),
+                (12, 'run-validation', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-10', 'Wash', 'Pants', 70, 1, 70, '03 Jan 2025, 10:31 AM', 'h2', 'r2'),
+                (13, 'run-validation', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-11', 'Iron', 'Kurta', 30, 1, 30, '03 Jan 2025, 10:32 AM', 'h3', 'r3')
+        """))
+        await session.commit()
+
+    metrics = await publish_uc_gst_order_details_to_line_items(
+        database_url=db_url,
+        run_id='run-validation',
+        store_code='UC567',
+    )
+
+    assert metrics.line_item_serial_validation is not None
+    assert metrics.line_item_serial_validation["scoped_rows"] == 3
+    assert metrics.line_item_serial_validation["orders_with_min_order_id_not_1"] == 0
+    assert metrics.line_item_serial_validation["orders_with_duplicate_order_number_order_id"] == 0
+    assert metrics.line_item_serial_validation["single_line_orders_with_order_id_not_1"] == 0
+
+    outliers = metrics.line_item_serial_validation["samples"]["max_order_id_outliers"]
+    assert outliers[0]["order_number"] == 'ORD-10'
+    assert outliers[0]["max_order_id"] == 2
+
 @pytest.mark.asyncio
 async def test_line_item_publish_is_deterministic_and_marks_orphans(tmp_path: Path) -> None:
     db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_line_items_orphan.sqlite'}"
