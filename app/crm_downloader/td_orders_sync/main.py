@@ -49,7 +49,7 @@ from app.crm_downloader.td_orders_sync.td_api_compare import (
     COMPARE_KEY_FIELDS_BY_DATASET,
 )
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
-from app.dashboard_downloader.db_tables import orders_sync_log, pipelines, td_sync_compare_log
+from app.dashboard_downloader.db_tables import orders_sync_log, pipelines
 from app.dashboard_downloader.notifications import send_notifications_for_run
 from app.dashboard_downloader.run_summary import (
     fetch_summary_for_run,
@@ -250,7 +250,7 @@ async def _evaluate_garment_orphan_alert(
             "delta_threshold": delta_threshold,
         }
 
-    if not config.database_url or baseline_windows <= 0:
+    if baseline_windows <= 0:
         return {
             "triggered": False,
             "reason": None,
@@ -262,43 +262,16 @@ async def _evaluate_garment_orphan_alert(
             "delta_threshold": delta_threshold,
         }
 
-    baseline_values: list[int] = []
-    try:
-        async with session_scope(config.database_url) as session:
-            result = await session.execute(
-                sa.select(td_sync_compare_log.c.gate_verdict_json)
-                .where(td_sync_compare_log.c.store_code == store_code)
-                .order_by(td_sync_compare_log.c.to_date.desc(), td_sync_compare_log.c.created_at.desc())
-                .limit(baseline_windows)
-            )
-            for row in result.fetchall():
-                payload = row[0]
-                if not isinstance(payload, Mapping):
-                    continue
-                datasets = payload.get("datasets")
-                if not isinstance(datasets, Mapping):
-                    continue
-                garments = datasets.get("garments")
-                if not isinstance(garments, Mapping):
-                    continue
-                historical_orphans = garments.get("orphan_rows")
-                if historical_orphans is None:
-                    continue
-                baseline_values.append(int(historical_orphans))
-    except Exception:
-        baseline_values = []
-
-    baseline_avg = (sum(baseline_values) / len(baseline_values)) if baseline_values else None
-    delta_vs_baseline = (orphan_rows - baseline_avg) if baseline_avg is not None else None
-    triggered = bool(delta_vs_baseline is not None and delta_vs_baseline >= delta_threshold)
+    # Compare verdicts are runtime-only and no longer persisted to td_sync_compare_log,
+    # so baseline-driven orphan drift checks are intentionally disabled.
     return {
-        "triggered": triggered,
-        "reason": "garments_orphan_rows_above_baseline" if triggered else None,
+        "triggered": False,
+        "reason": None,
         "orphan_rows": orphan_rows,
         "absolute_threshold": absolute_threshold,
-        "baseline_avg_orphan_rows": round(baseline_avg, 2) if baseline_avg is not None else None,
-        "baseline_sample_size": len(baseline_values),
-        "delta_vs_baseline": round(delta_vs_baseline, 2) if delta_vs_baseline is not None else None,
+        "baseline_avg_orphan_rows": None,
+        "baseline_sample_size": 0,
+        "delta_vs_baseline": None,
         "delta_threshold": delta_threshold,
     }
 
@@ -477,67 +450,6 @@ def _persist_compare_excel_artifact(
     workbook.save(artifact_path)
 
 
-async def _insert_td_compare_log(
-    *,
-    logger: JsonLogger,
-    run_id: str,
-    run_env: str,
-    store_code: str,
-    run_start_date: date,
-    run_end_date: date,
-    source_mode: str,
-    compare_metrics: Mapping[str, Any],
-    decision_log: Mapping[str, Any],
-    gate_verdict_json: Mapping[str, Any],
-) -> tuple[int, bool]:
-    if not config.database_url:
-        return 0, False
-    api_ready_required_windows = _int_env("TD_API_READY_CONSECUTIVE_WINDOWS", 2)
-    try:
-        async with session_scope(config.database_url) as session:
-            previous = await session.execute(
-                sa.select(td_sync_compare_log.c.consecutive_pass_windows)
-                .where(td_sync_compare_log.c.store_code == store_code)
-                .order_by(td_sync_compare_log.c.to_date.desc(), td_sync_compare_log.c.created_at.desc())
-                .limit(1)
-            )
-            previous_consecutive = int(previous.scalar() or 0)
-            passed = bool(gate_verdict_json.get("pass"))
-            consecutive_pass_windows = previous_consecutive + 1 if passed else 0
-            api_ready = consecutive_pass_windows >= api_ready_required_windows
-            values = {
-                "run_id": run_id,
-                "run_env": run_env,
-                "store_code": store_code,
-                "from_date": run_start_date,
-                "to_date": run_end_date,
-                "source_mode": source_mode,
-                "total_rows": compare_metrics.get("total_rows"),
-                "matched_rows": compare_metrics.get("matched_rows"),
-                "missing_in_api": compare_metrics.get("missing_in_api"),
-                "missing_in_ui": compare_metrics.get("missing_in_ui"),
-                "amount_mismatches": compare_metrics.get("amount_mismatches"),
-                "status_mismatches": compare_metrics.get("status_mismatches"),
-                "sample_mismatch_keys": compare_metrics.get("sample_mismatch_keys") or [],
-                "gate_verdict_json": dict(gate_verdict_json),
-                "consecutive_pass_windows": consecutive_pass_windows,
-                "api_ready": api_ready,
-                "decision": decision_log.get("decision"),
-                "reason": decision_log.get("reason"),
-            }
-            await session.execute(sa.insert(td_sync_compare_log).values(**values))
-            await session.commit()
-            return consecutive_pass_windows, api_ready
-    except Exception as exc:  # pragma: no cover
-        log_event(
-            logger=logger,
-            phase="compare",
-            status="warn",
-            message="Failed to persist TD compare metrics",
-            store_code=store_code,
-            error=str(exc),
-        )
-        return 0, False
 
 
 
@@ -8386,17 +8298,12 @@ async def _run_store_discovery(
         garment_dataset_verdict["orphan_alert"] = orphan_alert
         gate_verdict_datasets["garments"] = garment_dataset_verdict
         gate_verdict["datasets"] = gate_verdict_datasets
-        _consecutive_pass_windows, _api_ready = await _insert_td_compare_log(
+        log_event(
             logger=store_logger,
-            run_id=run_id,
-            run_env=run_env,
+            phase="compare",
+            message="TD compare evaluation completed (runtime-only; DB persistence disabled)",
             store_code=store.store_code,
-            run_start_date=run_start_date,
-            run_end_date=run_end_date,
             source_mode=correlation.source_mode,
-            compare_metrics=orders_compare_metrics,
-            decision_log=decision.as_dict(),
-            gate_verdict_json=gate_verdict,
         )
         if orders_report:
             orders_report.gate_verdict = gate_verdict
