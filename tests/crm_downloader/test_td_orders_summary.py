@@ -13,6 +13,7 @@ from app.crm_downloader.td_orders_sync.main import (
     _filter_non_order_summary_rows,
     _normalize_json_safe,
     _resolve_compare_rows,
+    _resolve_sync_log_status,
 )
 
 
@@ -444,3 +445,37 @@ def test_daily_reconciliation_uses_ingestion_status_as_pass_fail_truth() -> None
     assert daily["failed_stores"] == []
     assert daily["stores_passed"] == ["A1"]
     assert daily["stores_failed"] == []
+
+
+def test_sync_log_status_treats_warning_as_success_when_ingest_completed() -> None:
+    status = _resolve_sync_log_status(
+        orders_report=StoreReport(status="warning"),
+        sales_report=StoreReport(status="ok"),
+        run_orders=True,
+        run_sales=True,
+    )
+
+    assert status == "success"
+
+
+def test_summary_payload_exposes_data_ingest_status_and_observability_warnings() -> None:
+    summary = TdOrdersDiscoverySummary(
+        run_id="run-obs", run_env="test", report_date=date(2024, 1, 8), report_end_date=date(2024, 1, 8)
+    )
+    summary.record_store(
+        "A1",
+        StoreOutcome(status="warning", message="Completed with observability warnings"),
+        orders_result=StoreReport(status="ok", warnings=["compare_artifact_persistence_warning: missing workbook"]),
+        sales_result=StoreReport(status="ok"),
+    )
+
+    record = summary.build_record(finished_at=datetime(2024, 1, 8, tzinfo=timezone.utc))
+    store_summary = record["metrics_json"]["stores_summary"]["stores"]["A1"]
+    notification_store = record["metrics_json"]["notification_payload"]["stores"][0]
+
+    assert store_summary["data_ingest_status"] == "success"
+    assert store_summary["ingest_status"] == "success"
+    assert "compare_artifact_persistence_warning" in store_summary["observability_warnings"][0]
+    assert notification_store["data_ingest_status"] == "success"
+    assert notification_store["ingest_status"] == "success"
+    assert "compare_artifact_persistence_warning" in notification_store["observability_warnings"][0]
