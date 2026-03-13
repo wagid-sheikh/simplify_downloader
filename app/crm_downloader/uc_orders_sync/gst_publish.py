@@ -50,6 +50,71 @@ class PublishMetrics:
     missing_parent_count: int = 0
     preflight_warning: str | None = None
     preflight_diagnostics: dict[str, Any] | None = None
+    post_publish_verification: dict[str, int] | None = None
+
+
+def _build_payment_post_publish_verification_query() -> sa.TextClause:
+    return sa.text(
+        """
+        WITH scoped_sales AS (
+            SELECT s.id, s.order_number, s.customer_address, s.order_type
+            FROM sales s
+            WHERE s.run_id = :run_id
+              AND s.store_code = :store_code
+        ),
+        sales_with_sources AS (
+            SELECT
+                s.id,
+                s.order_type,
+                NULLIF(TRIM(s.customer_address), '') AS sales_customer_address,
+                (
+                    SELECT NULLIF(TRIM(o.customer_address), '')
+                    FROM orders o
+                    WHERE o.store_code = :store_code
+                      AND o.order_number = s.order_number
+                    ORDER BY o.id DESC
+                    LIMIT 1
+                ) AS primary_customer_address,
+                (
+                    SELECT NULLIF(TRIM(ab.address), '')
+                    FROM stg_uc_archive_orders_base ab
+                    WHERE ab.run_id = :run_id
+                      AND ab.store_code = :store_code
+                      AND ab.order_code = s.order_number
+                    ORDER BY ab.run_date DESC, ab.id DESC
+                    LIMIT 1
+                ) AS fallback_customer_address
+            FROM scoped_sales s
+        )
+        SELECT
+            COUNT(*) AS touched_rows,
+            SUM(CASE WHEN order_type IS NULL THEN 1 ELSE 0 END) AS order_type_null_rows,
+            SUM(
+                CASE
+                    WHEN sales_customer_address IS NOT NULL
+                     AND primary_customer_address IS NOT NULL
+                     AND sales_customer_address = primary_customer_address
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS customer_address_primary_rows,
+            SUM(
+                CASE
+                    WHEN sales_customer_address IS NOT NULL
+                     AND fallback_customer_address IS NOT NULL
+                     AND sales_customer_address = fallback_customer_address
+                     AND (
+                        primary_customer_address IS NULL
+                        OR sales_customer_address <> primary_customer_address
+                     )
+                    THEN 1
+                    ELSE 0
+                END
+            ) AS customer_address_fallback_rows,
+            SUM(CASE WHEN sales_customer_address IS NULL THEN 1 ELSE 0 END) AS customer_address_null_or_blank_rows
+        FROM sales_with_sources
+        """
+    )
 
 
 @dataclass
@@ -781,6 +846,20 @@ async def publish_uc_gst_payments_to_sales(
                 metrics.inserted += 1
 
         await session.commit()
+
+        verification_row = (
+            await session.execute(
+                _build_payment_post_publish_verification_query(),
+                {"run_id": run_id, "store_code": store_code},
+            )
+        ).mappings().one()
+        metrics.post_publish_verification = {
+            "touched_rows": int(verification_row["touched_rows"] or 0),
+            "order_type_null_rows": int(verification_row["order_type_null_rows"] or 0),
+            "customer_address_primary_rows": int(verification_row["customer_address_primary_rows"] or 0),
+            "customer_address_fallback_rows": int(verification_row["customer_address_fallback_rows"] or 0),
+            "customer_address_null_or_blank_rows": int(verification_row["customer_address_null_or_blank_rows"] or 0),
+        }
 
     metrics.reason_codes = dict(reasons)
     return metrics

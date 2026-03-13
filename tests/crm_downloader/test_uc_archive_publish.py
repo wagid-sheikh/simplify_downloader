@@ -245,6 +245,13 @@ async def test_payment_publish_customer_address_prefers_order_then_archive_base(
 
     metrics = await publish_uc_gst_payments_to_sales(database_url=db_url, run_id='run-addr', store_code='UC567')
     assert metrics.inserted == 2
+    assert metrics.post_publish_verification == {
+        'touched_rows': 2,
+        'order_type_null_rows': 2,
+        'customer_address_primary_rows': 1,
+        'customer_address_fallback_rows': 1,
+        'customer_address_null_or_blank_rows': 0,
+    }
 
     async with session_scope(db_url) as session:
         rows = (
