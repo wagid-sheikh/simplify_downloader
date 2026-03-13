@@ -79,6 +79,11 @@ INGEST_REMARKS_MAX_CHARS = 200
 DOM_SNIPPET_MAX_CHARS = 600
 WARNING_SAMPLE_LIMIT = 3
 VERBOSE_DOM_LOGGING = os.environ.get("TD_ORDERS_VERBOSE_LOGGING", "").strip().lower() in {"1", "true", "yes"}
+VERIFY_ORDERS_SYNC_LOG_UPSERT = os.environ.get("TD_VERIFY_ORDERS_SYNC_LOG_UPSERT", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 NAV_SNAPSHOT_SAMPLE_LIMIT = 3
 SALES_NAV_SAMPLE_LIMIT = 3
 ROW_SAMPLE_LIMIT = 3
@@ -2368,36 +2373,33 @@ async def _insert_orders_sync_log(
                 )
             ).scalar_one()
             await session.commit()
-            exists = (
-                await session.execute(
-                    sa.select(orders_sync_log.c.id).where(orders_sync_log.c.id == log_id)
-                )
-            ).scalar_one_or_none()
-            if not exists:
-                log_event(
-                    logger=logger,
-                    phase="orders_sync_log",
-                    status="error",
-                    message="Hard error: orders sync log row missing after insert",
-                    log_id=log_id,
-                    store_code=store.store_code,
-                )
-                return None
+            if VERIFY_ORDERS_SYNC_LOG_UPSERT:
+                verified_log_id = (
+                    await session.execute(
+                        sa.select(orders_sync_log.c.id).where(orders_sync_log.c.id == log_id)
+                    )
+                ).scalar_one_or_none()
+                if not verified_log_id:
+                    log_event(
+                        logger=logger,
+                        phase="orders_sync_log",
+                        status="error",
+                        message="orders_sync_log_upsert_verification_failed",
+                        log_id=log_id,
+                        store_code=store.store_code,
+                        run_id=run_id,
+                        insert_values=insert_values,
+                        verification_result={"verified_log_id": verified_log_id},
+                    )
+                    return None
             log_event(
                 logger=logger,
                 phase="orders_sync_log",
                 status="info",
-                message="Inserted orders sync log row",
+                message="orders_sync_log_upserted",
                 log_id=log_id,
                 store_code=store.store_code,
-            )
-            log_event(
-                logger=logger,
-                phase="orders_sync_log",
-                status="info",
-                message="Verified orders sync log row exists",
-                log_id=log_id,
-                store_code=store.store_code,
+                run_id=run_id,
             )
     except Exception as exc:  # pragma: no cover - defensive
         log_event(
