@@ -76,6 +76,32 @@ Operational visibility:
 
 - Each endpoint logs `summary_rows_filtered` via `TD API summary rows filtered` with endpoint and store code context.
 
+## Canonical per-store triage event (`TD store summary`)
+
+For per-store completion triage, operators should rely on a single canonical event:
+
+- `phase="window_summary"`
+- `message="TD store summary"`
+
+This event is emitted once per store after compare + ingest resolution and is the source of truth for store-level run triage.
+
+### Field contract (keep stable)
+
+Required fields for triage dashboards/alerts:
+
+- Identity/window: `run_id`, `store_code`, `from_date`, `to_date`
+- Ingest counts/status: `orders_ingested_rows`, `sales_ingested_rows`, `orders_ingest_status`, `sales_ingest_status`, `data_ingest_status`
+- Compare result: `compare_status` (`pass` or `mismatch`)
+- Store outcome: `final_status`, `failure_stage`
+- Warnings: `observability_warnings` (list; empty when none)
+- Durations: `durations_ms` (object; currently includes `store_execution_ms`)
+
+Backward-compatible supplementary fields may be included, but new triage dimensions should be added to this contract section before rollout.
+
+### Intermediate compare events
+
+Technical compare lifecycle logs (for example compare artifact persistence/evaluation details) are intentionally not part of the canonical triage contract and should remain low-noise (debug-oriented or emitted only for non-default paths such as warnings/mismatches).
+
 ## Expected observability signals
 
 In logs, verify API phase events are present for the store:
