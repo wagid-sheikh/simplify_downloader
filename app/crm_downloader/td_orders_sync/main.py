@@ -320,6 +320,14 @@ def _normalize_json_safe(value: Any) -> Any:
     return value
 
 
+def _append_unique_warning(report: StoreReport | None, warning: str | None) -> None:
+    if report is None or not warning:
+        return
+    rendered = str(warning).strip()
+    if rendered and rendered not in report.warnings:
+        report.warnings.append(rendered)
+
+
 def _summarize_text_samples(values: Sequence[str], *, limit: int = ROW_SAMPLE_LIMIT) -> dict[str, Any]:
     samples: list[str] = []
     for value in values:
@@ -954,6 +962,7 @@ class StoreOutcome:
     data_source_decision: str | None = None
     ingest_status: str | None = None
     failure_stage: str | None = None
+    observability_warnings: list[str] = field(default_factory=list)
     final_url: str | None = None
     iframe_attached: bool | None = None
     verification_seen: bool | None = None
@@ -1115,9 +1124,15 @@ class TdOrdersDiscoverySummary:
             orders_report=orders_result,
             sales_report=sales_result,
         )
+        resolved_observability_warnings = (
+            list(outcome.observability_warnings)
+            if outcome.observability_warnings
+            else _resolve_store_observability_warnings(orders_report=orders_result, sales_report=sales_result)
+        )
         outcome.data_source_decision = resolved_data_source_decision
         outcome.ingest_status = resolved_ingest_status
         outcome.failure_stage = resolved_failure_stage
+        outcome.observability_warnings = resolved_observability_warnings
         self.store_outcomes[store_code] = outcome
         resolved_orders = orders_result or StoreReport(
             status=outcome.status,
@@ -1665,10 +1680,20 @@ class TdOrdersDiscoverySummary:
                     if outcome and outcome.data_source_decision
                     else _resolve_data_source_decision(source_mode=orders_report.source_mode if orders_report else "ui", report=orders_report)
                 ),
+                "data_ingest_status": (
+                    outcome.ingest_status
+                    if outcome and outcome.ingest_status
+                    else _resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report)
+                ),
                 "ingest_status": (
                     outcome.ingest_status
                     if outcome and outcome.ingest_status
                     else _resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report)
+                ),
+                "observability_warnings": (
+                    list(outcome.observability_warnings)
+                    if outcome and outcome.observability_warnings
+                    else _resolve_store_observability_warnings(orders_report=orders_report, sales_report=sales_report)
                 ),
                 "failure_stage": (
                     outcome.failure_stage
@@ -1803,8 +1828,20 @@ class TdOrdersDiscoverySummary:
                         if outcome and outcome.data_source_decision
                         else _resolve_data_source_decision(source_mode=orders_report.get("source_mode") or "ui", report=None)
                     ),
+                    "data_ingest_status": (
+                        outcome.ingest_status if outcome and outcome.ingest_status else _resolve_store_ingest_status(
+                            orders_report=self.orders_results.get(code), sales_report=self.sales_results.get(code)
+                        )
+                    ),
                     "ingest_status": (
                         outcome.ingest_status if outcome and outcome.ingest_status else _resolve_store_ingest_status(
+                            orders_report=self.orders_results.get(code), sales_report=self.sales_results.get(code)
+                        )
+                    ),
+                    "observability_warnings": (
+                        list(outcome.observability_warnings)
+                        if outcome and outcome.observability_warnings
+                        else _resolve_store_observability_warnings(
                             orders_report=self.orders_results.get(code), sales_report=self.sales_results.get(code)
                         )
                     ),
@@ -2589,7 +2626,6 @@ def _resolve_sync_log_status(
     orders_skipped = orders_status == "skipped"
     sales_skipped = sales_status == "skipped"
     sales_intentionally_skipped = sales_skipped and not run_sales
-    has_warning = orders_status == "warning" or sales_status == "warning"
 
     # In API shadow mode we intentionally keep the UI extraction path as the
     # write source while API results are collected for comparison.
@@ -2604,7 +2640,7 @@ def _resolve_sync_log_status(
     if orders_skipped and sales_skipped:
         return "skipped"
     if orders_success and (sales_success or sales_intentionally_skipped):
-        return "partial" if has_warning else "success"
+        return "success"
     if orders_success or sales_success:
         return "partial"
     if orders_skipped or sales_skipped:
@@ -2859,6 +2895,18 @@ def _resolve_data_source_decision(*, source_mode: str, report: StoreReport | Non
     return "ui"
 
 
+def _resolve_store_observability_warnings(*, orders_report: StoreReport | None, sales_report: StoreReport | None) -> list[str]:
+    warnings: list[str] = []
+    for report in (orders_report, sales_report):
+        if report is None:
+            continue
+        for warning in report.warnings:
+            rendered = str(warning).strip()
+            if rendered and rendered not in warnings:
+                warnings.append(rendered)
+    return warnings
+
+
 def _resolve_store_ingest_status(*, orders_report: StoreReport | None, sales_report: StoreReport | None) -> str:
     reports = [report for report in (orders_report, sales_report) if report is not None]
     if reports and all(report.status in {"ok", "warning"} for report in reports):
@@ -2927,7 +2975,8 @@ def _log_td_window_summary(
     source_mode: str,
 ) -> None:
     data_source_decision = _resolve_data_source_decision(source_mode=source_mode, report=orders_report)
-    ingest_status = _resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report)
+    data_ingest_status = _resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report)
+    observability_warnings = _resolve_store_observability_warnings(orders_report=orders_report, sales_report=sales_report)
     failure_stage = _resolve_failure_stage(orders_report=orders_report, sales_report=sales_report)
     final_status = _resolve_sync_log_status(
         orders_report=orders_report,
@@ -2957,7 +3006,9 @@ def _log_td_window_summary(
         final_status=final_status,
         source_mode=source_mode,
         data_source_decision=data_source_decision,
-        ingest_status=ingest_status,
+        data_ingest_status=data_ingest_status,
+        ingest_status=data_ingest_status,
+        observability_warnings=observability_warnings,
         failure_stage=failure_stage,
     )
     has_downloads_or_ingest = any(
@@ -7312,6 +7363,9 @@ async def _run_store_discovery(
                                 context_source=api_context_source,
                                 warnings=artifact_result.warnings,
                             )
+                            for artifact_warning in artifact_result.warnings:
+                                _append_unique_warning(orders_report, f"api_artifact_persistence_warning: {artifact_warning}")
+                                _append_unique_warning(sales_report, f"api_artifact_persistence_warning: {artifact_warning}")
                         log_event(
                             logger=store_logger,
                             phase="api",
@@ -7533,6 +7587,14 @@ async def _run_store_discovery(
                             warnings=(api_sales_ingest_result.warnings if api_sales_ingest_result else []),
                             source_mode=source_mode,
                         )
+                        for artifact_warning in (artifact_result.warnings if 'artifact_result' in locals() else []):
+                            _append_unique_warning(orders_report, f"api_artifact_persistence_warning: {artifact_warning}")
+                            _append_unique_warning(sales_report, f"api_artifact_persistence_warning: {artifact_warning}")
+                        for endpoint, error_code in (api_fetch_result.endpoint_errors or {}).items():
+                            _append_unique_warning(
+                                orders_report,
+                                f"api_endpoint_warning:{endpoint}={error_code}",
+                            )
                         outcome = StoreOutcome(
                             status="warning" if (orders_status == "warning" or sales_status == "warning") else "ok",
                             message="API primary path executed",
@@ -7937,7 +7999,12 @@ async def _run_store_discovery(
             message="Resolved TD outcome dimensions for orders sync log update",
             store_code=store.store_code,
             data_source_decision=_resolve_data_source_decision(source_mode=source_mode, report=orders_report),
+            data_ingest_status=_resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report),
             ingest_status=_resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report),
+            observability_warnings=_resolve_store_observability_warnings(
+                orders_report=orders_report,
+                sales_report=sales_report,
+            ),
             failure_stage=_resolve_failure_stage(orders_report=orders_report, sales_report=sales_report),
         )
         ui_rows = _resolve_compare_rows(orders_report, dataset="orders")
@@ -8141,6 +8208,8 @@ async def _run_store_discovery(
             artifact_paths=compare_artifact_result.artifact_paths,
             warnings=compare_artifact_result.warnings,
         )
+        for compare_warning in compare_artifact_result.warnings:
+            _append_unique_warning(orders_report, f"compare_artifact_persistence_warning: {compare_warning}")
 
         garment_ingest_result: TdGarmentIngestResult | None = None
         compare_ok = (not orders_compare_readiness) or _compare_mismatch_free(orders_compare_metrics)
