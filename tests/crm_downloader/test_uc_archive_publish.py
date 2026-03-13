@@ -22,6 +22,7 @@ from app.crm_downloader.uc_orders_sync.gst_publish import (
     REASON_GST_LIFECYCLE_PARENT_COVERAGE_LOW,
     REASON_GST_LIFECYCLE_PARENT_COVERAGE_NEAR_ZERO,
     REASON_GST_LIFECYCLE_UNPARSEABLE_PAYMENT_DATE,
+    _build_payment_preflight_diagnostics,
     publish_uc_gst_order_details_to_line_items,
     publish_uc_gst_order_details_to_orders,
     publish_uc_gst_payments_to_sales,
@@ -686,7 +687,34 @@ async def test_payment_preflight_scoped_to_store_and_run_id(tmp_path: Path) -> N
     assert 'UC567:ORD-OTHER-MISSING' not in metrics.preflight_warning
     assert metrics.preflight_diagnostics is not None
     assert metrics.preflight_diagnostics['sample_missing_keys'] == ['UC610:ORD-MISSING']
+    assert metrics.preflight_diagnostics['sample_parent_keys_not_in_archive_payment_set'] == []
 
+
+def test_payment_preflight_diagnostics_builder_rejects_incompatible_counts() -> None:
+    with pytest.raises(ValueError, match=r"matched_parent_keys \+ missing_parent_keys"):
+        _build_payment_preflight_diagnostics(
+            archive_payment_keys={("UC610", "ORD-1")},
+            matched_archive_payment_keys={("UC610", "ORD-1"), ("UC610", "ORD-EXTRA")},
+            parent_lookup_keys={("UC610", "ORD-1")},
+        )
+
+
+def test_payment_preflight_diagnostics_builder_uses_explicit_parent_lookup_keyspace() -> None:
+    diagnostics = _build_payment_preflight_diagnostics(
+        archive_payment_keys={("UC610", "ORD-1"), ("UC610", "ORD-2")},
+        matched_archive_payment_keys={("UC610", "ORD-1")},
+        parent_lookup_keys={("UC610", "ORD-1"), ("UC610", "ORD-X")},
+    )
+
+    assert diagnostics["total_archive_payment_keys"] == 2
+    assert diagnostics["matched_parent_keys"] == 1
+    assert diagnostics["missing_parent_keys"] == 1
+    assert diagnostics["sample_missing_keys"] == ["UC610:ORD-2"]
+    assert diagnostics["sample_parent_keys_not_in_archive_payment_set"] == ["UC610:ORD-X"]
+    assert (
+        diagnostics["sample_parent_keys_not_in_archive_payment_set_derivation"]
+        == "sorted(parent_lookup_keys - archive_payment_keys)[:5]"
+    )
 
 
 @pytest.mark.asyncio

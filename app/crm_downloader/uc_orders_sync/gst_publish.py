@@ -85,6 +85,43 @@ def _parse_payment_datetime(value: str | None) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=tz)
 
 
+def _build_payment_preflight_diagnostics(
+    *,
+    archive_payment_keys: set[tuple[str, str]],
+    matched_archive_payment_keys: set[tuple[str, str]],
+    parent_lookup_keys: set[tuple[str, str]],
+) -> dict[str, Any]:
+    total_archive_payment_keys = len(archive_payment_keys)
+    matched_parent_keys = len(matched_archive_payment_keys)
+    missing_archive_payment_keys = sorted(archive_payment_keys - matched_archive_payment_keys)
+    missing_parent_keys = len(missing_archive_payment_keys)
+
+    sample_missing_keys = [f"{store_code}:{order_code}" for store_code, order_code in missing_archive_payment_keys[:5]]
+    parent_keys_not_in_archive_payment_set = sorted(parent_lookup_keys - archive_payment_keys)
+    sample_parent_keys_not_in_archive_payment_set = [
+        f"{store_code}:{order_code}" for store_code, order_code in parent_keys_not_in_archive_payment_set[:5]
+    ]
+
+    if missing_parent_keys == 0 and sample_missing_keys:
+        raise ValueError("Incompatible diagnostics: missing_parent_keys is zero but sample_missing_keys is non-empty")
+    if matched_parent_keys + missing_parent_keys != total_archive_payment_keys:
+        raise ValueError(
+            "Incompatible diagnostics: matched_parent_keys + missing_parent_keys must equal total_archive_payment_keys"
+        )
+
+    coverage = (matched_parent_keys / total_archive_payment_keys) if total_archive_payment_keys else 1.0
+    return {
+        "total_archive_payment_keys": total_archive_payment_keys,
+        "matched_parent_keys": matched_parent_keys,
+        "missing_parent_keys": missing_parent_keys,
+        "coverage": coverage,
+        "sample_missing_keys": sample_missing_keys,
+        "sample_parent_keys_not_in_archive_payment_set": sample_parent_keys_not_in_archive_payment_set,
+        "parent_keys_not_in_archive_payment_set_count": len(parent_keys_not_in_archive_payment_set),
+        "sample_parent_keys_not_in_archive_payment_set_derivation": "sorted(parent_lookup_keys - archive_payment_keys)[:5]",
+    }
+
+
 def _normalize_store_code(value: Any) -> str | None:
     if value is None:
         return None
@@ -537,28 +574,27 @@ async def publish_uc_gst_payments_to_sales(
         metrics.publish_parent_match_rate = (parent_match_count / len(order_keys)) if order_keys else None
         metrics.missing_parent_count = missing_parent_count
 
-        missing_keys = sorted(order_keys - matched_keys)
-        sample_missing_keys = [f"{store_code}:{order_code}" for store_code, order_code in missing_keys[:5]]
-        sample_unmatched_parent_keys = [
-            f"{store_code}:{order_code}" for store_code, order_code in sorted(set(order_lookup.keys()) - order_keys)[:5]
-        ]
-        coverage = Decimal(str(metrics.publish_parent_match_rate or 0)) if order_keys else Decimal("1")
-        metrics.preflight_diagnostics = {
-            "total_archive_payment_keys": len(order_keys),
-            "matched_parent_keys": parent_match_count,
-            "missing_parent_keys": missing_parent_count,
-            "coverage": float(coverage),
-            "sample_missing_keys": sample_missing_keys,
-            "sample_unmatched_parent_keys": sample_unmatched_parent_keys,
-        }
+        metrics.preflight_diagnostics = _build_payment_preflight_diagnostics(
+            archive_payment_keys=order_keys,
+            matched_archive_payment_keys=matched_keys,
+            parent_lookup_keys=set(order_lookup.keys()),
+        )
+        sample_missing_keys = metrics.preflight_diagnostics["sample_missing_keys"]
+        coverage = Decimal(str(metrics.preflight_diagnostics["coverage"])) if order_keys else Decimal("1")
         LOGGER.info(
             "gst_publish_payment_key_coverage %s",
             json.dumps(
                 {
-                    "total_candidate_keys": len(order_keys),
-                    "matched_keys": parent_match_count,
+                    "total_archive_payment_keys": metrics.preflight_diagnostics["total_archive_payment_keys"],
+                    "matched_parent_keys": metrics.preflight_diagnostics["matched_parent_keys"],
+                    "missing_parent_keys": metrics.preflight_diagnostics["missing_parent_keys"],
                     "sample_unmatched_archive_keys": sample_missing_keys,
-                    "sample_unmatched_parent_keys": sample_unmatched_parent_keys,
+                    "sample_parent_keys_not_in_archive_payment_set": metrics.preflight_diagnostics[
+                        "sample_parent_keys_not_in_archive_payment_set"
+                    ],
+                    "sample_parent_keys_not_in_archive_payment_set_derivation": metrics.preflight_diagnostics[
+                        "sample_parent_keys_not_in_archive_payment_set_derivation"
+                    ],
                 },
                 sort_keys=True,
             ),
