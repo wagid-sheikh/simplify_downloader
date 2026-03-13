@@ -187,7 +187,68 @@ async def test_payment_upsert_idempotency_and_null_transaction_collision(tmp_pat
     assert count == 1
     assert row.transaction_id is None
     assert "stg-remark" in (row.ingest_remarks or "")
-    assert row.order_type == "UClean"
+    assert row.order_type is None
+
+
+@pytest.mark.asyncio
+async def test_payment_publish_customer_address_prefers_order_then_archive_base(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_sales_customer_address.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders (
+                    cost_center, store_code, order_number, order_date, customer_name, mobile_number, customer_address, created_at
+                ) VALUES
+                    ('CC01', 'UC567', 'ORD-ADDR-1', '2025-01-01T00:00:00+00:00', 'Alice', '9999999999', 'Order Address 1', '2025-01-01T00:00:00+00:00'),
+                    ('CC01', 'UC567', 'ORD-ADDR-2', '2025-01-01T00:00:00+00:00', 'Bob', '8888888888', '   ', '2025-01-01T00:00:00+00:00')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_orders_base (
+                    run_id, run_date, cost_center, store_code, order_code, customer_name, customer_phone, address
+                ) VALUES
+                    ('run-addr', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-ADDR-1', 'Archive Alice', '7000000001', 'Archive Address 1'),
+                    ('run-addr', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-ADDR-2', 'Archive Bob', '7000000002', 'Archive Address 2')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_payment_details (
+                    run_id, run_date, store_code, order_code, payment_mode, amount, payment_date_raw, transaction_id
+                ) VALUES
+                    ('run-addr', '2025-01-03T00:00:00+00:00', 'UC567', 'ORD-ADDR-1', 'UPI', 100, '03 Jan 2025, 11:00 AM', 'TADDR1'),
+                    ('run-addr', '2025-01-03T00:00:00+00:00', 'UC567', 'ORD-ADDR-2', 'UPI', 200, '03 Jan 2025, 11:10 AM', 'TADDR2')
+                """
+            )
+        )
+        await session.commit()
+
+    metrics = await publish_uc_gst_payments_to_sales(database_url=db_url, run_id='run-addr', store_code='UC567')
+    assert metrics.inserted == 2
+
+    async with session_scope(db_url) as session:
+        rows = (
+            await session.execute(
+                sa.text(
+                    "SELECT order_number, customer_address, order_type FROM sales WHERE store_code='UC567' ORDER BY order_number"
+                )
+            )
+        ).all()
+
+    assert rows[0].order_number == 'ORD-ADDR-1'
+    assert rows[0].customer_address == 'Order Address 1'
+    assert rows[0].order_type is None
+    assert rows[1].order_number == 'ORD-ADDR-2'
+    assert rows[1].customer_address == 'Archive Address 2'
+    assert rows[1].order_type is None
 
 
 @pytest.mark.asyncio
