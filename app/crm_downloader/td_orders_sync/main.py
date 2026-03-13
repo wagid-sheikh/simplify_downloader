@@ -2918,6 +2918,54 @@ def _resolve_store_observability_warnings(*, orders_report: StoreReport | None, 
     return warnings
 
 
+def _is_data_risk_warning(warning: str) -> bool:
+    normalized_warning = str(warning or "").strip().lower()
+    if not normalized_warning:
+        return False
+    data_risk_markers = (
+        "incomplete fetch",
+        "partial_unavailable",
+        "partial unavailable",
+        "retry exhausted",
+        "retries exhausted",
+        "fallback",
+        "wall_time_budget_exhausted",
+    )
+    return any(marker in normalized_warning for marker in data_risk_markers)
+
+
+def _resolve_store_completion_log_details(
+    *,
+    payload: StoreExecutionPayload,
+    run_orders: bool,
+    run_sales: bool,
+    source_mode: str,
+) -> tuple[str, str, int]:
+    orders_report = payload.orders_report
+    sales_report = payload.sales_report
+    store_outcome = _resolve_sync_log_status(
+        orders_report=orders_report,
+        sales_report=sales_report,
+        run_orders=run_orders,
+        run_sales=run_sales,
+        source_mode=source_mode,
+    )
+    observability_warnings = (
+        list(payload.outcome.observability_warnings)
+        if payload.outcome and payload.outcome.observability_warnings
+        else _resolve_store_observability_warnings(orders_report=orders_report, sales_report=sales_report)
+    )
+    warning_count = sum(1 for warning in observability_warnings if _is_data_risk_warning(warning))
+
+    if store_outcome == "failed":
+        completion_status = "error"
+    elif warning_count > 0 or store_outcome == "partial":
+        completion_status = "warning"
+    else:
+        completion_status = "ok"
+    return completion_status, store_outcome, warning_count
+
+
 def _resolve_store_ingest_status(*, orders_report: StoreReport | None, sales_report: StoreReport | None) -> str:
     reports = [report for report in (orders_report, sales_report) if report is not None]
     if reports and all(report.status in {"ok", "warning"} for report in reports):
@@ -6928,6 +6976,12 @@ async def _run_store_discovery_worker(
         )
         payload.queue_wait_ms = queue_wait_ms
         payload.duration_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
+        completion_status, store_outcome, warning_count = _resolve_store_completion_log_details(
+            payload=payload,
+            run_orders=run_orders,
+            run_sales=run_sales,
+            source_mode=source_mode,
+        )
         log_event(
             logger=store_logger,
             phase="store",
@@ -6935,7 +6989,9 @@ async def _run_store_discovery_worker(
             run_id=run_id,
             queue_wait_ms=queue_wait_ms,
             duration_ms=payload.duration_ms,
-            status=(payload.outcome.status if payload.outcome else "error"),
+            status=completion_status,
+            store_outcome=store_outcome,
+            warning_count=warning_count,
         )
         return payload
     except Exception as exc:
