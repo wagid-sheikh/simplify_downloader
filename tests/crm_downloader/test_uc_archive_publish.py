@@ -14,6 +14,7 @@ from app.crm_downloader.uc_orders_sync.archive_ingest import (
     TABLE_ARCHIVE_ORDER_DETAILS,
     TABLE_ARCHIVE_PAYMENT_DETAILS,
 )
+from app.crm_downloader.td_orders_sync.garment_ingest import order_line_items_table
 from app.crm_downloader.uc_orders_sync.gst_publish import (
     REASON_GST_LIFECYCLE_PARENT_INGEST_FAILURE,
     REASON_GST_LIFECYCLE_PARENT_ORDER_CONTEXT_MISSING,
@@ -21,6 +22,7 @@ from app.crm_downloader.uc_orders_sync.gst_publish import (
     REASON_GST_LIFECYCLE_PARENT_COVERAGE_LOW,
     REASON_GST_LIFECYCLE_PARENT_COVERAGE_NEAR_ZERO,
     REASON_GST_LIFECYCLE_UNPARSEABLE_PAYMENT_DATE,
+    publish_uc_gst_order_details_to_line_items,
     publish_uc_gst_order_details_to_orders,
     publish_uc_gst_payments_to_sales,
     publish_uc_gst_stage2_stage3,
@@ -34,6 +36,7 @@ async def _create_tables(db_url: str) -> None:
     _orders_table(metadata)
     _stg_uc_orders_table(metadata)
     _sales_table(metadata)
+    order_line_items_table(metadata)
     sa.Table(
         TABLE_ARCHIVE_BASE,
         metadata,
@@ -54,11 +57,19 @@ async def _create_tables(db_url: str) -> None:
         metadata,
         sa.Column("id", sa.Integer, primary_key=True),
         sa.Column("run_id", sa.Text),
+        sa.Column("run_date", sa.DateTime(timezone=True)),
+        sa.Column("cost_center", sa.String(8)),
         sa.Column("store_code", sa.String(8)),
+        sa.Column("ingest_remarks", sa.Text),
         sa.Column("order_code", sa.String(24)),
+        sa.Column("order_datetime_raw", sa.Text),
+        sa.Column("service", sa.Text),
+        sa.Column("item_name", sa.Text),
+        sa.Column("rate", sa.Numeric(12, 2)),
         sa.Column("quantity", sa.Numeric(12, 2)),
         sa.Column("weight", sa.Numeric(12, 3)),
-        sa.Column("service", sa.Text),
+        sa.Column("amount", sa.Numeric(12, 2)),
+        sa.Column("line_hash", sa.String(64)),
     )
     sa.Table(
         TABLE_ARCHIVE_PAYMENT_DETAILS,
@@ -723,3 +734,77 @@ async def test_orders_enrichment_keeps_long_service_type_value(tmp_path: Path) -
         ).scalar_one()
 
     assert service_type == 'Dry cleaning, Laundry - Wash & Fold'
+
+
+@pytest.mark.asyncio
+async def test_line_item_publish_assigns_serials_and_single_row_defaults(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_line_items.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO orders (id, cost_center, store_code, order_number, order_date, customer_name, mobile_number, order_status, created_at)
+            VALUES
+                (101, 'CC01', 'UC567', 'ORD-1', '2025-01-01T00:00:00+00:00', 'Alice', '9999999999', 'Delivered', '2025-01-01T00:00:00+00:00'),
+                (102, 'CC01', 'UC567', 'ORD-2', '2025-01-01T00:00:00+00:00', 'Bob', '8888888888', 'Booked', '2025-01-01T00:00:00+00:00')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO stg_uc_archive_order_details
+            (id, run_id, run_date, cost_center, store_code, order_code, service, item_name, rate, quantity, amount, order_datetime_raw, line_hash, ingest_remarks)
+            VALUES
+                (1, 'run-li', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'Dryclean', 'Shirt', 50, 1, 50, '03 Jan 2025, 10:30 AM', 'bhash', 'r1'),
+                (2, 'run-li', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'Wash', 'Pants', 70, 2, 140, '03 Jan 2025, 10:30 AM', 'ahash', 'r2'),
+                (3, 'run-li', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-2', 'Iron', 'Kurta', 30, 1, 30, '03 Jan 2025, 10:30 AM', NULL, 'r3')
+        """))
+        await session.commit()
+
+    metrics = await publish_uc_gst_order_details_to_line_items(database_url=db_url, run_id='run-li', store_code='UC567')
+    assert metrics.inserted == 3
+
+    async with session_scope(db_url) as session:
+        rows = (await session.execute(sa.text("""
+            SELECT order_number, order_id, line_item_key, line_item_uid, is_orphan
+            FROM order_line_items
+            ORDER BY order_number, order_id
+        """))).all()
+
+    assert [(r.order_number, r.order_id) for r in rows] == [('ORD-1', 1), ('ORD-1', 2), ('ORD-2', 1)]
+    assert rows[0].line_item_key == 'ahash'
+    assert rows[2].line_item_key == 'Kurta|Iron|30.00'
+    assert rows[2].line_item_uid.endswith('|1')
+    assert all(not r.is_orphan for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_line_item_publish_is_deterministic_and_marks_orphans(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_line_items_orphan.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO orders (cost_center, store_code, order_number, order_date, customer_name, mobile_number, created_at)
+            VALUES ('CC01', 'UC567', 'ORD-1', '2025-01-01T00:00:00+00:00', 'Alice', '9999999999', '2025-01-01T00:00:00+00:00')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO stg_uc_archive_order_details
+            (id, run_id, run_date, cost_center, store_code, order_code, service, item_name, rate, quantity, amount, order_datetime_raw, line_hash, ingest_remarks)
+            VALUES
+                (1, 'run-det', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'Dryclean', 'Shirt', 50, 1, 50, '03 Jan 2025, 10:30 AM', 'h1', 'r1'),
+                (2, 'run-det', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-MISS', 'Wash', 'Pants', 70, 1, 70, '03 Jan 2025, 10:30 AM', 'h2', 'r2')
+        """))
+        await session.commit()
+
+    first = await publish_uc_gst_order_details_to_line_items(database_url=db_url, run_id='run-det', store_code='UC567')
+    second = await publish_uc_gst_order_details_to_line_items(database_url=db_url, run_id='run-det', store_code='UC567')
+
+    assert first.inserted == 2
+    assert second.updated == 2
+
+    async with session_scope(db_url) as session:
+        count = (await session.execute(sa.text("SELECT COUNT(*) FROM order_line_items"))).scalar_one()
+        orphan = (await session.execute(sa.text("""
+            SELECT is_orphan, ingest_remarks FROM order_line_items WHERE order_number='ORD-MISS'
+        """))).one()
+    assert count == 2
+    assert orphan.is_orphan
+    assert 'parent_order_missing' in (orphan.ingest_remarks or '')

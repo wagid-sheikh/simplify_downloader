@@ -15,6 +15,7 @@ import sqlalchemy as sa
 from dateutil import parser
 
 from app.common.db import session_scope
+from app.crm_downloader.td_orders_sync.garment_ingest import order_line_items_table
 from app.crm_downloader.td_orders_sync.sales_ingest import _sales_table
 from app.crm_downloader.uc_orders_sync.archive_ingest import (
     TABLE_ARCHIVE_BASE,
@@ -733,10 +734,198 @@ async def publish_uc_gst_payments_to_sales(
     return metrics
 
 
+def _normalize_line_item_key(*, line_hash: Any, item_name: Any, service: Any, rate: Any) -> str:
+    line_hash_token = _non_blank_text(line_hash)
+    if line_hash_token:
+        return line_hash_token
+    item_token = _non_blank_text(item_name) or "unknown"
+    service_token = _non_blank_text(service) or "unknown"
+    rate_token = "" if rate is None else str(rate)
+    return f"{item_token}|{service_token}|{rate_token}"
+
+
+async def publish_uc_gst_order_details_to_line_items(
+    *, database_url: str, run_id: str, store_code: str
+) -> PublishMetrics:
+    metrics = PublishMetrics()
+    metadata = sa.MetaData()
+    details = sa.Table(
+        TABLE_ARCHIVE_ORDER_DETAILS,
+        metadata,
+        sa.Column("id", sa.Integer),
+        sa.Column("run_id", sa.Text),
+        sa.Column("run_date", sa.DateTime(timezone=True)),
+        sa.Column("cost_center", sa.String(8)),
+        sa.Column("store_code", sa.String(8)),
+        sa.Column("order_code", sa.String(24)),
+        sa.Column("service", sa.Text),
+        sa.Column("item_name", sa.Text),
+        sa.Column("rate", sa.Numeric(12, 2)),
+        sa.Column("quantity", sa.Numeric(12, 2)),
+        sa.Column("amount", sa.Numeric(12, 2)),
+        sa.Column("order_datetime_raw", sa.Text),
+        sa.Column("line_hash", sa.String(64)),
+        sa.Column("ingest_remarks", sa.Text),
+        extend_existing=True,
+    )
+    orders = _orders_table(metadata)
+    line_items = order_line_items_table(metadata)
+
+    async with session_scope(database_url) as session:
+        detail_rows = (
+            await session.execute(
+                sa.select(
+                    details.c.id,
+                    details.c.run_id,
+                    details.c.run_date,
+                    details.c.cost_center,
+                    details.c.store_code,
+                    details.c.order_code,
+                    details.c.service,
+                    details.c.item_name,
+                    details.c.rate,
+                    details.c.quantity,
+                    details.c.amount,
+                    details.c.order_datetime_raw,
+                    details.c.line_hash,
+                    details.c.ingest_remarks,
+                ).where(
+                    sa.and_(
+                        details.c.run_id == run_id,
+                        details.c.store_code == store_code,
+                    )
+                )
+            )
+        ).all()
+        if not detail_rows:
+            return metrics
+
+        normalized_orders = {
+            normalized[0]: row
+            for row in (
+                await session.execute(
+                    sa.select(
+                        orders.c.id,
+                        orders.c.cost_center,
+                        orders.c.store_code,
+                        orders.c.order_number,
+                        orders.c.order_date,
+                        orders.c.updated_at,
+                        orders.c.order_status,
+                    ).where(orders.c.store_code == store_code)
+                )
+            ).all()
+            for normalized in [_build_join_key_variants(row.store_code, row.order_number)]
+            if normalized
+        }
+
+        indexed_rows: list[dict[str, Any]] = []
+        for source_idx, row in enumerate(detail_rows, start=1):
+            join_variants = _build_join_key_variants(row.store_code, row.order_code)
+            if not join_variants:
+                metrics.skipped += 1
+                metrics.warnings += 1
+                continue
+            indexed_rows.append(
+                {
+                    "source_idx": source_idx,
+                    "group_key": join_variants[0],
+                    "join_variants": join_variants,
+                    "row": row,
+                }
+            )
+
+        grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for record in indexed_rows:
+            grouped[record["group_key"]].append(record)
+
+        for group_key in sorted(grouped.keys()):
+            group_rows = sorted(
+                grouped[group_key],
+                key=lambda record: (
+                    _non_blank_text(record["row"].line_hash) or "",
+                    _non_blank_text(record["row"].item_name) or "",
+                    record["source_idx"],
+                ),
+            )
+            for serial, record in enumerate(group_rows, start=1):
+                row = record["row"]
+                join_variants = record["join_variants"]
+                parent_order = next((normalized_orders.get(variant) for variant in join_variants if variant in normalized_orders), None)
+                selected_order_number = join_variants[0][1]
+                selected_store_code = join_variants[0][0]
+                selected_cost_center = _non_blank_text(row.cost_center)
+                if parent_order is not None:
+                    selected_cost_center = _non_blank_text(parent_order.cost_center) or selected_cost_center
+                if not selected_cost_center:
+                    metrics.skipped += 1
+                    metrics.warnings += 1
+                    continue
+
+                line_item_key = _normalize_line_item_key(
+                    line_hash=row.line_hash,
+                    item_name=row.item_name,
+                    service=row.service,
+                    rate=row.rate,
+                )
+                line_item_uid = f"{selected_cost_center}|{selected_order_number}|{line_item_key}|{serial}"
+                order_date = _parse_payment_datetime(row.order_datetime_raw)
+                source_updated_at = row.run_date or datetime.now(tz=ZoneInfo(os.getenv("PIPELINE_TIMEZONE", "Asia/Kolkata")))
+                status = _non_blank_text(parent_order.order_status) if parent_order is not None else None
+                ingest_remarks = _merge_remarks(row.ingest_remarks, "parent_order_missing" if parent_order is None else None)
+
+                payload = {
+                    "run_id": row.run_id,
+                    "run_date": row.run_date,
+                    "cost_center": selected_cost_center,
+                    "store_code": selected_store_code,
+                    "order_id": serial,
+                    "order_number": selected_order_number,
+                    "line_item_key": line_item_key,
+                    "line_item_uid": line_item_uid,
+                    "garment_name": _non_blank_text(row.item_name),
+                    "service_name": _non_blank_text(row.service),
+                    "quantity": row.quantity,
+                    "amount": row.amount,
+                    "order_date": order_date or (parent_order.order_date if parent_order is not None else None),
+                    "updated_at": (parent_order.updated_at if parent_order is not None and parent_order.updated_at else source_updated_at),
+                    "status": status,
+                    "ingest_row_seq": record["source_idx"],
+                    "is_orphan": parent_order is None,
+                    "ingest_remarks": ingest_remarks,
+                }
+
+                existing = (
+                    await session.execute(
+                        sa.select(line_items.c.id).where(
+                            sa.and_(
+                                line_items.c.cost_center == selected_cost_center,
+                                line_items.c.order_number == selected_order_number,
+                                line_items.c.line_item_uid == line_item_uid,
+                            )
+                        )
+                    )
+                ).first()
+                if existing:
+                    await session.execute(sa.update(line_items).where(line_items.c.id == existing.id).values(**payload))
+                    metrics.updated += 1
+                else:
+                    await session.execute(sa.insert(line_items).values(**payload))
+                    metrics.inserted += 1
+
+        await session.commit()
+    return metrics
+
+
 async def publish_uc_gst_stage2_stage3(
     *, database_url: str, run_id: str, store_code: str
 ) -> GstPublishResult:
     orders_metrics = await publish_uc_gst_order_details_to_orders(
+        database_url=database_url,
+        run_id=run_id,
+        store_code=store_code,
+    )
+    await publish_uc_gst_order_details_to_line_items(
         database_url=database_url,
         run_id=run_id,
         store_code=store_code,

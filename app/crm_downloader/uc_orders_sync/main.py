@@ -39,6 +39,7 @@ from app.crm_downloader.uc_orders_sync.gst_api_extract import (
 )
 from app.crm_downloader.uc_orders_sync.ingest import ingest_uc_orders_workbook
 from app.crm_downloader.uc_orders_sync.gst_publish import (
+    publish_uc_gst_order_details_to_line_items,
     publish_uc_gst_order_details_to_orders,
     publish_uc_gst_payments_to_sales,
 )
@@ -3880,6 +3881,7 @@ async def _run_store_discovery(
         )
 
         gst_publish_orders: dict[str, Any] | None = None
+        gst_publish_order_line_items: dict[str, Any] | None = None
         gst_publish_sales: dict[str, Any] | None = None
         stage_statuses: dict[str, str] = {
             **gst_ingest_stage_statuses,
@@ -4019,6 +4021,7 @@ async def _run_store_discovery(
             if ingest_completed:
                 publish_failed = False
                 orders_error: str | None = None
+                line_items_error: str | None = None
                 sales_error: str | None = None
                 try:
                     orders_publish = await publish_uc_gst_order_details_to_orders(
@@ -4052,6 +4055,40 @@ async def _run_store_discovery(
                         message="UC archive order-details publish failed; continuing to payments publish",
                         store_code=store.store_code,
                         error=orders_error,
+                    )
+
+                try:
+                    line_items_publish = await publish_uc_gst_order_details_to_line_items(
+                        database_url=config.database_url,
+                        run_id=run_id,
+                        store_code=store.store_code,
+                    )
+                    gst_publish_order_line_items = {
+                        "inserted": line_items_publish.inserted,
+                        "updated": line_items_publish.updated,
+                        "skipped": line_items_publish.skipped,
+                        "warnings": line_items_publish.warnings,
+                        "reason_codes": line_items_publish.reason_codes,
+                    }
+                    log_event(
+                        logger=logger,
+                        phase="gst_publish_order_line_items",
+                        status="info",
+                        message="UC archive order-details line-item publish completed",
+                        store_code=store.store_code,
+                        metrics=gst_publish_order_line_items,
+                    )
+                except Exception as exc:
+                    publish_failed = True
+                    line_items_error = str(exc)
+                    gst_publish_order_line_items = {"error": line_items_error}
+                    log_event(
+                        logger=logger,
+                        phase="gst_publish_order_line_items",
+                        status="warning",
+                        message="UC archive order-details line-item publish failed; continuing to payments publish",
+                        store_code=store.store_code,
+                        error=line_items_error,
                     )
 
                 try:
@@ -4097,11 +4134,13 @@ async def _run_store_discovery(
                 )
                 stage_metrics["gst_publish"] = {
                     "order_details_to_orders": gst_publish_orders,
+                    "order_details_to_line_items": gst_publish_order_line_items,
                     "payment_details_to_sales": gst_publish_sales,
                 }
-                if orders_error or sales_error:
+                if orders_error or line_items_error or sales_error:
                     stage_metrics["gst_publish"]["errors"] = {
                         "order_details_to_orders": orders_error,
+                        "order_details_to_line_items": line_items_error,
                         "payment_details_to_sales": sales_error,
                     }
 
