@@ -3038,6 +3038,8 @@ def _log_td_window_summary(
     run_orders: bool,
     run_sales: bool,
     source_mode: str,
+    compare_status: str,
+    durations_ms: dict[str, int],
 ) -> None:
     data_source_decision = _resolve_data_source_decision(source_mode=source_mode, report=orders_report)
     data_ingest_status = _resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report)
@@ -3054,7 +3056,7 @@ def _log_td_window_summary(
     log_event(
         logger=logger,
         phase="window_summary",
-        message="TD window summary",
+        message="TD store summary",
         store_code=store_code,
         from_date=from_date,
         to_date=to_date,
@@ -3073,7 +3075,9 @@ def _log_td_window_summary(
         data_source_decision=data_source_decision,
         data_ingest_status=data_ingest_status,
         ingest_status=data_ingest_status,
+        compare_status=compare_status,
         observability_warnings=observability_warnings,
+        durations_ms=durations_ms,
         failure_stage=failure_stage,
     )
     has_downloads_or_ingest = any(
@@ -7044,6 +7048,7 @@ async def _run_store_discovery(
     source_mode: str,
 ) -> StoreExecutionPayload:
     store_logger = logger.bind(store_code=store.store_code)
+    store_started_at = datetime.now(timezone.utc)
     correlation = _build_correlation_context(
         run_id=run_id,
         store_code=store.store_code,
@@ -8294,15 +8299,18 @@ async def _run_store_discovery(
                 "sales": dict(sales_api_health),
             },
         )
-        log_event(
-            logger=store_logger,
-            phase="compare",
-            message="Persisted TD compare mismatch artifacts",
-            store_code=store.store_code,
-            source_mode=source_mode,
-            artifact_paths=compare_artifact_result.artifact_paths,
-            warnings=compare_artifact_result.warnings,
-        )
+        should_log_compare_artifacts = bool(compare_artifact_result.warnings)
+        if should_log_compare_artifacts:
+            log_event(
+                logger=store_logger,
+                phase="compare",
+                status="warning",
+                message="Persisted TD compare mismatch artifacts",
+                store_code=store.store_code,
+                source_mode=source_mode,
+                artifact_paths=compare_artifact_result.artifact_paths,
+                warnings=compare_artifact_result.warnings,
+            )
         for compare_warning in compare_artifact_result.warnings:
             _append_unique_warning(orders_report, f"compare_artifact_persistence_warning: {compare_warning}")
 
@@ -8462,13 +8470,20 @@ async def _run_store_discovery(
         garment_dataset_verdict["orphan_alert"] = orphan_alert
         gate_verdict_datasets["garments"] = garment_dataset_verdict
         gate_verdict["datasets"] = gate_verdict_datasets
-        log_event(
-            logger=store_logger,
-            phase="compare",
-            message="TD compare evaluation completed (runtime-only; DB persistence disabled)",
-            store_code=store.store_code,
-            source_mode=correlation.source_mode,
-        )
+        compare_status = "pass" if bool(gate_verdict.get("overall_pass", gate_verdict.get("pass", True))) else "mismatch"
+        compare_reason_codes = [str(code) for code in (gate_verdict.get("reason_codes") or []) if str(code).strip()]
+        should_log_compare_evaluation = compare_status != "pass" or bool(compare_reason_codes)
+        if should_log_compare_evaluation:
+            log_event(
+                logger=store_logger,
+                phase="compare",
+                status="warning",
+                message="TD compare evaluation completed (runtime-only; DB persistence disabled)",
+                store_code=store.store_code,
+                source_mode=correlation.source_mode,
+                compare_status=compare_status,
+                compare_reason_codes=compare_reason_codes,
+            )
         if orders_report:
             orders_report.gate_verdict = gate_verdict
 
@@ -8480,6 +8495,7 @@ async def _run_store_discovery(
             primary_metrics=primary_metrics,
             secondary_metrics=secondary_metrics,
         )
+        store_duration_ms = int((datetime.now(timezone.utc) - store_started_at).total_seconds() * 1000)
         _log_td_window_summary(
             logger=store_logger,
             store_code=store.store_code,
@@ -8490,6 +8506,8 @@ async def _run_store_discovery(
             run_orders=run_orders,
             run_sales=run_sales,
             source_mode=source_mode,
+            compare_status=compare_status,
+            durations_ms={"store_execution_ms": store_duration_ms},
         )
         await _close_context(context)
         return StoreExecutionPayload(
