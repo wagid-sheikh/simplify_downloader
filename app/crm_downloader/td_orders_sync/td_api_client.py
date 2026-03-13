@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import random
 import time
@@ -27,6 +28,7 @@ HAR_COMPATIBLE_ENDPOINTS = frozenset({SALES_ENDPOINT, GARMENTS_ENDPOINT})
 logger = logging.getLogger(__name__)
 
 _TIMEOUT_ERROR_CLASSES = {"read_timeout", "connect_timeout", "total_timeout", "network_timeout", "timeout", "TimeoutError", "PlaywrightError"}
+_GARMENTS_WALL_TIME_SOFT_THRESHOLD_RATIO = 0.9
 
 _SUMMARY_MARKERS = ("total", "summary", "grand total")
 _LABEL_LIKE_FIELD_SIGNALS = ("label", "name", "title", "description", "remark", "note", "particular")
@@ -562,6 +564,13 @@ class TdApiClient:
         garments_dynamic_throttle_events = 0
         garments_dynamic_throttle_total_ms = 0
         garments_degraded_reason: str | None = None
+        garments_budget_state = "within_budget"
+        garments_near_limit_emitted = False
+        garments_completion = "unknown"
+        garments_fetch_event = "garments_fetch_completeness"
+        garments_fetch_message = "TD garments fetch completeness could not be determined"
+        garments_expected_total_rows: int | None = None
+        garments_unique_row_ids: set[str] = set()
         last_successful_page = page - 1
 
         logger.info(
@@ -580,23 +589,40 @@ class TdApiClient:
             },
         )
 
+        window_start = str(params.get("startDate") or "")
+        window_end = str(params.get("endDate") or "")
         self._log_auth_context_ready_once(endpoint=endpoint)
 
         while True:
             if is_garments_endpoint and self.config.garments_max_wall_time_ms > 0:
                 elapsed_wall_time_ms = int((time.perf_counter() - endpoint_started_at) * 1000)
-                if elapsed_wall_time_ms >= self.config.garments_max_wall_time_ms:
-                    garments_degraded_reason = "garments_wall_time_budget_exhausted"
+                budget_ms = int(self.config.garments_max_wall_time_ms)
+                if elapsed_wall_time_ms >= budget_ms:
+                    garments_degraded_reason = "garments_wall_time_budget_cutoff"
+                    garments_budget_state = "cutoff"
                     errors[endpoint] = garments_degraded_reason
+                    remaining_pages_estimate = _estimate_remaining_pages(
+                        page_number=page,
+                        cumulative_rows=cumulative_rows,
+                        reported_total_rows=total_rows_hint,
+                        reported_total_pages=total_pages_hint,
+                    )
                     logger.warning(
-                        "TD API garments fetch degraded due to wall-time budget",
+                        "garments_wall_time_budget_cutoff",
                         extra={
                             "store_code": self.store_code,
+                            "window_start": window_start,
+                            "window_end": window_end,
                             "endpoint": endpoint,
                             "degraded_reason": garments_degraded_reason,
-                            "garments_elapsed_wall_time_ms": elapsed_wall_time_ms,
-                            "garments_max_wall_time_ms": self.config.garments_max_wall_time_ms,
-                            "page": page,
+                            "page_number": page,
+                            "rows_in_page": 0,
+                            "cumulative_rows": cumulative_rows,
+                            "elapsed_ms": elapsed_wall_time_ms,
+                            "budget_ms": budget_ms,
+                            "remaining_pages_estimate": remaining_pages_estimate,
+                            "expected_total_rows": total_rows_hint,
+                            "fetched_unique_row_ids": len(garments_unique_row_ids),
                             "garments_last_successful_page": last_successful_page,
                             "garments_resume_from_page": max(last_successful_page + 1, page),
                         },
@@ -716,6 +742,16 @@ class TdApiClient:
                     "retry_success_count": garments_retry_success_count if is_garments_endpoint else None,
                     "page_success_rate": garments_page_success_rate if is_garments_endpoint else None,
                 }
+                if is_garments_endpoint:
+                    endpoint_health[endpoint].update(
+                        {
+                            "garments_budget_state": garments_budget_state,
+                            "garments_fetch_completeness": "incomplete",
+                            "garments_expected_total_rows": total_rows_hint,
+                            "garments_fetched_unique_row_ids": len(garments_unique_row_ids),
+                            "garments_final_row_count": cumulative_rows,
+                        }
+                    )
                 if page == 1 and page_result.status == 401:
                     logger.error(
                         "TD API endpoint unauthorized on first page",
@@ -744,6 +780,16 @@ class TdApiClient:
                     "final_error_class": payload_error,
                     "attempts": endpoint_attempts,
                 }
+                if is_garments_endpoint:
+                    endpoint_health[endpoint].update(
+                        {
+                            "garments_budget_state": garments_budget_state,
+                            "garments_fetch_completeness": "incomplete",
+                            "garments_expected_total_rows": total_rows_hint,
+                            "garments_fetched_unique_row_ids": len(garments_unique_row_ids),
+                            "garments_final_row_count": cumulative_rows,
+                        }
+                    )
                 logger.error(
                     "TD API endpoint payload reported error",
                     extra={
@@ -762,6 +808,10 @@ class TdApiClient:
                 fallback_successes += 1
             aggregated_rows.extend(rows)
             cumulative_rows += len(rows)
+            rows_in_page = len(rows)
+
+            if is_garments_endpoint:
+                garments_unique_row_ids.update(_extract_row_ids(rows))
 
             if is_garments_endpoint and page_result.latency_ms is not None:
                 garments_latency_distribution_ms.append(max(int(page_result.latency_ms), 0))
@@ -813,6 +863,38 @@ class TdApiClient:
             total_rows_hint = _extract_total_rows_hint(page_payload) or total_rows_hint
             total_pages_hint = _extract_total_pages_hint(page_payload) or total_pages_hint
 
+            if is_garments_endpoint and self.config.garments_max_wall_time_ms > 0:
+                elapsed_wall_time_ms = int((time.perf_counter() - endpoint_started_at) * 1000)
+                budget_ms = int(self.config.garments_max_wall_time_ms)
+                if not garments_near_limit_emitted and elapsed_wall_time_ms >= int(budget_ms * _GARMENTS_WALL_TIME_SOFT_THRESHOLD_RATIO):
+                    garments_near_limit_emitted = True
+                    if garments_budget_state != "cutoff":
+                        garments_budget_state = "near_limit"
+                    remaining_pages_estimate = _estimate_remaining_pages(
+                        page_number=page,
+                        cumulative_rows=cumulative_rows,
+                        reported_total_rows=total_rows_hint,
+                        reported_total_pages=total_pages_hint,
+                    )
+                    logger.info(
+                        "garments_wall_time_budget_near_limit",
+                        extra={
+                            "store_code": self.store_code,
+                            "window_start": window_start,
+                            "window_end": window_end,
+                            "endpoint": endpoint,
+                            "page_number": page,
+                            "rows_in_page": rows_in_page,
+                            "cumulative_rows": cumulative_rows,
+                            "elapsed_ms": elapsed_wall_time_ms,
+                            "budget_ms": budget_ms,
+                            "remaining_pages_estimate": remaining_pages_estimate,
+                            "expected_total_rows": total_rows_hint,
+                            "fetched_unique_row_ids": len(garments_unique_row_ids),
+                            "details_message": "near limit, fetch still in progress",
+                        },
+                    )
+
             for item in metadata:
                 query_params = item.get("query_params")
                 if item.get("endpoint") != endpoint or not isinstance(query_params, dict):
@@ -847,6 +929,27 @@ class TdApiClient:
 
             page += 1
 
+
+        if is_garments_endpoint:
+            garments_expected_total_rows = total_rows_hint
+            fetched_unique_row_ids = len(garments_unique_row_ids)
+            if garments_expected_total_rows is not None:
+                garments_completion = "complete" if fetched_unique_row_ids >= garments_expected_total_rows else "incomplete"
+            elif total_pages_hint and last_successful_page >= total_pages_hint:
+                garments_completion = "complete"
+            elif errors.get(endpoint):
+                garments_completion = "incomplete"
+            else:
+                garments_completion = "unknown"
+            if garments_budget_state == "within_budget" and garments_near_limit_emitted:
+                garments_budget_state = "near_limit"
+            if garments_completion == "complete":
+                garments_fetch_message = "near limit, no data loss" if garments_budget_state == "near_limit" else "TD garments fetch complete"
+            elif garments_completion == "incomplete":
+                garments_fetch_message = "TD garments fetch incomplete; potential data loss"
+            else:
+                garments_fetch_message = "TD garments fetch completeness unknown"
+
         endpoint_health.setdefault(
             endpoint,
             {
@@ -862,6 +965,17 @@ class TdApiClient:
                 "page_success_rate": garments_page_success_rate if is_garments_endpoint else None,
             },
         )
+        if is_garments_endpoint:
+            endpoint_health.setdefault(endpoint, {})
+            endpoint_health[endpoint].update(
+                {
+                    "garments_budget_state": garments_budget_state,
+                    "garments_fetch_completeness": garments_completion,
+                    "garments_expected_total_rows": garments_expected_total_rows,
+                    "garments_fetched_unique_row_ids": len(garments_unique_row_ids),
+                    "garments_final_row_count": cumulative_rows,
+                }
+            )
 
         total_wall_time_ms = int((time.perf_counter() - endpoint_started_at) * 1000)
         logger.info(
@@ -881,6 +995,33 @@ class TdApiClient:
             latency_p50 = _percentile(garments_latency_distribution_ms, 50)
             latency_p95 = _percentile(garments_latency_distribution_ms, 95)
             latency_max = max(garments_latency_distribution_ms) if garments_latency_distribution_ms else 0
+            remaining_pages_estimate = _estimate_remaining_pages(
+                page_number=max(last_successful_page, 1),
+                cumulative_rows=cumulative_rows,
+                reported_total_rows=total_rows_hint,
+                reported_total_pages=total_pages_hint,
+            )
+            budget_log_level = logger.warning if garments_completion == "incomplete" else logger.info
+            budget_log_level(
+                garments_fetch_event,
+                extra={
+                    "store_code": self.store_code,
+                    "window_start": window_start,
+                    "window_end": window_end,
+                    "endpoint": endpoint,
+                    "garments_budget_state": garments_budget_state,
+                    "garments_fetch_completeness": garments_completion,
+                    "page_number": max(last_successful_page, 1),
+                    "rows_in_page": 0,
+                    "cumulative_rows": cumulative_rows,
+                    "elapsed_ms": total_wall_time_ms,
+                    "budget_ms": self.config.garments_max_wall_time_ms,
+                    "remaining_pages_estimate": remaining_pages_estimate,
+                    "expected_total_rows": garments_expected_total_rows,
+                    "fetched_unique_row_ids": len(garments_unique_row_ids),
+                    "details_message": garments_fetch_message,
+                },
+            )
             logger.info(
                 "TD API garments compact metrics summary",
                 extra={
@@ -907,12 +1048,16 @@ class TdApiClient:
                     "garments_last_successful_page": last_successful_page,
                     "garments_resume_from_page": max(last_successful_page + 1, page),
                     "garments_degraded_reason": garments_degraded_reason or errors.get(endpoint),
+                    "garments_budget_state": garments_budget_state,
+                    "garments_fetch_completeness": garments_completion,
+                    "garments_expected_total_rows": garments_expected_total_rows,
+                    "garments_fetched_unique_row_ids": len(garments_unique_row_ids),
                     "source_mode": self.config.source_mode,
                 },
             )
 
             partial_fetch_error = errors.get(endpoint)
-            if partial_fetch_error in {"garments_wall_time_budget_exhausted", "garments_timeout_budget_exhausted"}:
+            if partial_fetch_error in {"garments_wall_time_budget_cutoff", "garments_timeout_budget_exhausted"}:
                 self._increment_metric(
                     name="garments_partial_fetch_runs",
                     endpoint=endpoint,
@@ -2064,6 +2209,48 @@ def _looks_numeric(text: str) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _extract_row_ids(rows: list[dict[str, Any]]) -> set[str]:
+    ids: set[str] = set()
+    for row in rows:
+        for key in (
+            "api_line_item_id",
+            "apiLineItemId",
+            "api_garment_id",
+            "apiGarmentId",
+            "line_item_uid",
+            "lineItemUid",
+            "id",
+            "_id",
+        ):
+            value = row.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                ids.add(text)
+                break
+    return ids
+
+
+def _estimate_remaining_pages(
+    *,
+    page_number: int,
+    cumulative_rows: int,
+    reported_total_rows: int | None,
+    reported_total_pages: int | None,
+) -> int | None:
+    if reported_total_pages and reported_total_pages >= page_number:
+        return max(reported_total_pages - page_number, 0)
+    if reported_total_rows is not None and cumulative_rows > 0:
+        observed_page = max(page_number, 1)
+        avg_rows_per_page = cumulative_rows / observed_page
+        if avg_rows_per_page <= 0:
+            return None
+        estimated_total_pages = math.ceil(reported_total_rows / avg_rows_per_page)
+        return max(estimated_total_pages - observed_page, 0)
+    return None
 
 
 def _extract_total_rows_hint(payload: Any) -> int | None:
