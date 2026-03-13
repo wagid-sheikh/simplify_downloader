@@ -89,6 +89,8 @@ class FileIngestResult:
     rejected: int = 0
     warnings: int = 0
     reject_reasons: dict[str, int] = field(default_factory=dict)
+    warning_breakdown: dict[str, int] = field(default_factory=dict)
+    warning_samples: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
 
 @dataclass
@@ -233,6 +235,50 @@ def _add_remarks(remarks: list[str]) -> str | None:
 def _inc_reason(counter: Counter[str], reasons: Iterable[str]) -> None:
     for reason in reasons:
         counter[reason] += 1
+
+
+def _warning_category(warning_code: str) -> str:
+    if warning_code.startswith("missing_required_field"):
+        return "missing_required_field"
+    if warning_code.startswith("missing_"):
+        return "missing_optional_field"
+    if warning_code.startswith("invalid_"):
+        return "parse_fallback"
+    if "_normalized:" in warning_code:
+        return "normalization_applied"
+    if warning_code.startswith("header_follow_up"):
+        return "header_follow_up"
+    return "other"
+
+
+def _add_warning_sample(
+    result: FileIngestResult,
+    *,
+    category: str,
+    warning_code: str,
+    store_code: str | None,
+    source_file: str,
+    row_locator: str,
+    sample_tracker: dict[str, set[tuple[str | None, str, str]]],
+    sample_cap: int = 5,
+) -> None:
+    result.warning_breakdown[category] = result.warning_breakdown.get(category, 0) + 1
+    row_key = (store_code, source_file, row_locator)
+    seen = sample_tracker.setdefault(category, set())
+    if row_key in seen:
+        return
+    samples = result.warning_samples.setdefault(category, [])
+    if len(samples) >= sample_cap:
+        return
+    samples.append(
+        {
+            "warning_code": warning_code,
+            "store_code": store_code,
+            "source_file": source_file,
+            "row_locator": row_locator,
+        }
+    )
+    seen.add(row_key)
 
 
 def _normalize_payment_mode(raw: Any, remarks: list[str]) -> str:
@@ -440,6 +486,7 @@ async def _ingest_file(
     result = FileIngestResult()
     rejects: list[RejectRecord] = []
     rows, header_info = _read_rows(source_path, EXPECTED_HEADERS[file_kind])
+    warning_sample_tracker: dict[str, set[tuple[str | None, str, str]]] = {}
     if header_info["follow_up"]:
         log_event(
             logger=logger,
@@ -450,6 +497,16 @@ async def _ingest_file(
             headers=header_info["follow_up"],
         )
         result.warnings += len(header_info["follow_up"])
+        for header in header_info["follow_up"]:
+            _add_warning_sample(
+                result,
+                category=_warning_category("header_follow_up"),
+                warning_code=f"header_follow_up:{header}",
+                store_code=(store_code or "").strip().upper() or None,
+                source_file=source_path.name,
+                row_locator="header",
+                sample_tracker=warning_sample_tracker,
+            )
     use_store = (store_code or "").strip().upper() or None
 
     normalized_rows: list[dict[str, Any]] = []
@@ -467,6 +524,16 @@ async def _ingest_file(
         else:
             normalized, remarks, row_rejects = _normalize_payment_row(row, source_file=source_path.name, run_id=run_id, run_date=run_date, cost_center=resolved_cc)
         result.warnings += len(remarks)
+        for warning_code in remarks:
+            _add_warning_sample(
+                result,
+                category=_warning_category(warning_code),
+                warning_code=warning_code,
+                store_code=row_store,
+                source_file=source_path.name,
+                row_locator=f"row:{idx}",
+                sample_tracker=warning_sample_tracker,
+            )
         if row_rejects:
             result.rejected += 1
             _inc_reason(reject_counter, row_rejects)
