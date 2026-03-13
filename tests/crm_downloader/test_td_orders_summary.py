@@ -3,13 +3,11 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
-import app.crm_downloader.td_orders_sync.main as td_orders_main
 from app.crm_downloader.td_orders_sync.main import (
     StoreOutcome,
     StoreReport,
     TdOrdersDiscoverySummary,
     _build_dataset_order_set_verdict,
-    _build_threshold_verdict,
     _build_sales_order_row_count_verdict,
     _compare_row_count_diagnostics,
     _filter_non_order_summary_rows,
@@ -203,22 +201,14 @@ def test_daily_reconciliation_summary_groups_pass_and_fail() -> None:
         StoreOutcome(status="ok", message="done"),
         orders_result=StoreReport(
             status="ok",
-            threshold_verdict={"pass": True, "reason_codes": []},
-            api_ready=True,
-            consecutive_pass_windows=3,
         ),
     )
     summary.record_store(
         "A2",
-        StoreOutcome(status="warning", message="mismatch"),
+        StoreOutcome(status="error", message="ingestion failed"),
         orders_result=StoreReport(
-            status="warning",
-            threshold_verdict={
-                "pass": False,
-                "reason_codes": ["orders:row_count_delta_exceeded", "sales:status_mismatch_exceeded"],
-            },
-            api_ready=False,
-            consecutive_pass_windows=0,
+            status="error",
+            error_message="failed to ingest orders",
         ),
     )
 
@@ -228,7 +218,7 @@ def test_daily_reconciliation_summary_groups_pass_and_fail() -> None:
     assert daily["failed_stores"][0]["store_code"] == "A2"
     assert daily["stores_passed"] == ["A1"]
     assert daily["stores_failed"][0]["store_code"] == "A2"
-    assert "orders:row_count_delta_exceeded" in daily["top_mismatch_reasons"]
+    assert daily["top_mismatch_reasons"] == []
 
 
 def test_api_primary_decision_can_coexist_with_ingest_failure_stage() -> None:
@@ -435,85 +425,15 @@ def test_sales_verdict_fails_when_per_order_row_counts_differ() -> None:
     assert "sales:per_order_row_count_mismatch" in verdict["reason_codes"]
 
 
-def test_threshold_verdict_includes_garments_when_sync_enabled(monkeypatch) -> None:
-    class _Thresholds:
-        row_count_delta_tolerance = 0
-        amount_mismatch_tolerance = 0
-        status_mismatch_tolerance = 0
-
-        def as_dict(self) -> dict[str, int]:
-            return {
-                "row_count_delta_tolerance": self.row_count_delta_tolerance,
-                "amount_mismatch_tolerance": self.amount_mismatch_tolerance,
-                "status_mismatch_tolerance": self.status_mismatch_tolerance,
-            }
-
-    monkeypatch.setattr(td_orders_main, "_thresholds_for_dataset", lambda _dataset: _Thresholds())
-
-    thresholds_json, verdict = _build_threshold_verdict(
-        normalized_orders_verdict={"pass": True, "reasons": [], "thresholds": {}},
-        normalized_sales_verdict={"pass": True, "reasons": [], "thresholds": {}},
-        garment_metrics={"total_rows": 3, "matched_rows": 0, "amount_mismatches": 0, "status_mismatches": 0},
-        run_sales=False,
-        run_garment_sync=True,
-    )
-
-    assert "garments" in thresholds_json
-    assert verdict["datasets"]["garments"]["informational"] is False
-    assert verdict["datasets"]["garments"]["included_in_overall_pass"] is True
-    assert "garments:row_count_delta_exceeded" in verdict["reason_codes"]
-    assert verdict["overall_pass"] is False
-    assert verdict["pass"] is False
-
-
-def test_threshold_verdict_marks_garments_informational_when_sync_disabled(monkeypatch) -> None:
-    class _Thresholds:
-        row_count_delta_tolerance = 0
-        amount_mismatch_tolerance = 0
-        status_mismatch_tolerance = 0
-
-        def as_dict(self) -> dict[str, int]:
-            return {
-                "row_count_delta_tolerance": self.row_count_delta_tolerance,
-                "amount_mismatch_tolerance": self.amount_mismatch_tolerance,
-                "status_mismatch_tolerance": self.status_mismatch_tolerance,
-            }
-
-    monkeypatch.setattr(td_orders_main, "_thresholds_for_dataset", lambda _dataset: _Thresholds())
-
-    thresholds_json, verdict = _build_threshold_verdict(
-        normalized_orders_verdict={"pass": True, "reasons": [], "thresholds": {}},
-        normalized_sales_verdict={"pass": True, "reasons": [], "thresholds": {}},
-        garment_metrics={"total_rows": 4, "matched_rows": 0, "amount_mismatches": 0, "status_mismatches": 0},
-        run_sales=False,
-        run_garment_sync=False,
-    )
-
-    assert "garments" in thresholds_json
-    assert verdict["datasets"]["garments"]["informational"] is True
-    assert verdict["datasets"]["garments"]["included_in_overall_pass"] is False
-    assert "garments:row_count_delta_exceeded" in verdict["reason_codes"]
-    assert "garments:informational_when_sync_disabled" in verdict["reason_codes"]
-    assert verdict["overall_pass"] is True
-    assert verdict["pass"] is True
-
-
-def test_daily_reconciliation_uses_overall_pass_when_present() -> None:
+def test_daily_reconciliation_uses_ingestion_status_as_pass_fail_truth() -> None:
     summary = TdOrdersDiscoverySummary(
         run_id="run-7", run_env="test", report_date=date(2024, 1, 7), report_end_date=date(2024, 1, 7)
     )
     summary.record_store(
         "A1",
-        StoreOutcome(status="ok", message="done"),
+        StoreOutcome(status="warning", message="data mismatch warning"),
         orders_result=StoreReport(
-            status="ok",
-            threshold_verdict={
-                "pass": False,
-                "overall_pass": True,
-                "reason_codes": ["garments:row_count_delta_exceeded", "garments:informational_when_sync_disabled"],
-            },
-            api_ready=True,
-            consecutive_pass_windows=2,
+            status="warning",
         ),
     )
 
