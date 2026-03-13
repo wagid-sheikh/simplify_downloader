@@ -13,8 +13,8 @@ from alembic.operations import Operations
 
 def _load_migration_module():
     project_root = Path(__file__).resolve().parents[2]
-    module_path = project_root / "alembic" / "versions" / "0073_add_td_compare_threshold_verdicts.py"
-    spec = importlib.util.spec_from_file_location("v0073_add_td_compare_threshold_verdicts", module_path)
+    module_path = project_root / "alembic" / "versions" / "0073_add_td_compare_threshold.py"
+    spec = importlib.util.spec_from_file_location("v0073_add_td_compare_threshold", module_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Unable to load migration module from {module_path}")
     module = importlib.util.module_from_spec(spec)
