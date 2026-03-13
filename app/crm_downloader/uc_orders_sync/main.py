@@ -4107,6 +4107,7 @@ async def _run_store_discovery(
                         "missing_parent_count": sales_publish.missing_parent_count,
                         "preflight_warning": sales_publish.preflight_warning,
                         "preflight_diagnostics": sales_publish.preflight_diagnostics,
+                        "post_publish_verification": sales_publish.post_publish_verification,
                     }
                     log_event(
                         logger=logger,
