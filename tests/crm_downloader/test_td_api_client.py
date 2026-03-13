@@ -2092,3 +2092,88 @@ async def test_prepare_auth_context_dashboard_trial_cookie_only_marks_orders_not
     }
     assert auth_result.endpoint_failure_reasons == {"/reports/order-report": "token_missing_or_expired"}
     assert auth_result.failure_reason == "/reports/order-report:token_missing_or_expired"
+
+
+@pytest.mark.asyncio
+async def test_garments_wall_time_exhaustion_records_resume_checkpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TdApiClient(
+        store_code="a123",
+        context=None,
+        storage_state_path=tmp_path / "s.json",  # type: ignore[arg-type]
+        config=TdApiClientConfig(min_interval_seconds=0, garments_max_wall_time_ms=100, source_mode="api_only"),
+    )
+
+    responses = iter(
+        [
+            type("_Result", (), {"ok": True, "payload": {"data": [{"orderNo": "G-1"}], "totalPages": 3}, "error": None, "status": 200, "attempts": 1, "latency_ms": 40})(),
+        ]
+    )
+
+    async def _fake_get_json(**_: object) -> object:
+        return next(responses)
+
+    perf_values = iter([0.0, 0.02, 0.25, 0.28])
+
+    def _fake_perf_counter() -> float:
+        return next(perf_values, 0.28)
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    monkeypatch.setattr("app.crm_downloader.td_orders_sync.td_api_client.time.perf_counter", _fake_perf_counter)
+
+    metadata: list[dict[str, object]] = []
+    errors: dict[str, str] = {}
+    diagnostics: dict[str, dict[str, object]] = {}
+    endpoint_health: dict[str, dict[str, object]] = {}
+
+    result = await client._fetch_endpoint_rows(
+        endpoint="/garments/details",
+        params={"startDate": "2026-01-01", "endDate": "2026-01-02", "page": 1, "pageSize": 500},
+        metadata=metadata,
+        errors=errors,
+        error_diagnostics=diagnostics,
+        endpoint_health=endpoint_health,
+    )
+
+    assert result["error"] == "garments_wall_time_budget_exhausted"
+    assert endpoint_health["/garments/details"]["last_successful_page"] == 1
+    assert endpoint_health["/garments/details"]["resume_from_page"] == 2
+    assert client._metrics_counters["garments_partial_fetch_runs|endpoint=/garments/details|reason=garments_wall_time_budget_exhausted"] == 1
+
+
+@pytest.mark.asyncio
+async def test_garments_timeout_recovered_metric_emitted_separately_from_partial_fetch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TdApiClient(
+        store_code="a123",
+        context=None,
+        storage_state_path=tmp_path / "s.json",  # type: ignore[arg-type]
+        config=TdApiClientConfig(min_interval_seconds=0, source_mode="api_only"),
+    )
+
+    responses = iter(
+        [
+            type("_Result", (), {"ok": True, "payload": {"data": [{"orderNo": "G-1"}], "totalPages": 1}, "error": None, "status": 200, "attempts": 2, "latency_ms": 40})(),
+        ]
+    )
+
+    async def _fake_get_json(**_: object) -> object:
+        return next(responses)
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+
+    metadata: list[dict[str, object]] = []
+    errors: dict[str, str] = {}
+    diagnostics: dict[str, dict[str, object]] = {}
+    endpoint_health: dict[str, dict[str, object]] = {}
+
+    result = await client._fetch_endpoint_rows(
+        endpoint="/garments/details",
+        params={"startDate": "2026-01-01", "endDate": "2026-01-02", "page": 1, "pageSize": 500},
+        metadata=metadata,
+        errors=errors,
+        error_diagnostics=diagnostics,
+        endpoint_health=endpoint_health,
+    )
+
+    assert result["error"] is None
+    assert client._metrics_counters["garments_timeout_recovered_runs|endpoint=/garments/details"] == 1
+    assert all("garments_partial_fetch_runs" not in key for key in client._metrics_counters)

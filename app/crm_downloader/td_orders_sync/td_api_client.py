@@ -98,6 +98,8 @@ class TdApiClientConfig:
     garments_api_only_timeout_retry_limit: int = int(os.environ.get("TD_API_GARMENTS_API_ONLY_TIMEOUT_RETRY_LIMIT", "1"))
     garments_api_only_backoff_base_seconds: float = float(os.environ.get("TD_API_GARMENTS_API_ONLY_BACKOFF_BASE_SECONDS", "0.4"))
     garments_api_only_max_backoff_seconds: float = float(os.environ.get("TD_API_GARMENTS_API_ONLY_MAX_BACKOFF_SECONDS", "2.5"))
+    garments_adaptive_throttle_max_ms: int = int(os.environ.get("TD_API_GARMENTS_ADAPTIVE_THROTTLE_MAX_MS", "1200"))
+    garments_resume_page: int = int(os.environ.get("TD_API_GARMENTS_RESUME_PAGE", "1"))
     try_orders_cookie_shape: bool = os.environ.get("TD_API_TRY_ORDERS_COOKIE_SHAPE", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -531,7 +533,9 @@ class TdApiClient:
     ) -> dict[str, Any]:
         is_garments_endpoint = endpoint == GARMENTS_ENDPOINT
         endpoint_started_at = time.perf_counter()
-        page = 1
+        requested_start_page = max(1, int(params.get("page") or 1))
+        resume_start_page = max(1, int(self.config.garments_resume_page)) if is_garments_endpoint else 1
+        page = max(requested_start_page, resume_start_page)
         cumulative_rows = 0
         total_rows_hint: int | None = None
         total_pages_hint: int | None = None
@@ -555,7 +559,10 @@ class TdApiClient:
         garments_page_success_rate = 0.0
         garments_fallback_count = 0
         garments_adaptive_downgrades = 0
+        garments_dynamic_throttle_events = 0
+        garments_dynamic_throttle_total_ms = 0
         garments_degraded_reason: str | None = None
+        last_successful_page = page - 1
 
         logger.info(
             "TD API endpoint pagination configuration",
@@ -563,6 +570,7 @@ class TdApiClient:
                 "store_code": self.store_code,
                 "endpoint": endpoint,
                 "initial_page_size": active_page_size,
+                "initial_page": page,
                 "available_page_sizes": available_page_sizes,
                 "max_retries": retry_profile["max_retries"],
                 "timeout_retry_limit": retry_profile["timeout_retry_limit"],
@@ -589,6 +597,8 @@ class TdApiClient:
                             "garments_elapsed_wall_time_ms": elapsed_wall_time_ms,
                             "garments_max_wall_time_ms": self.config.garments_max_wall_time_ms,
                             "page": page,
+                            "garments_last_successful_page": last_successful_page,
+                            "garments_resume_from_page": max(last_successful_page + 1, page),
                         },
                     )
                     break
@@ -698,6 +708,8 @@ class TdApiClient:
                     "success": False,
                     "final_error_class": final_error,
                     "attempts": endpoint_attempts,
+                    "last_successful_page": last_successful_page,
+                    "resume_from_page": max(last_successful_page + 1, page),
                     "pages_attempted": garments_pages_attempted if is_garments_endpoint else None,
                     "timeout_count": garments_timeout_count if is_garments_endpoint else None,
                     "retry_count": garments_retry_count if is_garments_endpoint else None,
@@ -745,6 +757,7 @@ class TdApiClient:
                 break
 
             rows = _extract_rows(page_payload)
+            last_successful_page = page
             if fallback_used:
                 fallback_successes += 1
             aggregated_rows.extend(rows)
@@ -776,6 +789,26 @@ class TdApiClient:
                             "adaptive_page_size_to": available_page_sizes[page_size_index],
                         },
                     )
+
+                throttle_cap_ms = max(0, int(self.config.garments_adaptive_throttle_max_ms))
+                if latency_threshold_ms > 0 and throttle_cap_ms > 0 and int(page_result.latency_ms) >= latency_threshold_ms:
+                    latency_overage_ms = max(0, int(page_result.latency_ms) - latency_threshold_ms)
+                    throttle_delay_ms = min(throttle_cap_ms, max(100, latency_overage_ms // 2))
+                    garments_dynamic_throttle_events += 1
+                    garments_dynamic_throttle_total_ms += throttle_delay_ms
+                    logger.info(
+                        "TD API garments adaptive throttling applied",
+                        extra={
+                            "store_code": self.store_code,
+                            "endpoint": endpoint,
+                            "page": page,
+                            "latency_ms": page_result.latency_ms,
+                            "latency_threshold_ms": latency_threshold_ms,
+                            "throttle_delay_ms": throttle_delay_ms,
+                            "throttle_cap_ms": throttle_cap_ms,
+                        },
+                    )
+                    await asyncio.sleep(throttle_delay_ms / 1000)
 
             total_rows_hint = _extract_total_rows_hint(page_payload) or total_rows_hint
             total_pages_hint = _extract_total_pages_hint(page_payload) or total_pages_hint
@@ -820,6 +853,8 @@ class TdApiClient:
                 "success": True,
                 "final_error_class": None,
                 "attempts": endpoint_attempts,
+                "last_successful_page": last_successful_page,
+                "resume_from_page": max(last_successful_page + 1, page),
                 "pages_attempted": garments_pages_attempted if is_garments_endpoint else None,
                 "timeout_count": garments_timeout_count if is_garments_endpoint else None,
                 "retry_count": garments_retry_count if is_garments_endpoint else None,
@@ -867,10 +902,27 @@ class TdApiClient:
                     "garments_page_success_rate": garments_page_success_rate,
                     "garments_page_size_fallback_count": garments_fallback_count,
                     "garments_adaptive_downgrade_count": garments_adaptive_downgrades,
+                    "garments_dynamic_throttle_events": garments_dynamic_throttle_events,
+                    "garments_dynamic_throttle_total_ms": garments_dynamic_throttle_total_ms,
+                    "garments_last_successful_page": last_successful_page,
+                    "garments_resume_from_page": max(last_successful_page + 1, page),
                     "garments_degraded_reason": garments_degraded_reason or errors.get(endpoint),
                     "source_mode": self.config.source_mode,
                 },
             )
+
+            partial_fetch_error = errors.get(endpoint)
+            if partial_fetch_error in {"garments_wall_time_budget_exhausted", "garments_timeout_budget_exhausted"}:
+                self._increment_metric(
+                    name="garments_partial_fetch_runs",
+                    endpoint=endpoint,
+                    reason=partial_fetch_error,
+                )
+            elif garments_retry_success_count > 0 and partial_fetch_error is None:
+                self._increment_metric(
+                    name="garments_timeout_recovered_runs",
+                    endpoint=endpoint,
+                )
 
         if fallback_attempts > 0:
             self._increment_metric(
