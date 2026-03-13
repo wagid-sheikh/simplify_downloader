@@ -369,6 +369,7 @@ async def publish_uc_gst_payments_to_sales(
         sa.Column("cost_center", sa.String(8)),
         sa.Column("customer_name", sa.String(128)),
         sa.Column("customer_phone", sa.String(24)),
+        sa.Column("address", sa.Text),
         sa.Column("ingest_remarks", sa.Text),
     )
     stg_orders = _stg_uc_orders_table(metadata)
@@ -441,6 +442,7 @@ async def publish_uc_gst_payments_to_sales(
                     orders.c.order_date,
                     orders.c.customer_name,
                     orders.c.mobile_number,
+                    orders.c.customer_address,
                     orders.c.ingest_remarks,
                 ).where(
                     sa.and_(
@@ -465,6 +467,7 @@ async def publish_uc_gst_payments_to_sales(
                         orders.c.order_date,
                         orders.c.customer_name,
                         orders.c.mobile_number,
+                        orders.c.customer_address,
                         orders.c.ingest_remarks,
                     )
                     .where(
@@ -507,6 +510,7 @@ async def publish_uc_gst_payments_to_sales(
                     archive_base.c.cost_center,
                     archive_base.c.customer_name,
                     archive_base.c.customer_phone,
+                    archive_base.c.address,
                     archive_base.c.ingest_remarks,
                 ).where(
                     sa.and_(
@@ -663,7 +667,8 @@ async def publish_uc_gst_payments_to_sales(
                 "order_number": order_number,
                 "customer_code": None,
                 "customer_name": (parent.customer_name if parent is not None else None) or (base_parent.customer_name if base_parent is not None else None),
-                "customer_address": None,
+                "customer_address": _non_blank_text(parent.customer_address if parent is not None else None)
+                or _non_blank_text(base_parent.address if base_parent is not None else None),
                 "mobile_number": (parent.mobile_number if parent is not None else None) or (base_parent.customer_phone if base_parent is not None else None),
                 "payment_received": amount,
                 "adjustments": Decimal("0"),
@@ -672,7 +677,7 @@ async def publish_uc_gst_payments_to_sales(
                 "payment_mode": payment_mode,
                 "transaction_id": normalized_txid,
                 "payment_made_at": None,
-                "order_type": "UClean",
+                "order_type": None,
                 "is_duplicate": False,
                 "is_edited_order": False,
                 "ingest_remarks": _merge_remarks(
