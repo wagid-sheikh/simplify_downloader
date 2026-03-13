@@ -136,6 +136,11 @@ async def test_archive_orchestration_uses_api_only_and_produces_archive_outputs(
     )
     monkeypatch.setattr(
         uc_main,
+        "publish_uc_gst_order_details_to_line_items",
+        AsyncMock(return_value=SimpleNamespace(inserted=1, updated=0, skipped=0, warnings=0, reason_codes=[])),
+    )
+    monkeypatch.setattr(
+        uc_main,
         "publish_uc_gst_payments_to_sales",
         AsyncMock(
             return_value=SimpleNamespace(
@@ -247,8 +252,10 @@ async def test_archive_orchestration_ingest_exception_sets_reason_codes(
     )
 
     publish_orders_mock = AsyncMock()
+    publish_line_items_mock = AsyncMock()
     publish_sales_mock = AsyncMock()
     monkeypatch.setattr(uc_main, "publish_uc_gst_order_details_to_orders", publish_orders_mock)
+    monkeypatch.setattr(uc_main, "publish_uc_gst_order_details_to_line_items", publish_line_items_mock)
     monkeypatch.setattr(uc_main, "publish_uc_gst_payments_to_sales", publish_sales_mock)
 
     await uc_main._run_store_discovery(
@@ -281,6 +288,7 @@ async def test_archive_orchestration_ingest_exception_sets_reason_codes(
     )
 
     assert publish_orders_mock.await_count == 0
+    assert publish_line_items_mock.await_count == 0
     assert publish_sales_mock.await_count == 0
 
 
