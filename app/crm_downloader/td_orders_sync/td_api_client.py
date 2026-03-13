@@ -103,6 +103,7 @@ class TdApiClientConfig:
     garments_adaptive_throttle_max_ms: int = int(os.environ.get("TD_API_GARMENTS_ADAPTIVE_THROTTLE_MAX_MS", "1200"))
     garments_resume_page: int = int(os.environ.get("TD_API_GARMENTS_RESUME_PAGE", "1"))
     try_orders_cookie_shape: bool = os.environ.get("TD_API_TRY_ORDERS_COOKIE_SHAPE", "false").strip().lower() in {"1", "true", "yes", "on"}
+    debug_logging: bool = os.environ.get("TD_API_DEBUG_LOGGING", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -556,6 +557,9 @@ class TdApiClient:
         garments_timeout_count = 0
         garments_retry_count = 0
         garments_retry_success_count = 0
+        endpoint_timeout_count = 0
+        endpoint_retry_count = 0
+        endpoint_pages_attempted = 0
         garments_pages_attempted = 0
         garments_pages_succeeded = 0
         garments_page_success_rate = 0.0
@@ -615,9 +619,6 @@ class TdApiClient:
                             "window_end": window_end,
                             "endpoint": endpoint,
                             "degraded_reason": garments_degraded_reason,
-                            "page_number": page,
-                            "rows_in_page": 0,
-                            "cumulative_rows": cumulative_rows,
                             "elapsed_ms": elapsed_wall_time_ms,
                             "budget_ms": budget_ms,
                             "remaining_pages_estimate": remaining_pages_estimate,
@@ -625,6 +626,7 @@ class TdApiClient:
                             "fetched_unique_row_ids": len(garments_unique_row_ids),
                             "garments_last_successful_page": last_successful_page,
                             "garments_resume_from_page": max(last_successful_page + 1, page),
+                            **({"page_number": page, "rows_in_page": 0, "cumulative_rows": cumulative_rows} if self.config.debug_logging else {}),
                         },
                     )
                     break
@@ -647,6 +649,10 @@ class TdApiClient:
             )
 
             endpoint_attempts += max(int(page_result.attempts or 0), 0)
+            endpoint_pages_attempted += 1
+            endpoint_retry_count += max(int(page_result.attempts or 0) - 1, 0)
+            if page_result.error in _TIMEOUT_ERROR_CLASSES:
+                endpoint_timeout_count += 1
             if is_garments_endpoint:
                 garments_pages_attempted += 1
                 garments_retry_count += max(int(page_result.attempts or 0) - 1, 0)
@@ -813,6 +819,20 @@ class TdApiClient:
             if is_garments_endpoint:
                 garments_unique_row_ids.update(_extract_row_ids(rows))
 
+            if self.config.debug_logging:
+                logger.debug(
+                    "TD API endpoint page fetched",
+                    extra={
+                        "store_code": self.store_code,
+                        "endpoint": endpoint,
+                        "page_number": page,
+                        "rows_in_page": rows_in_page,
+                        "cumulative_rows": cumulative_rows,
+                        "latency_ms": page_result.latency_ms,
+                        "attempts": page_result.attempts,
+                    },
+                )
+
             if is_garments_endpoint and page_result.latency_ms is not None:
                 garments_latency_distribution_ms.append(max(int(page_result.latency_ms), 0))
                 latency_threshold_ms = max(int(self.config.garments_latency_threshold_ms), 0)
@@ -883,15 +903,13 @@ class TdApiClient:
                             "window_start": window_start,
                             "window_end": window_end,
                             "endpoint": endpoint,
-                            "page_number": page,
-                            "rows_in_page": rows_in_page,
-                            "cumulative_rows": cumulative_rows,
                             "elapsed_ms": elapsed_wall_time_ms,
                             "budget_ms": budget_ms,
                             "remaining_pages_estimate": remaining_pages_estimate,
                             "expected_total_rows": total_rows_hint,
                             "fetched_unique_row_ids": len(garments_unique_row_ids),
                             "details_message": "near limit, fetch still in progress",
+                            **({"page_number": page, "rows_in_page": rows_in_page, "cumulative_rows": cumulative_rows} if self.config.debug_logging else {}),
                         },
                     )
 
@@ -1011,15 +1029,13 @@ class TdApiClient:
                     "endpoint": endpoint,
                     "garments_budget_state": garments_budget_state,
                     "garments_fetch_completeness": garments_completion,
-                    "page_number": max(last_successful_page, 1),
-                    "rows_in_page": 0,
-                    "cumulative_rows": cumulative_rows,
                     "elapsed_ms": total_wall_time_ms,
                     "budget_ms": self.config.garments_max_wall_time_ms,
                     "remaining_pages_estimate": remaining_pages_estimate,
                     "expected_total_rows": garments_expected_total_rows,
                     "fetched_unique_row_ids": len(garments_unique_row_ids),
                     "details_message": garments_fetch_message,
+                    **({"page_number": max(last_successful_page, 1), "rows_in_page": 0, "cumulative_rows": cumulative_rows} if self.config.debug_logging else {}),
                 },
             )
             logger.info(
@@ -1069,6 +1085,19 @@ class TdApiClient:
                     endpoint=endpoint,
                 )
 
+        logger.info(
+            "TD API endpoint pagination summary",
+            extra={
+                "store_code": self.store_code,
+                "endpoint": endpoint,
+                "pages_attempted": endpoint_pages_attempted,
+                "rows_total": cumulative_rows,
+                "duration_ms": total_wall_time_ms,
+                "timeout_count": endpoint_timeout_count,
+                "retry_count": endpoint_retry_count,
+            },
+        )
+
         if fallback_attempts > 0:
             self._increment_metric(
                 name="fallback_page_size_attempts",
@@ -1090,6 +1119,9 @@ class TdApiClient:
                 "reported_total_rows": total_rows_hint,
                 "reported_total_pages": total_pages_hint,
                 "rows_per_page": available_page_sizes[page_size_index],
+                "pages_attempted": endpoint_pages_attempted,
+                "timeout_count": endpoint_timeout_count,
+                "retry_count": endpoint_retry_count,
             },
         }
 
