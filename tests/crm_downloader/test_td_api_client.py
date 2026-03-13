@@ -2127,10 +2127,10 @@ async def test_garments_wall_time_exhaustion_records_resume_checkpoint(tmp_path:
         endpoint_health=endpoint_health,
     )
 
-    assert result["error"] == "garments_wall_time_budget_exhausted"
+    assert result["error"] == "garments_wall_time_budget_cutoff"
     assert endpoint_health["/garments/details"]["last_successful_page"] == 1
     assert endpoint_health["/garments/details"]["resume_from_page"] == 2
-    assert client._metrics_counters["garments_partial_fetch_runs|endpoint=/garments/details|reason=garments_wall_time_budget_exhausted"] == 1
+    assert client._metrics_counters["garments_partial_fetch_runs|endpoint=/garments/details|reason=garments_wall_time_budget_cutoff"] == 1
 
 
 @pytest.mark.asyncio

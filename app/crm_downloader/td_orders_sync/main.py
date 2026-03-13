@@ -7605,6 +7605,30 @@ async def _run_store_discovery(
                                 orders_report,
                                 f"api_endpoint_warning:{endpoint}={error_code}",
                             )
+                        garments_health = dict((api_fetch_result.endpoint_health or {}).get("/garments/details") or {})
+                        garments_completeness = str(garments_health.get("garments_fetch_completeness") or "unknown")
+                        garments_budget_state = str(garments_health.get("garments_budget_state") or "within_budget")
+                        garments_final_rows = int(garments_health.get("garments_final_row_count") or len(api_fetch_result.garments_rows))
+                        if garments_budget_state == "near_limit" and garments_completeness == "complete":
+                            _append_unique_warning(
+                                orders_report,
+                                "garments_budget_warning: near limit, no data loss",
+                            )
+                        elif garments_completeness == "incomplete":
+                            _append_unique_warning(
+                                orders_report,
+                                "garments_data_risk: incomplete fetch under budget pressure",
+                            )
+                        log_event(
+                            logger=store_logger,
+                            phase="window_summary",
+                            status=("warn" if garments_completeness == "incomplete" else "info"),
+                            message="TD garments per-store run summary",
+                            store_code=store.store_code,
+                            garments_budget_state=garments_budget_state,
+                            garments_fetch_completeness=garments_completeness,
+                            garments_final_row_count=garments_final_rows,
+                        )
                         outcome = StoreOutcome(
                             status="warning" if (orders_status == "warning" or sales_status == "warning") else "ok",
                             message="API primary path executed",

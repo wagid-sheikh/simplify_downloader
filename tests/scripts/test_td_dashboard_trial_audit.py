@@ -109,7 +109,7 @@ def test_audit_blocks_promotion_when_success_rate_gate_fails(tmp_path: Path) -> 
             "store_code": "A668",
             "phase": "api",
             "source_mode": "api_only",
-            "endpoint_errors": {"/garments/details": "garments_wall_time_budget_exhausted"},
+            "endpoint_errors": {"/garments/details": "garments_wall_time_budget_cutoff"},
         },
         {
             "run_id": "run-1",
@@ -164,7 +164,7 @@ def test_audit_blocks_promotion_when_garments_stability_gate_fails(tmp_path: Pat
             "fallback_used": False,
             "runtime_delta_ms": 120,
             "context_source": "dashboard_only",
-            "endpoint_errors": {"/garments/details": "garments_wall_time_budget_exhausted"},
+            "endpoint_errors": {"/garments/details": "garments_wall_time_budget_cutoff"},
         },
         {
             "run_id": "run-1",
@@ -189,7 +189,7 @@ def test_audit_blocks_promotion_when_garments_stability_gate_fails(tmp_path: Pat
             "fallback_used": False,
             "runtime_delta_ms": 130,
             "context_source": "dashboard_only",
-            "endpoint_errors": {"/garments/details": "garments_wall_time_budget_exhausted"},
+            "endpoint_errors": {"/garments/details": "garments_wall_time_budget_cutoff"},
         },
         {
             "run_id": "run-2",
@@ -233,4 +233,4 @@ def test_audit_blocks_promotion_when_garments_stability_gate_fails(tmp_path: Pat
 
     assert result.returncode == 1
     assert "Gate NOT met: garments stability criteria failed for stores A668." in result.stdout
-    assert "garments_wall_time_budget_exhausted" in result.stdout
+    assert "garments_wall_time_budget_cutoff" in result.stdout
