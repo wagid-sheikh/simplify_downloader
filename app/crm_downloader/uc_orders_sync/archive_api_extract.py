@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import date
 from html import unescape
@@ -38,6 +39,7 @@ STATUS_MAP = {
 }
 
 _TOKEN_KEY_DEBUG_LOGGED_STORES: set[str] = set()
+_TOKEN_DIAGNOSTICS_LOGGED_STORES: set[str] = set()
 
 
 @dataclass
@@ -325,9 +327,11 @@ async def _api_get_json_with_retries(
                     url=url,
                 )
                 last_error = "browser_fetch_unauthorized"
+                last_status_code = fallback_status or status
                 continue
             if status >= 500 or status == 429:
                 last_error = f"http_status_{status}"
+                last_status_code = status
             elif status >= 400:
                 log_event(
                     logger=logger,
@@ -363,6 +367,7 @@ async def _api_get_json_with_retries(
                 return mapped_payload, None
         except Exception as exc:
             last_error = str(exc)
+            last_status_code = None
 
         if attempt < ARCHIVE_API_MAX_RETRIES:
             await asyncio.sleep(ARCHIVE_API_RETRY_BASE_SECONDS * attempt)
@@ -499,14 +504,16 @@ async def _resolve_archive_bearer_token(*, page: Page, logger: JsonLogger, store
             token_value = candidate.get("token")
             token = token_value.strip() if isinstance(token_value, str) and token_value.strip() else None
             token_length = len(token) if token else 0
-            log_event(
-                logger=logger,
-                phase="archive_api",
-                message="Resolved archive bearer token diagnostics",
-                store_code=store_code,
-                token_source_type=resolved_source,
-                token_length=token_length,
-            )
+            if store_code not in _TOKEN_DIAGNOSTICS_LOGGED_STORES:
+                log_event(
+                    logger=logger,
+                    phase="archive_api",
+                    message="Resolved archive bearer token diagnostics",
+                    store_code=store_code,
+                    token_source_type=resolved_source,
+                    token_length=token_length,
+                )
+                _TOKEN_DIAGNOSTICS_LOGGED_STORES.add(store_code)
 
             if store_code not in _TOKEN_KEY_DEBUG_LOGGED_STORES:
                 keys = candidate.get("candidateLocalStorageKeys")
@@ -610,13 +617,15 @@ async def _browser_fetch_text_with_credentials(
     return (payload if isinstance(payload, str) and payload else None), (status if isinstance(status, int) else None)
 
 
-async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str, store_code: str, order_code: str, logger: JsonLogger) -> str | None:
+async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str, store_code: str, order_code: str, logger: JsonLogger) -> tuple[str | None, int]:
     url = ARCHIVE_INVOICE_URL_TEMPLATE.format(booking_id=booking_id)
     bearer_token = await _resolve_archive_bearer_token(page=page, logger=logger, store_code=store_code)
     request_headers = _build_archive_request_headers(bearer_token=bearer_token)
     auth_header_present = "Authorization" in request_headers
     referer_set = request_headers.get("Referer") == ARCHIVE_REFERER
     last_error: str | None = None
+    retry_count = 0
+    last_status_code: int | None = None
     for attempt in range(1, ARCHIVE_API_MAX_RETRIES + 1):
         try:
             response = await page.request.get(url, timeout=90_000, headers=request_headers)
@@ -649,6 +658,7 @@ async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str,
                     log_event(
                         logger=logger,
                         phase="archive_api",
+                        status="debug",
                         message="Invoice API request succeeded",
                         store_code=store_code,
                         order_code=order_code,
@@ -662,7 +672,7 @@ async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str,
                         transport="browser_fetch",
                         url=url,
                     )
-                    return invoice_payload
+                    return invoice_payload, retry_count
                 log_event(
                     logger=logger,
                     phase="archive_api",
@@ -680,29 +690,34 @@ async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str,
                     url=url,
                 )
                 last_error = "browser_fetch_unauthorized"
+                last_status_code = fallback_status or status
                 continue
             if status >= 500 or status == 429:
                 last_error = f"http_status_{status}"
+                last_status_code = status
             elif status >= 400:
                 log_event(
                     logger=logger,
                     phase="archive_api",
-                    status="warning",
+                    status="error",
                     message="Invoice API request failed",
                     store_code=store_code,
                     order_code=order_code,
                     booking_id=booking_id,
                     attempt=attempt,
                     status_code=status,
+                    exception_type="HttpRequestError",
+                    exception_message=f"Invoice API returned HTTP {status}",
                     auth_header_present=auth_header_present,
                     referer_set=referer_set,
                     url=url,
                 )
-                return None
+                return None, retry_count
             else:
                 log_event(
                     logger=logger,
                     phase="archive_api",
+                    status="debug",
                     message="Invoice API request succeeded",
                     store_code=store_code,
                     order_code=order_code,
@@ -714,27 +729,33 @@ async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str,
                     transport="api_request_context",
                     url=url,
                 )
-                return await response.text()
+                return await response.text(), retry_count
         except Exception as exc:
             last_error = str(exc)
+            last_status_code = None
 
         if attempt < ARCHIVE_API_MAX_RETRIES:
+            retry_count += 1
             await asyncio.sleep(ARCHIVE_API_RETRY_BASE_SECONDS * attempt)
 
     log_event(
         logger=logger,
         phase="archive_api",
-        status="warning",
+        status="error",
         message="Invoice API retries exhausted",
         store_code=store_code,
         order_code=order_code,
         booking_id=booking_id,
         error=last_error,
+        retry_count=retry_count,
+        exception_type="InvoiceApiRetriesExhausted",
+        exception_message=last_error,
+        status_code=last_status_code,
         auth_header_present=auth_header_present,
         referer_set=referer_set,
         url=url,
     )
-    return None
+    return None, retry_count
 
 
 async def collect_archive_orders_via_api(
@@ -747,6 +768,12 @@ async def collect_archive_orders_via_api(
 ) -> ArchiveApiExtract:
     extract = ArchiveApiExtract()
     seen_orders: set[str] = set()
+    invoice_attempted = 0
+    invoice_successful = 0
+    invoice_failed = 0
+    invoice_retry_count = 0
+    sample_failed_order_codes: list[str] = []
+    started_at = time.perf_counter()
 
     page_number = 1
     while True:
@@ -853,14 +880,19 @@ async def collect_archive_orders_via_api(
                 _record_skip(extract, order_code=order_code, reason="missing_booking_id_for_invoice")
                 continue
 
-            invoice_html = await _fetch_invoice_html_with_retries(
+            invoice_attempted += 1
+            invoice_html, invoice_retries = await _fetch_invoice_html_with_retries(
                 page=page,
                 booking_id=booking_id,
                 store_code=store_code,
                 order_code=order_code,
                 logger=logger,
             )
+            invoice_retry_count += invoice_retries
             if not invoice_html:
+                invoice_failed += 1
+                if len(sample_failed_order_codes) < 5:
+                    sample_failed_order_codes.append(order_code)
                 _record_skip(extract, order_code=order_code, reason="invoice_fetch_failed")
                 continue
             detail_rows = _parse_invoice_order_details(
@@ -872,8 +904,12 @@ async def collect_archive_orders_via_api(
             if invoice_address:
                 base_row["address"] = invoice_address
             if not detail_rows:
+                invoice_failed += 1
+                if len(sample_failed_order_codes) < 5:
+                    sample_failed_order_codes.append(order_code)
                 _record_skip(extract, order_code=order_code, reason="invoice_parse_no_rows")
                 continue
+            invoice_successful += 1
             order_mode = next(
                 (
                     str(row.get("order_mode") or "").strip()
@@ -906,5 +942,19 @@ async def collect_archive_orders_via_api(
 
     if extract.page_count == 0:
         _record_extractor_error(extract, reason="all_pages_failed")
+
+    elapsed_seconds = round(time.perf_counter() - started_at, 3)
+    log_event(
+        logger=logger,
+        phase="archive_api",
+        message="Archive API store summary",
+        store_code=store_code,
+        attempted_invoices=invoice_attempted,
+        successful_invoices=invoice_successful,
+        failed_invoices=invoice_failed,
+        retry_count=invoice_retry_count,
+        elapsed_seconds=elapsed_seconds,
+        sample_failed_order_codes=sample_failed_order_codes,
+    )
 
     return extract
