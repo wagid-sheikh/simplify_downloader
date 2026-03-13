@@ -91,14 +91,28 @@ def _build_payment_preflight_diagnostics(
     matched_archive_payment_keys: set[tuple[str, str]],
     parent_lookup_keys: set[tuple[str, str]],
 ) -> dict[str, Any]:
+    """Build diagnostics using a single archive-payment keyspace for match coverage.
+
+    Keyspace contract:
+    - total_archive_payment_keys / matched_parent_keys / missing_parent_keys / sample_missing_keys
+      are all derived from ``archive_payment_keys``.
+    - ``sample_parent_lookup_keys_not_in_archive_payment_set`` is intentionally *not* part of
+      missing coverage; it samples the opposite set difference for observability.
+    """
     total_archive_payment_keys = len(archive_payment_keys)
+    unexpected_matched_keys = matched_archive_payment_keys - archive_payment_keys
+    if unexpected_matched_keys:
+        raise ValueError(
+            "Incompatible diagnostics: matched_archive_payment_keys must be a subset of archive_payment_keys"
+        )
+
     matched_parent_keys = len(matched_archive_payment_keys)
     missing_archive_payment_keys = sorted(archive_payment_keys - matched_archive_payment_keys)
     missing_parent_keys = len(missing_archive_payment_keys)
 
     sample_missing_keys = [f"{store_code}:{order_code}" for store_code, order_code in missing_archive_payment_keys[:5]]
     parent_keys_not_in_archive_payment_set = sorted(parent_lookup_keys - archive_payment_keys)
-    sample_parent_keys_not_in_archive_payment_set = [
+    sample_parent_lookup_keys_not_in_archive_payment_set = [
         f"{store_code}:{order_code}" for store_code, order_code in parent_keys_not_in_archive_payment_set[:5]
     ]
 
@@ -116,9 +130,11 @@ def _build_payment_preflight_diagnostics(
         "missing_parent_keys": missing_parent_keys,
         "coverage": coverage,
         "sample_missing_keys": sample_missing_keys,
-        "sample_parent_keys_not_in_archive_payment_set": sample_parent_keys_not_in_archive_payment_set,
-        "parent_keys_not_in_archive_payment_set_count": len(parent_keys_not_in_archive_payment_set),
-        "sample_parent_keys_not_in_archive_payment_set_derivation": "sorted(parent_lookup_keys - archive_payment_keys)[:5]",
+        "sample_parent_lookup_keys_not_in_archive_payment_set": sample_parent_lookup_keys_not_in_archive_payment_set,
+        "parent_lookup_keys_not_in_archive_payment_set_count": len(parent_keys_not_in_archive_payment_set),
+        "sample_parent_lookup_keys_not_in_archive_payment_set_derivation": (
+            "sorted(parent_lookup_keys - archive_payment_keys)[:5]"
+        ),
     }
 
 
@@ -589,11 +605,11 @@ async def publish_uc_gst_payments_to_sales(
                     "matched_parent_keys": metrics.preflight_diagnostics["matched_parent_keys"],
                     "missing_parent_keys": metrics.preflight_diagnostics["missing_parent_keys"],
                     "sample_unmatched_archive_keys": sample_missing_keys,
-                    "sample_parent_keys_not_in_archive_payment_set": metrics.preflight_diagnostics[
-                        "sample_parent_keys_not_in_archive_payment_set"
+                    "sample_parent_lookup_keys_not_in_archive_payment_set": metrics.preflight_diagnostics[
+                        "sample_parent_lookup_keys_not_in_archive_payment_set"
                     ],
-                    "sample_parent_keys_not_in_archive_payment_set_derivation": metrics.preflight_diagnostics[
-                        "sample_parent_keys_not_in_archive_payment_set_derivation"
+                    "sample_parent_lookup_keys_not_in_archive_payment_set_derivation": metrics.preflight_diagnostics[
+                        "sample_parent_lookup_keys_not_in_archive_payment_set_derivation"
                     ],
                 },
                 sort_keys=True,

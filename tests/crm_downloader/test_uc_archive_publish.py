@@ -687,11 +687,11 @@ async def test_payment_preflight_scoped_to_store_and_run_id(tmp_path: Path) -> N
     assert 'UC567:ORD-OTHER-MISSING' not in metrics.preflight_warning
     assert metrics.preflight_diagnostics is not None
     assert metrics.preflight_diagnostics['sample_missing_keys'] == ['UC610:ORD-MISSING']
-    assert metrics.preflight_diagnostics['sample_parent_keys_not_in_archive_payment_set'] == []
+    assert metrics.preflight_diagnostics['sample_parent_lookup_keys_not_in_archive_payment_set'] == []
 
 
 def test_payment_preflight_diagnostics_builder_rejects_incompatible_counts() -> None:
-    with pytest.raises(ValueError, match=r"matched_parent_keys \+ missing_parent_keys"):
+    with pytest.raises(ValueError, match=r"subset of archive_payment_keys"):
         _build_payment_preflight_diagnostics(
             archive_payment_keys={("UC610", "ORD-1")},
             matched_archive_payment_keys={("UC610", "ORD-1"), ("UC610", "ORD-EXTRA")},
@@ -710,9 +710,10 @@ def test_payment_preflight_diagnostics_builder_uses_explicit_parent_lookup_keysp
     assert diagnostics["matched_parent_keys"] == 1
     assert diagnostics["missing_parent_keys"] == 1
     assert diagnostics["sample_missing_keys"] == ["UC610:ORD-2"]
-    assert diagnostics["sample_parent_keys_not_in_archive_payment_set"] == ["UC610:ORD-X"]
+    assert diagnostics["sample_parent_lookup_keys_not_in_archive_payment_set"] == ["UC610:ORD-X"]
+    assert diagnostics["parent_lookup_keys_not_in_archive_payment_set_count"] == 1
     assert (
-        diagnostics["sample_parent_keys_not_in_archive_payment_set_derivation"]
+        diagnostics["sample_parent_lookup_keys_not_in_archive_payment_set_derivation"]
         == "sorted(parent_lookup_keys - archive_payment_keys)[:5]"
     )
 
