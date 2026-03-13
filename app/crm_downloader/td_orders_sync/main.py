@@ -390,7 +390,18 @@ def _serialize_compare_metrics(report: StoreReport | None) -> dict[str, int | li
         "missing_in_ui": metrics.get("missing_in_ui"),
         "amount_mismatches": metrics.get("amount_mismatches"),
         "status_mismatches": metrics.get("status_mismatches"),
-        "sample_mismatch_keys": metrics.get("sample_mismatch_keys"),
+    }
+
+
+def _operational_compare_metrics(compare_metrics: Mapping[str, Any], dataset_health: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "total_rows": compare_metrics.get("total_rows"),
+        "matched_rows": compare_metrics.get("matched_rows"),
+        "missing_in_api": compare_metrics.get("missing_in_api"),
+        "missing_in_ui": compare_metrics.get("missing_in_ui"),
+        "amount_mismatches": compare_metrics.get("amount_mismatches"),
+        "status_mismatches": compare_metrics.get("status_mismatches"),
+        "dataset_health": dict(dataset_health),
     }
 
 
@@ -442,7 +453,6 @@ def _persist_compare_excel_artifact(
         "missing_in_ui": compare_metrics.get("missing_in_ui"),
         "amount_mismatches": compare_metrics.get("amount_mismatches"),
         "status_mismatches": compare_metrics.get("status_mismatches"),
-        "sample_mismatch_keys": compare_metrics.get("sample_mismatch_keys"),
     }
     _write_rows("summary", [summary_row])
 
@@ -8151,12 +8161,14 @@ async def _run_store_discovery(
                     else "No blocking compare mismatches detected"
                 ),
             )
-        orders_compare_metrics = compare_metrics_obj.as_dict()
-        sales_compare_metrics = sales_compare_metrics_obj.as_dict()
-        orders_compare_metrics["dataset_health"] = dict(orders_api_health)
-        orders_compare_metrics["strict_verdict_ready"] = orders_compare_readiness
-        sales_compare_metrics["dataset_health"] = dict(sales_api_health)
-        sales_compare_metrics["strict_verdict_ready"] = sales_compare_readiness
+        orders_compare_metrics = _operational_compare_metrics(
+            compare_metrics_obj.as_dict(),
+            orders_api_health,
+        )
+        sales_compare_metrics = _operational_compare_metrics(
+            sales_compare_metrics_obj.as_dict(),
+            sales_api_health,
+        )
 
         if orders_report:
             orders_report.compare_metrics = orders_compare_metrics
@@ -8171,8 +8183,10 @@ async def _run_store_discovery(
             **correlation.as_dict(),
             compare_metrics=orders_compare_metrics,
             sales_compare_metrics=sales_compare_metrics,
-            orders_compare_ready=orders_compare_readiness,
-            sales_compare_ready=sales_compare_readiness,
+            endpoint_health_summary={
+                "orders": dict(orders_api_health),
+                "sales": dict(sales_api_health),
+            },
             endpoint_failure_summary=endpoint_failure_summary,
             endpoint_errors=api_fetch_result_obj.endpoint_errors if api_fetch_result_obj else {},
             endpoint_error_diagnostics=api_fetch_result_obj.endpoint_error_diagnostics if api_fetch_result_obj else {},
@@ -8180,7 +8194,6 @@ async def _run_store_discovery(
             sales_api_health=sales_api_health,
             api_request_metadata=redact_sensitive_fields(api_request_metadata),
             auth_diagnostics=auth_diagnostics.as_dict(),
-            decision_log=decision.as_dict(),
         )
         compare_artifact_result = persist_td_compare_artifacts(
             download_dir=download_dir,
@@ -8192,11 +8205,6 @@ async def _run_store_discovery(
             endpoint_health_summary={
                 "orders": dict(orders_api_health),
                 "sales": dict(sales_api_health),
-                "endpoint_errors": dict(api_fetch_result_obj.endpoint_errors) if api_fetch_result_obj else {},
-                "endpoint_error_diagnostics": (
-                    dict(api_fetch_result_obj.endpoint_error_diagnostics) if api_fetch_result_obj else {}
-                ),
-                "endpoint_health": dict(endpoint_health_summary) if isinstance(endpoint_health_summary, Mapping) else {},
             },
         )
         log_event(

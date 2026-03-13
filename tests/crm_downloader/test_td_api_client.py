@@ -427,7 +427,6 @@ def test_compare_excel_summary_excludes_nested_mismatch_artifacts(tmp_path: Path
         "missing_in_ui": 0,
         "amount_mismatches": 0,
         "status_mismatches": 0,
-        "sample_mismatch_keys": "A817|1002",
         "mismatch_artifacts": {"missing_in_api": [{"order_number": "1002"}]},
     }
 
@@ -454,7 +453,6 @@ def test_compare_excel_flattens_list_and_dict_cells(tmp_path: Path) -> None:
         "missing_in_ui": 1,
         "amount_mismatches": 0,
         "status_mismatches": 1,
-        "sample_mismatch_keys": ["A817|1002", "A817|1003"],
         "mismatch_artifacts": {
             "missing_in_api": [
                 {
@@ -477,9 +475,6 @@ def test_compare_excel_flattens_list_and_dict_cells(tmp_path: Path) -> None:
     summary = workbook["summary"]
     summary_headers = [cell.value for cell in next(summary.iter_rows(min_row=1, max_row=1))]
     summary_row = [cell.value for cell in next(summary.iter_rows(min_row=2, max_row=2))]
-    sample_keys_value = summary_row[summary_headers.index("sample_mismatch_keys")]
-    assert sample_keys_value == '["A817|1002", "A817|1003"]'
-
     missing_in_api = workbook["missing_in_api"]
     row_headers = [cell.value for cell in next(missing_in_api.iter_rows(min_row=1, max_row=1))]
     row_values = [cell.value for cell in next(missing_in_api.iter_rows(min_row=2, max_row=2))]
@@ -488,7 +483,7 @@ def test_compare_excel_flattens_list_and_dict_cells(tmp_path: Path) -> None:
 
 
 
-def test_compare_excel_save_succeeds_with_non_empty_sample_mismatch_keys_list(tmp_path: Path) -> None:
+def test_compare_excel_save_succeeds_without_sample_mismatch_keys(tmp_path: Path) -> None:
     artifact_path = tmp_path / "compare.xlsx"
     compare_metrics = {
         "total_rows": 3,
@@ -497,7 +492,6 @@ def test_compare_excel_save_succeeds_with_non_empty_sample_mismatch_keys_list(tm
         "missing_in_ui": 1,
         "amount_mismatches": 1,
         "status_mismatches": 0,
-        "sample_mismatch_keys": ["A817|1002", "A817|1003"],
         "mismatch_artifacts": {
             "missing_in_api": [
                 {
@@ -548,8 +542,8 @@ def test_persist_td_compare_artifacts_includes_endpoint_health_summary(tmp_path:
         store_code="a817",
         from_date=date(2026, 1, 1),
         to_date=date(2026, 1, 2),
-        orders_compare_metrics={"strict_verdict_ready": False, "dataset_health": {"ready": False}},
-        sales_compare_metrics={"strict_verdict_ready": True, "dataset_health": {"ready": True}},
+        orders_compare_metrics={"matched_rows": 8, "missing_in_api": 0, "missing_in_ui": 1, "amount_mismatches": 0, "status_mismatches": 0, "dataset_health": {"ready": False}},
+        sales_compare_metrics={"matched_rows": 10, "missing_in_api": 0, "missing_in_ui": 0, "amount_mismatches": 0, "status_mismatches": 0, "dataset_health": {"ready": True}},
         endpoint_health_summary={"orders": {"ready": False, "degraded_reason": "http_401"}},
     )
 
@@ -594,7 +588,6 @@ def test_persist_td_compare_artifacts_redacts_tokens_in_mismatch_payload(tmp_pat
         from_date=date(2026, 1, 1),
         to_date=date(2026, 1, 2),
         orders_compare_metrics={
-            "strict_verdict_ready": False,
             "dataset_health": {"ready": False},
             "mismatch_artifacts": {
                 "request_metadata": [
@@ -605,7 +598,7 @@ def test_persist_td_compare_artifacts_redacts_tokens_in_mismatch_payload(tmp_pat
                 ]
             },
         },
-        sales_compare_metrics={"strict_verdict_ready": True, "dataset_health": {"ready": True}},
+        sales_compare_metrics={"matched_rows": 10, "missing_in_api": 0, "missing_in_ui": 0, "amount_mismatches": 0, "status_mismatches": 0, "dataset_health": {"ready": True}},
         endpoint_health_summary={"diagnostics": {"set-cookie": "auth=clear"}},
     )
 
