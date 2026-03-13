@@ -39,7 +39,7 @@ A001,12345,No
         async def fake_session_scope(database_url):
             yield _DummySession()
 
-        async def fake_upsert_batch(session, bucket, rows):
+        async def fake_upsert_batch(session, bucket, rows, **_kwargs):
             spec = service.MERGE_BUCKET_DB_SPECS[bucket]
             deduped_rows = service._dedupe_rows(bucket, spec, rows)
             return {"affected_rows": len(deduped_rows), "deduped_rows": len(deduped_rows)}
@@ -110,7 +110,7 @@ def test_audit_warns_on_zero_ingest_in_single_session():
         bucket="undelivered_all", counts=counts, logger=logger, single_session=True
     )
 
-    assert result["status"] == "warn"
+    assert result["status"] == "warning"
 
 
 def test_dedupe_prefers_actual_delivery_information():

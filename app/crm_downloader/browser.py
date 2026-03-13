@@ -30,7 +30,7 @@ async def launch_browser(*, playwright: Any, logger: JsonLogger) -> Browser:
             log_event(
                 logger=logger,
                 phase="init",
-                status="warn",
+                status="warning",
                 message="Configured local Chrome executable missing; falling back to bundled Chromium",
                 backend=backend,
                 executable_path=chrome_exec,
@@ -52,7 +52,7 @@ async def launch_browser(*, playwright: Any, logger: JsonLogger) -> Browser:
             log_event(
                 logger=logger,
                 phase="init",
-                status="warn",
+                status="warning",
                 message="Local Chrome launch failed; retrying with bundled Chromium",
                 backend=backend,
                 executable_path=chrome_exec,

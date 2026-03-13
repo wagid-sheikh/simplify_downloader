@@ -444,7 +444,7 @@ async def _ingest_file(
         log_event(
             logger=logger,
             phase="archive_ingest",
-            status="warn",
+            status="warning",
             message="archive_ingest_header_follow_up",
             file=str(source_path),
             headers=header_info["follow_up"],

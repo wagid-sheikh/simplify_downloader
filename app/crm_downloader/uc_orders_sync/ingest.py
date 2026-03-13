@@ -642,7 +642,7 @@ async def ingest_uc_orders_workbook(
         log_event(
             logger=logger,
             phase="ingest",
-            status="warn",
+            status="warning",
             message="No rows parsed from UC GST workbook",
             store_code=store_code,
             workbook=str(workbook_path),

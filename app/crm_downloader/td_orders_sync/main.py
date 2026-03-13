@@ -589,7 +589,7 @@ async def main(
             log_event(
                 logger=logger,
                 phase="init",
-                status="warn",
+                status="warning",
                 message="No TD stores with sync_orders_flag found; exiting",
             )
             summary.mark_phase("init", "warning")
@@ -611,7 +611,7 @@ async def main(
                 log_event(
                     logger=logger,
                     phase="notifications",
-                    status="warn",
+                    status="warning",
                     message="Skipping notifications because run summary was not recorded",
                     run_id=resolved_run_id,
                 )
@@ -729,7 +729,7 @@ async def main(
             log_event(
                 logger=logger,
                 phase="notifications",
-                status="warn",
+                status="warning",
                 message="Skipping notifications because run summary was not recorded",
                 run_env=resolved_env,
                 run_id=resolved_run_id,
@@ -741,7 +741,7 @@ async def main(
         log_event(
             logger=logger,
             phase="store",
-            status="warn",
+            status="warning",
             message="TD orders sync discovery interrupted; attempting graceful shutdown",
             run_id=resolved_run_id,
         )
@@ -759,7 +759,7 @@ async def main(
         log_event(
             logger=logger,
             phase="store",
-            status="warn",
+            status="warning",
             message="TD orders sync discovery interrupted by KeyboardInterrupt; attempting graceful shutdown",
             run_id=resolved_run_id,
         )
@@ -1084,7 +1084,6 @@ def _normalize_output_status(status: str | None) -> str:
         "ok": "success",
         "success": "success",
         "warning": "success_with_warnings",
-        "warn": "success_with_warnings",
         "success_with_warnings": "success_with_warnings",
         "partial": "partial",
         "skipped": "partial",
@@ -1972,7 +1971,7 @@ async def _load_td_order_stores(
                 log_event(
                     logger=logger,
                     phase="init",
-                    status="warn",
+                    status="warning",
                     message="Skipping store with missing store_code",
                     raw_row=dict(row),
                 )
@@ -1994,7 +1993,7 @@ async def _load_td_order_stores(
             log_event(
                 logger=logger,
                 phase="init",
-                status="warn",
+                status="warning",
                 message="Temporarily restricting TD orders discovery to a subset of stores",
                 stores=[store.store_code for store in scoped],
                 skipped_stores=skipped or None,
@@ -2117,7 +2116,7 @@ async def _persist_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonLog
         log_event(
             logger=logger,
             phase="run_summary",
-            status="warn",
+            status="warning",
             message="Skipping run summary persistence because database_url is missing",
             run_id=summary.run_id,
         )
@@ -2170,7 +2169,7 @@ async def _persist_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonLog
             log_event(
                 logger=logger,
                 phase="notifications",
-                status="warn",
+                status="warning",
                 message="Proceeding with notifications after serialization-only summary persistence failure",
                 run_id=summary.run_id,
             )
@@ -2183,7 +2182,7 @@ async def _start_run_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonL
         log_event(
             logger=logger,
             phase="run_summary",
-            status="warn",
+            status="warning",
             message="Skipping run summary start because database_url is missing",
             run_id=summary.run_id,
         )
@@ -2255,7 +2254,7 @@ async def _fetch_pipeline_id(*, database_url: str, pipeline_name: str, logger: J
         log_event(
             logger=logger,
             phase="orders_sync_log",
-            status="warn",
+            status="warning",
             message="Failed to fetch pipeline id for orders sync log",
             pipeline_name=pipeline_name,
             error=str(exc),
@@ -2265,7 +2264,7 @@ async def _fetch_pipeline_id(*, database_url: str, pipeline_name: str, logger: J
         log_event(
             logger=logger,
             phase="orders_sync_log",
-            status="warn",
+            status="warning",
             message="Pipeline id not found for orders sync log",
             pipeline_name=pipeline_name,
         )
@@ -2287,7 +2286,7 @@ async def _insert_orders_sync_log(
         log_event(
             logger=logger,
             phase="orders_sync_log",
-            status="warn",
+            status="warning",
             message="Skipping orders sync log insert because database_url is missing",
             store_code=store.store_code,
         )
@@ -2303,7 +2302,7 @@ async def _insert_orders_sync_log(
         log_event(
             logger=logger,
             phase="orders_sync_log",
-            status="warn",
+            status="warning",
             message="Skipping orders sync log insert because run summary row is missing",
             run_id=run_id,
             store_code=store.store_code,
@@ -2565,7 +2564,7 @@ async def _update_orders_sync_log(
                 log_event(
                     logger=logger,
                     phase="orders_sync_log",
-                    status="warn",
+                    status="warning",
                     message="Orders sync log update matched no rows",
                     log_id=log_id,
                     update_values=values,
@@ -2574,7 +2573,7 @@ async def _update_orders_sync_log(
         log_event(
             logger=logger,
             phase="orders_sync_log",
-            status="warn",
+            status="warning",
             message="Failed to update orders sync log row",
             log_id=log_id,
             error=str(exc),
@@ -3035,7 +3034,7 @@ def _log_td_window_summary(
         log_event(
             logger=logger,
             phase="window_summary",
-            status="warn",
+            status="warning",
             message="Window marked failed despite downloads/ingest activity",
             store_code=store_code,
             from_date=from_date,
@@ -3056,7 +3055,7 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger, time
         log_event(
             logger=logger,
             phase="session",
-            status="warn",
+            status="warning",
             message="No home URL available to probe session",
             store_code=store.store_code,
         )
@@ -3124,7 +3123,7 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger, time
     log_event(
         logger=logger,
         phase="session",
-        status="ok" if state_valid else "warn",
+        status="ok" if state_valid else "warning",
         message="Probed session with existing storage state",
         store_code=store.store_code,
         response_status=getattr(response, "status", None),
@@ -3265,7 +3264,7 @@ async def _perform_login(page: Page, *, store: TdStore, logger: JsonLogger, nav_
     log_event(
         logger=logger,
         phase="login",
-        status="ok" if contains_store else "warn",
+        status="ok" if contains_store else "warning",
         message="Completed login attempt",
         store_code=store.store_code,
         final_url=final_url,
@@ -3388,7 +3387,7 @@ async def _log_home_nav_diagnostics(page: Page, *, logger: JsonLogger, store: Td
         log_event(
             logger=logger,
             phase="home",
-            status="warn",
+            status="warning",
             message="Failed to capture navigation diagnostics",
             store_code=store.store_code,
             error=str(exc),
@@ -3422,7 +3421,7 @@ async def _capture_orders_left_nav_snapshot(
         log_event(
             logger=logger,
             phase="orders",
-            status="warn",
+            status="warning",
             message="Orders left-nav snapshot not available",
             store_code=store.store_code,
             context=context,
@@ -3630,7 +3629,7 @@ async def _navigate_to_orders_container(
             log_event(
                 logger=logger,
                 phase="orders",
-                status="warn" if modal_status == "blocking" else None,
+                status="warning" if modal_status == "blocking" else "info",
                 message="Overdue modal dismissed before navigation"
                 if modal_status == "dismissed"
                 else "Overdue modal blocking navigation",
@@ -3792,7 +3791,7 @@ async def _navigate_to_orders_container(
                 log_event(
                     logger=logger,
                     phase="orders",
-                    status="warn",
+                    status="warning",
                     message="Overlay blocking Orders click; retrying",
                     store_code=store.store_code,
                     modal_selector=modal_selector,
@@ -3855,7 +3854,7 @@ async def _navigate_to_orders_container(
                 log_event(
                     logger=logger,
                     phase="orders",
-                    status="warn",
+                    status="warning",
                     message="Redirected away from Orders after click; retrying",
                     store_code=store.store_code,
                     final_url=page.url,
@@ -3942,7 +3941,7 @@ async def _navigate_to_sales_report(
         log_event(
             logger=logger,
             phase="sales",
-            status="warn",
+            status="warning",
             message="Unable to build Sales & Delivery report URL",
             store_code=store.store_code,
             current_url=page.url,
@@ -4030,7 +4029,7 @@ async def _navigate_to_sales_report(
             logger=logger,
             phase="sales",
             message="Sales navigation outcome",
-            status=status if status != "ok" else None,
+            status=status,
             store_code=store.store_code,
             navigation_method=navigation_method,
             navigation_path=navigation_path,
@@ -4054,7 +4053,7 @@ async def _navigate_to_sales_report(
                     log_event(
                         logger=logger,
                         phase="sales",
-                        status="warn",
+                        status="warning",
                         message="Sales re-login attempt failed and page is still Login; retrying once more",
                         store_code=store.store_code,
                         retry_status=retry_label,
@@ -4068,7 +4067,7 @@ async def _navigate_to_sales_report(
                 log_event(
                     logger=logger,
                     phase="sales",
-                    status="warn",
+                    status="warning",
                     message="Detected Login page immediately after Sales re-login; retrying once more",
                     store_code=store.store_code,
                     retry_status=retry_label,
@@ -4086,7 +4085,7 @@ async def _navigate_to_sales_report(
             log_event(
                 logger=logger,
                 phase="sales",
-                status="warn",
+                status="warning",
                 message="Sales navigation retry login failed",
                 store_code=store.store_code,
                 final_url=page.url,
@@ -4105,7 +4104,7 @@ async def _navigate_to_sales_report(
             log_event(
                 logger=logger,
                 phase="sales",
-                status="warn",
+                status="warning",
                 message="Home not ready after Sales re-login attempt",
                 store_code=store.store_code,
                 final_url=page.url,
@@ -4128,7 +4127,7 @@ async def _navigate_to_sales_report(
             log_event(
                 logger=logger,
                 phase="sales",
-                status="warn",
+                status="warning",
                 message="Failed to persist refreshed Sales storage state",
                 store_code=store.store_code,
                 storage_state=str(store.storage_state_path),
@@ -4204,7 +4203,7 @@ async def _navigate_to_sales_report(
             log_event(
                 logger=logger,
                 phase="sales",
-                status="warn",
+                status="warning",
                 message="Sales left-nav submenu not available",
                 store_code=store.store_code,
                 error=str(exc),
@@ -4445,7 +4444,7 @@ async def _navigate_to_sales_report(
             log_event(
                 logger=logger,
                 phase="sales",
-                status="warn",
+                status="warning",
                 message="Sales navigation retry aborted because session refresh failed",
                 store_code=store.store_code,
                 final_url=page.url,
@@ -4455,7 +4454,7 @@ async def _navigate_to_sales_report(
                 retry_status="after_login",
             )
             await _log_navigation_outcome(
-                status="warn",
+                status="warning",
                 navigation_method=(last_attempt or {}).get("navigation_method", "orders_left_nav"),
                 navigation_path=(last_attempt or {}).get("navigation_path", navigation_path_left_nav),
                 retry_status="after_login",
@@ -4525,7 +4524,7 @@ async def _navigate_to_sales_report(
         relogin_ok, relogin_reason = await _refresh_sales_session_with_guard(retry_label="after_validation")
         if not relogin_ok:
             await _log_navigation_outcome(
-                status="warn",
+                status="warning",
                 navigation_method=(last_attempt or {}).get("navigation_method", "orders_left_nav"),
                 navigation_path=(last_attempt or {}).get("navigation_path", navigation_path_left_nav),
                 retry_status="after_validation",
@@ -4583,7 +4582,7 @@ async def _navigate_to_sales_report(
     log_event(
         logger=logger,
         phase="sales",
-        status="warn",
+        status="warning",
         message="Sales & Delivery report navigation failed after retry",
         store_code=store.store_code,
         final_url=final_url,
@@ -4599,7 +4598,7 @@ async def _navigate_to_sales_report(
         log_event(
             logger=logger,
             phase="sales",
-            status="warn",
+            status="warning",
             message="Sales left-nav link not found; exiting without direct URL navigation",
             store_code=store.store_code,
             final_url=final_url,
@@ -4607,7 +4606,7 @@ async def _navigate_to_sales_report(
             attempts=attempts,
         )
     await _log_navigation_outcome(
-        status="warn",
+        status="warning",
         navigation_method=(last_attempt or {}).get("navigation_method", "unknown"),
         navigation_path=(last_attempt or {}).get("navigation_path", "unknown"),
         retry_status=(last_attempt or {}).get("retry_status", "unknown"),
@@ -4715,7 +4714,7 @@ async def _wait_for_report_iframe_auth_source(
             log_event(
                 logger=logger,
                 phase=phase,
-                status="warn",
+                status="warning",
                 message="Report iframe host did not resolve to expected auth source",
                 store_code=store.store_code,
                 iframe_src_hostname=iframe_hostname,
@@ -4750,7 +4749,7 @@ async def _resolve_report_iframe_auth_source_for_api(
         log_event(
             logger=logger,
             phase=phase,
-            status="warn",
+            status="warning",
             message="Fast-path iframe auth source unavailable; using fallback polling",
             store_code=store.store_code,
             iframe_src_hostname=iframe_hostname,
@@ -4778,7 +4777,7 @@ async def _resolve_report_iframe_auth_source_for_api(
         log_event(
             logger=logger,
             phase=phase,
-            status="warn",
+            status="warning",
             message="auth_source_fallback_unavailable",
             store_code=store.store_code,
             iframe_src_hostname=resolved_hostname,
@@ -4947,7 +4946,7 @@ async def _wait_for_loading_indicators(
         log_event(
             logger=logger,
             phase=phase,
-            status="warn",
+            status="warning",
             message="Loading indicators still visible after timeout",
             store_code=store.store_code,
             selectors=list(LOADING_LOCATOR_SELECTORS),
@@ -5110,7 +5109,7 @@ async def _wait_for_range_text_update(
     log_event(
         logger=logger,
         phase="iframe",
-        status="warn",
+        status="warning",
         message="Date range text did not update to expected value",
         store_code=store.store_code,
         expected_texts=list(expected_texts),
@@ -5364,7 +5363,7 @@ async def _fill_numeric_triplet(
         log_event(
             logger=logger,
             phase="iframe",
-            status="warn",
+            status="warning",
             message="Failed to fill numeric date inputs",
             store_code=store.store_code,
             label=label,
@@ -5442,7 +5441,7 @@ async def _fill_date_input(
     log_event(
         logger=logger,
         phase="iframe",
-        status="warn",
+        status="warning",
         message="Failed to fill date input",
         store_code=store.store_code,
         label=label,
@@ -5467,7 +5466,7 @@ async def _set_date_range(
         log_event(
             logger=logger,
             phase="iframe",
-            status="warn",
+            status="warning",
             message="Date range control not located inside iframe",
             store_code=store.store_code,
             control_attempts=control_attempts,
@@ -5482,7 +5481,7 @@ async def _set_date_range(
         log_event(
             logger=logger,
             phase="iframe",
-            status="warn",
+            status="warning",
             message="Failed to open date range picker",
             store_code=store.store_code,
             error=str(exc),
@@ -5499,7 +5498,7 @@ async def _set_date_range(
         log_event(
             logger=logger,
             phase="iframe",
-            status="warn",
+            status="warning",
             message="Date picker popup not visible after clicking control",
             store_code=store.store_code,
             control_attempts=control_attempts,
@@ -5593,7 +5592,7 @@ async def _set_date_range(
     log_event(
         logger=logger,
         phase="iframe",
-        status="warn",
+        status="warning",
         message="Failed to set date range via date-range control",
         store_code=store.store_code,
         from_ok=from_ok,
@@ -5920,7 +5919,7 @@ async def _wait_for_report_requests_container(
     log_event(
         logger=logger,
         phase="iframe",
-        status="warn",
+        status="warning",
         message="Report Requests container not visible after request",
         store_code=store.store_code,
         timeout_ms=timeout_ms,
@@ -6162,7 +6161,7 @@ async def _wait_for_report_request_download_link(
                         retry_payload = {
                             "logger": logger,
                             "phase": "iframe",
-                            "status": "warn",
+                            "status": "warning",
                             "message": "Download event missed; retrying download click",
                             "store_code": store.store_code,
                             "expected_range_texts": list(expected_range_texts),
@@ -6211,7 +6210,7 @@ async def _wait_for_report_request_download_link(
                         failure_payload = {
                             "logger": logger,
                             "phase": "iframe",
-                            "status": "warn",
+                            "status": "warning",
                             "message": "Failed to download report after locating link",
                             "store_code": store.store_code,
                             "error": str(exc),
@@ -6293,7 +6292,7 @@ async def _wait_for_report_request_download_link(
                                 refresh_error_payload = {
                                     "logger": logger,
                                     "phase": "iframe",
-                                    "status": "warn",
+                                    "status": "warning",
                                     "message": "Failed to click Refresh during pending state",
                                     "store_code": store.store_code,
                                     "status_text": matched_status,
@@ -6311,7 +6310,7 @@ async def _wait_for_report_request_download_link(
                             refresh_missing_payload = {
                                 "logger": logger,
                                 "phase": "iframe",
-                                "status": "warn",
+                                "status": "warning",
                                 "message": "Refresh control not visible during pending state",
                                 "store_code": store.store_code,
                                 "status_text": matched_status,
@@ -6339,7 +6338,7 @@ async def _wait_for_report_request_download_link(
     timeout_payload = {
         "logger": logger,
         "phase": "iframe",
-        "status": "warn",
+        "status": "warning",
         "message": "Report Requests download link not available before timeout",
         "store_code": store.store_code,
         "expected_range_texts": list(expected_range_texts),
@@ -6404,7 +6403,7 @@ async def _run_report_iframe_flow(
             log_event(
                 logger=logger,
                 phase="iframe",
-                status="warn",
+                status="warning",
                 message="Failed to click Expand button",
                 store_code=store.store_code,
                 error=str(exc),
@@ -6655,7 +6654,7 @@ async def _execute_sales_flow(
                                 log_event(
                                     logger=logger,
                                     phase="sales_ingest",
-                                    status="warn",
+                                    status="warning",
                                     message="TD Sales workbook ingested with warnings (warning_count is unique-value based)",
                                     store_code=store.store_code,
                                     warning_count=sales_warning_summary["count"],
@@ -6710,7 +6709,7 @@ async def _execute_sales_flow(
                     log_event(
                         logger=logger,
                         phase="sales_ingest",
-                        status="warn",
+                        status="warning",
                         message="Skipping TD Sales ingestion because database_url is missing",
                         store_code=store.store_code,
                     )
@@ -6722,7 +6721,7 @@ async def _execute_sales_flow(
                 log_event(
                     logger=logger,
                     phase="sales",
-                    status="warn",
+                    status="warning",
                     message="Sales & Delivery iframe flow failed",
                     store_code=store.store_code,
                     error=sales_detail,
@@ -6733,7 +6732,7 @@ async def _execute_sales_flow(
             log_event(
                 logger=logger,
                 phase="sales",
-                status="warn",
+                status="warning",
                 message="Sales iframe not ready after navigation",
                 store_code=store.store_code,
                 final_url=page.url,
@@ -6744,7 +6743,7 @@ async def _execute_sales_flow(
         log_event(
             logger=logger,
             phase="sales",
-            status="warn",
+            status="warning",
             message="Navigation to Sales & Delivery report did not complete",
             store_code=store.store_code,
             final_url=page.url,
@@ -6811,7 +6810,7 @@ async def _wait_for_otp_verification(
     log_event(
         logger=logger,
         phase="login",
-        status="warn",
+        status="warning",
         message="Verification page detected; pausing for manual OTP entry",
         store_code=store.store_code,
         current_url=current_url,
@@ -6866,7 +6865,7 @@ async def _wait_for_otp_verification(
     log_event(
         logger=logger,
         phase="login",
-        status="warn",
+        status="warning",
         message="OTP not completed; home page not reached before dwell deadline",
         store_code=store.store_code,
         final_url=final_url,
@@ -7209,7 +7208,7 @@ async def _run_store_discovery(
             log_event(
                 logger=store_logger,
                 phase="store",
-                status="warn",
+                status="warning",
                 message="Aborting TD orders discovery because OTP was not completed",
                 store_code=store.store_code,
             )
@@ -7368,7 +7367,7 @@ async def _run_store_discovery(
                             log_event(
                                 logger=store_logger,
                                 phase="api",
-                                status="warn",
+                                status="warning",
                                 message="TD API artifact persistence encountered warnings",
                                 store_code=store.store_code,
                                 source_mode=source_mode,
@@ -7402,7 +7401,7 @@ async def _run_store_discovery(
                         log_event(
                             logger=store_logger,
                             phase="api",
-                            status="warn",
+                            status="warning",
                             message="TD API fetch failed; continuing according to source mode",
                             store_code=store.store_code,
                             source_mode=source_mode,
@@ -7464,7 +7463,7 @@ async def _run_store_discovery(
                                     log_event(
                                         logger=store_logger,
                                         phase="ingest",
-                                        status="warn",
+                                        status="warning",
                                         message="TD API Orders rows ingested with warnings (warning_count is unique-value based)",
                                         store_code=store.store_code,
                                         source_mode=source_mode,
@@ -7507,7 +7506,7 @@ async def _run_store_discovery(
                                     log_event(
                                         logger=store_logger,
                                         phase="sales_ingest",
-                                        status="warn",
+                                        status="warning",
                                         message="TD API Sales rows ingested with warnings (warning_count is unique-value based)",
                                         store_code=store.store_code,
                                         source_mode=source_mode,
@@ -7537,7 +7536,7 @@ async def _run_store_discovery(
                             log_event(
                                 logger=store_logger,
                                 phase="ingest",
-                                status="warn",
+                                status="warning",
                                 message="Skipping TD API orders/sales ingestion because database_url is missing",
                                 store_code=store.store_code,
                                 source_mode=source_mode,
@@ -7624,7 +7623,7 @@ async def _run_store_discovery(
                         log_event(
                             logger=store_logger,
                             phase="window_summary",
-                            status=("warn" if garments_completeness == "incomplete" else "info"),
+                            status=("warning" if garments_completeness == "incomplete" else "info"),
                             message="TD garments per-store run summary",
                             store_code=store.store_code,
                             garments_budget_state=garments_budget_state,
@@ -7710,7 +7709,7 @@ async def _run_store_discovery(
                                 log_event(
                                     logger=store_logger,
                                     phase="ingest",
-                                    status="warn",
+                                    status="warning",
                                     message="TD Orders workbook ingested with warnings (warning_count is unique-value based)",
                                     store_code=store.store_code,
                                     warning_count=orders_warning_summary["count"],
@@ -7764,7 +7763,7 @@ async def _run_store_discovery(
                         log_event(
                             logger=store_logger,
                             phase="ingest",
-                            status="warn",
+                            status="warning",
                             message="Skipping TD Orders ingestion because database_url is missing",
                             store_code=store.store_code,
                         )
@@ -7948,7 +7947,7 @@ async def _run_store_discovery(
         log_event(
             logger=store_logger,
             phase="store",
-            status="warn",
+            status="warning",
             message="TD orders store discovery cancelled; closing context",
             store_code=store.store_code,
         )
@@ -7963,7 +7962,7 @@ async def _run_store_discovery(
         log_event(
             logger=store_logger,
             phase="store",
-            status="warn",
+            status="warning",
             message="TD orders store discovery interrupted; closing context",
             store_code=store.store_code,
             error=str(exc),
@@ -8077,7 +8076,7 @@ async def _run_store_discovery(
             log_event(
                 logger=store_logger,
                 phase="compare",
-                status="warn",
+                status="warning",
                 message="Marked compare as api_unavailable because all API endpoints failed auth",
                 **correlation.as_dict(),
                 endpoint_errors=api_fetch_result.endpoint_errors,
@@ -8282,7 +8281,7 @@ async def _run_store_discovery(
                 log_event(
                     logger=store_logger,
                     phase="garment_ingest",
-                    status="warn",
+                    status="warning",
                     message="TD garment sync failed",
                     store_code=store.store_code,
                     error=str(exc),
@@ -8291,7 +8290,7 @@ async def _run_store_discovery(
             log_event(
                 logger=store_logger,
                 phase="garment_ingest",
-                status="warn",
+                status="warning",
                 message="Skipped TD garment sync due to compare mismatch gate",
                 store_code=store.store_code,
                 compare_metrics=orders_compare_metrics,
@@ -8391,7 +8390,7 @@ async def _run_store_discovery(
             log_event(
                 logger=store_logger,
                 phase="reconciliation",
-                status="warn",
+                status="warning",
                 message="TD garments orphan-row drift alert triggered",
                 store_code=store.store_code,
                 orphan_alert=orphan_alert,

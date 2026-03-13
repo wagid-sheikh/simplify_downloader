@@ -136,7 +136,7 @@ async def _prime_context_with_storage_state(
         log_event(
             logger=logger,
             phase="download",
-            status="warn",
+            status="warning",
             store_code=store_code,
             bucket=None,
             message="storage state file missing",
@@ -147,7 +147,7 @@ async def _prime_context_with_storage_state(
         log_event(
             logger=logger,
             phase="download",
-            status="warn",
+            status="warning",
             store_code=store_code,
             bucket=None,
             message="unable to read storage state",
@@ -161,7 +161,7 @@ async def _prime_context_with_storage_state(
         log_event(
             logger=logger,
             phase="download",
-            status="warn",
+            status="warning",
             store_code=store_code,
             bucket=None,
             message="invalid storage state JSON",
@@ -187,7 +187,7 @@ async def _prime_context_with_storage_state(
             log_event(
                 logger=logger,
                 phase="download",
-                status="warn",
+                status="warning",
                 store_code=store_code,
                 bucket=None,
                 message="unable to apply cookies from storage state",
@@ -214,7 +214,7 @@ async def _prime_context_with_storage_state(
             log_event(
                 logger=logger,
                 phase="download",
-                status="warn",
+                status="warning",
                 store_code=store_code,
                 bucket=None,
                 message="unable to create priming page",
@@ -235,7 +235,7 @@ async def _prime_context_with_storage_state(
                         log_event(
                             logger=logger,
                             phase="download",
-                            status="warn",
+                            status="warning",
                             store_code=store_code,
                             bucket=None,
                             message="unable to initialize localStorage for origin",
@@ -265,7 +265,7 @@ async def _prime_context_with_storage_state(
                             log_event(
                                 logger=logger,
                                 phase="download",
-                                status="warn",
+                                status="warning",
                                 store_code=store_code,
                                 bucket=None,
                                 message="unable to persist localStorage entry",
@@ -337,7 +337,7 @@ async def _download_one_spec(page: Page, store_cfg: Dict, spec: Dict, *, logger:
             status = response.status
         except Exception as exc:  # pragma: no cover - defensive guard
             status = None
-            _log("warn", f"unable to read status for {spec['key']}", extras={"error": str(exc)})
+            _log("warning", f"unable to read status for {spec['key']}", extras={"error": str(exc)})
 
         try:
             body = await response.body()
@@ -353,12 +353,12 @@ async def _download_one_spec(page: Page, store_cfg: Dict, spec: Dict, *, logger:
         needs_refresh = False
 
         if status in {401, 403}:
-            _log("warn", f"received {status} for {spec['key']} — refreshing session")
+            _log("warning", f"received {status} for {spec['key']} — refreshing session")
             needs_refresh = True
         elif not body:
-            _log("warn", f"empty response for {spec['key']}")
+            _log("warning", f"empty response for {spec['key']}")
         elif _looks_like_login_html_bytes(body):
-            _log("warn", f"html/login-like response for {spec['key']} — refreshing session")
+            _log("warning", f"html/login-like response for {spec['key']} — refreshing session")
             needs_refresh = True
         elif status != 200:
             _log("error", f"unexpected status {status} for {spec['key']}")
@@ -612,7 +612,7 @@ async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -
 
     if navigation_error is not None:
         _log(
-            "warn",
+            "warning",
             "login navigation signalled a timeout; validating page state",
             extras={"error": str(navigation_error)},
         )
@@ -640,7 +640,7 @@ async def _perform_login_flow(page: Page, store_cfg: Dict, logger: JsonLogger) -
 
     if not login_form_cleared and login_form_error is not None:
         _log(
-            "warn",
+            "warning",
             "login form still present after submission; checking page content",
             extras={"error": str(login_form_error)},
         )
@@ -743,7 +743,7 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
 
         if not dashboard_controls_ready and controls_error is not None:
             _log(
-                "warn",
+                "warning",
                 "dashboard download controls not detected; validating page content",
                 extras={"error": str(controls_error)},
             )
@@ -795,7 +795,7 @@ async def _ensure_dashboard(page: Page, store_cfg: Dict, logger: JsonLogger) -> 
             if not attempted_home_nav:
                 attempted_home_nav = True
                 _log(
-                    "warn",
+                    "warning",
                     "dashboard reported login-style error; attempting home navigation",
                     extras={
                         "dashboard_url": dashboard_url,
@@ -976,7 +976,7 @@ async def run_all_stores(
                     log_event(
                         logger=logger,
                         phase="download",
-                        status="warn",
+                        status="warning",
                         store_code=sc,
                         bucket=None,
                         message="storage state not found; falling back to credential login",

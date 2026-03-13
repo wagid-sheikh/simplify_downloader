@@ -535,7 +535,6 @@ def _normalize_output_status(status: str | None) -> str:
         "ok": "success",
         "success": "success",
         "warning": "success_with_warnings",
-        "warn": "success_with_warnings",
         "success_with_warnings": "success_with_warnings",
         "partial": "partial",
         "skipped": "partial",
@@ -575,7 +574,6 @@ def _normalize_uc_status(status: str | None) -> str:
     mapping = {
         "ok": "success",
         "warning": "success_with_warnings",
-        "warn": "success_with_warnings",
         "error": "failed",
         "failed": "failed",
         "success": "success",
