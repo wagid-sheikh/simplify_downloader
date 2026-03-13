@@ -157,8 +157,6 @@ td_sync_compare_log = sa.Table(
     sa.Column("missing_in_ui", sa.BigInteger()),
     sa.Column("amount_mismatches", sa.BigInteger()),
     sa.Column("status_mismatches", sa.BigInteger()),
-    sa.Column("sample_mismatch_keys", postgresql.JSONB(astext_type=sa.Text())),
-    sa.Column("gate_verdict_json", postgresql.JSONB(astext_type=sa.Text())),
     sa.Column("consecutive_pass_windows", sa.Integer()),
     sa.Column("api_ready", sa.Boolean()),
     sa.Column("decision", sa.Text()),
