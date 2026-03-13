@@ -92,7 +92,7 @@ def _load_csv_rows(
             log_event(
                 logger=logger,
                 phase="ingest",
-                status=status or ("warn" if failed_rows else "info"),
+                status=status or ("warning" if failed_rows else "info"),
                 bucket=bucket,
                 merged_file=str(csv_path),
                 counts={
@@ -114,13 +114,13 @@ def _load_csv_rows(
             log_event(
                 logger=logger,
                 phase="ingest",
-                status="warn",
+                status="warning",
                 bucket=bucket,
                 merged_file=str(csv_path),
                 message="merged file is not a valid CSV (HTML content detected)",
                 sample=sample,
             )
-        emit_summary("csv file appears to contain HTML", status="warn")
+        emit_summary("csv file appears to contain HTML", status="warning")
         return []
 
     def iterator() -> Iterable[Dict[str, Any]]:
@@ -134,14 +134,14 @@ def _load_csv_rows(
                     log_event(
                         logger=logger,
                         phase="ingest",
-                        status="warn",
+                        status="warning",
                         bucket=bucket,
                         merged_file=str(csv_path),
                         message="failed to parse csv file",
                         error=str(exc),
                         sample=sample,
                     )
-                emit_summary("failed to parse csv file", status="warn")
+                emit_summary("failed to parse csv file", status="warning")
                 return
 
             if not reader.fieldnames:
@@ -150,13 +150,13 @@ def _load_csv_rows(
                     log_event(
                         logger=logger,
                         phase="ingest",
-                        status="warn",
+                        status="warning",
                         bucket=bucket,
                         merged_file=str(csv_path),
                         message="csv file missing header row",
                         sample=sample,
                     )
-                emit_summary("csv file missing header row", status="warn")
+                emit_summary("csv file missing header row", status="warning")
                 return
             header_map = normalize_headers(reader.fieldnames)
             try:
@@ -184,7 +184,7 @@ def _load_csv_rows(
                                 log_event(
                                     logger=logger,
                                     phase="ingest",
-                                    status="warn",
+                                    status="warning",
                                     bucket=bucket,
                                     merged_file=str(csv_path),
                                     message="failed to coerce csv row",
@@ -203,7 +203,7 @@ def _load_csv_rows(
                     log_event(
                         logger=logger,
                         phase="ingest",
-                        status="warn",
+                        status="warning",
                         bucket=bucket,
                         merged_file=str(csv_path),
                         message="csv parsing stopped due to error",
@@ -211,14 +211,14 @@ def _load_csv_rows(
                         processed_rows=total_rows,
                         sample=sample,
                     )
-                emit_summary("csv parsing stopped due to error", status="warn")
+                emit_summary("csv parsing stopped due to error", status="warning")
                 return
 
         if logger and suppressed_failures > 0:
             log_event(
                 logger=logger,
                 phase="ingest",
-                status="warn",
+                status="warning",
                 bucket=bucket,
                 merged_file=str(csv_path),
                 message=(
@@ -229,7 +229,7 @@ def _load_csv_rows(
             log_event(
                 logger=logger,
                 phase="ingest",
-                status="warn",
+                status="warning",
                 bucket=bucket,
                 merged_file=str(csv_path),
                 message="all csv rows failed coercion",
@@ -460,7 +460,7 @@ async def ingest_bucket(
             phase="ingest",
             bucket=bucket,
             merged_file=str(csv_path),
-            status="warn",
+            status="warning",
             message="non-empty merged file produced zero ingested rows",
         )
     log_event(

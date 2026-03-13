@@ -10,7 +10,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
-__all__ = ["JsonLogger", "get_logger", "log_event", "timed_event", "new_run_id"]
+LOG_STATUSES = frozenset({"ok", "info", "warning", "error"})
+
+__all__ = ["LOG_STATUSES", "JsonLogger", "get_logger", "log_event", "timed_event", "new_run_id"]
 
 
 def new_run_id() -> str:
@@ -97,9 +99,19 @@ class JsonLogger:
             self.file_handle.write(encoded + "\n")
             self.file_handle.flush()
 
+    @staticmethod
+    def _validate_status(status: str) -> str:
+        normalized = str(status or "").strip().lower()
+        if normalized not in LOG_STATUSES:
+            raise ValueError(
+                f"Unsupported log status '{status}'. Allowed values: {', '.join(sorted(LOG_STATUSES))}"
+            )
+        return normalized
+
     def info(self, *, phase: str, status: str = "ok", message: str = "", **fields: Any) -> None:
         if self.closed:
             return
+        status = self._validate_status(status)
         payload = {"phase": phase, "status": status, "message": message, **fields}
         if self.aggregator:
             try:
@@ -109,7 +121,7 @@ class JsonLogger:
         self._emit(payload)
 
     def warn(self, *, phase: str, message: str, **fields: Any) -> None:
-        self.info(phase=phase, status="warn", message=message, **fields)
+        self.info(phase=phase, status="warning", message=message, **fields)
 
     def error(self, *, phase: str, message: str, **fields: Any) -> None:
         self.info(phase=phase, status="error", message=message, **fields)

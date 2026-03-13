@@ -760,7 +760,7 @@ async def _ingest_td_orders_rows(
         log_event(
             logger=logger,
             phase="ingest",
-            status="warn",
+            status="warning",
             message="No rows parsed from TD Orders workbook",
             store_code=store_code,
             workbook=str(workbook_path) if workbook_path else "<rows>",

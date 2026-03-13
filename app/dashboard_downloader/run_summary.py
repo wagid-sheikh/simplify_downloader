@@ -47,7 +47,7 @@ def _format_duration(seconds: int) -> str:
 
 def _normalize_status(raw: str | None) -> str:
     normalized = (raw or "ok").lower()
-    if normalized in {"warn", "warning"}:
+    if normalized in {"warning"}:
         return "warning"
     if normalized == "error":
         return "error"

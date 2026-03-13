@@ -394,7 +394,7 @@ async def extract_dashboard_summary(
             and _clean_number(raw_value)
         ):
             _log(
-                "warn",
+                "warning",
                 "unable to parse dashboard metric",
                 extras={"metric": key, "value": raw_value},
             )
@@ -404,7 +404,7 @@ async def extract_dashboard_summary(
     try:
         if await title_locator.count() == 0:
             _log(
-                "warn",
+                "warning",
                 "dashboard title not found",
                 extras={"selector": "h1.dashboard-title"},
             )
@@ -425,7 +425,7 @@ async def extract_dashboard_summary(
                         dashboard_data["dashboard_date"] = parsed_dashboard_date
                     elif date_text:
                         _log(
-                            "warn",
+                            "warning",
                             "unable to parse dashboard date",
                             extras={"value": date_text},
                         )
@@ -439,19 +439,19 @@ async def extract_dashboard_summary(
                     dashboard_data["store_name"] = store_cfg.get("store_name")
                 else:
                     _log(
-                        "warn",
+                        "warning",
                         "store name not found in dashboard title",
                         extras={"title_lines": lines},
                     )
             else:
                 _log(
-                    "warn",
+                    "warning",
                     "dashboard title empty",
                     extras={"selector": "h1.dashboard-title"},
                 )
     except Exception as exc:  # pragma: no cover
         _log(
-            "warn",
+            "warning",
             "failed to extract dashboard title",
             extras={"error": str(exc)},
         )
@@ -476,7 +476,7 @@ async def extract_dashboard_summary(
                     dashboard_data[gstin_column_name] = gstin_candidate
                 else:
                     _log(
-                        "warn",
+                        "warning",
                         "invalid gstin candidate in navbar",
                         extras={
                             "store_code": store_code,
@@ -506,19 +506,19 @@ async def extract_dashboard_summary(
                     dashboard_data["launch_date"] = parsed_launch
                 else:
                     _log(
-                        "warn",
+                        "warning",
                         "unable to parse launch date",
                         extras={"value": launch_text},
                     )
             else:
                 _log(
-                    "warn",
+                    "warning",
                     "launch date value missing",
                     extras={"selector": "Launch Date"},
                 )
     except Exception as exc:  # pragma: no cover
         _log(
-            "warn",
+            "warning",
             "failed to extract launch date",
             extras={"error": str(exc)},
         )
@@ -561,14 +561,14 @@ async def extract_dashboard_summary(
             table_locator = await _select_table(candidate_tables, config)
         if table_locator is None:
             if not heading_present:
-                _log("warn", "section heading missing", extras={"section": section_name})
-            _log("warn", "table not found for section", extras={"section": section_name})
+                _log("warning", "section heading missing", extras={"section": section_name})
+            _log("warning", "table not found for section", extras={"section": section_name})
             return [], [], False
 
         headers = await _get_column_headers(table_locator)
         rows = await _extract_table_rows(table_locator)
         if not rows:
-            _log("warn", "section table empty", extras={"section": section_name})
+            _log("warning", "section table empty", extras={"section": section_name})
             return [], headers, False
         sections_with_data.add(section_name)
         return rows, headers, True
@@ -608,14 +608,14 @@ async def extract_dashboard_summary(
             if section and section not in sections_with_data:
                 continue
             _log(
-                "warn",
+                "warning",
                 "dashboard metric missing",
                 extras={"metric": metric},
             )
 
     if gstin_column_name is not None and dashboard_data.get(gstin_column_name) is None:
         _log(
-            "warn",
+            "warning",
             "gstin not found on dashboard",
             extras={"store_code": store_code, "user_bit_text": user_bit_text},
         )

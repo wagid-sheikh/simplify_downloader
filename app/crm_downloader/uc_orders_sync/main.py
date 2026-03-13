@@ -560,7 +560,6 @@ def _normalize_output_status(status: str | None) -> str:
         "ok": "success",
         "success": "success",
         "warning": "success_with_warnings",
-        "warn": "success_with_warnings",
         "success_with_warnings": "success_with_warnings",
         "partial": "partial",
         "skipped": "partial",
@@ -710,7 +709,7 @@ class UcOrdersDiscoverySummary:
 
     def mark_phase(self, phase: str, status: str) -> None:
         counters = self.phases.setdefault(phase, {"ok": 0, "warning": 0, "error": 0})
-        normalized = "warning" if status in {"warn", "warning"} else status
+        normalized = "warning" if status in {"warning"} else status
         if normalized not in counters:
             normalized = "ok"
         counters[normalized] += 1
@@ -1138,7 +1137,7 @@ async def main(
             log_event(
                 logger=logger,
                 phase="init",
-                status="warn",
+                status="warning",
                 message="No UC stores with sync_orders_flag found; exiting",
             )
             summary.mark_phase("init", "warning")
@@ -1211,7 +1210,7 @@ async def main(
             log_event(
                 logger=logger,
                 phase="notifications",
-                status="warn",
+                status="warning",
                 message="Skipping notifications because run summary was not recorded",
                 run_id=resolved_run_id,
             )
@@ -1404,7 +1403,7 @@ async def _load_uc_order_stores(
                 log_event(
                     logger=logger,
                     phase="init",
-                    status="warn",
+                    status="warning",
                     message="Skipping store with missing store_code",
                     raw_row=dict(row),
                 )
@@ -1465,7 +1464,7 @@ async def _fetch_pipeline_id(
         log_event(
             logger=logger,
             phase="orders_sync_log",
-            status="warn",
+            status="warning",
             message="Failed to fetch pipeline id for orders sync log",
             pipeline_name=pipeline_name,
             error=str(exc),
@@ -1475,7 +1474,7 @@ async def _fetch_pipeline_id(
         log_event(
             logger=logger,
             phase="orders_sync_log",
-            status="warn",
+            status="warning",
             message="Pipeline id not found for orders sync log",
             pipeline_name=pipeline_name,
         )
@@ -1497,7 +1496,7 @@ async def _insert_orders_sync_log(
         log_event(
             logger=logger,
             phase="orders_sync_log",
-            status="warn",
+            status="warning",
             message="Skipping orders sync log insert because database_url is missing",
             store_code=store.store_code,
         )
@@ -1513,7 +1512,7 @@ async def _insert_orders_sync_log(
         log_event(
             logger=logger,
             phase="orders_sync_log",
-            status="warn",
+            status="warning",
             message="Skipping orders sync log insert because run summary row is missing",
             run_id=run_id,
             store_code=store.store_code,
@@ -1914,7 +1913,7 @@ async def _navigate_to_archive_orders(
         log_event(
             logger=logger,
             phase="navigation",
-            status="warn",
+            status="warning",
             message="Archive Orders URL confirmation timed out",
             store_code=store.store_code,
             current_url=page.url,
@@ -1943,7 +1942,7 @@ async def _apply_archive_date_filter(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Archive Orders filter control missing",
             store_code=store.store_code,
             selector=ARCHIVE_FILTER_BUTTON_SELECTOR,
@@ -1974,7 +1973,7 @@ async def _apply_archive_date_filter(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Archive Orders filter dropdown content failed to render after clicking filter button",
             store_code=store.store_code,
             selectors=dropdown_selectors,
@@ -1997,7 +1996,7 @@ async def _apply_archive_date_filter(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Delivery Date filter radio missing",
             store_code=store.store_code,
             selector=ARCHIVE_DATE_TYPE_SELECTOR,
@@ -2008,7 +2007,7 @@ async def _apply_archive_date_filter(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Custom date option missing",
             store_code=store.store_code,
             selector=ARCHIVE_CUSTOM_OPTION_SELECTOR,
@@ -2020,7 +2019,7 @@ async def _apply_archive_date_filter(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Custom date inputs missing",
             store_code=store.store_code,
             selector=ARCHIVE_CUSTOM_INPUT_SELECTOR,
@@ -2362,7 +2361,7 @@ async def _wait_for_archive_filter_refresh_completion(
     log_event(
         logger=logger,
         phase="filters",
-        status="warn",
+        status="warning",
         message="Archive Orders filter refresh completion signal timed out",
         store_code=store.store_code,
         pre_filter_footer_window=pre_filter_footer_window,
@@ -2439,7 +2438,7 @@ async def _extract_order_details(
         log_event(
             logger=logger,
             phase="warnings",
-            status="warn",
+            status="warning",
             message="Order details trigger click failed; skipping order",
             store_code=store.store_code,
             order_code=order_code,
@@ -2459,7 +2458,7 @@ async def _extract_order_details(
         log_event(
             logger=logger,
             phase="warnings",
-            status="warn",
+            status="warning",
             message="Order details modal did not appear; skipping order",
             store_code=store.store_code,
             order_code=order_code,
@@ -2589,7 +2588,7 @@ async def _extract_payment_details(
         log_event(
             logger=logger,
             phase="warnings",
-            status="warn",
+            status="warning",
             message="Payment details modal did not appear",
             store_code=store.store_code,
             order_code=order_code,
@@ -2863,7 +2862,7 @@ async def _collect_archive_orders(
                 log_event(
                     logger=logger,
                     phase="warnings",
-                    status="warn",
+                    status="warning",
                     message="Archive Orders row missing order code; skipping details",
                     store_code=store.store_code,
                     page_number=page_index,
@@ -2904,7 +2903,7 @@ async def _collect_archive_orders(
             log_event(
                 logger=logger,
                 phase="pagination",
-                status="warn",
+                status="warning",
                 message="First pagination footer window drifted from post-filter baseline",
                 store_code=store.store_code,
                 reason_code="footer_baseline_drift_after_refresh",
@@ -2916,7 +2915,7 @@ async def _collect_archive_orders(
             log_event(
                 logger=logger,
                 phase="warnings",
-                status="warn",
+                status="warning",
                 message="No archive rows found on page",
                 store_code=store.store_code,
                 page_number=page_index,
@@ -2935,7 +2934,7 @@ async def _collect_archive_orders(
                 log_event(
                     logger=logger,
                     phase="warnings",
-                    status="warn",
+                    status="warning",
                     message="Failed to read archive row; skipping",
                     store_code=store.store_code,
                     order_code=order_code,
@@ -2950,7 +2949,7 @@ async def _collect_archive_orders(
                 log_event(
                     logger=logger,
                     phase="warnings",
-                    status="warn",
+                    status="warning",
                     message="Duplicate order code encountered; skipping",
                     store_code=store.store_code,
                     order_code=order_code,
@@ -2986,7 +2985,7 @@ async def _collect_archive_orders(
                 log_event(
                     logger=logger,
                     phase="warnings",
-                    status="warn",
+                    status="warning",
                     message="Failed to extract order details",
                     store_code=store.store_code,
                     order_code=order_code,
@@ -3015,7 +3014,7 @@ async def _collect_archive_orders(
                 log_event(
                     logger=logger,
                     phase="warnings",
-                    status="warn",
+                    status="warning",
                     message="Failed to extract payment details",
                     store_code=store.store_code,
                     order_code=order_code,
@@ -3027,7 +3026,7 @@ async def _collect_archive_orders(
             log_event(
                 logger=logger,
                 phase="pagination",
-                status="warn",
+                status="warning",
                 message="Archive Orders page stability timed out before pagination decision",
                 store_code=store.store_code,
                 partial_reason=partial_reason,
@@ -3062,7 +3061,7 @@ async def _collect_archive_orders(
             log_event(
                 logger=logger,
                 phase="pagination",
-                status="warn",
+                status="warning",
                 message="No new unique orders found while footer indicates more rows; forcing pagination retry",
                 store_code=store.store_code,
                 page_number=page_index,
@@ -3078,7 +3077,7 @@ async def _collect_archive_orders(
                 log_event(
                     logger=logger,
                     phase="pagination",
-                    status="warn",
+                    status="warning",
                     message="Archive Orders pagination aborted early: next button disabled before stable footer completion",
                     store_code=store.store_code,
                     partial_reason=partial_reason,
@@ -3213,7 +3212,7 @@ async def _collect_archive_orders(
             log_event(
                 logger=logger,
                 phase="pagination",
-                status="warn",
+                status="warning",
                 message="Pagination did not advance; retrying next click once",
                 store_code=store.store_code,
                 previous_page_number=previous_page_number,
@@ -3313,7 +3312,7 @@ async def _collect_archive_orders(
                 log_event(
                     logger=logger,
                     phase="pagination",
-                    status="warn",
+                    status="warning",
                     message="Pagination did not advance after one retry; aborting early",
                     store_code=store.store_code,
                     partial_reason=partial_reason,
@@ -3350,7 +3349,7 @@ async def _collect_archive_orders(
         log_event(
             logger=logger,
             phase="warnings",
-            status="warn",
+            status="warning",
             message="Archive Orders extraction ended before post-filter footer baseline was reached",
             store_code=store.store_code,
             extracted_base_rows=len(extract.base_rows),
@@ -3452,7 +3451,7 @@ async def _run_store_discovery(
             log_event(
                 logger=logger,
                 phase="filters",
-                status="warn",
+                status="warning",
                 message=outcome.message,
                 store_code=store.store_code,
                 from_date=from_date,
@@ -3546,7 +3545,7 @@ async def _run_store_discovery(
             log_event(
                 logger=logger,
                 phase="login",
-                status="warn",
+                status="warning",
                 message="Session probe failed; attempting full login",
                 store_code=store.store_code,
                 current_url=page.url,
@@ -3734,7 +3733,7 @@ async def _run_store_discovery(
                     log_event(
                         logger=logger,
                         phase="ingest",
-                        status="warn",
+                        status="warning",
                         message="GST ingest skipped: database_url is missing",
                         store_code=store.store_code,
                     )
@@ -3790,7 +3789,7 @@ async def _run_store_discovery(
                         log_event(
                             logger=logger,
                             phase="ingest",
-                            status="warn",
+                            status="warning",
                             message="GST ingest failed; continuing to Archive Orders",
                             store_code=store.store_code,
                             error=str(exc),
@@ -3919,7 +3918,7 @@ async def _run_store_discovery(
             log_event(
                 logger=logger,
                 phase="archive_ingest",
-                status="warn",
+                status="warning",
                 message="UC archive ingest failed; continuing with partial success",
                 store_code=store.store_code,
                 error=stage_metrics["archive_ingest"]["error"],
@@ -3927,7 +3926,7 @@ async def _run_store_discovery(
             log_event(
                 logger=logger,
                 phase="gst_publish",
-                status="warn",
+                status="warning",
                 message="GST publish not attempted because archive ingest failed",
                 store_code=store.store_code,
                 stage_marker="skipped_due_archive_ingest_failure",
@@ -3998,7 +3997,7 @@ async def _run_store_discovery(
                 log_event(
                     logger=logger,
                     phase="archive_ingest",
-                    status="warn",
+                    status="warning",
                     message="UC archive ingest failed; continuing with partial success",
                     store_code=store.store_code,
                     error=str(exc),
@@ -4006,7 +4005,7 @@ async def _run_store_discovery(
                 log_event(
                     logger=logger,
                     phase="gst_publish",
-                    status="warn",
+                    status="warning",
                     message="GST publish not attempted because archive ingest failed",
                     store_code=store.store_code,
                     stage_marker="skipped_due_archive_ingest_failure",
@@ -4049,7 +4048,7 @@ async def _run_store_discovery(
                     log_event(
                         logger=logger,
                         phase="gst_publish_orders",
-                        status="warn",
+                        status="warning",
                         message="UC archive order-details publish failed; continuing to payments publish",
                         store_code=store.store_code,
                         error=orders_error,
@@ -4075,7 +4074,7 @@ async def _run_store_discovery(
                     log_event(
                         logger=logger,
                         phase="gst_publish_sales",
-                        status="warn" if sales_publish.preflight_warning else "info",
+                        status="warning" if sales_publish.preflight_warning else "info",
                         message="UC archive payment publish completed",
                         store_code=store.store_code,
                         metrics=gst_publish_sales,
@@ -4087,7 +4086,7 @@ async def _run_store_discovery(
                     log_event(
                         logger=logger,
                         phase="gst_publish_sales",
-                        status="warn",
+                        status="warning",
                         message="UC archive payment publish failed; continuing with partial success",
                         store_code=store.store_code,
                         error=sales_error,
@@ -4205,7 +4204,7 @@ async def _run_store_discovery(
         log_event(
             logger=logger,
             phase="store",
-            status="warn",
+            status="warning",
             message=str(exc),
             store_code=store.store_code,
         )
@@ -4447,7 +4446,7 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
         log_event(
             logger=logger,
             phase="login",
-            status="warn",
+            status="warning",
             message="Login input empty after fill",
             store_code=store.store_code,
             empty_fields=empty_fields,
@@ -4645,7 +4644,7 @@ async def _wait_for_gst_report_ready(
         log_event(
             logger=logger,
             phase="navigation",
-            status="warn",
+            status="warning",
             message="GST page label not detected",
             store_code=store.store_code,
             selector=GST_PAGE_LABEL_SELECTOR,
@@ -4677,7 +4676,7 @@ async def _wait_for_gst_report_ready(
         log_event(
             logger=logger,
             phase="navigation",
-            status="warn",
+            status="warning",
             message="GST report container not detected",
             store_code=store.store_code,
             selector=readiness_selector,
@@ -4696,7 +4695,7 @@ async def _wait_for_gst_report_ready(
         log_event(
             logger=logger,
             phase="navigation",
-            status="warn",
+            status="warning",
             message="GST report readiness signal missing",
             store_code=store.store_code,
             selector=readiness_selector,
@@ -4732,7 +4731,7 @@ async def _try_direct_gst_reports(
         log_event(
             logger=logger,
             phase="navigation",
-            status="warn",
+            status="warning",
             message="Direct GST report navigation timed out",
             store_code=store.store_code,
             orders_url=orders_url,
@@ -4750,7 +4749,7 @@ async def _try_direct_gst_reports(
     log_event(
         logger=logger,
         phase="navigation",
-        status="warn",
+        status="warning",
         message="Direct GST report navigation did not reach report page",
         store_code=store.store_code,
         orders_url=orders_url,
@@ -4768,7 +4767,7 @@ async def _assert_home_ready(
         log_event(
             logger=logger,
             phase="navigation",
-            status="warn",
+            status="warning",
             message="Home readiness probe failed; session appears invalid",
             store_code=store.store_code,
             current_url=page.url,
@@ -4803,7 +4802,7 @@ async def _wait_for_home_ready(
         log_event(
             logger=logger,
             phase="navigation",
-            status="warn",
+            status="warning",
             message="Timed out waiting for home URL",
             store_code=store.store_code,
             home_url=home_url,
@@ -4854,7 +4853,7 @@ async def _wait_for_home_ready(
     log_event(
         logger=logger,
         phase="navigation",
-        status="warn",
+        status="warning",
         message="Home page marker not detected",
         store_code=store.store_code,
         home_url=home_url,
@@ -4894,7 +4893,7 @@ async def _apply_date_range(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Date range input not found; skipping range selection",
             store_code=store.store_code,
             selectors=input_selectors,
@@ -4924,7 +4923,7 @@ async def _apply_date_range(
             log_event(
                 logger=logger,
                 phase="filters",
-                status="warn",
+                status="warning",
                 message="Date range fallback failed to update input",
                 store_code=store.store_code,
                 reason=reason,
@@ -4935,7 +4934,7 @@ async def _apply_date_range(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Date range selection fallback used",
             store_code=store.store_code,
             reason=reason,
@@ -4966,7 +4965,7 @@ async def _apply_date_range(
             log_event(
                 logger=logger,
                 phase="filters",
-                status="warn",
+                status="warning",
                 message="Date picker popup missing; retrying click",
                 store_code=store.store_code,
                 attempt=attempt + 1,
@@ -4976,7 +4975,7 @@ async def _apply_date_range(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Date picker popup missing; reopening input",
             store_code=store.store_code,
         )
@@ -5012,7 +5011,7 @@ async def _apply_date_range(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Date range selection failed while navigating calendars",
             store_code=store.store_code,
             start_date=from_date,
@@ -5029,7 +5028,7 @@ async def _apply_date_range(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Start date selection failed; reopening date picker to retry start date",
             store_code=store.store_code,
             start_date=from_date,
@@ -5061,7 +5060,7 @@ async def _apply_date_range(
                 log_event(
                     logger=logger,
                     phase="filters",
-                    status="warn",
+                    status="warning",
                     message="Start date retry failed after reopening date picker",
                     store_code=store.store_code,
                     start_date=from_date,
@@ -5073,7 +5072,7 @@ async def _apply_date_range(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Date range selection incomplete",
             store_code=store.store_code,
             start_date=from_date,
@@ -5095,7 +5094,7 @@ async def _apply_date_range(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Calendar overlay not visible after date selection",
             store_code=store.store_code,
             selector=overlay_selector,
@@ -5139,11 +5138,11 @@ async def _apply_date_range(
                 if start_value and end_value:
                     break
                 await asyncio.sleep(0.3)
-            status = "info" if start_value and end_value else "warn"
+            status = "info" if start_value and end_value else "warning"
             log_event(
                 logger=logger,
                 phase="filters",
-                status=None if status == "info" else "warn",
+                status=status,
                 message=(
                     "Apply inputs populated after date selection"
                     if status == "info"
@@ -5157,7 +5156,7 @@ async def _apply_date_range(
             log_event(
                 logger=logger,
                 phase="filters",
-                status="warn" if await _is_export_button_missing() else "info",
+                status="warning" if await _is_export_button_missing() else "info",
                 message="Apply inputs not found after date selection",
                 store_code=store.store_code,
             )
@@ -5252,7 +5251,7 @@ async def _apply_date_range(
             log_event(
                 logger=logger,
                 phase="filters",
-                status="warn",
+                status="warning",
                 message="Apply control not found after date selection; skipping export",
                 store_code=store.store_code,
                 selectors=GST_CONTROL_SELECTORS["apply_button"],
@@ -5276,7 +5275,7 @@ async def _apply_date_range(
             log_event(
                 logger=logger,
                 phase="filters",
-                status="warn",
+                status="warning",
                 message="Apply button not ready after date selection",
                 store_code=store.store_code,
                 selector=overlay_apply_selector_used,
@@ -5295,7 +5294,7 @@ async def _apply_date_range(
             log_event(
                 logger=logger,
                 phase="filters",
-                status="warn",
+                status="warning",
                 message="Apply button not enabled after date selection",
                 store_code=store.store_code,
                 selector=overlay_apply_selector_used,
@@ -5318,7 +5317,7 @@ async def _apply_date_range(
                 log_event(
                     logger=logger,
                     phase="filters",
-                    status="warn",
+                    status="warning",
                     message="GST banner values remained zero after apply click; retrying apply",
                     store_code=store.store_code,
                 )
@@ -5352,7 +5351,7 @@ async def _apply_date_range(
             log_event(
                 logger=logger,
                 phase="filters",
-                status="warn",
+                status="warning",
                 message="GST report rows not detected and overlay still open; retrying apply",
                 store_code=store.store_code,
                 row_count=row_count,
@@ -5364,7 +5363,7 @@ async def _apply_date_range(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="GST report rows missing and overlay still open after apply",
             store_code=store.store_code,
             row_count=row_count,
@@ -5414,7 +5413,7 @@ async def _download_gst_report(
         log_event(
             logger=logger,
             phase="download",
-            status="warn",
+            status="warning",
             message=message,
             store_code=store.store_code,
             selectors=GST_CONTROL_SELECTORS["export_button"],
@@ -5457,7 +5456,7 @@ async def _download_gst_report(
                 log_event(
                     logger=logger,
                     phase="download",
-                    status="warn",
+                    status="warning",
                     message="Export Report button disabled; waiting before retry",
                     store_code=store.store_code,
                     attempt=attempt,
@@ -5472,7 +5471,7 @@ async def _download_gst_report(
             log_event(
                 logger=logger,
                 phase="download",
-                status="warn",
+                status="warning",
                 message="Export Report button disabled after retry; giving up",
                 store_code=store.store_code,
                 attempt=attempt,
@@ -5520,7 +5519,7 @@ async def _download_gst_report(
                 log_event(
                     logger=logger,
                     phase="download",
-                    status="warn",
+                    status="warning",
                     message=message,
                     store_code=store.store_code,
                     download_path=str(target_path),
@@ -5547,7 +5546,7 @@ async def _download_gst_report(
             log_event(
                 logger=logger,
                 phase="download",
-                status="warn",
+                status="warning",
                 message="GST report download did not start before timeout; retrying",
                 store_code=store.store_code,
                 attempt=attempt,
@@ -5559,7 +5558,7 @@ async def _download_gst_report(
             log_event(
                 logger=logger,
                 phase="download",
-                status="warn",
+                status="warning",
                 message="GST report download attempt failed",
                 store_code=store.store_code,
                 attempt=attempt,
@@ -5612,7 +5611,7 @@ async def _reopen_date_picker_popup(
                 log_event(
                     logger=logger,
                     phase="filters",
-                    status="warn",
+                    status="warning",
                     message="Reopened date picker input to restore popup",
                     store_code=store.store_code,
                     selector=selector,
@@ -5624,7 +5623,7 @@ async def _reopen_date_picker_popup(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Unable to reopen date picker input",
             store_code=store.store_code,
         )
@@ -5639,7 +5638,7 @@ async def _reopen_date_picker_popup(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Date picker popup still missing after reopen",
             store_code=store.store_code,
         )
@@ -5696,7 +5695,7 @@ async def _wait_for_date_picker_popup(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Date picker popup not visible after clicking input",
             store_code=store.store_code,
             selector=popup_selector,
@@ -5780,7 +5779,7 @@ async def _find_apply_button(
     log_event(
         logger=logger,
         phase="filters",
-        status="warn",
+        status="warning",
         message="Apply button not located using expanded cues",
         store_code=store.store_code,
         cues=CONTROL_CUES["apply"],
@@ -5837,7 +5836,7 @@ async def _select_calendar_date(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Target day not found in calendar; retrying selection",
             store_code=store.store_code,
             calendar_label=label,
@@ -5851,7 +5850,7 @@ async def _select_calendar_date(
             log_event(
                 logger=logger,
                 phase="filters",
-                status="warn",
+                status="warning",
                 message="Reopened date picker; retrying calendar selection",
                 store_code=store.store_code,
                 calendar_label=label,
@@ -5875,7 +5874,7 @@ async def _select_calendar_date(
             log_event(
                 logger=logger,
                 phase="filters",
-                status="warn",
+                status="warning",
                 message="Attempting typed date fallback after missing target day",
                 store_code=store.store_code,
                 calendar_label=label,
@@ -5893,7 +5892,7 @@ async def _select_calendar_date(
             log_event(
                 logger=logger,
                 phase="filters",
-                status="warn",
+                status="warning",
                 message="Attempting closest available day fallback",
                 store_code=store.store_code,
                 calendar_label=label,
@@ -5912,7 +5911,7 @@ async def _select_calendar_date(
             log_event(
                 logger=logger,
                 phase="filters",
-                status="warn",
+                status="warning",
                 message="Target day not found after retry and fallbacks",
                 store_code=store.store_code,
                 calendar_label=label,
@@ -5952,7 +5951,7 @@ async def _navigate_calendar_to_month(
             log_event(
                 logger=logger,
                 phase="filters",
-                status="warn",
+                status="warning",
                 message="Calendar header missing; retrying with fallback selectors",
                 store_code=store.store_code,
                 calendar_label=label,
@@ -5965,7 +5964,7 @@ async def _navigate_calendar_to_month(
             log_event(
                 logger=logger,
                 phase="filters",
-                status="warn",
+                status="warning",
                 message="Calendar header parsing failed; retrying lookup",
                 store_code=store.store_code,
                 calendar_label=label,
@@ -5979,7 +5978,7 @@ async def _navigate_calendar_to_month(
             log_event(
                 logger=logger,
                 phase="filters",
-                status="warn",
+                status="warning",
                 message="Unable to parse calendar header",
                 store_code=store.store_code,
                 calendar_label=label,
@@ -6002,7 +6001,7 @@ async def _navigate_calendar_to_month(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Calendar navigation exceeded maximum steps",
             store_code=store.store_code,
             calendar_label=label,
@@ -6044,7 +6043,7 @@ async def _reopen_calendar_for_retry(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Unable to reopen date picker for retry",
             store_code=store.store_code,
             calendar_label=label,
@@ -6101,7 +6100,7 @@ async def _try_fill_date_input(
                     log_event(
                         logger=logger,
                         phase="filters",
-                        status="warn",
+                        status="warning",
                         message="Fallback to typed date input",
                         store_code=store.store_code,
                         calendar_label=label,
@@ -6171,7 +6170,7 @@ async def _select_closest_available_day(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="No fallback calendar days available",
             store_code=store.store_code,
             calendar_label=label,
@@ -6196,7 +6195,7 @@ async def _select_closest_available_day(
                 log_event(
                     logger=logger,
                     phase="filters",
-                    status="warn",
+                    status="warning",
                     message="Fallback to closest available calendar day",
                     store_code=store.store_code,
                     calendar_label=label,
@@ -6623,7 +6622,7 @@ async def _confirm_date_filter_update(
     log_event(
         logger=logger,
         phase="filters",
-        status="warn",
+        status="warning",
         message="GST banner values remained zero and no rows after apply click",
         store_code=store.store_code,
         banner_values=banner_values,
@@ -6649,7 +6648,7 @@ async def _confirm_apply_dates(
         log_event(
             logger=logger,
             phase="filters",
-            status="warn",
+            status="warning",
             message="Apply inputs missing before export",
             store_code=store.store_code,
         )
@@ -6671,7 +6670,7 @@ async def _confirm_apply_dates(
     log_event(
         logger=logger,
         phase="filters",
-        status="warn",
+        status="warning",
         message="Apply inputs did not reflect selected dates",
         store_code=store.store_code,
         start_value=start_value,
@@ -6773,7 +6772,7 @@ async def _wait_for_report_refresh(
     log_event(
         logger=logger,
         phase="filters",
-        status="warn",
+        status="warning",
         message="GST report rows not detected after applying date range",
         store_code=store.store_code,
         row_count=initial_count,
@@ -6832,7 +6831,7 @@ async def _validate_gst_report_visible(
     log_event(
         logger=logger,
         phase="filters",
-        status="warn",
+        status="warning",
         message="GST report table not visible after apply",
         store_code=store.store_code,
         selectors=list(GST_REPORT_TABLE_SELECTORS),
@@ -6870,7 +6869,7 @@ async def _is_gst_export_ready(
     log_event(
         logger=logger,
         phase="filters",
-        status=None if export_ready else "warn",
+        status="info" if export_ready else "warning",
         message="Checked GST export button readiness after table visibility check",
         store_code=store.store_code,
         export_selector=selector_used,
@@ -6907,7 +6906,7 @@ async def _navigate_to_gst_reports(
         log_event(
             logger=logger,
             phase="navigation",
-            status="warn",
+            status="warning",
             message="GST reports direct navigation failed",
             store_code=store.store_code,
             orders_url=orders_url,
@@ -7293,7 +7292,7 @@ async def _persist_summary(
         log_event(
             logger=logger,
             phase="run_summary",
-            status="warn",
+            status="warning",
             message="Skipping run summary persistence because database_url is missing",
             run_id=summary.run_id,
         )
@@ -7354,7 +7353,7 @@ async def _start_run_summary(
         log_event(
             logger=logger,
             phase="run_summary",
-            status="warn",
+            status="warning",
             message="Skipping run summary start because database_url is missing",
             run_id=summary.run_id,
         )

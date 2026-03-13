@@ -188,7 +188,7 @@ async def _load_store_profiles(
                 log_event(
                     logger=logger,
                     phase="init",
-                    status="warn",
+                    status="warning",
                     message="Skipping store with missing store_code",
                     raw_row=dict(row),
                 )
@@ -225,7 +225,7 @@ async def _fetch_pipeline_id(
         log_event(
             logger=logger,
             phase="pipeline",
-            status="warn",
+            status="warning",
             message="Failed to fetch pipeline id",
             pipeline_name=pipeline_name,
             error=str(exc),
@@ -235,7 +235,7 @@ async def _fetch_pipeline_id(
         log_event(
             logger=logger,
             phase="pipeline",
-            status="warn",
+            status="warning",
             message="Pipeline id not found",
             pipeline_name=pipeline_name,
         )
@@ -488,7 +488,7 @@ async def _persist_missing_windows_log_rows(
             log_event(
                 logger=logger,
                 phase="summary",
-                status="warn",
+                status="warning",
                 message="Missing pipeline name for missing window log insert",
                 store_code=store_code,
             )
@@ -516,7 +516,7 @@ async def _persist_missing_windows_log_rows(
                 log_event(
                     logger=logger,
                     phase="summary",
-                    status="warn",
+                    status="warning",
                     message="Skipping missing window log insert due to invalid date range",
                     store_code=store_code,
                     from_date=window.get("from_date"),
@@ -590,7 +590,7 @@ async def _persist_missing_windows_log_rows(
             log_event(
                 logger=logger,
                 phase="summary",
-                status="warn",
+                status="warning",
                 message="Foreign key violation inserting missing windows; retrying with fallback run_id",
                 run_id=run_id,
                 fallback_run_id=fallback_run_id,
@@ -1243,7 +1243,7 @@ async def _run_store_windows(
                 log_event(
                     logger=logger,
                     phase="window",
-                    status="warn",
+                    status="warning",
                     message="orders_sync_log status skipped but ingestion rows present",
                     store_code=store.store_code,
                     pipeline_name=pipeline_name,
@@ -1280,7 +1280,7 @@ async def _run_store_windows(
                 log_event(
                     logger=logger,
                     phase="window",
-                    status="warn",
+                    status="warning",
                     message="Retrying window after non-success status",
                     store_code=store.store_code,
                     window_index=index,
@@ -1344,7 +1344,7 @@ async def _run_store_windows(
                 ingestion_counts=ingestion_counts,
                 error_message=error_message,
             )
-            uc_status = "ok" if uc_payload["ingest_success"] else ("error" if status == "failed" else "warn")
+            uc_status = "ok" if uc_payload["ingest_success"] else ("error" if status == "failed" else "warning")
             log_event(
                 logger=logger,
                 phase="uc_window_log",
@@ -1382,7 +1382,7 @@ async def _run_store_windows(
             log_event(
                 logger=logger,
                 phase="window",
-                status="error" if status == "failed" else "warn",
+                status="error" if status == "failed" else "warning",
                 message="Stopping further windows after failure or explicit stop condition",
                 store_code=store.store_code,
                 window_index=index,
@@ -1535,7 +1535,7 @@ async def main(
             log_event(
                 logger=logger,
                 phase="init",
-                status="warn",
+                status="warning",
                 message="No stores found for sync_group",
                 sync_group=group,
             )
@@ -1842,7 +1842,7 @@ def _main() -> None:
         log_event(
             logger=logger,
             phase="shutdown",
-            status="warn",
+            status="warning",
             message="Orders sync profiler interrupted",
         )
     except Exception as exc:
