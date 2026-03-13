@@ -1095,8 +1095,6 @@ class StoreReport:
     source_mode: str = "ui"
     decision_log: dict[str, str] = field(default_factory=dict)
     gate_verdict: dict[str, Any] = field(default_factory=dict)
-    api_ready: bool | None = None
-    consecutive_pass_windows: int | None = None
     message: str | None = None
     error_message: str | None = None
     warnings: list[str] = field(default_factory=list)
@@ -1132,9 +1130,6 @@ class StoreReport:
             "auth_diagnostics": dict(self.auth_diagnostics),
             "source_mode": self.source_mode,
             "decision_log": dict(self.decision_log),
-            "gate_verdict": dict(self.gate_verdict),
-            "api_ready": self.api_ready,
-            "consecutive_pass_windows": self.consecutive_pass_windows,
             "message": self.message,
             "error_message": self.error_message,
             "warnings": list(self.warnings),
@@ -1473,7 +1468,11 @@ class TdOrdersDiscoverySummary:
                 return payload
             if payload is None:
                 return StoreReport(status=default_status, message=default_message)
-            return StoreReport(**payload)
+            payload_dict = dict(payload)
+            payload_dict.pop("api_ready", None)
+            payload_dict.pop("consecutive_pass_windows", None)
+            payload_dict.pop("threshold_verdict", None)
+            return StoreReport(**payload_dict)
 
         def _format_store_report(code: str, report: StoreReport, *, sales: bool = False) -> list[str]:
             rows_downloaded = _coerce_count(report.rows_downloaded)
@@ -1805,9 +1804,6 @@ class TdOrdersDiscoverySummary:
                 "duplicate_rows": [],
                 "message": "No report recorded",
                 "error_message": None,
-                "gate_verdict": {},
-                "api_ready": None,
-                "consecutive_pass_windows": None,
             }
         filenames = list(report.filenames) if report.filenames else [expected_filename]
         return {
@@ -1834,9 +1830,6 @@ class TdOrdersDiscoverySummary:
             "dropped_rows": list(report.dropped_rows),
             "edited_rows": list(report.edited_rows),
             "duplicate_rows": list(report.duplicate_rows),
-            "gate_verdict": dict(report.gate_verdict),
-            "api_ready": report.api_ready,
-            "consecutive_pass_windows": report.consecutive_pass_windows,
         }
 
     def _build_store_reports_snapshot(self) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
@@ -2078,59 +2071,23 @@ async def _fetch_dashboard_nav_timeout_ms(database_url: str | None) -> int:
 
 
 def _build_daily_reconciliation_summary(summary: TdOrdersDiscoverySummary) -> dict[str, Any]:
-    readiness_gate_reason = "shadow:consecutive_window_policy_not_met"
-
-    def _resolve_failure_type(*, reason_codes: Sequence[str], decision: str | None) -> str:
-        endpoint_reason_markers = (
-            ":api_partial_unavailable",
-            ":api_unavailable",
-            ":auth_failure",
-        )
-        if decision in {"api_unavailable", "api_partial_unavailable"} or any(
-            marker in reason for marker in endpoint_reason_markers for reason in reason_codes
-        ):
-            return "endpoint_failure"
-        return "data_mismatch"
-
     stores_passed: list[str] = []
     stores_failed: list[dict[str, Any]] = []
-    reason_counter: Counter[str] = Counter()
-    data_clean_not_ready_stores: list[str] = []
+
     for store_code in summary._store_codes_for_payload():
         orders_report = summary.orders_results.get(store_code)
-        gate_verdict = dict(orders_report.gate_verdict) if orders_report else {}
-        data_clean = bool(gate_verdict.get("overall_pass", gate_verdict.get("pass")))
-        api_ready = bool(orders_report.api_ready) if orders_report else False
-        consecutive_pass_windows = int(orders_report.consecutive_pass_windows or 0) if orders_report else 0
-        reason_codes = [str(code) for code in gate_verdict.get("reason_codes") or []]
-        decision_log = dict(orders_report.decision_log) if orders_report else {}
-        failure_type: str | None = None
-
-        if data_clean and not api_ready:
-            failure_type = "readiness_gate"
-            reason_codes = [*reason_codes, readiness_gate_reason]
-        elif not data_clean:
-            failure_type = _resolve_failure_type(reason_codes=reason_codes, decision=decision_log.get("decision"))
-
-        normalized_verdicts = dict(gate_verdict.get("datasets") or {})
-        if failure_type is None:
+        status = (orders_report.status if orders_report else "skipped") or "skipped"
+        if status in {"ok", "warning", "skipped"}:
             stores_passed.append(store_code)
             continue
 
-        if failure_type == "readiness_gate":
-            data_clean_not_ready_stores.append(store_code)
-
-        for code in reason_codes:
-            reason_counter[code] += 1
         stores_failed.append(
             {
                 "store_code": store_code,
-                "failure_type": failure_type,
-                "reason_codes": reason_codes,
-                "api_ready": api_ready,
-                "consecutive_pass_windows": consecutive_pass_windows,
-                "top_mismatch_reasons": reason_codes[:3],
-                "normalized_verdicts": normalized_verdicts,
+                "failure_type": "ingestion_failure",
+                "status": status,
+                "message": orders_report.message if orders_report else None,
+                "error_message": orders_report.error_message if orders_report else None,
             }
         )
 
@@ -2142,95 +2099,16 @@ def _build_daily_reconciliation_summary(summary: TdOrdersDiscoverySummary) -> di
         "failed_stores": stores_failed,
         "stores_passed": sorted(stores_passed),
         "stores_failed": stores_failed,
-        "data_clean_not_promotion_ready_stores": sorted(data_clean_not_ready_stores),
-        "top_mismatch_reasons": [reason for reason, _ in reason_counter.most_common(5)],
+        "data_clean_not_promotion_ready_stores": [],
+        "top_mismatch_reasons": [],
     }
 
 
-def _build_reconciliation_gate_failures(
-    *, store_code: str, orders_report: StoreReport | None, readiness_gate_reason: str
-) -> list[dict[str, Any]]:
-    gate_verdict = dict(orders_report.gate_verdict) if orders_report else {}
-    datasets = dict(gate_verdict.get("datasets") or {})
-    reason_codes = [str(code) for code in gate_verdict.get("reason_codes") or []]
-    failures: list[dict[str, Any]] = []
-
-    for dataset, verdict_raw in datasets.items():
-        verdict = dict(verdict_raw or {})
-        gate_name = f"{dataset} parity"
-        thresholds = dict(verdict.get("thresholds") or {})
-        observed = {
-            "row_count_delta": int(verdict.get("row_count_delta") or 0),
-            "amount_mismatches": int(verdict.get("amount_mismatches") or 0),
-            "status_mismatches": int(verdict.get("status_mismatches") or 0),
-        }
-        failures.append(
-            {
-                "store_code": store_code,
-                "gate_name": gate_name,
-                "expected_threshold": thresholds,
-                "observed_value": observed,
-                "pass": bool(verdict.get("pass")),
-            }
-        )
-
-    overall_pass = bool(gate_verdict.get("overall_pass", gate_verdict.get("pass")))
-    failures.append(
-        {
-            "store_code": store_code,
-            "gate_name": "tolerances",
-            "expected_threshold": "all enabled dataset tolerance checks pass",
-            "observed_value": {
-                "reason_codes": reason_codes,
-                "failed_reason_count": len(reason_codes),
-            },
-            "pass": overall_pass,
-        }
-    )
-
-    schema_reason_codes = [code for code in reason_codes if "schema" in code.lower()]
-    failures.append(
-        {
-            "store_code": store_code,
-            "gate_name": "schema checks",
-            "expected_threshold": "0 schema mismatch reason codes",
-            "observed_value": {
-                "schema_reason_count": len(schema_reason_codes),
-                "schema_reason_codes": schema_reason_codes,
-            },
-            "pass": not schema_reason_codes,
-        }
-    )
-
-    api_ready = bool(orders_report.api_ready) if orders_report else False
-    consecutive_pass_windows = int(orders_report.consecutive_pass_windows or 0) if orders_report else 0
-    if readiness_gate_reason in reason_codes or (overall_pass and not api_ready):
-        failures.append(
-            {
-                "store_code": store_code,
-                "gate_name": "promotion readiness",
-                "expected_threshold": "api_ready=true",
-                "observed_value": {
-                    "api_ready": api_ready,
-                    "consecutive_pass_windows": consecutive_pass_windows,
-                },
-                "pass": api_ready,
-            }
-        )
-
-    return failures
-
-
 def _emit_reconciliation_gate_summary_logs(*, summary: TdOrdersDiscoverySummary, logger: JsonLogger) -> None:
-    readiness_gate_reason = "shadow:consecutive_window_policy_not_met"
     for store_code in summary._store_codes_for_payload():
         orders_report = summary.orders_results.get(store_code)
-        gate_summaries = _build_reconciliation_gate_failures(
-            store_code=store_code,
-            orders_report=orders_report,
-            readiness_gate_reason=readiness_gate_reason,
-        )
-        if not gate_summaries:
+        status = (orders_report.status if orders_report else "skipped") or "skipped"
+        if status in {"ok", "warning", "skipped"}:
             continue
         log_event(
             logger=logger,
@@ -2238,7 +2116,19 @@ def _emit_reconciliation_gate_summary_logs(*, summary: TdOrdersDiscoverySummary,
             message="TD reconciliation gate summary",
             run_id=summary.run_id,
             store_code=store_code,
-            run_log=gate_summaries,
+            run_log=[
+                {
+                    "store_code": store_code,
+                    "gate_name": "ingestion status",
+                    "expected_threshold": "ok|warning|skipped",
+                    "observed_value": {
+                        "status": status,
+                        "message": orders_report.message if orders_report else None,
+                        "error_message": orders_report.error_message if orders_report else None,
+                    },
+                    "pass": False,
+                }
+            ],
         )
 
 
@@ -8496,7 +8386,7 @@ async def _run_store_discovery(
         garment_dataset_verdict["orphan_alert"] = orphan_alert
         gate_verdict_datasets["garments"] = garment_dataset_verdict
         gate_verdict["datasets"] = gate_verdict_datasets
-        consecutive_pass_windows, api_ready = await _insert_td_compare_log(
+        _consecutive_pass_windows, _api_ready = await _insert_td_compare_log(
             logger=store_logger,
             run_id=run_id,
             run_env=run_env,
@@ -8510,8 +8400,6 @@ async def _run_store_discovery(
         )
         if orders_report:
             orders_report.gate_verdict = gate_verdict
-            orders_report.api_ready = api_ready
-            orders_report.consecutive_pass_windows = consecutive_pass_windows
 
         await _update_orders_sync_log(
             logger=store_logger,
