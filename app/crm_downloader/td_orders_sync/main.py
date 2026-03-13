@@ -98,6 +98,12 @@ INGEST_SOURCE_BY_MODE: Mapping[str, str] = {
 SUMMARY_ROW_MARKERS = ("total order", "grand total")
 
 
+
+
+def _td_api_debug_logging_enabled() -> bool:
+    return (os.environ.get("TD_API_DEBUG_LOGGING") or "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _resolve_td_api_artifact_dir() -> Path:
     configured = (os.environ.get("TD_API_ARTIFACT_DIR") or "").strip()
     if configured:
@@ -7451,7 +7457,7 @@ async def _run_store_discovery(
                             orders_summary_rows_filtered=api_fetch_result.orders_summary_rows_filtered,
                             sales_summary_rows_filtered=api_fetch_result.sales_summary_rows_filtered,
                             endpoint_errors=api_fetch_result.endpoint_errors,
-                            endpoint_error_diagnostics=api_fetch_result.endpoint_error_diagnostics,
+                            endpoint_error_diagnostics=(api_fetch_result.endpoint_error_diagnostics if _td_api_debug_logging_enabled() else {"present": bool(api_fetch_result.endpoint_error_diagnostics), "endpoint_count": len(api_fetch_result.endpoint_error_diagnostics)}),
                         )
                     except Exception as exc:
                         log_event(
@@ -8270,11 +8276,11 @@ async def _run_store_discovery(
             },
             endpoint_failure_summary=endpoint_failure_summary,
             endpoint_errors=api_fetch_result_obj.endpoint_errors if api_fetch_result_obj else {},
-            endpoint_error_diagnostics=api_fetch_result_obj.endpoint_error_diagnostics if api_fetch_result_obj else {},
+            endpoint_error_diagnostics=(api_fetch_result_obj.endpoint_error_diagnostics if (api_fetch_result_obj and _td_api_debug_logging_enabled()) else {"present": bool(api_fetch_result_obj and api_fetch_result_obj.endpoint_error_diagnostics), "endpoint_count": len(api_fetch_result_obj.endpoint_error_diagnostics) if api_fetch_result_obj else 0}),
             orders_api_health=orders_api_health,
             sales_api_health=sales_api_health,
-            api_request_metadata=redact_sensitive_fields(api_request_metadata),
-            auth_diagnostics=auth_diagnostics.as_dict(),
+            api_request_metadata=(redact_sensitive_fields(api_request_metadata) if _td_api_debug_logging_enabled() else {"request_count": len(api_request_metadata)}),
+            auth_diagnostics=(auth_diagnostics.as_dict() if _td_api_debug_logging_enabled() else {"token_found": bool(auth_diagnostics.as_dict().get("token_found")), "token_source": auth_diagnostics.as_dict().get("token_source"), "cookies_found": bool(auth_diagnostics.as_dict().get("cookies_found"))}),
         )
         compare_artifact_result = persist_td_compare_artifacts(
             download_dir=download_dir,

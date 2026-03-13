@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
 
 LOG_STATUSES = frozenset({"ok", "info", "warning", "error"})
+DEFAULT_MAX_EVENT_BYTES = max(1024, int(os.getenv("JSON_LOG_MAX_EVENT_BYTES", "65536")))
 
 __all__ = ["LOG_STATUSES", "JsonLogger", "get_logger", "log_event", "timed_event", "new_run_id"]
 
@@ -59,6 +60,7 @@ class JsonLogger:
         self._owns_state = True
         self._state: Dict[str, bool] = {"closed": False}
         self.aggregator = None
+        self.max_event_bytes = DEFAULT_MAX_EVENT_BYTES
 
     def bind(self, **kwargs: Any) -> "JsonLogger":
         child = JsonLogger(run_id=self.run_id, stream=self.stream, log_file_path=None)
@@ -67,6 +69,7 @@ class JsonLogger:
         child.log_file_path = self.log_file_path
         child.log_file_path_source = self.log_file_path_source
         child.aggregator = self.aggregator
+        child.max_event_bytes = self.max_event_bytes
         child._owns_state = False
         child._state = self._state
         child._owns_file_handle = False
@@ -92,12 +95,45 @@ class JsonLogger:
             return
         event = {**self.default_context, **payload}
         event.setdefault("ts", datetime.now(timezone.utc).isoformat())
-        encoded = json.dumps(event, default=str, ensure_ascii=False)
+        encoded = self._encode_event(event)
         self.stream.write(encoded + "\n")
         self.stream.flush()
         if self.file_handle:
             self.file_handle.write(encoded + "\n")
             self.file_handle.flush()
+
+    def _encode_event(self, event: Dict[str, Any]) -> str:
+        encoded = json.dumps(event, default=str, ensure_ascii=False)
+        if len(encoded.encode("utf-8")) <= self.max_event_bytes:
+            return encoded
+
+        trimmed_event = {
+            **event,
+            "log_truncated": True,
+            "log_truncated_keys": sorted(event.keys()),
+        }
+        oversized_field_keys = [
+            key
+            for key, value in event.items()
+            if key not in {"run_id", "ts", "phase", "status", "message"} and isinstance(value, (dict, list, tuple, set, str))
+        ]
+        for key in oversized_field_keys:
+            trimmed_event[key] = "<truncated_for_size_guard>"
+            candidate = json.dumps(trimmed_event, default=str, ensure_ascii=False)
+            if len(candidate.encode("utf-8")) <= self.max_event_bytes:
+                return candidate
+
+        minimal_event = {
+            "run_id": event.get("run_id"),
+            "ts": event.get("ts"),
+            "phase": event.get("phase"),
+            "status": event.get("status"),
+            "message": event.get("message"),
+            "log_truncated": True,
+            "log_truncated_reason": "max_event_bytes_exceeded",
+            "max_event_bytes": self.max_event_bytes,
+        }
+        return json.dumps(minimal_event, default=str, ensure_ascii=False)
 
     @staticmethod
     def _validate_status(status: str) -> str:
