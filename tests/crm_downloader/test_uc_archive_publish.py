@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from decimal import Decimal
 from pathlib import Path
 
@@ -432,6 +433,48 @@ async def test_payment_publish_parent_coverage_full(tmp_path: Path) -> None:
     assert metrics.preflight_warning is None
     assert metrics.inserted == 2
 
+
+
+
+@pytest.mark.asyncio
+async def test_payment_publish_parent_coverage_full_logs_compact_status(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_parent_full_logging.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders (cost_center, store_code, order_number, order_date, customer_name, mobile_number, created_at)
+                VALUES
+                    ('CC01', 'UC567', 'ORD-1', '2025-01-01T00:00:00+00:00', 'Alice', '9999999999', '2025-01-01T00:00:00+00:00'),
+                    ('CC01', 'UC567', 'ORD-2', '2025-01-01T00:00:00+00:00', 'Bob', '8888888888', '2025-01-01T00:00:00+00:00')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_payment_details (run_id, run_date, store_code, order_code, payment_mode, amount, payment_date_raw, transaction_id)
+                VALUES
+                    ('run-full-log', '2025-01-03T00:00:00+00:00', 'UC567', 'ORD-1', 'UPI', 50, '03 Jan 2025, 11:00 AM', 'T1'),
+                    ('run-full-log', '2025-01-03T00:00:00+00:00', 'UC567', 'ORD-2', 'CASH', 60, '03 Jan 2025, 11:10 AM', 'T2')
+                """
+            )
+        )
+        await session.commit()
+
+    caplog.set_level("INFO")
+    metrics = await publish_uc_gst_payments_to_sales(database_url=db_url, run_id='run-full-log', store_code='UC567')
+
+    assert metrics.preflight_warning is None
+    coverage_records = [r for r in caplog.records if "gst_publish_payment_key_coverage" in r.message]
+    assert coverage_records
+    payload = json.loads(coverage_records[-1].message.split("gst_publish_payment_key_coverage ", 1)[1])
+    assert payload["preflight_status"] == "full_coverage"
+    assert payload["coverage"] == 1.0
+    assert "sample_unmatched_archive_keys" not in payload
+    assert "sample_parent_lookup_keys_not_in_archive_payment_set" not in payload
 
 @pytest.mark.asyncio
 async def test_payment_publish_parent_coverage_near_zero_preflight_skip(tmp_path: Path) -> None:
