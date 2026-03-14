@@ -465,7 +465,7 @@ def test_summary_payload_exposes_data_ingest_status_and_observability_warnings()
     summary.record_store(
         "A1",
         StoreOutcome(status="warning", message="Completed with observability warnings"),
-        orders_result=StoreReport(status="ok", warnings=["compare_artifact_persistence_warning: missing workbook"]),
+        orders_result=StoreReport(status="ok", warnings=["api_artifact_persistence_warning: missing workbook"]),
         sales_result=StoreReport(status="ok"),
     )
 
@@ -475,7 +475,7 @@ def test_summary_payload_exposes_data_ingest_status_and_observability_warnings()
 
     assert store_summary["data_ingest_status"] == "success"
     assert store_summary["ingest_status"] == "success"
-    assert "compare_artifact_persistence_warning" in store_summary["observability_warnings"][0]
+    assert "api_artifact_persistence_warning" in store_summary["observability_warnings"][0]
     assert notification_store["data_ingest_status"] == "success"
     assert notification_store["ingest_status"] == "success"
-    assert "compare_artifact_persistence_warning" in notification_store["observability_warnings"][0]
+    assert "api_artifact_persistence_warning" in notification_store["observability_warnings"][0]
