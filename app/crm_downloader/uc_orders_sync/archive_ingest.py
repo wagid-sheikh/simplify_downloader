@@ -567,6 +567,7 @@ async def _ingest_file(
 
     if not upsert_rows:
         result.reject_reasons = dict(reject_counter)
+        logger.emit_suppressed_normalization_summary(phase="archive_ingest", file_key=source_path.name)
         return result, rejects
 
     async with session_scope(database_url) as session:
@@ -607,6 +608,7 @@ async def _ingest_file(
         else:
             result.inserted += 1
     result.reject_reasons = dict(reject_counter)
+    logger.emit_suppressed_normalization_summary(phase="archive_ingest", file_key=source_path.name)
     if include_full_warning_samples and full_warning_samples:
         log_event(
             logger=logger,
