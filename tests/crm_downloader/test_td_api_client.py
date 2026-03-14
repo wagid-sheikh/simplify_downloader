@@ -21,7 +21,6 @@ from app.crm_downloader.td_orders_sync.td_api_artifacts import (
     _validate_xlsx,
     _write_excel,
     persist_td_api_artifacts,
-    persist_td_compare_artifacts,
 )
 from app.crm_downloader.td_orders_sync.td_api_client import (
     TdApiClient,
@@ -536,25 +535,6 @@ def test_compare_excel_save_succeeds_without_sample_mismatch_keys(tmp_path: Path
 
 
 
-def test_persist_td_compare_artifacts_includes_endpoint_health_summary(tmp_path: Path) -> None:
-    result = persist_td_compare_artifacts(
-        download_dir=tmp_path,
-        store_code="a817",
-        from_date=date(2026, 1, 1),
-        to_date=date(2026, 1, 2),
-        orders_compare_metrics={"matched_rows": 8, "missing_in_api": 0, "missing_in_ui": 1, "amount_mismatches": 0, "status_mismatches": 0, "dataset_health": {"ready": False}},
-        sales_compare_metrics={"matched_rows": 10, "missing_in_api": 0, "missing_in_ui": 0, "amount_mismatches": 0, "status_mismatches": 0, "dataset_health": {"ready": True}},
-        endpoint_health_summary={"orders": {"ready": False, "degraded_reason": "http_401"}},
-    )
-
-    orders_payload = json.loads(Path(result.artifact_paths["orders_compare_mismatches"]).read_text(encoding="utf-8"))
-    sales_payload = json.loads(Path(result.artifact_paths["sales_compare_mismatches"]).read_text(encoding="utf-8"))
-
-    assert orders_payload["endpoint_health_summary"]["orders"]["degraded_reason"] == "http_401"
-    assert sales_payload["endpoint_health_summary"]["orders"]["ready"] is False
-
-
-
 def test_compare_excel_redacts_sensitive_api_request_metadata(tmp_path: Path) -> None:
     artifact_path = tmp_path / "compare.xlsx"
     _persist_compare_excel_artifact(
@@ -579,35 +559,6 @@ def test_compare_excel_redacts_sensitive_api_request_metadata(tmp_path: Path) ->
     assert "Bearer abc" not in serialized
     assert "sid=123" not in serialized
     assert "***REDACTED***" in serialized
-
-
-def test_persist_td_compare_artifacts_redacts_tokens_in_mismatch_payload(tmp_path: Path) -> None:
-    result = persist_td_compare_artifacts(
-        download_dir=tmp_path,
-        store_code="a817",
-        from_date=date(2026, 1, 1),
-        to_date=date(2026, 1, 2),
-        orders_compare_metrics={
-            "dataset_health": {"ready": False},
-            "mismatch_artifacts": {
-                "request_metadata": [
-                    {
-                        "query_params": {"token": ["visible-token"]},
-                        "headers": {"authorization": "Bearer not-safe"},
-                    }
-                ]
-            },
-        },
-        sales_compare_metrics={"matched_rows": 10, "missing_in_api": 0, "missing_in_ui": 0, "amount_mismatches": 0, "status_mismatches": 0, "dataset_health": {"ready": True}},
-        endpoint_health_summary={"diagnostics": {"set-cookie": "auth=clear"}},
-    )
-
-    orders_payload_text = Path(result.artifact_paths["orders_compare_mismatches"]).read_text(encoding="utf-8")
-    assert "visible-token" not in orders_payload_text
-    assert "not-safe" not in orders_payload_text
-    assert "auth=clear" not in orders_payload_text
-    assert "***REDACTED***" in orders_payload_text
-
 
 
 def test_persist_td_api_artifacts_excel_rows_match_input_without_injected_columns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

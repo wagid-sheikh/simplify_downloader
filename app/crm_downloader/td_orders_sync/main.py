@@ -36,7 +36,6 @@ from app.crm_downloader.td_orders_sync.td_api_client import TdApiClient, TdApiFe
 from app.crm_downloader.td_orders_sync.garment_ingest import TdGarmentIngestResult, ingest_td_garment_rows
 from app.crm_downloader.td_orders_sync.td_api_artifacts import (
     persist_td_api_artifacts,
-    persist_td_compare_artifacts,
     redact_sensitive_fields,
 )
 from app.crm_downloader.td_orders_sync.td_api_compare import (
@@ -8287,33 +8286,6 @@ async def _run_store_discovery(
             api_request_metadata=(redact_sensitive_fields(api_request_metadata) if _td_api_debug_logging_enabled() else {"request_count": len(api_request_metadata)}),
             auth_diagnostics=(auth_diagnostics.as_dict() if _td_api_debug_logging_enabled() else {"token_found": bool(auth_diagnostics.as_dict().get("token_found")), "token_source": auth_diagnostics.as_dict().get("token_source"), "cookies_found": bool(auth_diagnostics.as_dict().get("cookies_found"))}),
         )
-        compare_artifact_result = persist_td_compare_artifacts(
-            download_dir=download_dir,
-            store_code=store.store_code,
-            from_date=run_start_date,
-            to_date=run_end_date,
-            orders_compare_metrics=orders_compare_metrics,
-            sales_compare_metrics=sales_compare_metrics,
-            endpoint_health_summary={
-                "orders": dict(orders_api_health),
-                "sales": dict(sales_api_health),
-            },
-        )
-        should_log_compare_artifacts = bool(compare_artifact_result.warnings)
-        if should_log_compare_artifacts:
-            log_event(
-                logger=store_logger,
-                phase="compare",
-                status="warning",
-                message="Persisted TD compare mismatch artifacts",
-                store_code=store.store_code,
-                source_mode=source_mode,
-                artifact_paths=compare_artifact_result.artifact_paths,
-                warnings=compare_artifact_result.warnings,
-            )
-        for compare_warning in compare_artifact_result.warnings:
-            _append_unique_warning(orders_report, f"compare_artifact_persistence_warning: {compare_warning}")
-
         garment_ingest_result: TdGarmentIngestResult | None = None
         compare_ok = (not orders_compare_readiness) or _compare_mismatch_free(orders_compare_metrics)
         if (

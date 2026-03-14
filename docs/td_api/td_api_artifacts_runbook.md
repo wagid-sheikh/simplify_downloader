@@ -10,7 +10,7 @@ Run `td_orders_sync` with one of the API-capable modes:
 - `--source-mode api_primary` (API is preferred source when available)
 - `--source-mode api_only` (API-only flow)
 
-Default source mode is `api_only`. Use `--source-mode ui` only when you explicitly need the UI workbook path, where TD API fetch/compare artifacts are not expected.
+Default source mode is `api_only`. Use `--source-mode ui` only when you explicitly need the UI workbook path, where TD API fetch artifacts are not expected.
 
 ## Artifact directory behavior
 
@@ -100,7 +100,7 @@ Backward-compatible supplementary fields may be included, but new triage dimensi
 
 ### Intermediate compare events
 
-Technical compare lifecycle logs (for example compare artifact persistence/evaluation details) are intentionally not part of the canonical triage contract and should remain low-noise (debug-oriented or emitted only for non-default paths such as warnings/mismatches).
+Technical compare lifecycle logs (for example compare evaluation details) are intentionally not part of the canonical triage contract and should remain low-noise (debug-oriented or emitted only for non-default paths such as warnings/mismatches).
 
 ## Expected observability signals
 
