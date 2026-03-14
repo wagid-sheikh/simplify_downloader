@@ -24,6 +24,7 @@ TABLE_ARCHIVE_PAYMENT_DETAILS = "stg_uc_archive_payment_details"
 FILE_BASE = "base"
 FILE_ORDER_DETAILS = "order_details"
 FILE_PAYMENT_DETAILS = "payment_details"
+WARNING_SAMPLE_CAP_PER_TYPE = 3
 
 REASON_MISSING_STORE_CODE = "missing_store_code"
 REASON_MISSING_ORDER_CODE = "missing_order_code"
@@ -91,6 +92,8 @@ class FileIngestResult:
     reject_reasons: dict[str, int] = field(default_factory=dict)
     warning_breakdown: dict[str, int] = field(default_factory=dict)
     warning_samples: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    warning_samples_truncated: bool = False
+    warning_samples_total_available: int = 0
 
 
 @dataclass
@@ -260,24 +263,29 @@ def _add_warning_sample(
     source_file: str,
     row_locator: str,
     sample_tracker: dict[str, set[tuple[str | None, str, str]]],
-    sample_cap: int = 5,
+    sample_cap: int = WARNING_SAMPLE_CAP_PER_TYPE,
+    full_samples: dict[str, list[dict[str, Any]]] | None = None,
 ) -> None:
     result.warning_breakdown[category] = result.warning_breakdown.get(category, 0) + 1
     row_key = (store_code, source_file, row_locator)
     seen = sample_tracker.setdefault(category, set())
     if row_key in seen:
         return
+    sample_payload = {
+        "warning_code": warning_code,
+        "store_code": store_code,
+        "source_file": source_file,
+        "row_locator": row_locator,
+    }
+    result.warning_samples_total_available += 1
+    if full_samples is not None:
+        full_samples.setdefault(category, []).append(sample_payload)
     samples = result.warning_samples.setdefault(category, [])
     if len(samples) >= sample_cap:
+        result.warning_samples_truncated = True
+        seen.add(row_key)
         return
-    samples.append(
-        {
-            "warning_code": warning_code,
-            "store_code": store_code,
-            "source_file": source_file,
-            "row_locator": row_locator,
-        }
-    )
+    samples.append(sample_payload)
     seen.add(row_key)
 
 
@@ -482,11 +490,13 @@ async def _ingest_file(
     explicit_cost_center: str | None,
     cost_center_lookup: Mapping[str, str],
     logger: JsonLogger,
+    include_full_warning_samples: bool = False,
 ) -> tuple[FileIngestResult, list[RejectRecord]]:
     result = FileIngestResult()
     rejects: list[RejectRecord] = []
     rows, header_info = _read_rows(source_path, EXPECTED_HEADERS[file_kind])
     warning_sample_tracker: dict[str, set[tuple[str | None, str, str]]] = {}
+    full_warning_samples: dict[str, list[dict[str, Any]]] | None = {} if include_full_warning_samples else None
     if header_info["follow_up"]:
         log_event(
             logger=logger,
@@ -506,6 +516,7 @@ async def _ingest_file(
                 source_file=source_path.name,
                 row_locator="header",
                 sample_tracker=warning_sample_tracker,
+                full_samples=full_warning_samples,
             )
     use_store = (store_code or "").strip().upper() or None
 
@@ -533,6 +544,7 @@ async def _ingest_file(
                 source_file=source_path.name,
                 row_locator=f"row:{idx}",
                 sample_tracker=warning_sample_tracker,
+                full_samples=full_warning_samples,
             )
         if row_rejects:
             result.rejected += 1
@@ -595,6 +607,17 @@ async def _ingest_file(
         else:
             result.inserted += 1
     result.reject_reasons = dict(reject_counter)
+    if include_full_warning_samples and full_warning_samples:
+        log_event(
+            logger=logger,
+            phase="archive_ingest",
+            status="debug",
+            message="uc_archive_ingest_warning_samples_full",
+            file_kind=file_kind,
+            source_file=source_path.name,
+            warning_samples_full=full_warning_samples,
+            warning_samples_total_available=result.warning_samples_total_available,
+        )
     return result, rejects
 
 
@@ -610,6 +633,7 @@ async def ingest_uc_archive_excels(
     payment_details_path: str | Path,
     logger: JsonLogger,
     cost_center_resolver: Callable[[str], str | None] | None = None,
+    include_full_warning_samples: bool = False,
 ) -> ArchiveIngestResult:
     paths = {
         FILE_BASE: Path(base_order_info_path),
@@ -644,6 +668,7 @@ async def ingest_uc_archive_excels(
             explicit_cost_center=cost_center,
             cost_center_lookup=cc_lookup,
             logger=logger,
+            include_full_warning_samples=include_full_warning_samples,
         )
         summary.files[file_kind] = file_result
         summary.rejects.extend(file_rejects)
