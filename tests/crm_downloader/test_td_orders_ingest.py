@@ -13,11 +13,28 @@ from app.common.db import session_scope
 from app.crm_downloader.td_orders_sync.ingest import (
     TdOrdersIngestResult,
     _expected_headers,
+    _coerce_input_row,
     _orders_table,
     _stg_td_orders_table,
+    ingest_td_orders_rows,
     ingest_td_orders_workbook,
 )
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger
+
+
+def test_coerce_input_row_maps_customer_phone_alias() -> None:
+    raw = {
+        "orderNo": "ORD-API-ALIAS",
+        "orderDate": "2025-05-10 09:30",
+        "customerPhone": "+91 88889-99762",
+    }
+
+    coerced = _coerce_input_row(raw)
+
+    assert coerced["Order No."] == "ORD-API-ALIAS"
+    assert coerced["Order Date / Time"] == "2025-05-10 09:30"
+    assert coerced["Phone"] == "+91 88889-99762"
+
 
 
 def _build_sample_workbook(path: Path) -> Path:
@@ -386,6 +403,44 @@ def _create_tables(database_url: str) -> None:
     engine = sa.create_engine(database_url.replace("+aiosqlite", ""))
     metadata.create_all(engine)
     engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_ingest_td_orders_rows_api_payload(tmp_path: Path) -> None:
+    db_path = tmp_path / "orders_rows.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    run_date = datetime(2025, 5, 20, 12, 0, tzinfo=tz)
+    logger = get_logger(run_id="test_run")
+    rows = [
+        {
+            "orderNo": "ORD-API-001",
+            "orderDate": "2025-05-10 09:30",
+            "customerCode": "C001",
+            "customerName": "Alice",
+            "mobileNumber": "+91 99999-88888",
+            "grossAmount": "1200",
+            "netAmount": "1100",
+            "paid": "500",
+        }
+    ]
+
+    result = await ingest_td_orders_rows(
+        rows=rows,
+        store_code="A668",
+        cost_center="UN3668",
+        run_id="test_run",
+        run_date=run_date,
+        database_url=database_url,
+        logger=logger,
+    )
+
+    assert result.staging_rows == 1
+    assert result.final_rows == 1
+    assert result.rows_downloaded == 1
+    assert result.warnings == []
 
 
 @pytest.mark.asyncio

@@ -141,6 +141,16 @@ Any PR that touches protected paths must be isolated and explicitly labeled “p
   - `{store_code}-payment_details.xlsx`
 - Note: Stage 1 is **download-only** (no DB writes); data will be reviewed and later ingested in Stage 2.
 
+#### UC Archive ingestion path
+
+- Archive ingests are explicitly separate from the existing UC GST path. Keep `stg_uc_orders` + current GST mapping unchanged for production safety.
+- Archive file mapping is archive-only:
+  - `*-base_order_info_YYYYMMDD_YYYYMMDD.xlsx` → `stg_uc_archive_orders_base`
+  - `*-order_details_YYYYMMDD_YYYYMMDD.xlsx` → `stg_uc_archive_order_details`
+  - `*-payment_details_YYYYMMDD_YYYYMMDD.xlsx` → `stg_uc_archive_payment_details`
+- In archive ingest load step, resolve `cost_center` using store master mapping for each `store_code`.
+- Keep source datetime values in staging as raw text (`*_raw`) and perform parse/cast only in publish logic. Any parse/validation issue should append remarks to `ingest_remarks`.
+
 ### bank_sync
 
 - Objective of this pipeline is to Ingest Bank Statement Data (for all bank accounts relevant to payment reconciliation)
@@ -249,6 +259,7 @@ Any PR that touches protected paths must be isolated and explicitly labeled “p
   * 0–5 days
   * 6–15 days
   * > 15 days
+    >
 * Sort oldest first within each bucket.
 
 **Layout rules**
@@ -386,8 +397,8 @@ Any PR that touches protected paths must be isolated and explicitly labeled “p
 - TD Orders staging (`stg_td_orders`): upsert/merge on `{store_code, order_number, order_date}`. Production `td_orders` should mirror these uniqueness semantics to keep re-runs idempotent.
 - TD Sales staging (`stg_td_sales`): upsert/merge on `{store_code, order_number, payment_date}` with the same key alignment in `sales`.
 - UC Orders staging (`stg_uc_orders`): upsert/merge on `{store_code, order_number, invoice_date}`; ensure the production table enforces the same uniqueness to avoid drift.
-- UC Order Details staging (`stg_uc_order_details`): upsert/merge on `{store_code, order_number, line_hash}` where `line_hash` is a deterministic hash of the item-line attributes.
-- UC Payment Details staging (`stg_uc_payment_details`): upsert/merge on `{store_code, order_number, payment_date, payment_amount, payment_mode, transaction_id}`.
+- UC Archive Order Details staging (`stg_uc_archive_order_details`): upsert/merge on `{store_code, order_code, line_hash}` where `line_hash` is a deterministic hash of the item-line attributes.
+- UC Archive Payment Details staging (`stg_uc_archive_payment_details`): upsert/merge on `{store_code, order_code, payment_date_raw, payment_mode, amount, coalesce(transaction_id,'')}`.
 - Bank staging (`stg_bank`): upsert/merge on `{row_id}` and preserve that uniqueness in `bank` so repeated ingests update rather than duplicate rows.
 
 ### DB alignment prerequisites (before Playwright)
@@ -396,8 +407,8 @@ Any PR that touches protected paths must be isolated and explicitly labeled “p
   - `stg_td_orders`: unique on `(store_code, order_number, order_date)`; production `td_orders` must enforce the same business key for idempotent re-runs.
   - `stg_td_sales`: unique on `(store_code, order_number, payment_date)`; production `sales` must match.
   - `stg_uc_orders`: unique on `(store_code, order_number, invoice_date)`; production `uc_orders` must match.
-  - `stg_uc_order_details`: unique on `(store_code, order_number, line_hash)`; downstream consumers must enforce the same business key.
-  - `stg_uc_payment_details`: unique on `(store_code, order_number, payment_date, payment_amount, payment_mode, transaction_id)`; downstream consumers must enforce the same business key.
+  - `stg_uc_archive_order_details`: unique on `(store_code, order_code, line_hash)`; downstream consumers must enforce the same business key.
+  - `stg_uc_archive_payment_details`: unique on `(store_code, order_code, payment_date_raw, payment_mode, amount, coalesce(transaction_id,''))`; downstream consumers must enforce the same business key.
   - `stg_bank`: unique on `(row_id)`; production `bank` must match.
 - Alembic migration expectations (to be completed before Playwright automation starts):
   - Apply required table creates/alters to reflect the schemas specified in this document, including indexes/constraints for the business keys above.
@@ -590,6 +601,8 @@ create table stg_uc_orders (
     mobile_number   varchar(16) not null,
     payment_status  varchar(24),
     customer_gstin  varchar(32),
+    customer_source varchar(64),
+    customer_address text,
     place_of_supply varchar(32),
     net_amount      numeric(12,2),
     cgst            numeric(12,2),
@@ -600,47 +613,92 @@ create table stg_uc_orders (
 );
 ```
 
-### Table: stg_uc_order_details
+### Table: stg_uc_archive_orders_base
 
-This table will be used to hold per-line order item rows extracted from the UC archive order details modal for `store_master.sync_group='UC'` stores. `line_hash` is a deterministic hash of the item-line attributes to support idempotent upserts. Proposed structure of this table is as below:
+This table will hold base-level archive order rows from `*-base_order_info_YYYYMMDD_YYYYMMDD.xlsx` for the UC archive ingestion path. Proposed structure of this table is as below:
 
 ```sql
-create table stg_uc_order_details (
-    id              bigserial,
+create table stg_uc_archive_orders_base (
+    id              bigserial primary key,
     run_id          text,
     run_date        timestamptz,
+    cost_center     varchar(8),
     store_code      varchar(8),
-    order_number    varchar(12),
-    service_name    varchar(64),
-    hsn_sac         varchar(32),
-    item_name       varchar(128),
-    rate            numeric(12,2),
-    quantity        numeric(12,2),
-    weight          numeric(12,2),
-    addons          text,
-    amount          numeric(12,2),
-    line_hash       varchar(64),
-    constraint pk_stg_uc_order_details primary key (id)
+    ingest_remarks  text,
+    order_code      varchar(24),
+    pickup_raw      text,
+    delivery_raw    text,
+    customer_name   varchar(128),
+    customer_phone  varchar(24),
+    address         text,
+    payment_text    text,
+    instructions    text,
+    customer_source varchar(64),
+    status          varchar(32),
+    status_date_raw text,
+    source_file     text
 );
+
+create unique index uq_stg_uc_archive_orders_base_store_order
+    on stg_uc_archive_orders_base (store_code, order_code);
 ```
 
-### Table: stg_uc_payment_details
+### Table: stg_uc_archive_order_details
 
-This table will be used to hold per-line payment rows extracted from the UC payment details modal for `store_master.sync_group='UC'` stores. `transaction_id` is nullable because some payment modes do not provide a reference. Proposed structure of this table is as below:
+This table will hold per-line archive order item rows from `*-order_details_YYYYMMDD_YYYYMMDD.xlsx` for the UC archive ingestion path. `line_hash` is a deterministic hash of the line attributes and participates in idempotent upserts. Proposed structure of this table is as below:
 
 ```sql
-create table stg_uc_payment_details (
-    id              bigserial,
-    run_id          text,
-    run_date        timestamptz,
-    store_code      varchar(8),
-    order_number    varchar(12),
-    payment_mode    varchar(32),
-    payment_amount  numeric(12,2),
-    payment_date    timestamptz,
-    transaction_id  varchar(64),
-    constraint pk_stg_uc_payment_details primary key (id)
+create table stg_uc_archive_order_details (
+    id                   bigserial primary key,
+    run_id               text,
+    run_date             timestamptz,
+    cost_center          varchar(8),
+    store_code           varchar(8),
+    ingest_remarks       text,
+    order_code           varchar(24),
+    order_mode           varchar(64),
+    order_datetime_raw   text,
+    pickup_datetime_raw  text,
+    delivery_datetime_raw text,
+    service              text,
+    hsn_sac              varchar(32),
+    item_name            text,
+    rate                 numeric(12,2),
+    quantity             numeric(12,2),
+    weight               numeric(12,3),
+    addons               text,
+    amount               numeric(12,2),
+    line_hash            varchar(64),
+    source_file          text
 );
+
+create unique index uq_stg_uc_archive_order_details_store_order_line
+    on stg_uc_archive_order_details (store_code, order_code, line_hash);
+```
+
+### Table: stg_uc_archive_payment_details
+
+This table will hold per-line archive payment rows from `*-payment_details_YYYYMMDD_YYYYMMDD.xlsx` for the UC archive ingestion path. `transaction_id` can be null and idempotency uses `coalesce(transaction_id,'')` in the key expression. Proposed structure of this table is as below:
+
+```sql
+create table stg_uc_archive_payment_details (
+    id               bigserial primary key,
+    run_id           text,
+    run_date         timestamptz,
+    cost_center      varchar(8),
+    store_code       varchar(8),
+    ingest_remarks   text,
+    order_code       varchar(24),
+    payment_mode     varchar(32),
+    amount           numeric(12,2),
+    payment_date_raw text,
+    transaction_id   varchar(128),
+    source_file      text
+);
+
+create unique index uq_stg_uc_archive_payment_details_idempotency
+    on stg_uc_archive_payment_details
+    (store_code, order_code, payment_date_raw, payment_mode, amount, coalesce(transaction_id,''));
 ```
 
 ### Table: stg_td_sales
@@ -712,8 +770,9 @@ create table stg_bank (
   - `stg_td_orders`: unique on (`store_code`, `order_number`, `order_date`).
   - `stg_td_sales`: unique on (`store_code`, `order_number`, `payment_date`).
   - `stg_uc_orders`: unique on (`store_code`, `order_number`, `invoice_date`).
-  - `stg_uc_order_details`: unique on (`store_code`, `order_number`, `line_hash`) where `line_hash` is a deterministic hash of the item-line attributes.
-  - `stg_uc_payment_details`: unique on (`store_code`, `order_number`, `payment_date`, `payment_amount`, `payment_mode`, `transaction_id`).
+  - `stg_uc_archive_orders_base`: unique on (`store_code`, `order_code`).
+  - `stg_uc_archive_order_details`: unique on (`store_code`, `order_code`, `line_hash`) where `line_hash` is a deterministic hash of the item-line attributes.
+  - `stg_uc_archive_payment_details`: unique on (`store_code`, `order_code`, `payment_date_raw`, `payment_mode`, `amount`, `coalesce(transaction_id,'')`).
   - `stg_bank`: unique on (`row_id`) (already noted as `uq_stg_bank_row_id`).
 - Upsert/merge behavior in staging must use the above keys to avoid duplicates on re-runs for the same date ranges.
 - Production-table writes must align to these same business keys to keep reruns clean:
@@ -1078,6 +1137,8 @@ These rules apply during ingestion of `GST_Report_2025-12-01_to_2025-12-01.xlsx`
 
 #### from `stg_uc_orders` to `orders`
 
+> Note: Prior to final UC publish, `stg_uc_orders.customer_source` and `stg_uc_orders.customer_address` are backfilled from `stg_uc_archive_orders_base` using (`store_code`, `order_code` = UC `order_number`). If multiple archive rows exist for the same key, choose the latest by `run_date` and then highest `id` as deterministic tie-breaker.
+
 **Phase 7 – UC orders publish:** carry `ingest_remarks` from staging into `orders` alongside the existing field mappings.
 
 | #   | Target column                   | Source / Expression                             | Notes / Transform                                                            |
@@ -1093,10 +1154,10 @@ These rules apply during ingestion of `GST_Report_2025-12-01_to_2025-12-01.xlsx`
 | 9   | `orders.customer_name`          | `stg_uc_orders.customer_name`                   | `orders.customer_name ← stg_uc_orders.customer_name`                         |
 | 10  | `orders.mobile_number`          | `stg_uc_orders.mobile_number`                   | Normalize to 10-digit mobile                                                 |
 | 11  | `orders.customer_gstin`         | `stg_uc_orders.customer_gstin`                  | `orders.customer_gstin ← stg_uc_orders.customer_gstin`                       |
-| 12  | `orders.customer_source`        | `'Walk in Customer'`                            | Constant                                                                     |
+| 12  | `orders.customer_source`        | `stg_uc_orders.customer_source`                    | Enriched in UC ingest from `stg_uc_archive_orders_base.customer_source` via (`store_code`,`order_number=order_code`) when non-blank; otherwise keep staging value/NULL. |
 | 13  | `orders.package_flag`           | `FALSE`                                         | No package concept in staging table                                          |
 | 14  | `orders.service_type`           | `'UNKNOWN'`                                     | Constant; can be refined later                                               |
-| 15  | `orders.customer_address`       | `NULL`                                          | Address not present in staging table                                         |
+| 15  | `orders.customer_address`       | `stg_uc_orders.customer_address`                  | Enriched in UC ingest from `stg_uc_archive_orders_base.address` via (`store_code`,`order_number=order_code`) when non-blank; otherwise keep staging value/NULL. |
 | 16  | `orders.pieces`                 | `0`                                             | Not available; default to 0                                                  |
 | 17  | `orders.weight`                 | `0`                                             | Not available; default to 0                                                  |
 | 18  | `orders.due_date`               | `stg_uc_orders.invoice_date + interval '3 day'` | `stg_uc_orders.invoice_date + interval '3 day'`                              |
@@ -1126,15 +1187,107 @@ These rules apply during ingestion of `GST_Report_2025-12-01_to_2025-12-01.xlsx`
 | 42  | `orders.run_id`                 | `stg_uc_orders.run_id`                          | Traceability of ETL run                                                      |
 | 43  | `orders.run_date`               | `stg_uc_orders.run_date`                        | Same as created_at / ETL execution timestamp                                 |
 
-#### from `stg_uc_order_details` to `orders` (enrichment)
+### UC archive orders-only Excel → staging mapping (Stage 2 ingest)
 
-`stg_uc_order_details` enriches the base UC `orders` rows produced from `stg_uc_orders`. This is a **post-upsert enrichment** step (run after Phase 7) keyed on (`store_code`, `order_number`), and it must be safe to re-run.
+> Scope guard: this section applies **only** to UC archive orders ingestion (`*-base_order_info*.xlsx`, `*-order_details*.xlsx`, `*-payment_details*.xlsx`) and must not be reused for UC GST exports or any non-archive UC datasets.
+
+#### Source artifacts reviewed (UC archive orders only)
+
+- `docs/uc_page_htmls/downloaded_excels/UC567-base_order_info.xlsx`
+- `docs/uc_page_htmls/downloaded_excels/UC567-order_details.xlsx`
+- `docs/uc_page_htmls/downloaded_excels/UC567-payment_details.xlsx`
+- `docs/uc_page_htmls/downloaded_excels/UC610-base_order_info.xlsx`
+- `docs/uc_page_htmls/downloaded_excels/UC610-order_details.xlsx`
+- `docs/uc_page_htmls/downloaded_excels/UC610-payment_details.xlsx`
+
+Observed naming/header pattern for archive orders export files:
+
+- `{store_code}-base_order_info.xlsx`
+- `{store_code}-order_details.xlsx`
+- `{store_code}-payment_details.xlsx`
+
+#### Base file mapping (`*-base_order_info*.xlsx` → `stg_uc_archive_orders_base`)
+
+| Excel column name                                                      | Target staging table + column                | Transformation / normalization                                         | Null/default handling                                                                                                                                                                                       | Notes (unmatched/deprecated)                                                   |
+| ---------------------------------------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `store_code`                                                           | `stg_uc_archive_orders_base.store_code`      | Trim + uppercase; validate exists in `store_master` for UC sync group. | If blank/unmapped → reject row from upsert and append `missing_store_code` to `ingest_remarks`.                                                                                                             | Required for store→cost center derivation.                                     |
+| `order_code`                                                           | `stg_uc_archive_orders_base.order_code`      | Trim + uppercase; collapse inner spaces.                               | If blank → reject row and append `missing_order_code` to `ingest_remarks`.                                                                                                                                  | Required business key with `store_code`.                                       |
+| `pickup`                                                               | `stg_uc_archive_orders_base.pickup_raw`      | Keep raw text; trim outer whitespace only.                             | Blank/`-` → `NULL`.                                                                                                                                                                                         | Date parsing deferred to publish layer.                                        |
+| `delivery`                                                             | `stg_uc_archive_orders_base.delivery_raw`    | Keep raw text; trim outer whitespace only.                             | Blank/`-` → `NULL`.                                                                                                                                                                                         | Date parsing deferred to publish layer.                                        |
+| `customer_name`                                                        | `stg_uc_archive_orders_base.customer_name`   | Trim; normalize repeated spaces to one.                                | Blank →`NULL`.                                                                                                                                                                                              | Preserve source casing for now.                                                |
+| `customer_phone`                                                       | `stg_uc_archive_orders_base.customer_phone`  | Strip spaces,`+91`, punctuation; keep digits as text.                  | If empty after cleanup →`NULL`; if not 10 digits, keep cleaned value and append `phone_format_warning`. If phone parsing fails then apply fallback and svae<br />this phone number in the column 8888999762 | Do not hard-fail archive row for phone issues.                                 |
+| `address`                                                              | `stg_uc_archive_orders_base.address`         | Trim; collapse repeated separators (`, ,`) where possible.             | Blank →`NULL`.                                                                                                                                                                                              | Keep as free text (no geocode split in staging).                               |
+| `payment_text`                                                         | `stg_uc_archive_orders_base.payment_text`    | Trim.                                                                  | Blank →`NULL`.                                                                                                                                                                                              | Values like `View Payment Details` are expected and informational.             |
+| `instructions`                                                         | `stg_uc_archive_orders_base.instructions`    | Trim.                                                                  | Blank →`NULL`.                                                                                                                                                                                              | Keep full text for downstream ops context.                                     |
+| `customer_source`                                                      | `stg_uc_archive_orders_base.customer_source` | Trim + uppercase                                                       | Blank →`NULL`.                                                                                                                                                                                              | Non-standard values allowed; append `unknown_customer_source` only as warning. |
+| `status`                                                               | `stg_uc_archive_orders_base.status`          | Trim + title normalization (`delivered` → `Delivered`).                | Blank →`NULL`.                                                                                                                                                                                              | Do not drop row for unknown status; capture warning.                           |
+| `status_date`                                                          | `stg_uc_archive_orders_base.status_date_raw` | Keep raw text; trim only.                                              | Blank/`-` → `NULL`.                                                                                                                                                                                         | Parse later with timezone-aware rules.                                         |
+| *(Not in Excel)* `cost_center`                                         | `stg_uc_archive_orders_base.cost_center`     | Resolve from `store_master.cost_center` using normalized `store_code`. | If store has no cost center mapping → set `NULL`, keep row, append `missing_cost_center_mapping`.                                                                                                           | Required follow-up before publish if unresolved.                               |
+| *(Not in Excel)* `run_id`, `run_date`, `source_file`, `ingest_remarks` | same-named staging columns                   | Set by ingest process metadata.                                        | `ingest_remarks` default `NULL` when clean.                                                                                                                                                                 | `source_file` should keep actual archive filename used for ingest.             |
+
+#### Order details mapping (`*-order_details*.xlsx` → `stg_uc_archive_order_details`)
+
+| Excel column name                                                                     | Target staging table + column                        | Transformation / normalization                                    | Null/default handling                                     | Notes (unmatched/deprecated)                                                                |
+| ------------------------------------------------------------------------------------- | ---------------------------------------------------- | ----------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `store_code`                                                                          | `stg_uc_archive_order_details.store_code`            | Trim + uppercase; validate against `store_master`.                | Blank/unmapped → reject row; append `missing_store_code`. | Required.                                                                                   |
+| `order_code`                                                                          | `stg_uc_archive_order_details.order_code`            | Trim + uppercase.                                                 | Blank → reject row; append `missing_order_code`.          | Required.                                                                                   |
+| `order_mode`                                                                          | `stg_uc_archive_order_details.order_mode`            | Trim + uppercase normalization (`Walk-In` → `WALK-IN`).           | Blank →`NULL`.                                            | Keep unknown modes as-is after normalization.                                               |
+| `order_datetime`                                                                      | `stg_uc_archive_order_details.order_datetime_raw`    | Keep raw text, trimmed.                                           | Blank/`-` → `NULL`.                                       | Parse later.                                                                                |
+| `pickup_datetime`                                                                     | `stg_uc_archive_order_details.pickup_datetime_raw`   | Keep raw text, trimmed.                                           | Blank/`-` → `NULL`.                                       | Parse later.                                                                                |
+| `delivery_datetime`                                                                   | `stg_uc_archive_order_details.delivery_datetime_raw` | Keep raw text, trimmed.                                           | Blank/`-` → `NULL`.                                       | Parse later.                                                                                |
+| `service`                                                                             | `stg_uc_archive_order_details.service`               | Trim; normalize whitespace.                                       | Blank →`NULL`.                                            | Used in downstream `service_type` enrichment.                                               |
+| `hsn_sac`                                                                             | `stg_uc_archive_order_details.hsn_sac`               | Trim, preserve leading zeros/text form.                           | Blank →`NULL`.                                            | Keep as text, not numeric.                                                                  |
+| `item_name`                                                                           | `stg_uc_archive_order_details.item_name`             | Trim.                                                             | Blank →`NULL`.                                            | Used in deterministic `line_hash`.                                                          |
+| `rate`                                                                                | `stg_uc_archive_order_details.rate`                  | Numeric cast after removing commas/currency symbols (`₹`, `INR`). | Unparseable/blank →`NULL` + `invalid_rate`.               | Keep decimals to 2 places.                                                                  |
+| `quantity`                                                                            | `stg_uc_archive_order_details.quantity`              | Numeric cast; allow integer or decimal quantities.                | Unparseable/blank →`NULL` + `invalid_quantity`.           | `-` should be treated as `NULL`.                                                            |
+| `weight`                                                                              | `stg_uc_archive_order_details.weight`                | Numeric cast; map `-` to `NULL`; remove unit suffixes if present. | Unparseable →`NULL` + `invalid_weight`.                   | Preserve scale up to 3 decimals.                                                            |
+| `addons`                                                                              | `stg_uc_archive_order_details.addons`                | Trim.                                                             | Blank/`-` → `NULL`.                                       | In samples appears as numeric text like `0.00`; keep as text to avoid semantic assumptions. |
+| `amount`                                                                              | `stg_uc_archive_order_details.amount`                | Numeric cast after removing commas/currency symbols.              | Unparseable/blank →`NULL` + `invalid_amount`.             | Used in reconciliation checks and line hash input.                                          |
+| *(Not in Excel)* `line_hash`                                                          | `stg_uc_archive_order_details.line_hash`             | Deterministic hash of normalized line fields: `store_code         | order_code                                                | service                                                                                     |
+| *(Not in Excel)* `cost_center`, `run_id`, `run_date`, `source_file`, `ingest_remarks` | same-named staging columns                           | Set by ingest metadata and store mapping.                         | Missing cost center → keep row, append warning.           | Archive-orders-only metadata columns.                                                       |
+
+#### Payment details mapping (`*-payment_details*.xlsx` → `stg_uc_archive_payment_details`)
+
+| Excel column name                                                                     | Target staging table + column                     | Transformation / normalization                                                                 | Null/default handling                                 | Notes (unmatched/deprecated)                                                   |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `store_code`                                                                          | `stg_uc_archive_payment_details.store_code`       | Trim + uppercase; validate against UC store list.                                              | Blank/unmapped → reject row +`missing_store_code`.    | Required.                                                                      |
+| `order_code`                                                                          | `stg_uc_archive_payment_details.order_code`       | Trim + uppercase.                                                                              | Blank → reject row +`missing_order_code`.             | Required.                                                                      |
+| `payment_mode`                                                                        | `stg_uc_archive_payment_details.payment_mode`     | Trim + enum normalization (e.g.,`UPI / Wallet`, `UPI/Wallet` → `UPI_WALLET`; `Cash` → `CASH`). | Blank →`UNKNOWN` + warning.                           | Keep original token in remarks when normalized.                                |
+| `amount`                                                                              | `stg_uc_archive_payment_details.amount`           | Numeric cast after removing commas/currency symbols, plus optional trailing `.00`.             | Blank/unparseable →`NULL` + `invalid_payment_amount`. | Amount must remain signed numeric (negative refunds allowed if present later). |
+| `payment_date`                                                                        | `stg_uc_archive_payment_details.payment_date_raw` | Keep raw text in staging; trim only.                                                           | Blank/`-` → `NULL` + `missing_payment_date`.          | Parse in publish with timezone handling (`Asia/Kolkata`).                      |
+| `transaction_id`                                                                      | `stg_uc_archive_payment_details.transaction_id`   | Trim; normalize empty strings to `NULL`.                                                       | Blank →`NULL`.                                        | Optional; idempotency key uses `coalesce(transaction_id,'')`.                  |
+| *(Not in Excel)* `cost_center`, `run_id`, `run_date`, `source_file`, `ingest_remarks` | same-named staging columns                        | Set from store mapping + pipeline metadata.                                                    | Missing cost center → keep row with warning.          | Archive-orders-only metadata columns.                                          |
+
+#### UC archive orders-only ingestion assumptions and edge-case handling
+
+- **Missing/blank identifiers:** rows missing either `store_code` or `order_code` are not eligible for upsert in any archive staging table; keep a rejected-row audit in logs and increment ingest warning counters.
+- **Duplicate archive rows:**
+  - Base file duplicates collapse on (`store_code`, `order_code`) with latest-row-wins inside the same file and upsert-on-conflict across reruns.
+  - Order details duplicates collapse by deterministic `line_hash`.
+  - Payment duplicates collapse on (`store_code`, `order_code`, `payment_date_raw`, `payment_mode`, `amount`, `coalesce(transaction_id,''))`.
+- **Currency/amount formatting:** accept numeric strings with commas and optional currency tokens (`₹`, `INR`), strip formatting before cast, and record `invalid_*` remarks instead of hard-failing file ingest.
+- **Date format/timezone discrepancies:** keep all source datetime strings as raw text in staging (`*_raw`), then parse in publish using `PIPELINE_TIMEZONE` (`Asia/Kolkata`) with fallback patterns like `DD Mon YYYY, HH:MM AM/PM`; unparseable values remain NULL with remarks.
+- **Column drift/unmatched columns:** ignore extra columns not listed above, but add a file-level ingest note identifying unexpected headers so mapping coverage can be reviewed.
+
+#### Mapping coverage check (UC archive orders only)
+
+Before promoting Stage 2 ingest changes, run a per-file header audit for UC archive orders artifacts only and classify each header as:
+
+1. **Mapped** to a staging column,
+2. **Intentionally ignored** (documented reason), or
+3. **Follow-up required** (new/renamed field).
+
+The ingest task is considered complete for a given artifact set only when every discovered header is in one of those three states; no “unclassified” UC archive orders columns should remain.
+
+#### from `stg_uc_archive_order_details` to `orders` (enrichment)
+
+`stg_uc_archive_order_details` enriches the base UC `orders` rows produced from `stg_uc_orders`. This is a **post-upsert enrichment** step (run after Phase 7) keyed on (`store_code`, `order_code`), and it must be safe to re-run.
 
 **Fields to update (derived from order details):**
 
 - `orders.pieces`: set to `SUM(quantity)` for the order (ignore NULLs). Update only if the computed sum is > 0.
 - `orders.weight`: set to `SUM(weight)` for the order (ignore NULLs). Update only if the computed sum is > 0.
-- `orders.service_type`: set to a deterministic summary string, e.g. `STRING_AGG(DISTINCT service_name, ', ')` ordered alphabetically. Update only when non-empty.
+- `orders.service_type`: set to a deterministic summary string, e.g. `STRING_AGG(DISTINCT service, ', ')` ordered alphabetically.
 
 **Fields to preserve (do not overwrite from order details):**
 
@@ -1144,42 +1297,42 @@ These rules apply during ingestion of `GST_Report_2025-12-01_to_2025-12-01.xlsx`
 
 If no matching order-details rows exist for an order, leave the base `orders` record unchanged.
 
-#### from `stg_uc_payment_details` to `sales`
+#### from `stg_uc_archive_payment_details` to `sales`
 
-UC payment details drive `sales` rows **one row per payment line**. For each line in `stg_uc_payment_details`, insert/update exactly one `sales` row, using the payment fields as the business key. Use the parent UC order for any missing context.
+UC payment details drive `sales` rows **one row per payment line**. For each line in `stg_uc_archive_payment_details`, insert/update exactly one `sales` row, using the payment fields as the business key. Use the parent UC order for any missing context.
 
-| Target column               | Source / Expression                                                         | Notes / Transform                                                                 |
-| --------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `sales.cost_center`         | `stg_uc_orders.cost_center` via join on (`store_code`, `order_number`)       | Use the UC order’s cost center.                                                   |
-| `sales.store_code`          | `stg_uc_payment_details.store_code`                                         | Copy from staging.                                                                |
-| `sales.order_number`        | `stg_uc_payment_details.order_number`                                       | Copy from staging.                                                                |
-| `sales.order_date`          | `stg_uc_orders.invoice_date`                                                | Use UC invoice date for order date context.                                       |
-| `sales.payment_date`        | `stg_uc_payment_details.payment_date`                                       | Copy from staging (parsed timestamptz).                                           |
-| `sales.payment_mode`        | `stg_uc_payment_details.payment_mode`                                       | Copy from staging.                                                                |
-| `sales.payment_received`    | `stg_uc_payment_details.payment_amount`                                     | Use UC payment amount as payment received.                                        |
-| `sales.transaction_id`      | `stg_uc_payment_details.transaction_id`                                     | Optional; keep NULL when not provided by UC.                                      |
-| `sales.customer_name`       | `stg_uc_orders.customer_name`                                               | Optional enrichment; set to NULL if UC order missing.                             |
-| `sales.mobile_number`       | `stg_uc_orders.mobile_number`                                               | Optional enrichment; set to NULL if UC order missing.                             |
-| `sales.customer_address`    | `NULL`                                                                      | UC payment details do not include address; keep NULL.                             |
-| `sales.customer_code`       | `NULL`                                                                      | UC payment details do not include customer code; keep NULL.                       |
-| `sales.adjustments`         | `0`                                                                         | UC payment lines have no adjustment; default to 0.                                |
-| `sales.balance`             | `0`                                                                         | UC payment lines have no balance; default to 0.                                   |
-| `sales.accepted_by`         | `NULL`                                                                      | Not available from UC payment details.                                            |
-| `sales.payment_made_at`     | `NULL`                                                                      | Not available from UC payment details.                                            |
-| `sales.order_type`          | `'UClean'`                                                                  | Constant for UC-sourced payment lines.                                            |
-| `sales.is_duplicate`        | `FALSE`                                                                     | Default to false.                                                                 |
-| `sales.is_edited_order`     | `FALSE`                                                                     | Default to false.                                                                 |
-| `sales.ingest_remarks`      | `stg_uc_orders.ingest_remarks`                                              | Carry forward UC order ingest remarks when available.                             |
-| `sales.run_id`              | `stg_uc_payment_details.run_id`                                             | Traceability of ETL run.                                                          |
-| `sales.run_date`            | `stg_uc_payment_details.run_date`                                           | Same as ETL execution timestamp.                                                  |
+| Target column            | Source / Expression                                                    | Notes / Transform                                                         |
+| ------------------------ | ---------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `sales.cost_center`      | `stg_uc_orders.cost_center` via join on (`store_code`, `order_number`) | Use the UC order’s cost center.                                           |
+| `sales.store_code`       | `stg_uc_archive_payment_details.store_code`                            | Copy from staging.                                                        |
+| `sales.order_number`     | `stg_uc_archive_payment_details.order_code`                            | Copy from staging.                                                        |
+| `sales.order_date`       | `stg_uc_orders.invoice_date`                                           | Use UC invoice date for order date context.                               |
+| `sales.payment_date`     | `stg_uc_archive_payment_details.payment_date_raw`                      | Parse/cast in publish step (with validation remarks in `ingest_remarks`). |
+| `sales.payment_mode`     | `stg_uc_archive_payment_details.payment_mode`                          | Copy from staging.                                                        |
+| `sales.payment_received` | `stg_uc_archive_payment_details.amount`                                | Use UC payment amount as payment received.                                |
+| `sales.transaction_id`   | `stg_uc_archive_payment_details.transaction_id`                        | Optional; keep NULL when not provided by UC.                              |
+| `sales.customer_name`    | `stg_uc_orders.customer_name`                                          | Optional enrichment; set to NULL if UC order missing.                     |
+| `sales.mobile_number`    | `stg_uc_orders.mobile_number`                                          | Optional enrichment; set to NULL if UC order missing.                     |
+| `sales.customer_address` | `NULL`                                                                 | UC payment details do not include address; keep NULL.                     |
+| `sales.customer_code`    | `NULL`                                                                 | UC payment details do not include customer code; keep NULL.               |
+| `sales.adjustments`      | `0`                                                                    | UC payment lines have no adjustment; default to 0.                        |
+| `sales.balance`          | `0`                                                                    | UC payment lines have no balance; default to 0.                           |
+| `sales.accepted_by`      | `NULL`                                                                 | Not available from UC payment details.                                    |
+| `sales.payment_made_at`  | `NULL`                                                                 | Not available from UC payment details.                                    |
+| `sales.order_type`       | `'UClean'`                                                             | Constant for UC-sourced payment lines.                                    |
+| `sales.is_duplicate`     | `FALSE`                                                                | Default to false.                                                         |
+| `sales.is_edited_order`  | `FALSE`                                                                | Default to false.                                                         |
+| `sales.ingest_remarks`   | `stg_uc_orders.ingest_remarks`                                         | Carry forward UC order ingest remarks when available.                     |
+| `sales.run_id`           | `stg_uc_archive_payment_details.run_id`                                | Traceability of ETL run.                                                  |
+| `sales.run_date`         | `stg_uc_archive_payment_details.run_date`                              | Same as ETL execution timestamp.                                          |
 
 If multiple payment lines exist for a single order, each line produces its own `sales` row with its own `payment_date`/`payment_mode`/`payment_amount` (and optional `transaction_id`).
 
 #### UC conflict handling & idempotent upserts
 
 - **Orders base upsert:** `stg_uc_orders → orders` uses (`cost_center`, `order_number`, `order_date = invoice_date`) as the conflict key. On conflict, update only mutable columns (customer fields, amounts, status fields, ingest_remarks, updated_at/updated_by) while preserving immutable identifiers and created_at/run_id/run_date from the original insert.
-- **Orders enrichment:** `stg_uc_order_details → orders` is a deterministic update keyed on (`store_code`, `order_number`). Re-running should **recompute** `pieces`, `weight`, and `service_type` from the latest detail lines without touching other columns.
-- **Sales upsert:** `stg_uc_payment_details → sales` must upsert on a payment-line key to avoid duplicates on reruns. Use (`cost_center`, `order_number`, `payment_date`, `payment_mode`, `payment_amount`, `transaction_id`) as the logical business key; if the physical unique index remains `(cost_center, order_number, payment_date)`, then use a conflict-safe merge that updates the payment columns to match the latest line without inserting duplicates.
+- **Orders enrichment:** `stg_uc_archive_order_details → orders` is a deterministic update keyed on (`store_code`, `order_code`). Re-running should **recompute** `pieces`, `weight`, and `service_type` from the latest detail lines without touching other columns.
+- **Sales upsert:** `stg_uc_archive_payment_details → sales` must upsert on a payment-line key to avoid duplicates on reruns. Use (`cost_center`, `order_number`, parsed(`payment_date_raw`), `payment_mode`, `amount`, `coalesce(transaction_id,''))` as the logical business key; if the physical unique index remains `(cost_center, order_number, payment_date)`, then use a conflict-safe merge that updates payment columns to match the latest line without inserting duplicates.
 - **Idempotency expectation:** rerunning UC extraction for the same date range should not create extra orders or sales rows. Instead, it should converge to the same state by updating existing rows and inserting only genuinely new order/payment lines.
 
 ### from `1170-nQ2-KWQLOo_udNoF6SNoa.xlsx` Sales & Delivery to `stg_td_sales`
@@ -1299,7 +1452,7 @@ Sub Category
 **Phase 8 – Bank ingest/publish:** capture `ingest_remarks` in `stg_bank` alongside the parsed fields, and propagate it verbatim into `bank.ingest_remarks` whenever rows are inserted or updated.
 
 The table structure of `stg_bank` and `bank` are almost identical. If stg_bank.row_id does not exist in `bank` perform insert else perform update for `bank.comments`, `bank.cost_center`, `bank.order_number`, `bank.category`, `bank.sub_category`, and `bank.ingest_remarks`.
-----------------------------------------------------------------------------------------------------------------------------------------
+-----------------------------------------------------------------------------------------------------------------------------------------------
 
 ## Playwright Orchestration
 
@@ -1475,3 +1628,26 @@ After login, navigate to Reports → Sales and Delivery and verify the container
 - Click Export Report to trigger an .xlsx download only after the table is refreshed for the selected range. Save the downloaded file using the naming convention:
   `{store_master.store_code}_historical_sales_report_{from-date}_to_{to-date}.xlsx`
   (where `{from-date}` and `{to-date}` are the same values used in the filters, formatted consistently for filenames, and aligned with the displayed `Dec 05, 2025 - Dec 30, 2025` text).
+
+## UC GST API-primary migration playbook
+
+### Cutover steps
+
+1. GST extraction is API-only in uc_orders_sync.
+2. Run UC orders sync for at least one full business window using `scripts/run_local_uc_orders_sync.sh` (or production runner in deployment env).
+3. Confirm GST API extract files are generated and ingested without requiring UI GST navigation.
+4. Validate archive extraction and publish stages complete with no transport/auth warning spikes.
+
+### Recovery steps
+
+1. If GST API is unavailable, treat the store run as failed and investigate API/auth transport issues.
+2. Restore API connectivity/authentication and re-run the same date window.
+3. Keep archive extraction mode at `api` unless archive API transport/auth failures require `api_with_ui_fallback`.
+4. Validate successful ingest and publish once API recovery is confirmed.
+
+### Acceptance criteria
+
+- UC run completes successfully when GST API is healthy, without invoking GST UI navigation path.
+- GST ingest stage is successful (or explicitly skipped only when DB config is intentionally absent).
+- Archive extraction/publish stages complete with expected row parity and without merge-safety regressions.
+- `tests/crm_downloader/test_no_merge_conflict_markers.py` remains passing as a release gate.

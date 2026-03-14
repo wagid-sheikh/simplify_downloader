@@ -84,6 +84,23 @@ HEADER_MAP: Mapping[str, str] = {
 NUMERIC_FIELDS = {"payment_received", "adjustments", "balance"}
 DATE_FIELDS = {"order_date", "payment_date"}
 REQUIRED_HEADERS = set(HEADER_MAP.keys())
+ROW_FIELD_ALIASES: Mapping[str, tuple[str, ...]] = {
+    "Order Date": ("order_date", "orderDate", "Order Date / Time"),
+    "Payment Date": ("payment_date", "paymentDate"),
+    "Order Number": ("order_number", "orderNo", "orderNumber", "Order No."),
+    "Customer Code": ("customer_code", "customerCode"),
+    "Customer Name": ("customer_name", "customerName", "Name"),
+    "Customer Address": ("customer_address", "customerAddress", "Address"),
+    "Customer Mobile No.": ("mobile_number", "mobileNumber", "Phone", "customerMobile"),
+    "Payment Received": ("payment_received", "paymentReceived", "paid", "amount"),
+    "Adjustments": ("adjustments", "adjustment"),
+    "Balance": ("balance",),
+    "Accept By": ("accepted_by", "acceptedBy"),
+    "Payment Mode": ("payment_mode", "paymentMode"),
+    "Online TransactionID": ("transaction_id", "transactionId"),
+    "Payment Made At": ("payment_made_at", "paymentMadeAt"),
+    "Type": ("order_type", "orderType"),
+}
 
 
 def _stringify_value(value: Any) -> str:
@@ -108,10 +125,21 @@ class TdSalesIngestResult:
     rows_downloaded: int = 0
     dropped_rows: list[dict[str, Any]] = field(default_factory=list)
     warning_rows: list[dict[str, Any]] = field(default_factory=list)
+    parsed_rows: list[dict[str, Any]] = field(default_factory=list)
     edited_rows: list[dict[str, Any]] = field(default_factory=list)
     duplicate_rows: list[dict[str, Any]] = field(default_factory=list)
     rows_edited: int = 0
     rows_duplicate: int = 0
+    phone_fallback_rows: int = 0
+    phone_fallback_unique_values: int = 0
+    phone_fallback_top_invalid_values: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class _PhoneFallbackStats:
+    invalid_phone_numbers: set[str] = field(default_factory=set)
+    invalid_phone_value_counts: Counter[str] = field(default_factory=Counter)
+    fallback_rows: int = 0
 
 
 def _chunked(values: Sequence[tuple[Any, ...]], chunk_size: int = 500) -> Iterable[list[tuple[Any, ...]]]:
@@ -223,13 +251,19 @@ MOBILE_FALLBACK_NUMBER = "8888999762"
 
 
 def _normalize_phone(
-    value: str | None, *, warnings: list[str], invalid_phone_numbers: set[str], row_remarks: list[str]
+    value: str | None,
+    *,
+    warnings: list[str],
+    phone_fallback_stats: _PhoneFallbackStats,
+    row_remarks: list[str],
 ) -> str | None:
     value_str = "" if value is None else str(value)
     if value_str.strip() == "":
         row_remarks.append("MOBILE_FALLBACK_APPLIED")
-        if value_str not in invalid_phone_numbers:
-            invalid_phone_numbers.add(value_str)
+        phone_fallback_stats.fallback_rows += 1
+        phone_fallback_stats.invalid_phone_value_counts[value_str] += 1
+        if value_str not in phone_fallback_stats.invalid_phone_numbers:
+            phone_fallback_stats.invalid_phone_numbers.add(value_str)
             warnings.append("Invalid phone number fallback applied: <missing>")
         return MOBILE_FALLBACK_NUMBER
     sanitized = value_str
@@ -244,8 +278,10 @@ def _normalize_phone(
     if len(digits) == 10:
         return digits
     row_remarks.append("MOBILE_FALLBACK_APPLIED")
-    if value_str not in invalid_phone_numbers:
-        invalid_phone_numbers.add(value_str)
+    phone_fallback_stats.fallback_rows += 1
+    phone_fallback_stats.invalid_phone_value_counts[value_str] += 1
+    if value_str not in phone_fallback_stats.invalid_phone_numbers:
+        phone_fallback_stats.invalid_phone_numbers.add(value_str)
         warnings.append(f"Invalid phone number fallback applied: {value_str}")
     return MOBILE_FALLBACK_NUMBER
 
@@ -300,7 +336,7 @@ def _is_footer_row(values: Sequence[Any]) -> bool:
 
 
 def _coerce_row(
-    raw: Mapping[str, Any], *, tz: ZoneInfo, warnings: list[str], invalid_phone_numbers: set[str]
+    raw: Mapping[str, Any], *, tz: ZoneInfo, warnings: list[str], phone_fallback_stats: _PhoneFallbackStats
 ) -> tuple[Dict[str, Any], list[str], str | None]:
     row: Dict[str, Any] = {}
     row_remarks: list[str] = []
@@ -315,7 +351,10 @@ def _coerce_row(
         row[field] = _parse_numeric(row[field], warnings=warnings, field=field, row_remarks=row_remarks)
 
     row["mobile_number"] = _normalize_phone(
-        row.get("mobile_number"), warnings=warnings, invalid_phone_numbers=invalid_phone_numbers, row_remarks=row_remarks
+        row.get("mobile_number"),
+        warnings=warnings,
+        phone_fallback_stats=phone_fallback_stats,
+        row_remarks=row_remarks,
     )
 
     if row.get("order_number") in (None, ""):
@@ -335,7 +374,7 @@ def _coerce_row(
 
 def _read_workbook_rows(
     workbook_path: Path, *, tz: ZoneInfo, warnings: list[str], store_code: str
-) -> tuple[list[Dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int]:
+) -> tuple[list[Dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int, _PhoneFallbackStats]:
     wb = openpyxl.load_workbook(workbook_path, data_only=True)
     sheet = wb.active
     header_cells = list(next(sheet.iter_rows(min_row=1, max_row=1, values_only=True)))
@@ -352,12 +391,12 @@ def _read_workbook_rows(
         data_rows.pop()
     rows_downloaded = len(data_rows)
 
-    invalid_phone_numbers: set[str] = set()
+    phone_fallback_stats = _PhoneFallbackStats()
 
     for values in data_rows:
         raw_row = {header: values[idx] if idx < len(values) else None for idx, header in enumerate(headers)}
         normalized, row_remarks, drop_reason = _coerce_row(
-            raw_row, tz=tz, warnings=warnings, invalid_phone_numbers=invalid_phone_numbers
+            raw_row, tz=tz, warnings=warnings, phone_fallback_stats=phone_fallback_stats
         )
         order_number = _stringify_value(raw_row.get("Order Number"))
         if normalized:
@@ -385,7 +424,75 @@ def _read_workbook_rows(
                     "ingest_remarks": drop_reason or "; ".join(row_remarks) or "Row dropped due to missing required values",
                 }
             )
-    return rows, warning_rows, dropped_rows, rows_downloaded
+    return rows, warning_rows, dropped_rows, rows_downloaded, phone_fallback_stats
+
+
+def _coerce_input_row(raw: Mapping[str, Any]) -> Dict[str, Any]:
+    if any(header in raw for header in HEADER_MAP):
+        return {header: raw.get(header) for header in HEADER_MAP}
+
+    coerced: Dict[str, Any] = {}
+    for header, aliases in ROW_FIELD_ALIASES.items():
+        value = None
+        for alias in aliases:
+            if alias in raw and raw.get(alias) not in (None, ""):
+                value = raw.get(alias)
+                break
+        coerced[header] = value
+    return coerced
+
+
+def _read_input_rows(
+    input_rows: Sequence[Mapping[str, Any]], *, tz: ZoneInfo, warnings: list[str], store_code: str
+) -> tuple[list[Dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int, _PhoneFallbackStats]:
+    rows: list[Dict[str, Any]] = []
+    warning_rows: list[dict[str, Any]] = []
+    dropped_rows: list[dict[str, Any]] = []
+    phone_fallback_stats = _PhoneFallbackStats()
+    headers = list(HEADER_MAP.keys())
+    rows_downloaded = len(input_rows)
+
+    for payload in input_rows:
+        raw_row = _coerce_input_row(payload)
+        normalized, row_remarks, drop_reason = _coerce_row(
+            raw_row, tz=tz, warnings=warnings, phone_fallback_stats=phone_fallback_stats
+        )
+        order_number = _stringify_value(raw_row.get("Order Number"))
+        if normalized:
+            normalized["_remarks"] = row_remarks
+            if row_remarks:
+                warning_rows.append(
+                    {
+                        "store_code": store_code,
+                        "order_number": order_number,
+                        "headers": headers,
+                        "values": {header: _stringify_value(raw_row.get(header)) for header in headers},
+                        "remarks": "; ".join(row_remarks),
+                        "ingest_remarks": "; ".join(row_remarks),
+                    }
+                )
+            rows.append(normalized)
+        else:
+            dropped_rows.append(
+                {
+                    "store_code": store_code,
+                    "order_number": order_number,
+                    "headers": headers,
+                    "values": {header: _stringify_value(raw_row.get(header)) for header in headers},
+                    "remarks": drop_reason or "; ".join(row_remarks) or "Row dropped due to missing required values",
+                    "ingest_remarks": drop_reason
+                    or "; ".join(row_remarks)
+                    or "Row dropped due to missing required values",
+                }
+            )
+    return rows, warning_rows, dropped_rows, rows_downloaded, phone_fallback_stats
+
+
+def _phone_fallback_top_invalid_values(phone_fallback_stats: _PhoneFallbackStats, *, limit: int = 5) -> list[dict[str, Any]]:
+    return [
+        {"raw_value": "<missing>" if value == "" else value, "count": count}
+        for value, count in phone_fallback_stats.invalid_phone_value_counts.most_common(limit)
+    ]
 
 
 def _make_insert(table: sa.Table, values: Mapping[str, Any], *, use_sqlite: bool) -> sa.sql.dml.Insert:
@@ -413,19 +520,83 @@ async def ingest_td_sales_workbook(
 ) -> TdSalesIngestResult:
     tz = get_timezone()
     warnings: list[str] = []
-    rows, warning_rows, dropped_rows, rows_downloaded = _read_workbook_rows(
+    rows, warning_rows, dropped_rows, rows_downloaded, phone_fallback_stats = _read_workbook_rows(
         workbook_path, tz=tz, warnings=warnings, store_code=store_code
     )
+    return await _ingest_td_sales_rows(
+        rows=rows,
+        warning_rows=warning_rows,
+        dropped_rows=dropped_rows,
+        rows_downloaded=rows_downloaded,
+        store_code=store_code,
+        cost_center=cost_center,
+        run_id=run_id,
+        run_date=run_date,
+        database_url=database_url,
+        logger=logger,
+        warnings=warnings,
+        phone_fallback_stats=phone_fallback_stats,
+        workbook_path=workbook_path,
+    )
+
+
+async def ingest_td_sales_rows(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    store_code: str,
+    cost_center: str,
+    run_id: str,
+    run_date: datetime,
+    database_url: str,
+    logger: JsonLogger,
+) -> TdSalesIngestResult:
+    tz = get_timezone()
+    warnings: list[str] = []
+    parsed_rows, warning_rows, dropped_rows, rows_downloaded, phone_fallback_stats = _read_input_rows(
+        rows, tz=tz, warnings=warnings, store_code=store_code
+    )
+    return await _ingest_td_sales_rows(
+        rows=parsed_rows,
+        warning_rows=warning_rows,
+        dropped_rows=dropped_rows,
+        rows_downloaded=rows_downloaded,
+        store_code=store_code,
+        cost_center=cost_center,
+        run_id=run_id,
+        run_date=run_date,
+        database_url=database_url,
+        logger=logger,
+        warnings=warnings,
+        phone_fallback_stats=phone_fallback_stats,
+    )
+
+
+async def _ingest_td_sales_rows(
+    *,
+    rows: list[Dict[str, Any]],
+    warning_rows: list[dict[str, Any]],
+    dropped_rows: list[dict[str, Any]],
+    rows_downloaded: int,
+    store_code: str,
+    cost_center: str,
+    run_id: str,
+    run_date: datetime,
+    database_url: str,
+    logger: JsonLogger,
+    warnings: list[str],
+    phone_fallback_stats: _PhoneFallbackStats,
+    workbook_path: Path | None = None,
+) -> TdSalesIngestResult:
     header_labels = list(HEADER_MAP.keys())
 
     if not rows:
         log_event(
             logger=logger,
             phase="sales_ingest",
-            status="warn",
+            status="warning",
             message="No rows parsed from TD Sales workbook",
             store_code=store_code,
-            workbook=str(workbook_path),
+            workbook=str(workbook_path) if workbook_path else "<rows>",
         )
         return TdSalesIngestResult(
             staging_rows=0,
@@ -439,6 +610,10 @@ async def ingest_td_sales_workbook(
             rows_downloaded=rows_downloaded,
             dropped_rows=dropped_rows,
             warning_rows=warning_rows,
+            parsed_rows=rows,
+            phone_fallback_rows=phone_fallback_stats.fallback_rows,
+            phone_fallback_unique_values=len(phone_fallback_stats.invalid_phone_numbers),
+            phone_fallback_top_invalid_values=_phone_fallback_top_invalid_values(phone_fallback_stats),
         )
 
     metadata = sa.MetaData()
@@ -672,10 +847,14 @@ async def ingest_td_sales_workbook(
         rows_downloaded=rows_downloaded,
         dropped_rows=dropped_rows,
         warning_rows=warning_rows,
+        parsed_rows=rows,
         edited_rows=edited_rows,
         duplicate_rows=duplicate_rows,
         rows_edited=len(edited_rows),
         rows_duplicate=len(duplicate_rows),
+        phone_fallback_rows=phone_fallback_stats.fallback_rows,
+        phone_fallback_unique_values=len(phone_fallback_stats.invalid_phone_numbers),
+        phone_fallback_top_invalid_values=_phone_fallback_top_invalid_values(phone_fallback_stats),
     )
 
 
@@ -686,6 +865,7 @@ def _expected_headers() -> Sequence[str]:
 __all__ = [
     "TdSalesIngestResult",
     "ingest_td_sales_workbook",
+    "ingest_td_sales_rows",
     "_orders_table",
     "_stg_td_sales_table",
     "_sales_table",

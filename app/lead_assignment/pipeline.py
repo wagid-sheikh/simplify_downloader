@@ -271,7 +271,7 @@ def _send_store_notifications(
             log_event(
                 logger=logger,
                 phase="notify",
-                status="warn",
+                status="warning",
                 message="no attachments found for store",
                 extras={"store_code": store_code, "batch_id": batch_id},
             )
@@ -284,7 +284,7 @@ def _send_store_notifications(
             log_event(
                 logger=logger,
                 phase="notify",
-                status="warn",
+                status="warning",
                 message="no active recipients for store",
                 extras={"store_code": store_code, "batch_id": batch_id},
             )
@@ -325,7 +325,7 @@ def _send_store_notifications(
             log_event(
                 logger=logger,
                 phase="notify",
-                status="warn",
+                status="warning",
                 message="failed to send notification email",
                 extras={"store_code": store_code, "batch_id": batch_id},
             )
@@ -377,7 +377,7 @@ def _send_run_summary(
         log_event(
             logger=logger,
             phase="notify",
-            status="warn",
+            status="warning",
             message="run summary template missing; using fallback template",
             extras={**context, "template_source": "default" if default_template else "built_in"},
         )
@@ -391,7 +391,7 @@ def _send_run_summary(
         log_event(
             logger=logger,
             phase="notify",
-            status="warn",
+            status="warning",
             message="no recipients available for run summary; using default",
             extras={**context, "default_recipient": DEFAULT_RUN_SUMMARY_RECIPIENT},
         )
@@ -416,7 +416,7 @@ def _send_run_summary(
     log_event(
         logger=logger,
         phase="notify",
-        status="ok" if sent else "warn",
+        status="ok" if sent else "warning",
         message="run summary notification dispatched",
         extras={**context, "emails_sent": sent, "emails_planned": planned},
     )
@@ -452,7 +452,7 @@ async def run_leads_assignment_pipeline(env: str | None = None, run_id: str | No
             log_event(
                 logger=logger,
                 phase="orchestrator",
-                status="warn",
+                status="warning",
                 message="no assignments created; skipping pdf generation and notifications",
                 extras={"batch_id": batch_id},
             )
@@ -482,7 +482,7 @@ async def run_leads_assignment_pipeline(env: str | None = None, run_id: str | No
         log_event(
             logger=logger,
             phase="notify",
-            status="warn",
+            status="warning",
             message="no documents available for notification",
             extras={"batch_id": batch_id},
         )
@@ -496,7 +496,7 @@ async def run_leads_assignment_pipeline(env: str | None = None, run_id: str | No
         log_event(
             logger=logger,
             phase="notify",
-            status="warn",
+            status="warning",
             message="notification profile missing",
             extras={"batch_id": batch_id, "run_env": run_env},
         )
@@ -504,7 +504,7 @@ async def run_leads_assignment_pipeline(env: str | None = None, run_id: str | No
         log_event(
             logger=logger,
             phase="notify",
-            status="warn",
+            status="warning",
             message="notification template missing; skipping store notifications",
             extras={"batch_id": batch_id, "run_env": run_env},
         )

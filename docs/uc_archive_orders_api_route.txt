@@ -1,0 +1,2573 @@
+When you first come to the page:https://store.ucleanlaundry.com/archive
+This API is called: https://store.ucleanlaundry.com/api/v1/bookings/getDeliveredOrders?franchise=UCLEAN&page=1&limit=30
+Which returns data like this 
+{
+  "status": "success",
+  "data": [
+    {
+      "booking_code": "UC610-0890",
+      "final_amount": 320,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-02-03 12:12:33",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-31 18:47:47",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-02-02",
+      "name": "Combos Saloon ",
+      "mobile": "7836087861",
+      "email": "",
+      "id": 946596,
+      "status": 7,
+      "address": "Vyapar Kendra Sushant lok 1  GF shop 206 , , , ",
+      "payment_details": "[{\"created_at\": \"2026-02-03 12:12:32.000000\", \"payment_mode\": 4, \"payment_amount\": 320.00}]"
+    },
+    {
+      "booking_code": "UC610-0867",
+      "final_amount": 412.76,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-02-03 10:43:06",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-28 17:33:48",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-30",
+      "name": "Asmita ji ",
+      "mobile": "9474965201",
+      "email": "",
+      "id": 943123,
+      "status": 7,
+      "address": "C1251-52,, 102,, Near lily park",
+      "payment_details": "[{\"created_at\": \"2026-02-03 10:43:06.000000\", \"payment_mode\": 1, \"payment_amount\": 413.00}]"
+    },
+    {
+      "booking_code": "UC610-0869",
+      "final_amount": 957.92,
+      "orderthrough_id": 4,
+      "pick_boy_assign_at": "2026-01-29 10:55:30",
+      "delivered_at": "2026-01-31 17:56:03",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-29 10:59:15",
+      "pickupDate": "2026-01-29",
+      "dropDate": "2026-01-31",
+      "name": "shreya",
+      "mobile": "9084476036",
+      "email": null,
+      "id": 943573,
+      "status": 7,
+      "address": "Room-306, B 723 ground floor , Sushant Lok Phase I, Gurugram, Haryana 122009, Gurugram, ",
+      "payment_details": "[{\"created_at\": \"2026-01-31 17:56:03.000000\", \"payment_mode\": 1, \"payment_amount\": 958.00}]"
+    },
+    {
+      "booking_code": "UC610-0868",
+      "final_amount": 1298.65,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 15:45:10",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-29 12:30:13",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-30",
+      "name": "Rahul",
+      "mobile": "9811909170",
+      "email": "narang.rahul16@gmail.com",
+      "id": 943446,
+      "status": 7,
+      "address": "HOUSE NO 122 THIRD FLOOR SUSHANT LOK 1 , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 15:45:10.000000\", \"payment_mode\": 1, \"payment_amount\": 1299.00}]"
+    },
+    {
+      "booking_code": "UC610-0871",
+      "final_amount": 168.22,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 15:40:04",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-29 12:02:14",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-31",
+      "name": "Vikash",
+      "mobile": "9818584460",
+      "email": null,
+      "id": 943745,
+      "status": 7,
+      "address": "sec -15 -1",
+      "payment_details": "[{\"created_at\": \"2026-01-30 15:40:04.000000\", \"payment_mode\": 1, \"payment_amount\": 169.00}]"
+    },
+    {
+      "booking_code": "UC610-0862",
+      "final_amount": 497.97,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 15:32:36",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-26 17:14:36",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-28",
+      "name": "RAHUL MALIK ",
+      "mobile": "7906643261",
+      "email": "",
+      "id": 941026,
+      "status": 7,
+      "address": "3rd floor 1297 sector 43, Lotus avenue,  , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 15:32:36.000000\", \"payment_mode\": 1, \"payment_amount\": 498.00}]"
+    },
+    {
+      "booking_code": "UC610-0861",
+      "final_amount": 635.56,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 15:30:47",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-26 14:27:22",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-27",
+      "name": "Sameer Singal",
+      "mobile": "9996712662",
+      "email": "sameersingal5@gmail.com",
+      "id": 940959,
+      "status": 7,
+      "address": "2908/203, sector 43, ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 15:30:46.000000\", \"payment_mode\": 1, \"payment_amount\": 636.00}]"
+    },
+    {
+      "booking_code": "UC610-0859",
+      "final_amount": 619.15,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 15:27:31",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-25 19:02:57",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-28",
+      "name": "Puja Pandey",
+      "mobile": "9821204814",
+      "email": "pujatiwai345@gmail.com",
+      "id": 940539,
+      "status": 7,
+      "address": "422, Sector 27, ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 15:27:31.000000\", \"payment_mode\": 4, \"payment_amount\": 620.00}]"
+    },
+    {
+      "booking_code": "UC610-0852",
+      "final_amount": 140.66,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 13:24:50",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-25 10:54:09",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-26",
+      "name": "Hardeep",
+      "mobile": "7080484656",
+      "email": "",
+      "id": 939842,
+      "status": 7,
+      "address": "DLF PHASE 2, , DLF, DLF",
+      "payment_details": "[{\"created_at\": \"2026-01-30 13:24:50.000000\", \"payment_mode\": 1, \"payment_amount\": 141.00}]"
+    },
+    {
+      "booking_code": "UC610-0846",
+      "final_amount": 1787.22,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 13:14:35",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-23 13:00:11",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-24",
+      "name": "Rahul",
+      "mobile": "9811909170",
+      "email": "narang.rahul16@gmail.com",
+      "id": 938100,
+      "status": 7,
+      "address": "HOUSE NO 122 THIRD FLOOR SUSHANT LOK 1 , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 13:14:35.000000\", \"payment_mode\": 1, \"payment_amount\": 1788.00}]"
+    },
+    {
+      "booking_code": "UC610-0845",
+      "final_amount": 557.28,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 13:09:04",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-22 19:32:50",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-25",
+      "name": "shashaank",
+      "mobile": "9818934294",
+      "email": "",
+      "id": 937798,
+      "status": 7,
+      "address": "C 844 A near vyapar, , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 13:09:04.000000\", \"payment_mode\": 1, \"payment_amount\": 558.00}]"
+    },
+    {
+      "booking_code": "UC610-0844",
+      "final_amount": 892.82,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 13:06:09",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-22 17:06:31",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-24",
+      "name": "DIA GOEL ",
+      "mobile": "8126410434",
+      "email": "",
+      "id": 937505,
+      "status": 7,
+      "address": "House No 90, ground floor, sector 27, Gurgaon Haryana 122001, , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 13:06:09.000000\", \"payment_mode\": 1, \"payment_amount\": 893.00}]"
+    },
+    {
+      "booking_code": "UC610-0836",
+      "final_amount": 449.17,
+      "orderthrough_id": 2,
+      "pick_boy_assign_at": "2026-01-21 13:21:50",
+      "delivered_at": "2026-01-30 11:44:10",
+      "cancel_at": null,
+      "suggestion": null,
+      "updated_at": "2026-01-21 14:00:07",
+      "pickupDate": "2026-01-21",
+      "dropDate": "2026-01-23",
+      "name": "Mr. Deepak Sharma",
+      "mobile": "7017889653",
+      "email": "",
+      "id": 936283,
+      "status": 7,
+      "address": "Samaspur Village, Sector 51, Gurugram, Haryana , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 11:44:10.000000\", \"payment_mode\": 1, \"payment_amount\": 450.00}]"
+    },
+    {
+      "booking_code": "UC610-0834",
+      "final_amount": 470.82,
+      "orderthrough_id": 4,
+      "pick_boy_assign_at": "2026-01-21 11:11:23",
+      "delivered_at": "2026-01-30 11:41:58",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-21 11:17:50",
+      "pickupDate": "2026-01-21",
+      "dropDate": "2026-01-24",
+      "name": "Pratham ",
+      "mobile": "9818073147",
+      "email": null,
+      "id": 935945,
+      "status": 7,
+      "address": "Sector-28, Flat-9 , 166, ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 11:41:58.000000\", \"payment_mode\": 4, \"payment_amount\": 500.00}]"
+    },
+    {
+      "booking_code": "UC610-0832",
+      "final_amount": 372.08,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 11:38:02",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-20 14:21:42",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-28",
+      "name": "VAIBHAV GOEL",
+      "mobile": "7082295934",
+      "email": "",
+      "id": 935453,
+      "status": 7,
+      "address": "SECTOR 30, , SEC 30, ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 11:38:02.000000\", \"payment_mode\": 1, \"payment_amount\": 373.00}]"
+    },
+    {
+      "booking_code": "UC610-0829",
+      "final_amount": 233.64,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 11:29:15",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-19 13:36:32",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-20",
+      "name": "Prithi Jain ",
+      "mobile": "9643635141",
+      "email": "",
+      "id": 934513,
+      "status": 7,
+      "address": "shop no : 173 sushant lok 1 vyapar kendra sector 43 , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 11:29:15.000000\", \"payment_mode\": 1, \"payment_amount\": 234.00}]"
+    },
+    {
+      "booking_code": "UC610-0827",
+      "final_amount": 492.06,
+      "orderthrough_id": 4,
+      "pick_boy_assign_at": "2026-01-19 12:56:19",
+      "delivered_at": "2026-01-30 11:26:30",
+      "cancel_at": null,
+      "suggestion": "Please complete cleaning by Thursday",
+      "updated_at": "2026-01-19 12:57:45",
+      "pickupDate": "2026-01-19",
+      "dropDate": "2026-01-21",
+      "name": "Samuel",
+      "mobile": "9740152113",
+      "email": "sjey000@gmail.com",
+      "id": 934253,
+      "status": 7,
+      "address": "F-13 Galaxy Apartments, Golf Course Road, Sector 43",
+      "payment_details": "[{\"created_at\": \"2026-01-30 11:26:29.000000\", \"payment_mode\": 1, \"payment_amount\": 493.00}]"
+    },
+    {
+      "booking_code": "UC610-0825",
+      "final_amount": 650.18,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 11:17:23",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-18 15:04:09",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-18",
+      "name": "MR . RAJESH ",
+      "mobile": "9810806793",
+      "email": "",
+      "id": 933725,
+      "status": 7,
+      "address": "Orlov court4 / 801A Essel tower., , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 11:17:22.000000\", \"payment_mode\": 1, \"payment_amount\": 651.00}]"
+    },
+    {
+      "booking_code": "UC610-0824",
+      "final_amount": 105.14,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 11:15:21",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-18 13:53:47",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-19",
+      "name": "nikhil ",
+      "mobile": "9811843113",
+      "email": "",
+      "id": 933625,
+      "status": 7,
+      "address": "sec 43, , house 851 3rd floor 301, ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 11:15:20.000000\", \"payment_mode\": 1, \"payment_amount\": 106.00}]"
+    },
+    {
+      "booking_code": "UC610-0823",
+      "final_amount": 352.82,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 11:11:54",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-17 18:42:50",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-20",
+      "name": "varun",
+      "mobile": "8708774850",
+      "email": null,
+      "id": 933022,
+      "status": 7,
+      "address": "Second Floor,, Tower 5, Landmark Avenue",
+      "payment_details": "[{\"created_at\": \"2026-01-30 11:11:54.000000\", \"payment_mode\": 1, \"payment_amount\": 353.00}]"
+    },
+    {
+      "booking_code": "UC610-0837",
+      "final_amount": 767.51,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-28 18:10:08",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-21 15:12:13",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-23",
+      "name": "Sameer Singal",
+      "mobile": "9996712662",
+      "email": "sameersingal5@gmail.com",
+      "id": 936503,
+      "status": 7,
+      "address": "2908/203, sector 43, ",
+      "payment_details": "[{\"created_at\": \"2026-01-28 18:10:08.000000\", \"payment_mode\": 1, \"payment_amount\": 768.00}]"
+    },
+    {
+      "booking_code": "UC610-0858",
+      "final_amount": 610.06,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-28 16:31:28",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-25 17:26:39",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-28",
+      "name": "surya",
+      "mobile": "8448271143",
+      "email": "",
+      "id": 940369,
+      "status": 7,
+      "address": "SECTOR 53 DLF GURGAON , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-28 16:31:27.000000\", \"payment_mode\": 4, \"payment_amount\": 611.00}]"
+    },
+    {
+      "booking_code": "UC610-0847",
+      "final_amount": 128.62,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-28 16:31:15",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-23 19:02:35",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-25",
+      "name": "surya",
+      "mobile": "8448271143",
+      "email": "",
+      "id": 938570,
+      "status": 7,
+      "address": "SECTOR 53 DLF GURGAON , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-28 16:31:15.000000\", \"payment_mode\": 4, \"payment_amount\": 129.00}]"
+    },
+    {
+      "booking_code": "UC610-0839",
+      "final_amount": 260,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-27 13:19:54",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-21 16:45:22",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-24",
+      "name": "Combos Saloon ",
+      "mobile": "7836087861",
+      "email": "",
+      "id": 936626,
+      "status": 7,
+      "address": "Vyapar Kendra Sushant lok 1  GF shop 206 , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-27 13:19:54.000000\", \"payment_mode\": 4, \"payment_amount\": 260.00}]"
+    },
+    {
+      "booking_code": "UC610-0826",
+      "final_amount": 699.55,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-22 12:28:43",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-18 18:13:59",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-20",
+      "name": "kushagraen ",
+      "mobile": "8872674973",
+      "email": "",
+      "id": 933963,
+      "status": 7,
+      "address": "SUSHANT LOK BLOCK C , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-22 12:28:42.000000\", \"payment_mode\": 1, \"payment_amount\": 700.00}]"
+    },
+    {
+      "booking_code": "UC610-0828",
+      "final_amount": 324.18,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-22 11:49:36",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-19 10:22:56",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-21",
+      "name": "krishna yadav",
+      "mobile": "9871767912",
+      "email": "",
+      "id": 934260,
+      "status": 7,
+      "address": "ardee city sector 52 b15 ground floor , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-22 11:49:36.000000\", \"payment_mode\": 1, \"payment_amount\": 325.00}]"
+    },
+    {
+      "booking_code": "UC610-0822",
+      "final_amount": 1721.55,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-22 11:47:07",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-17 17:37:25",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-20",
+      "name": "Utkarsh Mishra ",
+      "mobile": "7007833075",
+      "email": null,
+      "id": 932918,
+      "status": 7,
+      "address": "3rd floor 1297 sector 43, Lotus avenue, ",
+      "payment_details": "[{\"created_at\": \"2026-01-22 11:47:07.000000\", \"payment_mode\": 1, \"payment_amount\": 1722.00}]"
+    },
+    {
+      "booking_code": "UC610-0817",
+      "final_amount": 1269.68,
+      "orderthrough_id": 2,
+      "pick_boy_assign_at": "2026-01-17 15:07:14",
+      "delivered_at": "2026-01-22 11:45:46",
+      "cancel_at": null,
+      "suggestion": null,
+      "updated_at": "2026-01-17 17:07:44",
+      "pickupDate": "2026-01-17",
+      "dropDate": "2026-01-20",
+      "name": "Ms. Jesley",
+      "mobile": "9075226255",
+      "email": "",
+      "id": 932516,
+      "status": 7,
+      "address": "Kaveri Hostel MDi, 1442, Delhi - Jaipur Expy, Block C, Sukhrali, Sector 17, Gurugram, Haryana , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-22 11:45:46.000000\", \"payment_mode\": 1, \"payment_amount\": 1270.00}]"
+    },
+    {
+      "booking_code": "UC610-0816",
+      "final_amount": 2250.37,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-22 11:13:17",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-17 12:23:14",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-20",
+      "name": "Mayank",
+      "mobile": "9878945424",
+      "email": "Shanma355@gmail.com",
+      "id": 932461,
+      "status": 7,
+      "address": "3A, 3rd floor , C 2598A, Gold souk mall",
+      "payment_details": "[{\"created_at\": \"2026-01-22 11:13:17.000000\", \"payment_mode\": 1, \"payment_amount\": 2251.00}]"
+    },
+    {
+      "booking_code": "UC610-0818",
+      "final_amount": 1394.17,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-22 11:13:03",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-17 13:20:25",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-19",
+      "name": "SOUVIK SINHA ROY ",
+      "mobile": "9999161393",
+      "email": "",
+      "id": 932564,
+      "status": 7,
+      "address": "REGENCY PARK 2 SOCIETY W-185 FLAT , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-22 11:13:03.000000\", \"payment_mode\": 1, \"payment_amount\": 1395.00}]"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 30,
+    "total": 489,
+    "totalPages": 17
+  }
+}
+Then I perform query to pull data for my needed date range and following call is made to the backend: I queried for 01-Jan-2026 to 10-Feb-2026
+https://store.ucleanlaundry.com/api/v1/bookings/getDeliveredOrders?franchise=UCLEAN&page=1&limit=30&dateRange=custom&startDate=2026-01-01&endDate=2026-02-10&dateType=delivery
+And then following data is returned:
+{
+  "status": "success",
+  "data": [
+    {
+      "booking_code": "UC610-0890",
+      "final_amount": 320,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-02-03 12:12:33",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-31 18:47:47",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-02-02",
+      "name": "Combos Saloon ",
+      "mobile": "7836087861",
+      "email": "",
+      "id": 946596,
+      "status": 7,
+      "address": "Vyapar Kendra Sushant lok 1  GF shop 206 , , , ",
+      "payment_details": "[{\"created_at\": \"2026-02-03 12:12:32.000000\", \"payment_mode\": 4, \"payment_amount\": 320.00}]"
+    },
+    {
+      "booking_code": "UC610-0867",
+      "final_amount": 412.76,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-02-03 10:43:06",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-28 17:33:48",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-30",
+      "name": "Asmita ji ",
+      "mobile": "9474965201",
+      "email": "",
+      "id": 943123,
+      "status": 7,
+      "address": "C1251-52,, 102,, Near lily park",
+      "payment_details": "[{\"created_at\": \"2026-02-03 10:43:06.000000\", \"payment_mode\": 1, \"payment_amount\": 413.00}]"
+    },
+    {
+      "booking_code": "UC610-0869",
+      "final_amount": 957.92,
+      "orderthrough_id": 4,
+      "pick_boy_assign_at": "2026-01-29 10:55:30",
+      "delivered_at": "2026-01-31 17:56:03",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-29 10:59:15",
+      "pickupDate": "2026-01-29",
+      "dropDate": "2026-01-31",
+      "name": "shreya",
+      "mobile": "9084476036",
+      "email": null,
+      "id": 943573,
+      "status": 7,
+      "address": "Room-306, B 723 ground floor , Sushant Lok Phase I, Gurugram, Haryana 122009, Gurugram, ",
+      "payment_details": "[{\"created_at\": \"2026-01-31 17:56:03.000000\", \"payment_mode\": 1, \"payment_amount\": 958.00}]"
+    },
+    {
+      "booking_code": "UC610-0868",
+      "final_amount": 1298.65,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 15:45:10",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-29 12:30:13",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-30",
+      "name": "Rahul",
+      "mobile": "9811909170",
+      "email": "narang.rahul16@gmail.com",
+      "id": 943446,
+      "status": 7,
+      "address": "HOUSE NO 122 THIRD FLOOR SUSHANT LOK 1 , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 15:45:10.000000\", \"payment_mode\": 1, \"payment_amount\": 1299.00}]"
+    },
+    {
+      "booking_code": "UC610-0871",
+      "final_amount": 168.22,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 15:40:04",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-29 12:02:14",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-31",
+      "name": "Vikash",
+      "mobile": "9818584460",
+      "email": null,
+      "id": 943745,
+      "status": 7,
+      "address": "sec -15 -1",
+      "payment_details": "[{\"created_at\": \"2026-01-30 15:40:04.000000\", \"payment_mode\": 1, \"payment_amount\": 169.00}]"
+    },
+    {
+      "booking_code": "UC610-0862",
+      "final_amount": 497.97,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 15:32:36",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-26 17:14:36",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-28",
+      "name": "RAHUL MALIK ",
+      "mobile": "7906643261",
+      "email": "",
+      "id": 941026,
+      "status": 7,
+      "address": "3rd floor 1297 sector 43, Lotus avenue,  , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 15:32:36.000000\", \"payment_mode\": 1, \"payment_amount\": 498.00}]"
+    },
+    {
+      "booking_code": "UC610-0861",
+      "final_amount": 635.56,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 15:30:47",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-26 14:27:22",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-27",
+      "name": "Sameer Singal",
+      "mobile": "9996712662",
+      "email": "sameersingal5@gmail.com",
+      "id": 940959,
+      "status": 7,
+      "address": "2908/203, sector 43, ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 15:30:46.000000\", \"payment_mode\": 1, \"payment_amount\": 636.00}]"
+    },
+    {
+      "booking_code": "UC610-0859",
+      "final_amount": 619.15,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 15:27:31",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-25 19:02:57",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-28",
+      "name": "Puja Pandey",
+      "mobile": "9821204814",
+      "email": "pujatiwai345@gmail.com",
+      "id": 940539,
+      "status": 7,
+      "address": "422, Sector 27, ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 15:27:31.000000\", \"payment_mode\": 4, \"payment_amount\": 620.00}]"
+    },
+    {
+      "booking_code": "UC610-0852",
+      "final_amount": 140.66,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 13:24:50",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-25 10:54:09",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-26",
+      "name": "Hardeep",
+      "mobile": "7080484656",
+      "email": "",
+      "id": 939842,
+      "status": 7,
+      "address": "DLF PHASE 2, , DLF, DLF",
+      "payment_details": "[{\"created_at\": \"2026-01-30 13:24:50.000000\", \"payment_mode\": 1, \"payment_amount\": 141.00}]"
+    },
+    {
+      "booking_code": "UC610-0846",
+      "final_amount": 1787.22,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 13:14:35",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-23 13:00:11",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-24",
+      "name": "Rahul",
+      "mobile": "9811909170",
+      "email": "narang.rahul16@gmail.com",
+      "id": 938100,
+      "status": 7,
+      "address": "HOUSE NO 122 THIRD FLOOR SUSHANT LOK 1 , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 13:14:35.000000\", \"payment_mode\": 1, \"payment_amount\": 1788.00}]"
+    },
+    {
+      "booking_code": "UC610-0845",
+      "final_amount": 557.28,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 13:09:04",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-22 19:32:50",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-25",
+      "name": "shashaank",
+      "mobile": "9818934294",
+      "email": "",
+      "id": 937798,
+      "status": 7,
+      "address": "C 844 A near vyapar, , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 13:09:04.000000\", \"payment_mode\": 1, \"payment_amount\": 558.00}]"
+    },
+    {
+      "booking_code": "UC610-0844",
+      "final_amount": 892.82,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 13:06:09",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-22 17:06:31",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-24",
+      "name": "DIA GOEL ",
+      "mobile": "8126410434",
+      "email": "",
+      "id": 937505,
+      "status": 7,
+      "address": "House No 90, ground floor, sector 27, Gurgaon Haryana 122001, , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 13:06:09.000000\", \"payment_mode\": 1, \"payment_amount\": 893.00}]"
+    },
+    {
+      "booking_code": "UC610-0836",
+      "final_amount": 449.17,
+      "orderthrough_id": 2,
+      "pick_boy_assign_at": "2026-01-21 13:21:50",
+      "delivered_at": "2026-01-30 11:44:10",
+      "cancel_at": null,
+      "suggestion": null,
+      "updated_at": "2026-01-21 14:00:07",
+      "pickupDate": "2026-01-21",
+      "dropDate": "2026-01-23",
+      "name": "Mr. Deepak Sharma",
+      "mobile": "7017889653",
+      "email": "",
+      "id": 936283,
+      "status": 7,
+      "address": "Samaspur Village, Sector 51, Gurugram, Haryana , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 11:44:10.000000\", \"payment_mode\": 1, \"payment_amount\": 450.00}]"
+    },
+    {
+      "booking_code": "UC610-0834",
+      "final_amount": 470.82,
+      "orderthrough_id": 4,
+      "pick_boy_assign_at": "2026-01-21 11:11:23",
+      "delivered_at": "2026-01-30 11:41:58",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-21 11:17:50",
+      "pickupDate": "2026-01-21",
+      "dropDate": "2026-01-24",
+      "name": "Pratham ",
+      "mobile": "9818073147",
+      "email": null,
+      "id": 935945,
+      "status": 7,
+      "address": "Sector-28, Flat-9 , 166, ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 11:41:58.000000\", \"payment_mode\": 4, \"payment_amount\": 500.00}]"
+    },
+    {
+      "booking_code": "UC610-0832",
+      "final_amount": 372.08,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 11:38:02",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-20 14:21:42",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-28",
+      "name": "VAIBHAV GOEL",
+      "mobile": "7082295934",
+      "email": "",
+      "id": 935453,
+      "status": 7,
+      "address": "SECTOR 30, , SEC 30, ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 11:38:02.000000\", \"payment_mode\": 1, \"payment_amount\": 373.00}]"
+    },
+    {
+      "booking_code": "UC610-0829",
+      "final_amount": 233.64,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 11:29:15",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-19 13:36:32",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-20",
+      "name": "Prithi Jain ",
+      "mobile": "9643635141",
+      "email": "",
+      "id": 934513,
+      "status": 7,
+      "address": "shop no : 173 sushant lok 1 vyapar kendra sector 43 , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 11:29:15.000000\", \"payment_mode\": 1, \"payment_amount\": 234.00}]"
+    },
+    {
+      "booking_code": "UC610-0827",
+      "final_amount": 492.06,
+      "orderthrough_id": 4,
+      "pick_boy_assign_at": "2026-01-19 12:56:19",
+      "delivered_at": "2026-01-30 11:26:30",
+      "cancel_at": null,
+      "suggestion": "Please complete cleaning by Thursday",
+      "updated_at": "2026-01-19 12:57:45",
+      "pickupDate": "2026-01-19",
+      "dropDate": "2026-01-21",
+      "name": "Samuel",
+      "mobile": "9740152113",
+      "email": "sjey000@gmail.com",
+      "id": 934253,
+      "status": 7,
+      "address": "F-13 Galaxy Apartments, Golf Course Road, Sector 43",
+      "payment_details": "[{\"created_at\": \"2026-01-30 11:26:29.000000\", \"payment_mode\": 1, \"payment_amount\": 493.00}]"
+    },
+    {
+      "booking_code": "UC610-0825",
+      "final_amount": 650.18,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 11:17:23",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-18 15:04:09",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-18",
+      "name": "MR . RAJESH ",
+      "mobile": "9810806793",
+      "email": "",
+      "id": 933725,
+      "status": 7,
+      "address": "Orlov court4 / 801A Essel tower., , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 11:17:22.000000\", \"payment_mode\": 1, \"payment_amount\": 651.00}]"
+    },
+    {
+      "booking_code": "UC610-0824",
+      "final_amount": 105.14,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 11:15:21",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-18 13:53:47",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-19",
+      "name": "nikhil ",
+      "mobile": "9811843113",
+      "email": "",
+      "id": 933625,
+      "status": 7,
+      "address": "sec 43, , house 851 3rd floor 301, ",
+      "payment_details": "[{\"created_at\": \"2026-01-30 11:15:20.000000\", \"payment_mode\": 1, \"payment_amount\": 106.00}]"
+    },
+    {
+      "booking_code": "UC610-0823",
+      "final_amount": 352.82,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-30 11:11:54",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-17 18:42:50",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-20",
+      "name": "varun",
+      "mobile": "8708774850",
+      "email": null,
+      "id": 933022,
+      "status": 7,
+      "address": "Second Floor,, Tower 5, Landmark Avenue",
+      "payment_details": "[{\"created_at\": \"2026-01-30 11:11:54.000000\", \"payment_mode\": 1, \"payment_amount\": 353.00}]"
+    },
+    {
+      "booking_code": "UC610-0837",
+      "final_amount": 767.51,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-28 18:10:08",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-21 15:12:13",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-23",
+      "name": "Sameer Singal",
+      "mobile": "9996712662",
+      "email": "sameersingal5@gmail.com",
+      "id": 936503,
+      "status": 7,
+      "address": "2908/203, sector 43, ",
+      "payment_details": "[{\"created_at\": \"2026-01-28 18:10:08.000000\", \"payment_mode\": 1, \"payment_amount\": 768.00}]"
+    },
+    {
+      "booking_code": "UC610-0858",
+      "final_amount": 610.06,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-28 16:31:28",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-25 17:26:39",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-28",
+      "name": "surya",
+      "mobile": "8448271143",
+      "email": "",
+      "id": 940369,
+      "status": 7,
+      "address": "SECTOR 53 DLF GURGAON , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-28 16:31:27.000000\", \"payment_mode\": 4, \"payment_amount\": 611.00}]"
+    },
+    {
+      "booking_code": "UC610-0847",
+      "final_amount": 128.62,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-28 16:31:15",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-23 19:02:35",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-25",
+      "name": "surya",
+      "mobile": "8448271143",
+      "email": "",
+      "id": 938570,
+      "status": 7,
+      "address": "SECTOR 53 DLF GURGAON , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-28 16:31:15.000000\", \"payment_mode\": 4, \"payment_amount\": 129.00}]"
+    },
+    {
+      "booking_code": "UC610-0839",
+      "final_amount": 260,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-27 13:19:54",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-21 16:45:22",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-24",
+      "name": "Combos Saloon ",
+      "mobile": "7836087861",
+      "email": "",
+      "id": 936626,
+      "status": 7,
+      "address": "Vyapar Kendra Sushant lok 1  GF shop 206 , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-27 13:19:54.000000\", \"payment_mode\": 4, \"payment_amount\": 260.00}]"
+    },
+    {
+      "booking_code": "UC610-0826",
+      "final_amount": 699.55,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-22 12:28:43",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-18 18:13:59",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-20",
+      "name": "kushagraen ",
+      "mobile": "8872674973",
+      "email": "",
+      "id": 933963,
+      "status": 7,
+      "address": "SUSHANT LOK BLOCK C , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-22 12:28:42.000000\", \"payment_mode\": 1, \"payment_amount\": 700.00}]"
+    },
+    {
+      "booking_code": "UC610-0828",
+      "final_amount": 324.18,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-22 11:49:36",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-19 10:22:56",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-21",
+      "name": "krishna yadav",
+      "mobile": "9871767912",
+      "email": "",
+      "id": 934260,
+      "status": 7,
+      "address": "ardee city sector 52 b15 ground floor , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-22 11:49:36.000000\", \"payment_mode\": 1, \"payment_amount\": 325.00}]"
+    },
+    {
+      "booking_code": "UC610-0822",
+      "final_amount": 1721.55,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-22 11:47:07",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-17 17:37:25",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-20",
+      "name": "Utkarsh Mishra ",
+      "mobile": "7007833075",
+      "email": null,
+      "id": 932918,
+      "status": 7,
+      "address": "3rd floor 1297 sector 43, Lotus avenue, ",
+      "payment_details": "[{\"created_at\": \"2026-01-22 11:47:07.000000\", \"payment_mode\": 1, \"payment_amount\": 1722.00}]"
+    },
+    {
+      "booking_code": "UC610-0817",
+      "final_amount": 1269.68,
+      "orderthrough_id": 2,
+      "pick_boy_assign_at": "2026-01-17 15:07:14",
+      "delivered_at": "2026-01-22 11:45:46",
+      "cancel_at": null,
+      "suggestion": null,
+      "updated_at": "2026-01-17 17:07:44",
+      "pickupDate": "2026-01-17",
+      "dropDate": "2026-01-20",
+      "name": "Ms. Jesley",
+      "mobile": "9075226255",
+      "email": "",
+      "id": 932516,
+      "status": 7,
+      "address": "Kaveri Hostel MDi, 1442, Delhi - Jaipur Expy, Block C, Sukhrali, Sector 17, Gurugram, Haryana , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-22 11:45:46.000000\", \"payment_mode\": 1, \"payment_amount\": 1270.00}]"
+    },
+    {
+      "booking_code": "UC610-0816",
+      "final_amount": 2250.37,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-22 11:13:17",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-17 12:23:14",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-20",
+      "name": "Mayank",
+      "mobile": "9878945424",
+      "email": "Shanma355@gmail.com",
+      "id": 932461,
+      "status": 7,
+      "address": "3A, 3rd floor , C 2598A, Gold souk mall",
+      "payment_details": "[{\"created_at\": \"2026-01-22 11:13:17.000000\", \"payment_mode\": 1, \"payment_amount\": 2251.00}]"
+    },
+    {
+      "booking_code": "UC610-0818",
+      "final_amount": 1394.17,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-22 11:13:03",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-17 13:20:25",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-19",
+      "name": "SOUVIK SINHA ROY ",
+      "mobile": "9999161393",
+      "email": "",
+      "id": 932564,
+      "status": 7,
+      "address": "REGENCY PARK 2 SOCIETY W-185 FLAT , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-22 11:13:03.000000\", \"payment_mode\": 1, \"payment_amount\": 1395.00}]"
+    }
+  ],
+  "pagination": {
+    "page": 1,
+    "limit": 30,
+    "total": 57,
+    "totalPages": 2
+  }
+}
+Then I navigate to page 2: following API is called:
+https://store.ucleanlaundry.com/api/v1/bookings/getDeliveredOrders?franchise=UCLEAN&page=2&limit=30&dateRange=custom&startDate=2026-01-01&endDate=2026-02-10&dateType=delivery
+Which returns data like this:
+{
+  "status": "success",
+  "data": [
+    {
+      "booking_code": "UC610-0813",
+      "final_amount": 3343.25,
+      "orderthrough_id": 4,
+      "pick_boy_assign_at": "2026-01-16 19:38:06",
+      "delivered_at": "2026-01-22 11:00:02",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-16 19:44:16",
+      "pickupDate": "2026-01-16",
+      "dropDate": "2026-01-19",
+      "name": "Puja Pandey",
+      "mobile": "9821204814",
+      "email": "pujatiwai345@gmail.com",
+      "id": 931759,
+      "status": 7,
+      "address": "422, Sector 27, ",
+      "payment_details": "[{\"created_at\": \"2026-01-22 11:00:02.000000\", \"payment_mode\": 1, \"payment_amount\": 3344.00}]"
+    },
+    {
+      "booking_code": "UC610-0811",
+      "final_amount": 351.04,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-22 10:54:06",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-16 15:18:48",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-18",
+      "name": "krishna yadav",
+      "mobile": "9871767912",
+      "email": "",
+      "id": 931698,
+      "status": 7,
+      "address": "ardee city sector 52 b15 ground floor , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-22 10:54:06.000000\", \"payment_mode\": 1, \"payment_amount\": 352.00}]"
+    },
+    {
+      "booking_code": "UC610-0810",
+      "final_amount": 1179.32,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-22 10:50:01",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-16 13:56:33",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-19",
+      "name": "ISHITA GUPTA ",
+      "mobile": "9125736020",
+      "email": "",
+      "id": 931456,
+      "status": 7,
+      "address": "1ST FLOOR C1 ARDEE CITY SECTOR 52, , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-22 10:50:01.000000\", \"payment_mode\": 1, \"payment_amount\": 1180.00}]"
+    },
+    {
+      "booking_code": "UC610-0528",
+      "final_amount": 4393.22,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-21 17:06:51",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2025-12-24 18:35:42",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2025-11-12",
+      "name": "VANDANA",
+      "mobile": "9889563001",
+      "email": "",
+      "id": 861107,
+      "status": 7,
+      "address": "F704 MAPIL HEIGHT, , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-21 17:06:51.000000\", \"payment_mode\": 4, \"payment_amount\": 4000.00}]"
+    },
+    {
+      "booking_code": "UC610-0833",
+      "final_amount": 711.54,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-21 17:05:37",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-20 15:56:00",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-21",
+      "name": "vanshika maheshwari ",
+      "mobile": "7791810225",
+      "email": "",
+      "id": 935612,
+      "status": 7,
+      "address": "flat no 603 MS07 kendriya vihar  sector 56, , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-21 17:05:36.000000\", \"payment_mode\": 4, \"payment_amount\": 712.00}]"
+    },
+    {
+      "booking_code": "UC610-0819",
+      "final_amount": 342,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-21 14:12:24",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-17 14:17:44",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-19",
+      "name": "Combos Saloon ",
+      "mobile": "7836087861",
+      "email": "",
+      "id": 932672,
+      "status": 7,
+      "address": "Vyapar Kendra Sushant lok 1  GF shop 206 , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-21 14:12:24.000000\", \"payment_mode\": 4, \"payment_amount\": 342.00}]"
+    },
+    {
+      "booking_code": "UC610-0830",
+      "final_amount": 290,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-21 14:12:04",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-19 14:25:53",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-20",
+      "name": "Combos Saloon ",
+      "mobile": "7836087861",
+      "email": "",
+      "id": 934570,
+      "status": 7,
+      "address": "Vyapar Kendra Sushant lok 1  GF shop 206 , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-21 14:12:04.000000\", \"payment_mode\": 4, \"payment_amount\": 290.00}]"
+    },
+    {
+      "booking_code": "UC610-0769",
+      "final_amount": 411.82,
+      "orderthrough_id": 4,
+      "pick_boy_assign_at": "2026-01-05 21:38:42",
+      "delivered_at": "2026-01-20 18:49:36",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-05 21:39:52",
+      "pickupDate": "2026-01-05",
+      "dropDate": "2026-01-08",
+      "name": "Baibhav ",
+      "mobile": "7739314444",
+      "email": "baibhavhomework@gmail.con",
+      "id": 921538,
+      "status": 7,
+      "address": "Plot no. 596, Golf Course Road, Flock coliving sector 43",
+      "payment_details": "[{\"created_at\": \"2026-01-20 18:49:36.000000\", \"payment_mode\": 1, \"payment_amount\": 20.00}, {\"created_at\": \"2026-01-20 18:49:36.000000\", \"payment_mode\": 4, \"payment_amount\": 392.00}]"
+    },
+    {
+      "booking_code": "UC610-0774",
+      "final_amount": 707.99,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-20 18:48:55",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-06 14:31:09",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-07",
+      "name": "Baibhav ",
+      "mobile": "7739314444",
+      "email": "baibhavhomework@gmail.con",
+      "id": 922305,
+      "status": 7,
+      "address": "Plot no. 596, Golf Course Road, Flock coliving sector 43",
+      "payment_details": "[{\"created_at\": \"2026-01-20 18:48:54.000000\", \"payment_mode\": 4, \"payment_amount\": 708.00}]"
+    },
+    {
+      "booking_code": "UC610-0799",
+      "final_amount": 1183.64,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-16 10:34:52",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-13 13:33:09",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-15",
+      "name": "shashaank",
+      "mobile": "9818934294",
+      "email": "",
+      "id": 929027,
+      "status": 7,
+      "address": "C 844 A near vyapar, , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-16 10:34:52.000000\", \"payment_mode\": 1, \"payment_amount\": 1184.00}]"
+    },
+    {
+      "booking_code": "UC610-0800",
+      "final_amount": 2003.54,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-15 19:13:54",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-13 15:29:53",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-14",
+      "name": "Rahul",
+      "mobile": "9811909170",
+      "email": "narang.rahul16@gmail.com",
+      "id": 929179,
+      "status": 7,
+      "address": "HOUSE NO 122 THIRD FLOOR SUSHANT LOK 1 , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-15 19:13:53.000000\", \"payment_mode\": 1, \"payment_amount\": 2004.00}]"
+    },
+    {
+      "booking_code": "UC610-0781",
+      "final_amount": 653.42,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-15 17:29:45",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-07 14:18:35",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-10",
+      "name": "Itisha mam",
+      "mobile": "9982156048",
+      "email": "",
+      "id": 923305,
+      "status": 7,
+      "address": "tower 5 flat no. 1502, , Unitech the palms, south city 1, ",
+      "payment_details": "[{\"created_at\": \"2026-01-15 17:29:45.000000\", \"payment_mode\": 1, \"payment_amount\": 654.00}]"
+    },
+    {
+      "booking_code": "UC610-0797",
+      "final_amount": 250.14,
+      "orderthrough_id": 4,
+      "pick_boy_assign_at": "2026-01-13 12:49:33",
+      "delivered_at": "2026-01-15 15:43:13",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-13 13:18:53",
+      "pickupDate": "2026-01-13",
+      "dropDate": "2026-01-13",
+      "name": "Armaan",
+      "mobile": "7726881588",
+      "email": "armaansbrar07@gmail.com",
+      "id": 928813,
+      "status": 7,
+      "address": "A55-12, Street Number 55, ",
+      "payment_details": "[{\"created_at\": \"2026-01-15 15:43:13.000000\", \"payment_mode\": 1, \"payment_amount\": 251.00}]"
+    },
+    {
+      "booking_code": "UC610-0798",
+      "final_amount": 350.17,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-15 15:42:10",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-13 13:08:42",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-13",
+      "name": "stuti verma",
+      "mobile": "9682798097",
+      "email": null,
+      "id": 928960,
+      "status": 7,
+      "address": "first floor 2148 room no 5, sushant lok block c, ",
+      "payment_details": "[{\"created_at\": \"2026-01-15 15:42:10.000000\", \"payment_mode\": 1, \"payment_amount\": 351.00}]"
+    },
+    {
+      "booking_code": "UC610-0791",
+      "final_amount": 580.6,
+      "orderthrough_id": 4,
+      "pick_boy_assign_at": "2026-01-11 16:15:57",
+      "delivered_at": "2026-01-15 15:40:47",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-11 16:26:55",
+      "pickupDate": "2026-01-11",
+      "dropDate": "2026-01-12",
+      "name": "Abhinav Kanaujia ",
+      "mobile": "7307781578",
+      "email": null,
+      "id": 926869,
+      "status": 7,
+      "address": "Room no. 102, First floor, C2934, Block C, Sushant lok phase 1, Sector 43, ",
+      "payment_details": "[{\"created_at\": \"2026-01-15 15:40:47.000000\", \"payment_mode\": 1, \"payment_amount\": 581.00}]"
+    },
+    {
+      "booking_code": "UC610-0802",
+      "final_amount": 505.04,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-15 15:26:25",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-13 16:53:05",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-14",
+      "name": "Itisha mam",
+      "mobile": "9982156048",
+      "email": "",
+      "id": 929260,
+      "status": 7,
+      "address": "tower 5 flat no. 1502, , Unitech the palms, south city 1, ",
+      "payment_details": "[{\"created_at\": \"2026-01-15 15:26:24.000000\", \"payment_mode\": 1, \"payment_amount\": 505.04}]"
+    },
+    {
+      "booking_code": "UC610-0738",
+      "final_amount": 300,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-15 13:37:59",
+      "cancel_at": null,
+      "suggestion": "SHOES",
+      "updated_at": "2025-12-30 12:18:25",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-02",
+      "name": "SAMAR KUMAR ",
+      "mobile": "7700005018",
+      "email": "",
+      "id": 915863,
+      "status": 7,
+      "address": "Stanza living, 152,  Silokra Rd, Vijay Vihar, Sector 30, Gurugram, , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-15 13:37:59.000000\", \"payment_mode\": 1, \"payment_amount\": 300.00}]"
+    },
+    {
+      "booking_code": "UC610-0805",
+      "final_amount": 1416.38,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-15 13:37:36",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-14 16:38:12",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-15",
+      "name": "SAMAR KUMAR ",
+      "mobile": "7700005018",
+      "email": "",
+      "id": 929910,
+      "status": 7,
+      "address": "Stanza living, 152,  Silokra Rd, Vijay Vihar, Sector 30, Gurugram, , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-15 13:37:36.000000\", \"payment_mode\": 1, \"payment_amount\": 1417.00}]"
+    },
+    {
+      "booking_code": "UC610-0780",
+      "final_amount": 1752.3,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-09 18:56:00",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-07 11:43:35",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-07",
+      "name": "VIJAY YADAV",
+      "mobile": "9818867979",
+      "email": "",
+      "id": 923075,
+      "status": 7,
+      "address": "SECTOR 43, , SECTOR 43, ",
+      "payment_details": "[{\"created_at\": \"2026-01-09 18:55:59.000000\", \"payment_mode\": 1, \"payment_amount\": 1753.00}]"
+    },
+    {
+      "booking_code": "UC610-0782",
+      "final_amount": 240,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-09 13:35:21",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-07 18:47:56",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-10",
+      "name": "Combos Saloon ",
+      "mobile": "7836087861",
+      "email": "",
+      "id": 923567,
+      "status": 7,
+      "address": "Vyapar Kendra Sushant lok 1  GF shop 206 , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-09 13:35:20.000000\", \"payment_mode\": 4, \"payment_amount\": 250.00}]"
+    },
+    {
+      "booking_code": "UC610-0768",
+      "final_amount": 481.44,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-08 17:11:59",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-05 16:54:53",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-08",
+      "name": "surya",
+      "mobile": "8448271143",
+      "email": "",
+      "id": 921512,
+      "status": 7,
+      "address": "SECTOR 53 DLF GURGAON , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-08 17:11:59.000000\", \"payment_mode\": 4, \"payment_amount\": 482.00}]"
+    },
+    {
+      "booking_code": "UC610-0759",
+      "final_amount": 1627.81,
+      "orderthrough_id": 4,
+      "pick_boy_assign_at": "2026-01-04 11:38:13",
+      "delivered_at": "2026-01-06 13:05:05",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-01-04 11:53:29",
+      "pickupDate": "2026-01-04",
+      "dropDate": "2026-01-06",
+      "name": "Venkatesh",
+      "mobile": "7042612642",
+      "email": "mailmvenkateshreddy@gmail.com",
+      "id": 919904,
+      "status": 7,
+      "address": "B704, Block B, ",
+      "payment_details": "[{\"created_at\": \"2026-01-06 13:05:05.000000\", \"payment_mode\": 1, \"payment_amount\": 1628.00}]"
+    },
+    {
+      "booking_code": "UC610-0740",
+      "final_amount": 411.82,
+      "orderthrough_id": 4,
+      "pick_boy_assign_at": "2025-12-31 13:41:25",
+      "delivered_at": "2026-01-04 16:00:04",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2025-12-31 13:42:06",
+      "pickupDate": "2025-12-31",
+      "dropDate": "2026-01-03",
+      "name": "Divyansh",
+      "mobile": "7073013567",
+      "email": "divyanshkalia27@gmail.com",
+      "id": 916586,
+      "status": 7,
+      "address": "1st floor, 898A, Block C, ",
+      "payment_details": "[{\"created_at\": \"2026-01-04 16:00:04.000000\", \"payment_mode\": 1, \"payment_amount\": 412.00}]"
+    },
+    {
+      "booking_code": "UC610-0696",
+      "final_amount": 1647.28,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-04 13:54:19",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2026-02-08 20:25:25",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2025-12-25",
+      "name": "Ranodeep",
+      "mobile": "7688055417",
+      "email": "rano1396@gmail.com",
+      "id": 907605,
+      "status": 7,
+      "address": "House 219 Housr Homes, Phase 1, Housr Homes",
+      "payment_details": "[{\"created_at\": \"2026-01-04 13:54:19.000000\", \"payment_mode\": 1, \"payment_amount\": 1648.00}]"
+    },
+    {
+      "booking_code": "UC610-0727",
+      "final_amount": 1570.82,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-03 19:15:09",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2025-12-27 12:17:24",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2025-12-30",
+      "name": "MANAN ",
+      "mobile": "9910012308",
+      "email": "",
+      "id": 912881,
+      "status": 7,
+      "address": "E111 2ND FLOOR E BLOCK SUSHANT LOK PHASE 1 , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-03 19:15:09.000000\", \"payment_mode\": 1, \"payment_amount\": 1571.00}]"
+    },
+    {
+      "booking_code": "UC610-0742",
+      "final_amount": 776.13,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-03 14:54:28",
+      "cancel_at": null,
+      "suggestion": "10 ARTICLES ",
+      "updated_at": "2025-12-31 18:35:47",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-02",
+      "name": "Geetu",
+      "mobile": "9711130288",
+      "email": "Geetu2099@gmail.com",
+      "id": 917208,
+      "status": 7,
+      "address": "A307, Huda Sector, Near shape up gym",
+      "payment_details": "[{\"created_at\": \"2026-01-03 14:54:28.000000\", \"payment_mode\": 1, \"payment_amount\": 777.00}]"
+    },
+    {
+      "booking_code": "UC610-0734",
+      "final_amount": 597.6,
+      "orderthrough_id": 1,
+      "pick_boy_assign_at": null,
+      "delivered_at": "2026-01-02 17:28:26",
+      "cancel_at": null,
+      "suggestion": "",
+      "updated_at": "2025-12-30 11:16:21",
+      "pickupDate": "0000-00-00",
+      "dropDate": "2026-01-01",
+      "name": "HARSHIT ",
+      "mobile": "9953554480",
+      "email": "",
+      "id": 914785,
+      "status": 7,
+      "address": "C777 FRESH ALLEY STORE C BLOCK , , , ",
+      "payment_details": "[{\"created_at\": \"2026-01-02 17:28:25.000000\", \"payment_mode\": 1, \"payment_amount\": 598.00}]"
+    }
+  ],
+  "pagination": {
+    "page": 2,
+    "limit": 30,
+    "total": 57,
+    "totalPages": 2
+  }
+}
+Then in UI i click on order: UC610-0759 to see it's order details, following API is called.
+https://store.ucleanlaundry.com/api/v1/bookings/generateInvoice/919904?franchise=UCLEAN
+Which returns full HTML like this containing order details:
+<html>
+<head>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      line-height: 1.6;
+      color: #4d4d4d;
+      background: #fff;
+    }
+
+    .invoice-container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: #fff;
+      box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
+    }
+
+    .invoice-page {
+      padding: 0;
+    }
+
+    .invoice-body {
+      font-family: 'Poppins', sans-serif;
+    }
+
+    /* Header Styles */
+    .body-header {
+      background: #003A26;
+      /* background: linear-gradient(135deg, #003A26 0%, #004d33 100%); */
+      padding: 15px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .body-header-wt {
+      background: #000000;
+      /* background: linear-gradient(135deg, #003A26 0%, #004d33 100%); */
+      padding: 15px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 15px;
+      width: 100%;
+    }
+
+    .logo-image {
+      height: 50px;
+      width: auto;
+    }
+
+    .logo-text {
+      color: #74b944;
+      font-size: 14px;
+      font-weight: 500;
+      text-decoration: none;
+    }
+
+    .logo-text-wt {
+      color: #ffffff;
+      font-size: 14px;
+      font-weight: 500;
+      text-decoration: none;
+    }
+
+    /* Main Content */
+    .page-body {
+      padding: 20px;
+    }
+
+    .invoice-body-inner {
+      margin: 0;
+    }
+
+    /* Invoice Header */
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+      /* padding: 20px;
+      background: #f8f9fa;
+      border-radius: 8px;
+      border-left: 4px solid #003A26; */
+    }
+
+    .invoice-number {
+      font-size: 18px;
+      color: #003A26;
+      font-weight: 600;
+    }
+
+    .normal-text{
+      font-weight: 500;
+    }
+
+    .challan-id {
+      background: #003A261A;
+      padding: 8px 16px;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      color: #003A26;
+    }
+
+    /* Customer and Store Details */
+    .customer-store-container {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 30px;
+      margin-bottom: 30px;
+    }
+
+    .details-left, .details-right {
+      overflow: hidden;
+    }
+
+    .body-customer-details-header {
+      background: #edeeeb;
+      border-radius: 8px;
+      padding: 10px 20px;
+      font-weight: 600;
+      font-size: 16px;
+      color: #4d4d4d;
+      text-transform: uppercase;
+      margin-bottom: 15px;
+    }
+
+    .field {
+      padding: 0px 20px;
+      display: flex;
+      width: 100%;
+      gap:10px;
+      /* justify-content: space-between; */
+      /* align-items: center; */
+    }
+
+    .field:last-child {
+      border-bottom: none;
+    }
+
+    .label-text-sm {
+      font-weight: 600;
+      color: #555;
+      font-size: 13px;
+      width: 95px;
+    }
+
+    .value-text-sm {
+      color: #4d4d4d;
+      font-size: 13px;
+
+      /* text-align: right; */
+      max-width: 70%;
+    } 
+
+    /* Order Details */
+    .booking-details {
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 30px;
+    }
+
+    .order-details {
+      padding: 0px 20px;
+    }
+
+    .order-info-grid {
+      display: flex;
+      justify-content: space-between;
+      /* display: grid;
+      grid-template-columns: repeat(3, 1fr); */
+      gap: 10px;
+      /* margin-bottom: 20px; */
+    }
+
+    .order-info-item {
+      /* text-align: center;
+      padding: 15px; */
+      /* background: #f8f9fa;
+      border-radius: 6px;
+      border: 1px solid #e9ecef; */
+    }
+
+    .order-info-label {
+      font-size: 13px;
+      font-weight: 600;
+      color: #666;
+      text-transform: uppercase;
+      /* margin-bottom: 5px; */
+    }
+
+    .order-info-value {
+      font-size: 13px;
+      color: #4d4d4d;
+      font-weight: 400;
+    }
+
+    .order-mode {
+      color: #74b944;
+      font-weight: 600;
+    }
+
+    /* Table Styles */
+    .order-breakup {
+      margin-top: 20px;
+    }
+
+    table {
+      width: 100%;
+       border-collapse: collapse;
+      overflow: hidden;
+      border-color: #4d4d4d;
+      border-radius: 8px;
+    }
+
+    thead{
+      border-radius: 8px;
+    }
+
+    .table-header-row {
+      background: #edeeeb;
+      border-radius: 8px;
+    
+    }
+
+    .table-header-row th {
+      padding: 8px 5px;
+      text-align: left;
+      font-weight: 600;
+      font-size: 13px;
+      color: #4d4d4d;
+      /* border-bottom: 2px solid #e9ecef; */
+      text-transform: uppercase;
+      /* letter-spacing: 0.5px; */
+    }
+
+    .table-header-row th:last-child {
+      text-align: right;
+    }
+
+    /* .table-header-row th:nth-child(5),
+    .table-header-row th:nth-child(6),
+    .table-header-row th:nth-child(7),
+    .table-header-row th:nth-child(8),
+    .table-header-row th:nth-child(9) {
+      text-align: right;
+    } */
+
+    tr {
+      border-bottom: 1px solid #00000026;
+    }
+
+    td {
+      padding: 8px 5px;
+      font-size: 13px;
+      color: #4d4d4d;
+      vertical-align: top;
+      border-right: 1px solid #00000026;
+    }
+
+    th{
+      border-right: 1px solid #00000026;
+    }
+
+    td:last-child, th:last-child {
+      border-right: 1px solid #ffffff;
+    }
+
+    .table-item {
+      font-size: 13px;
+      color: #4d4d4d;
+    }
+
+    .item-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .item-list li {
+      /* margin-bottom: 5px; */
+      padding-left: 10px;
+      position: relative;
+    }
+
+    .item-list li:before {
+      content: "•";
+      color: #4d4d4d;
+      font-weight: bold;
+      position: absolute;
+      left: 0;
+    }
+
+    .item-list li:last-child {
+      margin-bottom: 0;
+    }
+
+    /* Summary Section */
+    .custom-block {
+      display: flex;
+      justify-content: flex-end;
+      padding: 20px;
+    }
+
+    .summary {
+      width: 300px;
+    }
+
+    .summary-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      /* margin-bottom: 5px; */
+      font-size: 14px;
+    }
+
+    .summary-item b {
+      font-weight: 600;
+      color: #4d4d4d;
+    }
+
+    .summary-item span {
+      font-weight: 500;
+      color: #4d4d4d;
+    }
+
+    .custom-hr {
+      height: 1px;
+      background: #dee2e6;
+      margin: 12px 0;
+      border: none;
+    }
+
+    .summary-item.total {
+      font-size: 16px;
+      font-weight: 700;
+      color: #4d4d4d;
+      margin-top: 10px;
+      padding: 5px 0px;
+      border-top: 2px solid #8d8d8d;
+      border-bottom: 2px solid #8d8d8d;
+    }
+
+    /* Footer */
+    .footer-bottom {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 15px 30px;
+      background: #f8f9fa;
+      border-top: 1px solid #e9ecef;
+    }
+
+    .disclaimer {
+      font-size: 12px;
+      color: #666;
+    }
+
+    .disclaimer a {
+      color: #74b944;
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .page-text {
+      font-size: 12px;
+      color: #666;
+    }
+
+    .body-footer {
+      background: #003A26;
+
+      /* background: linear-gradient(135deg, #003A26 0%, #004d33 100%); */
+      padding: 15px 30px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 30px;
+    }
+
+    .body-footer-wt {
+      background: #000000;
+
+      /* background: linear-gradient(135deg, #003A26 0%, #004d33 100%); */
+      padding: 15px 30px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 30px;
+    }
+
+    .footer-content {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+
+    .footer-text {
+      color: #fff;
+      font-size: 14px;
+      font-weight: 500;
+    }
+
+    .phone-link, .email-link {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+      color: #74b944;
+      font-size: 14px;
+    }
+
+    .phone-link-wt, .email-link-wt {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      text-decoration: none;
+      color: #ffffff;
+      font-size: 14px;
+    }
+
+    .icon {
+      width: 16px;
+      height: 16px;
+      filter: brightness(0) invert(1);
+    }
+
+    /* Terms and Conditions Page */
+    .terms-page {
+      margin-top: 30px;
+    }
+
+
+
+    .tnc-body {
+      /* padding: 20px; */
+      background: #fff;
+    }
+
+    .main-heading {
+      color: #003A26;
+      font-size: 24px;
+      font-weight: 600;
+      /* margin-bottom: 20px; */
+      text-align: center;
+    }
+
+    .tnc-body ul {
+      list-style: none;
+      padding: 0;
+    }
+
+    .tnc-body li {
+      padding-left: 20px;
+      position: relative;
+      /* font-size: 13px; */
+      /* line-height: 1.6; */
+      color: #4d4d4d;
+    }
+
+    .tnc-body li:before {
+      content: counter(item) ".";
+      counter-increment: item;
+      position: absolute;
+      left: 0;
+      color: #4d4d4d;
+    }
+
+    /* Print Styles */
+    @media print {
+      .invoice-container {
+        box-shadow: none;
+        max-width: none;
+        margin: 0;
+        padding: 0;
+      }
+
+      .terms-page {
+        page-break-before: always;
+        margin-top: 0;
+      }
+
+      .body-header {
+        background: #fff !important;
+        -webkit-print-color-adjust: exact;
+        color-adjust: exact;
+      }
+
+      .image-dark {
+        filter: brightness(0);
+      }
+
+      .body-footer {
+        background: #fff !important;
+        -webkit-print-color-adjust: exact;
+        color-adjust: exact;
+      }
+
+      .footer-text, .phone-link, .email-link {
+        color: #000 !important;
+      }
+
+      .icon {
+        filter: brightness(0);
+      }
+
+      .text-primary-color {
+        color: #000 !important;
+      }
+
+      .text-secondary-color {
+        color: #000 !important;
+      }
+
+
+
+      /* Ensure proper page breaks */
+      /* .page-body {
+        page-break-inside: avoid;
+      }
+
+      .tnc-body {
+        page-break-inside: avoid;
+      } */
+    }
+
+    /* Responsive Design */
+    /* @media (max-width: 768px) {
+      .customer-store-container {
+        grid-template-columns: 1fr;
+        gap: 20px;
+      }
+
+      .order-info-grid {
+        grid-template-columns: 1fr;
+        gap: 15px;
+      }
+
+      .header {
+        flex-direction: column;
+        gap: 15px;
+        align-items: flex-start;
+      }
+
+      .body-footer {
+        flex-direction: column;
+        gap: 15px;
+        text-align: center;
+      }
+
+      .footer-content {
+        display: flex;
+        gap: 20px;
+      }
+
+      .summary {
+        width: 100%;
+      }
+    } */
+  </style>
+</head>
+<body>
+<div class="invoice-container">
+  <div class="invoice-page">
+    <div class="invoice-body">
+      <header>
+        <div class="body-header">
+          <div class="logo">
+                 <img class="logo-image image-dark" alt="U CLEAN Logo" id="dynamicImage"
+                 src="https://storeassets.ucleanlaundry.com/assets/images/uc-white.png"/>    
+          </div>
+            <a href="https://www.ucleanlaundry.com" class="logo-text">www.ucleanlaundry.com</a>
+        </div>
+      </header> 
+
+      <div class="page-body">
+        <div class="invoice-body-inner"> 
+          <div class="header">
+            <div class="invoice-number">
+                <span>Tax Invoice No. - <span class="normal-text">UC610-2025-26-648</span></span>
+            </div>
+
+          </div>
+          
+          <div class="customer-store-container">
+            <div class="details-left">
+              <div class="body-customer-details-header">
+                CUSTOMER DETAILS
+              </div>
+              <div class="field">
+                <span class="label-text-sm">Name:</span>
+                <span class="value-text-sm">Venkatesh</span>
+              </div>
+              <div class="field">
+                <span class="label-text-sm">Ph No.:</span>
+                <span class="value-text-sm">+91 7042612642</span>
+              </div>
+              <div class="field">
+                <span class="label-text-sm">Email Id:</span>
+                <span class="value-text-sm">mailmvenkateshreddy@gmail.com</span>
+              </div>
+              <div class="field">
+                <span class="label-text-sm">Address:</span>
+                <span class="value-text-sm">B704, Block B, Block B, </span>
+              </div>
+            </div>
+            
+            <div class="details-right">
+              <div class="body-customer-details-header">
+                STORE DETAILS
+              </div>
+              <div class="field">
+                <span class="label-text-sm">Code:</span>
+                <span class="value-text-sm">UC610</span>
+              </div>
+              <div class="field">
+                <span class="label-text-sm">Name:</span>
+                <span class="value-text-sm">UClean Vyapar Kendra</span>
+              </div>
+              <div class="field">
+                <span class="label-text-sm">GSTIN:</span>
+                <span class="value-text-sm">06AAXFT2747E1ZS</span>
+              </div>
+              <div class="field">
+                <span class="label-text-sm">Ph No.:</span>
+                <span class="value-text-sm">+91 9122266628</span>
+              </div>
+              <div class="field">
+                <span class="label-text-sm">Address:</span>
+                <span class="value-text-sm">Shop No. 176, Ground Floor, Vayapar Kendra Market, Sushant Lok-1, Gurugram, Haryana - 122002</span>
+              </div>
+              <div class="field">
+                <span class="label-text-sm">Reg. Name:</span>
+                <span class="value-text-sm">The Shaw Ventures</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="booking-details">
+            <div class="body-customer-details-header">
+              ORDER DETAILS
+            </div>
+            <div class="order-details">
+              <div class="order-info-grid">
+                <div class="order-info-item">
+                  <div class="order-info-label">Order No. - UC610-0759 <span class="order-mode">(App)</span></div>
+                  <div style="font-size: 13px; color: #666;">2026-01-04 10:45:53</div>
+                </div>
+                <div class="order-info-item">
+                  <div class="order-info-label">Pickup Done Date & Time</div>
+                  <div class="order-info-value">2026-01-04 11 AM - 1 PM</div>
+                </div>
+                <div class="order-info-item">
+                  <div class="order-info-label">Delivery Date & Time</div>
+                  <div class="order-info-value">2026-01-06 11 AM - 1 PM</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="order-breakup">
+            <table>
+              <thead class="table-header-row">
+                <tr>
+                  <th>S.No.</th>
+                  <th>Service</th>
+                  <th>HSN/SAC</th>
+                  <th>Items</th>
+                  <th>Rate</th>
+                  <th>Qty.</th>
+                  <th>Wt./Kg</th>
+                  <th>Addons</th>
+                  <th>Amount</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                <tr>
+                  <td class="table-item">1.</td>
+                  <td class="table-item">Dry cleaning</td>
+                  <td class="table-item">999712</td>
+                  <td>
+                      <ul class="item-list">
+                        <li>Formal and Casual Trousers / Pants</li>
+                        <li>Blazer / Coat - Short</li>
+                        <li>Jacket Normal Short</li>
+                      </ul>
+                  </td>
+                  <td class="table-item" style="text-align: right;">
+                    <div> 109.00</div>
+                    <div> 299.00</div>
+                    <div> 299.00</div>
+                  </td>
+                  <td class="table-item" style="text-align: right;">
+                    <div>1</div>
+                    <div>1</div>
+                    <div>2</div>
+                  </td>
+                  <td class="table-item" style="text-align: right;">-</td>
+                  <td class="table-item" style="text-align: right;"> 0.00</td>
+                  <td class="table-item" style="text-align: right;">
+                    <strong> 1006.00</strong>
+                  </td>
+                </tr>
+                <tr>
+                  <td class="table-item">2.</td>
+                  <td class="table-item">Premium Laundry Kg</td>
+                  <td class="table-item">999711</td>
+                  <td>
+                      -
+                  </td>
+                  <td class="table-item" style="text-align: right;"> 249.00</td>
+                  <td class="table-item" style="text-align: right;">6</td>
+                  <td class="table-item" style="text-align: right;">1.5</td>
+                  <td class="table-item" style="text-align: right;"> 0.00</td>
+                  <td class="table-item" style="text-align: right;">
+                    <strong> 373.50</strong>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+
+            <div class="custom-block">
+              <div class="summary">
+                <div class="summary-item">
+                  <b>Amount:</b> <span>₹ 1379.50</span>
+                </div>
+                <div class="summary-item">
+                  <b>Addon:</b> <span>₹ 0.00</span>
+                </div>
+                <div class="summary-item">
+                  <b>Express Amount:</b> <span>₹ 0.00</span>
+                </div>
+                <div class="summary-item">
+                  <b>Discount:</b> <span>₹ 0</span>
+                </div>
+                
+                      <div class="summary-item">
+                        <b>SGST:</b> <span> 124.16</span>
+                      </div>
+                      <div class="summary-item">
+                        <b>CGST:</b> <span> 124.16</span>
+                      </div>
+                
+                <div class="summary-item total">
+                  <b>TOTAL</b> <span>₹ 1627.81</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- <footer>
+        <div class="footer-bottom">
+          <span class="disclaimer">Disclaimer: I hereby acknowledge that I accept the service <a href="#">terms & conditions*</a></span>
+          <span class="page-text">Page: 1 of 2</span>
+        </div>
+        <div class="body-footer">
+          <div class="footer-content">
+            <span class="footer-text">Contact Support:</span>
+            <a class="phone-link">
+              <img src="https://storeassets.ucleanlaundry.com/assets/images/icons/order-through/phone.svg" alt="Phone" class="icon">
+              <span>9999759911</span>
+            </a>
+            <a class="email-link">
+              <img src="https://storeassets.ucleanlaundry.com/assets/images/icons/order-through/laptop.svg" alt="Email" class="icon">
+              <span>support@uclean.in</span>
+            </a>
+          </div>
+        </div>
+      </footer> -->
+
+      
+<footer>
+  <div class="footer-bottom">
+    <span class="disclaimer">Disclaimer: I hereby acknowledge that I accept the service <a href="#">terms & conditions*</a></span>
+    <span class="page-text">Page: 1 of 2</span>
+  </div>
+  <div class="body-footer">
+    <div class="footer-content">
+      <span class="footer-text">Contact Support:</span>
+      <a class="phone-link">
+        <img src="https://storeassets.ucleanlaundry.com/assets/images/icons/order-through/phone.svg" alt="Phone" class="icon">
+        <span>9999759911</span>
+      </a>
+      <a class="email-link">
+        <img src="https://storeassets.ucleanlaundry.com/assets/images/icons/order-through/laptop.svg" alt="Email" class="icon">
+        <span>support@uclean.in</span>
+      </a>
+    </div>
+  </div>
+</footer>
+    
+    </div>
+  </div>
+
+  <div class="terms-page">
+    <div class="invoice-body">
+      <header>
+        <div class="body-header">
+          <div class="logo">
+                 <img class="logo-image image-dark" alt="U CLEAN Logo" id="dynamicImage"
+                 src="https://storeassets.ucleanlaundry.com/assets/images/uc-white.png"/>    
+          </div>
+            <a href="https://www.ucleanlaundry.com" class="logo-text">www.ucleanlaundry.com</a>
+        </div>
+      </header> 
+
+      <div class="page-body">
+        <div class="tnc-body"> 
+          <div class="header">
+            <div class="main-heading">Terms and Conditions</div>
+          </div>
+          <ul style="counter-reset: item; font-size: 12px;">
+              <li>Ensure All Original Bill Or Challan Copy After Due Delivery Of Articles Is To Be Presented.</li>
+              <li>Original Bill Or Chaloni Copy Needs To Be Presented At The Time Of Delivery Of Processed Articles.</li>
+              <li>If Original Bill Or Chaloni Is Not Presented At The Time Of Delivery, The Delivery Of Processed Article Shall Be Handed To The Owner Only After Verifying His/Her Credentials.</li>
+              <li>Express/Urgent Delivery Of Articles Would Be Charged 50% Extra Of The Regular Tariff.</li>
+              <li>If Original Bill Or Chaloni Is Not Presented At The Time Of Delivery, We Would Not Be Held Responsible For Any Loss Or Misplacement Of Article.</li>
+              <li>If Not Satisfied With The Quality Of Any Service Offered, Customers Should Get In Touch With The Store Or The Company Within 48 Hours Post Collection.</li>
+              <li>We Are Not Responsible For Stains Caused Due To Ink Marks, Christmas Stickers, Damages To Embellishments Or Embroidery, Work On Fine Articles During Processing.</li>
+              <li>We Might Charge You Additional For Best Efforts To Remove Any Stains Or Unwanted Marks On The Clothes.</li>
+              <li>This Is A &#x27;Wear &amp; Tear&#x27; Policy. All Puttings In Garment Stains Or Marks Customers Will Have No Claim Whatsoever Or No Liability For Damage Caused To Articles On Account Of This.</li>
+              <li>&#x27;No Fault No Claim&#x27; Policy. If Articles Are Accepted At Customer&#x27;s Risk, We Shall Not Be Held Responsible For Damage To Articles That Occur During Processing Of Any Cleanings Or Any Discoloration Of Clothes.</li>
+              <li>We Shall Not Be Held Responsible For Any Ornaments Or Jewelry Fittings On Your Clothes Getting Damaged During The Process.</li>
+              <li>We Shall Not Be Held Responsible For Shrinking, Damage, Cuts, Holes, Stretches, Stains Etc. Becoming Apparent During The Wash Process Due To Defective Manufacturing, Adulteration, Deterioration, Wear &amp; Tear, And Exposure To Environment.</li>
+              <li>We Will Put Our Best Efforts To Ensure Timely Pick-Up And Delivery. However, There Might Be Incidents Beyond Our Control Or Incidences Of Force Majeure Where We Are Unable To Stick To The Timelines. In Such Cases, Customer Cannot Claim Any Indemnifications, Refunds, Or Any Reduction In Charges.</li>
+              <li>We Do Not Accept Liability For Any Items In The Clothes Of The Customer Beyond 3 (Three) Weeks Of The Scheduled Delivery Date.</li>
+              <li>We Do Not Accept Liability For Any Loss Or Damage To Clothes Arising Due To Fire, Burglary, Which Are Beyond Our Control At Any Of Our Stores, Franchises, Or Any Other Locations.</li>
+              <li>We Will Ensure Thorough Checking For Valuable Articles/Cash Etc. Inadvertently Kept In The Articles Which Is Malodour Or Unrecoverable After Processing.</li>
+              <li>The Charges For Express/Urgent Delivery For Clothes Or Any Other Articles Needs Practice Would Be Decided On A Case-To-Case Basis, And Expressed/Intimated To The Customer Directly At The Store Once The Article Has Been Confirmed By The Person Present At The Store.</li>
+              <li>In Case Any Article Or An Item Gets Damaged During The Processing For Any Reasons Other Than The Ones Mentioned Above, The Compensation For The Customer Would Be Limited To 10 Times The Value Of The Charges Specified At The Counter For The Processing Or INR 3000, Whichever Is Lower.</li>
+              <li>All Disputes Are Subject To The Jurisdiction Of Courts In Delhi Only.</li>
+              <li>We Maintain Fitness Rights To Cancel/Modify/Change The Terms And Conditions At Any Point In Time Without Any Prior Intimation Or Notice.</li>
+          </ul>
+        </div>
+      </div>
+
+      <footer>
+        <div class="footer-bottom">
+          <span class="disclaimer">Disclaimer: I hereby acknowledge that I accept the service <a href="#">terms & conditions*</a></span>
+          <span class="page-text">Page: 2 of 2</span>
+        </div>
+        <div class="body-footer">
+          <div class="footer-content">
+            <span class="footer-text">Contact Support:</span>
+            <a class="phone-link">
+              <img src="https://storeassets.ucleanlaundry.com/assets/images/icons/order-through/phone.svg" alt="Phone" class="icon">
+              <span>9999759911</span>
+            </a>
+            <a class="email-link">
+              <img src="https://storeassets.ucleanlaundry.com/assets/images/icons/order-through/laptop.svg" alt="Email" class="icon">
+              <span>support@uclean.in</span>
+            </a>
+          </div>
+        </div>
+      </footer>
+    </div>
+  </div>
+</div>
+</body>
+</html>

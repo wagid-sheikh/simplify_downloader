@@ -27,6 +27,8 @@ STG_UC_ORDERS_COLUMNS = [
     "mobile_number",
     "payment_status",
     "customer_gstin",
+    "customer_source",
+    "customer_address",
     "place_of_supply",
     "net_amount",
     "cgst",
@@ -80,7 +82,7 @@ ORDERS_COLUMNS = [
     "run_date",
 ]
 
-HEADER_MAP: Mapping[str, str] = {
+LEGACY_HEADER_MAP: Mapping[str, str] = {
     "S.No.": "s_no",
     "Booking ID": "order_number",
     "Invoice No.": "invoice_number",
@@ -96,9 +98,29 @@ HEADER_MAP: Mapping[str, str] = {
     "Total Invoice Value": "gross_amount",
 }
 
+API_HEADER_MAP: Mapping[str, str] = {
+    "order_number": "order_number",
+    "invoice_number": "invoice_number",
+    "invoice_date": "invoice_date",
+    "name": "customer_name",
+    "customer_phone": "mobile_number",
+    "payment_status": "payment_status",
+    "customer_gst": "customer_gstin",
+    "city_name": "place_of_supply",
+    "taxable_value": "net_amount",
+    "cgst": "cgst",
+    "sgst": "sgst",
+    "final_amount": "gross_amount",
+}
+
 NUMERIC_FIELDS = {"net_amount", "cgst", "sgst", "gross_amount"}
 
-REQUIRED_HEADERS = set(HEADER_MAP.keys())
+REQUIRED_HEADERS = set(LEGACY_HEADER_MAP.keys())
+
+SUPPORTED_HEADER_MAPS: tuple[tuple[str, Mapping[str, str]], ...] = (
+    ("legacy", LEGACY_HEADER_MAP),
+    ("api", API_HEADER_MAP),
+)
 
 MOBILE_FALLBACK_NUMBER = "8888999762"
 
@@ -148,7 +170,13 @@ def _normalize_drop_reason(drop_reason: str | None) -> str:
         return "missing_order_number"
     if "missing invoice_date" in drop_reason:
         return "missing_invoice_date"
+    if "invalid invoice_date" in drop_reason:
+        return "invalid_invoice_date"
     return "missing_required_fields"
+
+
+def _normalize_naive_datetime(value: datetime) -> datetime:
+    return value if value.tzinfo else value.replace(tzinfo=get_timezone())
 
 
 def _stg_uc_orders_table(metadata: sa.MetaData) -> sa.Table:
@@ -173,6 +201,8 @@ def _stg_uc_orders_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("mobile_number", sa.String(length=16)),
         sa.Column("payment_status", sa.String(length=24)),
         sa.Column("customer_gstin", sa.String(length=32)),
+        sa.Column("customer_source", sa.String(length=64)),
+        sa.Column("customer_address", sa.Text()),
         sa.Column("place_of_supply", sa.String(length=64)),
         sa.Column("net_amount", sa.Numeric(12, 2)),
         sa.Column("cgst", sa.Numeric(12, 2)),
@@ -206,7 +236,7 @@ def _orders_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("customer_gstin", sa.String(length=32)),
         sa.Column("customer_source", sa.String(length=64)),
         sa.Column("package_flag", sa.Boolean(), nullable=False, server_default=sa.text("false")),
-        sa.Column("service_type", sa.String(length=64)),
+        sa.Column("service_type", sa.String(length=256)),
         sa.Column("customer_address", sa.String(length=256)),
         sa.Column("pieces", sa.Numeric(12, 0)),
         sa.Column("weight", sa.Numeric(12, 2)),
@@ -318,10 +348,10 @@ def _parse_datetime(
     if value in (None, ""):
         return None
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=get_timezone())
+        return _normalize_naive_datetime(value)
     try:
         parsed = parser.parse(str(value), dayfirst=dayfirst)
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=get_timezone())
+        return _normalize_naive_datetime(parsed)
     except Exception:
         warnings.append(f"Could not parse datetime for {field}: {value}")
         row_remarks.append(f"Field {field} could not be parsed from value '{value}' (field cleared)")
@@ -333,15 +363,30 @@ def _parse_invoice_date_strict(
 ) -> datetime | None:
     if value in (None, ""):
         return None
+    if isinstance(value, datetime):
+        return _normalize_naive_datetime(value)
+    if isinstance(value, date):
+        return _normalize_naive_datetime(datetime(value.year, value.month, value.day))
+
     value_str = str(value).strip()
     if not value_str:
         return None
+
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            parsed = datetime.strptime(value_str, fmt)
+            return _normalize_naive_datetime(parsed)
+        except ValueError:
+            continue
+
     try:
-        parsed = datetime.strptime(value_str, "%d/%m/%Y")
-        return parsed.replace(tzinfo=get_timezone())
-    except ValueError:
-        warnings.append(f"Invalid invoice_date format (expected dd/mm/yyyy): {value_str}")
-        row_remarks.append(f"Invoice Date '{value_str}' did not match dd/mm/yyyy format (field cleared)")
+        parsed_iso = parser.isoparse(value_str)
+        return _normalize_naive_datetime(parsed_iso)
+    except (TypeError, ValueError):
+        warnings.append(
+            f"Invalid invoice_date format (expected dd/mm/yyyy, yyyy-mm-dd, yyyy-mm-dd hh:mm:ss, or ISO-8601): {value_str}"
+        )
+        row_remarks.append(f"Invoice Date '{value_str}' could not be parsed (field cleared)")
         return None
 
 
@@ -404,12 +449,12 @@ def _build_ingest_remarks_payload(*, warnings: list[str], failures: list[str] | 
 
 
 def _coerce_row(
-    raw: Mapping[str, Any], *, warnings: list[str], invalid_phone_numbers: set[str]
+    raw: Mapping[str, Any], *, header_map: Mapping[str, str], warnings: list[str], invalid_phone_numbers: set[str]
 ) -> tuple[Dict[str, Any], list[str], str | None]:
     row: Dict[str, Any] = {}
     row_remarks: list[str] = []
     drop_reason: str | None = None
-    for header, field in HEADER_MAP.items():
+    for header, field in header_map.items():
         row[field] = raw.get(header)
 
     row["s_no"] = _parse_s_no(row.get("s_no"), warnings=warnings, row_remarks=row_remarks)
@@ -419,9 +464,8 @@ def _coerce_row(
     row["invoice_number"] = _normalize_invoice_number(
         row.get("invoice_number"), warnings=warnings, row_remarks=row_remarks
     )
-    row["invoice_date"] = _parse_invoice_date_strict(
-        row.get("invoice_date"), warnings=warnings, row_remarks=row_remarks
-    )
+    raw_invoice_date = row.get("invoice_date")
+    row["invoice_date"] = _parse_invoice_date_strict(raw_invoice_date, warnings=warnings, row_remarks=row_remarks)
     for field in NUMERIC_FIELDS:
         row[field] = _parse_numeric(row.get(field), warnings=warnings, field=field, row_remarks=row_remarks)
     row["mobile_number"] = _normalize_phone(
@@ -439,7 +483,9 @@ def _coerce_row(
         drop_reason = warning
         return {}, row_remarks, drop_reason
     if row["invoice_date"] is None:
-        warning = f"Skipping row with missing invoice_date for order {row['order_number']}"
+        has_invoice_date_value = bool(str(raw_invoice_date).strip()) if raw_invoice_date is not None else False
+        reason = "invalid" if has_invoice_date_value else "missing"
+        warning = f"Skipping row with {reason} invoice_date for order {row['order_number']}"
         warnings.append(warning)
         drop_reason = warning
         return {}, row_remarks, drop_reason
@@ -456,12 +502,33 @@ def _read_workbook_rows(
     header_cells = list(next(sheet.iter_rows(min_row=1, max_row=1, values_only=False)))
     header_values = [cell.value for cell in header_cells]
     headers = [cell for cell in header_values if cell]
-    missing = REQUIRED_HEADERS - set(headers)
-    if missing:
-        raise ValueError(f"UC GST workbook missing expected columns: {sorted(missing)}")
+    selected_header_map: Mapping[str, str] | None = None
+    selected_missing: set[str] = set()
+    for _, header_map in SUPPORTED_HEADER_MAPS:
+        missing = set(header_map.keys()) - set(headers)
+        if not missing:
+            selected_header_map = header_map
+            selected_missing = set()
+            break
+        if not selected_header_map:
+            selected_header_map = header_map
+            selected_missing = missing
+
+    if selected_header_map is None:
+        raise ValueError("UC GST workbook has no supported header schema")
+    if selected_missing:
+        raise ValueError(f"UC GST workbook missing expected columns: {sorted(selected_missing)}")
 
     header_indices = {header: idx for idx, header in enumerate(header_values) if header}
-    invoice_date_index = header_indices.get("Invoice Date")
+    invoice_date_header = next(
+        (header for header, field in selected_header_map.items() if field == "invoice_date"),
+        None,
+    )
+    order_number_header = next(
+        (header for header, field in selected_header_map.items() if field == "order_number"),
+        None,
+    )
+    invoice_date_index = header_indices.get(invoice_date_header) if invoice_date_header else None
 
     rows: list[Dict[str, Any]] = []
     warning_rows: list[dict[str, Any]] = []
@@ -484,12 +551,15 @@ def _read_workbook_rows(
             header: row_cells[idx].value if idx < len(row_cells) else None
             for header, idx in header_indices.items()
         }
-        if invoice_date_index is not None and invoice_date_index < len(row_cells):
-            raw_row["Invoice Date"] = _invoice_date_display_value(row_cells[invoice_date_index])
+        if invoice_date_header and invoice_date_index is not None and invoice_date_index < len(row_cells):
+            raw_row[invoice_date_header] = _invoice_date_display_value(row_cells[invoice_date_index])
         normalized, row_remarks, drop_reason = _coerce_row(
-            raw_row, warnings=warnings, invalid_phone_numbers=invalid_phone_numbers
+            raw_row,
+            header_map=selected_header_map,
+            warnings=warnings,
+            invalid_phone_numbers=invalid_phone_numbers,
         )
-        order_number = _stringify_value(raw_row.get("Booking ID"))
+        order_number = _stringify_value(raw_row.get(order_number_header or "Booking ID"))
         if normalized:
             if normalized.get("ingest_remarks"):
                 warning_rows.append(
@@ -537,6 +607,13 @@ def _make_insert(table: sa.Table, values: Mapping[str, Any], *, use_sqlite: bool
     return insert.on_conflict_do_update(index_elements=conflict_cols, set_={key: insert.excluded[key] for key in values})
 
 
+def _non_blank_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 async def ingest_uc_orders_workbook(
     *,
     workbook_path: Path,
@@ -565,7 +642,7 @@ async def ingest_uc_orders_workbook(
         log_event(
             logger=logger,
             phase="ingest",
-            status="warn",
+            status="warning",
             message="No rows parsed from UC GST workbook",
             store_code=store_code,
             workbook=str(workbook_path),
@@ -603,13 +680,24 @@ async def ingest_uc_orders_workbook(
 
         stg_keys = {(store_code, row["order_number"], row["invoice_date"]) for row in rows}
         existing_stg: set[tuple[str, str, datetime | None]] = set()
+        existing_stg_customer_fields: dict[tuple[str, str], dict[str, Any]] = {}
         if stg_keys:
             key_tuple = sa.tuple_(stg_table.c.store_code, stg_table.c.order_number, stg_table.c.invoice_date)
-            stmt = sa.select(stg_table.c.store_code, stg_table.c.order_number, stg_table.c.invoice_date).where(
-                key_tuple.in_(list(stg_keys))
-            )
+            stmt = sa.select(
+                stg_table.c.store_code,
+                stg_table.c.order_number,
+                stg_table.c.invoice_date,
+                stg_table.c.customer_source,
+                stg_table.c.customer_address,
+            ).where(key_tuple.in_(list(stg_keys)))
             result = await session.execute(stmt)
-            existing_stg = {tuple(row) for row in result.all()}
+            for existing_row in result:
+                key = (existing_row.store_code, existing_row.order_number, existing_row.invoice_date)
+                existing_stg.add(key)
+                existing_stg_customer_fields[(existing_row.store_code, existing_row.order_number)] = {
+                    "customer_source": existing_row.customer_source,
+                    "customer_address": existing_row.customer_address,
+                }
         staging_inserted = len(stg_keys - existing_stg)
         staging_updated = len(stg_keys & existing_stg)
 
@@ -625,6 +713,49 @@ async def ingest_uc_orders_workbook(
         final_inserted = len(final_keys - existing_final)
         final_updated = len(final_keys & existing_final)
 
+        archive_enrichment: dict[str, dict[str, str | None]] = {}
+        order_numbers = sorted({row["order_number"] for row in rows if row.get("order_number")})
+        if order_numbers:
+            archive_table = sa.table(
+                "stg_uc_archive_orders_base",
+                sa.column("id"),
+                sa.column("store_code"),
+                sa.column("order_code"),
+                sa.column("run_date"),
+                sa.column("customer_source"),
+                sa.column("address"),
+            )
+            archive_stmt = (
+                sa.select(
+                    archive_table.c.order_code,
+                    archive_table.c.customer_source,
+                    archive_table.c.address,
+                )
+                .where(
+                    archive_table.c.store_code == store_code,
+                    archive_table.c.order_code.in_(order_numbers),
+                )
+                .order_by(
+                    archive_table.c.order_code,
+                    archive_table.c.run_date.desc(),
+                    archive_table.c.id.desc(),
+                )
+            )
+            try:
+                archive_rows = await session.execute(archive_stmt)
+                for archive_row in archive_rows:
+                    order_code = archive_row.order_code
+                    if order_code in archive_enrichment:
+                        continue
+                    # Deterministic selection rule when duplicates exist:
+                    # choose the row with latest run_date and then highest id.
+                    archive_enrichment[order_code] = {
+                        "customer_source": _non_blank_text(archive_row.customer_source),
+                        "customer_address": _non_blank_text(archive_row.address),
+                    }
+            except sa.exc.SQLAlchemyError:
+                archive_enrichment = {}
+
         staging_count = 0
         final_count = 0
         for row in rows:
@@ -635,6 +766,25 @@ async def ingest_uc_orders_workbook(
                 "cost_center": cost_center,
                 "store_code": store_code,
             }
+
+            archive_values = archive_enrichment.get(str(stg_values.get("order_number") or ""))
+            if archive_values:
+                if archive_values.get("customer_source"):
+                    stg_values["customer_source"] = archive_values["customer_source"]
+                if archive_values.get("customer_address"):
+                    stg_values["customer_address"] = archive_values["customer_address"]
+
+            stg_customer_key = (store_code, stg_values.get("order_number"))
+            existing_customer_fields = existing_stg_customer_fields.get(stg_customer_key, {})
+            if not _non_blank_text(stg_values.get("customer_source")) and _non_blank_text(
+                existing_customer_fields.get("customer_source")
+            ):
+                stg_values["customer_source"] = existing_customer_fields.get("customer_source")
+            if not _non_blank_text(stg_values.get("customer_address")) and _non_blank_text(
+                existing_customer_fields.get("customer_address")
+            ):
+                stg_values["customer_address"] = existing_customer_fields.get("customer_address")
+
             stmt = _make_insert(stg_table, stg_values, use_sqlite=use_sqlite)
             await session.execute(stmt)
             staging_count += 1
@@ -656,10 +806,10 @@ async def ingest_uc_orders_workbook(
                 "customer_name": stg_values.get("customer_name") or "",
                 "mobile_number": stg_values.get("mobile_number") or "",
                 "customer_gstin": stg_values.get("customer_gstin"),
-                "customer_source": "Walk in Customer",
+                "customer_source": stg_values.get("customer_source"),
                 "package_flag": False,
                 "service_type": "UNKNOWN",
-                "customer_address": None,
+                "customer_address": stg_values.get("customer_address"),
                 "pieces": Decimal("0"),
                 "weight": Decimal("0"),
                 "due_date": default_due_date,
@@ -713,7 +863,7 @@ async def ingest_uc_orders_workbook(
 
 
 def _expected_headers() -> Sequence[str]:
-    return list(HEADER_MAP.keys())
+    return list(LEGACY_HEADER_MAP.keys())
 
 
 __all__ = [

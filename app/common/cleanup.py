@@ -19,7 +19,7 @@ def cleanup_bucket(
             logger=logger,
             phase="cleanup",
             bucket=bucket,
-            status="warn",
+            status="warning",
             merged_file=str(merged_path),
             message="skipping cleanup due to audit mismatch",
         )

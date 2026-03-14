@@ -68,7 +68,7 @@ async def run_leads_assignment(
             log_event(
                 logger=logger,
                 phase="lead_assignment",
-                status="warn",
+                status="warning",
                 message="no eligible leads found",
                 extras={"batch_id": batch_id},
             )
@@ -85,7 +85,7 @@ async def run_leads_assignment(
                 log_event(
                     logger=logger,
                     phase="lead_assignment",
-                    status="warn",
+                    status="warning",
                     message="eligible leads exceeded quota limits",
                     extras={
                         "batch_id": batch_id,

@@ -225,6 +225,7 @@ app/reports/output_files/
 tests/config.db
 
 update_system_secrets_local.py
+update_system_secrets_v2.py
 
 .sql.gz
 *.sql.gz

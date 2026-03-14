@@ -67,7 +67,7 @@ async def run_pipeline(
                 phase="ingest",
                 bucket=bucket,
                 merged_file=str(merged_path),
-                status="warn",
+                status="warning",
                 message="skipping ingestion (dry run or missing database)",
             )
         else:

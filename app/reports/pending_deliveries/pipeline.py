@@ -109,7 +109,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             log_event(
                 logger=logger,
                 phase="orchestrator",
-                status="warn",
+                status="warning",
                 message="pending deliveries report already generated; skipping",
                 report_date=resolved_date.isoformat(),
                 existing_status=existing.get("overall_status"),
@@ -239,7 +239,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             log_event(
                 logger=logger,
                 phase="send_email",
-                status="warn",
+                status="warning",
                 message="notification dispatch failed",
                 report_date=resolved_date.isoformat(),
                 error=str(exc),

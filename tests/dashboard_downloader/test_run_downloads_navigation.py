@@ -96,7 +96,7 @@ def test_navigate_with_retry_switches_to_insecure_mode(monkeypatch):
 
     logged = [json.loads(line) for line in log_stream.getvalue().splitlines() if line.strip()]
     warn_entries = [
-        entry for entry in logged if entry.get("status") == "warn"
+        entry for entry in logged if entry.get("status") == "warning"
     ]
     assert any(entry.get("extras", {}).get("ignore_https_errors") for entry in warn_entries)
     assert any(entry.get("extras", {}).get("insecure_retry") for entry in warn_entries)
@@ -146,8 +146,8 @@ def test_navigate_with_retry_logs_fatal_after_insecure_failure(monkeypatch):
 
     logged = [json.loads(line) for line in log_stream.getvalue().splitlines() if line.strip()]
     statuses = [entry.get("status") for entry in logged]
-    assert "warn" in statuses
-    assert "fatal" in statuses
+    assert "warning" in statuses
+    assert "error" in statuses
 
 
 def test_navigate_with_retry_prefers_secure_context(monkeypatch):
@@ -173,5 +173,5 @@ def test_navigate_with_retry_prefers_secure_context(monkeypatch):
     assert context.new_context_calls == 0
 
     logged = [json.loads(line) for line in log_stream.getvalue().splitlines() if line.strip()]
-    assert all(entry.get("status") != "warn" for entry in logged)
+    assert all(entry.get("status") != "warning" for entry in logged)
 

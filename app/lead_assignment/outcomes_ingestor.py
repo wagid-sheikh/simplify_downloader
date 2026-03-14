@@ -289,7 +289,7 @@ async def ingest_pdf(pdf_path: Path) -> None:
             log_event(
                 logger=logger,
                 phase="ingest_pdf",
-                status="warn",
+                status="warning",
                 message="rowids missing from assignments",
                 missing_rowids=missing_rowids,
                 batch_id=batch_id,

@@ -134,7 +134,7 @@ def cleanup_stale_chrome_locks(
                     log_event(
                         logger=logger,
                         phase="download",
-                        status="warn",
+                        status="warning",
                         store_code=store_code,
                         bucket=None,
                         message="unable to remove stale chrome lock file",
@@ -205,7 +205,7 @@ async def navigate_with_retry(
                 log_event(
                     logger=logger,
                     phase="download",
-                    status="warn" if attempt < max_attempts else "error",
+                    status="warning" if attempt < max_attempts else "error",
                     store_code=store_code,
                     bucket=None,
                     message="navigation attempt failed",
@@ -236,7 +236,7 @@ async def navigate_with_retry(
                         log_event(
                             logger=logger,
                             phase="download",
-                            status="fatal",
+                            status="error",
                             store_code=store_code,
                             bucket=None,
                             message="certificate error during navigation",
@@ -259,7 +259,7 @@ async def navigate_with_retry(
                     log_event(
                         logger=logger,
                         phase="download",
-                        status="warn",
+                        status="warning",
                         store_code=store_code,
                         bucket=None,
                         message="certificate error detected; retrying with HTTPS checks disabled",
@@ -303,7 +303,7 @@ async def navigate_with_retry(
                         log_event(
                             logger=logger,
                             phase="download",
-                            status="fatal",
+                            status="error",
                             store_code=store_code,
                             bucket=None,
                             message="unable to bypass certificate error",
@@ -329,7 +329,7 @@ async def navigate_with_retry(
                     log_event(
                         logger=logger,
                         phase="download",
-                        status="warn" if attempt < max_attempts else "error",
+                        status="warning" if attempt < max_attempts else "error",
                         store_code=store_code,
                         bucket=None,
                         message="navigation attempt failed",
@@ -659,7 +659,7 @@ async def _persist_storage_state(
         log_event(
             logger=logger,
             phase="download",
-            status="warn",
+            status="warning",
             store_code=store_code,
             bucket=None,
             message="bootstrap: unable to persist storage state after login",
@@ -744,7 +744,7 @@ async def _prime_context_with_storage_state(
         log_event(
             logger=logger,
             phase="download",
-            status="warn",
+            status="warning",
             store_code=store_code,
             bucket=None,
             message="storage state file missing",
@@ -755,7 +755,7 @@ async def _prime_context_with_storage_state(
         log_event(
             logger=logger,
             phase="download",
-            status="warn",
+            status="warning",
             store_code=store_code,
             bucket=None,
             message="unable to read storage state",
@@ -769,7 +769,7 @@ async def _prime_context_with_storage_state(
         log_event(
             logger=logger,
             phase="download",
-            status="warn",
+            status="warning",
             store_code=store_code,
             bucket=None,
             message="invalid storage state JSON",
@@ -799,7 +799,7 @@ async def _prime_context_with_storage_state(
             log_event(
                 logger=logger,
                 phase="download",
-                status="warn",
+                status="warning",
                 store_code=store_code,
                 bucket=None,
                 message="unable to apply cookies from storage state",
@@ -826,7 +826,7 @@ async def _prime_context_with_storage_state(
             log_event(
                 logger=logger,
                 phase="download",
-                status="warn",
+                status="warning",
                 store_code=store_code,
                 bucket=None,
                 message="unable to create priming page",
@@ -847,7 +847,7 @@ async def _prime_context_with_storage_state(
                         log_event(
                             logger=logger,
                             phase="download",
-                            status="warn",
+                            status="warning",
                             store_code=store_code,
                             bucket=None,
                             message="unable to initialize localStorage for origin",
@@ -877,7 +877,7 @@ async def _prime_context_with_storage_state(
                             log_event(
                                 logger=logger,
                                 phase="download",
-                                status="warn",
+                                status="warning",
                                 store_code=store_code,
                                 bucket=None,
                                 message="unable to persist localStorage entry",
@@ -961,7 +961,7 @@ async def _download_one_spec(
             status = response.status
         except Exception as exc:  # pragma: no cover - defensive guard
             status = None
-            _log("warn", f"unable to read status for {spec['key']}", extras={"error": str(exc)})
+            _log("warning", f"unable to read status for {spec['key']}", extras={"error": str(exc)})
 
         try:
             body = await response.body()
@@ -975,7 +975,7 @@ async def _download_one_spec(
             is_valid, reason = _validate_downloaded_csv(final_path, body=body)
             if not is_valid:
                 _log(
-                    "warn",
+                    "warning",
                     f"discarding invalid CSV download for {spec['key']}",
                     extras={"reason": reason} if reason else None,
                 )
@@ -983,7 +983,7 @@ async def _download_one_spec(
                     final_path.unlink(missing_ok=True)
                 except OSError as exc:
                     _log(
-                        "warn",
+                        "warning",
                         f"unable to delete invalid download for {spec['key']}",
                         extras={"error": str(exc)},
                     )
@@ -993,12 +993,12 @@ async def _download_one_spec(
         needs_refresh = False
 
         if status in {401, 403}:
-            _log("warn", f"received {status} for {spec['key']} — refreshing session")
+            _log("warning", f"received {status} for {spec['key']} — refreshing session")
             needs_refresh = True
         elif not body:
-            _log("warn", f"empty response for {spec['key']}")
+            _log("warning", f"empty response for {spec['key']}")
         elif _looks_like_login_html_bytes(body):
-            _log("warn", f"html/login-like response for {spec['key']} — refreshing session")
+            _log("warning", f"html/login-like response for {spec['key']} — refreshing session")
             needs_refresh = True
         elif status != 200:
             _log("error", f"unexpected status {status} for {spec['key']}")
@@ -1072,7 +1072,7 @@ def _finalize_merges(
                 phase="merge",
                 bucket=bucket,
                 message="no merged filename configured; skipping bucket",
-                status="warn",
+                status="warning",
             )
             continue
 
@@ -1476,7 +1476,7 @@ async def _switch_to_store_dashboard_and_download(
                 )
         except Exception as exc:  # pragma: no cover - defensive logging
             _log(
-                "warn",
+                "warning",
                 "failed to extract/persist dashboard summary",
                 extras={"error": str(exc)},
             )
@@ -1718,7 +1718,7 @@ async def _navigate_via_home_to_dashboard(
             navigation_response = None
         except Exception as exc:
             _log(
-                "warn",
+                "warning",
                 "unexpected error while waiting for navigation",
                 extras={"error": str(exc)},
             )
@@ -1729,7 +1729,7 @@ async def _navigate_via_home_to_dashboard(
         except Exception as exc:
             popup_page = None
             _log(
-                "warn",
+                "warning",
                 "unexpected error while waiting for TMS popup",
                 extras={"error": str(exc)},
             )
@@ -1745,7 +1745,7 @@ async def _navigate_via_home_to_dashboard(
         await tms_page.wait_for_load_state("domcontentloaded")
     except Exception as exc:
         _log(
-            "warn",
+            "warning",
             "tms page load warning",
             extras={"error": str(exc), "current_url": tms_page.url},
         )
@@ -1901,7 +1901,7 @@ async def _perform_login_flow(
 
     if navigation_error is not None:
         _log(
-            "warn",
+            "warning",
             "login navigation signalled a timeout; validating page state",
             extras={"error": str(navigation_error)},
         )
@@ -1929,7 +1929,7 @@ async def _perform_login_flow(
 
     if not login_form_cleared and login_form_error is not None:
         _log(
-            "warn",
+            "warning",
             "login form still present after submission; checking page content",
             extras={"error": str(login_form_error)},
         )
@@ -2034,7 +2034,7 @@ async def _ensure_dashboard(
     if await _is_login_page(page, logger):
         if not has_creds:
             _log(
-                "warn",
+                "warning",
                 GLOBAL_CREDENTIAL_ERROR,
                 extras={"dashboard_url": dashboard_url, "current_url": page.url},
             )
@@ -2077,7 +2077,7 @@ async def _ensure_dashboard(
             break
         except PlaywrightTimeoutError as exc:
             _log(
-                "warn",
+                "warning",
                 "dashboard download controls not detected; validating page content",
                 extras={"error": str(exc)},
             )
@@ -2085,7 +2085,7 @@ async def _ensure_dashboard(
             if await _is_login_page(page, logger):
                 if not has_creds:
                     _log(
-                        "warn",
+                        "warning",
                         GLOBAL_CREDENTIAL_ERROR,
                         extras={"current_url": page.url},
                     )
@@ -2133,7 +2133,7 @@ async def _ensure_dashboard(
 
             if not has_creds:
                 _log(
-                    "warn",
+                    "warning",
                     GLOBAL_CREDENTIAL_ERROR,
                     extras={"current_url": page.url},
                 )
@@ -2409,7 +2409,7 @@ async def run_all_stores_single_session(
                     log_event(
                         logger=logger,
                         phase="download",
-                        status="warn",
+                        status="warning",
                         store_code=sc,
                         bucket=None,
                         message="dashboard navigation rate limited; skipping store",
@@ -2442,7 +2442,7 @@ async def run_all_stores_single_session(
                     log_event(
                         logger=logger,
                         phase="download",
-                        status="warn",
+                        status="warning",
                         store_code=sc,
                         bucket=None,
                         message="skipping store due to dashboard unavailability",
