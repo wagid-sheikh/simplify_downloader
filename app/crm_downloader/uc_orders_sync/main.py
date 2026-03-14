@@ -1342,6 +1342,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _resolve_uc_max_workers() -> int:
     return max(1, _env_int("UC_MAX_WORKERS", UC_MAX_WORKERS_DEFAULT))
 
@@ -3966,6 +3973,10 @@ async def _run_store_discovery(
                     order_details_path=staging_feed_order_details_path,
                     payment_details_path=staging_feed_payment_details_path,
                     logger=logger,
+                    include_full_warning_samples=_env_bool(
+                        "UC_ARCHIVE_INGEST_FULL_WARNING_SAMPLES_DEBUG",
+                        default=False,
+                    ),
                 )
                 ingest_metrics = {
                     "files": {k: vars(v) for k, v in ingest_result.files.items()},
