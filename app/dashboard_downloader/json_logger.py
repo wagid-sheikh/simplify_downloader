@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import time
 from contextlib import contextmanager
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
@@ -14,6 +16,49 @@ LOG_STATUSES = frozenset({"debug", "ok", "info", "warning", "error"})
 DEFAULT_MAX_EVENT_BYTES = max(1024, int(os.getenv("JSON_LOG_MAX_EVENT_BYTES", "65536")))
 
 __all__ = ["LOG_STATUSES", "JsonLogger", "get_logger", "log_event", "timed_event", "new_run_id"]
+
+STATUS_NORMALIZED_WARNING_TOKEN = "status_normalized:"
+
+
+class StatusNormalizationSuppressionFilter(logging.Filter):
+    """Suppress expected status normalization warnings and track suppression counts."""
+
+    def __init__(self) -> None:
+        super().__init__(name="status_normalization_suppression")
+        self._suppressed_by_file: dict[str, int] = defaultdict(int)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        event = getattr(record, "event_payload", None)
+        if not isinstance(event, dict):
+            return True
+        if str(event.get("status", "")).strip().lower() != "warning":
+            return True
+        if not self._contains_status_normalization(event):
+            return True
+        file_key = self._event_file_key(event)
+        self._suppressed_by_file[file_key] += 1
+        return False
+
+    def pop_suppressed_count(self, *, file_key: str) -> int:
+        return self._suppressed_by_file.pop(file_key, 0)
+
+    @staticmethod
+    def _contains_status_normalization(event: dict[str, Any]) -> bool:
+        for key in ("message", "warning_code", "ingest_remarks"):
+            value = event.get(key)
+            if isinstance(value, str) and STATUS_NORMALIZED_WARNING_TOKEN in value:
+                return True
+        return False
+
+    @staticmethod
+    def _event_file_key(event: dict[str, Any]) -> str:
+        source_file = event.get("source_file")
+        if isinstance(source_file, str) and source_file.strip():
+            return source_file.strip()
+        file_value = event.get("file")
+        if isinstance(file_value, str) and file_value.strip():
+            return Path(file_value).name
+        return "<unknown>"
 
 
 def new_run_id() -> str:
@@ -61,6 +106,7 @@ class JsonLogger:
         self._state: Dict[str, bool] = {"closed": False}
         self.aggregator = None
         self.max_event_bytes = DEFAULT_MAX_EVENT_BYTES
+        self._status_normalization_filter = StatusNormalizationSuppressionFilter()
 
     def bind(self, **kwargs: Any) -> "JsonLogger":
         child = JsonLogger(run_id=self.run_id, stream=self.stream, log_file_path=None)
@@ -149,12 +195,38 @@ class JsonLogger:
             return
         status = self._validate_status(status)
         payload = {"phase": phase, "status": status, "message": message, **fields}
+        if not self._passes_filters(payload):
+            return
         if self.aggregator:
             try:
                 self.aggregator.record_log_event(payload)
             except Exception:
                 pass
         self._emit(payload)
+
+    def _passes_filters(self, payload: Dict[str, Any]) -> bool:
+        record = logging.makeLogRecord(
+            {
+                "name": "app.dashboard_downloader.json_logger",
+                "level": logging.WARNING if payload.get("status") == "warning" else logging.INFO,
+                "msg": payload.get("message", ""),
+                "event_payload": payload,
+            }
+        )
+        return self._status_normalization_filter.filter(record)
+
+    def emit_suppressed_normalization_summary(self, *, phase: str, file_key: str) -> None:
+        """Emit one info event for suppressed normalization warnings of a source file."""
+        suppressed_count = self._status_normalization_filter.pop_suppressed_count(file_key=file_key)
+        if suppressed_count <= 0:
+            return
+        self.info(
+            phase=phase,
+            status="info",
+            message="normalization_events_suppressed",
+            source_file=file_key,
+            normalization_events_suppressed=suppressed_count,
+        )
 
     def warn(self, *, phase: str, message: str, **fields: Any) -> None:
         self.info(phase=phase, status="warning", message=message, **fields)
