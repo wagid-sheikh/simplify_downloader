@@ -10,7 +10,7 @@ Run `td_orders_sync` with one of the API-capable modes:
 - `--source-mode api_primary` (API is preferred source when available)
 - `--source-mode api_only` (API-only flow)
 
-If you leave source mode as `ui`, TD API fetch/compare artifacts are not expected.
+Default source mode is `api_only`. Use `--source-mode ui` only when you explicitly need the UI workbook path, where TD API fetch/compare artifacts are not expected.
 
 ## Artifact directory behavior
 
