@@ -11,6 +11,7 @@ from playwright.async_api import Page
 
 from app.crm_downloader.uc_orders_sync.archive_api_extract import (
     _extract_invoice_customer_address,
+    InvoiceApiCallStats,
     _extract_order_info,
     _fetch_invoice_html_with_retries,
     _parse_invoice_order_details,
@@ -355,6 +356,7 @@ async def collect_gst_orders_via_api(
 
     gst_order_codes: set[str] = set()
     seen_orders: set[str] = set()
+    invoice_call_stats = InvoiceApiCallStats()
     for row in rows:
         if not isinstance(row, Mapping):
             continue
@@ -426,6 +428,8 @@ async def collect_gst_orders_via_api(
             store_code=store_code,
             order_code=order_code,
             logger=logger,
+            trace_invoice_success=False,
+            invoice_call_stats=invoice_call_stats,
         )
         extract.invoice_retry_count += invoice_retries
         if not invoice_html:
