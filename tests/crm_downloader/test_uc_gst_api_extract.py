@@ -49,7 +49,7 @@ def test_collect_gst_orders_via_api_keeps_base_row_when_invoice_fetch_fails(monk
             "suggestions": "Handle carefully",
         }
 
-    async def _fake_fetch_invoice_html_with_retries(*, page, booking_id, store_code, order_code, logger):
+    async def _fake_fetch_invoice_html_with_retries(*, page, booking_id, store_code, order_code, logger, **_kwargs):
         return None, 0
 
     monkeypatch.setattr(
@@ -138,7 +138,7 @@ def test_collect_gst_orders_via_api_builds_payment_rows_from_payment_details(mon
             "payment_details": '[{"payment_mode": 1, "payment_amount": 100, "created_at": "2026-01-02 10:00:00", "transaction_id": "TXN-1"}, {"payment_mode": "99", "payment_amount": 136, "created_at": "2026-01-02 10:05:00"}]',
         }
 
-    async def _fake_fetch_invoice_html_with_retries(*, page, booking_id, store_code, order_code, logger):
+    async def _fake_fetch_invoice_html_with_retries(*, page, booking_id, store_code, order_code, logger, **_kwargs):
         return "<html></html>", 0
 
     monkeypatch.setattr(gst_api_extract, "_resolve_archive_bearer_token", _fake_resolve_archive_bearer_token)

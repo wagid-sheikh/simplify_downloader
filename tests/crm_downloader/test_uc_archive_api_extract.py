@@ -8,6 +8,7 @@ from datetime import date
 from app.crm_downloader.uc_orders_sync import archive_api_extract
 from app.crm_downloader.uc_orders_sync.archive_api_extract import (
     ArchiveApiExtract,
+    InvoiceApiCallStats,
     _map_status,
     _parse_invoice_order_details,
     _parse_payment_rows,
@@ -200,7 +201,7 @@ class _FakeArchivePage:
         }
 
 
-def test_fetch_invoice_success_logs_debug_not_info() -> None:
+def test_fetch_invoice_success_logs_debug_when_trace_enabled() -> None:
     archive_api_extract._TOKEN_DIAGNOSTICS_LOGGED_STORES.clear()
     archive_api_extract._TOKEN_KEY_DEBUG_LOGGED_STORES.clear()
     stream = io.StringIO()
@@ -214,6 +215,8 @@ def test_fetch_invoice_success_logs_debug_not_info() -> None:
             store_code="UC610",
             order_code="UC610-0001",
             logger=logger,
+            trace_invoice_success=True,
+            invoice_call_stats=InvoiceApiCallStats(),
         )
     )
 
@@ -223,6 +226,32 @@ def test_fetch_invoice_success_logs_debug_not_info() -> None:
     success_events = [e for e in events if e.get("message") == "Invoice API request succeeded"]
     assert len(success_events) == 1
     assert success_events[0]["status"] == "debug"
+
+
+def test_fetch_invoice_success_suppresses_per_order_success_log_by_default() -> None:
+    archive_api_extract._TOKEN_DIAGNOSTICS_LOGGED_STORES.clear()
+    archive_api_extract._TOKEN_KEY_DEBUG_LOGGED_STORES.clear()
+    stream = io.StringIO()
+    logger = JsonLogger(run_id="test", stream=stream, log_file_path=None)
+    page = _FakeArchivePage([_FakeResponse(status=200, payload="<html>ok</html>")])
+
+    html, retries = asyncio.run(
+        _fetch_invoice_html_with_retries(
+            page=page,
+            booking_id=123,
+            store_code="UC610",
+            order_code="UC610-0001",
+            logger=logger,
+            trace_invoice_success=False,
+            invoice_call_stats=InvoiceApiCallStats(),
+        )
+    )
+
+    assert html == "<html>ok</html>"
+    assert retries == 0
+    events = _read_events(stream.getvalue())
+    success_events = [e for e in events if e.get("message") == "Invoice API request succeeded"]
+    assert success_events == []
 
 
 def test_collect_archive_orders_logs_store_summary_payload() -> None:
@@ -314,4 +343,13 @@ def test_collect_archive_orders_logs_store_summary_payload() -> None:
     assert summary["failed_invoices"] == 1
     assert summary["retry_count"] == 1
     assert summary["sample_failed_order_codes"] == ["UC610-0002"]
+    assert summary["sample_success_order_codes"] == ["UC610-0001"]
+    assert summary["invoice_call_total"] == 0
+    assert summary["invoice_call_success_count"] == 0
+    assert summary["invoice_call_failure_count"] == 0
+    assert summary["invoice_call_retry_count"] == 0
+    assert summary["invoice_latency_p50_ms"] is None
+    assert summary["invoice_latency_p90_ms"] is None
+    assert summary["invoice_latency_p95_ms"] is None
+    assert summary["success_logging_mode"] == "aggregate"
     assert isinstance(summary["elapsed_seconds"], float)

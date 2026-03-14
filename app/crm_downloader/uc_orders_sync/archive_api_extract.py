@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -40,6 +41,41 @@ STATUS_MAP = {
 
 _TOKEN_KEY_DEBUG_LOGGED_STORES: set[str] = set()
 _TOKEN_DIAGNOSTICS_LOGGED_STORES: set[str] = set()
+
+_TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
+
+
+def _env_flag(name: str, *, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in _TRUTHY_ENV_VALUES
+
+
+@dataclass
+class InvoiceApiCallStats:
+    total_calls: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    retry_count: int = 0
+    latencies_ms: list[float] = field(default_factory=list)
+
+    def record_call(self, *, success: bool, latency_ms: float) -> None:
+        self.total_calls += 1
+        self.latencies_ms.append(latency_ms)
+        if success:
+            self.success_count += 1
+        else:
+            self.failure_count += 1
+
+    def percentile_ms(self, percentile: float) -> float | None:
+        if not self.latencies_ms:
+            return None
+        if len(self.latencies_ms) == 1:
+            return round(self.latencies_ms[0], 2)
+        sorted_latencies = sorted(self.latencies_ms)
+        rank = max(0, min(len(sorted_latencies) - 1, round((percentile / 100) * (len(sorted_latencies) - 1))))
+        return round(sorted_latencies[rank], 2)
 
 
 @dataclass
@@ -617,7 +653,16 @@ async def _browser_fetch_text_with_credentials(
     return (payload if isinstance(payload, str) and payload else None), (status if isinstance(status, int) else None)
 
 
-async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str, store_code: str, order_code: str, logger: JsonLogger) -> tuple[str | None, int]:
+async def _fetch_invoice_html_with_retries(
+    *,
+    page: Page,
+    booking_id: int | str,
+    store_code: str,
+    order_code: str,
+    logger: JsonLogger,
+    trace_invoice_success: bool,
+    invoice_call_stats: InvoiceApiCallStats,
+) -> tuple[str | None, int]:
     url = ARCHIVE_INVOICE_URL_TEMPLATE.format(booking_id=booking_id)
     bearer_token = await _resolve_archive_bearer_token(page=page, logger=logger, store_code=store_code)
     request_headers = _build_archive_request_headers(bearer_token=bearer_token)
@@ -627,6 +672,8 @@ async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str,
     retry_count = 0
     last_status_code: int | None = None
     for attempt in range(1, ARCHIVE_API_MAX_RETRIES + 1):
+        attempt_started_at = time.perf_counter()
+        call_logged = False
         try:
             response = await page.request.get(url, timeout=90_000, headers=request_headers)
             status = response.status
@@ -654,24 +701,30 @@ async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str,
                     url=url,
                     headers=request_headers,
                 )
-                if invoice_payload is not None:
-                    log_event(
-                        logger=logger,
-                        phase="archive_api",
-                        status="debug",
-                        message="Invoice API request succeeded",
-                        store_code=store_code,
-                        order_code=order_code,
-                        booking_id=booking_id,
-                        attempt=attempt,
-                        status_code=fallback_status,
-                        primary_status_code=status,
-                        fallback_status_code=fallback_status,
-                        auth_header_present=auth_header_present,
-                        referer_set=referer_set,
-                        transport="browser_fetch",
-                        url=url,
-                    )
+                success = invoice_payload is not None
+                latency_ms = round((time.perf_counter() - attempt_started_at) * 1000, 2)
+                invoice_call_stats.record_call(success=success, latency_ms=latency_ms)
+                call_logged = True
+                if success:
+                    if trace_invoice_success:
+                        log_event(
+                            logger=logger,
+                            phase="archive_api",
+                            status="debug",
+                            message="Invoice API request succeeded",
+                            store_code=store_code,
+                            order_code=order_code,
+                            booking_id=booking_id,
+                            attempt=attempt,
+                            status_code=fallback_status,
+                            primary_status_code=status,
+                            fallback_status_code=fallback_status,
+                            auth_header_present=auth_header_present,
+                            referer_set=referer_set,
+                            transport="browser_fetch",
+                            latency_ms=latency_ms,
+                            url=url,
+                        )
                     return invoice_payload, retry_count
                 log_event(
                     logger=logger,
@@ -682,11 +735,13 @@ async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str,
                     order_code=order_code,
                     booking_id=booking_id,
                     attempt=attempt,
+                    status_code=fallback_status,
                     primary_status_code=status,
                     fallback_status_code=fallback_status,
                     auth_header_present=auth_header_present,
                     transport="browser_fetch",
                     referer_set=referer_set,
+                    latency_ms=latency_ms,
                     url=url,
                 )
                 last_error = "browser_fetch_unauthorized"
@@ -696,6 +751,9 @@ async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str,
                 last_error = f"http_status_{status}"
                 last_status_code = status
             elif status >= 400:
+                latency_ms = round((time.perf_counter() - attempt_started_at) * 1000, 2)
+                invoice_call_stats.record_call(success=False, latency_ms=latency_ms)
+                call_logged = True
                 log_event(
                     logger=logger,
                     phase="archive_api",
@@ -710,32 +768,58 @@ async def _fetch_invoice_html_with_retries(*, page: Page, booking_id: int | str,
                     exception_message=f"Invoice API returned HTTP {status}",
                     auth_header_present=auth_header_present,
                     referer_set=referer_set,
+                    latency_ms=latency_ms,
                     url=url,
                 )
                 return None, retry_count
             else:
-                log_event(
-                    logger=logger,
-                    phase="archive_api",
-                    status="debug",
-                    message="Invoice API request succeeded",
-                    store_code=store_code,
-                    order_code=order_code,
-                    booking_id=booking_id,
-                    attempt=attempt,
-                    status_code=status,
-                    auth_header_present=auth_header_present,
-                    referer_set=referer_set,
-                    transport="api_request_context",
-                    url=url,
-                )
-                return await response.text(), retry_count
+                payload = await response.text()
+                latency_ms = round((time.perf_counter() - attempt_started_at) * 1000, 2)
+                invoice_call_stats.record_call(success=True, latency_ms=latency_ms)
+                call_logged = True
+                if trace_invoice_success:
+                    log_event(
+                        logger=logger,
+                        phase="archive_api",
+                        status="debug",
+                        message="Invoice API request succeeded",
+                        store_code=store_code,
+                        order_code=order_code,
+                        booking_id=booking_id,
+                        attempt=attempt,
+                        status_code=status,
+                        auth_header_present=auth_header_present,
+                        referer_set=referer_set,
+                        transport="api_request_context",
+                        latency_ms=latency_ms,
+                        url=url,
+                    )
+                return payload, retry_count
         except Exception as exc:
             last_error = str(exc)
             last_status_code = None
 
+        if not call_logged:
+            latency_ms = round((time.perf_counter() - attempt_started_at) * 1000, 2)
+            invoice_call_stats.record_call(success=False, latency_ms=latency_ms)
+
         if attempt < ARCHIVE_API_MAX_RETRIES:
             retry_count += 1
+            invoice_call_stats.retry_count += 1
+            log_event(
+                logger=logger,
+                phase="archive_api",
+                status="warning",
+                message="Invoice API request retry scheduled",
+                store_code=store_code,
+                order_code=order_code,
+                booking_id=booking_id,
+                attempt=attempt,
+                status_code=last_status_code,
+                error=last_error,
+                next_retry_attempt=attempt + 1,
+                url=url,
+            )
             await asyncio.sleep(ARCHIVE_API_RETRY_BASE_SECONDS * attempt)
 
     log_event(
@@ -773,6 +857,9 @@ async def collect_archive_orders_via_api(
     invoice_failed = 0
     invoice_retry_count = 0
     sample_failed_order_codes: list[str] = []
+    sample_success_order_codes: list[str] = []
+    trace_invoice_success = _env_flag("PIPELINE_TRACE_INVOICE", default=False)
+    invoice_call_stats = InvoiceApiCallStats()
     started_at = time.perf_counter()
 
     page_number = 1
@@ -887,6 +974,8 @@ async def collect_archive_orders_via_api(
                 store_code=store_code,
                 order_code=order_code,
                 logger=logger,
+                trace_invoice_success=trace_invoice_success,
+                invoice_call_stats=invoice_call_stats,
             )
             invoice_retry_count += invoice_retries
             if not invoice_html:
@@ -910,6 +999,8 @@ async def collect_archive_orders_via_api(
                 _record_skip(extract, order_code=order_code, reason="invoice_parse_no_rows")
                 continue
             invoice_successful += 1
+            if len(sample_success_order_codes) < 5:
+                sample_success_order_codes.append(order_code)
             order_mode = next(
                 (
                     str(row.get("order_mode") or "").strip()
@@ -944,6 +1035,9 @@ async def collect_archive_orders_via_api(
         _record_extractor_error(extract, reason="all_pages_failed")
 
     elapsed_seconds = round(time.perf_counter() - started_at, 3)
+    latency_p50_ms = invoice_call_stats.percentile_ms(50)
+    latency_p90_ms = invoice_call_stats.percentile_ms(90)
+    latency_p95_ms = invoice_call_stats.percentile_ms(95)
     log_event(
         logger=logger,
         phase="archive_api",
@@ -953,8 +1047,17 @@ async def collect_archive_orders_via_api(
         successful_invoices=invoice_successful,
         failed_invoices=invoice_failed,
         retry_count=invoice_retry_count,
+        invoice_call_total=invoice_call_stats.total_calls,
+        invoice_call_success_count=invoice_call_stats.success_count,
+        invoice_call_failure_count=invoice_call_stats.failure_count,
+        invoice_call_retry_count=invoice_call_stats.retry_count,
+        invoice_latency_p50_ms=latency_p50_ms,
+        invoice_latency_p90_ms=latency_p90_ms,
+        invoice_latency_p95_ms=latency_p95_ms,
         elapsed_seconds=elapsed_seconds,
         sample_failed_order_codes=sample_failed_order_codes,
+        sample_success_order_codes=sample_success_order_codes,
+        success_logging_mode=("trace" if trace_invoice_success else "aggregate"),
     )
 
     return extract
