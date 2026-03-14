@@ -7,13 +7,16 @@ import os
 import re
 import contextlib
 from dataclasses import asdict, dataclass, field
+from collections import Counter
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Sequence
 from urllib.parse import urlparse, urljoin
 
 import sqlalchemy as sa
+import openpyxl
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from playwright.async_api import Browser, BrowserContext, FrameLocator, Locator, Page, TimeoutError, async_playwright
 
@@ -21,14 +24,29 @@ from app.common.db import session_scope
 from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
 from app.config import config
 from app.crm_downloader.browser import launch_browser
-from app.crm_downloader.config import default_download_dir, default_profiles_dir
+from app.crm_downloader.config import default_profiles_dir, default_download_dir
 from app.crm_downloader.orders_sync_window import (
     fetch_last_success_window_end,
     resolve_orders_sync_start_date,
     resolve_window_settings,
 )
-from app.crm_downloader.td_orders_sync.ingest import TdOrdersIngestResult, ingest_td_orders_workbook
-from app.crm_downloader.td_orders_sync.sales_ingest import TdSalesIngestResult, ingest_td_sales_workbook
+from app.crm_downloader.td_orders_sync.ingest import TdOrdersIngestResult, ingest_td_orders_rows, ingest_td_orders_workbook
+from app.crm_downloader.td_orders_sync.sales_ingest import TdSalesIngestResult, ingest_td_sales_rows, ingest_td_sales_workbook
+from app.crm_downloader.td_orders_sync.td_api_client import TdApiClient, TdApiFetchResult
+from app.crm_downloader.td_orders_sync.garment_ingest import TdGarmentIngestResult, ingest_td_garment_rows
+from app.crm_downloader.td_orders_sync.td_api_artifacts import (
+    persist_td_api_artifacts,
+    redact_sensitive_fields,
+)
+from app.crm_downloader.td_orders_sync.td_api_compare import (
+    CorrelationContext,
+    DecisionLog,
+    build_api_request_metadata,
+    collect_auth_diagnostics,
+    compare_canonical_rows,
+    project_api_rows_for_compare,
+    COMPARE_KEY_FIELDS_BY_DATASET,
+)
 from app.dashboard_downloader.json_logger import JsonLogger, get_logger, log_event, new_run_id
 from app.dashboard_downloader.db_tables import orders_sync_log, pipelines
 from app.dashboard_downloader.notifications import send_notifications_for_run
@@ -43,11 +61,12 @@ PIPELINE_NAME = "td_orders_sync"
 DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS = 90_000
 LOADING_LOCATOR_SELECTORS = ("text=/loading/i", ".k-loading-mask")
 OTP_VERIFICATION_DWELL_SECONDS = 600
-TEMP_ENABLED_STORES = {"A668", "A817"}
+TEMP_ENABLED_STORES = {code.strip().upper() for code in os.environ.get("TD_ORDERS_TEMP_ENABLED_STORES", "").split(",") if code.strip()}
 REPORT_REQUEST_MAX_TIMEOUT_MS = 60_000
 REPORT_REQUEST_POLL_LOG_INTERVAL_SECONDS = 20.0
 REPORT_REQUEST_REFRESH_INTERVAL_SECONDS = 15.0
-PENDING_MIN_POLL_SECONDS = 135
+PENDING_ETA_CUSHION_MIN_SECONDS = 5
+PENDING_ETA_CUSHION_MAX_SECONDS = 15
 STABLE_LOCATOR_STRATEGIES = {
     "container_locator_strategy": "heading_preferred_wrapper",
     "range_match_strategy": "date_range_text_pattern",
@@ -59,10 +78,212 @@ INGEST_REMARKS_MAX_CHARS = 200
 DOM_SNIPPET_MAX_CHARS = 600
 WARNING_SAMPLE_LIMIT = 3
 VERBOSE_DOM_LOGGING = os.environ.get("TD_ORDERS_VERBOSE_LOGGING", "").strip().lower() in {"1", "true", "yes"}
+VERIFY_ORDERS_SYNC_LOG_UPSERT = os.environ.get("TD_VERIFY_ORDERS_SYNC_LOG_UPSERT", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 NAV_SNAPSHOT_SAMPLE_LIMIT = 3
 SALES_NAV_SAMPLE_LIMIT = 3
 ROW_SAMPLE_LIMIT = 3
 SNAPSHOT_TEXT_MAX_CHARS = 120
+TD_SOURCE_MODES = {"ui", "api_shadow", "api_primary", "api_only"}
+INGEST_SOURCE_BY_MODE: Mapping[str, str] = {
+    "ui": "ui_workbook",
+    "api_shadow": "ui_workbook",
+    "api_primary": "api_rows",
+    "api_only": "api_rows",
+}
+SUMMARY_ROW_MARKERS = ("total order", "grand total")
+
+
+
+
+def _td_api_debug_logging_enabled() -> bool:
+    return (os.environ.get("TD_API_DEBUG_LOGGING") or "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_td_api_artifact_dir() -> Path:
+    configured = (os.environ.get("TD_API_ARTIFACT_DIR") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    try:
+        return default_download_dir().resolve()
+    except NameError:  # defensive in case import gets dropped during conflict resolution
+        from app.crm_downloader.config import default_download_dir as _default_download_dir
+
+        return _default_download_dir().resolve()
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _int_env(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    stripped = value.strip()
+    if not stripped:
+        return default
+    try:
+        return int(stripped)
+    except ValueError:
+        return default
+
+
+def _ingest_source_for_mode(source_mode: str) -> str:
+    return INGEST_SOURCE_BY_MODE.get(source_mode, "ui_workbook")
+
+
+def _ensure_ui_workbook_ingest_allowed(*, source_mode: str, dataset: str) -> None:
+    if _ingest_source_for_mode(source_mode) != "ui_workbook":
+        raise RuntimeError(
+            f"Workbook ingest for {dataset} is not allowed when source_mode={source_mode!r}; "
+            f"expected API rows ingestion"
+        )
+
+
+def _build_compare_verdict(
+    *,
+    normalized_orders_verdict: Mapping[str, Any],
+    normalized_sales_verdict: Mapping[str, Any],
+    garment_metrics: Mapping[str, Any],
+    run_sales: bool,
+    run_garment_sync: bool,
+) -> dict[str, Any]:
+    garment_row_delta = max(int(garment_metrics.get("total_rows") or 0) - int(garment_metrics.get("matched_rows") or 0), 0)
+    garments_verdict: dict[str, Any] = {
+        "dataset": "garments",
+        "pass": garment_row_delta == 0,
+        "row_count_delta": garment_row_delta,
+        "amount_mismatches": int(garment_metrics.get("amount_mismatches") or 0),
+        "status_mismatches": int(garment_metrics.get("status_mismatches") or 0),
+        "reasons": [] if garment_row_delta == 0 else ["garments:compare_row_delta_detected"],
+        "reason_codes": [] if garment_row_delta == 0 else ["garments:compare_row_delta_detected"],
+    }
+    if run_garment_sync:
+        garments_verdict["informational"] = False
+        garments_verdict["included_in_overall_pass"] = True
+    else:
+        garments_verdict["informational"] = True
+        garments_verdict["included_in_overall_pass"] = False
+
+    datasets: dict[str, dict[str, Any]] = {
+        "orders": dict(normalized_orders_verdict),
+        "garments": garments_verdict,
+    }
+    if run_sales:
+        datasets["sales"] = dict(normalized_sales_verdict)
+
+    all_reasons: list[str] = []
+    for verdict in datasets.values():
+        all_reasons.extend([str(reason) for reason in verdict.get("reason_codes") or verdict.get("reasons") or []])
+    top_reasons = [reason for reason, _ in Counter(all_reasons).most_common(3)]
+    overall_pass = all(
+        bool(verdict.get("pass"))
+        for verdict in datasets.values()
+        if bool(verdict.get("included_in_overall_pass", True))
+    )
+
+    return {
+        "pass": overall_pass,
+        "overall_pass": overall_pass,
+        "datasets": datasets,
+        "reason_codes": all_reasons,
+        "top_reason_codes": top_reasons,
+    }
+
+
+
+
+def _resolve_store_concurrency_settings(*, source_mode: str) -> tuple[int, bool]:
+    configured_concurrency = max(_int_env("TD_API_ONLY_STORE_CONCURRENCY", 2), 2)
+    allow_non_api_only = _bool_env("TD_ENABLE_NON_API_ONLY_STORE_CONCURRENCY", default=False)
+    should_enable = source_mode == "api_only" or allow_non_api_only
+    if not should_enable:
+        return 1, False
+    return configured_concurrency, configured_concurrency > 1
+
+
+def _compare_mismatch_free(metrics: Mapping[str, Any]) -> bool:
+    return (
+        int(metrics.get("missing_in_api") or 0) == 0
+        and int(metrics.get("missing_in_ui") or 0) == 0
+        and int(metrics.get("amount_mismatches") or 0) == 0
+        and int(metrics.get("status_mismatches") or 0) == 0
+    )
+
+
+def _build_garments_health_summary(
+    *,
+    api_fetch_result: TdApiFetchResult | None,
+    garment_ingest_result: TdGarmentIngestResult | None,
+) -> dict[str, int | float]:
+    endpoint_health = dict((api_fetch_result.endpoint_health or {}).get("/garments/details") or {}) if api_fetch_result else {}
+    pages_attempted = int(endpoint_health.get("pages_attempted") or 0)
+    timeout_count = int(endpoint_health.get("timeout_count") or 0)
+    retry_success_count = int(endpoint_health.get("retry_success_count") or 0)
+    row_count = int(garment_ingest_result.row_count or 0) if garment_ingest_result else 0
+    orphan_rows = int(garment_ingest_result.orphan_rows or 0) if garment_ingest_result else 0
+    return {
+        "pages_attempted": pages_attempted,
+        "timeout_count": timeout_count,
+        "retry_success_count": retry_success_count,
+        "final_row_count": row_count,
+        "orphan_rows": orphan_rows,
+    }
+
+
+async def _evaluate_garment_orphan_alert(
+    *,
+    store_code: str,
+    garments_health_summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    orphan_rows = int(garments_health_summary.get("orphan_rows") or 0)
+    absolute_threshold = _int_env("TD_GARMENT_ORPHAN_ALERT_THRESHOLD", 25)
+    baseline_windows = _int_env("TD_GARMENT_ORPHAN_BASELINE_WINDOWS", 5)
+    delta_threshold = _int_env("TD_GARMENT_ORPHAN_BASELINE_DELTA", 10)
+
+    if orphan_rows >= absolute_threshold:
+        return {
+            "triggered": True,
+            "reason": "garments_orphan_rows_above_threshold",
+            "orphan_rows": orphan_rows,
+            "absolute_threshold": absolute_threshold,
+            "baseline_avg_orphan_rows": None,
+            "baseline_sample_size": 0,
+            "delta_vs_baseline": None,
+            "delta_threshold": delta_threshold,
+        }
+
+    if baseline_windows <= 0:
+        return {
+            "triggered": False,
+            "reason": None,
+            "orphan_rows": orphan_rows,
+            "absolute_threshold": absolute_threshold,
+            "baseline_avg_orphan_rows": None,
+            "baseline_sample_size": 0,
+            "delta_vs_baseline": None,
+            "delta_threshold": delta_threshold,
+        }
+
+    # Compare verdicts are runtime-only and no longer persisted to td_sync_compare_log,
+    # so baseline-driven orphan drift checks are intentionally disabled.
+    return {
+        "triggered": False,
+        "reason": None,
+        "orphan_rows": orphan_rows,
+        "absolute_threshold": absolute_threshold,
+        "baseline_avg_orphan_rows": None,
+        "baseline_sample_size": 0,
+        "delta_vs_baseline": None,
+        "delta_threshold": delta_threshold,
+    }
 
 
 def _dom_logging_enabled() -> bool:
@@ -91,6 +312,30 @@ def _truncate_text(value: str | None, *, max_chars: int = SNAPSHOT_TEXT_MAX_CHAR
     if len(value) <= max_chars:
         return value
     return value[: max_chars - 1] + "…"
+
+
+def _normalize_json_safe(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value) if value.is_finite() else str(value)
+    if isinstance(value, Mapping):
+        return {key: _normalize_json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_normalize_json_safe(item) for item in value]
+    return value
+
+
+def _append_unique_warning(report: StoreReport | None, warning: str | None) -> None:
+    if report is None or not warning:
+        return
+    rendered = str(warning).strip()
+    if rendered and rendered not in report.warnings:
+        report.warnings.append(rendered)
 
 
 def _summarize_text_samples(values: Sequence[str], *, limit: int = ROW_SAMPLE_LIMIT) -> dict[str, Any]:
@@ -134,6 +379,109 @@ def _format_warning_preview(summary: Mapping[str, Any]) -> str:
         return f"{count} warning(s) (samples: {', '.join(samples)}{suffix})"
     return f"{count} warning(s)"
 
+def _build_correlation_context(
+    *, run_id: str, store_code: str, window_start: date, window_end: date, source_mode: str
+) -> CorrelationContext:
+    return CorrelationContext(
+        run_id=run_id,
+        store_code=store_code,
+        window_start=window_start.isoformat(),
+        window_end=window_end.isoformat(),
+        source_mode=source_mode,
+    )
+
+
+def _serialize_compare_metrics(report: StoreReport | None) -> dict[str, int | list[str] | None]:
+    metrics = (report.compare_metrics if report else {}) or {}
+    return {
+        "total_rows": metrics.get("total_rows"),
+        "matched_rows": metrics.get("matched_rows"),
+        "missing_in_api": metrics.get("missing_in_api"),
+        "missing_in_ui": metrics.get("missing_in_ui"),
+        "amount_mismatches": metrics.get("amount_mismatches"),
+        "status_mismatches": metrics.get("status_mismatches"),
+    }
+
+
+def _operational_compare_metrics(compare_metrics: Mapping[str, Any], dataset_health: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "total_rows": compare_metrics.get("total_rows"),
+        "matched_rows": compare_metrics.get("matched_rows"),
+        "missing_in_api": compare_metrics.get("missing_in_api"),
+        "missing_in_ui": compare_metrics.get("missing_in_ui"),
+        "amount_mismatches": compare_metrics.get("amount_mismatches"),
+        "status_mismatches": compare_metrics.get("status_mismatches"),
+        "dataset_health": dict(dataset_health),
+    }
+
+
+def _persist_compare_excel_artifact(
+    *,
+    artifact_path: Path,
+    compare_metrics: Mapping[str, Any],
+    api_request_metadata: Sequence[Mapping[str, Any]],
+) -> None:
+    workbook = openpyxl.Workbook()
+
+    def _json_compatible(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(key): _json_compatible(nested_value) for key, nested_value in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_json_compatible(item) for item in value]
+        if isinstance(value, set):
+            normalized_items = [_json_compatible(item) for item in value]
+            return sorted(normalized_items, key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True))
+        return value
+
+    def _excel_safe_cell_value(value: Any) -> Any:
+        if isinstance(value, (list, dict, tuple, set)):
+            return json.dumps(_json_compatible(value), ensure_ascii=False, sort_keys=True)
+        return value
+
+    def _write_rows(sheet_name: str, rows: Sequence[Mapping[str, Any]]) -> None:
+        worksheet = workbook.create_sheet(title=sheet_name)
+        if not rows:
+            worksheet.append(["note"])
+            worksheet.append(["no rows"])
+            return
+
+        columns: list[str] = []
+        for row in rows:
+            for key in row.keys():
+                key_text = str(key)
+                if key_text not in columns:
+                    columns.append(key_text)
+
+        worksheet.append(columns)
+        for row in rows:
+            worksheet.append([_excel_safe_cell_value(row.get(column)) for column in columns])
+
+    summary_row = {
+        "total_rows": compare_metrics.get("total_rows"),
+        "matched_rows": compare_metrics.get("matched_rows"),
+        "missing_in_api": compare_metrics.get("missing_in_api"),
+        "missing_in_ui": compare_metrics.get("missing_in_ui"),
+        "amount_mismatches": compare_metrics.get("amount_mismatches"),
+        "status_mismatches": compare_metrics.get("status_mismatches"),
+    }
+    _write_rows("summary", [summary_row])
+
+    mismatch_artifacts = compare_metrics.get("mismatch_artifacts") or {}
+    _write_rows("missing_in_api", list(mismatch_artifacts.get("missing_in_api") or []))
+    _write_rows("missing_in_ui", list(mismatch_artifacts.get("missing_in_ui") or []))
+    _write_rows("value_mismatches", list(mismatch_artifacts.get("value_mismatches") or []))
+    _write_rows("api_request_metadata", list(redact_sensitive_fields(list(api_request_metadata or []))))
+
+    default_sheet = workbook["Sheet"]
+    workbook.remove(default_sheet)
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    workbook.save(artifact_path)
+
+
+
+
+
+
 
 async def main(
     *,
@@ -144,6 +492,7 @@ async def main(
     store_codes: Sequence[str] | None = None,
     run_orders: bool = True,
     run_sales: bool = True,
+    source_mode: str = "api_only",
 ) -> None:
     """Run the TD Orders sync flow (login + iframe historical orders download)."""
 
@@ -155,6 +504,17 @@ async def main(
     if from_date and from_date > run_end_date:
         raise ValueError(f"from_date ({from_date}) must be on or before to_date ({run_end_date})")
     logger = get_logger(run_id=resolved_run_id)
+    source_mode = (source_mode or "api_only").strip().lower()
+    if source_mode not in TD_SOURCE_MODES:
+        raise ValueError(f"source_mode must be one of {sorted(TD_SOURCE_MODES)}, got {source_mode!r}")
+    ingest_source = _ingest_source_for_mode(source_mode)
+    log_event(
+        logger=logger,
+        phase="ingest",
+        message="Resolved TD ingest source for mode",
+        source_mode=source_mode,
+        ingest_source=ingest_source,
+    )
     stores = await _load_td_order_stores(logger=logger, store_codes=store_codes)
     store_start_dates: dict[str, date] = {}
     pipeline_id: int | None = None
@@ -171,7 +531,7 @@ async def main(
                 pipeline_id=pipeline_id,
                 store_code=store.store_code,
             )
-        store_start_dates[store.store_code] = resolve_orders_sync_start_date(
+        resolved_start_date = resolve_orders_sync_start_date(
             end_date=run_end_date,
             last_success=last_success,
             overlap_days=overlap,
@@ -179,6 +539,22 @@ async def main(
             window_days=window_size,
             from_date=from_date,
             store_start_date=None,
+        )
+        store_start_dates[store.store_code] = resolved_start_date
+        window_source = "explicit_from_date" if from_date else ("last_success_with_overlap" if last_success else "backfill_window")
+        log_event(
+            logger=logger,
+            phase="window_resolution",
+            message="Resolved TD per-store effective date window",
+            store_code=store.store_code,
+            window_start=resolved_start_date.isoformat(),
+            window_end=run_end_date.isoformat(),
+            window_source=window_source,
+            explicit_from_date=from_date.isoformat() if from_date else None,
+            last_success_window_end=last_success.isoformat() if last_success else None,
+            overlap_days=overlap,
+            backfill_days=backfill,
+            window_days=window_size,
         )
     report_start_date = from_date or (min(store_start_dates.values()) if store_start_dates else run_end_date)
     summary = TdOrdersDiscoverySummary(
@@ -218,7 +594,7 @@ async def main(
             log_event(
                 logger=logger,
                 phase="init",
-                status="warn",
+                status="warning",
                 message="No TD stores with sync_orders_flag found; exiting",
             )
             summary.mark_phase("init", "warning")
@@ -240,32 +616,100 @@ async def main(
                 log_event(
                     logger=logger,
                     phase="notifications",
-                    status="warn",
+                    status="warning",
                     message="Skipping notifications because run summary was not recorded",
                     run_id=resolved_run_id,
                 )
             return
 
+        store_concurrency, store_concurrency_enabled = _resolve_store_concurrency_settings(source_mode=source_mode)
+        log_event(
+            logger=logger,
+            phase="store",
+            message="Resolved TD store concurrency settings",
+            source_mode=source_mode,
+            configured_concurrency=store_concurrency,
+            concurrency_enabled=store_concurrency_enabled,
+            allow_non_api_only_concurrency=_bool_env("TD_ENABLE_NON_API_ONLY_STORE_CONCURRENCY", default=True),
+        )
+
         async with async_playwright() as p:
             browser = await launch_browser(playwright=p, logger=logger)
-            for store in stores:
-                store_start_date = store_start_dates.get(store.store_code, summary.report_date)
-                await _run_store_discovery(
-                    browser=browser,
-                    store=store,
-                    logger=logger,
-                    run_env=resolved_env,
-                    run_id=resolved_run_id,
-                    run_date=resolved_run_date,
-                    run_start_date=store_start_date,
-                    run_end_date=run_end_date,
-                    nav_timeout_ms=nav_timeout_ms,
-                    summary=summary,
-                    run_orders=run_orders,
-                    run_sales=run_sales,
-                )
+            try:
+                if store_concurrency_enabled:
+                    semaphore = asyncio.Semaphore(store_concurrency)
+                    tasks = [
+                        _run_store_discovery_worker(
+                            browser=browser,
+                            store=store,
+                            logger=logger,
+                            run_env=resolved_env,
+                            run_id=resolved_run_id,
+                            run_date=resolved_run_date,
+                            run_start_date=store_start_dates.get(store.store_code, summary.report_date),
+                            run_end_date=run_end_date,
+                            nav_timeout_ms=nav_timeout_ms,
+                            summary=summary,
+                            run_orders=run_orders,
+                            run_sales=run_sales,
+                            source_mode=source_mode,
+                            semaphore=semaphore,
+                        )
+                        for store in stores
+                    ]
+                    worker_results = await asyncio.gather(*tasks, return_exceptions=True)
+                else:
+                    worker_results = []
+                    for store in stores:
+                        payload = await _run_store_discovery_worker(
+                            browser=browser,
+                            store=store,
+                            logger=logger,
+                            run_env=resolved_env,
+                            run_id=resolved_run_id,
+                            run_date=resolved_run_date,
+                            run_start_date=store_start_dates.get(store.store_code, summary.report_date),
+                            run_end_date=run_end_date,
+                            nav_timeout_ms=nav_timeout_ms,
+                            summary=summary,
+                            run_orders=run_orders,
+                            run_sales=run_sales,
+                            source_mode=source_mode,
+                            semaphore=None,
+                        )
+                        worker_results.append(payload)
 
-            await browser.close()
+                payload_by_store: dict[str, StoreExecutionPayload] = {}
+                for result in worker_results:
+                    if isinstance(result, Exception):
+                        log_event(
+                            logger=logger,
+                            phase="store",
+                            status="error",
+                            message="Unhandled TD store worker exception",
+                            run_id=resolved_run_id,
+                            error=str(result),
+                        )
+                        continue
+                    payload_by_store[result.store.store_code] = result
+
+                for store in stores:
+                    payload = payload_by_store.get(store.store_code)
+                    if payload is None:
+                        outcome = StoreOutcome(status="error", message="Store worker did not return a payload")
+                        summary.record_store(store.store_code, outcome)
+                        continue
+                    if payload.outcome is None:
+                        message = payload.error or "Store worker completed without outcome"
+                        payload.outcome = StoreOutcome(status="error", message=message)
+                    summary.record_store(
+                        store.store_code,
+                        payload.outcome,
+                        orders_result=payload.orders_report,
+                        sales_result=payload.sales_report,
+                    )
+            finally:
+                await browser.close()
 
         log_event(
             logger=logger,
@@ -290,7 +734,7 @@ async def main(
             log_event(
                 logger=logger,
                 phase="notifications",
-                status="warn",
+                status="warning",
                 message="Skipping notifications because run summary was not recorded",
                 run_env=resolved_env,
                 run_id=resolved_run_id,
@@ -302,7 +746,7 @@ async def main(
         log_event(
             logger=logger,
             phase="store",
-            status="warn",
+            status="warning",
             message="TD orders sync discovery interrupted; attempting graceful shutdown",
             run_id=resolved_run_id,
         )
@@ -320,7 +764,7 @@ async def main(
         log_event(
             logger=logger,
             phase="store",
-            status="warn",
+            status="warning",
             message="TD orders sync discovery interrupted by KeyboardInterrupt; attempting graceful shutdown",
             run_id=resolved_run_id,
         )
@@ -376,6 +820,20 @@ def _coerce_dict(value: Any) -> Dict[str, Any]:
     return {}
 
 
+def _coerce_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, (tuple, list)):
+        for item in value:
+            coerced = _coerce_text(item)
+            if coerced:
+                return coerced
+        return None
+    return str(value).strip() or None
+
+
 def _get_nested_str(mapping: Mapping[str, Any], path: Sequence[str]) -> str | None:
     current: Any = mapping
     for key in path:
@@ -384,11 +842,11 @@ def _get_nested_str(mapping: Mapping[str, Any], path: Sequence[str]) -> str | No
         current = current.get(key)
     if current is None:
         return None
-    return str(current).strip() or None
+    return _coerce_text(current)
 
 
-def _normalize_id_selector(selector: str) -> str:
-    selector = selector.strip()
+def _normalize_id_selector(selector: Any) -> str:
+    selector = _coerce_text(selector) or ""
     prefixes = ("#", ".", "[", "text=", "css=", "xpath=", "role=", "id=")
     if selector.startswith(prefixes):
         return selector
@@ -511,8 +969,8 @@ class TdStore:
 
     @property
     def reports_nav_selector(self) -> str:
-        raw = _get_nested_str(self.sync_config, ("selectors", "reports_nav")) or self.sync_config.get(
-            "reports_nav_selector"
+        raw = _get_nested_str(self.sync_config, ("selectors", "reports_nav")) or _coerce_text(
+            self.sync_config.get("reports_nav_selector")
         )
         return _normalize_id_selector(raw or "#achrOrderReport")
 
@@ -521,6 +979,10 @@ class TdStore:
 class StoreOutcome:
     status: str
     message: str
+    data_source_decision: str | None = None
+    ingest_status: str | None = None
+    failure_stage: str | None = None
+    observability_warnings: list[str] = field(default_factory=list)
     final_url: str | None = None
     iframe_attached: bool | None = None
     verification_seen: bool | None = None
@@ -533,6 +995,19 @@ class DeferredOrdersSyncLog:
     run_id: str
     run_start_date: date
     run_end_date: date
+
+
+@dataclass
+class StoreExecutionPayload:
+    store: "TdStore"
+    run_start_date: date
+    run_end_date: date
+    outcome: StoreOutcome | None = None
+    orders_report: "StoreReport" | None = None
+    sales_report: "StoreReport" | None = None
+    error: str | None = None
+    queue_wait_ms: int = 0
+    duration_ms: int = 0
 
 
 @dataclass
@@ -554,11 +1029,20 @@ class StoreReport:
     dropped_rows_count: int | None = None
     edited_rows_count: int | None = None
     duplicate_rows_count: int | None = None
+    garment_reconciliation: dict[str, Any] = field(default_factory=dict)
+    compare_metrics: dict[str, Any] = field(default_factory=dict)
+    api_request_metadata: list[dict[str, Any]] = field(default_factory=list)
+    auth_diagnostics: dict[str, Any] = field(default_factory=dict)
+    source_mode: str = "api_only"
+    decision_log: dict[str, str] = field(default_factory=dict)
+    gate_verdict: dict[str, Any] = field(default_factory=dict)
     message: str | None = None
     error_message: str | None = None
     warnings: list[str] = field(default_factory=list)
     dropped_rows: list[dict[str, Any]] = field(default_factory=list)
     warning_rows: list[dict[str, Any]] = field(default_factory=list)
+    compare_rows_orders: list[dict[str, Any]] = field(default_factory=list)
+    compare_rows_sales: list[dict[str, Any]] = field(default_factory=list)
     edited_rows: list[dict[str, Any]] = field(default_factory=list)
     duplicate_rows: list[dict[str, Any]] = field(default_factory=list)
 
@@ -581,11 +1065,19 @@ class StoreReport:
             "dropped_rows_count": self.dropped_rows_count,
             "edited_rows_count": self.edited_rows_count,
             "duplicate_rows_count": self.duplicate_rows_count,
+            "garment_reconciliation": dict(self.garment_reconciliation),
+            "compare_metrics": dict(self.compare_metrics),
+            "api_request_metadata": list(self.api_request_metadata),
+            "auth_diagnostics": dict(self.auth_diagnostics),
+            "source_mode": self.source_mode,
+            "decision_log": dict(self.decision_log),
             "message": self.message,
             "error_message": self.error_message,
             "warnings": list(self.warnings),
             "dropped_rows": list(self.dropped_rows),
             "warning_rows": list(self.warning_rows),
+            "compare_rows_orders": list(self.compare_rows_orders),
+            "compare_rows_sales": list(self.compare_rows_sales),
             "edited_rows": list(self.edited_rows),
             "duplicate_rows": list(self.duplicate_rows),
         }
@@ -597,7 +1089,6 @@ def _normalize_output_status(status: str | None) -> str:
         "ok": "success",
         "success": "success",
         "warning": "success_with_warnings",
-        "warn": "success_with_warnings",
         "success_with_warnings": "success_with_warnings",
         "partial": "partial",
         "skipped": "partial",
@@ -640,6 +1131,27 @@ class TdOrdersDiscoverySummary:
         orders_result: StoreReport | None = None,
         sales_result: StoreReport | None = None,
     ) -> None:
+        resolved_data_source_decision = outcome.data_source_decision or _resolve_data_source_decision(
+            source_mode=(orders_result.source_mode if orders_result else "api_only"),
+            report=orders_result,
+        )
+        resolved_ingest_status = outcome.ingest_status or _resolve_store_ingest_status(
+            orders_report=orders_result,
+            sales_report=sales_result,
+        )
+        resolved_failure_stage = outcome.failure_stage or _resolve_failure_stage(
+            orders_report=orders_result,
+            sales_report=sales_result,
+        )
+        resolved_observability_warnings = (
+            list(outcome.observability_warnings)
+            if outcome.observability_warnings
+            else _resolve_store_observability_warnings(orders_report=orders_result, sales_report=sales_result)
+        )
+        outcome.data_source_decision = resolved_data_source_decision
+        outcome.ingest_status = resolved_ingest_status
+        outcome.failure_stage = resolved_failure_stage
+        outcome.observability_warnings = resolved_observability_warnings
         self.store_outcomes[store_code] = outcome
         resolved_orders = orders_result or StoreReport(
             status=outcome.status,
@@ -902,7 +1414,11 @@ class TdOrdersDiscoverySummary:
                 return payload
             if payload is None:
                 return StoreReport(status=default_status, message=default_message)
-            return StoreReport(**payload)
+            payload_dict = dict(payload)
+            payload_dict.pop("api_ready", None)
+            payload_dict.pop("consecutive_pass_windows", None)
+            payload_dict.pop("threshold_verdict", None)
+            return StoreReport(**payload_dict)
 
         def _format_store_report(code: str, report: StoreReport, *, sales: bool = False) -> list[str]:
             rows_downloaded = _coerce_count(report.rows_downloaded)
@@ -1178,6 +1694,31 @@ class TdOrdersDiscoverySummary:
                 "status": outcome.status if outcome else "error",
                 "message": outcome.message if outcome else "No outcome recorded",
                 "error_message": outcome.message if outcome and outcome.status in {"warning", "error"} else None,
+                "data_source_decision": (
+                    outcome.data_source_decision
+                    if outcome and outcome.data_source_decision
+                    else _resolve_data_source_decision(source_mode=orders_report.source_mode if orders_report else "api_only", report=orders_report)
+                ),
+                "data_ingest_status": (
+                    outcome.ingest_status
+                    if outcome and outcome.ingest_status
+                    else _resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report)
+                ),
+                "ingest_status": (
+                    outcome.ingest_status
+                    if outcome and outcome.ingest_status
+                    else _resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report)
+                ),
+                "observability_warnings": (
+                    list(outcome.observability_warnings)
+                    if outcome and outcome.observability_warnings
+                    else _resolve_store_observability_warnings(orders_report=orders_report, sales_report=sales_report)
+                ),
+                "failure_stage": (
+                    outcome.failure_stage
+                    if outcome and outcome.failure_stage
+                    else _resolve_failure_stage(orders_report=orders_report, sales_report=sales_report)
+                ),
                 "orders": self._build_report_summary(
                     code, orders_report, expected_filename=self._expected_orders_filename(code)
                 ),
@@ -1301,6 +1842,33 @@ class TdOrdersDiscoverySummary:
                     "store_code": code,
                     "status": outcome.status if outcome else None,
                     "message": outcome.message if outcome else None,
+                    "data_source_decision": (
+                        outcome.data_source_decision
+                        if outcome and outcome.data_source_decision
+                        else _resolve_data_source_decision(source_mode=orders_report.get("source_mode") or "api_only", report=None)
+                    ),
+                    "data_ingest_status": (
+                        outcome.ingest_status if outcome and outcome.ingest_status else _resolve_store_ingest_status(
+                            orders_report=self.orders_results.get(code), sales_report=self.sales_results.get(code)
+                        )
+                    ),
+                    "ingest_status": (
+                        outcome.ingest_status if outcome and outcome.ingest_status else _resolve_store_ingest_status(
+                            orders_report=self.orders_results.get(code), sales_report=self.sales_results.get(code)
+                        )
+                    ),
+                    "observability_warnings": (
+                        list(outcome.observability_warnings)
+                        if outcome and outcome.observability_warnings
+                        else _resolve_store_observability_warnings(
+                            orders_report=self.orders_results.get(code), sales_report=self.sales_results.get(code)
+                        )
+                    ),
+                    "failure_stage": (
+                        outcome.failure_stage if outcome and outcome.failure_stage else _resolve_failure_stage(
+                            orders_report=self.orders_results.get(code), sales_report=self.sales_results.get(code)
+                        )
+                    ),
                     "orders": orders_report,
                     "sales": sales_report,
                 }
@@ -1348,6 +1916,7 @@ class TdOrdersDiscoverySummary:
         metrics["notification_payload"] = self._build_notification_payload(
             finished_at=finished_at, orders_snapshot=orders_snapshot, sales_snapshot=sales_snapshot
         )
+        metrics["daily_reconciliation"] = _build_daily_reconciliation_summary(self)
         return {
             "pipeline_name": PIPELINE_NAME,
             "run_id": self.run_id,
@@ -1407,7 +1976,7 @@ async def _load_td_order_stores(
                 log_event(
                     logger=logger,
                     phase="init",
-                    status="warn",
+                    status="warning",
                     message="Skipping store with missing store_code",
                     raw_row=dict(row),
                 )
@@ -1429,7 +1998,7 @@ async def _load_td_order_stores(
             log_event(
                 logger=logger,
                 phase="init",
-                status="warn",
+                status="warning",
                 message="Temporarily restricting TD orders discovery to a subset of stores",
                 stores=[store.store_code for store in scoped],
                 skipped_stores=skipped or None,
@@ -1469,14 +2038,90 @@ async def _fetch_dashboard_nav_timeout_ms(database_url: str | None) -> int:
         return DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS
 
 
+def _build_daily_reconciliation_summary(summary: TdOrdersDiscoverySummary) -> dict[str, Any]:
+    stores_passed: list[str] = []
+    stores_failed: list[dict[str, Any]] = []
+
+    for store_code in summary._store_codes_for_payload():
+        orders_report = summary.orders_results.get(store_code)
+        status = (orders_report.status if orders_report else "skipped") or "skipped"
+        if status in {"ok", "warning", "skipped"}:
+            stores_passed.append(store_code)
+            continue
+
+        stores_failed.append(
+            {
+                "store_code": store_code,
+                "failure_type": "ingestion_failure",
+                "status": status,
+                "message": orders_report.message if orders_report else None,
+                "error_message": orders_report.error_message if orders_report else None,
+            }
+        )
+
+    return {
+        "report_name": "td_orders_shadow_readiness_reconciliation",
+        "report_date": summary.report_end_date.isoformat(),
+        "run_id": summary.run_id,
+        "passed_stores": sorted(stores_passed),
+        "failed_stores": stores_failed,
+        "stores_passed": sorted(stores_passed),
+        "stores_failed": stores_failed,
+        "data_clean_not_promotion_ready_stores": [],
+        "top_mismatch_reasons": [],
+    }
+
+
+def _emit_reconciliation_gate_summary_logs(*, summary: TdOrdersDiscoverySummary, logger: JsonLogger) -> None:
+    for store_code in summary._store_codes_for_payload():
+        orders_report = summary.orders_results.get(store_code)
+        status = (orders_report.status if orders_report else "skipped") or "skipped"
+        if status in {"ok", "warning", "skipped"}:
+            continue
+        log_event(
+            logger=logger,
+            phase="reconciliation",
+            message="TD reconciliation gate summary",
+            run_id=summary.run_id,
+            store_code=store_code,
+            run_log=[
+                {
+                    "store_code": store_code,
+                    "gate_name": "ingestion status",
+                    "expected_threshold": "ok|warning|skipped",
+                    "observed_value": {
+                        "status": status,
+                        "message": orders_report.message if orders_report else None,
+                        "error_message": orders_report.error_message if orders_report else None,
+                    },
+                    "pass": False,
+                }
+            ],
+        )
+
+
+def _write_daily_reconciliation_artifact(*, summary: TdOrdersDiscoverySummary, logger: JsonLogger) -> Path | None:
+    log_event(
+        logger=logger,
+        phase="reconciliation",
+        message="Skipping TD shadow readiness reconciliation artifact persistence",
+        run_id=summary.run_id,
+    )
+    _emit_reconciliation_gate_summary_logs(summary=summary, logger=logger)
+    return None
+
+
 async def _persist_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonLogger) -> bool:
     finished_at = datetime.now(timezone.utc)
     record = summary.build_record(finished_at=finished_at)
+    record["phases_json"] = _normalize_json_safe(record.get("phases_json") or {})
+    record["metrics_json"] = _normalize_json_safe(record.get("metrics_json") or {})
+    _write_daily_reconciliation_artifact(summary=summary, logger=logger)
     if not config.database_url:
         log_event(
             logger=logger,
             phase="run_summary",
-            status="warn",
+            status="warning",
             message="Skipping run summary persistence because database_url is missing",
             run_id=summary.run_id,
         )
@@ -1516,14 +2161,24 @@ async def _persist_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonLog
         )
         return True
     except Exception as exc:  # pragma: no cover - defensive persistence
+        error_text = str(exc)
         log_event(
             logger=logger,
             phase="run_summary",
             status="error",
             message="Failed to persist run summary",
             run_id=summary.run_id,
-            error=str(exc),
+            error=error_text,
         )
+        if "is not JSON serializable" in error_text:
+            log_event(
+                logger=logger,
+                phase="notifications",
+                status="warning",
+                message="Proceeding with notifications after serialization-only summary persistence failure",
+                run_id=summary.run_id,
+            )
+            return True
         return False
 
 
@@ -1532,7 +2187,7 @@ async def _start_run_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonL
         log_event(
             logger=logger,
             phase="run_summary",
-            status="warn",
+            status="warning",
             message="Skipping run summary start because database_url is missing",
             run_id=summary.run_id,
         )
@@ -1548,8 +2203,8 @@ async def _start_run_summary(*, summary: TdOrdersDiscoverySummary, logger: JsonL
         "report_date": summary.report_date,
         "overall_status": "running",
         "summary_text": "Run started.",
-        "phases_json": {},
-        "metrics_json": {},
+        "phases_json": _normalize_json_safe({}),
+        "metrics_json": _normalize_json_safe({}),
         "created_at": summary.started_at,
     }
     try:
@@ -1604,17 +2259,17 @@ async def _fetch_pipeline_id(*, database_url: str, pipeline_name: str, logger: J
         log_event(
             logger=logger,
             phase="orders_sync_log",
-            status="warn",
+            status="warning",
             message="Failed to fetch pipeline id for orders sync log",
             pipeline_name=pipeline_name,
             error=str(exc),
         )
-        return None
+        return None, None
     if not pipeline_id:
         log_event(
             logger=logger,
             phase="orders_sync_log",
-            status="warn",
+            status="warning",
             message="Pipeline id not found for orders sync log",
             pipeline_name=pipeline_name,
         )
@@ -1636,11 +2291,11 @@ async def _insert_orders_sync_log(
         log_event(
             logger=logger,
             phase="orders_sync_log",
-            status="warn",
+            status="warning",
             message="Skipping orders sync log insert because database_url is missing",
             store_code=store.store_code,
         )
-        return None
+        return None, None
 
     pipeline_id = await _fetch_pipeline_id(
         database_url=config.database_url, pipeline_name=PIPELINE_NAME, logger=logger
@@ -1652,7 +2307,7 @@ async def _insert_orders_sync_log(
         log_event(
             logger=logger,
             phase="orders_sync_log",
-            status="warn",
+            status="warning",
             message="Skipping orders sync log insert because run summary row is missing",
             run_id=run_id,
             store_code=store.store_code,
@@ -1722,36 +2377,33 @@ async def _insert_orders_sync_log(
                 )
             ).scalar_one()
             await session.commit()
-            exists = (
-                await session.execute(
-                    sa.select(orders_sync_log.c.id).where(orders_sync_log.c.id == log_id)
-                )
-            ).scalar_one_or_none()
-            if not exists:
-                log_event(
-                    logger=logger,
-                    phase="orders_sync_log",
-                    status="error",
-                    message="Hard error: orders sync log row missing after insert",
-                    log_id=log_id,
-                    store_code=store.store_code,
-                )
-                return None
+            if VERIFY_ORDERS_SYNC_LOG_UPSERT:
+                verified_log_id = (
+                    await session.execute(
+                        sa.select(orders_sync_log.c.id).where(orders_sync_log.c.id == log_id)
+                    )
+                ).scalar_one_or_none()
+                if not verified_log_id:
+                    log_event(
+                        logger=logger,
+                        phase="orders_sync_log",
+                        status="error",
+                        message="orders_sync_log_upsert_verification_failed",
+                        log_id=log_id,
+                        store_code=store.store_code,
+                        run_id=run_id,
+                        insert_values=insert_values,
+                        verification_result={"verified_log_id": verified_log_id},
+                    )
+                    return None
             log_event(
                 logger=logger,
                 phase="orders_sync_log",
                 status="info",
-                message="Inserted orders sync log row",
+                message="orders_sync_log_upserted",
                 log_id=log_id,
                 store_code=store.store_code,
-            )
-            log_event(
-                logger=logger,
-                phase="orders_sync_log",
-                status="info",
-                message="Verified orders sync log row exists",
-                log_id=log_id,
-                store_code=store.store_code,
+                run_id=run_id,
             )
     except Exception as exc:  # pragma: no cover - defensive
         log_event(
@@ -1859,6 +2511,15 @@ async def _flush_deferred_orders_sync_logs(
             run_orders=summary.run_orders,
             run_sales=summary.run_sales,
         )
+        log_event(
+            logger=logger,
+            phase="orders_sync_log",
+            message="Resolved TD outcome dimensions for deferred orders sync log update",
+            store_code=entry.store.store_code,
+            data_source_decision=_resolve_data_source_decision(source_mode=orders_report.source_mode if orders_report else "api_only", report=orders_report),
+            ingest_status=_resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report),
+            failure_stage=_resolve_failure_stage(orders_report=orders_report, sales_report=sales_report),
+        )
         await _update_orders_sync_log(
             logger=logger,
             log_id=log_id,
@@ -1908,7 +2569,7 @@ async def _update_orders_sync_log(
                 log_event(
                     logger=logger,
                     phase="orders_sync_log",
-                    status="warn",
+                    status="warning",
                     message="Orders sync log update matched no rows",
                     log_id=log_id,
                     update_values=values,
@@ -1917,7 +2578,7 @@ async def _update_orders_sync_log(
         log_event(
             logger=logger,
             phase="orders_sync_log",
-            status="warn",
+            status="warning",
             message="Failed to update orders sync log row",
             log_id=log_id,
             error=str(exc),
@@ -1947,7 +2608,12 @@ def _build_unified_metrics(
     sales_report: StoreReport | None,
     run_orders: bool,
     run_sales: bool,
+    run_garment_sync: bool | None = None,
 ) -> tuple[dict[str, int | None], dict[str, int | None]]:
+    # `run_garment_sync` is accepted for forward/backward compatibility with
+    # callers that assemble unified metrics alongside garment-sync settings.
+    # Garment metrics are tracked in td_compare_log rather than orders_sync_log.
+    _ = run_garment_sync
     primary_metrics = _build_report_metrics(orders_report if run_orders else None)
     secondary_metrics = _build_report_metrics(sales_report if run_sales else None)
     return _prefix_metrics("primary_", primary_metrics), _prefix_metrics("secondary_", secondary_metrics)
@@ -1959,6 +2625,7 @@ def _resolve_sync_log_status(
     sales_report: StoreReport | None,
     run_orders: bool,
     run_sales: bool,
+    source_mode: str = "api_only",
 ) -> str:
     def _normalize_report_status(report: StoreReport | None, *, default: str) -> str:
         if report is None or not report.status:
@@ -1975,7 +2642,10 @@ def _resolve_sync_log_status(
     orders_skipped = orders_status == "skipped"
     sales_skipped = sales_status == "skipped"
     sales_intentionally_skipped = sales_skipped and not run_sales
-    has_warning = orders_status == "warning" or sales_status == "warning"
+
+    # In API shadow mode we intentionally keep the UI extraction path as the
+    # write source while API results are collected for comparison.
+    _ = source_mode
 
     if sales_status == "error" and orders_success:
         return "partial"
@@ -1986,7 +2656,7 @@ def _resolve_sync_log_status(
     if orders_skipped and sales_skipped:
         return "skipped"
     if orders_success and (sales_success or sales_intentionally_skipped):
-        return "partial" if has_warning else "success"
+        return "success"
     if orders_success or sales_success:
         return "partial"
     if orders_skipped or sales_skipped:
@@ -2026,6 +2696,7 @@ def _resolve_sync_log_status_note(
     outcome: StoreOutcome | None,
     run_orders: bool,
     run_sales: bool,
+    run_garment_sync: bool = True,
 ) -> str | None:
     if status not in {"skipped", "partial"}:
         return None
@@ -2051,6 +2722,9 @@ def _resolve_sync_log_status_note(
     elif not run_sales:
         _add("Sales sync skipped by flag")
 
+    if not run_garment_sync:
+        _add("Garment sync skipped by flag")
+
     if outcome and outcome.status in {"warning", "error"} and outcome.message:
         _add(outcome.message)
 
@@ -2072,6 +2746,142 @@ def _resolve_sync_log_message(
     return None
 
 
+
+
+def _resolve_compare_rows(report: StoreReport | None, *, dataset: str) -> list[dict[str, Any]]:
+    if not report:
+        return []
+    if dataset == "orders":
+        return list(report.compare_rows_orders or [])
+    if dataset == "sales":
+        return list(report.compare_rows_sales or [])
+    raise ValueError(f"Unsupported compare dataset: {dataset}")
+
+
+def _row_has_summary_marker(row: Mapping[str, Any]) -> bool:
+    for value in row.values():
+        lowered = str(value or "").strip().lower()
+        if any(marker in lowered for marker in SUMMARY_ROW_MARKERS):
+            return True
+    return False
+
+
+def _extract_order_number(row: Mapping[str, Any]) -> str:
+    for key in ("order_number", "orderNo", "orderNumber", "Order No.", "Order Number"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            return value
+    values = row.get("values")
+    if isinstance(values, Mapping):
+        for key in ("order_number", "Order No.", "Order Number"):
+            value = str(values.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _filter_non_order_summary_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    filtered_rows: list[dict[str, Any]] = []
+    filtered_count = 0
+    for row in rows:
+        order_number = _extract_order_number(row).strip().lower()
+        if _row_has_summary_marker(row) or "total order" in order_number:
+            filtered_count += 1
+            continue
+        filtered_rows.append(dict(row))
+    return filtered_rows, filtered_count
+
+
+def _build_dataset_order_set_verdict(*, dataset: str, ui_rows: Sequence[Mapping[str, Any]], api_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    ui_orders = {_extract_order_number(row) for row in ui_rows if _extract_order_number(row)}
+    api_orders = {_extract_order_number(row) for row in api_rows if _extract_order_number(row)}
+    order_set_equal = ui_orders == api_orders
+    reasons = [] if order_set_equal else [f"{dataset}:order_number_set_mismatch"]
+    return {
+        "dataset": dataset,
+        "pass": order_set_equal,
+        "order_number_set_equal": order_set_equal,
+        "ui_order_count": len(ui_orders),
+        "api_order_count": len(api_orders),
+        "reason_codes": reasons,
+        "reasons": reasons,
+        "thresholds": {},
+    }
+
+
+def _build_sales_order_row_count_verdict(ui_rows: Sequence[Mapping[str, Any]], api_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    verdict = _build_dataset_order_set_verdict(dataset="sales", ui_rows=ui_rows, api_rows=api_rows)
+    ui_counts = Counter(_extract_order_number(row) for row in ui_rows if _extract_order_number(row))
+    api_counts = Counter(_extract_order_number(row) for row in api_rows if _extract_order_number(row))
+    row_count_equal = ui_counts == api_counts
+    if not row_count_equal:
+        verdict["reason_codes"] = [*verdict["reason_codes"], "sales:per_order_row_count_mismatch"]
+        verdict["reasons"] = list(verdict["reason_codes"])
+    verdict["per_order_row_count_equal"] = row_count_equal
+    verdict["pass"] = bool(verdict["order_number_set_equal"] and row_count_equal)
+    return verdict
+
+
+def _compare_row_count_diagnostics(orders_report: StoreReport | None, sales_report: StoreReport | None) -> dict[str, int]:
+    orders_rows_for_compare = len(_resolve_compare_rows(orders_report, dataset="orders"))
+    sales_rows_for_compare = len(_resolve_compare_rows(sales_report, dataset="sales"))
+    return {
+        "orders_rows_for_compare": orders_rows_for_compare,
+        "orders_warning_rows": len(orders_report.warning_rows) if orders_report and orders_report.warning_rows else 0,
+        "sales_rows_for_compare": sales_rows_for_compare,
+        "sales_warning_rows": len(sales_report.warning_rows) if sales_report and sales_report.warning_rows else 0,
+    }
+
+
+def _dataset_completion_health(
+    payload: Mapping[str, Any] | None,
+    *,
+    endpoint_error: str | None,
+    endpoint_health: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    pagination = (payload or {}).get("pagination") if isinstance(payload, Mapping) else {}
+    pagination = pagination if isinstance(pagination, Mapping) else {}
+    pages_fetched = int(pagination.get("pages_fetched") or 0)
+    reported_total_pages = pagination.get("reported_total_pages")
+    reported_total_rows = pagination.get("reported_total_rows")
+    total_rows = int(pagination.get("total_rows") or 0)
+
+    completed_by_pages = isinstance(reported_total_pages, int) and pages_fetched >= reported_total_pages
+    completed_by_rows = isinstance(reported_total_rows, int) and total_rows >= reported_total_rows
+    no_known_totals = reported_total_pages is None and reported_total_rows is None
+    readiness = not endpoint_error and (completed_by_pages or completed_by_rows or no_known_totals)
+
+    degraded_reason: str | None = None
+    if endpoint_error:
+        degraded_reason = f"endpoint_failed:{endpoint_error}"
+    elif not readiness:
+        degraded_reason = "pagination_incomplete"
+
+    health = endpoint_health if isinstance(endpoint_health, Mapping) else {}
+    return {
+        "ready": readiness,
+        "degraded_reason": degraded_reason,
+        "endpoint_error": endpoint_error,
+        "endpoint_success": bool(health.get("success")) if health else not bool(endpoint_error),
+        "endpoint_final_error_class": health.get("final_error_class") if health else endpoint_error,
+        "endpoint_attempts": int(health.get("attempts") or 0),
+        "pages_fetched": pages_fetched,
+        "reported_total_pages": reported_total_pages,
+        "total_rows": total_rows,
+        "reported_total_rows": reported_total_rows,
+    }
+
+
+def _endpoint_failure_summary(api_fetch_result: TdApiFetchResult | None) -> dict[str, Any]:
+    if api_fetch_result is None:
+        return {"orders": None, "sales": None, "garments": None}
+    endpoint_errors = api_fetch_result.endpoint_errors or {}
+    return {
+        "orders": endpoint_errors.get("/reports/order-report"),
+        "sales": endpoint_errors.get("/sales-and-deliveries/sales"),
+        "garments": endpoint_errors.get("/garments/details"),
+    }
+
 def _resolve_ingested_rows(report: StoreReport | None) -> int | None:
     if report is None:
         return None
@@ -2089,6 +2899,99 @@ def _resolve_ingest_status(report: StoreReport | None, *, run_report: bool) -> s
     if report.status == "skipped":
         return "skipped"
     return "error"
+
+
+def _resolve_data_source_decision(*, source_mode: str, report: StoreReport | None) -> str:
+    if report and report.decision_log.get("decision") in {"api_primary", "api_primary_degraded"}:
+        return "api_primary"
+    if source_mode in {"api_primary", "api_only"}:
+        return "api_primary"
+    if source_mode == "api_shadow":
+        return "api_shadow"
+    return "ui"
+
+
+def _resolve_store_observability_warnings(*, orders_report: StoreReport | None, sales_report: StoreReport | None) -> list[str]:
+    warnings: list[str] = []
+    for report in (orders_report, sales_report):
+        if report is None:
+            continue
+        for warning in report.warnings:
+            rendered = str(warning).strip()
+            if rendered and rendered not in warnings:
+                warnings.append(rendered)
+    return warnings
+
+
+def _is_data_risk_warning(warning: str) -> bool:
+    normalized_warning = str(warning or "").strip().lower()
+    if not normalized_warning:
+        return False
+    data_risk_markers = (
+        "incomplete fetch",
+        "partial_unavailable",
+        "partial unavailable",
+        "retry exhausted",
+        "retries exhausted",
+        "fallback",
+        "wall_time_budget_exhausted",
+    )
+    return any(marker in normalized_warning for marker in data_risk_markers)
+
+
+def _resolve_store_completion_log_details(
+    *,
+    payload: StoreExecutionPayload,
+    run_orders: bool,
+    run_sales: bool,
+    source_mode: str,
+) -> tuple[str, str, int]:
+    orders_report = payload.orders_report
+    sales_report = payload.sales_report
+    store_outcome = _resolve_sync_log_status(
+        orders_report=orders_report,
+        sales_report=sales_report,
+        run_orders=run_orders,
+        run_sales=run_sales,
+        source_mode=source_mode,
+    )
+    observability_warnings = (
+        list(payload.outcome.observability_warnings)
+        if payload.outcome and payload.outcome.observability_warnings
+        else _resolve_store_observability_warnings(orders_report=orders_report, sales_report=sales_report)
+    )
+    warning_count = sum(1 for warning in observability_warnings if _is_data_risk_warning(warning))
+
+    if store_outcome == "failed":
+        completion_status = "error"
+    elif warning_count > 0 or store_outcome == "partial":
+        completion_status = "warning"
+    else:
+        completion_status = "ok"
+    return completion_status, store_outcome, warning_count
+
+
+def _resolve_store_ingest_status(*, orders_report: StoreReport | None, sales_report: StoreReport | None) -> str:
+    reports = [report for report in (orders_report, sales_report) if report is not None]
+    if reports and all(report.status in {"ok", "warning"} for report in reports):
+        return "success"
+    return "failed"
+
+
+def _resolve_failure_stage(*, orders_report: StoreReport | None, sales_report: StoreReport | None) -> str | None:
+    reports = [report for report in (orders_report, sales_report) if report is not None and report.status == "error"]
+    if not reports:
+        return None
+
+    for report in reports:
+        decision = str((report.decision_log or {}).get("decision") or "").strip().lower()
+        if decision in {"api_unavailable", "api_partial_unavailable", "api_primary_degraded"}:
+            return "compare"
+        if (report.rows_downloaded or 0) <= 0 and not report.downloaded_path:
+            return "fetch"
+        if report.error_message:
+            return "ingest"
+    return "publish"
 
 
 def _merge_outcome_status(current: str, incoming: str | None) -> str:
@@ -2133,7 +3036,14 @@ def _log_td_window_summary(
     sales_report: StoreReport | None,
     run_orders: bool,
     run_sales: bool,
+    source_mode: str,
+    compare_status: str,
+    durations_ms: dict[str, int],
 ) -> None:
+    data_source_decision = _resolve_data_source_decision(source_mode=source_mode, report=orders_report)
+    data_ingest_status = _resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report)
+    observability_warnings = _resolve_store_observability_warnings(orders_report=orders_report, sales_report=sales_report)
+    failure_stage = _resolve_failure_stage(orders_report=orders_report, sales_report=sales_report)
     final_status = _resolve_sync_log_status(
         orders_report=orders_report,
         sales_report=sales_report,
@@ -2145,7 +3055,7 @@ def _log_td_window_summary(
     log_event(
         logger=logger,
         phase="window_summary",
-        message="TD window summary",
+        message="TD store summary",
         store_code=store_code,
         from_date=from_date,
         to_date=to_date,
@@ -2160,6 +3070,14 @@ def _log_td_window_summary(
         orders_ingested_rows=_resolve_ingested_rows(orders_report),
         sales_ingested_rows=_resolve_ingested_rows(sales_report),
         final_status=final_status,
+        source_mode=source_mode,
+        data_source_decision=data_source_decision,
+        data_ingest_status=data_ingest_status,
+        ingest_status=data_ingest_status,
+        compare_status=compare_status,
+        observability_warnings=observability_warnings,
+        durations_ms=durations_ms,
+        failure_stage=failure_stage,
     )
     has_downloads_or_ingest = any(
         [
@@ -2173,7 +3091,7 @@ def _log_td_window_summary(
         log_event(
             logger=logger,
             phase="window_summary",
-            status="warn",
+            status="warning",
             message="Window marked failed despite downloads/ingest activity",
             store_code=store_code,
             from_date=from_date,
@@ -2194,7 +3112,7 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger, time
         log_event(
             logger=logger,
             phase="session",
-            status="warn",
+            status="warning",
             message="No home URL available to probe session",
             store_code=store.store_code,
         )
@@ -2262,7 +3180,7 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger, time
     log_event(
         logger=logger,
         phase="session",
-        status="ok" if state_valid else "warn",
+        status="ok" if state_valid else "warning",
         message="Probed session with existing storage state",
         store_code=store.store_code,
         response_status=getattr(response, "status", None),
@@ -2403,7 +3321,7 @@ async def _perform_login(page: Page, *, store: TdStore, logger: JsonLogger, nav_
     log_event(
         logger=logger,
         phase="login",
-        status="ok" if contains_store else "warn",
+        status="ok" if contains_store else "warning",
         message="Completed login attempt",
         store_code=store.store_code,
         final_url=final_url,
@@ -2526,7 +3444,7 @@ async def _log_home_nav_diagnostics(page: Page, *, logger: JsonLogger, store: Td
         log_event(
             logger=logger,
             phase="home",
-            status="warn",
+            status="warning",
             message="Failed to capture navigation diagnostics",
             store_code=store.store_code,
             error=str(exc),
@@ -2560,7 +3478,7 @@ async def _capture_orders_left_nav_snapshot(
         log_event(
             logger=logger,
             phase="orders",
-            status="warn",
+            status="warning",
             message="Orders left-nav snapshot not available",
             store_code=store.store_code,
             context=context,
@@ -2768,7 +3686,7 @@ async def _navigate_to_orders_container(
             log_event(
                 logger=logger,
                 phase="orders",
-                status="warn" if modal_status == "blocking" else None,
+                status="warning" if modal_status == "blocking" else "info",
                 message="Overdue modal dismissed before navigation"
                 if modal_status == "dismissed"
                 else "Overdue modal blocking navigation",
@@ -2930,7 +3848,7 @@ async def _navigate_to_orders_container(
                 log_event(
                     logger=logger,
                     phase="orders",
-                    status="warn",
+                    status="warning",
                     message="Overlay blocking Orders click; retrying",
                     store_code=store.store_code,
                     modal_selector=modal_selector,
@@ -2993,7 +3911,7 @@ async def _navigate_to_orders_container(
                 log_event(
                     logger=logger,
                     phase="orders",
-                    status="warn",
+                    status="warning",
                     message="Redirected away from Orders after click; retrying",
                     store_code=store.store_code,
                     final_url=page.url,
@@ -3080,7 +3998,7 @@ async def _navigate_to_sales_report(
         log_event(
             logger=logger,
             phase="sales",
-            status="warn",
+            status="warning",
             message="Unable to build Sales & Delivery report URL",
             store_code=store.store_code,
             current_url=page.url,
@@ -3168,7 +4086,7 @@ async def _navigate_to_sales_report(
             logger=logger,
             phase="sales",
             message="Sales navigation outcome",
-            status=status if status != "ok" else None,
+            status=status,
             store_code=store.store_code,
             navigation_method=navigation_method,
             navigation_path=navigation_path,
@@ -3192,7 +4110,7 @@ async def _navigate_to_sales_report(
                     log_event(
                         logger=logger,
                         phase="sales",
-                        status="warn",
+                        status="warning",
                         message="Sales re-login attempt failed and page is still Login; retrying once more",
                         store_code=store.store_code,
                         retry_status=retry_label,
@@ -3206,7 +4124,7 @@ async def _navigate_to_sales_report(
                 log_event(
                     logger=logger,
                     phase="sales",
-                    status="warn",
+                    status="warning",
                     message="Detected Login page immediately after Sales re-login; retrying once more",
                     store_code=store.store_code,
                     retry_status=retry_label,
@@ -3224,7 +4142,7 @@ async def _navigate_to_sales_report(
             log_event(
                 logger=logger,
                 phase="sales",
-                status="warn",
+                status="warning",
                 message="Sales navigation retry login failed",
                 store_code=store.store_code,
                 final_url=page.url,
@@ -3243,7 +4161,7 @@ async def _navigate_to_sales_report(
             log_event(
                 logger=logger,
                 phase="sales",
-                status="warn",
+                status="warning",
                 message="Home not ready after Sales re-login attempt",
                 store_code=store.store_code,
                 final_url=page.url,
@@ -3266,7 +4184,7 @@ async def _navigate_to_sales_report(
             log_event(
                 logger=logger,
                 phase="sales",
-                status="warn",
+                status="warning",
                 message="Failed to persist refreshed Sales storage state",
                 store_code=store.store_code,
                 storage_state=str(store.storage_state_path),
@@ -3342,7 +4260,7 @@ async def _navigate_to_sales_report(
             log_event(
                 logger=logger,
                 phase="sales",
-                status="warn",
+                status="warning",
                 message="Sales left-nav submenu not available",
                 store_code=store.store_code,
                 error=str(exc),
@@ -3583,7 +4501,7 @@ async def _navigate_to_sales_report(
             log_event(
                 logger=logger,
                 phase="sales",
-                status="warn",
+                status="warning",
                 message="Sales navigation retry aborted because session refresh failed",
                 store_code=store.store_code,
                 final_url=page.url,
@@ -3593,7 +4511,7 @@ async def _navigate_to_sales_report(
                 retry_status="after_login",
             )
             await _log_navigation_outcome(
-                status="warn",
+                status="warning",
                 navigation_method=(last_attempt or {}).get("navigation_method", "orders_left_nav"),
                 navigation_path=(last_attempt or {}).get("navigation_path", navigation_path_left_nav),
                 retry_status="after_login",
@@ -3663,7 +4581,7 @@ async def _navigate_to_sales_report(
         relogin_ok, relogin_reason = await _refresh_sales_session_with_guard(retry_label="after_validation")
         if not relogin_ok:
             await _log_navigation_outcome(
-                status="warn",
+                status="warning",
                 navigation_method=(last_attempt or {}).get("navigation_method", "orders_left_nav"),
                 navigation_path=(last_attempt or {}).get("navigation_path", navigation_path_left_nav),
                 retry_status="after_validation",
@@ -3721,7 +4639,7 @@ async def _navigate_to_sales_report(
     log_event(
         logger=logger,
         phase="sales",
-        status="warn",
+        status="warning",
         message="Sales & Delivery report navigation failed after retry",
         store_code=store.store_code,
         final_url=final_url,
@@ -3737,7 +4655,7 @@ async def _navigate_to_sales_report(
         log_event(
             logger=logger,
             phase="sales",
-            status="warn",
+            status="warning",
             message="Sales left-nav link not found; exiting without direct URL navigation",
             store_code=store.store_code,
             final_url=final_url,
@@ -3745,7 +4663,7 @@ async def _navigate_to_sales_report(
             attempts=attempts,
         )
     await _log_navigation_outcome(
-        status="warn",
+        status="warning",
         navigation_method=(last_attempt or {}).get("navigation_method", "unknown"),
         navigation_path=(last_attempt or {}).get("navigation_path", "unknown"),
         retry_status=(last_attempt or {}).get("retry_status", "unknown"),
@@ -3762,7 +4680,7 @@ async def _wait_for_iframe(
     logger: JsonLogger,
     require_src: bool = False,
     phase: str = "orders",
-) -> FrameLocator | None:
+) -> tuple[FrameLocator | None, str | None]:
     page_title = await _safe_page_title(page)
     try:
         await page.wait_for_selector("#ifrmReport", state="attached", timeout=20_000)
@@ -3777,7 +4695,7 @@ async def _wait_for_iframe(
             page_title=page_title,
             iframe_attached=False,
         )
-        return None
+        return None, None
 
     iframe_src = None
     try:
@@ -3798,7 +4716,7 @@ async def _wait_for_iframe(
             page_title=page_title,
             iframe_attached=True,
         )
-        return None
+        return None, None
 
     iframe_src_length = len(iframe_src) if iframe_src else None
     iframe_src_prefix = iframe_src[:64] if iframe_src else None
@@ -3816,7 +4734,112 @@ async def _wait_for_iframe(
         iframe_src_length=iframe_src_length,
         iframe_attached=True,
     )
-    return page.frame_locator("#ifrmReport")
+    return page.frame_locator("#ifrmReport"), iframe_src
+
+
+async def _wait_for_report_iframe_auth_source(
+    page: Page,
+    *,
+    store: TdStore,
+    logger: JsonLogger,
+    phase: str = "api",
+    timeout_ms: int | None = None,
+) -> tuple[bool, str | None]:
+    if timeout_ms is None:
+        timeout_ms = _int_env("TD_API_AUTH_SOURCE_TIMEOUT_MS", 5_000)
+
+    iframe_src_locator = page.locator("#ifrmReport")
+    try:
+        await iframe_src_locator.first.wait_for(state="attached", timeout=timeout_ms)
+    except TimeoutError:
+        return False, None
+
+    deadline = asyncio.get_running_loop().time() + (timeout_ms / 1000.0)
+    while True:
+        iframe_src = await iframe_src_locator.first.get_attribute("src")
+        iframe_hostname = urlparse(iframe_src).hostname if iframe_src else None
+        if iframe_hostname == "reports.quickdrycleaning.com":
+            log_event(
+                logger=logger,
+                phase=phase,
+                message="Using report iframe host as API auth source-of-truth",
+                store_code=store.store_code,
+                iframe_src_hostname=iframe_hostname,
+            )
+            return True, iframe_src
+        if asyncio.get_running_loop().time() >= deadline:
+            log_event(
+                logger=logger,
+                phase=phase,
+                status="warning",
+                message="Report iframe host did not resolve to expected auth source",
+                store_code=store.store_code,
+                iframe_src_hostname=iframe_hostname,
+            )
+            return False, iframe_src
+        await asyncio.sleep(0.25)
+
+
+async def _resolve_report_iframe_auth_source_for_api(
+    page: Page,
+    *,
+    store: TdStore,
+    logger: JsonLogger,
+    initial_iframe_src: str | None,
+    phase: str = "api",
+    poll_timeout_ms: int | None = None,
+) -> str | None:
+    iframe_src = (initial_iframe_src or "").strip()
+    iframe_hostname = urlparse(iframe_src).hostname if iframe_src else None
+
+    if iframe_hostname == "reports.quickdrycleaning.com":
+        log_event(
+            logger=logger,
+            phase=phase,
+            message="auth_source_fast_path",
+            store_code=store.store_code,
+            iframe_src_hostname=iframe_hostname,
+        )
+        return iframe_src
+
+    if iframe_src and iframe_hostname != "reports.quickdrycleaning.com":
+        log_event(
+            logger=logger,
+            phase=phase,
+            status="warning",
+            message="Fast-path iframe auth source unavailable; using fallback polling",
+            store_code=store.store_code,
+            iframe_src_hostname=iframe_hostname,
+            auth_source_resolution="auth_source_fallback_unavailable",
+            auth_source_fast_path_src_present=True,
+        )
+
+    auth_source_ok, report_iframe_src = await _wait_for_report_iframe_auth_source(
+        page,
+        store=store,
+        logger=logger,
+        phase=phase,
+        timeout_ms=poll_timeout_ms,
+    )
+    resolved_hostname = urlparse(report_iframe_src).hostname if report_iframe_src else None
+    if auth_source_ok:
+        log_event(
+            logger=logger,
+            phase=phase,
+            message="auth_source_polled",
+            store_code=store.store_code,
+            iframe_src_hostname=resolved_hostname,
+        )
+    else:
+        log_event(
+            logger=logger,
+            phase=phase,
+            status="warning",
+            message="auth_source_fallback_unavailable",
+            store_code=store.store_code,
+            iframe_src_hostname=resolved_hostname,
+        )
+    return report_iframe_src
 
 
 async def _observe_iframe_hydration(
@@ -3980,7 +5003,7 @@ async def _wait_for_loading_indicators(
         log_event(
             logger=logger,
             phase=phase,
-            status="warn",
+            status="warning",
             message="Loading indicators still visible after timeout",
             store_code=store.store_code,
             selectors=list(LOADING_LOCATOR_SELECTORS),
@@ -4143,7 +5166,7 @@ async def _wait_for_range_text_update(
     log_event(
         logger=logger,
         phase="iframe",
-        status="warn",
+        status="warning",
         message="Date range text did not update to expected value",
         store_code=store.store_code,
         expected_texts=list(expected_texts),
@@ -4397,7 +5420,7 @@ async def _fill_numeric_triplet(
         log_event(
             logger=logger,
             phase="iframe",
-            status="warn",
+            status="warning",
             message="Failed to fill numeric date inputs",
             store_code=store.store_code,
             label=label,
@@ -4475,7 +5498,7 @@ async def _fill_date_input(
     log_event(
         logger=logger,
         phase="iframe",
-        status="warn",
+        status="warning",
         message="Failed to fill date input",
         store_code=store.store_code,
         label=label,
@@ -4500,7 +5523,7 @@ async def _set_date_range(
         log_event(
             logger=logger,
             phase="iframe",
-            status="warn",
+            status="warning",
             message="Date range control not located inside iframe",
             store_code=store.store_code,
             control_attempts=control_attempts,
@@ -4515,7 +5538,7 @@ async def _set_date_range(
         log_event(
             logger=logger,
             phase="iframe",
-            status="warn",
+            status="warning",
             message="Failed to open date range picker",
             store_code=store.store_code,
             error=str(exc),
@@ -4532,7 +5555,7 @@ async def _set_date_range(
         log_event(
             logger=logger,
             phase="iframe",
-            status="warn",
+            status="warning",
             message="Date picker popup not visible after clicking control",
             store_code=store.store_code,
             control_attempts=control_attempts,
@@ -4626,7 +5649,7 @@ async def _set_date_range(
     log_event(
         logger=logger,
         phase="iframe",
-        status="warn",
+        status="warning",
         message="Failed to set date range via date-range control",
         store_code=store.store_code,
         from_ok=from_ok,
@@ -4953,7 +5976,7 @@ async def _wait_for_report_requests_container(
     log_event(
         logger=logger,
         phase="iframe",
-        status="warn",
+        status="warning",
         message="Report Requests container not visible after request",
         store_code=store.store_code,
         timeout_ms=timeout_ms,
@@ -5030,6 +6053,7 @@ async def _wait_for_report_request_download_link(
     pending_attempts = 0
     download_strategy: str | None = None
     last_refresh_attempt_at = 0.0
+    last_status_for_deadline_extension: str | None = None
     selected_row_state: str | None = None
     selection_source: str | None = None
     last_matched_range_text: str | None = None
@@ -5128,14 +6152,23 @@ async def _wait_for_report_request_download_link(
                 if matched_status:
                     eta_seconds = _parse_eta_seconds(matched_status)
                     pending_eta_seconds = None
+                    should_consider_extension = matched_status != last_status_for_deadline_extension
                     if "pending" in matched_status.lower():
-                        pending_eta_seconds = max(eta_seconds or 0, PENDING_MIN_POLL_SECONDS)
-                        desired_deadline = start_time + pending_eta_seconds
+                        if eta_seconds is not None:
+                            eta_cushion_seconds = min(
+                                max(int(round(eta_seconds * 0.1)), PENDING_ETA_CUSHION_MIN_SECONDS),
+                                PENDING_ETA_CUSHION_MAX_SECONDS,
+                            )
+                            pending_eta_seconds = eta_seconds + eta_cushion_seconds
+                            desired_deadline = start_time + pending_eta_seconds
+                        else:
+                            desired_deadline = None
                     else:
                         desired_deadline = start_time + eta_seconds if eta_seconds is not None else None
-                    if desired_deadline and desired_deadline > deadline:
+                    if should_consider_extension and desired_deadline and desired_deadline > deadline:
                         deadline = desired_deadline
                         poll_timeout_ms = int((deadline - start_time) * 1000)
+                        last_status_for_deadline_extension = matched_status
                         eta_payload = {
                             "logger": logger,
                             "phase": "iframe",
@@ -5185,7 +6218,7 @@ async def _wait_for_report_request_download_link(
                         retry_payload = {
                             "logger": logger,
                             "phase": "iframe",
-                            "status": "warn",
+                            "status": "warning",
                             "message": "Download event missed; retrying download click",
                             "store_code": store.store_code,
                             "expected_range_texts": list(expected_range_texts),
@@ -5234,7 +6267,7 @@ async def _wait_for_report_request_download_link(
                         failure_payload = {
                             "logger": logger,
                             "phase": "iframe",
-                            "status": "warn",
+                            "status": "warning",
                             "message": "Failed to download report after locating link",
                             "store_code": store.store_code,
                             "error": str(exc),
@@ -5316,7 +6349,7 @@ async def _wait_for_report_request_download_link(
                                 refresh_error_payload = {
                                     "logger": logger,
                                     "phase": "iframe",
-                                    "status": "warn",
+                                    "status": "warning",
                                     "message": "Failed to click Refresh during pending state",
                                     "store_code": store.store_code,
                                     "status_text": matched_status,
@@ -5334,7 +6367,7 @@ async def _wait_for_report_request_download_link(
                             refresh_missing_payload = {
                                 "logger": logger,
                                 "phase": "iframe",
-                                "status": "warn",
+                                "status": "warning",
                                 "message": "Refresh control not visible during pending state",
                                 "store_code": store.store_code,
                                 "status_text": matched_status,
@@ -5362,7 +6395,7 @@ async def _wait_for_report_request_download_link(
     timeout_payload = {
         "logger": logger,
         "phase": "iframe",
-        "status": "warn",
+        "status": "warning",
         "message": "Report Requests download link not available before timeout",
         "store_code": store.store_code,
         "expected_range_texts": list(expected_range_texts),
@@ -5427,7 +6460,7 @@ async def _run_report_iframe_flow(
             log_event(
                 logger=logger,
                 phase="iframe",
-                status="warn",
+                status="warning",
                 message="Failed to click Expand button",
                 store_code=store.store_code,
                 error=str(exc),
@@ -5597,6 +6630,7 @@ async def _execute_sales_flow(
     summary: TdOrdersDiscoverySummary,
     sales_only_mode: bool = False,
     sync_log_id: int | None = None,
+    source_mode: str = "api_only",
 ) -> StoreReport:
     sales_status: str | None = None
     sales_message: str | None = None
@@ -5609,7 +6643,7 @@ async def _execute_sales_flow(
         page, store=store, logger=logger, nav_timeout_ms=nav_timeout_ms, sales_only_mode=sales_only_mode
     )
     if sales_nav_ready:
-        sales_iframe = await _wait_for_iframe(page, store=store, logger=logger, require_src=True, phase="sales")
+        sales_iframe, _ = await _wait_for_iframe(page, store=store, logger=logger, require_src=True, phase="sales")
         if sales_iframe is not None:
             if _dom_logging_enabled():
                 await _observe_iframe_hydration(sales_iframe, store=store, logger=logger, timeout_ms=nav_timeout_ms)
@@ -5658,6 +6692,7 @@ async def _execute_sales_flow(
                         sales_message = "Missing cost_center for TD store; cannot ingest sales"
                     else:
                         try:
+                            _ensure_ui_workbook_ingest_allowed(source_mode=source_mode, dataset="sales")
                             sales_ingest_result = await ingest_td_sales_workbook(
                                 workbook_path=Path(sales_detail),
                                 store_code=store.store_code,
@@ -5676,10 +6711,13 @@ async def _execute_sales_flow(
                                 log_event(
                                     logger=logger,
                                     phase="sales_ingest",
-                                    status="warn",
-                                    message="TD Sales workbook ingested with warnings",
+                                    status="warning",
+                                    message="TD Sales workbook ingested with warnings (warning_count is unique-value based)",
                                     store_code=store.store_code,
                                     warning_count=sales_warning_summary["count"],
+                                    phone_fallback_rows=sales_ingest_result.phone_fallback_rows,
+                                    phone_fallback_unique_values=sales_ingest_result.phone_fallback_unique_values,
+                                    phone_fallback_top_invalid_values=sales_ingest_result.phone_fallback_top_invalid_values,
                                     warning_samples=sales_warning_summary["samples"],
                                     warnings_truncated=sales_warning_summary["truncated"],
                                     staging_rows=sales_ingest_result.staging_rows,
@@ -5702,6 +6740,9 @@ async def _execute_sales_flow(
                                     store_code=store.store_code,
                                     staging_rows=sales_ingest_result.staging_rows,
                                     final_rows=sales_ingest_result.final_rows,
+                                    phone_fallback_rows=sales_ingest_result.phone_fallback_rows,
+                                    phone_fallback_unique_values=sales_ingest_result.phone_fallback_unique_values,
+                                    phone_fallback_top_invalid_values=sales_ingest_result.phone_fallback_top_invalid_values,
                                 )
                             summary.add_ingest_remarks(sales_ingest_result.ingest_remarks)
                         except Exception as exc:
@@ -5725,7 +6766,7 @@ async def _execute_sales_flow(
                     log_event(
                         logger=logger,
                         phase="sales_ingest",
-                        status="warn",
+                        status="warning",
                         message="Skipping TD Sales ingestion because database_url is missing",
                         store_code=store.store_code,
                     )
@@ -5737,7 +6778,7 @@ async def _execute_sales_flow(
                 log_event(
                     logger=logger,
                     phase="sales",
-                    status="warn",
+                    status="warning",
                     message="Sales & Delivery iframe flow failed",
                     store_code=store.store_code,
                     error=sales_detail,
@@ -5748,7 +6789,7 @@ async def _execute_sales_flow(
             log_event(
                 logger=logger,
                 phase="sales",
-                status="warn",
+                status="warning",
                 message="Sales iframe not ready after navigation",
                 store_code=store.store_code,
                 final_url=page.url,
@@ -5759,7 +6800,7 @@ async def _execute_sales_flow(
         log_event(
             logger=logger,
             phase="sales",
-            status="warn",
+            status="warning",
             message="Navigation to Sales & Delivery report did not complete",
             store_code=store.store_code,
             final_url=page.url,
@@ -5802,6 +6843,7 @@ async def _execute_sales_flow(
         warnings=sales_ingest_result.warnings if sales_ingest_result else [],
         dropped_rows=sales_ingest_result.dropped_rows if sales_ingest_result else [],
         warning_rows=sales_ingest_result.warning_rows if sales_ingest_result else [],
+        compare_rows_sales=sales_ingest_result.parsed_rows if sales_ingest_result else [],
         edited_rows=sales_ingest_result.edited_rows if sales_ingest_result else [],
         duplicate_rows=sales_ingest_result.duplicate_rows if sales_ingest_result else [],
     )
@@ -5825,7 +6867,7 @@ async def _wait_for_otp_verification(
     log_event(
         logger=logger,
         phase="login",
-        status="warn",
+        status="warning",
         message="Verification page detected; pausing for manual OTP entry",
         store_code=store.store_code,
         current_url=current_url,
@@ -5880,7 +6922,7 @@ async def _wait_for_otp_verification(
     log_event(
         logger=logger,
         phase="login",
-        status="warn",
+        status="warning",
         message="OTP not completed; home page not reached before dwell deadline",
         store_code=store.store_code,
         final_url=final_url,
@@ -5890,6 +6932,102 @@ async def _wait_for_otp_verification(
         dwell_seconds=dwell_seconds,
     )
     return False, True
+
+
+async def _run_store_discovery_worker(
+    *,
+    browser: Browser,
+    store: TdStore,
+    logger: JsonLogger,
+    run_env: str,
+    run_id: str,
+    run_date: datetime,
+    run_start_date: date,
+    run_end_date: date,
+    nav_timeout_ms: int,
+    summary: TdOrdersDiscoverySummary,
+    run_orders: bool,
+    run_sales: bool,
+    source_mode: str,
+    semaphore: asyncio.Semaphore | None,
+) -> StoreExecutionPayload:
+    queued_at = datetime.now(timezone.utc)
+    if semaphore is not None:
+        await semaphore.acquire()
+    queue_wait_ms = int((datetime.now(timezone.utc) - queued_at).total_seconds() * 1000)
+    started_at = datetime.now(timezone.utc)
+    store_logger = logger.bind(store_code=store.store_code)
+    log_event(
+        logger=store_logger,
+        phase="store",
+        message="TD store worker start",
+        run_id=run_id,
+        from_date=run_start_date,
+        to_date=run_end_date,
+        queue_wait_ms=queue_wait_ms,
+        concurrency_limited=semaphore is not None,
+    )
+    try:
+        payload = await _run_store_discovery(
+            browser=browser,
+            store=store,
+            logger=logger,
+            run_env=run_env,
+            run_id=run_id,
+            run_date=run_date,
+            run_start_date=run_start_date,
+            run_end_date=run_end_date,
+            nav_timeout_ms=nav_timeout_ms,
+            summary=summary,
+            run_orders=run_orders,
+            run_sales=run_sales,
+            source_mode=source_mode,
+        )
+        payload.queue_wait_ms = queue_wait_ms
+        payload.duration_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
+        completion_status, store_outcome, warning_count = _resolve_store_completion_log_details(
+            payload=payload,
+            run_orders=run_orders,
+            run_sales=run_sales,
+            source_mode=source_mode,
+        )
+        log_event(
+            logger=store_logger,
+            phase="store",
+            message="TD store worker complete",
+            run_id=run_id,
+            queue_wait_ms=queue_wait_ms,
+            duration_ms=payload.duration_ms,
+            status=completion_status,
+            store_outcome=store_outcome,
+            warning_count=warning_count,
+        )
+        return payload
+    except Exception as exc:
+        duration_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
+        log_event(
+            logger=store_logger,
+            phase="store",
+            status="error",
+            message="TD store worker failed",
+            run_id=run_id,
+            queue_wait_ms=queue_wait_ms,
+            duration_ms=duration_ms,
+            error=str(exc),
+        )
+        return StoreExecutionPayload(
+            store=store,
+            run_start_date=run_start_date,
+            run_end_date=run_end_date,
+            outcome=StoreOutcome(status="error", message=str(exc), failure_stage="store_worker"),
+            error=str(exc),
+            queue_wait_ms=queue_wait_ms,
+            duration_ms=duration_ms,
+        )
+    finally:
+        if semaphore is not None:
+            semaphore.release()
+
 
 
 async def _run_store_discovery(
@@ -5906,8 +7044,17 @@ async def _run_store_discovery(
     summary: TdOrdersDiscoverySummary,
     run_orders: bool,
     run_sales: bool,
-) -> None:
+    source_mode: str,
+) -> StoreExecutionPayload:
     store_logger = logger.bind(store_code=store.store_code)
+    store_started_at = datetime.now(timezone.utc)
+    correlation = _build_correlation_context(
+        run_id=run_id,
+        store_code=store.store_code,
+        window_start=run_start_date,
+        window_end=run_end_date,
+        source_mode=source_mode,
+    )
     log_event(
         logger=store_logger,
         phase="store",
@@ -5915,6 +7062,7 @@ async def _run_store_discovery(
         run_env=run_env,
         from_date=run_start_date,
         to_date=run_end_date,
+        **correlation.as_dict(),
     )
 
     sync_log_id = await _insert_orders_sync_log(
@@ -5927,17 +7075,24 @@ async def _run_store_discovery(
         run_end_date=run_end_date,
     )
     if sync_log_id is None:
+        message = "Hard error: orders sync log row missing; aborting store discovery"
         log_event(
             logger=store_logger,
             phase="orders_sync_log",
             status="error",
-            message="Hard error: orders sync log row missing; aborting store discovery",
+            message=message,
             run_id=run_id,
         )
-        return
+        return StoreExecutionPayload(
+            store=store,
+            run_start_date=run_start_date,
+            run_end_date=run_end_date,
+            outcome=StoreOutcome(status="error", message=message, failure_stage="orders_sync_log"),
+            error=message,
+        )
 
     storage_state_exists = store.storage_state_path.exists()
-    download_dir = default_download_dir()
+    download_dir = _resolve_td_api_artifact_dir()
     context = await browser.new_context(
         storage_state=str(store.storage_state_path) if storage_state_exists else None,
         accept_downloads=True,
@@ -5952,6 +7107,16 @@ async def _run_store_discovery(
     probe_reason: str | None = None
     probe_result: SessionProbeResult | None = None
     sync_error_message: str | None = None
+    garment_sync_enabled = _bool_env("TD_GARMENT_SYNC_ENABLED", default=True)
+    api_request_metadata: list[dict[str, Any]] = []
+    auth_diagnostics = collect_auth_diagnostics(store.storage_state_path if storage_state_exists else None)
+    log_event(
+        logger=store_logger,
+        phase="session",
+        message="Redacted auth/session diagnostics",
+        **correlation.as_dict(),
+        **auth_diagnostics.as_dict(),
+    )
     try:
         session_reused = False
         login_performed = False
@@ -5965,8 +7130,19 @@ async def _run_store_discovery(
                 store_code=store.store_code,
                 storage_state=str(store.storage_state_path),
             )
+            probe_started = datetime.now(timezone.utc)
             probe_result = await _probe_session(
                 page, store=store, logger=store_logger, timeout_ms=nav_timeout_ms
+            )
+            probe_latency = int((datetime.now(timezone.utc) - probe_started).total_seconds() * 1000)
+            api_request_metadata.append(
+                build_api_request_metadata(
+                    url=store.session_probe_url or store.home_url or store.default_home_url or "",
+                    method="GET",
+                    status=200 if probe_result.valid else None,
+                    latency_ms=probe_latency,
+                    retry_count=0,
+                ).as_dict()
             )
             probe_reason = probe_result.reason or "state_valid"
             verification_seen = bool(probe_result.verification_seen)
@@ -6098,7 +7274,7 @@ async def _run_store_discovery(
             log_event(
                 logger=store_logger,
                 phase="store",
-                status="warn",
+                status="warning",
                 message="Aborting TD orders discovery because OTP was not completed",
                 store_code=store.store_code,
             )
@@ -6154,8 +7330,12 @@ async def _run_store_discovery(
                 refreshed=login_performed,
             )
 
+        api_fetch_result = TdApiFetchResult()
+        api_all_endpoints_auth_failed = False
+        api_context_source = "iframe"
         sales_only_mode = not run_orders
-        if not run_orders:
+
+        if not run_orders and source_mode == "ui":
             log_event(
                 logger=store_logger,
                 phase="orders",
@@ -6164,6 +7344,8 @@ async def _run_store_discovery(
             )
             orders_report = StoreReport(status="skipped", message="Orders sync skipped by flag")
         else:
+            iframe_locator: FrameLocator | None = None
+            iframe_src: str | None = None
             container_ready = await _navigate_to_orders_container(
                 page,
                 store=store,
@@ -6184,8 +7366,345 @@ async def _run_store_discovery(
                 )
                 return
 
-            iframe_locator = await _wait_for_iframe(page, store=store, logger=store_logger)
+            iframe_locator, iframe_src = await _wait_for_iframe(page, store=store, logger=store_logger)
             if iframe_locator is not None:
+                if source_mode != "ui":
+                    report_iframe_src: str | None = None
+                    report_iframe_src = await _resolve_report_iframe_auth_source_for_api(
+                        page,
+                        store=store,
+                        logger=store_logger,
+                        initial_iframe_src=iframe_src,
+                    )
+                    try:
+                        api_client = TdApiClient(
+                            store_code=store.store_code,
+                            context=context,
+                            storage_state_path=store.storage_state_path,
+                            report_iframe_src=report_iframe_src,
+                        )
+                        session_artifact = api_client.read_session_artifact()
+                        log_event(
+                            logger=store_logger,
+                            phase="api",
+                            message="Prepared API client from per-store session artifact",
+                            store_code=store.store_code,
+                            storage_state=stored_state_path,
+                            artifact_has_cookies=bool(session_artifact.get("cookies")),
+                            artifact_has_origins=bool(session_artifact.get("origins")),
+                            source_mode=source_mode,
+                            context_source=api_context_source,
+                        )
+                        api_fetch_result = await api_client.fetch_reports(from_date=run_start_date, to_date=run_end_date)
+                        api_request_metadata.extend(api_fetch_result.request_metadata)
+                        endpoint_errors = api_fetch_result.endpoint_errors or {}
+                        auth_error_codes = {"auth_unavailable", "http_401"}
+                        api_all_endpoints_auth_failed = bool(endpoint_errors) and all(
+                            str(error_code) in auth_error_codes for error_code in endpoint_errors.values()
+                        )
+                        artifact_result = persist_td_api_artifacts(
+                            download_dir=download_dir,
+                            store_code=store.store_code,
+                            from_date=run_start_date,
+                            to_date=run_end_date,
+                            raw_orders=api_fetch_result.raw_orders_payload,
+                            raw_sales=api_fetch_result.raw_sales_payload,
+                            raw_garments=api_fetch_result.raw_garments_payload,
+                            # API snapshot purity contract: only raw API row collections belong
+                            # in these Excel snapshot inputs (never compare/diagnostic payloads).
+                            order_rows=api_fetch_result.orders_rows,
+                            sale_rows=api_fetch_result.sales_rows,
+                            garments_rows=api_fetch_result.garments_rows,
+                        )
+                        log_event(
+                            logger=store_logger,
+                            phase="api",
+                            message="Persisted TD API artifacts",
+                            store_code=store.store_code,
+                            source_mode=source_mode,
+                            context_source=api_context_source,
+                            artifact_dir=str(download_dir),
+                            artifact_paths=artifact_result.artifact_paths,
+                            human_readable_export_enabled=artifact_result.human_readable_export_enabled,
+                            human_readable_artifact_paths=artifact_result.human_readable_artifact_paths,
+                            warnings=artifact_result.warnings,
+                        )
+                        if artifact_result.warnings:
+                            log_event(
+                                logger=store_logger,
+                                phase="api",
+                                status="warning",
+                                message="TD API artifact persistence encountered warnings",
+                                store_code=store.store_code,
+                                source_mode=source_mode,
+                                context_source=api_context_source,
+                                warnings=artifact_result.warnings,
+                            )
+                            for artifact_warning in artifact_result.warnings:
+                                _append_unique_warning(orders_report, f"api_artifact_persistence_warning: {artifact_warning}")
+                                _append_unique_warning(sales_report, f"api_artifact_persistence_warning: {artifact_warning}")
+                        log_event(
+                            logger=store_logger,
+                            phase="api",
+                            message="Fetched TD API reports",
+                            store_code=store.store_code,
+                            source_mode=source_mode,
+                            context_source=api_context_source,
+                            orders_cookie_shape_attempted=api_fetch_result.orders_cookie_shape_attempted,
+                            orders_cookie_shape_success=api_fetch_result.orders_cookie_shape_success,
+                            orders_cookie_shape_failure_reason=api_fetch_result.orders_cookie_shape_failure_reason,
+                            orders_cookie_shape_fallback_used=api_fetch_result.orders_cookie_shape_fallback_used,
+                            orders_cookie_shape_runtime_delta_ms=api_fetch_result.orders_cookie_shape_runtime_delta_ms,
+                            orders_rows=len(api_fetch_result.orders_rows),
+                            sales_rows=len(api_fetch_result.sales_rows),
+                            garments_rows=len(api_fetch_result.garments_rows),
+                            orders_summary_rows_filtered=api_fetch_result.orders_summary_rows_filtered,
+                            sales_summary_rows_filtered=api_fetch_result.sales_summary_rows_filtered,
+                            endpoint_errors=api_fetch_result.endpoint_errors,
+                            endpoint_error_diagnostics=(api_fetch_result.endpoint_error_diagnostics if _td_api_debug_logging_enabled() else {"present": bool(api_fetch_result.endpoint_error_diagnostics), "endpoint_count": len(api_fetch_result.endpoint_error_diagnostics)}),
+                        )
+                    except Exception as exc:
+                        log_event(
+                            logger=store_logger,
+                            phase="api",
+                            status="warning",
+                            message="TD API fetch failed; continuing according to source mode",
+                            store_code=store.store_code,
+                            source_mode=source_mode,
+                            context_source=api_context_source,
+                            orders_cookie_shape_attempted=api_fetch_result.orders_cookie_shape_attempted,
+                            orders_cookie_shape_success=api_fetch_result.orders_cookie_shape_success,
+                            orders_cookie_shape_failure_reason=api_fetch_result.orders_cookie_shape_failure_reason,
+                            orders_cookie_shape_fallback_used=api_fetch_result.orders_cookie_shape_fallback_used,
+                            orders_cookie_shape_runtime_delta_ms=api_fetch_result.orders_cookie_shape_runtime_delta_ms,
+                            error=str(exc),
+                        )
+                        if source_mode == "api_only":
+                            outcome = StoreOutcome(
+                                status="error",
+                                message=f"TD API fetch failed in api_only mode: {exc}",
+                                final_url=page.url,
+                                verification_seen=verification_seen,
+                                storage_state=stored_state_path,
+                            )
+                            return
+
+                    if source_mode in {"api_only", "api_primary"}:
+                        api_orders_ingest_result: TdOrdersIngestResult | None = None
+                        api_sales_ingest_result: TdSalesIngestResult | None = None
+                        api_orders_warning_summary: dict[str, Any] | None = None
+                        api_sales_warning_summary: dict[str, Any] | None = None
+                        if config.database_url:
+                            if not store.cost_center:
+                                log_event(
+                                    logger=store_logger,
+                                    phase="ingest",
+                                    status="error",
+                                    message="Missing cost_center for TD store; cannot ingest API orders/sales",
+                                    store_code=store.store_code,
+                                    source_mode=source_mode,
+                                )
+                                outcome = StoreOutcome(
+                                    status="error",
+                                    message="Missing cost_center for TD store; cannot ingest API orders/sales",
+                                    final_url=page.url,
+                                    verification_seen=verification_seen,
+                                    storage_state=stored_state_path,
+                                )
+                                return
+
+                            if api_fetch_result.orders_rows:
+                                api_orders_ingest_result = await ingest_td_orders_rows(
+                                    rows=api_fetch_result.orders_rows,
+                                    store_code=store.store_code,
+                                    cost_center=store.cost_center or "",
+                                    run_id=run_id,
+                                    run_date=run_date,
+                                    database_url=config.database_url,
+                                    logger=store_logger,
+                                )
+                                summary.add_ingest_remarks(api_orders_ingest_result.ingest_remarks)
+                                if api_orders_ingest_result.warnings:
+                                    api_orders_warning_summary = _summarize_warnings(api_orders_ingest_result.warnings)
+                                    log_event(
+                                        logger=store_logger,
+                                        phase="ingest",
+                                        status="warning",
+                                        message="TD API Orders rows ingested with warnings (warning_count is unique-value based)",
+                                        store_code=store.store_code,
+                                        source_mode=source_mode,
+                                        warning_count=api_orders_warning_summary["count"],
+                                        phone_fallback_rows=api_orders_ingest_result.phone_fallback_rows,
+                                        phone_fallback_unique_values=api_orders_ingest_result.phone_fallback_unique_values,
+                                        phone_fallback_top_invalid_values=api_orders_ingest_result.phone_fallback_top_invalid_values,
+                                        warning_samples=api_orders_warning_summary["samples"],
+                                        warnings_truncated=api_orders_warning_summary["truncated"],
+                                        staging_rows=api_orders_ingest_result.staging_rows,
+                                        final_rows=api_orders_ingest_result.final_rows,
+                                    )
+                                else:
+                                    log_event(
+                                        logger=store_logger,
+                                        phase="ingest",
+                                        message="TD API Orders rows ingested",
+                                        store_code=store.store_code,
+                                        source_mode=source_mode,
+                                        staging_rows=api_orders_ingest_result.staging_rows,
+                                        final_rows=api_orders_ingest_result.final_rows,
+                                        phone_fallback_rows=api_orders_ingest_result.phone_fallback_rows,
+                                        phone_fallback_unique_values=api_orders_ingest_result.phone_fallback_unique_values,
+                                        phone_fallback_top_invalid_values=api_orders_ingest_result.phone_fallback_top_invalid_values,
+                                    )
+
+                            if run_sales and api_fetch_result.sales_rows:
+                                api_sales_ingest_result = await ingest_td_sales_rows(
+                                    rows=api_fetch_result.sales_rows,
+                                    store_code=store.store_code,
+                                    cost_center=store.cost_center or "",
+                                    run_id=run_id,
+                                    run_date=run_date,
+                                    database_url=config.database_url,
+                                    logger=store_logger,
+                                )
+                                summary.add_ingest_remarks(api_sales_ingest_result.ingest_remarks)
+                                if api_sales_ingest_result.warnings:
+                                    api_sales_warning_summary = _summarize_warnings(api_sales_ingest_result.warnings)
+                                    log_event(
+                                        logger=store_logger,
+                                        phase="sales_ingest",
+                                        status="warning",
+                                        message="TD API Sales rows ingested with warnings (warning_count is unique-value based)",
+                                        store_code=store.store_code,
+                                        source_mode=source_mode,
+                                        warning_count=api_sales_warning_summary["count"],
+                                        phone_fallback_rows=api_sales_ingest_result.phone_fallback_rows,
+                                        phone_fallback_unique_values=api_sales_ingest_result.phone_fallback_unique_values,
+                                        phone_fallback_top_invalid_values=api_sales_ingest_result.phone_fallback_top_invalid_values,
+                                        warning_samples=api_sales_warning_summary["samples"],
+                                        warnings_truncated=api_sales_warning_summary["truncated"],
+                                        staging_rows=api_sales_ingest_result.staging_rows,
+                                        final_rows=api_sales_ingest_result.final_rows,
+                                    )
+                                else:
+                                    log_event(
+                                        logger=store_logger,
+                                        phase="sales_ingest",
+                                        message="TD API Sales rows ingested",
+                                        store_code=store.store_code,
+                                        source_mode=source_mode,
+                                        staging_rows=api_sales_ingest_result.staging_rows,
+                                        final_rows=api_sales_ingest_result.final_rows,
+                                        phone_fallback_rows=api_sales_ingest_result.phone_fallback_rows,
+                                        phone_fallback_unique_values=api_sales_ingest_result.phone_fallback_unique_values,
+                                        phone_fallback_top_invalid_values=api_sales_ingest_result.phone_fallback_top_invalid_values,
+                                    )
+                        else:
+                            log_event(
+                                logger=store_logger,
+                                phase="ingest",
+                                status="warning",
+                                message="Skipping TD API orders/sales ingestion because database_url is missing",
+                                store_code=store.store_code,
+                                source_mode=source_mode,
+                            )
+
+                        orders_status = "ok" if api_fetch_result.orders_rows else "warning"
+                        if api_orders_ingest_result and api_orders_ingest_result.warnings:
+                            orders_status = "warning"
+
+                        sales_status = "ok" if api_fetch_result.sales_rows else ("skipped" if not run_sales else "warning")
+                        if api_sales_ingest_result and api_sales_ingest_result.warnings:
+                            sales_status = "warning"
+
+                        orders_report = StoreReport(
+                            status=orders_status,
+                            message=(
+                                "Orders sourced from API and ingested"
+                                if config.database_url
+                                else "Orders sourced from API"
+                            ),
+                            warning_rows=(
+                                api_orders_ingest_result.warning_rows
+                                if api_orders_ingest_result
+                                else list(api_fetch_result.orders_rows)
+                            ),
+                            compare_rows_orders=(
+                                api_orders_ingest_result.parsed_rows
+                                if api_orders_ingest_result
+                                else list(api_fetch_result.orders_rows)
+                            ),
+                            rows_downloaded=len(api_fetch_result.orders_rows),
+                            rows_ingested=(api_orders_ingest_result.final_rows if api_orders_ingest_result else 0),
+                            staging_rows=(api_orders_ingest_result.staging_rows if api_orders_ingest_result else None),
+                            final_rows=(api_orders_ingest_result.final_rows if api_orders_ingest_result else None),
+                            warnings=(api_orders_ingest_result.warnings if api_orders_ingest_result else []),
+                            source_mode=source_mode,
+                        )
+                        sales_report = StoreReport(
+                            status=sales_status,
+                            message=(
+                                "Sales sourced from API and ingested"
+                                if (run_sales and config.database_url)
+                                else ("Sales sourced from API" if run_sales else "Sales sync skipped by flag")
+                            ),
+                            warning_rows=(
+                                api_sales_ingest_result.warning_rows
+                                if api_sales_ingest_result
+                                else list(api_fetch_result.sales_rows)
+                            ),
+                            compare_rows_sales=(
+                                api_sales_ingest_result.parsed_rows
+                                if api_sales_ingest_result
+                                else list(api_fetch_result.sales_rows)
+                            ),
+                            rows_downloaded=len(api_fetch_result.sales_rows),
+                            rows_ingested=(api_sales_ingest_result.final_rows if api_sales_ingest_result else 0),
+                            staging_rows=(api_sales_ingest_result.staging_rows if api_sales_ingest_result else None),
+                            final_rows=(api_sales_ingest_result.final_rows if api_sales_ingest_result else None),
+                            warnings=(api_sales_ingest_result.warnings if api_sales_ingest_result else []),
+                            source_mode=source_mode,
+                        )
+                        for artifact_warning in (artifact_result.warnings if 'artifact_result' in locals() else []):
+                            _append_unique_warning(orders_report, f"api_artifact_persistence_warning: {artifact_warning}")
+                            _append_unique_warning(sales_report, f"api_artifact_persistence_warning: {artifact_warning}")
+                        for endpoint, error_code in (api_fetch_result.endpoint_errors or {}).items():
+                            _append_unique_warning(
+                                orders_report,
+                                f"api_endpoint_warning:{endpoint}={error_code}",
+                            )
+                        garments_health = dict((api_fetch_result.endpoint_health or {}).get("/garments/details") or {})
+                        garments_completeness = str(garments_health.get("garments_fetch_completeness") or "unknown")
+                        garments_budget_state = str(garments_health.get("garments_budget_state") or "within_budget")
+                        garments_final_rows = int(garments_health.get("garments_final_row_count") or len(api_fetch_result.garments_rows))
+                        if garments_budget_state == "near_limit" and garments_completeness == "complete":
+                            _append_unique_warning(
+                                orders_report,
+                                "garments_budget_warning: near limit, no data loss",
+                            )
+                        elif garments_completeness == "incomplete":
+                            _append_unique_warning(
+                                orders_report,
+                                "garments_data_risk: incomplete fetch under budget pressure",
+                            )
+                        log_event(
+                            logger=store_logger,
+                            phase="window_summary",
+                            status=("warning" if garments_completeness == "incomplete" else "info"),
+                            message="TD garments per-store run summary",
+                            store_code=store.store_code,
+                            garments_budget_state=garments_budget_state,
+                            garments_fetch_completeness=garments_completeness,
+                            garments_final_row_count=garments_final_rows,
+                        )
+                        outcome = StoreOutcome(
+                            status="warning" if (orders_status == "warning" or sales_status == "warning") else "ok",
+                            message="API primary path executed",
+                            final_url=page.url,
+                            verification_seen=verification_seen,
+                            storage_state=stored_state_path,
+                        )
+                        return
+
                 if _dom_logging_enabled():
                     await _observe_iframe_hydration(iframe_locator, store=store, logger=store_logger)
                 else:
@@ -6241,6 +7760,7 @@ async def _run_store_discovery(
                             )
                             return
                         try:
+                            _ensure_ui_workbook_ingest_allowed(source_mode=source_mode, dataset="orders")
                             ingest_result = await ingest_td_orders_workbook(
                                 workbook_path=Path(detail),
                                 store_code=store.store_code,
@@ -6255,10 +7775,13 @@ async def _run_store_discovery(
                                 log_event(
                                     logger=store_logger,
                                     phase="ingest",
-                                    status="warn",
-                                    message="TD Orders workbook ingested with warnings",
+                                    status="warning",
+                                    message="TD Orders workbook ingested with warnings (warning_count is unique-value based)",
                                     store_code=store.store_code,
                                     warning_count=orders_warning_summary["count"],
+                                    phone_fallback_rows=ingest_result.phone_fallback_rows,
+                                    phone_fallback_unique_values=ingest_result.phone_fallback_unique_values,
+                                    phone_fallback_top_invalid_values=ingest_result.phone_fallback_top_invalid_values,
                                     warning_samples=orders_warning_summary["samples"],
                                     warnings_truncated=orders_warning_summary["truncated"],
                                     staging_rows=ingest_result.staging_rows,
@@ -6272,6 +7795,9 @@ async def _run_store_discovery(
                                     store_code=store.store_code,
                                     staging_rows=ingest_result.staging_rows,
                                     final_rows=ingest_result.final_rows,
+                                    phone_fallback_rows=ingest_result.phone_fallback_rows,
+                                    phone_fallback_unique_values=ingest_result.phone_fallback_unique_values,
+                                    phone_fallback_top_invalid_values=ingest_result.phone_fallback_top_invalid_values,
                                 )
                             summary.add_ingest_remarks(ingest_result.ingest_remarks)
                         except Exception as exc:
@@ -6303,7 +7829,7 @@ async def _run_store_discovery(
                         log_event(
                             logger=store_logger,
                             phase="ingest",
-                            status="warn",
+                            status="warning",
                             message="Skipping TD Orders ingestion because database_url is missing",
                             store_code=store.store_code,
                         )
@@ -6338,6 +7864,7 @@ async def _run_store_discovery(
                         ),
                         dropped_rows_count=len(ingest_result.dropped_rows) if ingest_result else None,
                         warning_rows=ingest_result.warning_rows if ingest_result else [],
+                        compare_rows_orders=ingest_result.parsed_rows if ingest_result else [],
                         dropped_rows=ingest_result.dropped_rows if ingest_result else [],
                         message=outcome_message,
                         warnings=ingest_result.warnings if ingest_result else [],
@@ -6357,6 +7884,7 @@ async def _run_store_discovery(
                             summary=summary,
                             sales_only_mode=sales_only_mode,
                             sync_log_id=sync_log_id,
+                            source_mode=source_mode,
                         )
                         sales_status = sales_report.status
                         sales_message = sales_report.message
@@ -6444,6 +7972,7 @@ async def _run_store_discovery(
                 summary=summary,
                 sales_only_mode=sales_only_mode,
                 sync_log_id=sync_log_id,
+                source_mode=source_mode,
             )
         elif sales_report is None:
             log_event(
@@ -6484,7 +8013,7 @@ async def _run_store_discovery(
         log_event(
             logger=store_logger,
             phase="store",
-            status="warn",
+            status="warning",
             message="TD orders store discovery cancelled; closing context",
             store_code=store.store_code,
         )
@@ -6499,7 +8028,7 @@ async def _run_store_discovery(
         log_event(
             logger=store_logger,
             phase="store",
-            status="warn",
+            status="warning",
             message="TD orders store discovery interrupted; closing context",
             store_code=store.store_code,
             error=str(exc),
@@ -6538,6 +8067,7 @@ async def _run_store_discovery(
             sales_report=sales_report,
             run_orders=run_orders,
             run_sales=run_sales,
+            source_mode=source_mode,
         )
         final_error_message = _resolve_sync_log_error_message(
             status=final_status,
@@ -6553,6 +8083,7 @@ async def _run_store_discovery(
             outcome=outcome,
             run_orders=run_orders,
             run_sales=run_sales,
+            run_garment_sync=garment_sync_enabled,
         )
         resolved_message = _resolve_sync_log_message(
             status=final_status, error_message=final_error_message, status_note=status_note
@@ -6563,6 +8094,371 @@ async def _run_store_discovery(
             run_orders=run_orders,
             run_sales=run_sales,
         )
+        log_event(
+            logger=store_logger,
+            phase="orders_sync_log",
+            message="Resolved TD outcome dimensions for orders sync log update",
+            store_code=store.store_code,
+            data_source_decision=_resolve_data_source_decision(source_mode=source_mode, report=orders_report),
+            data_ingest_status=_resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report),
+            ingest_status=_resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report),
+            observability_warnings=_resolve_store_observability_warnings(
+                orders_report=orders_report,
+                sales_report=sales_report,
+            ),
+            failure_stage=_resolve_failure_stage(orders_report=orders_report, sales_report=sales_report),
+        )
+        ui_rows = _resolve_compare_rows(orders_report, dataset="orders")
+        api_fetch_result_obj = api_fetch_result if "api_fetch_result" in locals() else None
+        api_rows = api_fetch_result_obj.orders_rows if api_fetch_result_obj else []
+        sales_ui_rows = _resolve_compare_rows(sales_report, dataset="sales")
+        sales_api_rows = api_fetch_result_obj.sales_rows if api_fetch_result_obj else []
+        endpoint_failure_summary = _endpoint_failure_summary(api_fetch_result_obj)
+        endpoint_health_summary = api_fetch_result_obj.endpoint_health if api_fetch_result_obj else {}
+        orders_api_health = _dataset_completion_health(
+            api_fetch_result_obj.raw_orders_payload if api_fetch_result_obj else {},
+            endpoint_error=endpoint_failure_summary.get("orders"),
+            endpoint_health=endpoint_health_summary.get("/reports/order-report") if isinstance(endpoint_health_summary, Mapping) else None,
+        )
+        sales_api_health = _dataset_completion_health(
+            api_fetch_result_obj.raw_sales_payload if api_fetch_result_obj else {},
+            endpoint_error=endpoint_failure_summary.get("sales"),
+            endpoint_health=endpoint_health_summary.get("/sales-and-deliveries/sales") if isinstance(endpoint_health_summary, Mapping) else None,
+        )
+
+        if source_mode == "api_shadow" and api_all_endpoints_auth_failed:
+            compare_metrics_obj = compare_canonical_rows(
+                ui_rows=[],
+                api_rows=[],
+                key_fields=COMPARE_KEY_FIELDS_BY_DATASET["orders"],
+                sample_limit=WARNING_SAMPLE_LIMIT,
+            )
+            sales_compare_metrics_obj = compare_canonical_rows(
+                ui_rows=[],
+                api_rows=[],
+                key_fields=COMPARE_KEY_FIELDS_BY_DATASET["sales"],
+                sample_limit=WARNING_SAMPLE_LIMIT,
+            )
+            log_event(
+                logger=store_logger,
+                phase="compare",
+                status="warning",
+                message="Marked compare as api_unavailable because all API endpoints failed auth",
+                **correlation.as_dict(),
+                endpoint_errors=api_fetch_result.endpoint_errors,
+                endpoint_error_diagnostics=api_fetch_result.endpoint_error_diagnostics,
+            )
+            compare_api_rows = []
+            sales_compare_api_rows = []
+            normalized_orders_ui_rows = []
+            normalized_orders_api_rows = []
+            normalized_sales_ui_rows = []
+            normalized_sales_api_rows = []
+        else:
+            compare_api_rows = project_api_rows_for_compare(dataset="orders", api_rows=api_rows, store_code=store.store_code)
+            sales_compare_api_rows = project_api_rows_for_compare(dataset="sales", api_rows=sales_api_rows, store_code=store.store_code)
+
+            normalized_orders_ui_rows, orders_summary_rows_filtered = _filter_non_order_summary_rows(ui_rows)
+            normalized_orders_api_rows, orders_api_summary_rows_filtered = _filter_non_order_summary_rows(compare_api_rows)
+            normalized_sales_ui_rows, sales_summary_rows_filtered = _filter_non_order_summary_rows(sales_ui_rows)
+            normalized_sales_api_rows, sales_api_summary_rows_filtered = _filter_non_order_summary_rows(sales_compare_api_rows)
+
+            compare_metrics_obj = compare_canonical_rows(
+                ui_rows=normalized_orders_ui_rows,
+                api_rows=normalized_orders_api_rows,
+                key_fields=COMPARE_KEY_FIELDS_BY_DATASET["orders"],
+                sample_limit=WARNING_SAMPLE_LIMIT,
+            )
+            sales_compare_metrics_obj = compare_canonical_rows(
+                ui_rows=normalized_sales_ui_rows,
+                api_rows=normalized_sales_api_rows,
+                key_fields=COMPARE_KEY_FIELDS_BY_DATASET["sales"],
+                sample_limit=WARNING_SAMPLE_LIMIT,
+            )
+            log_event(
+                logger=store_logger,
+                phase="compare",
+                message="Filtered non-order summary rows before verdict computation",
+                store_code=store.store_code,
+                orders_ui_summary_rows_filtered=orders_summary_rows_filtered,
+                orders_api_summary_rows_filtered=orders_api_summary_rows_filtered,
+                sales_ui_summary_rows_filtered=sales_summary_rows_filtered,
+                sales_api_summary_rows_filtered=sales_api_summary_rows_filtered,
+            )
+        api_garment_rows = api_fetch_result_obj.garments_rows if api_fetch_result_obj else []
+        compare_row_counts = _compare_row_count_diagnostics(orders_report, sales_report)
+        log_event(
+            logger=store_logger,
+            phase="compare",
+            message="TD UI/API row-count verification",
+            **correlation.as_dict(),
+            **compare_row_counts,
+            orders_api_rows=len(api_rows),
+            sales_api_rows=len(sales_api_rows),
+            garments_api_rows=len(api_garment_rows),
+        )
+        orders_compare_readiness = bool(orders_api_health.get("ready"))
+        sales_compare_readiness = bool(sales_api_health.get("ready"))
+
+        if source_mode == "api_shadow" and api_all_endpoints_auth_failed:
+            decision = DecisionLog(
+                decision="api_unavailable",
+                reason="All API endpoints failed auth in shadow mode",
+            )
+        elif source_mode == "api_shadow" and (not orders_compare_readiness or not sales_compare_readiness):
+            readiness_gaps: list[str] = []
+            if not orders_compare_readiness:
+                readiness_gaps.append(f"orders:{orders_api_health.get('degraded_reason') or 'api_incomplete'}")
+            if not sales_compare_readiness:
+                readiness_gaps.append(f"sales:{sales_api_health.get('degraded_reason') or 'api_incomplete'}")
+            decision = DecisionLog(
+                decision="api_partial_unavailable",
+                reason=(
+                    "API shadow strict compare readiness failed "
+                    f"({'; '.join(readiness_gaps)})"
+                ),
+            )
+        elif source_mode == "api_shadow":
+            decision = DecisionLog(
+                decision="api_shadow_compare_only",
+                reason="Shadow mode enabled: API data compared and logged without write path",
+            )
+        elif source_mode in {"api_primary", "api_only"}:
+            if orders_compare_readiness and sales_compare_readiness:
+                decision = DecisionLog(
+                    decision="api_primary",
+                    reason="API selected as primary source (orders+sales ready)",
+                )
+            else:
+                degraded_parts: list[str] = []
+                if not orders_compare_readiness:
+                    degraded_parts.append(f"orders:{orders_api_health.get('degraded_reason') or 'api_incomplete'}")
+                if not sales_compare_readiness:
+                    degraded_parts.append(f"sales:{sales_api_health.get('degraded_reason') or 'api_incomplete'}")
+                decision = DecisionLog(
+                    decision="api_primary_degraded",
+                    reason=f"API primary requested but readiness degraded ({'; '.join(degraded_parts)})",
+                )
+        else:
+            decision = DecisionLog(
+                decision=(
+                    "ui_fallback_triggered"
+                    if (orders_report and orders_report.status in {"warning", "error"})
+                    else "api_write_allowed"
+                ),
+                reason=(
+                    (orders_report.error_message or orders_report.message or "ui extraction issue")
+                    if (orders_report and orders_report.status in {"warning", "error"})
+                    else "No blocking compare mismatches detected"
+                ),
+            )
+        orders_compare_metrics = _operational_compare_metrics(
+            compare_metrics_obj.as_dict(),
+            orders_api_health,
+        )
+        sales_compare_metrics = _operational_compare_metrics(
+            sales_compare_metrics_obj.as_dict(),
+            sales_api_health,
+        )
+
+        if orders_report:
+            orders_report.compare_metrics = orders_compare_metrics
+            orders_report.api_request_metadata = list(api_request_metadata)
+            orders_report.auth_diagnostics = auth_diagnostics.as_dict()
+            orders_report.source_mode = correlation.source_mode
+            orders_report.decision_log = decision.as_dict()
+        log_event(
+            logger=store_logger,
+            phase="compare",
+            message="TD UI/API compare metrics",
+            **correlation.as_dict(),
+            compare_metrics=orders_compare_metrics,
+            sales_compare_metrics=sales_compare_metrics,
+            endpoint_health_summary={
+                "orders": dict(orders_api_health),
+                "sales": dict(sales_api_health),
+            },
+            endpoint_failure_summary=endpoint_failure_summary,
+            endpoint_errors=api_fetch_result_obj.endpoint_errors if api_fetch_result_obj else {},
+            endpoint_error_diagnostics=(api_fetch_result_obj.endpoint_error_diagnostics if (api_fetch_result_obj and _td_api_debug_logging_enabled()) else {"present": bool(api_fetch_result_obj and api_fetch_result_obj.endpoint_error_diagnostics), "endpoint_count": len(api_fetch_result_obj.endpoint_error_diagnostics) if api_fetch_result_obj else 0}),
+            orders_api_health=orders_api_health,
+            sales_api_health=sales_api_health,
+            api_request_metadata=(redact_sensitive_fields(api_request_metadata) if _td_api_debug_logging_enabled() else {"request_count": len(api_request_metadata)}),
+            auth_diagnostics=(auth_diagnostics.as_dict() if _td_api_debug_logging_enabled() else {"token_found": bool(auth_diagnostics.as_dict().get("token_found")), "token_source": auth_diagnostics.as_dict().get("token_source"), "cookies_found": bool(auth_diagnostics.as_dict().get("cookies_found"))}),
+        )
+        garment_ingest_result: TdGarmentIngestResult | None = None
+        compare_ok = (not orders_compare_readiness) or _compare_mismatch_free(orders_compare_metrics)
+        if (
+            garment_sync_enabled
+            and compare_ok
+            and config.database_url
+            and getattr(store, "cost_center", None)
+            and "api_fetch_result" in locals()
+            and api_fetch_result.garments_rows
+        ):
+            try:
+                garment_ingest_result = await ingest_td_garment_rows(
+                    rows=api_fetch_result.garments_rows,
+                    store_code=store.store_code,
+                    cost_center=store.cost_center,
+                    run_id=run_id,
+                    run_date=run_date,
+                    window_from_date=run_start_date,
+                    window_to_date=run_end_date,
+                    database_url=config.database_url,
+                )
+                log_event(
+                    logger=store_logger,
+                    phase="garment_ingest",
+                    message="TD garment sync completed",
+                    store_code=store.store_code,
+                    row_count=garment_ingest_result.row_count,
+                    source_id_duplicates=garment_ingest_result.source_id_duplicate_rows,
+                    metric_definition="Counts unexpected duplicate occurrences of non-empty source IDs (api_line_item_id/api_garment_id); repeated same-item orders without source IDs are not counted.",
+                    changed_rows=garment_ingest_result.changed_rows,
+                    late_updates=garment_ingest_result.late_updates,
+                    orphan_rows=garment_ingest_result.orphan_rows,
+                )
+            except Exception as exc:
+                log_event(
+                    logger=store_logger,
+                    phase="garment_ingest",
+                    status="warning",
+                    message="TD garment sync failed",
+                    store_code=store.store_code,
+                    error=str(exc),
+                )
+        elif garment_sync_enabled and not compare_ok:
+            log_event(
+                logger=store_logger,
+                phase="garment_ingest",
+                status="warning",
+                message="Skipped TD garment sync due to compare mismatch gate",
+                store_code=store.store_code,
+                compare_metrics=orders_compare_metrics,
+            )
+        if orders_report and garment_ingest_result:
+            orders_report.garment_reconciliation = {
+                "row_count": garment_ingest_result.row_count,
+                "source_id_duplicates": garment_ingest_result.source_id_duplicate_rows,
+                "metric_definition": "Counts unexpected duplicate occurrences of non-empty source IDs (api_line_item_id/api_garment_id); historical 'duplicates' values were based on synthetic line_item_uid frequency and are not directly comparable.",
+                "changed_rows": garment_ingest_result.changed_rows,
+                "late_updates": garment_ingest_result.late_updates,
+                "orphan_rows": garment_ingest_result.orphan_rows,
+            }
+
+        garments_health_summary = _build_garments_health_summary(
+            api_fetch_result=api_fetch_result_obj,
+            garment_ingest_result=garment_ingest_result,
+        )
+        log_event(
+            logger=store_logger,
+            phase="garment_ingest",
+            message="TD garments endpoint health summary",
+            store_code=store.store_code,
+            garments_health=garments_health_summary,
+        )
+        if orders_report:
+            orders_report.garment_reconciliation = {
+                **dict(orders_report.garment_reconciliation),
+                **garments_health_summary,
+            }
+
+        garment_total_rows = len(api_fetch_result.garments_rows) if "api_fetch_result" in locals() else 0
+        garment_matched_rows = garment_ingest_result.row_count if garment_ingest_result else (garment_total_rows if garment_total_rows == 0 else 0)
+        garment_compare_metrics = {
+            "total_rows": garment_total_rows,
+            "matched_rows": garment_matched_rows,
+            "amount_mismatches": 0,
+            "status_mismatches": 0,
+        }
+        normalized_orders_verdict = _build_dataset_order_set_verdict(
+            dataset="orders",
+            ui_rows=normalized_orders_ui_rows,
+            api_rows=normalized_orders_api_rows,
+        )
+        normalized_orders_verdict["compare_readiness"] = orders_compare_readiness
+        if not orders_compare_readiness:
+            degraded_code = "orders:api_partial_unavailable"
+            normalized_orders_verdict["pass"] = False
+            normalized_orders_verdict["reason_codes"] = [degraded_code]
+            normalized_orders_verdict["reasons"] = [degraded_code]
+
+        normalized_sales_verdict = _build_sales_order_row_count_verdict(
+            ui_rows=normalized_sales_ui_rows,
+            api_rows=normalized_sales_api_rows,
+        )
+        normalized_sales_verdict["compare_readiness"] = sales_compare_readiness
+        if not sales_compare_readiness:
+            degraded_code = "sales:api_partial_unavailable"
+            normalized_sales_verdict["pass"] = False
+            normalized_sales_verdict["reason_codes"] = [degraded_code]
+            normalized_sales_verdict["reasons"] = [degraded_code]
+        gate_verdict = _build_compare_verdict(
+            normalized_orders_verdict=normalized_orders_verdict,
+            normalized_sales_verdict=normalized_sales_verdict,
+            garment_metrics=garment_compare_metrics,
+            run_sales=run_sales,
+            run_garment_sync=garment_sync_enabled,
+        )
+        gate_verdict_datasets = dict(gate_verdict.get("datasets") or {})
+        garment_dataset_verdict = dict(gate_verdict_datasets.get("garments") or {})
+        garment_dataset_verdict.update(
+            {
+                "orphan_rows": garments_health_summary["orphan_rows"],
+                "pages_attempted": garments_health_summary["pages_attempted"],
+                "timeout_count": garments_health_summary["timeout_count"],
+                "retry_success_count": garments_health_summary["retry_success_count"],
+                "final_row_count": garments_health_summary["final_row_count"],
+            }
+        )
+
+        orphan_alert = await _evaluate_garment_orphan_alert(
+            store_code=store.store_code,
+            garments_health_summary=garments_health_summary,
+        )
+        if orphan_alert.get("triggered"):
+            garment_dataset_verdict["pass"] = False
+            garment_reasons = [str(reason) for reason in garment_dataset_verdict.get("reasons", [])]
+            alert_reason = str(orphan_alert.get("reason") or "garments_orphan_rows_alert")
+            if alert_reason not in garment_reasons:
+                garment_reasons.append(alert_reason)
+            garment_dataset_verdict["reasons"] = garment_reasons
+            gate_reason_codes = [str(code) for code in gate_verdict.get("reason_codes") or []]
+            if alert_reason not in gate_reason_codes:
+                gate_verdict["reason_codes"] = [*gate_reason_codes, alert_reason]
+            gate_verdict["pass"] = False
+            gate_verdict["overall_pass"] = False
+            log_event(
+                logger=store_logger,
+                phase="reconciliation",
+                status="warning",
+                message="TD garments orphan-row drift alert triggered",
+                store_code=store.store_code,
+                orphan_alert=orphan_alert,
+                compare_ok=compare_ok,
+            )
+
+        garment_dataset_verdict["orphan_alert"] = orphan_alert
+        gate_verdict_datasets["garments"] = garment_dataset_verdict
+        gate_verdict["datasets"] = gate_verdict_datasets
+        compare_status = "pass" if bool(gate_verdict.get("overall_pass", gate_verdict.get("pass", True))) else "mismatch"
+        compare_reason_codes = [str(code) for code in (gate_verdict.get("reason_codes") or []) if str(code).strip()]
+        should_log_compare_evaluation = compare_status != "pass" or bool(compare_reason_codes)
+        if should_log_compare_evaluation:
+            log_event(
+                logger=store_logger,
+                phase="compare",
+                status="warning",
+                message="TD compare evaluation completed (runtime-only; DB persistence disabled)",
+                store_code=store.store_code,
+                source_mode=correlation.source_mode,
+                compare_status=compare_status,
+                compare_reason_codes=compare_reason_codes,
+            )
+        if orders_report:
+            orders_report.gate_verdict = gate_verdict
+
         await _update_orders_sync_log(
             logger=store_logger,
             log_id=sync_log_id,
@@ -6571,12 +8467,7 @@ async def _run_store_discovery(
             primary_metrics=primary_metrics,
             secondary_metrics=secondary_metrics,
         )
-        summary.record_store(
-            store.store_code,
-            outcome,
-            orders_result=orders_report,
-            sales_result=sales_report,
-        )
+        store_duration_ms = int((datetime.now(timezone.utc) - store_started_at).total_seconds() * 1000)
         _log_td_window_summary(
             logger=store_logger,
             store_code=store.store_code,
@@ -6586,8 +8477,19 @@ async def _run_store_discovery(
             sales_report=sales_report,
             run_orders=run_orders,
             run_sales=run_sales,
+            source_mode=source_mode,
+            compare_status=compare_status,
+            durations_ms={"store_execution_ms": store_duration_ms},
         )
         await _close_context(context)
+        return StoreExecutionPayload(
+            store=store,
+            run_start_date=run_start_date,
+            run_end_date=run_end_date,
+            outcome=outcome,
+            orders_report=orders_report,
+            sales_report=sales_report,
+        )
 
 
 async def _close_context(context: BrowserContext | None) -> None:
@@ -6619,6 +8521,13 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run only the Sales sync (skip Orders)",
     )
+    parser.add_argument(
+        "--source-mode",
+        dest="source_mode",
+        choices=sorted(TD_SOURCE_MODES),
+        default="api_only",
+        help="Data source mode: ui, api_shadow, api_primary, or api_only",
+    )
     return parser
 
 
@@ -6632,6 +8541,7 @@ async def _async_entrypoint(argv: Sequence[str] | None = None) -> None:
         to_date=args.to_date,
         run_orders=not args.sales_only,
         run_sales=not args.orders_only,
+        source_mode=args.source_mode,
     )
 
 

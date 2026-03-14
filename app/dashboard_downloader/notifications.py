@@ -535,7 +535,6 @@ def _normalize_output_status(status: str | None) -> str:
         "ok": "success",
         "success": "success",
         "warning": "success_with_warnings",
-        "warn": "success_with_warnings",
         "success_with_warnings": "success_with_warnings",
         "partial": "partial",
         "skipped": "partial",
@@ -575,7 +574,6 @@ def _normalize_uc_status(status: str | None) -> str:
     mapping = {
         "ok": "success",
         "warning": "success_with_warnings",
-        "warn": "success_with_warnings",
         "error": "failed",
         "failed": "failed",
         "success": "success",
@@ -1702,6 +1700,9 @@ def _build_td_orders_context(
                 "store_code": store_code,
                 "status": _normalize_output_status(store.get("status")),
                 "message": store.get("message"),
+                "data_source_decision": store.get("data_source_decision") or "ui",
+                "ingest_status": store.get("ingest_status") or ("failed" if store.get("status") in {"error", "warning"} else "success"),
+                "failure_stage": store.get("failure_stage"),
                 "orders_status": orders_status,
                 "orders_status_conflict": orders_status_conflict,
                 "orders_filenames": orders.get("filenames") or [],
@@ -2253,6 +2254,9 @@ def _td_summary_text_from_payload(run_data: Mapping[str, Any]) -> str:
             dropped_count = _count(report, "dropped_rows_count", "dropped_rows")
             base = [
                 f"- {store.get('store_code') or 'UNKNOWN'} — {status_label}",
+                f"  data_source_decision: {store.get('data_source_decision') or 'ui'}",
+                f"  ingest_status: {store.get('ingest_status') or ('failed' if status in {'failed', 'success_with_warnings'} else 'success')}",
+                f"  failure_stage: {store.get('failure_stage') or 'none'}",
                 f"  rows_downloaded: {rows_downloaded}",
                 f"  rows_ingested: {rows_ingested}",
                 f"  inserted: {inserted}",

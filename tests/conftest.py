@@ -34,6 +34,9 @@ def _default_system_config_rows(secret_key: str) -> dict[str, str]:
         "ETL_HEADLESS": "true",
         "pipeline_skip_dom_logging": "false",
         "skip_lead_assignment": "false",
+        "ETL_STEP_TIMEOUT_SECONDS": "30",
+        "PDF_RENDER_TIMEOUT_SECONDS": "30",
+        "SKIP_UC_Pending_Delivery": "false",
     }
     rows["TD_GLOBAL_PASSWORD"] = encrypt_secret(secret_key, "change-me-global-password")
     rows["REPORT_EMAIL_SMTP_PASSWORD"] = encrypt_secret(secret_key, "change-me-smtp-password")

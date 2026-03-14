@@ -142,7 +142,7 @@ async def persist_dashboard_summary(
         _log(
             logger=logger,
             store_code=dashboard_data.get("store_code"),
-            status="warn",
+            status="warning",
             message="database url missing; skipping dashboard persistence",
         )
         return
@@ -152,7 +152,7 @@ async def persist_dashboard_summary(
         _log(
             logger=logger,
             store_code=None,
-            status="warn",
+            status="warning",
             message="store_code missing in dashboard data; skipping persist",
         )
         return
@@ -162,7 +162,7 @@ async def persist_dashboard_summary(
         _log(
             logger=logger,
             store_code=store_code,
-            status="warn",
+            status="warning",
             message="dashboard_date missing; skipping persist",
         )
         return

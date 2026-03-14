@@ -139,3 +139,30 @@ orders_sync_log = sa.Table(
         "updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")
     ),
 )
+
+
+td_sync_compare_log = sa.Table(
+    "td_sync_compare_log",
+    metadata,
+    sa.Column("id", sa.BigInteger(), primary_key=True, autoincrement=True),
+    sa.Column("run_id", sa.String(length=64), nullable=False),
+    sa.Column("run_env", sa.String(length=32), nullable=False),
+    sa.Column("store_code", sa.String(length=8), nullable=False),
+    sa.Column("from_date", sa.Date(), nullable=False),
+    sa.Column("to_date", sa.Date(), nullable=False),
+    sa.Column("source_mode", sa.String(length=16), nullable=False),
+    sa.Column("total_rows", sa.BigInteger()),
+    sa.Column("matched_rows", sa.BigInteger()),
+    sa.Column("missing_in_api", sa.BigInteger()),
+    sa.Column("missing_in_ui", sa.BigInteger()),
+    sa.Column("amount_mismatches", sa.BigInteger()),
+    sa.Column("status_mismatches", sa.BigInteger()),
+    sa.Column("consecutive_pass_windows", sa.Integer()),
+    sa.Column("api_ready", sa.Boolean()),
+    sa.Column("decision", sa.Text()),
+    sa.Column("reason", sa.Text()),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    sa.Index("ix_td_sync_compare_log_run_id_store_code", "run_id", "store_code"),
+    sa.Index("ix_td_sync_compare_log_store_code_from_date_to_date", "store_code", "from_date", "to_date"),
+)

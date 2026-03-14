@@ -21,10 +21,10 @@ def audit_bucket(
 
     if single_session:
         if ingest_error:
-            status = "warn"
+            status = "warning"
             message = "ingest error detected in single-session mode"
         elif ingested_rows == 0:
-            status = "warn"
+            status = "warning"
             message = "ingest produced zero rows in single-session mode"
         elif merged_rows != ingested_rows:
             status = "ok"
@@ -33,7 +33,7 @@ def audit_bucket(
             status = "ok"
             message = "counts match"
     else:
-        status = "ok" if merged_rows == ingested_rows else "warn"
+        status = "ok" if merged_rows == ingested_rows else "warning"
         message = "counts match" if status == "ok" else "ingest differs from merged"
 
     logged_counts = {
