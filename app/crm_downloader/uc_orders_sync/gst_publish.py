@@ -772,13 +772,17 @@ async def publish_uc_gst_payments_to_sales(
         )
         sample_missing_keys = metrics.preflight_diagnostics["sample_missing_keys"]
         coverage = Decimal(str(metrics.preflight_diagnostics["coverage"])) if order_keys else Decimal("1")
-        LOGGER.info(
-            "gst_publish_payment_key_coverage %s",
-            json.dumps(
+        preflight_log_payload: dict[str, Any] = {
+            "total_archive_payment_keys": metrics.preflight_diagnostics["total_archive_payment_keys"],
+            "matched_parent_keys": metrics.preflight_diagnostics["matched_parent_keys"],
+            "missing_parent_keys": metrics.preflight_diagnostics["missing_parent_keys"],
+            "coverage": metrics.preflight_diagnostics["coverage"],
+        }
+        if coverage == Decimal("1") and missing_parent_count == 0:
+            preflight_log_payload["preflight_status"] = "full_coverage"
+        else:
+            preflight_log_payload.update(
                 {
-                    "total_archive_payment_keys": metrics.preflight_diagnostics["total_archive_payment_keys"],
-                    "matched_parent_keys": metrics.preflight_diagnostics["matched_parent_keys"],
-                    "missing_parent_keys": metrics.preflight_diagnostics["missing_parent_keys"],
                     "sample_unmatched_archive_keys": sample_missing_keys,
                     "sample_parent_lookup_keys_not_in_archive_payment_set": metrics.preflight_diagnostics[
                         "sample_parent_lookup_keys_not_in_archive_payment_set"
@@ -786,9 +790,11 @@ async def publish_uc_gst_payments_to_sales(
                     "sample_parent_lookup_keys_not_in_archive_payment_set_derivation": metrics.preflight_diagnostics[
                         "sample_parent_lookup_keys_not_in_archive_payment_set_derivation"
                     ],
-                },
-                sort_keys=True,
-            ),
+                }
+            )
+        LOGGER.info(
+            "gst_publish_payment_key_coverage %s",
+            json.dumps(preflight_log_payload, sort_keys=True),
         )
 
         if order_keys and parent_match_count == 0:
