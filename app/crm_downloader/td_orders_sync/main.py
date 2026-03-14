@@ -493,7 +493,7 @@ async def main(
     store_codes: Sequence[str] | None = None,
     run_orders: bool = True,
     run_sales: bool = True,
-    source_mode: str = "ui",
+    source_mode: str = "api_only",
 ) -> None:
     """Run the TD Orders sync flow (login + iframe historical orders download)."""
 
@@ -505,7 +505,7 @@ async def main(
     if from_date and from_date > run_end_date:
         raise ValueError(f"from_date ({from_date}) must be on or before to_date ({run_end_date})")
     logger = get_logger(run_id=resolved_run_id)
-    source_mode = (source_mode or "ui").strip().lower()
+    source_mode = (source_mode or "api_only").strip().lower()
     if source_mode not in TD_SOURCE_MODES:
         raise ValueError(f"source_mode must be one of {sorted(TD_SOURCE_MODES)}, got {source_mode!r}")
     ingest_source = _ingest_source_for_mode(source_mode)
@@ -1034,7 +1034,7 @@ class StoreReport:
     compare_metrics: dict[str, Any] = field(default_factory=dict)
     api_request_metadata: list[dict[str, Any]] = field(default_factory=list)
     auth_diagnostics: dict[str, Any] = field(default_factory=dict)
-    source_mode: str = "ui"
+    source_mode: str = "api_only"
     decision_log: dict[str, str] = field(default_factory=dict)
     gate_verdict: dict[str, Any] = field(default_factory=dict)
     message: str | None = None
@@ -1133,7 +1133,7 @@ class TdOrdersDiscoverySummary:
         sales_result: StoreReport | None = None,
     ) -> None:
         resolved_data_source_decision = outcome.data_source_decision or _resolve_data_source_decision(
-            source_mode=(orders_result.source_mode if orders_result else "ui"),
+            source_mode=(orders_result.source_mode if orders_result else "api_only"),
             report=orders_result,
         )
         resolved_ingest_status = outcome.ingest_status or _resolve_store_ingest_status(
@@ -1698,7 +1698,7 @@ class TdOrdersDiscoverySummary:
                 "data_source_decision": (
                     outcome.data_source_decision
                     if outcome and outcome.data_source_decision
-                    else _resolve_data_source_decision(source_mode=orders_report.source_mode if orders_report else "ui", report=orders_report)
+                    else _resolve_data_source_decision(source_mode=orders_report.source_mode if orders_report else "api_only", report=orders_report)
                 ),
                 "data_ingest_status": (
                     outcome.ingest_status
@@ -1846,7 +1846,7 @@ class TdOrdersDiscoverySummary:
                     "data_source_decision": (
                         outcome.data_source_decision
                         if outcome and outcome.data_source_decision
-                        else _resolve_data_source_decision(source_mode=orders_report.get("source_mode") or "ui", report=None)
+                        else _resolve_data_source_decision(source_mode=orders_report.get("source_mode") or "api_only", report=None)
                     ),
                     "data_ingest_status": (
                         outcome.ingest_status if outcome and outcome.ingest_status else _resolve_store_ingest_status(
@@ -2517,7 +2517,7 @@ async def _flush_deferred_orders_sync_logs(
             phase="orders_sync_log",
             message="Resolved TD outcome dimensions for deferred orders sync log update",
             store_code=entry.store.store_code,
-            data_source_decision=_resolve_data_source_decision(source_mode=orders_report.source_mode if orders_report else "ui", report=orders_report),
+            data_source_decision=_resolve_data_source_decision(source_mode=orders_report.source_mode if orders_report else "api_only", report=orders_report),
             ingest_status=_resolve_store_ingest_status(orders_report=orders_report, sales_report=sales_report),
             failure_stage=_resolve_failure_stage(orders_report=orders_report, sales_report=sales_report),
         )
@@ -2626,7 +2626,7 @@ def _resolve_sync_log_status(
     sales_report: StoreReport | None,
     run_orders: bool,
     run_sales: bool,
-    source_mode: str = "ui",
+    source_mode: str = "api_only",
 ) -> str:
     def _normalize_report_status(report: StoreReport | None, *, default: str) -> str:
         if report is None or not report.status:
@@ -6631,7 +6631,7 @@ async def _execute_sales_flow(
     summary: TdOrdersDiscoverySummary,
     sales_only_mode: bool = False,
     sync_log_id: int | None = None,
-    source_mode: str = "ui",
+    source_mode: str = "api_only",
 ) -> StoreReport:
     sales_status: str | None = None
     sales_message: str | None = None
@@ -8553,7 +8553,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--source-mode",
         dest="source_mode",
         choices=sorted(TD_SOURCE_MODES),
-        default="ui",
+        default="api_only",
         help="Data source mode: ui, api_shadow, api_primary, or api_only",
     )
     return parser
