@@ -96,6 +96,7 @@ class GstApiExtract:
     delivered_rows_matched_gst: int = 0
     delivered_payment_rows_produced: int = 0
     gst_orders_without_payments: int = 0
+    invoice_retry_count: int = 0
 
 
 def _record_skip(extract: GstApiExtract, *, order_code: str, reason: str) -> None:
@@ -419,13 +420,14 @@ async def collect_gst_orders_via_api(
             if booking_row.get("suggestions"):
                 base_row["instructions"] = booking_row.get("suggestions")
 
-        invoice_html = await _fetch_invoice_html_with_retries(
+        invoice_html, invoice_retries = await _fetch_invoice_html_with_retries(
             page=page,
             booking_id=booking_id,
             store_code=store_code,
             order_code=order_code,
             logger=logger,
         )
+        extract.invoice_retry_count += invoice_retries
         if not invoice_html:
             _record_skip(extract, order_code=order_code, reason="invoice_fetch_failed")
             # Keep the base row so aggregate order reporting still includes the order,
@@ -477,6 +479,7 @@ async def collect_gst_orders_via_api(
         delivered_rows_matched_gst=extract.delivered_rows_matched_gst,
         delivered_payment_rows_produced=extract.delivered_payment_rows_produced,
         gst_orders_without_payments=extract.gst_orders_without_payments,
+        invoice_retry_count=extract.invoice_retry_count,
         skipped_order_counters=extract.skipped_order_counters,
     )
     return extract
