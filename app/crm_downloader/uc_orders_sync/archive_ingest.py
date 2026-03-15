@@ -360,6 +360,22 @@ def _normalize_base_row(source: Mapping[str, Any], *, source_file: str, run_id: 
     return (None if rejects else normalized), remarks, rejects
 
 
+def _service_allows_blank_item_name(service: str | None) -> bool:
+    if not service:
+        return False
+    service_upper = service.upper()
+    normalized = re.sub(r"\s+", " ", service_upper).strip()
+    wash_patterns = (
+        "WASH & IRON",
+        "WASH AND IRON",
+        "WASH-IRON",
+        "WASH & FOLD",
+        "WASH AND FOLD",
+        "WASH-FOLD",
+    )
+    return normalized.startswith("LAUNDRY") or any(pattern in normalized for pattern in wash_patterns)
+
+
 def _normalize_order_details_row(source: Mapping[str, Any], *, source_file: str, run_id: str, run_date: datetime, cost_center: str | None) -> tuple[dict[str, Any] | None, list[str], list[str]]:
     remarks: list[str] = []
     rejects: list[str] = []
@@ -373,8 +389,7 @@ def _normalize_order_details_row(source: Mapping[str, Any], *, source_file: str,
     item_name = _non_blank_text(source.get("item_name"), collapse_spaces=True)
     if not service:
         remarks.append(f"{REASON_MISSING_REQUIRED_FIELD}:service")
-    service_is_laundry = bool(service and service.upper().startswith("LAUNDRY"))
-    if not item_name and not service_is_laundry:
+    if not item_name and not _service_allows_blank_item_name(service):
         remarks.append(f"{REASON_MISSING_REQUIRED_FIELD}:item_name")
     if cost_center is None:
         remarks.append("missing_cost_center_mapping")

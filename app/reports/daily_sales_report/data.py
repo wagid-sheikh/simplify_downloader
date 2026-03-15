@@ -172,10 +172,15 @@ def _build_orders_count_agg(orders: sa.Table, ranges: dict[str, datetime]) -> sa
 
 
 def _build_orders_sync_agg(orders_sync_log: sa.Table) -> sa.Subquery:
+    effective_pulled_at = sa.func.coalesce(
+        orders_sync_log.c.orders_pulled_at,
+        orders_sync_log.c.updated_at,
+        orders_sync_log.c.created_at,
+    )
     return (
         sa.select(
             orders_sync_log.c.cost_center.label("cost_center"),
-            sa.func.max(orders_sync_log.c.orders_pulled_at).label("orders_pulled_at"),
+            sa.func.max(effective_pulled_at).label("orders_pulled_at"),
         )
         .group_by(orders_sync_log.c.cost_center)
         .subquery()
@@ -331,6 +336,8 @@ async def fetch_daily_sales_report(
         "orders_sync_log",
         sa.column("cost_center"),
         sa.column("orders_pulled_at"),
+        sa.column("updated_at"),
+        sa.column("created_at"),
     )
     sales = sa.table(
         "sales",
@@ -547,7 +554,15 @@ async def fetch_daily_sales_report(
 
             orders_pulled_at = entry["orders_pulled_at"]
             orders_sync_time = None
+            if isinstance(orders_pulled_at, str):
+                normalized_ts = orders_pulled_at.strip().replace("Z", "+00:00")
+                try:
+                    orders_pulled_at = datetime.fromisoformat(normalized_ts)
+                except ValueError:
+                    orders_pulled_at = None
             if orders_pulled_at:
+                if getattr(orders_pulled_at, "tzinfo", None) is None:
+                    orders_pulled_at = orders_pulled_at.replace(tzinfo=tz)
                 orders_sync_time = orders_pulled_at.astimezone(tz).strftime("%H:%M")
 
             rows.append(
