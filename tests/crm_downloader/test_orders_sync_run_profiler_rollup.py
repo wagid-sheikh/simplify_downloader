@@ -231,3 +231,15 @@ def test_extract_uc_warning_count_from_summary() -> None:
     assert _extract_uc_warning_count_from_summary(summary, store_code="test") == 7
     assert _extract_uc_warning_count_from_summary(summary, store_code="missing") == 0
 
+
+def test_profiler_top_level_status_failed_when_any_window_fails() -> None:
+    status_counts = {
+        "success": 3,
+        "success_with_warnings": 1,
+        "partial": 0,
+        "failed": 1,
+        "skipped": 0,
+    }
+
+    assert _rollup_overall_status(status_counts) == "failed"
+    assert _select_summary_overall_status(status_counts) == "failed"
