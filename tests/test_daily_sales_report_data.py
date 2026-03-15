@@ -65,7 +65,9 @@ def _create_tables(database_url: str) -> None:
                 """
                 CREATE TABLE orders_sync_log (
                     cost_center TEXT,
-                    orders_pulled_at TIMESTAMP
+                    orders_pulled_at TIMESTAMP,
+                    updated_at TIMESTAMP,
+                    created_at TIMESTAMP
                 )
                 """
             )
@@ -188,3 +190,73 @@ async def test_fetch_daily_sales_report_missed_leads_td_only(tmp_path, monkeypat
             ],
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_orders_sync_uses_updated_at_fallback(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_sync_fallback.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 1, 19)
+
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO cost_center (cost_center, description, target_type, is_active)
+                VALUES ('CC-TD', 'TD Cost Center', 'value', 1)
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders_sync_log (cost_center, orders_pulled_at, updated_at, created_at)
+                VALUES ('CC-TD', NULL, '2026-01-19 07:25:00', '2026-01-19 07:10:00')
+                """
+            )
+        )
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    td_row = next(row for row in report.rows if row.cost_center == "CC-TD")
+    assert td_row.orders_sync_time == "07:25"
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_orders_sync_uses_created_at_string_fallback(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_sync_created_fallback.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 1, 19)
+
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO cost_center (cost_center, description, target_type, is_active)
+                VALUES ('CC-TD', 'TD Cost Center', 'value', 1)
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders_sync_log (cost_center, orders_pulled_at, updated_at, created_at)
+                VALUES ('CC-TD', NULL, NULL, '2026-01-19T05:45:00Z')
+                """
+            )
+        )
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    td_row = next(row for row in report.rows if row.cost_center == "CC-TD")
+    assert td_row.orders_sync_time == "11:15"

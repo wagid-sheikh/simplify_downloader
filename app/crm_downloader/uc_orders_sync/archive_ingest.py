@@ -373,12 +373,7 @@ def _normalize_order_details_row(source: Mapping[str, Any], *, source_file: str,
     item_name = _non_blank_text(source.get("item_name"), collapse_spaces=True)
     if not service:
         remarks.append(f"{REASON_MISSING_REQUIRED_FIELD}:service")
-    service_upper = service.upper() if service else ""
-    service_is_laundry = bool(
-        service_upper.startswith("LAUNDRY")
-        or "WASH & IRON" in service_upper
-        or "WASH & FOLD" in service_upper
-    )
+    service_is_laundry = _service_allows_blank_item_name(service)
     if not item_name and not service_is_laundry:
         remarks.append(f"{REASON_MISSING_REQUIRED_FIELD}:item_name")
     if cost_center is None:
@@ -410,6 +405,29 @@ def _normalize_order_details_row(source: Mapping[str, Any], *, source_file: str,
     if not normalized["line_hash"]:
         return None, remarks, [REASON_MISSING_LINE_HASH]
     return normalized, remarks, rejects
+
+
+def _service_allows_blank_item_name(service: str | None) -> bool:
+    if not service:
+        return False
+    normalized = re.sub(r"[^a-z0-9]+", " ", service.casefold()).strip()
+    if not normalized:
+        return False
+    normalized = re.sub(r"\s+", " ", normalized)
+
+    allowed_exact = {
+        "laundry",
+        "premium laundry kg",
+        "standard iron",
+    }
+    if normalized in allowed_exact:
+        return True
+
+    return (
+        normalized.startswith("laundry")
+        or "wash iron" in normalized
+        or "wash fold" in normalized
+    )
 
 
 def _normalize_payment_row(source: Mapping[str, Any], *, source_file: str, run_id: str, run_date: datetime, cost_center: str | None) -> tuple[dict[str, Any] | None, list[str], list[str]]:
