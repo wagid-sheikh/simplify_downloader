@@ -3,7 +3,8 @@ from __future__ import annotations
 import io
 import json
 
-from app.dashboard_downloader.json_logger import JsonLogger
+from app.dashboard_downloader import json_logger
+from app.dashboard_downloader.json_logger import JsonLogger, get_logger
 
 
 def test_json_logger_truncates_oversized_payloads() -> None:
@@ -91,3 +92,21 @@ def test_json_logger_emits_suppressed_normalization_summary_per_file() -> None:
     assert summary["message"] == "normalization_events_suppressed"
     assert summary["source_file"] == "base.xlsx"
     assert summary["normalization_events_suppressed"] == 2
+
+
+def test_get_logger_is_idempotent_for_same_run_id(monkeypatch) -> None:
+    stream = io.StringIO()
+    monkeypatch.setattr(json_logger, "_LOGGER_REGISTRY", {})
+    monkeypatch.setattr(json_logger.sys, "stdout", stream)
+    monkeypatch.setattr(json_logger.JsonLogger, "_resolve_path", staticmethod(lambda _raw: None))
+
+    first = get_logger(run_id="same-run")
+    second = get_logger(run_id="same-run")
+
+    events = [json.loads(line) for line in stream.getvalue().strip().splitlines() if line.strip()]
+    assert first is second
+    assert len(events) == 1
+    assert events[0]["phase"] == "logger"
+    assert events[0]["message"] == "Initialized JSON logger"
+
+    first.close()

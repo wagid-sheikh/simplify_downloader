@@ -77,6 +77,7 @@ def _default_log_file_path() -> tuple[str | None, str | None]:
 
 
 _AUTO = object()
+_LOGGER_REGISTRY: dict[tuple[int, str], "JsonLogger"] = {}
 
 
 class JsonLogger:
@@ -103,7 +104,11 @@ class JsonLogger:
         )
         self._owns_file_handle = self.file_handle is not None
         self._owns_state = True
-        self._state: Dict[str, bool] = {"closed": False}
+        self._state: Dict[str, bool] = {
+            "closed": False,
+            "startup_event_emitted": False,
+        }
+        self._registry_key: tuple[int, str] | None = None
         self.aggregator = None
         self.max_event_bytes = DEFAULT_MAX_EVENT_BYTES
         self._status_normalization_filter = StatusNormalizationSuppressionFilter()
@@ -234,7 +239,14 @@ class JsonLogger:
     def error(self, *, phase: str, message: str, **fields: Any) -> None:
         self.info(phase=phase, status="error", message=message, **fields)
 
-    def log_startup_event(self) -> None:
+    def has_file_handler(self) -> bool:
+        if self.closed:
+            return False
+        return self.file_handle is not None or self.stream is not None
+
+    def log_startup_event(self, *, force: bool = False) -> None:
+        if self._state.get("startup_event_emitted") and not force:
+            return
         self.info(
             phase="logger",
             message="Initialized JSON logger",
@@ -242,6 +254,7 @@ class JsonLogger:
             log_file_source=self.log_file_path_source,
             run_id=self.run_id,
         )
+        self._state["startup_event_emitted"] = True
 
     def close(self) -> None:
         if not self._owns_state:
@@ -252,6 +265,11 @@ class JsonLogger:
         if self.file_handle and self._owns_file_handle:
             self.file_handle.close()
             self.file_handle = None
+        if self._registry_key is not None:
+            existing = _LOGGER_REGISTRY.get(self._registry_key)
+            if existing is self:
+                _LOGGER_REGISTRY.pop(self._registry_key, None)
+            self._registry_key = None
 
     def __del__(self) -> None:  # pragma: no cover
         try:
@@ -260,9 +278,17 @@ class JsonLogger:
             pass
 
 
-def get_logger(run_id: Optional[str] = None) -> JsonLogger:
-    logger = JsonLogger(run_id=run_id)
-    logger.log_startup_event()
+def get_logger(run_id: Optional[str] = None, *, force: bool = False) -> JsonLogger:
+    resolved_run_id = run_id or new_run_id()
+    registry_key = (os.getpid(), resolved_run_id)
+    existing_logger = _LOGGER_REGISTRY.get(registry_key)
+    if existing_logger and not existing_logger.closed and existing_logger.has_file_handler() and not force:
+        return existing_logger
+
+    logger = JsonLogger(run_id=resolved_run_id)
+    logger._registry_key = registry_key
+    _LOGGER_REGISTRY[registry_key] = logger
+    logger.log_startup_event(force=force)
     return logger
 
 
