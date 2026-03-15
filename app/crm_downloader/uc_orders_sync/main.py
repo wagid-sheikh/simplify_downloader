@@ -580,6 +580,13 @@ def _classify_store_window_status(outcome: StoreOutcome | None) -> str:
         return "failed"
     if "partial_extraction" in reason_codes:
         return "partial"
+    stage_statuses = {
+        str(status).strip().lower()
+        for status in (outcome.stage_statuses or {}).values()
+        if str(status).strip()
+    }
+    if "failed" in stage_statuses or "error" in stage_statuses:
+        return "partial"
     if (
         "footer_baseline_unavailable" in reason_codes
         or _has_non_trivial_gst_publish_warning(outcome)
@@ -731,10 +738,16 @@ class UcOrdersDiscoverySummary:
         self.mark_phase("store", outcome.status)
 
     def overall_status(self) -> str:
+        store_phase = self.phases.get("store", {})
+        if int(store_phase.get("error", 0) or 0) > 0:
+            return "failed"
         classifications = [
             _classify_store_window_status(outcome)
             for outcome in self.store_outcomes.values()
         ]
+        missing_windows = self._window_summary().get("missing_windows", 0)
+        if int(missing_windows or 0) > 0:
+            return "failed"
         if any(state == "failed" for state in classifications):
             return "failed"
         if any(state == "partial" for state in classifications):

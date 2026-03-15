@@ -291,6 +291,8 @@ async def test_archive_orchestration_ingest_exception_sets_reason_codes(
     assert publish_orders_mock.await_count == 0
     assert publish_line_items_mock.await_count == 0
     assert publish_sales_mock.await_count == 0
+    assert summary.overall_status() == "partial"
+
 
 
 def test_resolve_uc_archive_extraction_mode_rejects_ui_flags(
@@ -393,3 +395,35 @@ async def test_run_store_discovery_warning_path_does_not_raise_type_error(
     outcome = summary.store_outcomes["A102"]
     assert outcome.status == "warning"
     assert update_calls["count"] >= 1
+
+
+def test_run_summary_final_status_not_success_when_windows_missing_or_errors() -> None:
+    summary_missing = uc_main.UcOrdersDiscoverySummary(
+        run_id="run-summary-1",
+        run_env="test",
+        report_date=date(2025, 1, 1),
+        report_end_date=date(2025, 1, 1),
+        started_at=datetime.now(timezone.utc),
+        store_codes=["A1", "A2"],
+    )
+    summary_missing.record_store(
+        "A1",
+        uc_main.StoreOutcome(status="ok", message="done"),
+    )
+
+    summary_store_error = uc_main.UcOrdersDiscoverySummary(
+        run_id="run-summary-2",
+        run_env="test",
+        report_date=date(2025, 1, 1),
+        report_end_date=date(2025, 1, 1),
+        started_at=datetime.now(timezone.utc),
+        store_codes=["A1"],
+    )
+    summary_store_error.mark_phase("store", "error")
+    summary_store_error.record_store(
+        "A1",
+        uc_main.StoreOutcome(status="ok", message="done"),
+    )
+
+    assert summary_missing.overall_status() == "failed"
+    assert summary_store_error.overall_status() == "failed"
