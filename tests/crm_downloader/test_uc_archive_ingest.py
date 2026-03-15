@@ -569,3 +569,58 @@ async def test_uc_archive_order_details_laundry_allows_blank_item_name(tmp_path:
         ).one()
 
     assert "missing_required_field:item_name" not in (row.ingest_remarks or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service_name",
+    [
+        "Wash & Iron",
+        "Wash & Fold",
+    ],
+)
+async def test_uc_archive_order_details_wash_services_allow_blank_item_name(tmp_path: Path, service_name: str) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'db_wash_item_name.sqlite'}"
+    await _create_tables(db_url)
+
+    base = _write_xlsx(
+        tmp_path / "base_wash_item.xlsx",
+        ["store_code", "order_code", "pickup", "delivery", "customer_name", "customer_phone", "address", "payment_text", "instructions", "customer_source", "status", "status_date"],
+        [["UC610", "ORD-31", "", "", "", "", "", "", "", "", "", ""]],
+    )
+    details = _write_xlsx(
+        tmp_path / "details_wash_item.xlsx",
+        ["store_code", "order_code", "order_mode", "order_datetime", "pickup_datetime", "delivery_datetime", "service", "hsn_sac", "item_name", "rate", "quantity", "weight", "addons", "amount"],
+        [["UC610", "ORD-31", "", "", "", "", service_name, "", "", "10", "1", "1", "", "10"]],
+    )
+    payments = _write_xlsx(
+        tmp_path / "payments_wash_item.xlsx",
+        ["store_code", "order_code", "payment_mode", "amount", "payment_date", "transaction_id"],
+        [["UC610", "ORD-31", "Cash", "10", "2025-01-01", "TX-31"]],
+    )
+
+    result = await ingest_uc_archive_excels(
+        database_url=db_url,
+        run_id="run-wash-item",
+        run_date=datetime(2025, 1, 7, tzinfo=timezone.utc),
+        store_code=None,
+        cost_center="CC01",
+        base_order_info_path=base,
+        order_details_path=details,
+        payment_details_path=payments,
+        logger=get_logger("test_uc_archive_wash_item_name"),
+    )
+
+    assert result.files[FILE_ORDER_DETAILS].inserted == 1
+    assert result.files[FILE_ORDER_DETAILS].warnings == 0
+
+    async with session_scope(db_url) as session:
+        row = (
+            await session.execute(
+                sa.text(
+                    "SELECT ingest_remarks FROM stg_uc_archive_order_details WHERE store_code='UC610' AND order_code='ORD-31'"
+                )
+            )
+        ).one()
+
+    assert "missing_required_field:item_name" not in (row.ingest_remarks or "")
