@@ -57,3 +57,20 @@ poetry run python -m app db upgrade
 ```bash
 poetry run pytest
 ```
+
+## Orders sync profiler status semantics (alerting)
+
+The `orders_sync_run_profiler` summary `overall_status` is intentionally
+severity-driven for downstream alerting:
+
+- `failed`: at least one failed window, or missing required windows when missing
+  windows are not allowed.
+- `partial`: no failures, but at least one partial window.
+- `success_with_warnings`: no failed/partial windows, but at least one window
+  completed with warning-class outcome (`success_with_warnings`).
+- `success`: all completed windows are clean success/skipped with no warning-class
+  outcomes.
+
+This policy means warning windows are promoted to top-level
+`success_with_warnings` so alerts and dashboards can reliably detect
+non-clean runs without parsing per-window payloads.

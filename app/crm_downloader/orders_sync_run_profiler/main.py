@@ -1028,6 +1028,16 @@ def _rollup_overall_status(status_counts: Mapping[str, int]) -> str:
     return "success"
 
 
+def _select_summary_overall_status(status_counts: Mapping[str, int]) -> str:
+    """Return the top-level run status used in profiler summary + alerting.
+
+    Policy: promote the summary status to ``success_with_warnings`` when any
+    window lands in warning-class outcomes but no partial/failed window exists.
+    """
+
+    return _rollup_overall_status(status_counts)
+
+
 UNIFIED_METRIC_FIELDS = (
     "rows_downloaded",
     "rows_ingested",
@@ -1768,7 +1778,7 @@ async def main(
         _sum_unified_metrics(secondary_totals, secondary_metrics)
         _accumulate_ingestion_totals(grand_ingestion_totals, {"total": result.ingestion_totals})
         _merge_row_facts(row_facts, result.row_facts)
-    overall_status = _rollup_overall_status(total_status_counts)
+    overall_status = _select_summary_overall_status(total_status_counts)
     warning_windows_total = int(total_status_counts.get("success_with_warnings", 0) or 0)
     if warning_windows_total > 0 and not any(
         entry.startswith("WINDOW_WARNINGS:") for entry in warning_messages

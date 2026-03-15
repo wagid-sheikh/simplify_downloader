@@ -9,6 +9,7 @@ from app.crm_downloader.orders_sync_run_profiler.main import (
     _merge_status_counts,
     _resolve_window_outcome_status,
     _rollup_overall_status,
+    _select_summary_overall_status,
 )
 
 
@@ -136,3 +137,27 @@ def test_ingestion_counts_merge_uses_summary_final_rows_for_totals() -> None:
     assert totals["final_rows"] == 28
     assert totals["final_inserted"] == 11
     assert totals["final_updated"] == 17
+
+
+def test_summary_overall_status_is_success_when_all_windows_clean() -> None:
+    status_counts = {
+        "success": 5,
+        "success_with_warnings": 0,
+        "partial": 0,
+        "failed": 0,
+        "skipped": 0,
+    }
+
+    assert _select_summary_overall_status(status_counts) == "success"
+
+
+def test_summary_overall_status_promotes_warning_windows() -> None:
+    status_counts = {
+        "success": 4,
+        "success_with_warnings": 2,
+        "partial": 0,
+        "failed": 0,
+        "skipped": 0,
+    }
+
+    assert _select_summary_overall_status(status_counts) == "success_with_warnings"
