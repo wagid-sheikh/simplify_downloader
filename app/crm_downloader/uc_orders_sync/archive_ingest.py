@@ -373,7 +373,12 @@ def _normalize_order_details_row(source: Mapping[str, Any], *, source_file: str,
     item_name = _non_blank_text(source.get("item_name"), collapse_spaces=True)
     if not service:
         remarks.append(f"{REASON_MISSING_REQUIRED_FIELD}:service")
-    service_is_laundry = bool(service and service.upper().startswith("LAUNDRY"))
+    service_upper = service.upper() if service else ""
+    service_is_laundry = bool(
+        service_upper.startswith("LAUNDRY")
+        or "WASH & IRON" in service_upper
+        or "WASH & FOLD" in service_upper
+    )
     if not item_name and not service_is_laundry:
         remarks.append(f"{REASON_MISSING_REQUIRED_FIELD}:item_name")
     if cost_center is None:
