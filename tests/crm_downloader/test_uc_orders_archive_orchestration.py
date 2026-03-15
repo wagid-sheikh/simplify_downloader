@@ -304,3 +304,92 @@ def test_resolve_uc_archive_extraction_mode_rejects_ui_flags(
     monkeypatch.setenv("UC_ARCHIVE_UI_ENABLED", "true")
     with pytest.raises(ValueError, match="no longer supported"):
         uc_main._resolve_uc_archive_extraction_mode()
+
+
+@pytest.mark.asyncio
+async def test_run_store_discovery_warning_path_does_not_raise_type_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    logger = JsonLogger(stream=io.StringIO(), log_file_path=None)
+    summary = uc_main.UcOrdersDiscoverySummary(
+        run_id="run-warning-1",
+        run_env="test",
+        report_date=date(2025, 1, 1),
+        report_end_date=date(2025, 1, 1),
+        started_at=datetime.now(timezone.utc),
+        store_codes=["A102"],
+    )
+    store = uc_main.UcStore(
+        store_code="A102",
+        store_name="Store C",
+        cost_center="CC03",
+        sync_config={
+            "urls": {
+                "home": "https://example.com/home",
+                "orders_link": "https://example.com/orders",
+                "login": "https://example.com/login",
+            },
+            "username": "user",
+            "password": "pass",
+        },
+    )
+
+    (tmp_path / "A102_storage_state.json").write_text("{}")
+
+    update_calls = {"count": 0}
+
+    async def strict_update_orders_sync_log(
+        *,
+        logger: JsonLogger,
+        log_id: int | None,
+        status: str | None = None,
+        orders_pulled_at: datetime | None = None,
+        error_message: str | None = None,
+        primary_metrics: dict[str, object] | None = None,
+        secondary_metrics: dict[str, object] | None = None,
+    ) -> None:
+        del logger, log_id, status, orders_pulled_at, error_message, primary_metrics, secondary_metrics
+        update_calls["count"] += 1
+
+    monkeypatch.setattr(
+        uc_main,
+        "config",
+        type("_Cfg", (), {"database_url": None, "pipeline_skip_dom_logging": True})(),
+    )
+    monkeypatch.setattr(uc_main, "default_profiles_dir", lambda: tmp_path)
+    monkeypatch.setattr(uc_main, "_resolve_uc_download_dir", lambda *_: tmp_path)
+    monkeypatch.setattr(uc_main, "_insert_orders_sync_log", AsyncMock(return_value=1))
+    monkeypatch.setattr(uc_main, "_update_orders_sync_log", strict_update_orders_sync_log)
+    monkeypatch.setattr(uc_main, "_assert_home_ready", AsyncMock(return_value=True))
+    monkeypatch.setattr(uc_main, "_navigate_to_gst_reports", AsyncMock(return_value=False))
+    monkeypatch.setattr(uc_main, "_try_direct_gst_reports", AsyncMock(return_value=(False, None)))
+    monkeypatch.setattr(uc_main, "_navigate_to_archive_orders", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        uc_main,
+        "collect_gst_orders_via_api",
+        AsyncMock(
+            return_value=uc_main.GstApiExtract(
+                gst_rows=[{"order_number": "UC-102"}],
+                base_rows=[{"order_code": "UC-102"}],
+                order_detail_rows=[],
+                payment_detail_rows=[],
+            )
+        ),
+    )
+
+    await uc_main._run_store_discovery(
+        browser=_FakeBrowser(),
+        store=store,
+        logger=logger,
+        run_env="test",
+        run_id="run-warning-1",
+        run_date=datetime.now(timezone.utc),
+        summary=summary,
+        from_date=date(2025, 1, 1),
+        to_date=date(2025, 1, 1),
+        download_timeout_ms=1000,
+    )
+
+    outcome = summary.store_outcomes["A102"]
+    assert outcome.status == "warning"
+    assert update_calls["count"] >= 1

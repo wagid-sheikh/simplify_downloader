@@ -4330,7 +4330,6 @@ async def _run_store_discovery(
             error_message=resolved_message,
             primary_metrics=primary_metrics,
             secondary_metrics=secondary_metrics,
-            warning_count=outcome.warning_count,
         )
         log_event(
             logger=logger,
