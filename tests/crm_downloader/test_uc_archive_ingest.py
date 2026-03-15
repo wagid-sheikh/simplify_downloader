@@ -581,6 +581,8 @@ async def test_uc_archive_order_details_laundry_allows_blank_item_name(tmp_path:
         "LAUNDRY — WASH + FOLD",
         "Premium Laundry Kg",
         "Standard Iron",
+        "Dry cleaning",
+        "Laundry - Dry cleaning, Wash and Fold",
     ],
 )
 async def test_uc_archive_order_details_wash_services_allow_blank_item_name(tmp_path: Path, service_name: str) -> None:
