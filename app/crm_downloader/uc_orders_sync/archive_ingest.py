@@ -410,13 +410,22 @@ def _normalize_order_details_row(source: Mapping[str, Any], *, source_file: str,
 def _service_allows_blank_item_name(service: str | None) -> bool:
     if not service:
         return False
-    normalized = re.sub(r"[^a-z0-9]+", " ", service.casefold()).strip()
-    if not normalized:
+    normalized_tokens = re.findall(r"[a-z0-9]+", service.casefold())
+    if not normalized_tokens:
         return False
-    normalized = re.sub(r"\s+", " ", normalized)
+    normalized = " ".join(normalized_tokens)
+
+    if "laundry" in normalized_tokens:
+        return True
+
+    token_set = set(normalized_tokens)
+    if "wash" in token_set and ({"iron", "fold"} & token_set):
+        return True
+
+    if "dry" in token_set and "cleaning" in token_set:
+        return True
 
     allowed_exact = {
-        "laundry",
         "premium laundry kg",
         "standard iron",
     }
