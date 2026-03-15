@@ -660,17 +660,28 @@ def _has_non_trivial_gst_publish_warning(outcome: StoreOutcome | None) -> bool:
     publish_reason_codes = _gst_publish_reason_codes(outcome)
     if "gst_lifecycle_parent_coverage_near_zero" in publish_reason_codes or "preflight_parent_coverage_near_zero" in publish_reason_codes:
         return True
-    for publish_metrics in _iter_gst_publish_metrics(outcome):
-        warnings = publish_metrics.get("warnings")
-        skipped = publish_metrics.get("skipped")
-        if (
-            isinstance(warnings, int)
-            and isinstance(skipped, int)
-            and warnings >= 5
-            and skipped >= 5
-        ):
-            return True
     return False
+
+
+def _archive_ingest_warning_count_for_stage_metrics(
+    stage_metrics: Mapping[str, Any] | None,
+) -> int:
+    if not isinstance(stage_metrics, Mapping):
+        return 0
+    archive_ingest = stage_metrics.get("archive_ingest")
+    if not isinstance(archive_ingest, Mapping):
+        return 0
+    files = archive_ingest.get("files")
+    if not isinstance(files, Mapping):
+        return 0
+    warning_count = 0
+    for file_metrics in files.values():
+        if not isinstance(file_metrics, Mapping):
+            continue
+        warnings = file_metrics.get("warnings")
+        if isinstance(warnings, int) and warnings > 0:
+            warning_count += warnings
+    return warning_count
 
 
 def _archive_extraction_gap(extract: ArchiveOrdersExtract) -> int:
@@ -4157,9 +4168,12 @@ async def _run_store_discovery(
                         "payment_details_to_sales": sales_error,
                     }
 
-        archive_warning_count = _gst_publish_warning_count_for_metrics(
-            gst_publish_orders,
-            gst_publish_sales,
+        archive_warning_count = (
+            _gst_publish_warning_count_for_metrics(
+                gst_publish_orders,
+                gst_publish_sales,
+            )
+            + _archive_ingest_warning_count_for_stage_metrics(stage_metrics)
         )
         publish_reason_codes = sorted(
             _gst_publish_reason_codes_for_metrics(
@@ -4316,6 +4330,7 @@ async def _run_store_discovery(
             error_message=resolved_message,
             primary_metrics=primary_metrics,
             secondary_metrics=secondary_metrics,
+            warning_count=outcome.warning_count,
         )
         log_event(
             logger=logger,
@@ -4374,6 +4389,7 @@ async def _run_store_discovery(
                 "overlap_duplicates_updated": outcome.final_updated,
                 "rows_skipped_invalid": outcome.rows_skipped_invalid,
                 "rows_skipped_invalid_reasons": outcome.rows_skipped_invalid_reasons,
+                "warning_count": outcome.warning_count,
                 "reason_codes": list(outcome.reason_codes),
                 "footer_total": outcome.post_filter_footer_total,
                 "pre_filter_footer_total": outcome.pre_filter_footer_total,

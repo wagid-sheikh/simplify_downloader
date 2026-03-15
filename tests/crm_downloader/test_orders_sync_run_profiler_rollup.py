@@ -4,6 +4,7 @@ from app.crm_downloader.orders_sync_run_profiler.main import (
     _accumulate_ingestion_totals,
     _extract_ingestion_counts_from_log,
     _extract_ingestion_counts_from_summary,
+    _extract_uc_warning_count_from_summary,
     _init_status_counts,
     _merge_ingestion_counts,
     _merge_status_counts,
@@ -212,3 +213,21 @@ def test_uc_ingestion_totals_do_not_double_count_gst_and_include_final_rows() ->
     assert totals["rows_ingested"] == 23
     assert totals["final_rows"] == 23
     assert totals["rows_ingested"] <= totals["rows_downloaded"]
+
+
+def test_extract_uc_warning_count_from_summary() -> None:
+    summary = {
+        "metrics_json": {
+            "stores_summary": {
+                "stores": {
+                    "TEST": {
+                        "warning_count": 7,
+                    }
+                }
+            }
+        }
+    }
+
+    assert _extract_uc_warning_count_from_summary(summary, store_code="test") == 7
+    assert _extract_uc_warning_count_from_summary(summary, store_code="missing") == 0
+

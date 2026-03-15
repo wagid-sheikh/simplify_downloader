@@ -708,6 +708,7 @@ def _build_uc_window_log(
     download_paths: Mapping[str, Any],
     ingestion_counts: Mapping[str, Any],
     error_message: str | None,
+    warning_count: int = 0,
 ) -> dict[str, Any]:
     path_payload = _coerce_dict(download_paths.get("gst"))
     if not path_payload:
@@ -737,6 +738,7 @@ def _build_uc_window_log(
         "download_path": download_path,
         "staging_rows": staging_rows,
         "final_rows": final_rows,
+        "warning_count": max(0, warning_count),
         "ingest_success": ingest_success,
         "ingest_failure_reason": failure_reason,
     }
@@ -808,6 +810,26 @@ def _extract_ingestion_counts_from_summary(
         "primary": _extract_metrics(orders_store),
         "secondary": _extract_metrics(sales_store),
     }
+
+
+def _extract_uc_warning_count_from_summary(
+    summary: Mapping[str, Any] | None, *, store_code: str
+) -> int:
+    if not summary:
+        return 0
+    metrics = _coerce_dict(summary.get("metrics_json"))
+    if not metrics:
+        return 0
+    normalized_code = store_code.upper()
+    summary_store = _coerce_dict(
+        _coerce_dict(_coerce_dict(metrics.get("stores_summary")).get("stores")).get(
+            normalized_code
+        )
+    )
+    warning_count = summary_store.get("warning_count")
+    if isinstance(warning_count, int) and warning_count > 0:
+        return warning_count
+    return 0
 
 
 def _merge_ingestion_counts(
@@ -1251,7 +1273,7 @@ async def _run_store_windows(
     )
     if not windows:
         detail_lines.append("No windows to process (start_date after end_date).")
-        return "success", windows, detail_lines, status_counts, window_audit, ingestion_totals
+        return "success", windows, detail_lines, status_counts, window_audit, ingestion_totals, row_facts
     log_event(
         logger=logger,
         phase="store",
@@ -1272,6 +1294,7 @@ async def _run_store_windows(
         download_paths: dict[str, Any] = {}
         ingestion_counts: dict[str, Any] = {}
         uc_payload: dict[str, Any] | None = None
+        uc_warning_count = 0
         status_conflict = False
         attempts = 0
         attempt_run_id = window_run_id
@@ -1305,6 +1328,10 @@ async def _run_store_windows(
             )
             summary = await fetch_summary_for_run(config.database_url, attempt_run_id)
             attempt_row_facts = _extract_row_facts_from_summary(summary)
+            if pipeline_name == "uc_orders_sync":
+                uc_warning_count = _extract_uc_warning_count_from_summary(
+                    summary, store_code=store.store_code
+                )
             log_row = await _fetch_latest_log_row(
                 database_url=config.database_url,
                 pipeline_id=pipeline_id,
@@ -1383,6 +1410,7 @@ async def _run_store_windows(
                     download_paths=download_paths,
                     ingestion_counts=ingestion_counts,
                     error_message=error_message,
+                    warning_count=uc_warning_count,
                 )
             note_for_attempt = status_note
             if attempt > 0:
@@ -1462,6 +1490,7 @@ async def _run_store_windows(
                 "attempt_run_id": attempt_run_id,
                 "orders_sync_log_id": log_row.get("id") if log_row else None,
                 "attempts": attempt_audit,
+                "warning_count": uc_payload["warning_count"] if pipeline_name == "uc_orders_sync" and uc_payload else 0,
             }
         )
         if pipeline_name == "uc_orders_sync":
@@ -1469,6 +1498,7 @@ async def _run_store_windows(
                 download_paths=download_paths,
                 ingestion_counts=ingestion_counts,
                 error_message=error_message,
+                warning_count=uc_warning_count,
             )
             uc_status = "ok" if uc_payload["ingest_success"] else ("error" if status == "failed" else "warning")
             log_event(
@@ -1487,6 +1517,7 @@ async def _run_store_windows(
                 download_path=uc_payload["download_path"],
                 staging_rows=uc_payload["staging_rows"],
                 final_rows=uc_payload["final_rows"],
+                warning_count=uc_payload["warning_count"],
                 ingest_success=uc_payload["ingest_success"],
                 ingest_failure_reason=uc_payload["ingest_failure_reason"],
                 attempt_no=attempts,
@@ -1712,6 +1743,7 @@ async def main(
     secondary_totals: dict[str, int] = {field: 0 for field in UNIFIED_METRIC_FIELDS}
     warning_messages: list[str] = []
     row_facts = _init_row_facts()
+    uc_warning_count_total = 0
     for result in all_results:
         total_windows += result.window_count
         store_window_counts[result.store_code] = result.window_count
@@ -1788,6 +1820,11 @@ async def main(
         _sum_unified_metrics(secondary_totals, secondary_metrics)
         _accumulate_ingestion_totals(grand_ingestion_totals, {"total": result.ingestion_totals})
         _merge_row_facts(row_facts, result.row_facts)
+        if result.pipeline_name == "uc_orders_sync":
+            uc_warning_count_total += sum(
+                int(window.get("warning_count", 0) or 0)
+                for window in result.window_audit
+            )
     overall_status = _select_summary_overall_status(total_status_counts)
     warning_windows_total = int(total_status_counts.get("success_with_warnings", 0) or 0)
     if warning_windows_total > 0 and not any(
@@ -1795,6 +1832,12 @@ async def main(
     ):
         warning_messages.append(
             f"WINDOW_WARNINGS: {warning_windows_total} window(s) completed with warnings"
+        )
+    if uc_warning_count_total > 0 and not any(
+        entry.startswith("UC_STORE_WARNINGS:") for entry in warning_messages
+    ):
+        warning_messages.append(
+            f"UC_STORE_WARNINGS: {uc_warning_count_total} row-level warning(s) reported by UC ingest"
         )
     if row_facts["warning_rows"] and not any(
         entry.startswith("ROW_WARNINGS:") for entry in warning_messages
@@ -1866,6 +1909,7 @@ async def main(
             "primary_totals": primary_totals,
             "secondary_totals": secondary_totals,
             "row_facts": row_facts,
+            "uc_warning_count": uc_warning_count_total,
             "notification_payload": _build_profiler_notification_payload(
                 run_id=resolved_run_id,
                 run_env=resolved_env,
