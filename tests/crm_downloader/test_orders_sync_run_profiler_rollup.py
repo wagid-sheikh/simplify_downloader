@@ -161,3 +161,54 @@ def test_summary_overall_status_promotes_warning_windows() -> None:
     }
 
     assert _select_summary_overall_status(status_counts) == "success_with_warnings"
+
+
+def test_uc_ingestion_totals_do_not_double_count_gst_and_include_final_rows() -> None:
+    summary_window_1 = {
+        "metrics_json": {
+            "stores_summary": {
+                "stores": {
+                    "TEST": {
+                        "rows_downloaded": 9,
+                        "rows_ingested": 9,
+                        "final_rows": 9,
+                    }
+                }
+            }
+        }
+    }
+    summary_window_2 = {
+        "metrics_json": {
+            "stores_summary": {
+                "stores": {
+                    "TEST": {
+                        "rows_downloaded": 14,
+                        "rows_ingested": 14,
+                        "final_rows": 14,
+                    }
+                }
+            }
+        }
+    }
+
+    totals = {
+        "rows_downloaded": 0,
+        "rows_ingested": 0,
+        "staging_rows": 0,
+        "final_rows": 0,
+        "staging_inserted": 0,
+        "staging_updated": 0,
+        "final_inserted": 0,
+        "final_updated": 0,
+    }
+
+    for summary in (summary_window_1, summary_window_2):
+        counts = _extract_ingestion_counts_from_summary(
+            summary, store_code="test", pipeline_name="uc_orders_sync"
+        )
+        _accumulate_ingestion_totals(totals, counts)
+
+    assert totals["rows_downloaded"] == 23
+    assert totals["rows_ingested"] == 23
+    assert totals["final_rows"] == 23
+    assert totals["rows_ingested"] <= totals["rows_downloaded"]
