@@ -860,7 +860,24 @@ def test_summary_overall_status_rolls_up_publish_preflight_warning() -> None:
     assert payload["stores"][0]["status"] == "success_with_warnings"
 
 
-def test_store_outcome_marks_warning_for_high_publish_skips_with_warnings() -> None:
+
+
+def test_store_outcome_keeps_missing_required_field_warning_informational() -> None:
+    outcome = uc_main.StoreOutcome(
+        status="ok",
+        message="Archive Orders extracted 10 rows",
+        warning_count=3,
+        reason_codes=["missing_required_field:item_name"],
+    )
+
+    status = uc_main._resolve_sync_log_status(
+        outcome=outcome, download_succeeded=True, row_count=10
+    )
+
+    assert status == "success"
+    assert uc_main._classify_store_window_status(outcome) == "success"
+
+def test_store_outcome_keeps_high_publish_skips_informational() -> None:
     outcome = uc_main.StoreOutcome(
         status="ok",
         message="Archive Orders extracted 10 rows",
@@ -875,7 +892,7 @@ def test_store_outcome_marks_warning_for_high_publish_skips_with_warnings() -> N
         outcome=outcome, download_succeeded=True, row_count=10
     )
 
-    assert status == "success_with_warnings"
+    assert status == "success"
 
 
 class _FakeFilterLocator:

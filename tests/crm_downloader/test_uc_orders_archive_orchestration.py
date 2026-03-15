@@ -280,6 +280,7 @@ async def test_archive_orchestration_ingest_exception_sets_reason_codes(
 
     window_result = summary.window_audit[-1]
     assert window_result["store_code"] == "A101"
+    assert window_result["warning_count"] == outcome.warning_count
     assert window_result["reason_codes"]
     assert uc_main.REASON_ARCHIVE_INGEST_FAILED in window_result["reason_codes"]
     assert (
