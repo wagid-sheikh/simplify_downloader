@@ -750,6 +750,7 @@ def _extract_ingestion_counts_from_log(
             "rows_downloaded": log_row.get(f"{prefix}_rows_downloaded"),
             "rows_ingested": log_row.get(f"{prefix}_rows_ingested"),
             "staging_rows": log_row.get(f"{prefix}_staging_rows"),
+            "final_rows": None,
             "staging_inserted": log_row.get(f"{prefix}_staging_inserted"),
             "staging_updated": log_row.get(f"{prefix}_staging_updated"),
             "final_inserted": log_row.get(f"{prefix}_final_inserted"),
@@ -761,6 +762,69 @@ def _extract_ingestion_counts_from_log(
     if pipeline_name == "uc_orders_sync":
         secondary = {**{key: None for key in primary}, "label": "not applicable"}
     return {"primary": primary, "secondary": secondary}
+
+
+def _extract_ingestion_counts_from_summary(
+    summary: Mapping[str, Any] | None, *, store_code: str, pipeline_name: str
+) -> dict[str, Any]:
+    if not summary:
+        return {}
+    metrics = _coerce_dict(summary.get("metrics_json"))
+    if not metrics:
+        return {}
+    normalized_code = store_code.upper()
+
+    def _extract_metrics(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+        source = _coerce_dict(payload)
+        return {
+            "rows_downloaded": source.get("rows_downloaded"),
+            "rows_ingested": source.get("rows_ingested"),
+            "staging_rows": source.get("staging_rows"),
+            "final_rows": source.get("final_rows"),
+            "staging_inserted": source.get("staging_inserted"),
+            "staging_updated": source.get("staging_updated"),
+            "final_inserted": source.get("final_inserted"),
+            "final_updated": source.get("final_updated"),
+        }
+
+    if pipeline_name == "uc_orders_sync":
+        summary_store = _coerce_dict(
+            _coerce_dict(_coerce_dict(metrics.get("stores_summary")).get("stores")).get(normalized_code)
+        )
+        primary = _extract_metrics(summary_store)
+        secondary = {**{key: None for key in primary}, "label": "not applicable"}
+        return {"primary": primary, "secondary": secondary, "gst": primary}
+
+    orders_store = _coerce_dict(
+        _coerce_dict(_coerce_dict(metrics.get("orders")).get("stores")).get(normalized_code)
+    )
+    sales_store = _coerce_dict(
+        _coerce_dict(_coerce_dict(metrics.get("sales")).get("stores")).get(normalized_code)
+    )
+    return {
+        "primary": _extract_metrics(orders_store),
+        "secondary": _extract_metrics(sales_store),
+    }
+
+
+def _merge_ingestion_counts(
+    base: Mapping[str, Any], fallback: Mapping[str, Any]
+) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for channel in ("primary", "secondary", "gst"):
+        base_payload = _coerce_dict(base.get(channel))
+        fallback_payload = _coerce_dict(fallback.get(channel))
+        if not base_payload and not fallback_payload:
+            continue
+        keys = set(base_payload) | set(fallback_payload)
+        merged_payload = {
+            key: base_payload.get(key)
+            if base_payload.get(key) is not None
+            else fallback_payload.get(key)
+            for key in keys
+        }
+        merged[channel] = merged_payload
+    return merged
 
 
 def _normalize_ingestion_metrics(metrics: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -1269,12 +1333,16 @@ async def _run_store_windows(
             status = resolved_status
             status_note += resolved_note
             download_paths = _extract_window_download_paths(summary, store_code=store.store_code)
+            summary_ingestion_counts = _extract_ingestion_counts_from_summary(
+                summary, store_code=store.store_code, pipeline_name=pipeline_name
+            )
             if log_row:
-                ingestion_counts = _extract_ingestion_counts_from_log(
-                    log_row, pipeline_name=pipeline_name
+                ingestion_counts = _merge_ingestion_counts(
+                    _extract_ingestion_counts_from_log(log_row, pipeline_name=pipeline_name),
+                    summary_ingestion_counts,
                 )
             else:
-                ingestion_counts = {}
+                ingestion_counts = summary_ingestion_counts
             status_conflict = status == "skipped" and _has_positive_ingestion_rows(ingestion_counts)
             if status_conflict:
                 status_note += " (status skipped but rows present)"
