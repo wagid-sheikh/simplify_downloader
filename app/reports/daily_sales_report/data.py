@@ -172,14 +172,40 @@ def _build_orders_count_agg(orders: sa.Table, ranges: dict[str, datetime]) -> sa
 
 
 def _build_orders_sync_agg(orders_sync_log: sa.Table) -> sa.Subquery:
+    sync_ts = sa.func.coalesce(
+        orders_sync_log.c.orders_pulled_at,
+        orders_sync_log.c.updated_at,
+        orders_sync_log.c.created_at,
+    )
     return (
         sa.select(
             orders_sync_log.c.cost_center.label("cost_center"),
-            sa.func.max(orders_sync_log.c.orders_pulled_at).label("orders_pulled_at"),
+            sa.func.max(sync_ts).label("orders_pulled_at"),
         )
         .group_by(orders_sync_log.c.cost_center)
         .subquery()
     )
+
+
+def _parse_orders_sync_timestamp(value: object | None, *, tz) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=tz)
+    return dt.astimezone(tz)
 
 
 def _build_sales_agg(sales: sa.Table, ranges: dict[str, datetime]) -> sa.Subquery:
@@ -331,6 +357,8 @@ async def fetch_daily_sales_report(
         "orders_sync_log",
         sa.column("cost_center"),
         sa.column("orders_pulled_at"),
+        sa.column("updated_at"),
+        sa.column("created_at"),
     )
     sales = sa.table(
         "sales",
@@ -545,10 +573,8 @@ async def fetch_daily_sales_report(
             elif remaining_days:
                 reqd_per_day = abs(delta) / Decimal(str(remaining_days))
 
-            orders_pulled_at = entry["orders_pulled_at"]
-            orders_sync_time = None
-            if orders_pulled_at:
-                orders_sync_time = orders_pulled_at.astimezone(tz).strftime("%H:%M")
+            orders_pulled_at = _parse_orders_sync_timestamp(entry["orders_pulled_at"], tz=tz)
+            orders_sync_time = orders_pulled_at.strftime("%H:%M") if orders_pulled_at else None
 
             rows.append(
                 DailySalesRow(
