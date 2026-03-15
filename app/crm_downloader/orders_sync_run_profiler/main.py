@@ -776,11 +776,14 @@ def _extract_ingestion_counts_from_summary(
 
     def _extract_metrics(payload: Mapping[str, Any] | None) -> dict[str, Any]:
         source = _coerce_dict(payload)
+        final_rows = source.get("final_rows")
+        if final_rows is None:
+            final_rows = source.get("rows_ingested")
         return {
             "rows_downloaded": source.get("rows_downloaded"),
             "rows_ingested": source.get("rows_ingested"),
             "staging_rows": source.get("staging_rows"),
-            "final_rows": source.get("final_rows"),
+            "final_rows": final_rows,
             "staging_inserted": source.get("staging_inserted"),
             "staging_updated": source.get("staging_updated"),
             "final_inserted": source.get("final_inserted"),
@@ -1002,7 +1005,14 @@ def _accumulate_ingestion_totals(
     target: dict[str, int], ingestion_counts: Mapping[str, Any]
 ) -> dict[str, int]:
     totals = _init_ingestion_totals()
-    for payload in ingestion_counts.values():
+    primary_payload = ingestion_counts.get("primary")
+    gst_payload = ingestion_counts.get("gst")
+    channels: list[Any] = []
+    channels.extend([ingestion_counts.get("primary"), ingestion_counts.get("secondary")])
+    if isinstance(gst_payload, Mapping) and not isinstance(primary_payload, Mapping):
+        channels.append(gst_payload)
+
+    for payload in channels:
         if not isinstance(payload, Mapping):
             continue
         for key in totals:
