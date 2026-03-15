@@ -809,9 +809,37 @@ def _has_positive_ingestion_rows(ingestion_counts: Mapping[str, Any]) -> bool:
 def _normalize_window_status(
     *, pipeline_name: str, status: str, error_message: str | None
 ) -> tuple[str, str]:
-    if status == "success_with_warnings":
+    normalized_status = _normalize_rollup_status(status)
+    if normalized_status == "success_with_warnings":
         return "success_with_warnings", " (success with warnings)"
-    return status, ""
+    return normalized_status, ""
+
+
+def _normalize_rollup_status(status: str | None) -> str:
+    normalized = str(status or "").strip().lower()
+    status_aliases = {
+        "success": "success",
+        "ok": "success",
+        "success_with_warning": "success_with_warnings",
+        "success_with_warnings": "success_with_warnings",
+        "warning": "success_with_warnings",
+        "partial": "partial",
+        "failed": "failed",
+        "error": "failed",
+        "failure": "failed",
+        "skipped": "skipped",
+    }
+    return status_aliases.get(normalized, "failed")
+
+
+def _resolve_window_outcome_status(
+    *, raw_status: str, summary_overall_status: str | None
+) -> tuple[str, str]:
+    window_status = _normalize_rollup_status(raw_status)
+    summary_status = _normalize_rollup_status(summary_overall_status)
+    if summary_status == "success_with_warnings" and window_status == "success":
+        return "success_with_warnings", " (summary overall_status=success_with_warnings)"
+    return window_status, ""
 
 
 def _has_explicit_stop_condition(*messages: str | None) -> bool:
@@ -867,7 +895,8 @@ def _init_status_counts() -> dict[str, int]:
 
 def _merge_status_counts(target: dict[str, int], source: Mapping[str, int]) -> None:
     for status, count in source.items():
-        target[status] = target.get(status, 0) + int(count)
+        normalized_status = _normalize_rollup_status(status)
+        target[normalized_status] = target.get(normalized_status, 0) + int(count)
 
 
 def _window_warning_entries(store_code: str, status_counts: Mapping[str, int]) -> list[str]:
@@ -1230,6 +1259,15 @@ async def _run_store_windows(
                     pipeline_name=pipeline_name, status=status, error_message=error_message
                 )
                 status_note += mapped_note
+            summary_overall_status = None
+            if isinstance(summary, Mapping):
+                summary_overall_status = str(summary.get("overall_status") or "")
+            resolved_status, resolved_note = _resolve_window_outcome_status(
+                raw_status=status,
+                summary_overall_status=summary_overall_status,
+            )
+            status = resolved_status
+            status_note += resolved_note
             download_paths = _extract_window_download_paths(summary, store_code=store.store_code)
             if log_row:
                 ingestion_counts = _extract_ingestion_counts_from_log(
