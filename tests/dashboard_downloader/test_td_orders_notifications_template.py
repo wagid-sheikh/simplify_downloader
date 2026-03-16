@@ -235,3 +235,23 @@ def test_td_context_includes_store_metadata_on_row_details() -> None:
 
     assert sales_edited_row["store_code"] == "A1"
     assert sales_edited_row["order_number"] == "S-3"
+
+
+def test_td_context_contains_unified_template_contract_without_duplicate_blocks() -> None:
+    run_data = _sample_run_data(summary_text="")
+
+    context = _build_td_orders_context(run_data)
+
+    assert context["env_upper"] == "TEST"
+    assert context["overall_status_upper"] == "SUCCESS WITH WARNINGS"
+    assert context["pipeline_display_name"] == "TD Orders Sync"
+    assert context["store_code"] == "ALL"
+    assert context["run_date_display"] == "05-01-2024"
+    assert context["started_at_ist"] == "05-01-2024 10:30:00"
+    assert context["finished_at_ist"] == "05-01-2024 10:35:00"
+
+    assert context["store_processing_summary_block"].count("A1") == 1
+    assert context["store_processing_summary_block"].count("A2") == 1
+    assert context["files_processed_block"].count("(none)") == 1
+    assert context["warnings_block"].count("(none)") == 1
+    assert "missing_windows" in context["optional_notes_block"]
