@@ -5,6 +5,8 @@ from app.dashboard_downloader.notifications import (
     _build_uc_orders_context,
     _format_fact_sections_text,
     _prepare_ingest_remarks,
+    _td_summary_text_from_payload,
+    _uc_summary_text_from_payload,
 )
 
 
@@ -80,3 +82,89 @@ def test_fact_sections_include_placeholder_and_sorted_rows() -> None:
     assert fact_rows[1]["order_number"] == "<missing_order_number>"
     assert "Warning rows (2):" in fact_text
     assert "<missing_order_number>" in fact_text
+
+
+def test_td_and_uc_summary_text_have_shared_deterministic_sections() -> None:
+    td_run_data = {
+        "run_id": "run-td-1",
+        "run_env": "test",
+        "report_date": "2024-01-05",
+        "overall_status": "warning",
+        "total_time_taken": "00:02:00",
+        "started_at": "2024-01-05T05:00:00+00:00",
+        "finished_at": "2024-01-05T05:02:00+00:00",
+        "metrics_json": {
+            "window_summary": {"completed_windows": 1, "expected_windows": 1, "missing_windows": 0},
+            "notification_payload": {
+                "overall_status": "warning",
+                "orders_status": "ok",
+                "sales_status": "warning",
+                "stores": [
+                    {
+                        "store_code": "TD01",
+                        "data_source_decision": "ui",
+                        "ingest_status": "success",
+                        "failure_stage": None,
+                        "orders": {"status": "ok", "rows_downloaded": 10, "rows_ingested": 10},
+                        "sales": {
+                            "status": "warning",
+                            "rows_downloaded": 10,
+                            "rows_ingested": 9,
+                            "warning_rows": [{"order_number": "S1"}],
+                            "filenames": ["TD01_sales.xlsx"],
+                        },
+                    }
+                ],
+            },
+        },
+    }
+    uc_run_data = {
+        "run_id": "run-uc-1",
+        "run_env": "test",
+        "report_date": "2024-01-05",
+        "overall_status": "success_with_warnings",
+        "total_time_taken": "00:03:00",
+        "started_at": "2024-01-05T05:00:00+00:00",
+        "finished_at": "2024-01-05T05:03:00+00:00",
+        "metrics_json": {
+            "window_summary": {"completed_windows": 1, "expected_windows": 1, "missing_windows": 0},
+            "window_audit": [],
+            "notification_payload": {
+                "overall_status": "warning",
+                "stores": [
+                    {
+                        "store_code": "UC01",
+                        "status": "warning",
+                        "rows_downloaded": 10,
+                        "rows_ingested": 9,
+                        "staging_inserted": 8,
+                        "staging_updated": 1,
+                        "rows_skipped_invalid": 1,
+                        "rows_skipped_invalid_reasons": {"invalid_gstin": 1},
+                        "warning_rows": [{"order_number": "U1"}],
+                        "filename": "UC01_uc.xlsx",
+                    }
+                ],
+            },
+        },
+    }
+
+    td_summary = _td_summary_text_from_payload(td_run_data)
+    uc_summary = _uc_summary_text_from_payload(uc_run_data)
+
+    for summary in (td_summary, uc_summary):
+        assert "Header:" in summary
+        assert "Window reconciliation summary:" in summary
+        assert "Per-store metrics:" in summary
+        assert "Warnings:" in summary
+        assert "Row-level facts:" in summary
+        assert "Filenames:" in summary
+
+        assert summary.index("Header:") < summary.index("Window reconciliation summary:")
+        assert summary.index("Window reconciliation summary:") < summary.index("Per-store metrics:")
+        assert summary.index("Per-store metrics:") < summary.index("Warnings:")
+        assert summary.index("Warnings:") < summary.index("Row-level facts:")
+        assert summary.index("Row-level facts:") < summary.index("Filenames:")
+
+    assert "overall_status: SUCCESS WITH WARNINGS" in td_summary
+    assert "overall_status: SUCCESS WITH WARNINGS" in uc_summary
