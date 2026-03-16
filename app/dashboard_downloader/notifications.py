@@ -9,6 +9,7 @@ from datetime import date, datetime, timezone
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
 from jinja2 import Template
@@ -60,6 +61,7 @@ TD_SALES_EDITED_LIMIT: int | None = None
 FACT_SECTION_ROW_LIMIT: int | None = None
 PROFILER_FACT_ROW_LIMIT_PER_STORE: int = 200
 UC_GSTIN_MISSING_REMARK = "Customer GSTIN missing"
+NOTIFICATION_DISPLAY_TIMEZONE = ZoneInfo("Asia/Kolkata")
 PROFILER_HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -2258,9 +2260,12 @@ def _uc_all_stores_failed(stores_payload: list[Mapping[str, Any]]) -> bool:
 
 
 def _format_profiler_html_timestamp(value: Any) -> str:
+    return _format_notification_display_datetime(value)
+
+
+def _format_notification_display_datetime(value: Any) -> str:
     if not value:
         return ""
-    tz = get_timezone()
     try:
         if isinstance(value, datetime):
             dt = value
@@ -2276,27 +2281,13 @@ def _format_profiler_html_timestamp(value: Any) -> str:
             return _normalize_datetime(value)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(tz).strftime("%d-%b-%Y %H:%M:%S")
+        return dt.astimezone(NOTIFICATION_DISPLAY_TIMEZONE).strftime("%d-%b-%Y %H:%M:%S")
     except Exception:
         return _normalize_datetime(value)
 
 
 def _format_td_timestamp(value: Any) -> str:
-    if not value:
-        return ""
-    tz = get_timezone()
-    try:
-        if isinstance(value, str):
-            dt = datetime.fromisoformat(value)
-        elif isinstance(value, datetime):
-            dt = value
-        else:
-            return _normalize_datetime(value)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(tz).strftime("%d-%m-%Y %H:%M:%S")
-    except Exception:
-        return _normalize_datetime(value)
+    return _format_notification_display_datetime(value)
 
 
 def _run_date_display(value: Any) -> str:
@@ -2610,8 +2601,8 @@ def _uc_summary_text_from_payload(
     return _deterministic_summary_text(
         pipeline="uc_orders_sync",
         run_data=run_data,
-        started_at=_normalize_datetime(payload.get("started_at") or run_data.get("started_at")),
-        finished_at=_normalize_datetime(payload.get("finished_at") or run_data.get("finished_at")),
+        started_at=_format_notification_display_datetime(payload.get("started_at") or run_data.get("started_at")),
+        finished_at=_format_notification_display_datetime(payload.get("finished_at") or run_data.get("finished_at")),
         duration=str(payload.get("total_time_taken") or run_data.get("total_time_taken") or ""),
         overall_status=overall_status,
         window_lines=window_lines,

@@ -169,7 +169,7 @@ def test_td_context_prefers_structured_summary_text() -> None:
     assert context["summary_text"].startswith(summary_text)
     assert "Row-level facts:" in context["summary_text"]
     assert context["td_all_stores_failed"] is False
-    assert context["started_at_formatted"] == "05-01-2024 10:30:00"
+    assert context["started_at_formatted"] == "05-Jan-2024 10:30:00"
     assert context["orders_status"] == "success_with_warnings"
     assert context["sales_status"] == "success_with_warnings"
     assert context["stores"][0]["data_source_decision"] == "api_primary"
@@ -200,7 +200,7 @@ def test_td_template_renders_payload_without_false_failure_note() -> None:
     assert "warning_count: 1" in body
     assert "edited_count: 1" in body
     assert "duplicate_count: 0" in body
-    assert "started_at: 05-01-2024 10:30:00" in body
+    assert "started_at: 05-Jan-2024 10:30:00" in body
     assert "All TD stores failed" not in body
 
 
@@ -247,8 +247,8 @@ def test_td_context_contains_unified_template_contract_without_duplicate_blocks(
     assert context["pipeline_display_name"] == "TD Orders Sync"
     assert context["store_code"] == "ALL"
     assert context["run_date_display"] == "05-01-2024"
-    assert context["started_at_ist"] == "05-01-2024 10:30:00"
-    assert context["finished_at_ist"] == "05-01-2024 10:35:00"
+    assert context["started_at_ist"] == "05-Jan-2024 10:30:00"
+    assert context["finished_at_ist"] == "05-Jan-2024 10:35:00"
 
     assert context["store_processing_summary_block"].count("A1") == 1
     assert context["store_processing_summary_block"].count("A2") == 1
