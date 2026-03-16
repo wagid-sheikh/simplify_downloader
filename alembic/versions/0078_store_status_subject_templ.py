@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0078_store_scope_status_subject_template"
+revision = "0078_store_status_subject_templ"
 down_revision = "0077_standardize_td_uc_bodytempl"
 branch_labels = None
 depends_on = None
