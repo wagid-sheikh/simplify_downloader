@@ -12,38 +12,28 @@ branch_labels = None
 depends_on = None
 
 
-def _upsert_config(bind, system_config: sa.Table, *, key: str, value: str, description: str) -> None:
-    existing = bind.execute(sa.select(system_config.c.id).where(system_config.c.key == key)).scalar()
-    params = {"key": key, "value": value, "description": description}
-    if existing:
-        bind.execute(
-            system_config.update()
-            .where(system_config.c.id == existing)
-            .values(**params, is_active=True, updated_at=sa.func.now())
-        )
-    else:
-        bind.execute(system_config.insert().values(**params, is_active=True))
+def _system_config_table() -> sa.Table:
+    return sa.table(
+        "system_config",
+        sa.column("key", sa.String()),
+        sa.column("value", sa.String()),
+        sa.column("description", sa.String()),
+        sa.column("is_active", sa.Boolean()),
+    )
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    meta = sa.MetaData()
-    meta.reflect(bind=bind, only=["system_config"])
-    system_config = sa.Table("system_config", meta, autoload_with=bind)
-
-    _upsert_config(
-        bind,
-        system_config,
-        key="SKIP_UC_Pending_Delivery",
-        value="true",
-        description="Skip UC orders in pending deliveries report.",
+    system_config = _system_config_table()
+    op.execute(
+        system_config.insert().values(
+            key="SKIP_UC_Pending_Delivery",
+            value="true",
+            description="Skip UC orders in pending deliveries report.",
+            is_active=True,
+        )
     )
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-    meta = sa.MetaData()
-    meta.reflect(bind=bind, only=["system_config"])
-    system_config = sa.Table("system_config", meta, autoload_with=bind)
-
-    bind.execute(system_config.delete().where(system_config.c.key == "SKIP_UC_Pending_Delivery"))
+    system_config = _system_config_table()
+    op.execute(system_config.delete().where(system_config.c.key == "SKIP_UC_Pending_Delivery"))
