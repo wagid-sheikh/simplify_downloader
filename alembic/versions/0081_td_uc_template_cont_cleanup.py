@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0081_td_uc_template_contract_cleanup"
+revision = "0081_td_uc_template_cont_cleanup"
 down_revision = "0080_td_uc_run_email_std"
 branch_labels = None
 depends_on = None

@@ -7,7 +7,7 @@ import sqlalchemy as sa
 
 
 revision = "0082_uc_pending_default_false"
-down_revision = "0081_td_uc_template_contract_cleanup"
+down_revision = "0081_td_uc_template_cont_cleanup"
 branch_labels = None
 depends_on = None
 
