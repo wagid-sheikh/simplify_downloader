@@ -1027,12 +1027,15 @@ def _accumulate_ingestion_totals(
     target: dict[str, int], ingestion_counts: Mapping[str, Any]
 ) -> dict[str, int]:
     totals = _init_ingestion_totals()
-    primary_payload = ingestion_counts.get("primary")
-    gst_payload = ingestion_counts.get("gst")
-    channels: list[Any] = []
-    channels.extend([ingestion_counts.get("primary"), ingestion_counts.get("secondary")])
-    if isinstance(gst_payload, Mapping) and not isinstance(primary_payload, Mapping):
-        channels.append(gst_payload)
+    if all(key in ingestion_counts for key in totals):
+        channels: list[Any] = [ingestion_counts]
+    else:
+        primary_payload = ingestion_counts.get("primary")
+        gst_payload = ingestion_counts.get("gst")
+        channels = []
+        channels.extend([ingestion_counts.get("primary"), ingestion_counts.get("secondary")])
+        if isinstance(gst_payload, Mapping) and not isinstance(primary_payload, Mapping):
+            channels.append(gst_payload)
 
     for payload in channels:
         if not isinstance(payload, Mapping):
