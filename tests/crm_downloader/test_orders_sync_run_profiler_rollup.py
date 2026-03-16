@@ -232,6 +232,44 @@ def test_extract_uc_warning_count_from_summary() -> None:
     assert _extract_uc_warning_count_from_summary(summary, store_code="missing") == 0
 
 
+def test_accumulate_ingestion_totals_supports_flat_totals_payload() -> None:
+    totals = {
+        "rows_downloaded": 0,
+        "rows_ingested": 0,
+        "staging_rows": 0,
+        "final_rows": 0,
+        "staging_inserted": 0,
+        "staging_updated": 0,
+        "final_inserted": 0,
+        "final_updated": 0,
+    }
+
+    _accumulate_ingestion_totals(
+        totals,
+        {
+            "rows_downloaded": 73,
+            "rows_ingested": 73,
+            "staging_rows": 73,
+            "final_rows": 73,
+            "staging_inserted": 0,
+            "staging_updated": 0,
+            "final_inserted": 0,
+            "final_updated": 0,
+        },
+    )
+
+    assert totals == {
+        "rows_downloaded": 73,
+        "rows_ingested": 73,
+        "staging_rows": 73,
+        "final_rows": 73,
+        "staging_inserted": 0,
+        "staging_updated": 0,
+        "final_inserted": 0,
+        "final_updated": 0,
+    }
+
+
 def test_profiler_top_level_status_failed_when_any_window_fails() -> None:
     status_counts = {
         "success": 3,
