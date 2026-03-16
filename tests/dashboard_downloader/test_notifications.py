@@ -168,3 +168,43 @@ def test_td_and_uc_summary_text_have_shared_deterministic_sections() -> None:
 
     assert "overall_status: SUCCESS WITH WARNINGS" in td_summary
     assert "overall_status: SUCCESS WITH WARNINGS" in uc_summary
+
+
+def test_unified_context_contract_for_uc_orders() -> None:
+    run_data = {
+        "run_id": "run-uc-contract-1",
+        "run_env": "stage",
+        "report_date": "2024-01-05",
+        "overall_status": "success_with_warnings",
+        "metrics_json": {
+            "window_summary": {"completed_windows": 1, "expected_windows": 1, "missing_windows": 0},
+            "window_audit": [],
+            "notification_payload": {
+                "overall_status": "warning",
+                "started_at": "2024-01-05T05:00:00+00:00",
+                "finished_at": "2024-01-05T05:03:00+00:00",
+                "stores": [
+                    {
+                        "store_code": "UC01",
+                        "status": "warning",
+                        "warning_rows": [{"order_number": "U1", "ingest_remarks": "needs review"}],
+                        "filename": "UC01_orders.xlsx",
+                    }
+                ],
+            },
+        },
+    }
+
+    context = _build_uc_orders_context(run_data)
+
+    assert context["env_upper"] == "STAGE"
+    assert context["overall_status_upper"] == "SUCCESS WITH WARNINGS"
+    assert context["pipeline_display_name"] == "UC Orders Sync"
+    assert context["store_code"] == "UC01"
+    assert context["run_date_display"] == "05-01-2024"
+    assert context["started_at_ist"] == "05-01-2024 10:30:00"
+    assert context["finished_at_ist"] == "05-01-2024 10:33:00"
+    assert context["store_processing_summary_block"].count("UC01") == 1
+    assert context["files_processed_block"].count("UC01_orders.xlsx") == 1
+    assert context["warnings_block"]
+    assert context["optional_notes_block"]

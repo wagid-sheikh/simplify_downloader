@@ -1800,6 +1800,43 @@ def _build_td_orders_context(
     started_at_formatted = _format_td_timestamp(payload.get("started_at") or run_data.get("started_at"))
     finished_at_formatted = _format_td_timestamp(payload.get("finished_at") or run_data.get("finished_at"))
     window_summary = metrics.get("window_summary") or {}
+    overall_status = _normalize_output_status(payload.get("overall_status") or run_data.get("overall_status"))
+    payload_warnings = _normalize_warning_entries(payload.get("warnings") or metrics.get("warnings") or [])
+
+    store_processing_summary_block = _format_block(
+        [
+            (
+                f"- {store.get('store_code') or 'UNKNOWN'}: "
+                f"overall={_format_status_label(store.get('status')).upper()}, "
+                f"orders={_format_status_label(store.get('orders_status')).upper()}, "
+                f"sales={_format_status_label(store.get('sales_status')).upper()}"
+            )
+            for store in stores
+        ]
+    )
+    files_processed_entries = sorted(
+        {
+            f"{store.get('store_code') or 'UNKNOWN'} orders: {name}"
+            for store in stores
+            for name in (store.get("orders_filenames") or [])
+        }
+        | {
+            f"{store.get('store_code') or 'UNKNOWN'} sales: {name}"
+            for store in stores
+            for name in (store.get("sales_filenames") or [])
+        }
+    )
+    files_processed_block = _format_block([f"- {entry}" for entry in files_processed_entries] or ["- (none)"])
+    warnings_block = _format_block([f"- {warning}" for warning in payload_warnings] or ["- (none)"])
+    optional_notes_lines = [
+        f"- missing_windows: {window_summary.get('missing_windows', 0)}",
+        f"- missing_window_stores: {', '.join(window_summary.get('missing_store_codes') or []) or '(none)'}",
+    ]
+    if fact_sections_text:
+        optional_notes_lines.append("- row_level_facts_available: yes")
+    optional_notes_block = _format_block(optional_notes_lines)
+    unique_store_codes = sorted({store.get("store_code") for store in stores if store.get("store_code")})
+    store_code = unique_store_codes[0] if len(unique_store_codes) == 1 else "ALL"
 
     return {
         "summary_text": summary_text,
@@ -1809,8 +1846,8 @@ def _build_td_orders_context(
         "started_at_formatted": started_at_formatted,
         "finished_at_formatted": finished_at_formatted,
         "total_time_taken": payload.get("total_time_taken") or run_data.get("total_time_taken"),
-        "overall_status": _normalize_output_status(payload.get("overall_status") or run_data.get("overall_status")),
-        "td_overall_status": _normalize_output_status(payload.get("overall_status") or run_data.get("overall_status")),
+        "overall_status": overall_status,
+        "td_overall_status": overall_status,
         "orders_status": _normalize_output_status(
             payload.get("orders_status") or (metrics.get("orders") or {}).get("overall_status")
         ),
@@ -1837,6 +1874,17 @@ def _build_td_orders_context(
         "td_sales_dropped_rows_count": len(sales_dropped_rows),
         "td_sales_dropped_rows_samples": dropped_samples,
         "td_sales_ingest_remarks_text": td_ingest_text,
+        "env_upper": str(run_data.get("run_env") or "").upper(),
+        "overall_status_upper": _to_upper_status(overall_status),
+        "pipeline_display_name": "TD Orders Sync",
+        "store_code": store_code,
+        "run_date_display": _run_date_display(run_data.get("report_date")),
+        "started_at_ist": started_at_formatted,
+        "finished_at_ist": finished_at_formatted,
+        "store_processing_summary_block": store_processing_summary_block,
+        "files_processed_block": files_processed_block,
+        "warnings_block": warnings_block,
+        "optional_notes_block": optional_notes_block,
     }
 
 
@@ -2002,6 +2050,36 @@ def _build_uc_orders_context(
     store_count = len(stores_payload)
     outcome_summary = _build_outcome_summary(overall_status, store_count=store_count)
     status_counts = _uc_status_counts(stores_payload, uc_status_by_store)
+    started_at_ist = _format_td_timestamp(started_at)
+    finished_at_ist = _format_td_timestamp(finished_at)
+    store_processing_summary_block = _format_block(
+        [
+            (
+                f"- {store.get('store_code') or 'UNKNOWN'}: "
+                f"status={_format_status_label(store.get('status')).upper()}, "
+                f"warnings={store.get('warning_count') or 0}"
+            )
+            for store in stores
+        ]
+    )
+    files_processed_block = _format_block(
+        [
+            f"- {(store.get('store_code') or 'UNKNOWN')}: {store.get('filename')}"
+            for store in stores
+            if store.get("filename")
+        ]
+        or ["- (none)"]
+    )
+    warnings_block = _format_block([f"- {warning}" for warning in warnings] or ["- (none)"])
+    optional_notes_lines = [
+        f"- missing_windows: {window_summary.get('missing_windows', 0)}",
+        f"- missing_window_stores: {', '.join(window_summary.get('missing_store_codes') or []) or '(none)'}",
+    ]
+    if summary_text:
+        optional_notes_lines.append("- summary_available: yes")
+    optional_notes_block = _format_block(optional_notes_lines)
+    unique_store_codes = sorted({store.get("store_code") for store in stores if store.get("store_code")})
+    unified_store_code = unique_store_codes[0] if len(unique_store_codes) == 1 else "ALL"
 
     return {
         "summary_text": summary_text,
@@ -2036,6 +2114,17 @@ def _build_uc_orders_context(
         "missing_windows": window_summary.get("missing_windows"),
         "missing_window_stores": window_summary.get("missing_store_codes") or [],
         "missing_windows_by_store": merged_missing_windows,
+        "env_upper": str(run_data.get("run_env") or "").upper(),
+        "overall_status_upper": _to_upper_status(overall_status),
+        "pipeline_display_name": "UC Orders Sync",
+        "store_code": unified_store_code,
+        "run_date_display": _run_date_display(run_data.get("report_date")),
+        "started_at_ist": started_at_ist,
+        "finished_at_ist": finished_at_ist,
+        "store_processing_summary_block": store_processing_summary_block,
+        "files_processed_block": files_processed_block,
+        "warnings_block": warnings_block,
+        "optional_notes_block": optional_notes_block,
     }
 
 
@@ -2208,6 +2297,34 @@ def _format_td_timestamp(value: Any) -> str:
         return dt.astimezone(tz).strftime("%d-%m-%Y %H:%M:%S")
     except Exception:
         return _normalize_datetime(value)
+
+
+def _run_date_display(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, datetime):
+        return value.date().strftime("%d-%m-%Y")
+    if isinstance(value, date):
+        return value.strftime("%d-%m-%Y")
+    text = str(value).strip()
+    if not text:
+        return ""
+    try:
+        if "T" in text or ":" in text:
+            parsed = datetime.fromisoformat(text)
+            return parsed.date().strftime("%d-%m-%Y")
+        return date.fromisoformat(text).strftime("%d-%m-%Y")
+    except ValueError:
+        return text
+
+
+def _to_upper_status(status: str | None) -> str:
+    return _format_status_label(_normalize_output_status(status)).upper()
+
+
+def _format_block(lines: Iterable[str]) -> str:
+    cleaned = [str(line).strip() for line in lines if str(line).strip()]
+    return "\n".join(cleaned)
 
 
 def _deterministic_summary_text(
