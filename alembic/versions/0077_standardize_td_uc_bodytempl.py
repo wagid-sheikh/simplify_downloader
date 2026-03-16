@@ -36,12 +36,15 @@ email_templates = sa.table(
 
 PIPELINE_CODES = ("td_orders_sync", "uc_orders_sync")
 SUMMARY_TEXT_TEMPLATE = "{{ summary_text }}"
+PREVIOUS_BODY_TEMPLATES = {
+    "td_orders_sync": "{{ (summary_text or td_summary_text) }}",
+    "uc_orders_sync": "{{ (summary_text or uc_summary_text) }}",
+}
 
 
-def upgrade() -> None:
-    bind = op.get_bind()
-    template_ids = bind.execute(
-        sa.select(email_templates.c.id)
+def _target_template_ids(bind: sa.Connection) -> dict[int, str]:
+    rows = bind.execute(
+        sa.select(email_templates.c.id, pipelines.c.code)
         .select_from(
             email_templates.join(
                 notification_profiles,
@@ -52,7 +55,13 @@ def upgrade() -> None:
         .where(notification_profiles.c.scope == "store")
         .where(notification_profiles.c.is_active.is_(True))
         .where(email_templates.c.is_active.is_(True))
-    ).scalars().all()
+    ).all()
+    return {row.id: row.code for row in rows}
+
+
+def upgrade() -> None:
+    bind = op.get_bind()
+    template_ids = tuple(_target_template_ids(bind))
 
     if template_ids:
         bind.execute(
@@ -63,4 +72,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    pass
+    bind = op.get_bind()
+    template_map = _target_template_ids(bind)
+    for template_id, pipeline_code in template_map.items():
+        bind.execute(
+            email_templates.update()
+            .where(email_templates.c.id == template_id)
+            .where(email_templates.c.body_template == SUMMARY_TEXT_TEMPLATE)
+            .values(body_template=PREVIOUS_BODY_TEMPLATES[pipeline_code])
+        )
