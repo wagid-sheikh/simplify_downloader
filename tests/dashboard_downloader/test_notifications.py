@@ -168,6 +168,8 @@ def test_td_and_uc_summary_text_have_shared_deterministic_sections() -> None:
 
     assert "overall_status: SUCCESS WITH WARNINGS" in td_summary
     assert "overall_status: SUCCESS WITH WARNINGS" in uc_summary
+    assert "started_at: 05-Jan-2024 10:30:00" in td_summary
+    assert "finished_at: 05-Jan-2024 10:33:00" in uc_summary
 
 
 def test_unified_context_contract_for_uc_orders() -> None:
@@ -202,8 +204,8 @@ def test_unified_context_contract_for_uc_orders() -> None:
     assert context["pipeline_display_name"] == "UC Orders Sync"
     assert context["store_code"] == "UC01"
     assert context["run_date_display"] == "05-01-2024"
-    assert context["started_at_ist"] == "05-01-2024 10:30:00"
-    assert context["finished_at_ist"] == "05-01-2024 10:33:00"
+    assert context["started_at_ist"] == "05-Jan-2024 10:30:00"
+    assert context["finished_at_ist"] == "05-Jan-2024 10:33:00"
     assert context["store_processing_summary_block"].count("UC01") == 1
     assert context["files_processed_block"].count("UC01_orders.xlsx") == 1
     assert context["warnings_block"]
