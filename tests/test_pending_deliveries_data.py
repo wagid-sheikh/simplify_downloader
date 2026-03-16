@@ -32,6 +32,65 @@ def _create_tables(database_url: str) -> None:
     engine.dispose()
 
 
+async def _insert_order_and_sale(
+    *,
+    database_url: str,
+    now: datetime,
+    order_date: datetime,
+    default_due_date: datetime,
+    source_system: str,
+    order_number: str,
+    gross_amount: Decimal,
+    net_amount: Decimal,
+    payment_received: Decimal,
+    adjustments: Decimal,
+) -> None:
+    async with session_scope(database_url) as session:
+        metadata = sa.MetaData()
+        orders = _orders_table(metadata)
+        sales = _sales_table(metadata)
+        await session.execute(
+            sa.insert(orders).values(
+                run_id="test-run",
+                run_date=now,
+                cost_center="UN3668",
+                store_code="A668",
+                source_system=source_system,
+                order_number=order_number,
+                invoice_number=f"INV-{order_number}",
+                order_date=order_date,
+                customer_name=f"Customer-{order_number}",
+                mobile_number="9999999999",
+                package_flag=False,
+                due_date=default_due_date,
+                default_due_date=default_due_date,
+                complete_processing_by=default_due_date,
+                gross_amount=gross_amount,
+                net_amount=net_amount,
+                order_status="Pending",
+                created_at=now,
+            )
+        )
+        await session.execute(
+            sa.insert(sales).values(
+                run_id="test-run",
+                run_date=now,
+                cost_center="UN3668",
+                store_code="A668",
+                order_date=order_date,
+                payment_date=now,
+                order_number=order_number,
+                customer_name=f"Customer-{order_number}",
+                payment_received=payment_received,
+                adjustments=adjustments,
+                payment_mode="Cash",
+                is_duplicate=False,
+                is_edited_order=False,
+            )
+        )
+        await session.commit()
+
+
 @pytest.mark.asyncio
 async def test_fetch_pending_deliveries_package_pending_tolerance(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "pending_deliveries.db"
@@ -121,3 +180,130 @@ async def test_fetch_pending_deliveries_package_pending_tolerance(tmp_path, monk
         if row.order_number == "ORD-NOT-COVERED"
     )
     assert included_row.default_due_date == date(2025, 5, 10)
+
+
+@pytest.mark.asyncio
+async def test_fetch_pending_deliveries_includes_td_and_uc_when_not_skipped(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_deliveries_mixed.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
+    now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
+    order_date = datetime(2025, 5, 1, 10, 0, tzinfo=tz)
+    default_due_date = datetime(2025, 5, 1, 10, 0, tzinfo=tz)
+
+    await _insert_order_and_sale(
+        database_url=database_url,
+        now=now,
+        order_date=order_date,
+        default_due_date=default_due_date,
+        source_system="TumbleDry",
+        order_number="TD-001",
+        gross_amount=Decimal("100.00"),
+        net_amount=Decimal("100.00"),
+        payment_received=Decimal("60.00"),
+        adjustments=Decimal("10.00"),
+    )
+    await _insert_order_and_sale(
+        database_url=database_url,
+        now=now,
+        order_date=order_date,
+        default_due_date=default_due_date,
+        source_system="UClean",
+        order_number="UC-001",
+        gross_amount=Decimal("200.00"),
+        net_amount=Decimal("200.00"),
+        payment_received=Decimal("50.00"),
+        adjustments=Decimal("25.00"),
+    )
+
+    data = await fetch_pending_deliveries_report(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+        skip_uc_pending_delivery=False,
+    )
+
+    assert data.total_count == 2
+    assert data.total_pending_amount == Decimal("180.00")
+    assert len(data.summary_sections) == 1
+    assert data.summary_sections[0].total_count == 2
+    assert data.summary_sections[0].total_pending_amount == Decimal("180.00")
+    summary_buckets = {bucket.label: bucket for bucket in data.summary_sections[0].buckets}
+    assert summary_buckets["0-5 days"].total_count == 0
+    assert summary_buckets["0-5 days"].total_pending_amount == Decimal("0")
+    assert summary_buckets["6-15 days"].total_count == 0
+    assert summary_buckets["6-15 days"].total_pending_amount == Decimal("0")
+    assert summary_buckets[">15 days"].total_count == 2
+    assert summary_buckets[">15 days"].total_pending_amount == Decimal("180.00")
+
+    assert data.cost_center_sections[0].total_count == 2
+    assert data.cost_center_sections[0].total_pending_amount == Decimal("180.00")
+    detail_rows = [row for bucket in data.cost_center_sections[0].buckets for row in bucket.rows]
+    assert {row.order_number for row in detail_rows} == {"TD-001", "UC-001"}
+    assert {row.source_system for row in detail_rows} == {"TumbleDry", "UClean"}
+
+
+@pytest.mark.asyncio
+async def test_fetch_pending_deliveries_excludes_uc_when_skip_flag_enabled(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_deliveries_skip_uc.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
+    now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
+    order_date = datetime(2025, 5, 1, 10, 0, tzinfo=tz)
+    default_due_date = datetime(2025, 5, 1, 10, 0, tzinfo=tz)
+
+    await _insert_order_and_sale(
+        database_url=database_url,
+        now=now,
+        order_date=order_date,
+        default_due_date=default_due_date,
+        source_system="TumbleDry",
+        order_number="TD-001",
+        gross_amount=Decimal("100.00"),
+        net_amount=Decimal("100.00"),
+        payment_received=Decimal("60.00"),
+        adjustments=Decimal("10.00"),
+    )
+    await _insert_order_and_sale(
+        database_url=database_url,
+        now=now,
+        order_date=order_date,
+        default_due_date=default_due_date,
+        source_system="UClean",
+        order_number="UC-001",
+        gross_amount=Decimal("200.00"),
+        net_amount=Decimal("200.00"),
+        payment_received=Decimal("50.00"),
+        adjustments=Decimal("25.00"),
+    )
+
+    data = await fetch_pending_deliveries_report(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+        skip_uc_pending_delivery=True,
+    )
+
+    assert data.total_count == 1
+    assert data.total_pending_amount == Decimal("30.00")
+    summary_buckets = {bucket.label: bucket for bucket in data.summary_sections[0].buckets}
+    assert summary_buckets["0-5 days"].total_count == 0
+    assert summary_buckets["6-15 days"].total_count == 0
+    assert summary_buckets[">15 days"].total_count == 1
+    assert summary_buckets[">15 days"].total_pending_amount == Decimal("30.00")
+
+    assert data.cost_center_sections[0].total_count == 1
+    assert data.cost_center_sections[0].total_pending_amount == Decimal("30.00")
+    detail_rows = [row for bucket in data.cost_center_sections[0].buckets for row in bucket.rows]
+    assert [row.order_number for row in detail_rows] == ["TD-001"]
+    assert [row.source_system for row in detail_rows] == ["TumbleDry"]
