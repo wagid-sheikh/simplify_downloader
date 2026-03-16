@@ -90,6 +90,7 @@ def test_daily_sales_report_ttd_calculation_and_rendering() -> None:
         {
             "company_name": "The Shaw Ventures",
             "report_date_display": report_date.strftime("%d-%b-%Y"),
+            "run_environment": "prod",
             "rows": report_data.rows,
             "totals": report_data.totals,
             "edited_orders": report_data.edited_orders,
@@ -99,6 +100,8 @@ def test_daily_sales_report_ttd_calculation_and_rendering() -> None:
         }
     )
 
+    assert "Run Environment: prod" in html
+    assert html.index("Pickup &amp; Delivery KPIs Report for") < html.index("Run Environment: prod")
     assert uttam_ttd == Decimal("307")
     assert kirti_ttd == Decimal("-41117")
     assert html.count('class="ttd-negative"') == 2
@@ -161,6 +164,7 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
         {
             "company_name": "The Shaw Ventures",
             "report_date_display": report_date.strftime("%d-%b-%Y"),
+            "run_environment": "prod",
             "rows": report_data.rows,
             "totals": report_data.totals,
             "edited_orders": report_data.edited_orders,
@@ -170,6 +174,8 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
         }
     )
 
+    assert "Run Environment: prod" in html
+    assert html.index("Pickup &amp; Delivery KPIs Report for") < html.index("Run Environment: prod")
     assert "Missed Leads for this month" in html
     assert "Uttam Nagar New" in html
     assert "(9999999999, Alice), (8888888888, Bob)" in html

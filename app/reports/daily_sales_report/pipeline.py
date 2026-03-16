@@ -99,11 +99,12 @@ async def _persist_document(
         await session.commit()
 
 
-def _build_context(data: DailySalesReportData) -> dict[str, object]:
+def _build_context(data: DailySalesReportData, run_environment: str) -> dict[str, object]:
     report_date_display = data.report_date.strftime("%d-%b-%Y")
     return {
         "company_name": "The Shaw Ventures",
         "report_date_display": report_date_display,
+        "run_environment": run_environment,
         "rows": data.rows,
         "totals": data.totals,
         "edited_orders": data.edited_orders,
@@ -171,7 +172,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             edited_orders=len(data.edited_orders),
         )
 
-        context = _build_context(data)
+        context = _build_context(data, run_env)
         html = _render_html(context)
         tracker.mark_phase("render_html", "ok")
         log_event(
