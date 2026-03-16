@@ -29,10 +29,12 @@ from app.config import config
 
 logger = logging.getLogger(__name__)
 
-STORE_PROFILE_DOC_TYPES: dict[tuple[str, str], str] = {
+STORE_PROFILE_DOC_TYPES: dict[tuple[str, str], str | None] = {
     ("dashboard_daily", "store_daily_reports"): "store_daily_pdf",
     ("dashboard_weekly", "store_weekly_reports"): "store_weekly_pdf",
     ("dashboard_monthly", "store_monthly_reports"): "store_monthly_pdf",
+    ("td_orders_sync", "store_reports"): None,
+    ("uc_orders_sync", "store_reports"): None,
 }
 STATUS_EXPLANATIONS = {
     "ok": "run completed with no issues recorded",
@@ -1305,17 +1307,36 @@ def _build_store_plans(
 ) -> list[EmailPlan]:
     if not template:
         return []
-    doc_type = STORE_PROFILE_DOC_TYPES.get((pipeline_code, profile["code"]))
-    if not doc_type:
+    if (pipeline_code, profile["code"]) not in STORE_PROFILE_DOC_TYPES:
         return []
+    doc_type = STORE_PROFILE_DOC_TYPES[(pipeline_code, profile["code"])]
+
+    context_store_codes = {
+        normalized
+        for payload in (context.get("stores") or [])
+        if isinstance(payload, Mapping)
+        for normalized in [_normalize_store_code(payload.get("store_code"))]
+        if normalized and normalized != "ALL"
+    }
+    recipient_store_codes = {
+        normalized
+        for row in recipients
+        for normalized in [_normalize_store_code(row.get("store_code"))]
+        if normalized
+    }
+
     plans: list[EmailPlan] = []
     grouped: dict[str, list[DocumentRecord]] = {}
     for record in docs:
-        if record.doc_type != doc_type or not record.store_code or record.store_code == "ALL":
+        if doc_type and record.doc_type != doc_type:
+            continue
+        if not record.store_code or record.store_code == "ALL":
             continue
         grouped.setdefault(record.store_code, []).append(record)
-    for store_code in sorted(grouped):
-        store_records = grouped[store_code]
+
+    planned_store_codes = set(grouped) | context_store_codes | recipient_store_codes
+    for store_code in sorted(planned_store_codes):
+        store_records = grouped.get(store_code, [])
         to, cc, bcc = _collect_recipient_lists(recipients, store_code=store_code)
         if not to and cc:
             logger.info(
@@ -1339,7 +1360,8 @@ def _build_store_plans(
             )
             continue
         attachments = _paths_for_documents(store_records)
-        if profile.get("attach_mode") == "per_store_pdf" and not attachments:
+        require_attachments = profile.get("attach_mode") == "per_store_pdf" and doc_type is not None
+        if require_attachments and not attachments:
             continue
         store_context = dict(context)
         store_context["store_code"] = store_code

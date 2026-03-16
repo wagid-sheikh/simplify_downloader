@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.dashboard_downloader.notifications import (
     _build_fact_rows,
+    _build_store_plans,
     _build_uc_orders_context,
     _format_fact_sections_text,
     _prepare_ingest_remarks,
@@ -210,3 +211,25 @@ def test_unified_context_contract_for_uc_orders() -> None:
     assert context["files_processed_block"].count("UC01_orders.xlsx") == 1
     assert context["warnings_block"]
     assert context["optional_notes_block"]
+
+
+
+def test_store_scope_td_uc_allows_global_recipient_without_documents() -> None:
+    profile = {"code": "store_reports", "scope": "store", "attach_mode": "per_store_pdf"}
+    template = {"subject_template": "{{ store_code }}", "body_template": "{{ store_name }}"}
+    recipients = [{"store_code": None, "email_address": "ops@example.com", "send_as": "to"}]
+
+    plans = _build_store_plans(
+        pipeline_code="td_orders_sync",
+        profile=profile,
+        template=template,
+        recipients=recipients,
+        docs=[],
+        context={"stores": [{"store_code": "TD001"}]},
+        store_names={"TD001": "Store TD001"},
+    )
+
+    assert len(plans) == 1
+    assert plans[0].store_code == "TD001"
+    assert plans[0].to == ["ops@example.com"]
+    assert plans[0].attachments == []
