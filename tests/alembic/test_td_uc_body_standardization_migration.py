@@ -13,8 +13,8 @@ from alembic.operations import Operations
 
 def _load_migration_module():
     project_root = Path(__file__).resolve().parents[2]
-    module_path = project_root / "alembic" / "versions" / "0078_store_status_subject_templ.py"
-    spec = importlib.util.spec_from_file_location("v0078_store_status_subject_templ", module_path)
+    module_path = project_root / "alembic" / "versions" / "0077_standardize_td_uc_bodytempl.py"
+    spec = importlib.util.spec_from_file_location("v0077_standardize_td_uc_bodytempl", module_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Unable to load migration module from {module_path}")
     module = importlib.util.module_from_spec(spec)
@@ -36,12 +36,12 @@ def _run_migration(connection: sa.Connection, fn: Callable[[], None], monkeypatc
         monkeypatch.setattr(migration, "op", original_op)
 
 
-def _subject_by_template_id(connection: sa.Connection) -> dict[int, str]:
-    rows = connection.execute(sa.text("SELECT id, subject_template FROM email_templates ORDER BY id")).fetchall()
+def _body_by_template_id(connection: sa.Connection) -> dict[int, str]:
+    rows = connection.execute(sa.text("SELECT id, body_template FROM email_templates ORDER BY id")).fetchall()
     return {int(row[0]): str(row[1]) for row in rows}
 
 
-def test_store_scope_status_subject_template_upgrade_and_downgrade(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_td_uc_body_standardization_upgrade_and_downgrade(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = sa.create_engine("sqlite://")
 
     with engine.begin() as connection:
@@ -53,7 +53,7 @@ def test_store_scope_status_subject_template_upgrade_and_downgrade(monkeypatch: 
         )
         connection.execute(
             sa.text(
-                "CREATE TABLE email_templates (id INTEGER PRIMARY KEY, profile_id INTEGER, subject_template TEXT, is_active BOOLEAN)"
+                "CREATE TABLE email_templates (id INTEGER PRIMARY KEY, profile_id INTEGER, body_template TEXT, is_active BOOLEAN)"
             )
         )
 
@@ -82,37 +82,38 @@ def test_store_scope_status_subject_template_upgrade_and_downgrade(monkeypatch: 
         connection.execute(
             sa.text(
                 """
-                INSERT INTO email_templates (id, profile_id, subject_template, is_active) VALUES
-                  (101, 11, 'TD Orders Sync – {{ store_code }}', 1),
-                  (102, 12, 'UC Orders Sync – {{ store_code }}', 1),
-                  (103, 13, 'td run subject', 1),
-                  (104, 14, 'inactive profile subject', 1),
-                  (105, 15, 'bank subject', 1),
-                  (106, 12, 'inactive template subject', 0)
+                INSERT INTO email_templates (id, profile_id, body_template, is_active) VALUES
+                  (101, 11, '{{ (summary_text or td_summary_text) }}', 1),
+                  (102, 12, '{{ (summary_text or uc_summary_text) }}', 1),
+                  (103, 13, 'td run body', 1),
+                  (104, 14, 'inactive profile body', 1),
+                  (105, 15, 'bank body', 1),
+                  (106, 12, 'inactive template body', 0)
                 """
             )
         )
 
     with engine.begin() as connection:
         _run_migration(connection, migration.upgrade, monkeypatch)
-        upgraded = _subject_by_template_id(connection)
+        upgraded = _body_by_template_id(connection)
 
-    assert upgraded[101] == migration.NEW_SUBJECT_TEMPLATE
-    assert upgraded[102] == migration.NEW_SUBJECT_TEMPLATE
-    assert upgraded[103] == "td run subject"
-    assert upgraded[104] == "inactive profile subject"
-    assert upgraded[105] == "bank subject"
-    assert upgraded[106] == "inactive template subject"
+    assert upgraded[101] == migration.SUMMARY_TEXT_TEMPLATE
+    assert upgraded[102] == migration.SUMMARY_TEXT_TEMPLATE
+    assert upgraded[103] == "td run body"
+    assert upgraded[104] == "inactive profile body"
+    assert upgraded[105] == "bank body"
+    assert upgraded[106] == "inactive template body"
 
     with engine.begin() as connection:
         connection.execute(
-            sa.text(
-                "UPDATE email_templates SET subject_template = 'manually changed after upgrade' WHERE id = 101"
-            )
+            sa.text("UPDATE email_templates SET body_template = 'manually changed after upgrade' WHERE id = 101")
         )
         _run_migration(connection, migration.downgrade, monkeypatch)
-        downgraded = _subject_by_template_id(connection)
+        downgraded = _body_by_template_id(connection)
 
     assert downgraded[101] == "manually changed after upgrade"
-    assert downgraded[102] == "UC Orders Sync – {{ store_code }}"
-    assert downgraded[103] == "td run subject"
+    assert downgraded[102] == "{{ (summary_text or uc_summary_text) }}"
+    assert downgraded[103] == "td run body"
+    assert downgraded[104] == "inactive profile body"
+    assert downgraded[105] == "bank body"
+    assert downgraded[106] == "inactive template body"
