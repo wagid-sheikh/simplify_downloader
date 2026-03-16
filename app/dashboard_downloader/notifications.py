@@ -1856,8 +1856,6 @@ def _build_td_orders_context(
         f"- missing_windows: {window_summary.get('missing_windows', 0)}",
         f"- missing_window_stores: {', '.join(window_summary.get('missing_store_codes') or []) or '(none)'}",
     ]
-    if fact_sections_text:
-        optional_notes_lines.append("- row_level_facts_available: yes")
     optional_notes_block = _format_block(optional_notes_lines)
     unique_store_codes = sorted({store.get("store_code") for store in stores if store.get("store_code")})
     store_code = unique_store_codes[0] if len(unique_store_codes) == 1 else "ALL"
@@ -2099,8 +2097,6 @@ def _build_uc_orders_context(
         f"- missing_windows: {window_summary.get('missing_windows', 0)}",
         f"- missing_window_stores: {', '.join(window_summary.get('missing_store_codes') or []) or '(none)'}",
     ]
-    if summary_text:
-        optional_notes_lines.append("- summary_available: yes")
     optional_notes_block = _format_block(optional_notes_lines)
     unique_store_codes = sorted({store.get("store_code") for store in stores if store.get("store_code")})
     unified_store_code = unique_store_codes[0] if len(unique_store_codes) == 1 else "ALL"
@@ -2303,7 +2299,7 @@ def _format_notification_display_datetime(value: Any) -> str:
             return _normalize_datetime(value)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(NOTIFICATION_DISPLAY_TIMEZONE).strftime("%d-%b-%Y %H:%M:%S")
+        return dt.astimezone(NOTIFICATION_DISPLAY_TIMEZONE).strftime("%d-%b-%Y %H:%M:%S IST")
     except Exception:
         return _normalize_datetime(value)
 
@@ -2316,17 +2312,17 @@ def _run_date_display(value: Any) -> str:
     if value in (None, ""):
         return ""
     if isinstance(value, datetime):
-        return value.date().strftime("%d-%m-%Y")
+        return value.date().strftime("%d-%b-%Y")
     if isinstance(value, date):
-        return value.strftime("%d-%m-%Y")
+        return value.strftime("%d-%b-%Y")
     text = str(value).strip()
     if not text:
         return ""
     try:
         if "T" in text or ":" in text:
             parsed = datetime.fromisoformat(text)
-            return parsed.date().strftime("%d-%m-%Y")
-        return date.fromisoformat(text).strftime("%d-%m-%Y")
+            return parsed.date().strftime("%d-%b-%Y")
+        return date.fromisoformat(text).strftime("%d-%b-%Y")
     except ValueError:
         return text
 
