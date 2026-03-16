@@ -189,16 +189,18 @@ def test_td_template_renders_payload_without_false_failure_note() -> None:
 
     body = Template(TEMPLATE_BODY).render(**render_context)
 
-    assert "TD Orders & Sales Run Summary" in body
-    assert "rows_downloaded: 12" in body
+    assert "Header:" in body
+    assert "- pipeline: td_orders_sync" in body
+    assert "Per-store metrics:" in body
     assert "data_source_decision: api_primary" in body
     assert "ingest_status: failed" in body
     assert "failure_stage: ingest" in body
+    assert "rows_downloaded: 12" in body
     assert "rows_ingested: 10" in body
     assert "warning_count: 1" in body
     assert "edited_count: 1" in body
     assert "duplicate_count: 0" in body
-    assert "05-01-2024 10:30:00" in body
+    assert "started_at: 05-01-2024 10:30:00" in body
     assert "All TD stores failed" not in body
 
 

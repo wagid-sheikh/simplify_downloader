@@ -2210,6 +2210,71 @@ def _format_td_timestamp(value: Any) -> str:
         return _normalize_datetime(value)
 
 
+def _deterministic_summary_text(
+    *,
+    pipeline: str,
+    run_data: Mapping[str, Any],
+    started_at: str,
+    finished_at: str,
+    duration: str,
+    overall_status: str,
+    window_lines: Sequence[str],
+    per_store_metrics: Sequence[dict[str, Any]],
+    warnings: Sequence[str],
+    row_level_facts: Sequence[str],
+    filenames: Sequence[str],
+) -> str:
+    header_lines = [
+        "Header:",
+        f"- pipeline: {pipeline}",
+        f"- run_id: {run_data.get('run_id')}",
+        f"- env: {run_data.get('run_env')}",
+        f"- report_date: {run_data.get('report_date') or ''}",
+        f"- started_at: {started_at}",
+        f"- finished_at: {finished_at}",
+        f"- duration: {duration}",
+        f"- overall_status: {_format_status_label(overall_status).upper()}",
+    ]
+
+    lines: list[str] = [*header_lines, "", "Window reconciliation summary:"]
+    lines.extend(window_lines or ["- (none)"])
+
+    lines.extend(["", "Per-store metrics:"])
+    metric_order = (
+        "data_source_decision",
+        "ingest_status",
+        "failure_stage",
+        "rows_downloaded",
+        "rows_ingested",
+        "inserted",
+        "updated",
+        "warning_count",
+        "dropped_count",
+        "edited_count",
+        "duplicate_count",
+        "reconciliation",
+    )
+    if per_store_metrics:
+        for store in per_store_metrics:
+            lines.append(f"- {store.get('store_code') or 'UNKNOWN'} — {store.get('status') or 'UNKNOWN'}")
+            for key in metric_order:
+                if key not in store:
+                    continue
+                lines.append(f"  {key}: {store.get(key)}")
+    else:
+        lines.append("- (none)")
+
+    lines.extend(["", "Warnings:"])
+    lines.extend(f"- {warning}" for warning in warnings) if warnings else lines.append("- (none)")
+
+    lines.extend(["", "Row-level facts:"])
+    lines.extend(f"- {fact}" for fact in row_level_facts) if row_level_facts else lines.append("- (none)")
+
+    lines.extend(["", "Filenames:"])
+    lines.extend(f"- {name}" for name in filenames) if filenames else lines.append("- (none)")
+    return "\n".join(lines)
+
+
 def _td_summary_text_from_payload(run_data: Mapping[str, Any]) -> str:
     metrics = run_data.get("metrics_json") or {}
     payload = metrics.get("notification_payload") or {}
@@ -2241,89 +2306,73 @@ def _td_summary_text_from_payload(run_data: Mapping[str, Any]) -> str:
         updated = _coalesce_int(report, "final_updated", "staging_updated") or 0
         return inserted, updated
 
-    def _format_store_section(*, sales: bool = False) -> list[str]:
-        lines: list[str] = []
-        for store in stores_payload:
-            report = (store.get("sales") if sales else store.get("orders")) or {}
-            status = _normalize_output_status(report.get("status"))
-            status_label = _format_status_label(status).upper()
-            rows_downloaded = report.get("rows_downloaded") or 0
-            rows_ingested = _rows_ingested(report)
-            inserted, updated = _inserted_updated(report)
-            warning_count = _count(report, "warning_count", "warning_rows", "warnings")
-            dropped_count = _count(report, "dropped_rows_count", "dropped_rows")
-            base = [
-                f"- {store.get('store_code') or 'UNKNOWN'} — {status_label}",
-                f"  data_source_decision: {store.get('data_source_decision') or 'ui'}",
-                f"  ingest_status: {store.get('ingest_status') or ('failed' if status in {'failed', 'success_with_warnings'} else 'success')}",
-                f"  failure_stage: {store.get('failure_stage') or 'none'}",
-                f"  rows_downloaded: {rows_downloaded}",
-                f"  rows_ingested: {rows_ingested}",
-                f"  inserted: {inserted}",
-                f"  updated: {updated}",
-                f"  warning_count: {warning_count}",
-                f"  dropped_count: {dropped_count}",
-            ]
-            if sales:
-                edited = _count(report, "edited_rows_count", "edited_rows")
-                duplicate = _count(report, "duplicate_rows_count", "duplicate_rows")
-                base.extend(
-                    [
-                        f"  edited_count: {edited}",
-                        f"  duplicate_count: {duplicate}",
-                    ]
-                )
-            lines.extend(base)
-        if not lines:
-            lines.append("- (none)")
-        return lines
-
     started = _format_td_timestamp(payload.get("started_at") or run_data.get("started_at"))
     finished = _format_td_timestamp(payload.get("finished_at") or run_data.get("finished_at"))
     duration = payload.get("total_time_taken") or run_data.get("total_time_taken") or ""
     orders_status = payload.get("orders_status") or (metrics.get("orders") or {}).get("overall_status")
     sales_status = payload.get("sales_status") or (metrics.get("sales") or {}).get("overall_status")
     window_summary = metrics.get("window_summary") or {}
-    status_line = (
-        "Overall Status: "
-        f"{_format_status_label(_normalize_output_status(payload.get('overall_status') or run_data.get('overall_status')))}"
-        " (Orders: "
-        f"{_format_status_label(_normalize_output_status(orders_status))}, Sales: "
-        f"{_format_status_label(_normalize_output_status(sales_status))})"
-    )
-    window_lines = []
+    overall_status = _normalize_output_status(payload.get("overall_status") or run_data.get("overall_status"))
+    window_lines: list[str] = []
     if window_summary:
         window_lines = [
-            f"Windows Completed: {window_summary.get('completed_windows', 0)} / {window_summary.get('expected_windows', 0)}",
-            f"Missing Windows: {window_summary.get('missing_windows', 0)}",
+            f"- windows_completed: {window_summary.get('completed_windows', 0)} / {window_summary.get('expected_windows', 0)}",
+            f"- missing_windows: {window_summary.get('missing_windows', 0)}",
         ]
         missing_stores = window_summary.get("missing_store_codes") or []
         if missing_stores:
-            window_lines.append(f"Missing Window Stores: {', '.join(missing_stores)}")
+            window_lines.append(f"- missing_window_stores: {', '.join(missing_stores)}")
 
-    lines = [
-        "TD Orders & Sales Run Summary",
-        f"Run ID: {run_data.get('run_id')} | Env: {run_data.get('run_env')}",
-        f"Report Date: {(run_data.get('report_date') or '')}",
-        f"Started (Asia/Kolkata): {started}",
-        f"Finished (Asia/Kolkata): {finished}",
-    ]
-    if duration:
-        lines.append(f"Total Duration: {duration}")
-    lines.extend([status_line, *window_lines])
-    lines.extend(
-        [
-            "",
-            "**Per Store Orders Metrics:**",
-            *_format_store_section(sales=False),
-            "",
-            "**Per Store Sales Metrics:**",
-            *_format_store_section(sales=True),
-        ]
-    )
+    per_store_metrics: list[dict[str, Any]] = []
+    warnings = _normalize_warning_entries(payload.get("warnings") or metrics.get("warnings") or [])
+    row_level_facts: list[str] = []
+    filenames: list[str] = []
+    for store in stores_payload:
+        for report_name in ("orders", "sales"):
+            report = store.get(report_name) or {}
+            status = _normalize_output_status(report.get("status"))
+            inserted, updated = _inserted_updated(report)
+            store_code = store.get("store_code") or "UNKNOWN"
+            per_store_metrics.append(
+                {
+                    "store_code": f"{store_code} ({report_name})",
+                    "status": _format_status_label(status).upper(),
+                    "data_source_decision": store.get("data_source_decision") or "ui",
+                    "ingest_status": store.get("ingest_status")
+                    or ("failed" if status in {"failed", "success_with_warnings"} else "success"),
+                    "failure_stage": store.get("failure_stage") or "none",
+                    "rows_downloaded": report.get("rows_downloaded") or 0,
+                    "rows_ingested": _rows_ingested(report),
+                    "inserted": inserted,
+                    "updated": updated,
+                    "warning_count": _count(report, "warning_count", "warning_rows", "warnings"),
+                    "dropped_count": _count(report, "dropped_rows_count", "dropped_rows"),
+                    "edited_count": _count(report, "edited_rows_count", "edited_rows") if report_name == "sales" else 0,
+                    "duplicate_count": _count(report, "duplicate_rows_count", "duplicate_rows") if report_name == "sales" else 0,
+                }
+            )
+            for fact_type in ("warning_rows", "dropped_rows", "edited_rows", "duplicate_rows"):
+                fact_rows = report.get(fact_type) or []
+                if fact_rows:
+                    row_level_facts.append(f"{store_code} {report_name} {fact_type}: {len(fact_rows)}")
+            report_filenames = report.get("filenames") or []
+            filenames.extend(f"{store_code} {report_name}: {name}" for name in report_filenames)
     if _td_all_stores_failed(stores_payload):
-        lines.append("All TD stores failed for Orders and Sales.")
-    return "\n".join(lines)
+        warnings.append("All TD stores failed for Orders and Sales.")
+
+    return _deterministic_summary_text(
+        pipeline="td_orders_sync",
+        run_data=run_data,
+        started_at=started,
+        finished_at=finished,
+        duration=duration,
+        overall_status=overall_status,
+        window_lines=window_lines,
+        per_store_metrics=per_store_metrics,
+        warnings=warnings,
+        row_level_facts=row_level_facts,
+        filenames=filenames,
+    )
 
 
 def _uc_summary_text_from_payload(
@@ -2369,21 +2418,20 @@ def _uc_summary_text_from_payload(
             continue
         missing_window_lines.append(f"- {store_code}: {', '.join(window_lines)}")
     missing_windows_detail = "\n".join(missing_window_lines) if missing_window_lines else ""
-    lines = [
-        "UC GST Run Summary",
-        f"Overall Status: {_format_status_label(overall_status)} ({status_explanation})",
+    window_lines = [
         (
-            f"Stores: {uc_status_counts.get('success', 0)} success, "
-            f"{uc_status_counts.get('success_with_warnings', 0)} success with warnings, "
+            f"- stores: {uc_status_counts.get('success', 0)} success, "
+            f"{uc_status_counts.get('success_with_warnings', 0)} success_with_warnings, "
             f"{uc_status_counts.get('partial', 0)} partial, {uc_status_counts.get('failed', 0)} failed"
             f"{skipped_suffix} across {total} stores"
         ),
-        f"Windows Completed: {window_summary.get('completed_windows', 0)} / {window_summary.get('expected_windows', 0)}",
-        missing_line,
+        f"- windows_completed: {window_summary.get('completed_windows', 0)} / {window_summary.get('expected_windows', 0)}",
+        f"- missing_windows: {missing_windows if missing_windows is not None else 0}",
     ]
+    if missing_stores:
+        window_lines.append(f"- missing_window_stores: {', '.join(missing_stores)}")
     if missing_windows_detail:
-        lines.append("Missing Window Ranges:")
-        lines.append(missing_windows_detail)
+        window_lines.append(f"- missing_window_ranges: {missing_windows_detail}")
     warning_counts_by_store: dict[str, int] = {}
     for store in stores_payload:
         store_code = store.get("store_code") or "UNKNOWN"
@@ -2400,10 +2448,9 @@ def _uc_summary_text_from_payload(
         payload_warnings=payload.get("warnings") or metrics.get("warnings") or [],
         warning_counts_by_store=warning_counts_by_store,
     )
-    if warnings:
-        lines.append("Warnings:")
-        lines.extend(f"- {warning}" for warning in warnings)
-    store_lines: list[str] = []
+    per_store_metrics: list[dict[str, Any]] = []
+    row_level_facts: list[str] = []
+    filenames: list[str] = []
     for store in stores_payload:
         store_code = store.get("store_code") or "UNKNOWN"
         rows_downloaded = _coerce_int(store.get("rows_downloaded")) or 0
@@ -2418,22 +2465,44 @@ def _uc_summary_text_from_payload(
         )
         reason_counts = store.get("rows_skipped_invalid_reasons") or {}
         reason_parts = [f"{key}={value}" for key, value in reason_counts.items()] or ["(none)"]
-        store_lines.extend(
-            [
-                f"- {store_code}",
-                f"  rows_downloaded: {rows_downloaded}",
-                f"  rows_ingested: {rows_ingested}",
-                f"  inserted: {inserted}",
-                f"  updated: {updated}",
-                f"  warning_count: {warning_count}",
-                f"  dropped_count: {dropped_count} ({', '.join(reason_parts)})",
-                f"  reconciliation: rows_downloaded == inserted + updated + dropped_count ({reconciliation})",
-            ]
+        per_store_metrics.append(
+            {
+                "store_code": store_code,
+                "status": _format_status_label(_normalize_uc_status(store.get("status"))).upper(),
+                "rows_downloaded": rows_downloaded,
+                "rows_ingested": rows_ingested,
+                "inserted": inserted,
+                "updated": updated,
+                "warning_count": warning_count,
+                "dropped_count": f"{dropped_count} ({', '.join(reason_parts)})",
+                "reconciliation": f"rows_downloaded == inserted + updated + dropped_count ({reconciliation})",
+            }
         )
-    if store_lines:
-        lines.append("Window Reconciliation:")
-        lines.extend(store_lines)
-    return "\n".join(lines)
+        warning_rows = _clean_uc_rows_for_reporting(store.get("warning_rows"), drop_empty=True)
+        if warning_rows:
+            row_level_facts.append(f"{store_code} warning_rows: {len(warning_rows)}")
+        dropped_rows = _clean_uc_rows_for_reporting(store.get("dropped_rows"), drop_empty=True)
+        if dropped_rows:
+            row_level_facts.append(f"{store_code} dropped_rows: {len(dropped_rows)}")
+        filename = store.get("filename")
+        if filename:
+            filenames.append(f"{store_code}: {filename}")
+
+    warnings = list(warnings)
+    warnings.insert(0, f"overall_status_explanation: {status_explanation}")
+    return _deterministic_summary_text(
+        pipeline="uc_orders_sync",
+        run_data=run_data,
+        started_at=_normalize_datetime(payload.get("started_at") or run_data.get("started_at")),
+        finished_at=_normalize_datetime(payload.get("finished_at") or run_data.get("finished_at")),
+        duration=str(payload.get("total_time_taken") or run_data.get("total_time_taken") or ""),
+        overall_status=overall_status,
+        window_lines=window_lines,
+        per_store_metrics=per_store_metrics,
+        warnings=warnings,
+        row_level_facts=row_level_facts,
+        filenames=filenames,
+    )
 
 
 async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[str, Any]:
