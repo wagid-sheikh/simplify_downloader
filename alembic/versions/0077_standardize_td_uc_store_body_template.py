@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0077_standardize_td_uc_store_body_template"
+revision = "0077_standardize_td_uc_bodytempl"
 down_revision = ("0075_store_scope_subj_codes", "0076_add_stg_td_garments_weight")
 branch_labels = None
 depends_on = None
