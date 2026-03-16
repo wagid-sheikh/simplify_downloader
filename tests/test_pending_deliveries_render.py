@@ -64,6 +64,7 @@ def test_render_html_includes_due_date_column_and_value() -> None:
             "report_date_display": "20-May-2025",
             "run_id": "run-1",
             "timezone": "Asia/Kolkata",
+            "run_environment": "prod",
             "summary_sections": [summary_section],
             "cost_center_sections": [cost_center_section],
             "total_count": 1,
@@ -71,6 +72,10 @@ def test_render_html_includes_due_date_column_and_value() -> None:
         }
     )
 
+    assert "<strong>Report Date:</strong> 20-May-2025" in html
+    assert "<strong>Run ID:</strong> run-1" in html
+    assert "<strong>Timezone:</strong> Asia/Kolkata" in html
+    assert "<strong>Run Environment:</strong> prod" in html
     assert "<th>Due Date</th>" in html
     assert "10-May-2025</td>" in html
     assert "12-May-2025</td>" in html

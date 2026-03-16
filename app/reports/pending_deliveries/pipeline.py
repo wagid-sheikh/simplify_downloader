@@ -26,7 +26,11 @@ OUTPUT_ROOT = Path("app") / "reports" / "output_files"
 
 
 def _build_context(
-    data: PendingDeliveriesReportData, *, run_id: str, timezone_label: str
+    data: PendingDeliveriesReportData,
+    *,
+    run_id: str,
+    timezone_label: str,
+    run_environment: str,
 ) -> dict[str, object]:
     report_date_display = data.report_date.strftime("%d-%b-%Y")
     return {
@@ -34,6 +38,7 @@ def _build_context(
         "report_date": data.report_date.isoformat(),
         "run_id": run_id,
         "timezone": timezone_label,
+        "run_environment": run_environment,
         "summary_sections": data.summary_sections,
         "cost_center_sections": data.cost_center_sections,
         "total_count": data.total_count,
@@ -130,7 +135,12 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             rows=data.total_count,
         )
 
-        context = _build_context(data, run_id=run_id, timezone_label=tz.key)
+        context = _build_context(
+            data,
+            run_id=run_id,
+            timezone_label=tz.key,
+            run_environment=run_env,
+        )
         html = render_html(context)
         tracker.mark_phase("render_html", "ok")
         log_event(
