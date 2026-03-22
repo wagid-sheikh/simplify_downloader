@@ -1,0 +1,129 @@
+# Architecture (current repository state)
+
+## System overview
+
+`simplify_downloader` is an async Python service that combines:
+1. headless browser + API extraction from CRM systems,
+2. ingestion/upsert into Postgres,
+3. PDF report generation,
+4. notification dispatch driven by DB templates/recipients,
+5. run-summary and per-window observability.
+
+Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates to `app/dashboard_downloader/cli.py` and sub-pipelines.
+
+## Major components
+
+### 1) Configuration and secrets
+- `app/config.py` is SSOT for runtime config.
+- Inputs come from:
+  - required env vars (DB pieces, secret key, paths, timezone),
+  - `system_config` table for plaintext/encrypted app settings,
+  - decryption via `app/crypto.py`.
+- Config fails fast on missing/invalid values.
+
+### 2) Shared data access and models
+- Async DB session management: `app/common/db.py`.
+- Dashboard/store tables and persistence helpers: `app/common/dashboard_store.py`.
+- CSV ingestion schema/model pipeline: `app/common/ingest/{schemas.py,models.py,service.py}`.
+
+### 3) Dashboard downloader orchestration
+- Orchestrator: `app/dashboard_downloader/pipeline.py`.
+- CLI/router: `app/dashboard_downloader/cli.py`.
+- Responsibilities:
+  - run single-session store downloads,
+  - merge + ingest bucketed CSVs,
+  - audit/cleanup,
+  - trigger store report generation tail-step,
+  - persist run summary,
+  - trigger notifications.
+
+### 4) CRM order-sync pipelines
+- UC sync: `app/crm_downloader/uc_orders_sync/main.py`.
+- TD sync: `app/crm_downloader/td_orders_sync/main.py`.
+- Shared window logic: `app/crm_downloader/orders_sync_window.py`.
+- Profiler/orchestrator over windows + stores: `app/crm_downloader/orders_sync_run_profiler/main.py`.
+- Data source behavior appears to include UI extraction plus TD API compare/source-mode switching.
+
+### 5) Reporting pipelines
+- Daily sales: `app/reports/daily_sales_report/`.
+- Pending deliveries: `app/reports/pending_deliveries/`.
+- Store/week/month reporting helpers: `app/dashboard_downloader/run_store_reports.py` + `app/dashboard_downloader/pipelines/`.
+- PDF rendering centralized through report renderer wrappers.
+
+### 6) Lead assignment pipeline
+- `app/lead_assignment/pipeline.py` orchestrates:
+  - assignment batch creation,
+  - PDF generation,
+  - notification dispatch,
+  - run summary style logging.
+
+### 7) Notifications and operational messaging
+- `app/dashboard_downloader/notifications.py` resolves pipeline run context + docs + templates + recipients from DB.
+- SMTP config values are loaded from `app.config`.
+- Supports diagnostics command (`python -m app notifications test ...`).
+
+## Request / run flow (high level)
+
+1. Operator/cron/script invokes `python -m app ...`.
+2. CLI loads `config` (env + DB), resolves run mode.
+3. Pipeline executes extraction/ingest/reporting stages.
+4. Stage metrics and events are logged via `JsonLogger`.
+5. Run summary rows inserted/updated in `pipeline_run_summaries`.
+6. Notifications are planned from DB metadata and sent via SMTP.
+
+For order-sync profiler, the run additionally:
+- computes date windows per store,
+- runs TD/UC sync workers,
+- writes/reads `orders_sync_log` and derived summary metrics.
+
+## Data and migration layer
+
+- Alembic is configured in `alembic/env.py` (env-driven URL build).
+- Revisions are under `alembic/versions/`.
+- Schema includes operational tables such as:
+  - `pipeline_run_summaries`,
+  - `documents`,
+  - `orders_sync_log`,
+  - `td_sync_compare_log`,
+  - ingest tables (`missed_leads`, `undelivered_orders`, etc.).
+
+## CI/CD and deployment shape
+
+- CI (`.github/workflows/ci.yml`): on push to `main`, install via Poetry, run pytest.
+- Deploy (`.github/workflows/deploy-prod.yml`): SSH to host, hard reset to origin/main, docker compose build/up, run alembic upgrade head.
+- Runtime container entrypoint: `python -m app`.
+
+## AuthN/AuthZ and sensitive assets
+
+- Primary auth appears to be service credentials for CRM endpoints and SMTP; no user-facing auth layer in this repo.
+- Sensitive artifacts include storage-state browser cookies, report PDFs, logs, and encrypted DB config values.
+
+## Integration points
+
+- CRM web UIs and/or APIs (TD/UC flows).
+- Postgres via SQLAlchemy.
+- SMTP for outbound emails.
+- Playwright/browser runtime for scraping/PDF rendering.
+
+## Important boundaries/patterns
+
+- Keep config reads inside `app.config`.
+- Keep DB reads/writes via shared async session helpers.
+- Keep pipeline telemetry structured (`log_event`, run IDs, phase/status).
+- Treat DB notification metadata as runtime contract for email behavior.
+
+## Legacy markdown status (triaged)
+
+From code-audit perspective:
+
+- **Useful + mostly aligned**: `README.md`, `docs/configuration.md`, `docs/uc_orders_sync_runbook.md`, `docs/td_api/*.md`.
+- **Useful but likely stale/partial**: `docs/CRM-Downloader-Specs.md`, `docs/crm-sync-pipeline*.md`, `docs/tsv_crm_refactor_master_plan.md`.
+- **Historical/process-only**: `docs/StepA-Response.md`, `docs/StepC-Documentation.md`, `docs/CODEX_KICKOFF_SIMPLIFY_DOWNLOADER.md`, `docs/start.md`.
+- **Out-of-scope/contradictory for this repo**: `docs/temp_md/*`, `app/charms_wiki/*.md` (different product domain).
+
+Use canonical docs first, then consult legacy docs only for supporting context.
+
+## Known ambiguities needing verification
+
+- Some long CRM sync modules contain mixed legacy and current paths; exact source-of-truth flow per source mode should be validated by focused runtime tests.
+- Presence of similarly named migrations (e.g., multiple `0075*`) suggests historical complexity; migration sequence should always be checked from actual revision chain, not filename assumptions.
