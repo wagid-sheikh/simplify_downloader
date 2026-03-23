@@ -258,7 +258,7 @@ class RunAggregator:
                 lines.append(f"  - {bucket}: {row_count} rows")
         missed_leads = self.bucket_metrics.get("missed_leads", {})
         missed_downloads = missed_leads.get("stores", {}) or {}
-        missed_ingested = missed_leads.get("ingested_stores", {}) or {}
+        missed_ingested = missed_leads.get("ingested_by_store", {}) or {}
         if missed_downloads or missed_ingested:
             lines.append("- Missed leads by store:")
             for store_code in sorted(set(missed_downloads) | set(missed_ingested)):
