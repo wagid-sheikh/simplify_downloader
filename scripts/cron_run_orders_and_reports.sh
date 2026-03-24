@@ -9,67 +9,65 @@ if [[ -f "${ENV_FILE}" ]]; then
   source "${ENV_FILE}"
 fi
 
-# -------- CONFIG --------
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LOG_DIR="${REPO_ROOT}/logs"
+LOCK_DIR="${REPO_ROOT}/tmp"
+RUN_LOCK_DIR="${LOCK_DIR}/cron_run_orders_and_reports.lock"
 TIMESTAMP="$(date '+%Y-%m-%d_%H-%M-%S')"
 LOG_FILE="${LOG_DIR}/cron_run_orders_and_reports_${TIMESTAMP}.log"
 
-mkdir -p "${LOG_DIR}"
+mkdir -p "${LOG_DIR}" "${LOCK_DIR}"
 cd "${REPO_ROOT}"
+
+# -------- single-run lock (mac-safe) --------
+if ! mkdir "${RUN_LOCK_DIR}" 2>/dev/null; then
+  echo "Another run is already in progress. Exiting at $(date)." >> "${LOG_FILE}"
+  exit 1
+fi
+
+cleanup() {
+  rmdir "${RUN_LOCK_DIR}" 2>/dev/null || true
+}
+
+on_error() {
+  local exit_code=$?
+  echo "=== CRON RUN FAILED @ $(date) with exit code ${exit_code} ===" >> "${LOG_FILE}"
+  cleanup
+  exit "${exit_code}"
+}
+
+on_exit() {
+  local exit_code=$?
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "=== CRON RUN FINISHED @ $(date) ===" >> "${LOG_FILE}"
+  fi
+  cleanup
+}
+
+trap on_error ERR
+trap on_exit EXIT INT TERM
 
 echo "=== CRON RUN STARTED @ $(date) ===" >> "${LOG_FILE}"
 
-# IMPORTANT: ensure poetry is available to cron
-# export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
 CRON_HOME="${CRON_HOME:-${HOME:-/tmp}}"
 export HOME="${CRON_HOME}"
 
 CRON_PATH="${CRON_PATH:-/usr/local/bin:/opt/homebrew/bin}"
 export PATH="${CRON_PATH}:${PATH}"
+
 echo "ENV_FILE=${ENV_FILE}" >> "${LOG_FILE}"
 echo "HOME=${HOME}" >> "${LOG_FILE}"
 echo "PATH=$PATH" >> "${LOG_FILE}"
 echo "poetry=$(command -v poetry || echo NOT_FOUND)" >> "${LOG_FILE}"
 
-bootstrap_poetry_env() {
-  local preferred_python="${CRON_PYTHON_BIN:-python3.12}"
-  local fallback_python="${CRON_PYTHON_FALLBACK_BIN:-python3}"
-  local selected_python=""
-
-  if command -v "${preferred_python}" >/dev/null 2>&1; then
-    selected_python="${preferred_python}"
-  elif command -v "${fallback_python}" >/dev/null 2>&1; then
-    selected_python="${fallback_python}"
-  fi
-
-  if [[ -n "${selected_python}" ]]; then
-    echo "Bootstrapping poetry env with ${selected_python}" >> "${LOG_FILE}"
-    poetry env use "${selected_python}" >> "${LOG_FILE}" 2>&1
-  else
-    echo "No configured Python binary found for poetry env bootstrap; using poetry defaults." >> "${LOG_FILE}"
-  fi
-
-  if ! poetry run python -c "import sqlalchemy" >> "${LOG_FILE}" 2>&1; then
-    echo "Poetry environment missing dependencies. Running poetry install --no-interaction --no-root --sync" >> "${LOG_FILE}"
-    poetry install --no-interaction --no-root --sync >> "${LOG_FILE}" 2>&1
-  fi
-}
-
-bootstrap_poetry_env
-
 echo "--- Running Script 1: orders_sync_run_profiler ---" >> "${LOG_FILE}"
 ./scripts/orders_sync_run_profiler.sh >> "${LOG_FILE}" 2>&1
-
 echo "--- Script 1 completed successfully ---" >> "${LOG_FILE}"
 
 echo "--- Running Script 2: daily_sales_report ---" >> "${LOG_FILE}"
 ./scripts/run_local_reports_daily_sales.sh >> "${LOG_FILE}" 2>&1
 echo "--- Script 2 completed successfully ---" >> "${LOG_FILE}"
 
-
 echo "--- Running Script 3: pending_deliveries ---" >> "${LOG_FILE}"
 ./scripts/run_local_reports_pending_deliveries.sh >> "${LOG_FILE}" 2>&1
 echo "--- Script 3 completed successfully ---" >> "${LOG_FILE}"
-
-echo "=== CRON RUN FINISHED @ $(date) ===" >> "${LOG_FILE}"
