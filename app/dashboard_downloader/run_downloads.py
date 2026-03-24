@@ -1120,7 +1120,10 @@ def _manual_merge_bucket(bucket: str, files: List[Path]) -> Path | None:
             if not file_path.exists():
                 continue
 
-            data = file_path.read_bytes()
+            data = _prepare_csv_bytes_for_merge(file_path.read_bytes())
+            if data is None:
+                continue
+
             if first:
                 out_f.write(data)
                 first = False
@@ -1134,6 +1137,38 @@ def _manual_merge_bucket(bucket: str, files: List[Path]) -> Path | None:
             out_f.write(data[header_end + 1 :])
 
     return merged_path
+
+
+def _prepare_csv_bytes_for_merge(data: bytes) -> bytes | None:
+    """Normalize download content before merge.
+
+    Some dashboard exports return a single-line sentinel (`No data available to export`)
+    instead of a CSV header. If that payload is merged as the first file, downstream
+    parsing treats it as the header and all subsequent rows fail coercion.
+    """
+
+    if not data or not data.strip():
+        return None
+
+    try:
+        text = data.decode("utf-8", errors="ignore")
+    except Exception:
+        return data
+
+    lines = text.splitlines(keepends=True)
+    if not lines:
+        return None
+
+    first_line = lines[0].strip().lower()
+    if "no data available to export" not in first_line:
+        return data
+
+    # Pure sentinel payload (no header / rows).
+    if len(lines) == 1:
+        return None
+
+    # Defensive: if a file contains sentinel preamble then CSV content, drop only preamble.
+    return "".join(lines[1:]).encode("utf-8")
 
 
 async def _bootstrap_session_via_home_and_tracker(
