@@ -345,6 +345,11 @@ async def fetch_daily_sales_report(
         sa.column("year"),
         sa.column("cost_center"),
         sa.column("sale_target"),
+        sa.column("collection_target"),
+        sa.column("sales_mtd"),
+        sa.column("collection_mtd"),
+        sa.column("sales_target_met"),
+        sa.column("collection_target_met"),
     )
     orders = sa.table(
         "orders",
@@ -489,6 +494,7 @@ async def fetch_daily_sales_report(
             sales_agg.c.collections_count_mtd,
             sales_agg.c.collections_count_lmtd,
             targets.c.sale_target,
+            targets.c.collection_target,
             orders_sync_agg.c.orders_pulled_at,
             sa.case(
                 (
@@ -546,6 +552,7 @@ async def fetch_daily_sales_report(
     rows: list[DailySalesRow] = []
     async with session_scope(database_url) as session:
         result = await session.execute(stmt)
+        target_updates: list[dict[str, object]] = []
         for entry in result.mappings():
             target_type = (entry["target_type"] or "value").lower()
             sales_ftd = _decimal(entry["sales_ftd"])
@@ -575,6 +582,26 @@ async def fetch_daily_sales_report(
 
             orders_pulled_at = _parse_orders_sync_timestamp(entry["orders_pulled_at"], tz=tz)
             orders_sync_time = orders_pulled_at.strftime("%H:%M") if orders_pulled_at else None
+
+            sale_target = _decimal(entry["sale_target"]) if entry["sale_target"] is not None else None
+            collection_target = (
+                _decimal(entry["collection_target"]) if entry["collection_target"] is not None else None
+            )
+            sales_target_met = None if sale_target is None else bool(sales_mtd >= sale_target)
+            collection_target_met = (
+                None if collection_target is None else bool(collections_mtd >= collection_target)
+            )
+            target_updates.append(
+                {
+                    "b_month": report_date.month,
+                    "b_year": report_date.year,
+                    "b_cost_center": str(entry["cost_center"]),
+                    "sales_mtd": str(sales_mtd),
+                    "collection_mtd": str(collections_mtd),
+                    "sales_target_met": sales_target_met,
+                    "collection_target_met": collection_target_met,
+                }
+            )
 
             rows.append(
                 DailySalesRow(
@@ -607,6 +634,26 @@ async def fetch_daily_sales_report(
                     kpi_snapshot_label=str(entry["kpi_snapshot_label"] or "--"),
                 )
             )
+
+        if target_updates:
+            update_stmt = (
+                sa.update(targets)
+                .where(
+                    sa.and_(
+                        targets.c.month == sa.bindparam("b_month"),
+                        targets.c.year == sa.bindparam("b_year"),
+                        targets.c.cost_center == sa.bindparam("b_cost_center"),
+                    )
+                )
+                .values(
+                    sales_mtd=sa.bindparam("sales_mtd"),
+                    collection_mtd=sa.bindparam("collection_mtd"),
+                    sales_target_met=sa.bindparam("sales_target_met"),
+                    collection_target_met=sa.bindparam("collection_target_met"),
+                )
+            )
+            await session.execute(update_stmt, target_updates)
+            await session.commit()
 
         edited_stmt = (
             sa.select(

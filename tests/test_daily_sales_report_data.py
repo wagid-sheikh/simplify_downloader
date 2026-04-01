@@ -43,7 +43,12 @@ def _create_tables(database_url: str) -> None:
                     month INTEGER,
                     year INTEGER,
                     cost_center TEXT,
-                    sale_target NUMERIC
+                    sale_target NUMERIC,
+                    collection_target NUMERIC,
+                    sales_mtd NUMERIC,
+                    collection_mtd NUMERIC,
+                    sales_target_met BOOLEAN,
+                    collection_target_met BOOLEAN
                 )
                 """
             )
@@ -260,3 +265,71 @@ async def test_fetch_daily_sales_report_orders_sync_uses_created_at_string_fallb
 
     td_row = next(row for row in report.rows if row.cost_center == "CC-TD")
     assert td_row.orders_sync_time == "11:15"
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_updates_cost_center_targets_mtd_fields(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_targets_update.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 1, 19)
+
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO cost_center (cost_center, description, target_type, is_active)
+                VALUES ('CC-TD', 'TD Cost Center', 'value', 1)
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO cost_center_targets (
+                    month, year, cost_center, sale_target, collection_target
+                ) VALUES (1, 2026, 'CC-TD', 150, 90)
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders (cost_center, order_number, order_date, net_amount)
+                VALUES
+                    ('CC-TD', 'ORD-1', '2026-01-05 10:00:00', 100),
+                    ('CC-TD', 'ORD-2', '2026-01-10 11:00:00', 60)
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO sales (cost_center, payment_date, payment_received, adjustments, order_number, is_edited_order)
+                VALUES ('CC-TD', '2026-01-12 12:00:00', 120, 0, 'ORD-1', 0)
+                """
+            )
+        )
+        await session.commit()
+
+    await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    async with session_scope(database_url) as session:
+        updated = await session.execute(
+            sa.text(
+                """
+                SELECT sales_mtd, collection_mtd, sales_target_met, collection_target_met
+                FROM cost_center_targets
+                WHERE month = 1 AND year = 2026 AND cost_center = 'CC-TD'
+                """
+            )
+        )
+        row = updated.mappings().one()
+
+    assert row["sales_mtd"] == 160
+    assert row["collection_mtd"] == 120
+    assert bool(row["sales_target_met"]) is True
+    assert bool(row["collection_target_met"]) is True
