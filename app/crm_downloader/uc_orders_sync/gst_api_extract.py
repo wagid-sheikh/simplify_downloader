@@ -289,10 +289,11 @@ async def _collect_gst_payment_rows_from_delivered_orders(
                 continue
             extract.delivered_rows_scanned += 1
             order_code = str(booking.get("booking_code") or "").strip()
-            if not order_code or order_code not in gst_order_codes:
+            if not order_code:
                 continue
+            if order_code in gst_order_codes:
+                extract.delivered_rows_matched_gst += 1
 
-            extract.delivered_rows_matched_gst += 1
             payment_rows, payment_reason_codes = _build_payment_rows_from_booking(
                 store_code=store_code,
                 order_code=order_code,
@@ -318,7 +319,7 @@ async def _collect_gst_payment_rows_from_delivered_orders(
                 extract.delivered_payment_rows_produced += 1
                 appended_for_order = True
 
-            if appended_for_order:
+            if appended_for_order and order_code in gst_order_codes:
                 matched_orders_with_payments.add(order_code)
 
         page_number += 1
