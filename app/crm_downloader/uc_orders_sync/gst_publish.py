@@ -575,6 +575,7 @@ async def publish_uc_gst_payments_to_sales(
 ) -> PublishMetrics:
     metrics = PublishMetrics()
     reasons = Counter[str]()
+    unmatched_parent_reasons = Counter[str]()
     metadata = sa.MetaData()
     payments = sa.Table(
         TABLE_ARCHIVE_PAYMENT_DETAILS,
@@ -871,19 +872,25 @@ async def publish_uc_gst_payments_to_sales(
             if parent is None and (base_parent is None or not has_stg_parent):
                 metrics.skipped += 1
                 metrics.warnings += 1
-                _append_reason(
-                    reasons,
-                    REASON_GST_LIFECYCLE_PARENT_INGEST_FAILURE if archive_parent_ingest_failure else REASON_GST_LIFECYCLE_PARENT_SOURCE_ABSENT,
+                unmatched_reason = (
+                    REASON_GST_LIFECYCLE_PARENT_INGEST_FAILURE
+                    if archive_parent_ingest_failure
+                    else REASON_GST_LIFECYCLE_PARENT_SOURCE_ABSENT
                 )
+                _append_reason(reasons, unmatched_reason)
+                _append_reason(unmatched_parent_reasons, unmatched_reason)
                 continue
 
             if not parent_cost_center:
                 metrics.skipped += 1
                 metrics.warnings += 1
-                _append_reason(
-                    reasons,
-                    REASON_GST_LIFECYCLE_PARENT_INGEST_FAILURE if archive_parent_ingest_failure else REASON_GST_LIFECYCLE_PARENT_ORDER_CONTEXT_MISSING,
+                unmatched_reason = (
+                    REASON_GST_LIFECYCLE_PARENT_INGEST_FAILURE
+                    if archive_parent_ingest_failure
+                    else REASON_GST_LIFECYCLE_PARENT_ORDER_CONTEXT_MISSING
                 )
+                _append_reason(reasons, unmatched_reason)
+                _append_reason(unmatched_parent_reasons, unmatched_reason)
                 continue
 
             logical_key = (parent_cost_center, order_number, payment_date, payment_mode, Decimal(str(amount)), txid)
@@ -962,6 +969,12 @@ async def publish_uc_gst_payments_to_sales(
                 metrics.inserted += 1
 
         await session.commit()
+
+        if unmatched_parent_reasons:
+            LOGGER.info(
+                "gst_publish_payment_unmatched_parent_reasons %s",
+                json.dumps(dict(unmatched_parent_reasons), sort_keys=True),
+            )
 
         verification_row = (
             await session.execute(

@@ -399,6 +399,57 @@ async def test_payment_publish_reason_codes_distinguish_ingest_failure_vs_absent
     assert metrics.reason_codes[REASON_GST_LIFECYCLE_PARENT_SOURCE_ABSENT] == 1
 
 
+
+
+@pytest.mark.asyncio
+async def test_payment_publish_logs_unmatched_parent_reason_codes(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_parent_reason_logging.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_orders (run_id, run_date, cost_center, store_code, order_number, invoice_date)
+                VALUES ('run-reason-log', '2025-01-03T00:00:00+00:00', 'CC88', 'UC888', 'ORD-INGEST', '2025-01-02T00:00:00+00:00')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_orders_base (
+                    run_id, run_date, cost_center, store_code, order_code, ingest_remarks
+                ) VALUES (
+                    'run-reason-log', '2025-01-03T00:00:00+00:00', '', 'UC888', 'ORD-INGEST', 'gst header mismatch'
+                )
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO stg_uc_archive_payment_details (
+                    run_id, run_date, store_code, order_code, payment_mode, amount, payment_date_raw, transaction_id
+                ) VALUES
+                    ('run-reason-log', '2025-01-03T00:00:00+00:00', 'UC888', 'ORD-INGEST', 'UPI', 90, '03 Jan 2025, 10:00 AM', 'T-INGEST'),
+                    ('run-reason-log', '2025-01-03T00:00:00+00:00', 'UC888', 'ORD-ABSENT', 'UPI', 95, '03 Jan 2025, 10:05 AM', 'T-ABSENT')
+                """
+            )
+        )
+        await session.commit()
+
+    caplog.set_level("INFO")
+    metrics = await publish_uc_gst_payments_to_sales(database_url=db_url, run_id='run-reason-log', store_code='UC888')
+
+    assert metrics.inserted == 0
+    unmatched_reason_records = [r for r in caplog.records if "gst_publish_payment_unmatched_parent_reasons" in r.message]
+    assert unmatched_reason_records
+    payload = json.loads(
+        unmatched_reason_records[-1].message.split("gst_publish_payment_unmatched_parent_reasons ", 1)[1]
+    )
+    assert payload[REASON_GST_LIFECYCLE_PARENT_INGEST_FAILURE] == 1
+    assert payload[REASON_GST_LIFECYCLE_PARENT_SOURCE_ABSENT] == 1
 @pytest.mark.asyncio
 async def test_payment_publish_parent_coverage_full(tmp_path: Path) -> None:
     db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_parent_full.sqlite'}"
