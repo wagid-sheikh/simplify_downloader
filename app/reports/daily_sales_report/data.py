@@ -209,47 +209,74 @@ def _parse_orders_sync_timestamp(value: object | None, *, tz) -> datetime | None
 
 
 def _build_sales_agg(sales: sa.Table, ranges: dict[str, datetime]) -> sa.Subquery:
-    def _sum_when(condition: sa.ColumnElement[bool]) -> sa.ColumnElement:
-        return sa.func.coalesce(sa.func.sum(sa.case((condition, sales.c.payment_received), else_=0)), 0)
-
+    normalized_order_number = sa.func.trim(sales.c.order_number)
     valid_order_number = sa.and_(
         sales.c.order_number.is_not(None),
-        sa.func.trim(sales.c.order_number) != "",
+        normalized_order_number != "",
+    )
+    ftd_condition = sa.and_(sales.c.payment_date >= ranges["start_day"], sales.c.payment_date < ranges["next_day"])
+    mtd_condition = sa.and_(sales.c.payment_date >= ranges["start_month"], sales.c.payment_date < ranges["next_day"])
+    lmtd_condition = sa.and_(sales.c.payment_date >= ranges["lmt_start"], sales.c.payment_date < ranges["lmt_end"])
+
+    periodized_sales = sa.union_all(
+        sa.select(
+            sales.c.cost_center.label("cost_center"),
+            normalized_order_number.label("order_number"),
+            sa.literal("ftd").label("period_bucket"),
+            sales.c.payment_received.label("payment_received"),
+        ).where(sa.and_(valid_order_number, ftd_condition)),
+        sa.select(
+            sales.c.cost_center.label("cost_center"),
+            normalized_order_number.label("order_number"),
+            sa.literal("mtd").label("period_bucket"),
+            sales.c.payment_received.label("payment_received"),
+        ).where(sa.and_(valid_order_number, mtd_condition)),
+        sa.select(
+            sales.c.cost_center.label("cost_center"),
+            normalized_order_number.label("order_number"),
+            sa.literal("lmtd").label("period_bucket"),
+            sales.c.payment_received.label("payment_received"),
+        ).where(sa.and_(valid_order_number, lmtd_condition)),
+    ).subquery()
+
+    sales_per_order = (
+        sa.select(
+            periodized_sales.c.cost_center,
+            periodized_sales.c.order_number,
+            periodized_sales.c.period_bucket,
+            sa.func.coalesce(sa.func.sum(periodized_sales.c.payment_received), 0).label("order_amount"),
+        )
+        .group_by(
+            periodized_sales.c.cost_center,
+            periodized_sales.c.order_number,
+            periodized_sales.c.period_bucket,
+        )
+        .subquery()
     )
 
-    def _count_distinct_orders_when(condition: sa.ColumnElement[bool]) -> sa.ColumnElement:
-        return sa.func.count(
-            sa.distinct(
-                sa.case(
-                    (sa.and_(condition, valid_order_number), sales.c.order_number),
-                    else_=None,
-                )
-            )
+    def _sum_when_period(period_bucket: str) -> sa.ColumnElement:
+        return sa.func.coalesce(
+            sa.func.sum(sa.case((sales_per_order.c.period_bucket == period_bucket, sales_per_order.c.order_amount), else_=0)),
+            0,
+        )
+
+    def _count_when_period(period_bucket: str) -> sa.ColumnElement:
+        return sa.func.coalesce(
+            sa.func.sum(sa.case((sales_per_order.c.period_bucket == period_bucket, 1), else_=0)),
+            0,
         )
 
     return (
         sa.select(
-            sales.c.cost_center.label("cost_center"),
-            _sum_when(sa.and_(sales.c.payment_date >= ranges["start_day"], sales.c.payment_date < ranges["next_day"]))
-            .label("collections_ftd"),
-            _sum_when(sa.and_(sales.c.payment_date >= ranges["start_month"], sales.c.payment_date < ranges["next_day"]))
-            .label("collections_mtd"),
-            _sum_when(sa.and_(sales.c.payment_date >= ranges["lmt_start"], sales.c.payment_date < ranges["lmt_end"]))
-            .label("collections_lmtd"),
-            _count_distinct_orders_when(
-                sa.and_(sales.c.payment_date >= ranges["start_day"], sales.c.payment_date < ranges["next_day"])
-            )
-            .label("collections_count_ftd"),
-            _count_distinct_orders_when(
-                sa.and_(sales.c.payment_date >= ranges["start_month"], sales.c.payment_date < ranges["next_day"])
-            )
-            .label("collections_count_mtd"),
-            _count_distinct_orders_when(
-                sa.and_(sales.c.payment_date >= ranges["lmt_start"], sales.c.payment_date < ranges["lmt_end"])
-            )
-            .label("collections_count_lmtd"),
+            sales_per_order.c.cost_center.label("cost_center"),
+            _sum_when_period("ftd").label("collections_ftd"),
+            _sum_when_period("mtd").label("collections_mtd"),
+            _sum_when_period("lmtd").label("collections_lmtd"),
+            _count_when_period("ftd").label("collections_count_ftd"),
+            _count_when_period("mtd").label("collections_count_mtd"),
+            _count_when_period("lmtd").label("collections_count_lmtd"),
         )
-        .group_by(sales.c.cost_center)
+        .group_by(sales_per_order.c.cost_center)
         .subquery()
     )
 

@@ -32,6 +32,9 @@ def test_daily_sales_report_ttd_calculation_and_rendering() -> None:
             collections_ftd=Decimal("0"),
             collections_mtd=Decimal("0"),
             collections_lmtd=Decimal("0"),
+            collections_count_ftd=0,
+            collections_count_mtd=0,
+            collections_count_lmtd=0,
             target=uttam_target,
             achieved=uttam_achieved,
             ttd=uttam_ttd,
@@ -58,6 +61,9 @@ def test_daily_sales_report_ttd_calculation_and_rendering() -> None:
             collections_ftd=Decimal("0"),
             collections_mtd=Decimal("0"),
             collections_lmtd=Decimal("0"),
+            collections_count_ftd=0,
+            collections_count_mtd=0,
+            collections_count_lmtd=0,
             target=kirti_target,
             achieved=kirti_achieved,
             ttd=kirti_ttd,
@@ -101,10 +107,11 @@ def test_daily_sales_report_ttd_calculation_and_rendering() -> None:
     )
 
     assert "Run Environment: prod" in html
-    assert html.index("Pickup &amp; Delivery KPIs Report for") < html.index("Run Environment: prod")
+    assert html.index("Pickup & Delivery KPIs Report for:") < html.index("Run Environment: prod")
     assert uttam_ttd == Decimal("307")
     assert kirti_ttd == Decimal("-41117")
     assert html.count('class="ttd-negative"') == 2
+    assert "0 orders" in html
     assert "-41,117" in html
     assert "-40,811" in html
 
@@ -125,6 +132,9 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
             collections_ftd=Decimal("0"),
             collections_mtd=Decimal("0"),
             collections_lmtd=Decimal("0"),
+            collections_count_ftd=0,
+            collections_count_mtd=0,
+            collections_count_lmtd=0,
             target=Decimal("1000"),
             achieved=Decimal("100"),
             ttd=Decimal("0"),
@@ -175,9 +185,9 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
     )
 
     assert "Run Environment: prod" in html
-    assert html.index("Pickup &amp; Delivery KPIs Report for") < html.index("Run Environment: prod")
+    assert html.index("Pickup & Delivery KPIs Report for:") < html.index("Run Environment: prod")
     assert "Missed Leads for this month" in html
     assert "Uttam Nagar New" in html
     assert "(9999999999, Alice), (8888888888, Bob)" in html
     assert "Sync Group" not in html
-    assert html.index("Pickup &amp; Delivery KPIs") < html.index("Missed Leads for this month")
+    assert html.index("Pickup & Delivery KPIs") < html.index("Missed Leads for this month")
