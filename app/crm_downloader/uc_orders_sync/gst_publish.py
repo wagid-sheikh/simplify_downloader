@@ -251,10 +251,39 @@ def _merge_remarks(*remarks: str | None) -> str | None:
 def _parse_payment_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
-    try:
-        parsed = parser.parse(str(value), dayfirst=True)
-    except Exception:
+    raw_value = str(value).strip()
+    if not raw_value:
         return None
+
+    normalized_value = raw_value.replace("T", " ").replace("Z", "+00:00")
+    if "." in normalized_value:
+        prefix, suffix = normalized_value.split(".", 1)
+        tz_split = re.split(r"([+-]\d{2}:?\d{2})$", suffix, maxsplit=1)
+        if len(tz_split) == 3:
+            microseconds, tz_suffix, _ = tz_split
+            normalized_value = f"{prefix}.{microseconds[:6]}{tz_suffix}"
+        else:
+            normalized_value = f"{prefix}.{suffix[:6]}"
+
+    parsed: datetime | None = None
+    try:
+        parsed = datetime.fromisoformat(normalized_value)
+    except Exception:
+        known_formats = (
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%Y-%m-%d %H:%M:%S",
+        )
+        for known_format in known_formats:
+            try:
+                parsed = datetime.strptime(normalized_value, known_format)
+                break
+            except ValueError:
+                continue
+        if parsed is None:
+            try:
+                parsed = parser.parse(raw_value)
+            except Exception:
+                return None
     tz_name = os.getenv("PIPELINE_TIMEZONE", "Asia/Kolkata")
     tz = ZoneInfo(tz_name)
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=tz)
