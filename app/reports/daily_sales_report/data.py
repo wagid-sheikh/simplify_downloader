@@ -209,7 +209,7 @@ def _parse_orders_sync_timestamp(value: object | None, *, tz) -> datetime | None
 
 
 def _build_sales_agg(sales: sa.Table, ranges: dict[str, datetime]) -> sa.Subquery:
-    normalized_order_number = sa.func.trim(sales.c.order_number)
+    normalized_order_number = sa.func.upper(sa.func.trim(sales.c.order_number))
     valid_order_number = sa.and_(
         sales.c.order_number.is_not(None),
         normalized_order_number != "",

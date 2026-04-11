@@ -359,8 +359,9 @@ async def test_fetch_daily_sales_report_collections_preaggregated_by_normalized_
                 """
                 INSERT INTO sales (cost_center, payment_date, payment_received, adjustments, order_number, is_edited_order)
                 VALUES
-                    ('CC-TD', '2026-01-19 09:00:00', 100, 0, 'ORD-100', 0),
-                    ('CC-TD', '2026-01-19 12:00:00', 50, 0, 'ORD-100', 0),
+                    ('CC-TD', '2026-01-19 09:00:00', 100, 0, 'ORD123', 0),
+                    ('CC-TD', '2026-01-19 12:00:00', 50, 0, ' ord123 ', 0),
+                    ('CC-TD', '2026-01-19 13:00:00', 25, 0, 'Ord123', 0),
                     ('CC-TD', '2026-01-10 11:00:00', 40, 0, ' ORD-200 ', 0),
                     ('CC-TD', '2026-01-11 14:00:00', 20, 0, 'ORD-200', 0),
                     ('CC-TD', '2026-01-19 15:00:00', 500, 0, '', 0),
@@ -373,7 +374,7 @@ async def test_fetch_daily_sales_report_collections_preaggregated_by_normalized_
     report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
     td_row = next(row for row in report.rows if row.cost_center == "CC-TD")
 
-    assert td_row.collections_ftd == 150
-    assert td_row.collections_mtd == 210
+    assert td_row.collections_ftd == 175
+    assert td_row.collections_mtd == 235
     assert td_row.collections_count_ftd == 1
     assert td_row.collections_count_mtd == 2

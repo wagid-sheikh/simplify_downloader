@@ -357,6 +357,9 @@ def _coerce_row(
         row_remarks=row_remarks,
     )
 
+    normalized_order_number = _stringify_value(row.get("order_number")).strip().upper()
+    row["order_number"] = normalized_order_number if normalized_order_number else None
+
     if row.get("order_number") in (None, ""):
         drop_reason = "Skipping row with blank order_number"
         warnings.append(drop_reason)
