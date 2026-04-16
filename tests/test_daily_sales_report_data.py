@@ -333,3 +333,48 @@ async def test_fetch_daily_sales_report_updates_cost_center_targets_mtd_fields(t
     assert row["collection_mtd"] == 120
     assert bool(row["sales_target_met"]) is True
     assert bool(row["collection_target_met"]) is True
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_collections_preaggregated_by_normalized_order(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_collections_grain.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 1, 19)
+
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO cost_center (cost_center, description, target_type, is_active)
+                VALUES ('CC-TD', 'TD Cost Center', 'value', 1)
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO sales (cost_center, payment_date, payment_received, adjustments, order_number, is_edited_order)
+                VALUES
+                    ('CC-TD', '2026-01-19 09:00:00', 100, 0, 'ORD123', 0),
+                    ('CC-TD', '2026-01-19 12:00:00', 50, 0, ' ord123 ', 0),
+                    ('CC-TD', '2026-01-19 13:00:00', 25, 0, 'Ord123', 0),
+                    ('CC-TD', '2026-01-10 11:00:00', 40, 0, ' ORD-200 ', 0),
+                    ('CC-TD', '2026-01-11 14:00:00', 20, 0, 'ORD-200', 0),
+                    ('CC-TD', '2026-01-19 15:00:00', 500, 0, '', 0),
+                    ('CC-TD', '2026-01-19 16:00:00', 600, 0, NULL, 0)
+                """
+            )
+        )
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    td_row = next(row for row in report.rows if row.cost_center == "CC-TD")
+
+    assert td_row.collections_ftd == 175
+    assert td_row.collections_mtd == 235
+    assert td_row.collections_count_ftd == 1
+    assert td_row.collections_count_mtd == 2

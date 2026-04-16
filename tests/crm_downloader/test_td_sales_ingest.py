@@ -613,6 +613,67 @@ async def test_sales_ingest_reingest_same_range_is_not_duplicate(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_sales_ingest_normalizes_order_number_for_upsert_keys(tmp_path: Path) -> None:
+    db_path = tmp_path / "sales_normalized_keys.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    await _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    run_date = datetime(2025, 5, 21, 12, 0, tzinfo=tz)
+    logger = get_logger(run_id="normalize_keys")
+
+    result = await ingest_td_sales_rows(
+        rows=[
+            {
+                "orderNo": "ORD123",
+                "paymentDate": "2025-05-11 09:30",
+                "paymentReceived": "100",
+                "paymentMode": "UPI",
+                "mobileNumber": "9999988888",
+            },
+            {
+                "orderNo": " ord123 ",
+                "paymentDate": "2025-05-11 09:30",
+                "paymentReceived": "200",
+                "paymentMode": "UPI",
+                "mobileNumber": "9999988888",
+            },
+            {
+                "orderNo": "Ord123",
+                "paymentDate": "2025-05-11 09:30",
+                "paymentReceived": "300",
+                "paymentMode": "UPI",
+                "mobileNumber": "9999988888",
+            },
+        ],
+        store_code="A668",
+        cost_center="UN3668",
+        run_id="normalize_keys",
+        run_date=run_date,
+        database_url=database_url,
+        logger=logger,
+    )
+
+    assert result.staging_inserted == 1
+    assert result.staging_updated == 0
+    assert result.final_inserted == 1
+    assert result.final_updated == 0
+
+    async with session_scope(database_url) as session:
+        metadata = sa.MetaData()
+        final_table = _sales_table(metadata)
+        rows = (
+            await session.execute(
+                sa.select(final_table.c.order_number, final_table.c.payment_received).order_by(final_table.c.id)
+            )
+        ).all()
+
+    assert len(rows) == 1
+    assert rows[0].order_number == "ORD123"
+    assert float(rows[0].payment_received) == 300
+
+
+@pytest.mark.asyncio
 async def test_sales_ingest_parses_dates_numbers_and_mobile(tmp_path: Path) -> None:
     db_path = tmp_path / "sales_parsing.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"

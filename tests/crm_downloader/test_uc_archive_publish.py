@@ -24,6 +24,7 @@ from app.crm_downloader.uc_orders_sync.gst_publish import (
     REASON_GST_LIFECYCLE_PARENT_COVERAGE_NEAR_ZERO,
     REASON_GST_LIFECYCLE_UNPARSEABLE_PAYMENT_DATE,
     _build_payment_preflight_diagnostics,
+    _parse_payment_datetime,
     publish_uc_gst_order_details_to_line_items,
     publish_uc_gst_order_details_to_orders,
     publish_uc_gst_payments_to_sales,
@@ -92,6 +93,25 @@ async def _create_tables(db_url: str) -> None:
         assert isinstance(bind, sa.ext.asyncio.AsyncEngine)
         async with bind.begin() as conn:
             await conn.run_sync(metadata.create_all)
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected_iso"),
+    [
+        ("2026-04-06 20:09:28.000000", "2026-04-06T20:09:28+00:00"),
+        ("06/04/2026 20:09:28", "2026-06-04T20:09:28+00:00"),
+        ("2026-04-06T20:09:28+05:30", "2026-04-06T20:09:28+05:30"),
+    ],
+)
+def test_parse_payment_datetime_regressions(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_value: str,
+    expected_iso: str,
+) -> None:
+    monkeypatch.setenv("PIPELINE_TIMEZONE", "UTC")
+    parsed = _parse_payment_datetime(raw_value)
+    assert parsed is not None
+    assert parsed.isoformat() == expected_iso
 
 
 @pytest.mark.asyncio
