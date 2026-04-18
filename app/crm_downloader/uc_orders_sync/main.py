@@ -75,11 +75,23 @@ ARCHIVE_FILTER_REFRESH_TIMEOUT_MS = 20_000
 SPINNER_CSS_SELECTORS = [".spinner", ".loading", ".loader", ".k-loading-mask"]
 SPINNER_TEXT_SELECTOR = "text=/loading/i"
 DOM_SNIPPET_MAX_CHARS = 600
+LOGIN_SELECTOR_TIMEOUT_MS_DEFAULT = 8_000
+LOGIN_SELECTOR_TIMEOUT_MS_MIN = 1_000
 UC_LOGIN_SELECTORS = {
-    "username": "input[placeholder='Email'][type='email']",
-    "password": "input[placeholder='Password'][type='password']",
+    "username": "#email",
+    "password": "#password",
     "submit": "button.btn-primary[type='submit']",
 }
+UC_LOGIN_EMAIL_SELECTOR_CASCADE = (
+    "#email",
+    "input[id='email']",
+    "input[type='email'], input[name*='email' i]",
+)
+UC_LOGIN_PASSWORD_SELECTOR_CASCADE = (
+    "#password",
+    "input[id='password']",
+    "input[type='password'], input[name*='password' i]",
+)
 HOME_READY_SELECTORS = (
     "nav",
     "[role='navigation']",
@@ -1371,6 +1383,13 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_login_selector_timeout_ms() -> int:
+    return max(
+        LOGIN_SELECTOR_TIMEOUT_MS_MIN,
+        _env_int("UC_LOGIN_SELECTOR_TIMEOUT_MS", LOGIN_SELECTOR_TIMEOUT_MS_DEFAULT),
+    )
 
 
 def _resolve_uc_max_workers() -> int:
@@ -4438,7 +4457,8 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
         )
         return False
 
-    selectors = UC_LOGIN_SELECTORS
+    selectors = {**UC_LOGIN_SELECTORS, **store.login_selectors}
+    login_selector_timeout_ms = _resolve_login_selector_timeout_ms()
 
     await page.goto(store.login_url or "", wait_until="domcontentloaded")
     element_locator = page.locator("input, button, select")
@@ -4478,26 +4498,32 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
             element_count=len(visible_elements),
             elements=visible_elements[:20],
         )
-    for form_field in ("username", "password"):
-        selector = selectors[form_field]
-        locator = page.locator(selector).first
-        try:
-            await locator.wait_for(state="visible", timeout=NAV_TIMEOUT_MS)
-        except TimeoutError:
-            log_event(
-                logger=logger,
-                phase="login",
-                status="error",
-                message="Login selector not visible within timeout",
-                store_code=store.store_code,
-                selector=selector,
-                field=field,
-                timeout_ms=NAV_TIMEOUT_MS,
-            )
-            return False
-
-    username_locator = page.locator(selectors["username"]).first
-    password_locator = page.locator(selectors["password"]).first
+    username_locator = await _resolve_login_field_locator(
+        page=page,
+        logger=logger,
+        store=store,
+        field_name="username",
+        selectors=(
+            selectors.get("username", ""),
+            *UC_LOGIN_EMAIL_SELECTOR_CASCADE,
+        ),
+        timeout_ms=login_selector_timeout_ms,
+    )
+    if username_locator is None:
+        return False
+    password_locator = await _resolve_login_field_locator(
+        page=page,
+        logger=logger,
+        store=store,
+        field_name="password",
+        selectors=(
+            selectors.get("password", ""),
+            *UC_LOGIN_PASSWORD_SELECTOR_CASCADE,
+        ),
+        timeout_ms=login_selector_timeout_ms,
+    )
+    if password_locator is None:
+        return False
     await username_locator.click()
     await username_locator.type(store.username or "", delay=50)
     await username_locator.press("Tab")
@@ -4691,17 +4717,73 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
     return True
 
 
+async def _resolve_login_field_locator(
+    *,
+    page: Page,
+    logger: JsonLogger,
+    store: UcStore,
+    field_name: str,
+    selectors: Sequence[str],
+    timeout_ms: int,
+) -> Locator | None:
+    deduped_selectors = [selector for selector in dict.fromkeys(selectors) if selector]
+    for selector in deduped_selectors:
+        locator = page.locator(selector).first
+        try:
+            await locator.wait_for(state="visible", timeout=timeout_ms)
+            log_event(
+                logger=logger,
+                phase="login",
+                status="debug",
+                message="Login field selector matched",
+                store_code=store.store_code,
+                field=field_name,
+                selector=selector,
+                timeout_ms=timeout_ms,
+            )
+            return locator
+        except TimeoutError:
+            continue
+        except Exception as exc:
+            log_event(
+                logger=logger,
+                phase="login",
+                status="debug",
+                message="Login field selector probe failed",
+                store_code=store.store_code,
+                field=field_name,
+                selector=selector,
+                error=str(exc),
+            )
+    dom_summary = await _get_login_dom_summary(page)
+    log_event(
+        logger=logger,
+        phase="login",
+        status="error",
+        message="Login field selector not found",
+        store_code=store.store_code,
+        field=field_name,
+        attempted_selectors=deduped_selectors,
+        timeout_ms=timeout_ms,
+        dom_summary=dom_summary,
+    )
+    return None
+
+
 async def _session_invalid(*, page: Page, store: UcStore) -> bool:
     current_url = page.url or ""
     login_url = store.login_url or ""
     if login_url and (current_url.startswith(login_url) or login_url in current_url):
         return True
 
-    selectors = {
-        "username": UC_LOGIN_SELECTORS["username"],
-        "password": UC_LOGIN_SELECTORS["password"],
-    }
-    markers = [selector for selector in selectors.values() if selector]
+    markers = [
+        selector
+        for selector in (
+            *UC_LOGIN_EMAIL_SELECTOR_CASCADE,
+            *UC_LOGIN_PASSWORD_SELECTOR_CASCADE,
+        )
+        if selector
+    ]
     for marker in markers:
         try:
             if await page.locator(marker).count():
@@ -7178,6 +7260,32 @@ async def _maybe_get_dom_snippet(page: Page) -> str | None:
     if config.pipeline_skip_dom_logging:
         return None
     return await _get_dom_snippet(page)
+
+
+async def _get_login_dom_summary(page: Page) -> list[dict[str, str]]:
+    summary: list[dict[str, str]] = []
+    element_locator = page.locator("input, button, form")
+    try:
+        element_count = min(await element_locator.count(), 10)
+    except Exception:
+        return summary
+    for idx in range(element_count):
+        element = element_locator.nth(idx)
+        try:
+            if not await element.is_visible():
+                continue
+            summary.append(
+                {
+                    "tag": await element.evaluate("el => el.tagName.toLowerCase()"),
+                    "type": await element.get_attribute("type") or "",
+                    "name": await element.get_attribute("name") or "",
+                    "id": await element.get_attribute("id") or "",
+                    "placeholder": await element.get_attribute("placeholder") or "",
+                }
+            )
+        except Exception:
+            continue
+    return summary
 
 
 async def _find_gst_report_container(
