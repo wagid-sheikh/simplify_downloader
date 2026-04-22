@@ -91,7 +91,7 @@ def upgrade() -> None:
                 pipeline_id=pipeline_id,
                 code=PROFILE_CODE,
                 description="TD CRM leads run summary",
-                env="all",
+                env="any",
                 scope="run",
                 attach_mode="none",
                 is_active=True,
@@ -107,7 +107,7 @@ def upgrade() -> None:
         bind.execute(
             notification_profiles.update()
             .where(notification_profiles.c.id == profile_id)
-            .values(is_active=True, attach_mode="none", env="all")
+            .values(is_active=True, attach_mode="none", env="any")
         )
 
     template_id = bind.execute(
@@ -136,7 +136,7 @@ def upgrade() -> None:
         sa.select(notification_recipients.c.id)
         .where(notification_recipients.c.profile_id == profile_id)
         .where(notification_recipients.c.store_code == "ALL")
-        .where(notification_recipients.c.env == "all")
+        .where(notification_recipients.c.env == "any")
         .where(notification_recipients.c.email_address == RECIPIENT_EMAIL)
         .where(notification_recipients.c.send_as == "to")
     ).scalar_one_or_none()
@@ -145,7 +145,7 @@ def upgrade() -> None:
             notification_recipients.insert().values(
                 profile_id=profile_id,
                 store_code="ALL",
-                env="all",
+                env="any",
                 email_address=RECIPIENT_EMAIL,
                 display_name="Wagid Sheikh",
                 send_as="to",
