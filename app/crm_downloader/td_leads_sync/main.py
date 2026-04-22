@@ -105,7 +105,45 @@ OUTPUT_COLUMNS = [
 DATETIME_LIKE_OUTPUT_COLUMNS = frozenset({"pickup_date", "scraped_at", "started_at", "finished_at", "created_at"})
 _DB_MODE_LOGGED_RUN_IDS: set[str] = set()
 def _td_leads_bucket_rows(result: "StoreLeadResult", status_bucket: str) -> list[dict[str, Any]]:
-    return [row for row in result.rows if str(row.get("status_bucket") or "").strip().lower() == status_bucket]
+    bucket_rows = [row for row in result.rows if str(row.get("status_bucket") or "").strip().lower() == status_bucket]
+    return _sort_td_leads_bucket_rows(bucket_rows)
+
+
+def _parse_td_leads_created_datetime(value: Any) -> datetime | None:
+    raw_value = str(value or "").strip()
+    if not raw_value:
+        return None
+
+    normalized = raw_value.replace("T", " ")
+    with contextlib.suppress(ValueError):
+        return datetime.fromisoformat(normalized)
+
+    formats = (
+        "%d %b %Y %I:%M:%S %p",
+        "%d %b %Y %I:%M %p",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+    )
+    for pattern in formats:
+        with contextlib.suppress(ValueError):
+            return datetime.strptime(raw_value, pattern)
+    return None
+
+
+def _sort_td_leads_bucket_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    parseable_rows: list[tuple[datetime, str, dict[str, Any]]] = []
+    unparsable_rows: list[dict[str, Any]] = []
+    for row in rows:
+        created_text = str(row.get("pickup_date") or "").strip()
+        created_dt = _parse_td_leads_created_datetime(created_text)
+        if created_dt is None:
+            unparsable_rows.append(row)
+            continue
+        parseable_rows.append((created_dt, created_text, row))
+
+    parseable_rows.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [item[2] for item in parseable_rows] + unparsable_rows
 
 
 def _build_td_leads_bucket_table_html(
