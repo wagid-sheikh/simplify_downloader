@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -563,6 +564,7 @@ def _write_store_artifact(
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{store_code}-crm_leads.xlsx"
+    temp_output_path = output_dir / f"{store_code}-crm_leads.xlsx.tmp"
 
     sanitized_rows = _sanitize_rows_for_xlsx_export(rows=rows)
     tz_aware_columns = _find_tz_aware_columns(rows=sanitized_rows, columns=OUTPUT_COLUMNS)
@@ -581,12 +583,34 @@ def _write_store_artifact(
         )
 
     workbook = openpyxl.Workbook()
-    sheet = workbook.active
-    sheet.title = "crm_leads"
-    sheet.append(OUTPUT_COLUMNS)
-    for row in sanitized_rows:
-        sheet.append([row.get(column) for column in OUTPUT_COLUMNS])
-    workbook.save(output_path)
+    try:
+        sheet = workbook.active
+        sheet.title = "crm_leads"
+        sheet.append(OUTPUT_COLUMNS)
+        for row in sanitized_rows:
+            sheet.append([row.get(column) for column in OUTPUT_COLUMNS])
+
+        with contextlib.suppress(FileNotFoundError):
+            temp_output_path.unlink()
+        workbook.save(temp_output_path)
+        workbook.close()
+        os.replace(temp_output_path, output_path)
+    except Exception as exc:
+        with contextlib.suppress(FileNotFoundError):
+            temp_output_path.unlink()
+        log_event(
+            logger=logger,
+            phase="artifact",
+            status="error",
+            message="artifact_write_failed",
+            store_code=store_code,
+            artifact_path=str(temp_output_path),
+            error=str(exc),
+        )
+        raise
+    finally:
+        with contextlib.suppress(Exception):
+            workbook.close()
     return output_path
 
 
