@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 import openpyxl
 import sqlalchemy as sa
@@ -104,6 +105,8 @@ OUTPUT_COLUMNS = [
 
 DATETIME_LIKE_OUTPUT_COLUMNS = frozenset({"pickup_date", "scraped_at", "started_at", "finished_at", "created_at"})
 _DB_MODE_LOGGED_RUN_IDS: set[str] = set()
+_IST = ZoneInfo("Asia/Kolkata")
+_UTC = ZoneInfo("UTC")
 def _td_leads_bucket_rows(result: "StoreLeadResult", status_bucket: str) -> list[dict[str, Any]]:
     bucket_rows = [row for row in result.rows if str(row.get("status_bucket") or "").strip().lower() == status_bucket]
     return _sort_td_leads_bucket_rows(bucket_rows)
@@ -678,21 +681,24 @@ def _field_from_headers(*, headers: Sequence[str], values: Sequence[str], field_
     return None
 
 
-def _parse_created_datetime(created_datetime_text: str | None) -> tuple[str | None, str | None]:
+def _parse_created_datetime(created_datetime_text: str | None) -> tuple[str | None, datetime | None]:
     raw_value = str(created_datetime_text or "").strip()
     if not raw_value:
         return None, None
 
-    with contextlib.suppress(ValueError):
-        parsed = datetime.strptime(raw_value, "%d %b %Y %I:%M:%S %p")
-        pickup_time = parsed.strftime("%I:%M:%S %p").lstrip("0")
-        return raw_value, pickup_time or None
+    normalized = " ".join(raw_value.split())
+    for fmt in ("%d %b %Y %I:%M:%S %p", "%d %b %Y %I:%M %p"):
+        with contextlib.suppress(ValueError):
+            parsed = datetime.strptime(normalized, fmt).replace(tzinfo=_IST).astimezone(_UTC)
+            return raw_value, parsed
 
-    fallback_match = re.search(r"\b(\d{1,2}:\d{2}:\d{2}\s*[AP]M)\b", raw_value, flags=re.IGNORECASE)
-    if fallback_match:
-        pickup_time = fallback_match.group(1).upper().replace(" ", "")
-        pickup_time = f"{pickup_time[:-2]} {pickup_time[-2:]}"
-        return raw_value, pickup_time
+    iso_candidate = normalized.replace("Z", "+00:00").replace(" ", "T", 1)
+    with contextlib.suppress(ValueError):
+        parsed = datetime.fromisoformat(iso_candidate)
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            parsed = parsed.replace(tzinfo=_IST)
+        return raw_value, parsed.astimezone(_UTC)
+
     return raw_value, None
 
 
@@ -721,11 +727,10 @@ async def _collect_status_rows(
             pickup_date = _field_from_headers(headers=headers, values=values, field_name="pickup_date")
             pickup_time = _field_from_headers(headers=headers, values=values, field_name="pickup_time")
             created_datetime_text = _field_from_headers(headers=headers, values=values, field_name="pickup_created_at")
+            pickup_created_at = None
             if created_datetime_text:
-                parsed_pickup_date, parsed_pickup_time = _parse_created_datetime(created_datetime_text)
+                parsed_pickup_date, pickup_created_at = _parse_created_datetime(created_datetime_text)
                 pickup_date = parsed_pickup_date or pickup_date
-                if parsed_pickup_time:
-                    pickup_time = parsed_pickup_time
 
             row = {
                 "store_code": store_code,
@@ -738,6 +743,7 @@ async def _collect_status_rows(
                 "mobile": _field_from_headers(headers=headers, values=values, field_name="mobile"),
                 "pickup_date": pickup_date,
                 "pickup_time": pickup_time,
+                "pickup_created_at": pickup_created_at,
                 "special_instruction": _field_from_headers(headers=headers, values=values, field_name="special_instruction"),
                 "status_text": _field_from_headers(headers=headers, values=values, field_name="status_text"),
                 "reason": _field_from_headers(headers=headers, values=values, field_name="reason"),

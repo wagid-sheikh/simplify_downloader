@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
-import re
 from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -33,6 +33,7 @@ def _crm_leads_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("address", sa.Text()),
         sa.Column("mobile", sa.String(length=32)),
         sa.Column("pickup_created_date", sa.String(length=64)),
+        sa.Column("pickup_created_at", sa.DateTime(timezone=True)),
         sa.Column("pickup_time", sa.String(length=64)),
         sa.Column("special_instruction", sa.Text()),
         sa.Column("status_text", sa.String(length=64)),
@@ -51,7 +52,7 @@ def _crm_leads_table(metadata: sa.MetaData) -> sa.Table:
 
 def build_lead_uid(row: Mapping[str, Any]) -> str:
     normalized_created_date = _normalized_pickup_created_date(row)
-    normalized_pickup_time = _normalized_pickup_time(row, created_text=normalized_created_date)
+    normalized_pickup_time = str(row.get("pickup_time") or "").strip()
     parts = [
         str(row.get("store_code") or "").strip().upper(),
         str(row.get("status_bucket") or "").strip().lower(),
@@ -72,28 +73,34 @@ def _normalized_pickup_created_date(row: Mapping[str, Any]) -> str:
     return str(row.get("pickup_date") or "").strip()
 
 
-def _normalized_pickup_time(row: Mapping[str, Any], *, created_text: str) -> str:
-    pickup_time = str(row.get("pickup_time") or "").strip()
-    if pickup_time:
-        return pickup_time
-    return _extract_time_from_created_text(created_text)
+_IST = ZoneInfo("Asia/Kolkata")
+_UTC = ZoneInfo("UTC")
 
 
-def _extract_time_from_created_text(created_text: str) -> str:
-    if not created_text:
-        return ""
-    normalized = created_text.strip()
+def _coerce_pickup_created_at(row: Mapping[str, Any], *, normalized_created_date: str) -> datetime | None:
+    existing = row.get("pickup_created_at")
+    if isinstance(existing, datetime):
+        if existing.tzinfo is None or existing.utcoffset() is None:
+            return existing.replace(tzinfo=_IST).astimezone(_UTC)
+        return existing.astimezone(_UTC)
+    raw_value = str(existing or normalized_created_date or "").strip()
+    if not raw_value:
+        return None
+
+    normalized = " ".join(raw_value.split())
     for fmt in ("%d %b %Y %I:%M:%S %p", "%d %b %Y %I:%M %p"):
         try:
-            parsed = datetime.strptime(normalized, fmt)
-            return parsed.strftime("%I:%M:%S %p").lstrip("0")
+            return datetime.strptime(normalized, fmt).replace(tzinfo=_IST).astimezone(_UTC)
         except ValueError:
             continue
-    fallback_match = re.search(r"(\d{1,2}:\d{2}(?::\d{2})?\s*[AaPp][Mm])$", normalized)
-    if not fallback_match:
-        return ""
-    raw_time = fallback_match.group(1).upper().replace(" ", "")
-    return f"{raw_time[:-2]} {raw_time[-2:]}"
+
+    try:
+        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=_IST)
+    return parsed.astimezone(_UTC)
 
 
 async def ingest_td_crm_leads_rows(
@@ -117,7 +124,8 @@ async def ingest_td_crm_leads_rows(
 
         for row in rows:
             normalized_created_date = _normalized_pickup_created_date(row)
-            normalized_pickup_time = _normalized_pickup_time(row, created_text=normalized_created_date)
+            normalized_pickup_time = str(row.get("pickup_time") or "").strip()
+            pickup_created_at = _coerce_pickup_created_at(row, normalized_created_date=normalized_created_date)
             values = {
                 "lead_uid": build_lead_uid(row),
                 "store_code": str(row.get("store_code") or "").upper(),
@@ -128,6 +136,7 @@ async def ingest_td_crm_leads_rows(
                 "address": (str(row.get("address")).strip() or None) if row.get("address") is not None else None,
                 "mobile": (str(row.get("mobile")).strip() or None) if row.get("mobile") is not None else None,
                 "pickup_created_date": normalized_created_date or None,
+                "pickup_created_at": pickup_created_at,
                 "pickup_time": normalized_pickup_time or None,
                 "special_instruction": (str(row.get("special_instruction")).strip() or None) if row.get("special_instruction") is not None else None,
                 "status_text": (str(row.get("status_text")).strip() or None) if row.get("status_text") is not None else None,
