@@ -129,9 +129,9 @@ class LeadsRunSummary:
         return sum(len(result.rows) for result in self.store_results.values())
 
     def build_record(self, *, finished_at: datetime) -> dict[str, Any]:
-        elapsed = max(0, int((finished_at - self.started_at).total_seconds()))
-        hh, mm, ss = elapsed // 3600, (elapsed % 3600) // 60, elapsed % 60
-        total_time_taken = f"{hh:02d}:{mm:02d}:{ss:02d}"
+        elapsed_seconds = max(0, int((finished_at - self.started_at).total_seconds()))
+        hh, mm, ss = elapsed_seconds // 3600, (elapsed_seconds % 3600) // 60, elapsed_seconds % 60
+        duration_human = f"{hh:02d}:{mm:02d}:{ss:02d}"
 
         store_rows_payload = [
             {
@@ -162,6 +162,7 @@ class LeadsRunSummary:
             f"Report Date: {self.report_date.isoformat()}",
             f"Overall Status: {self.overall_status()}",
             f"Total Rows: {self.total_rows()}",
+            f"Duration: {duration_human}",
             "",
             "Store Details:",
         ]
@@ -190,7 +191,7 @@ class LeadsRunSummary:
             "run_env": self.run_env,
             "started_at": self.started_at,
             "finished_at": finished_at,
-            "total_time_taken": total_time_taken,
+            "total_time_taken": duration_human,
             "report_date": self.report_date,
             "overall_status": self.overall_status(),
             "summary_text": "\n".join(summary_lines),
@@ -198,6 +199,8 @@ class LeadsRunSummary:
             "metrics_json": _normalize_json_safe(
                 {
                     "total_rows": self.total_rows(),
+                    "duration_seconds": elapsed_seconds,
+                    "duration_human": duration_human,
                     "stores": store_rows_payload,
                 }
             ),
@@ -840,8 +843,14 @@ async def main(
     resolved_run_id = run_id or new_run_id()
     resolved_run_env = run_env or config.run_env
     report_date = aware_now(get_timezone()).date()
+    run_start_ts = datetime.now(timezone.utc)
     logger = get_logger(run_id=resolved_run_id)
-    summary = LeadsRunSummary(run_id=resolved_run_id, run_env=resolved_run_env, report_date=report_date)
+    summary = LeadsRunSummary(
+        run_id=resolved_run_id,
+        run_env=resolved_run_env,
+        report_date=report_date,
+        started_at=run_start_ts,
+    )
 
     await _start_run_summary(logger=logger, summary=summary)
 

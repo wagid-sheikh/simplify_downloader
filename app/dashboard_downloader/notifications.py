@@ -2700,6 +2700,13 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[st
     recipients_by_profile = resources["recipients"]
     store_names = resources["store_names"]
     profiler_missing_windows = resources.get("profiler_missing_windows") or {}
+    metrics_payload = run_data.get("metrics_json") or {}
+    duration_seconds = metrics_payload.get("duration_seconds")
+    duration_human = (
+        metrics_payload.get("duration_human")
+        or run_data.get("total_time_taken")
+        or ""
+    )
 
     context: dict[str, Any] = {
         "pipeline_name": pipeline_name,
@@ -2710,7 +2717,9 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[st
         "overall_status": run_data.get("overall_status"),
         "total_time_taken": run_data.get("total_time_taken"),
         "summary_text": run_data.get("summary_text", ""),
-        "metrics_json": run_data.get("metrics_json") or {},
+        "metrics_json": metrics_payload,
+        "duration_seconds": duration_seconds,
+        "duration_human": duration_human,
         "missing_windows_by_store": profiler_missing_windows,
     }
     if pipeline_name == "td_orders_sync":
@@ -2788,6 +2797,9 @@ async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str
     templates_map = resources["templates"]
     recipients_by_profile = resources["recipients"]
     store_names = resources["store_names"]
+    metrics_payload = run_data.get("metrics_json") or {}
+    duration_seconds = metrics_payload.get("duration_seconds")
+    duration_human = metrics_payload.get("duration_human") or run_data.get("total_time_taken") or ""
 
     context = {
         "pipeline_name": pipeline_name,
@@ -2798,7 +2810,9 @@ async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str
         "overall_status": run_data.get("overall_status"),
         "total_time_taken": run_data.get("total_time_taken"),
         "summary_text": run_data.get("summary_text", ""),
-        "metrics_json": run_data.get("metrics_json") or {},
+        "metrics_json": metrics_payload,
+        "duration_seconds": duration_seconds,
+        "duration_human": duration_human,
     }
     if pipeline_name == "td_orders_sync":
         context.update(_build_td_orders_context(run_data))
