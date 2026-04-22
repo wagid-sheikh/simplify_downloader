@@ -75,11 +75,31 @@ ARCHIVE_FILTER_REFRESH_TIMEOUT_MS = 20_000
 SPINNER_CSS_SELECTORS = [".spinner", ".loading", ".loader", ".k-loading-mask"]
 SPINNER_TEXT_SELECTOR = "text=/loading/i"
 DOM_SNIPPET_MAX_CHARS = 600
+LOGIN_SELECTOR_TIMEOUT_MS_DEFAULT = 8_000
+LOGIN_SELECTOR_TIMEOUT_MS_MIN = 1_000
 UC_LOGIN_SELECTORS = {
-    "username": "input[placeholder='Email'][type='email']",
-    "password": "input[placeholder='Password'][type='password']",
+    "username": "#email",
+    "password": "#password",
     "submit": "button.btn-primary[type='submit']",
 }
+UC_LOGIN_EMAIL_SELECTOR_CASCADE = (
+    "#email",
+    "input[id='email']",
+    "input[type='email'], input[name*='email' i]",
+)
+UC_LOGIN_PASSWORD_SELECTOR_CASCADE = (
+    "#password",
+    "input[id='password']",
+    "input[type='password'], input[name*='password' i]",
+)
+UC_LOGIN_SUBMIT_SELECTOR_CASCADE = (
+    "button.btn-primary[type='submit']",
+    "button.btn-primary",
+    "button#login",
+    "button#submit",
+    "button[type='submit']",
+    "input[type='submit']",
+)
 HOME_READY_SELECTORS = (
     "nav",
     "[role='navigation']",
@@ -1371,6 +1391,13 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_login_selector_timeout_ms() -> int:
+    return max(
+        LOGIN_SELECTOR_TIMEOUT_MS_MIN,
+        _env_int("UC_LOGIN_SELECTOR_TIMEOUT_MS", LOGIN_SELECTOR_TIMEOUT_MS_DEFAULT),
+    )
 
 
 def _resolve_uc_max_workers() -> int:
@@ -3569,9 +3596,20 @@ async def _run_store_discovery(
             return
 
         await page.goto(store.home_url, wait_until="domcontentloaded")
-        session_probe_result = await _assert_home_ready(
-            page=page, store=store, logger=logger, source="session"
-        )
+        if _url_is_login(page.url, store):
+            session_probe_result = False
+            log_event(
+                logger=logger,
+                phase="navigation",
+                status="warning",
+                message="Session probe landed on login URL; skipping home wait",
+                store_code=store.store_code,
+                current_url=page.url,
+            )
+        else:
+            session_probe_result = await _assert_home_ready(
+                page=page, store=store, logger=logger, source="session"
+            )
         if not session_probe_result:
             fallback_login_attempted = True
             log_event(
@@ -3586,6 +3624,7 @@ async def _run_store_discovery(
             fallback_login_result = await _perform_login(
                 page=page, store=store, logger=logger
             )
+            login_error_code = getattr(page, "_uc_login_error_code", None)
             if fallback_login_result:
                 storage_state_path.parent.mkdir(parents=True, exist_ok=True)
                 await context.storage_state(path=str(storage_state_path))
@@ -3601,9 +3640,15 @@ async def _run_store_discovery(
                 ):
                     fallback_login_result = False
             if not fallback_login_result:
+                error_message = "Login failed after session probe"
+                reason_codes: list[str] = []
+                if isinstance(login_error_code, str) and login_error_code.strip():
+                    reason_codes.append(login_error_code)
+                if login_error_code == "LOGIN_DOM_MISMATCH":
+                    error_message = "Login DOM mismatch after session probe"
                 outcome = StoreOutcome(
                     status="error",
-                    message="Login failed after session probe",
+                    message=error_message,
                     final_url=page.url,
                     storage_state=(
                         str(storage_state_path) if storage_state_path.exists() else None
@@ -3612,6 +3657,24 @@ async def _run_store_discovery(
                     session_probe_result=session_probe_result,
                     fallback_login_attempted=fallback_login_attempted,
                     fallback_login_result=fallback_login_result,
+                    reason_codes=reason_codes,
+                )
+                log_event(
+                    logger=logger,
+                    phase="login",
+                    status="error",
+                    message=error_message,
+                    store_code=store.store_code,
+                    error_code=login_error_code,
+                    login_page_version_signature=getattr(
+                        page, "_uc_login_page_version_signature", None
+                    ),
+                    login_dom_snippet_path=getattr(
+                        page, "_uc_login_dom_snippet_path", None
+                    ),
+                    login_dom_screenshot_path=getattr(
+                        page, "_uc_login_dom_screenshot_path", None
+                    ),
                 )
                 summary.record_store(store.store_code, outcome)
                 return
@@ -4418,6 +4481,10 @@ async def _run_store_discovery(
 
 
 async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> bool:
+    setattr(page, "_uc_login_error_code", None)
+    setattr(page, "_uc_login_page_version_signature", None)
+    setattr(page, "_uc_login_dom_snippet_path", None)
+    setattr(page, "_uc_login_dom_screenshot_path", None)
     missing_fields = [
         label
         for label, value in (
@@ -4438,9 +4505,21 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
         )
         return False
 
-    selectors = UC_LOGIN_SELECTORS
+    selectors = {**UC_LOGIN_SELECTORS, **store.login_selectors}
+    login_selector_timeout_ms = _resolve_login_selector_timeout_ms()
 
     await page.goto(store.login_url or "", wait_until="domcontentloaded")
+    login_page_version_signature = await _get_login_page_version_signature(page=page)
+    setattr(page, "_uc_login_page_version_signature", login_page_version_signature)
+    log_event(
+        logger=logger,
+        phase="login",
+        status="debug",
+        message="Login page version signature collected",
+        store_code=store.store_code,
+        current_url=page.url,
+        login_page_version_signature=login_page_version_signature,
+    )
     element_locator = page.locator("input, button, select")
     visible_elements: list[dict[str, str]] = []
     try:
@@ -4478,26 +4557,51 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
             element_count=len(visible_elements),
             elements=visible_elements[:20],
         )
-    for form_field in ("username", "password"):
-        selector = selectors[form_field]
-        locator = page.locator(selector).first
-        try:
-            await locator.wait_for(state="visible", timeout=NAV_TIMEOUT_MS)
-        except TimeoutError:
-            log_event(
-                logger=logger,
-                phase="login",
-                status="error",
-                message="Login selector not visible within timeout",
-                store_code=store.store_code,
-                selector=selector,
-                field=field,
-                timeout_ms=NAV_TIMEOUT_MS,
-            )
-            return False
-
-    username_locator = page.locator(selectors["username"]).first
-    password_locator = page.locator(selectors["password"]).first
+    username_resolution = await _resolve_login_field_locator(
+        page=page,
+        logger=logger,
+        store=store,
+        field_name="username",
+        selectors=(
+            selectors.get("username", ""),
+            *UC_LOGIN_EMAIL_SELECTOR_CASCADE,
+        ),
+        timeout_ms=login_selector_timeout_ms,
+    )
+    if username_resolution is None:
+        setattr(page, "_uc_login_error_code", "LOGIN_DOM_MISMATCH")
+        return False
+    username_locator, _username_selector = username_resolution
+    password_resolution = await _resolve_login_field_locator(
+        page=page,
+        logger=logger,
+        store=store,
+        field_name="password",
+        selectors=(
+            selectors.get("password", ""),
+            *UC_LOGIN_PASSWORD_SELECTOR_CASCADE,
+        ),
+        timeout_ms=login_selector_timeout_ms,
+    )
+    if password_resolution is None:
+        setattr(page, "_uc_login_error_code", "LOGIN_DOM_MISMATCH")
+        return False
+    password_locator, _password_selector = password_resolution
+    submit_resolution = await _resolve_login_field_locator(
+        page=page,
+        logger=logger,
+        store=store,
+        field_name="submit",
+        selectors=(
+            selectors.get("submit", ""),
+            *UC_LOGIN_SUBMIT_SELECTOR_CASCADE,
+        ),
+        timeout_ms=login_selector_timeout_ms,
+    )
+    if submit_resolution is None:
+        setattr(page, "_uc_login_error_code", "LOGIN_DOM_MISMATCH")
+        return False
+    submit_locator, submit_selector = submit_resolution
     await username_locator.click()
     await username_locator.type(store.username or "", delay=50)
     await username_locator.press("Tab")
@@ -4557,7 +4661,7 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
             and _login_response_matches(response.url),
             timeout=15_000,
         ) as response_info:
-            await page.click(selectors["submit"])
+            await submit_locator.click()
         response = await response_info.value
     except TimeoutError:
         log_event(
@@ -4575,7 +4679,7 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
             status="warning",
             message="Login submit click failed",
             store_code=store.store_code,
-            selector=selectors["submit"],
+            selector=submit_selector,
             error=str(exc),
         )
         return False
@@ -4586,7 +4690,7 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
         phase="login",
         message="Login submitted",
         store_code=store.store_code,
-        selector=selectors["submit"],
+        selector=submit_selector,
     )
     if response is not None:
         log_event(
@@ -4691,17 +4795,91 @@ async def _perform_login(*, page: Page, store: UcStore, logger: JsonLogger) -> b
     return True
 
 
+async def _resolve_login_field_locator(
+    *,
+    page: Page,
+    logger: JsonLogger,
+    store: UcStore,
+    field_name: str,
+    selectors: Sequence[str],
+    timeout_ms: int,
+) -> tuple[Locator, str] | None:
+    deduped_selectors = [selector for selector in dict.fromkeys(selectors) if selector]
+    for selector in deduped_selectors:
+        locator = page.locator(selector).first
+        try:
+            await locator.wait_for(state="visible", timeout=timeout_ms)
+            log_event(
+                logger=logger,
+                phase="login",
+                status="debug",
+                message="Login field selector matched",
+                store_code=store.store_code,
+                field=field_name,
+                selector=selector,
+                timeout_ms=timeout_ms,
+            )
+            return locator, selector
+        except TimeoutError:
+            continue
+        except Exception as exc:
+            log_event(
+                logger=logger,
+                phase="login",
+                status="debug",
+                message="Login field selector probe failed",
+                store_code=store.store_code,
+                field=field_name,
+                selector=selector,
+                error=str(exc),
+            )
+    dom_summary = await _get_login_dom_summary(page)
+    login_page_version_signature = await _get_login_page_version_signature(page=page)
+    artifact_paths = await _capture_login_dom_mismatch_artifacts(
+        page=page, store=store
+    )
+    setattr(page, "_uc_login_page_version_signature", login_page_version_signature)
+    setattr(
+        page,
+        "_uc_login_dom_snippet_path",
+        artifact_paths.get("login_dom_snippet_path"),
+    )
+    setattr(
+        page,
+        "_uc_login_dom_screenshot_path",
+        artifact_paths.get("login_dom_screenshot_path"),
+    )
+    log_event(
+        logger=logger,
+        phase="login",
+        status="error",
+        message="Login field selector not found",
+        store_code=store.store_code,
+        error_code="LOGIN_DOM_MISMATCH",
+        field=field_name,
+        attempted_selectors=deduped_selectors,
+        timeout_ms=timeout_ms,
+        dom_summary=dom_summary,
+        login_page_version_signature=login_page_version_signature,
+        **artifact_paths,
+    )
+    return None
+
+
 async def _session_invalid(*, page: Page, store: UcStore) -> bool:
     current_url = page.url or ""
     login_url = store.login_url or ""
     if login_url and (current_url.startswith(login_url) or login_url in current_url):
         return True
 
-    selectors = {
-        "username": UC_LOGIN_SELECTORS["username"],
-        "password": UC_LOGIN_SELECTORS["password"],
-    }
-    markers = [selector for selector in selectors.values() if selector]
+    markers = [
+        selector
+        for selector in (
+            *UC_LOGIN_EMAIL_SELECTOR_CASCADE,
+            *UC_LOGIN_PASSWORD_SELECTOR_CASCADE,
+        )
+        if selector
+    ]
     for marker in markers:
         try:
             if await page.locator(marker).count():
@@ -7178,6 +7356,82 @@ async def _maybe_get_dom_snippet(page: Page) -> str | None:
     if config.pipeline_skip_dom_logging:
         return None
     return await _get_dom_snippet(page)
+
+
+async def _get_login_dom_summary(page: Page) -> list[dict[str, str]]:
+    summary: list[dict[str, str]] = []
+    element_locator = page.locator("input, button, form")
+    try:
+        element_count = min(await element_locator.count(), 10)
+    except Exception:
+        return summary
+    for idx in range(element_count):
+        element = element_locator.nth(idx)
+        try:
+            if not await element.is_visible():
+                continue
+            summary.append(
+                {
+                    "tag": await element.evaluate("el => el.tagName.toLowerCase()"),
+                    "type": await element.get_attribute("type") or "",
+                    "name": await element.get_attribute("name") or "",
+                    "id": await element.get_attribute("id") or "",
+                    "placeholder": await element.get_attribute("placeholder") or "",
+                }
+            )
+        except Exception:
+            continue
+    return summary
+
+
+async def _get_login_page_version_signature(*, page: Page) -> str:
+    probes = {
+        "email_id": "#email",
+        "password_id": "#password",
+        "submit_btn_primary": "button.btn-primary[type='submit']",
+        "submit_id_login": "button#login",
+        "submit_id_submit": "button#submit",
+    }
+    parts: list[str] = []
+    for label, selector in probes.items():
+        present = 0
+        try:
+            present = 1 if await page.locator(selector).count() else 0
+        except Exception:
+            present = 0
+        parts.append(f"{label}={present}")
+    return ",".join(parts)
+
+
+async def _capture_login_dom_mismatch_artifacts(
+    *, page: Page, store: UcStore
+) -> dict[str, str]:
+    if config.pipeline_skip_dom_logging:
+        return {}
+    debug_dir = default_download_dir() / "uc_login_dom"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = aware_now(get_timezone()).strftime("%Y%m%dT%H%M%S%f")
+    base_name = f"{_normalize_artifact_token(store.store_code)}_login_dom_{timestamp}"
+    snippet_path = debug_dir / f"{base_name}.txt"
+    screenshot_path = debug_dir / f"{base_name}.jpg"
+
+    dom_snippet = await _get_dom_snippet(page)
+    with contextlib.suppress(Exception):
+        snippet_path.write_text(dom_snippet, encoding="utf-8")
+    with contextlib.suppress(Exception):
+        await page.screenshot(
+            path=str(screenshot_path),
+            type="jpeg",
+            quality=40,
+            full_page=False,
+        )
+
+    payload: dict[str, str] = {}
+    if snippet_path.exists():
+        payload["login_dom_snippet_path"] = str(snippet_path)
+    if screenshot_path.exists():
+        payload["login_dom_screenshot_path"] = str(screenshot_path)
+    return payload
 
 
 async def _find_gst_report_container(
