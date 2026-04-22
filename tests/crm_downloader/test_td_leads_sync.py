@@ -254,12 +254,12 @@ def test_td_leads_tables_html_renders_store_sections_bucket_tables_and_rows() ->
     pending_rows = [
         {
             "status_bucket": "pending",
-            "pickup_id": f"P-{index}",
+            "pickup_code": f"P-{index}",
             "customer_name": f"Pending {index}",
             "mobile": "9000000000",
             "address": "Area 1",
             "pickup_date": "2026-04-22 10:15",
-            "status_text": "Urgent",
+            "pickup_time": "10:15 AM - 12:15 PM",
         }
         for index in range(1, 53)
     ]
@@ -274,12 +274,12 @@ def test_td_leads_tables_html_renders_store_sections_bucket_tables_and_rows() ->
                     *pending_rows,
                     {
                         "status_bucket": "completed",
-                        "pickup_id": "C-2",
+                        "pickup_code": "C-2",
                         "customer_name": "Raj",
                         "mobile": "9111111111",
                         "address": "Area 2",
                         "pickup_date": "2026-04-22 09:00",
-                        "status_text": "Done",
+                        "pickup_time": "09:00 AM - 11:00 AM",
                     },
                 ],
             )
@@ -296,6 +296,11 @@ def test_td_leads_tables_html_renders_store_sections_bucket_tables_and_rows() ->
     assert "Raj" in tables_html
     assert "No cancelled leads." in tables_html
     assert "Pending 52" in tables_html
+    assert "<th align='left'>Pickup Code</th><th align='left'>Customer Name</th><th align='left'>Mobile</th><th align='left'>Address/Area</th><th align='left'>Pickup Created Date</th><th align='left'>Pickup Time</th>" in tables_html
+    assert "Priority / Status" not in tables_html
+    assert "Pickup ID" not in tables_html
+    assert "Urgent" not in tables_html
+    assert "Done" not in tables_html
     assert "more rows in artifact" not in tables_html
 
 

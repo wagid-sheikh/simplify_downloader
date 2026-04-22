@@ -63,6 +63,7 @@ STATUS_CONFIG: tuple[tuple[str, str, str], ...] = (
 )
 
 FIELD_ALIASES: Mapping[str, tuple[str, ...]] = {
+    "pickup_code": ("pickup code", "pickup no.", "pickup no", "pickupno"),
     "pickup_no": ("pickup no.", "pickup no", "pickupno"),
     "customer_name": ("customer name", "name"),
     "address": ("address",),
@@ -111,12 +112,12 @@ def _build_td_leads_bucket_table_html(
         "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse; width:100%; margin-bottom:8px;'>",
         (
             "<thead><tr>"
-            "<th align='left'>Pickup ID</th>"
+            "<th align='left'>Pickup Code</th>"
             "<th align='left'>Customer Name</th>"
             "<th align='left'>Mobile</th>"
             "<th align='left'>Address/Area</th>"
             "<th align='left'>Pickup Created Date</th>"
-            "<th align='left'>Priority / Status</th>"
+            "<th align='left'>Pickup Time</th>"
             "</tr></thead>"
         ),
         "<tbody>",
@@ -124,16 +125,15 @@ def _build_td_leads_bucket_table_html(
     if not rows:
         blocks.append(f"<tr><td colspan='6'><em>{html.escape(empty_text)}</em></td></tr>")
     for row in rows:
-        pickup_id = row.get("pickup_id") or row.get("pickup_no") or "—"
-        priority_or_status = row.get("status_text") or row.get("special_instruction") or "—"
+        pickup_code = row.get("pickup_code") or row.get("pickup_no") or row.get("pickup_id") or "—"
         blocks.append(
             "<tr>"
-            f"<td>{html.escape(str(pickup_id))}</td>"
+            f"<td>{html.escape(str(pickup_code))}</td>"
             f"<td>{html.escape(str(row.get('customer_name') or '—'))}</td>"
             f"<td>{html.escape(str(row.get('mobile') or '—'))}</td>"
             f"<td>{html.escape(str(row.get('address') or '—'))}</td>"
             f"<td>{html.escape(str(row.get('pickup_date') or '—'))}</td>"
-            f"<td>{html.escape(str(priority_or_status))}</td>"
+            f"<td>{html.escape(str(row.get('pickup_time') or '—'))}</td>"
             "</tr>"
         )
     blocks.extend(["</tbody>", "</table>"])
@@ -657,6 +657,7 @@ async def _collect_status_rows(
                 "store_code": store_code,
                 "status_bucket": status_bucket,
                 "pickup_id": str(raw_row.get("pickup_id") or "").strip() or None,
+                "pickup_code": _field_from_headers(headers=headers, values=values, field_name="pickup_code"),
                 "pickup_no": _field_from_headers(headers=headers, values=values, field_name="pickup_no"),
                 "customer_name": _field_from_headers(headers=headers, values=values, field_name="customer_name"),
                 "address": _field_from_headers(headers=headers, values=values, field_name="address"),
