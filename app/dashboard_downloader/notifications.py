@@ -1644,6 +1644,50 @@ async def _load_notification_resources(
     return resources, []
 
 
+def _coerce_duration_seconds(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        seconds = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return max(0, seconds)
+
+
+def _format_duration_hhmmss(seconds: int | None) -> str:
+    if seconds is None:
+        return ""
+    hh, mm, ss = seconds // 3600, (seconds % 3600) // 60, seconds % 60
+    return f"{hh:02d}:{mm:02d}:{ss:02d}"
+
+
+def _derive_duration_fields(run_data: Mapping[str, Any], metrics_payload: Mapping[str, Any]) -> tuple[int | None, str]:
+    duration_seconds = _coerce_duration_seconds(metrics_payload.get("duration_seconds"))
+    duration_human = str(metrics_payload.get("duration_human") or "").strip()
+
+    started_at = run_data.get("started_at")
+    finished_at = run_data.get("finished_at")
+    if (duration_seconds is None or not duration_human) and isinstance(started_at, datetime) and isinstance(finished_at, datetime):
+        computed_seconds = _coerce_duration_seconds((finished_at - started_at).total_seconds())
+        if computed_seconds is not None:
+            duration_seconds = duration_seconds if duration_seconds is not None else computed_seconds
+            if not duration_human:
+                duration_human = _format_duration_hhmmss(computed_seconds)
+
+    if not duration_human:
+        duration_human = str(run_data.get("total_time_taken") or "").strip()
+
+    if duration_seconds is None and duration_human:
+        parts = duration_human.split(":")
+        if len(parts) == 3 and all(part.isdigit() for part in parts):
+            duration_seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+
+    if duration_human and duration_seconds is None:
+        duration_seconds = _coerce_duration_seconds(run_data.get("duration_seconds"))
+
+    return duration_seconds, duration_human
+
+
 def _normalize_datetime(value: Any) -> str:
     try:
         return value.isoformat()  # type: ignore[attr-defined]
@@ -2703,12 +2747,7 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[st
     store_names = resources["store_names"]
     profiler_missing_windows = resources.get("profiler_missing_windows") or {}
     metrics_payload = run_data.get("metrics_json") or {}
-    duration_seconds = metrics_payload.get("duration_seconds")
-    duration_human = (
-        metrics_payload.get("duration_human")
-        or run_data.get("total_time_taken")
-        or ""
-    )
+    duration_seconds, duration_human = _derive_duration_fields(run_data, metrics_payload)
 
     context: dict[str, Any] = {
         "pipeline_name": pipeline_name,
@@ -2717,7 +2756,7 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[st
         "run_env": run_data["run_env"],
         "report_date": run_data.get("report_date").isoformat() if run_data.get("report_date") else "",
         "overall_status": run_data.get("overall_status"),
-        "total_time_taken": run_data.get("total_time_taken"),
+        "total_time_taken": run_data.get("total_time_taken") or duration_human,
         "summary_text": run_data.get("summary_text", ""),
         "summary_html": metrics_payload.get("summary_html") or "",
         "metrics_json": metrics_payload,
@@ -2801,8 +2840,7 @@ async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str
     recipients_by_profile = resources["recipients"]
     store_names = resources["store_names"]
     metrics_payload = run_data.get("metrics_json") or {}
-    duration_seconds = metrics_payload.get("duration_seconds")
-    duration_human = metrics_payload.get("duration_human") or run_data.get("total_time_taken") or ""
+    duration_seconds, duration_human = _derive_duration_fields(run_data, metrics_payload)
 
     context = {
         "pipeline_name": pipeline_name,
@@ -2811,7 +2849,7 @@ async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str
         "run_env": run_data["run_env"],
         "report_date": run_data.get("report_date").isoformat() if run_data.get("report_date") else "",
         "overall_status": run_data.get("overall_status"),
-        "total_time_taken": run_data.get("total_time_taken"),
+        "total_time_taken": run_data.get("total_time_taken") or duration_human,
         "summary_text": run_data.get("summary_text", ""),
         "summary_html": metrics_payload.get("summary_html") or "",
         "metrics_json": metrics_payload,

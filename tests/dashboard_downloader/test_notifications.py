@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from app.dashboard_downloader.notifications import (
     _build_fact_rows,
     _build_run_plan,
+    _derive_duration_fields,
     _build_store_plans,
     _build_uc_orders_context,
     _format_fact_sections_text,
@@ -248,3 +251,16 @@ def test_td_leads_run_plan_sets_html_body_when_summary_html_is_available() -> No
 
     assert plan is not None
     assert plan.body_html == "<h3>HTML summary</h3>"
+
+
+def test_derive_duration_fields_prefers_summary_timestamps_when_metrics_missing() -> None:
+    started = datetime(2026, 4, 22, 0, 0, tzinfo=timezone.utc)
+    finished = datetime(2026, 4, 22, 0, 1, 7, tzinfo=timezone.utc)
+
+    duration_seconds, duration_human = _derive_duration_fields(
+        {"started_at": started, "finished_at": finished, "total_time_taken": ""},
+        {},
+    )
+
+    assert duration_seconds == 67
+    assert duration_human == "00:01:07"

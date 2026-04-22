@@ -689,7 +689,7 @@ async def test_td_leads_seeded_run_notification_plans_email(tmp_path, monkeypatc
                     """
                 ),
                 {
-                    "metrics_json": json.dumps({"duration_seconds": 60, "duration_human": "00:01:00"}),
+                    "metrics_json": json.dumps({"summary_html": "<div>ok</div>"}),
                 },
             )
             await connection.execute(
@@ -709,7 +709,7 @@ async def test_td_leads_seeded_run_notification_plans_email(tmp_path, monkeypatc
                     INSERT INTO email_templates (
                         profile_id, name, subject_template, body_template, is_active
                     ) VALUES (
-                        10, 'run_summary', 'TD Leads {{ run_id }}', 'Run {{ run_id }} complete', 1
+                        10, 'run_summary', 'TD Leads {{ run_id }}', 'Run {{ run_id }} complete in {{ duration_human }}', 1
                     )
                     """
                 )
@@ -738,20 +738,20 @@ async def test_td_leads_seeded_run_notification_plans_email(tmp_path, monkeypatc
                 report_email_use_tls=app_config.report_email_use_tls,
             ),
         )
-        captured_context: dict[str, object] = {}
+        sent_plans = []
 
-        def _capture_plans(**kwargs):
-            captured_context.update(kwargs["context"])
-            return []
+        def _capture_send_email(_smtp_config, plan):
+            sent_plans.append(plan)
+            return True
 
-        monkeypatch.setattr("app.dashboard_downloader.notifications._build_email_plans", _capture_plans)
+        monkeypatch.setattr("app.dashboard_downloader.notifications._send_email", _capture_send_email)
 
         result = await send_notifications_for_run("td_crm_leads_sync", "run-1")
 
-        assert result["emails_planned"] == 0
-        assert captured_context["started_at"] == "2026-04-22T00:00:00+00:00"
-        assert captured_context["finished_at"] == "2026-04-22T00:01:00+00:00"
-        assert captured_context["duration_seconds"] == 60
-        assert captured_context["duration_human"] == "00:01:00"
+        assert result["emails_planned"] == 1
+        assert result["emails_sent"] == 1
+        assert len(sent_plans) == 1
+        assert "00:01:00" in sent_plans[0].body
+        assert "Run run-1 complete in 00:01:00" in sent_plans[0].body
     finally:
         await engine.dispose()
