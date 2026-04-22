@@ -184,6 +184,84 @@ def test_write_store_artifact_fails_when_tz_aware_values_remain(monkeypatch: pyt
     assert events[-1]["tz_aware_columns"] == ["mobile"]
 
 
+def test_write_store_artifact_writes_temp_then_promotes(tmp_path) -> None:
+    rows = [
+        {
+            "store_code": "A668",
+            "status_bucket": "pending",
+            "pickup_id": "1",
+            "pickup_no": "A668-1",
+            "customer_name": "Foo",
+            "address": "Bar",
+            "mobile": "9999999999",
+            "pickup_date": "22 Apr 2026",
+            "pickup_time": "11:00 AM - 1:00 PM",
+            "special_instruction": "",
+            "status_text": "PENDING",
+            "reason": "",
+            "source": "",
+            "user": "",
+            "scraped_at": datetime(2026, 4, 22, 6, 30),
+        }
+    ]
+
+    output_path = _write_store_artifact(
+        store_code="A668",
+        rows=rows,
+        output_dir=tmp_path,
+        logger=SimpleNamespace(),
+    )
+
+    assert output_path == tmp_path / "A668-crm_leads.xlsx"
+    assert output_path.exists()
+    assert not (tmp_path / "A668-crm_leads.xlsx.tmp").exists()
+
+
+def test_write_store_artifact_removes_temp_and_logs_failure(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.crm_downloader.td_leads_sync.main.log_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+
+    class _FakeSheet:
+        def __init__(self) -> None:
+            self.title = ""
+
+        def append(self, _row) -> None:
+            return None
+
+    class _FailingWorkbook:
+        def __init__(self) -> None:
+            self.active = _FakeSheet()
+
+        def save(self, _path) -> None:
+            raise OSError("disk full")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "app.crm_downloader.td_leads_sync.main.openpyxl.Workbook",
+        lambda: _FailingWorkbook(),
+    )
+
+    with pytest.raises(OSError, match="disk full"):
+        _write_store_artifact(
+            store_code="A668",
+            rows=[],
+            output_dir=tmp_path,
+            logger=SimpleNamespace(),
+        )
+
+    tmp_artifact = tmp_path / "A668-crm_leads.xlsx.tmp"
+    assert not tmp_artifact.exists()
+    assert events
+    assert events[-1]["message"] == "artifact_write_failed"
+    assert events[-1]["store_code"] == "A668"
+    assert events[-1]["artifact_path"] == str(tmp_artifact)
+
+
 class _FakeLocator:
     def __init__(self, count: int) -> None:
         self._count = count
