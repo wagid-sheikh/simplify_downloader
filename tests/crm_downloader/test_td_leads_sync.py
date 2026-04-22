@@ -7,10 +7,13 @@ import pytest
 
 from app.crm_downloader.td_leads_sync.ingest import build_lead_uid
 from app.crm_downloader.td_leads_sync.main import (
+    _available_pager_args,
     _ensure_scheduler_page,
     _field_from_headers,
     _find_tz_aware_columns,
+    _postback_page_arg,
     _sanitize_rows_for_xlsx_export,
+    _scrape_grid_rows,
     _write_store_artifact,
 )
 
@@ -371,3 +374,49 @@ async def test_ensure_scheduler_page_timeout_logs_selector_and_final_url(monkeyp
     error_event = error_events[-1]
     assert error_event.get("awaited_selectors")
     assert str(error_event.get("final_url", "")).endswith("frmHomePickUpScheduler.aspx")
+
+
+class _FakeEvaluatePage:
+    def __init__(self, evaluate_result):
+        self.evaluate_result = evaluate_result
+        self.evaluate_calls: list[tuple[str, dict[str, str]]] = []
+
+    async def evaluate(self, script: str, payload: dict[str, str]):
+        self.evaluate_calls.append((script, payload))
+        return self.evaluate_result
+
+
+@pytest.mark.asyncio
+async def test_available_pager_args_uses_raw_regex_pattern_in_evaluate_script() -> None:
+    page = _FakeEvaluatePage(["Page$1", "Page$2"])
+
+    values = await _available_pager_args(page, grid_selector="#grdEntry")
+
+    assert values == ["Page$1", "Page$2"]
+    script, payload = page.evaluate_calls[0]
+    assert payload == {"gridSelector": "#grdEntry"}
+    assert r"href.match(/Page\$\d+/i)" in script
+
+
+@pytest.mark.asyncio
+async def test_postback_page_arg_uses_event_argument_payload() -> None:
+    page = _FakeEvaluatePage(None)
+
+    await _postback_page_arg(page, arg="Page$3")
+
+    script, payload = page.evaluate_calls[0]
+    assert payload == {"eventArgument": "Page$3"}
+    assert "__EVENTARGUMENT" in script
+    assert "__doPostBack('', eventArgument)" in script
+
+
+@pytest.mark.asyncio
+async def test_scrape_grid_rows_script_keeps_whitespace_regex_literal() -> None:
+    page = _FakeEvaluatePage({"headers": [], "rows": []})
+
+    headers, rows = await _scrape_grid_rows(page, grid_selector="#grdEntry")
+
+    assert headers == []
+    assert rows == []
+    script, _payload = page.evaluate_calls[0]
+    assert r"replace(/\s+/g, ' ')" in script
