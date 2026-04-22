@@ -1178,6 +1178,8 @@ def _summarize_ingest_remarks_by_store(
 
 
 def _recipient_matches(row_store: str | None, store_code: str | None) -> bool:
+    if row_store == "ALL":
+        return True
     if store_code is None:
         return row_store is None
     if row_store is None:
@@ -1503,6 +1505,14 @@ async def _load_notification_resources(
         pipeline_row = (
             await session.execute(sa.select(pipelines).where(pipelines.c.code == pipeline_name))
         ).mappings().first()
+        logger.info(
+            "notification filter stage pipeline_lookup",
+            extra={
+                "pipeline_name": pipeline_name,
+                "run_id": run_id,
+                "pipeline_found": bool(pipeline_row),
+            },
+        )
         if not pipeline_row:
             return None, [f"pipeline {pipeline_name} is not registered in notification metadata"]
 
@@ -1533,6 +1543,19 @@ async def _load_notification_resources(
                 .where(notification_profiles.c.env.in_(["any", run_row["run_env"]]))
             )
         ).mappings().all()
+        logger.info(
+            "notification filter stage profile_lookup",
+            extra={
+                "pipeline_name": pipeline_name,
+                "run_id": run_id,
+                "pipeline_id": pipeline_row["id"],
+                "run_env": run_row["run_env"],
+                "profiles_found": len(profiles_rows),
+                "profile_codes": [row.get("code") for row in profiles_rows],
+                "profile_scopes": [row.get("scope") for row in profiles_rows],
+                "profile_envs": [row.get("env") for row in profiles_rows],
+            },
+        )
         if not profiles_rows:
             return None, [f"no active notification profiles found for pipeline {pipeline_name}"]
 
@@ -1542,10 +1565,25 @@ async def _load_notification_resources(
                 sa.select(email_templates)
                 .where(email_templates.c.profile_id.in_(profile_ids))
                 .where(email_templates.c.is_active.is_(True))
-                .where(email_templates.c.name == "default")
+                .where(email_templates.c.name.in_(["default", "run_summary"]))
             )
         ).mappings().all()
-        templates_by_profile = {row["profile_id"]: dict(row) for row in templates_rows}
+        logger.info(
+            "notification filter stage template_lookup",
+            extra={
+                "pipeline_name": pipeline_name,
+                "run_id": run_id,
+                "template_rows_found": len(templates_rows),
+                "template_profile_ids": [row.get("profile_id") for row in templates_rows],
+                "template_names": [row.get("name") for row in templates_rows],
+            },
+        )
+        templates_by_profile: dict[int, dict[str, Any]] = {}
+        for row in templates_rows:
+            data = dict(row)
+            existing = templates_by_profile.get(data["profile_id"])
+            if existing is None or existing.get("name") != "default":
+                templates_by_profile[data["profile_id"]] = data
 
         recipients_rows = (
             await session.execute(
@@ -1555,6 +1593,17 @@ async def _load_notification_resources(
                 .where(notification_recipients.c.env.in_(["any", run_row["run_env"]]))
             )
         ).mappings().all()
+        logger.info(
+            "notification filter stage recipient_lookup",
+            extra={
+                "pipeline_name": pipeline_name,
+                "run_id": run_id,
+                "recipient_rows_found": len(recipients_rows),
+                "recipient_profile_ids": [row.get("profile_id") for row in recipients_rows],
+                "recipient_envs": [row.get("env") for row in recipients_rows],
+                "recipient_store_codes": [row.get("store_code") for row in recipients_rows],
+            },
+        )
 
         store_codes: set[str] = set()
         for row in docs_rows:

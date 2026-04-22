@@ -119,16 +119,24 @@ def test_seed_td_leads_notif_upgrade_and_downgrade(monkeypatch: pytest.MonkeyPat
         assert profile_id is not None
 
         profile_env = connection.execute(
-            sa.text("SELECT env FROM notification_profiles WHERE id = :profile_id"),
+            sa.text("SELECT code, scope, env FROM notification_profiles WHERE id = :profile_id"),
+            {"profile_id": profile_id},
+        ).one()
+        assert profile_env.code == "run_summary"
+        assert profile_env.scope == "run"
+        assert profile_env.env == "any"
+        assert profile_env.env in ALLOWED_ENVS
+
+        template_name = connection.execute(
+            sa.text("SELECT name FROM email_templates WHERE profile_id = :profile_id"),
             {"profile_id": profile_id},
         ).scalar_one()
-        assert profile_env == "any"
-        assert profile_env in ALLOWED_ENVS
+        assert template_name == "run_summary"
 
         recipient_row = connection.execute(
             sa.text(
                 """
-                SELECT email_address, env
+                SELECT email_address, env, store_code
                 FROM notification_recipients
                 WHERE profile_id = :profile_id AND send_as = 'to'
                 """
@@ -138,6 +146,7 @@ def test_seed_td_leads_notif_upgrade_and_downgrade(monkeypatch: pytest.MonkeyPat
         assert recipient_row.email_address == "wagid.sheikh@gmail.com"
         assert recipient_row.env == "any"
         assert recipient_row.env in ALLOWED_ENVS
+        assert recipient_row.store_code == "ALL"
 
     with engine.begin() as connection:
         _run_migration(connection, migration.downgrade, monkeypatch)

@@ -19,6 +19,8 @@ from app.crm_downloader.td_leads_sync.main import (
     _scrape_grid_rows,
     _write_store_artifact,
 )
+from app.dashboard_downloader.notifications import send_notifications_for_run
+from app.config import config as app_config
 
 
 def test_build_lead_uid_is_stable_for_same_business_identity() -> None:
@@ -455,5 +457,188 @@ async def test_ingest_store_path_uses_async_session_scope_without_greenlet_error
         async with engine.connect() as connection:
             count = await connection.scalar(sa.text("SELECT COUNT(*) FROM crm_leads"))
         assert count == 1
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_td_leads_seeded_run_notification_plans_email(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_leads_notif.db'}"
+    engine = create_async_engine(database_url, future=True)
+
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                sa.text(
+                    """
+                    CREATE TABLE pipelines (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        code TEXT NOT NULL,
+                        description TEXT
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text(
+                    """
+                    CREATE TABLE pipeline_run_summaries (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        pipeline_name TEXT,
+                        run_id TEXT,
+                        run_env TEXT,
+                        started_at DATETIME,
+                        finished_at DATETIME,
+                        total_time_taken TEXT,
+                        report_date DATE,
+                        overall_status TEXT,
+                        summary_text TEXT,
+                        phases_json JSON,
+                        metrics_json JSON,
+                        created_at DATETIME
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text(
+                    """
+                    CREATE TABLE documents (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        doc_type TEXT,
+                        doc_subtype TEXT,
+                        doc_date DATE,
+                        reference_name_1 TEXT,
+                        reference_id_1 TEXT,
+                        reference_name_2 TEXT,
+                        reference_id_2 TEXT,
+                        reference_name_3 TEXT,
+                        reference_id_3 TEXT,
+                        file_name TEXT,
+                        mime_type TEXT,
+                        file_size_bytes INTEGER,
+                        storage_backend TEXT,
+                        file_path TEXT,
+                        file_blob BLOB,
+                        checksum TEXT,
+                        status TEXT,
+                        error_message TEXT,
+                        created_at DATETIME,
+                        created_by TEXT
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text(
+                    """
+                    CREATE TABLE notification_profiles (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        pipeline_id INTEGER,
+                        code TEXT,
+                        description TEXT,
+                        env TEXT,
+                        scope TEXT,
+                        attach_mode TEXT,
+                        is_active BOOLEAN
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text(
+                    """
+                    CREATE TABLE email_templates (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        profile_id INTEGER,
+                        name TEXT,
+                        subject_template TEXT,
+                        body_template TEXT,
+                        is_active BOOLEAN
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text(
+                    """
+                    CREATE TABLE notification_recipients (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        profile_id INTEGER,
+                        store_code TEXT,
+                        env TEXT,
+                        email_address TEXT,
+                        display_name TEXT,
+                        send_as TEXT,
+                        is_active BOOLEAN,
+                        created_at DATETIME
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text("INSERT INTO pipelines (id, code, description) VALUES (1, 'td_crm_leads_sync', 'TD leads')")
+            )
+            await connection.execute(
+                sa.text(
+                    """
+                    INSERT INTO pipeline_run_summaries (
+                        pipeline_name, run_id, run_env, report_date, overall_status, total_time_taken, summary_text, metrics_json
+                    ) VALUES (
+                        'td_crm_leads_sync', 'run-1', 'local', '2026-04-22', 'success', '00:01:00', 'ok', '{}'
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text(
+                    """
+                    INSERT INTO notification_profiles (
+                        id, pipeline_id, code, description, env, scope, attach_mode, is_active
+                    ) VALUES (
+                        10, 1, 'run_summary', 'TD leads run summary', 'any', 'run', 'none', 1
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text(
+                    """
+                    INSERT INTO email_templates (
+                        profile_id, name, subject_template, body_template, is_active
+                    ) VALUES (
+                        10, 'run_summary', 'TD Leads {{ run_id }}', 'Run {{ run_id }} complete', 1
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text(
+                    """
+                    INSERT INTO notification_recipients (
+                        profile_id, store_code, env, email_address, send_as, is_active
+                    ) VALUES (
+                        10, 'ALL', 'any', 'ops@example.com', 'to', 1
+                    )
+                    """
+                )
+            )
+
+        monkeypatch.setattr(
+            "app.dashboard_downloader.notifications.config",
+            SimpleNamespace(
+                database_url=database_url,
+                report_email_smtp_host=app_config.report_email_smtp_host,
+                report_email_smtp_port=app_config.report_email_smtp_port,
+                report_email_from=app_config.report_email_from,
+                report_email_smtp_username=app_config.report_email_smtp_username,
+                report_email_smtp_password=app_config.report_email_smtp_password,
+                report_email_use_tls=app_config.report_email_use_tls,
+            ),
+        )
+
+        result = await send_notifications_for_run("td_crm_leads_sync", "run-1")
+
+        assert result["emails_planned"] > 0
     finally:
         await engine.dispose()
