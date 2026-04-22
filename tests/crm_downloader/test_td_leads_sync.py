@@ -286,7 +286,7 @@ def test_td_leads_tables_html_renders_store_sections_bucket_tables_and_rows() ->
         },
     )
 
-    tables_html = _build_td_leads_tables_html(summary=summary, row_limit=50)
+    tables_html = _build_td_leads_tables_html(summary=summary)
 
     assert "Store A817" in tables_html
     assert "<h5 style='margin:10px 0 6px 0;'>Pending</h5>" in tables_html
@@ -295,8 +295,8 @@ def test_td_leads_tables_html_renders_store_sections_bucket_tables_and_rows() ->
     assert "Pending 1" in tables_html
     assert "Raj" in tables_html
     assert "No cancelled leads." in tables_html
-    assert "Pending 52" not in tables_html
-    assert "+2 more rows in artifact for A817 pending." in tables_html
+    assert "Pending 52" in tables_html
+    assert "more rows in artifact" not in tables_html
 
 
 def test_write_store_artifact_fails_when_tz_aware_values_remain(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
