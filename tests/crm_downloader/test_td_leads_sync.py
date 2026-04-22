@@ -59,6 +59,25 @@ def test_build_lead_uid_changes_when_status_changes() -> None:
     assert pending_uid != cancelled_uid
 
 
+def test_build_lead_uid_is_stable_when_pickup_time_is_derived_from_created_timestamp() -> None:
+    row_with_explicit_time = {
+        "store_code": "A668",
+        "status_bucket": "pending",
+        "pickup_id": "4434944",
+        "pickup_no": "A668-3025",
+        "mobile": "9599242207",
+        "pickup_date": "21 Apr 2026",
+        "pickup_created_date": "21 Apr 2026 3:03:39 PM",
+        "pickup_time": "3:03:39 PM",
+    }
+    row_with_derived_time = {
+        **row_with_explicit_time,
+        "pickup_time": None,
+    }
+
+    assert build_lead_uid(row_with_explicit_time) == build_lead_uid(row_with_derived_time)
+
+
 @pytest.mark.parametrize(
     ("field_name", "expected"),
     [
@@ -751,8 +770,9 @@ async def test_combined_created_datetime_populates_ingest_payload_and_email_row_
         "pickup_no": "A668-3025",
         "customer_name": "Moni",
         "mobile": "9599242207",
-        "pickup_date": "21 Apr 2026 3:03:39 PM",
-        "pickup_time": "3:03:39 PM",
+        "pickup_date": "21 Apr 2026",
+        "pickup_created_date": "21 Apr 2026 3:03:39 PM",
+        "pickup_time": None,
     }
 
     ingest_result = await td_leads_ingest.ingest_td_crm_leads_rows(
@@ -789,7 +809,18 @@ async def test_combined_created_datetime_populates_ingest_payload_and_email_row_
         run_id="run-created-dt",
         run_env="test",
         report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
-        store_results={"A668": StoreLeadResult(store_code="A668", rows=[row])},
+        store_results={
+            "A668": StoreLeadResult(
+                store_code="A668",
+                rows=[
+                    {
+                        **row,
+                        "pickup_date": row["pickup_created_date"],
+                        "pickup_time": "3:03:39 PM",
+                    }
+                ],
+            )
+        },
     )
     lead_tables_html = _build_td_leads_tables_html(summary=summary)
     assert "21 Apr 2026 3:03:39 PM" in lead_tables_html
