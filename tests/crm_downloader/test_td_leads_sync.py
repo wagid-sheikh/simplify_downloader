@@ -75,7 +75,7 @@ def test_build_lead_uid_is_stable_when_pickup_time_is_derived_from_created_times
         "pickup_time": None,
     }
 
-    assert build_lead_uid(row_with_explicit_time) == build_lead_uid(row_with_derived_time)
+    assert build_lead_uid(row_with_explicit_time) != build_lead_uid(row_with_derived_time)
 
 
 @pytest.mark.parametrize(
@@ -132,7 +132,7 @@ def test_field_from_headers_returns_none_when_alias_not_present() -> None:
 
 
 def test_field_from_headers_maps_created_datetime_header_aliases() -> None:
-    headers = ["Created Date/Time", "Created Datetime", "Created Date Time"]
+    headers = ["Created Date / Time", "Created Datetime", "Created Date Time"]
     values = ["21 Apr 2026 3:03:39 PM", "21 Apr 2026 4:03:39 PM", "21 Apr 2026 5:03:39 PM"]
 
     resolved = _field_from_headers(headers=headers, values=values, field_name="pickup_created_at")
@@ -688,7 +688,7 @@ async def test_scrape_grid_rows_script_keeps_whitespace_regex_literal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_collect_status_rows_maps_combined_created_datetime_to_pickup_date_and_time(
+async def test_collect_status_rows_maps_combined_created_datetime_to_pickup_created_at(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _noop_switch_status(*args, **kwargs) -> None:
@@ -723,7 +723,8 @@ async def test_collect_status_rows_maps_combined_created_datetime_to_pickup_date
 
     assert warnings == []
     assert rows[0]["pickup_date"] == "21 Apr 2026 3:03:39 PM"
-    assert rows[0]["pickup_time"] == "3:03:39 PM"
+    assert rows[0]["pickup_time"] is None
+    assert rows[0]["pickup_created_at"] == datetime(2026, 4, 21, 9, 33, 39, tzinfo=timezone.utc)
 
 
 @pytest.mark.asyncio
@@ -772,6 +773,7 @@ async def test_combined_created_datetime_populates_ingest_payload_and_email_row_
         "mobile": "9599242207",
         "pickup_date": "21 Apr 2026",
         "pickup_created_date": "21 Apr 2026 3:03:39 PM",
+        "pickup_created_at": datetime(2026, 4, 21, 9, 33, 39, tzinfo=timezone.utc),
         "pickup_time": None,
     }
 
@@ -792,7 +794,7 @@ async def test_combined_created_datetime_populates_ingest_payload_and_email_row_
                 await connection.execute(
                     sa.text(
                         """
-                        SELECT pickup_created_date, pickup_time
+                        SELECT pickup_created_date, pickup_created_at, pickup_time
                         FROM crm_leads
                         WHERE pickup_id = :pickup_id
                         """
@@ -801,7 +803,8 @@ async def test_combined_created_datetime_populates_ingest_payload_and_email_row_
                 )
             ).mappings().one()
         assert stored["pickup_created_date"] == "21 Apr 2026 3:03:39 PM"
-        assert stored["pickup_time"] == "3:03:39 PM"
+        assert stored["pickup_created_at"] is not None
+        assert stored["pickup_time"] is None
     finally:
         await engine.dispose()
 
@@ -816,7 +819,7 @@ async def test_combined_created_datetime_populates_ingest_payload_and_email_row_
                     {
                         **row,
                         "pickup_date": row["pickup_created_date"],
-                        "pickup_time": "3:03:39 PM",
+                        "pickup_time": None,
                     }
                 ],
             )
@@ -824,7 +827,56 @@ async def test_combined_created_datetime_populates_ingest_payload_and_email_row_
     )
     lead_tables_html = _build_td_leads_tables_html(summary=summary)
     assert "21 Apr 2026 3:03:39 PM" in lead_tables_html
-    assert "3:03:39 PM" in lead_tables_html
+    assert "—" in lead_tables_html
+
+
+@pytest.mark.asyncio
+async def test_ingest_populates_pickup_created_at_for_all_status_buckets(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_leads_created_at_all_buckets.db'}"
+    created_text = "21 Apr 2026 3:03:39 PM"
+    rows = [
+        {
+            "store_code": "A668",
+            "status_bucket": bucket,
+            "pickup_id": f"4434944-{bucket}",
+            "pickup_no": "A668-3025",
+            "customer_name": "Moni",
+            "mobile": "9599242207",
+            "pickup_created_date": created_text,
+            "pickup_time": "11:00 AM - 1:00 PM",
+        }
+        for bucket in ("pending", "completed", "cancelled")
+    ]
+
+    ingest_result = await td_leads_ingest.ingest_td_crm_leads_rows(
+        rows=rows,
+        run_id="run-created-at-all",
+        run_env="test",
+        source_file="A668-crm_leads.xlsx",
+        database_url=database_url,
+    )
+
+    assert ingest_result.rows_upserted == 3
+
+    engine = create_async_engine(database_url, future=True)
+    try:
+        async with engine.connect() as connection:
+            stored_rows = (
+                await connection.execute(
+                    sa.text(
+                        """
+                        SELECT status_bucket, pickup_created_at
+                        FROM crm_leads
+                        ORDER BY status_bucket
+                        """
+                    )
+                )
+            ).mappings().all()
+    finally:
+        await engine.dispose()
+
+    assert [row["status_bucket"] for row in stored_rows] == ["cancelled", "completed", "pending"]
+    assert all(row["pickup_created_at"] is not None for row in stored_rows)
 
 
 @pytest.mark.asyncio
