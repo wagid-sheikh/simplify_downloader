@@ -6,7 +6,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0085_td_leads_add_duration_fields"
+revision = "0085_td_leads_duration"
 down_revision = "0084_seed_td_leads_notif"
 branch_labels = None
 depends_on = None
