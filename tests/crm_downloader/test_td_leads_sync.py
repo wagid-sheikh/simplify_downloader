@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from contextlib import asynccontextmanager, contextmanager
 from types import SimpleNamespace
 
 import pytest
+import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.crm_downloader.td_leads_sync.ingest import build_lead_uid
 from app.crm_downloader.td_leads_sync import ingest as td_leads_ingest
@@ -425,37 +426,8 @@ async def test_scrape_grid_rows_script_keeps_whitespace_regex_literal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ingest_store_path_accepts_sync_bind_context_manager(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _FakeConnection:
-        def _run_ddl_visitor(self, *_args, **_kwargs) -> None:
-            return None
-
-    class _FakeBind:
-        @contextmanager
-        def begin(self):
-            yield _FakeConnection()
-
-    class _FakeSession:
-        def __init__(self) -> None:
-            self.executed: list[object] = []
-            self.committed = False
-
-        def get_bind(self) -> _FakeBind:
-            return _FakeBind()
-
-        async def execute(self, stmt: object) -> None:
-            self.executed.append(stmt)
-
-        async def commit(self) -> None:
-            self.committed = True
-
-    fake_session = _FakeSession()
-
-    @asynccontextmanager
-    async def _fake_session_scope(_database_url: str):
-        yield fake_session
-
-    monkeypatch.setattr(td_leads_ingest, "session_scope", _fake_session_scope)
+async def test_ingest_store_path_uses_async_session_scope_without_greenlet_errors(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_leads.db'}"
 
     result = await td_leads_ingest.ingest_td_crm_leads_rows(
         rows=[
@@ -472,10 +444,16 @@ async def test_ingest_store_path_accepts_sync_bind_context_manager(monkeypatch: 
         run_id="run-1",
         run_env="test",
         source_file="A668-crm_leads.xlsx",
-        database_url="postgresql+asyncpg://user:pass@localhost/db",
+        database_url=database_url,
     )
 
     assert result.rows_received == 1
     assert result.rows_upserted == 1
-    assert fake_session.committed is True
-    assert len(fake_session.executed) == 1
+
+    engine = create_async_engine(database_url, future=True)
+    try:
+        async with engine.connect() as connection:
+            count = await connection.scalar(sa.text("SELECT COUNT(*) FROM crm_leads"))
+        assert count == 1
+    finally:
+        await engine.dispose()

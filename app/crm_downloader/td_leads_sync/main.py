@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import openpyxl
+import sqlalchemy as sa
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from app.common.date_utils import aware_now, get_timezone
@@ -93,6 +94,7 @@ OUTPUT_COLUMNS = [
 ]
 
 DATETIME_LIKE_OUTPUT_COLUMNS = frozenset({"pickup_date", "scraped_at", "started_at", "finished_at", "created_at"})
+_DB_MODE_LOGGED_RUN_IDS: set[str] = set()
 
 
 @dataclass
@@ -653,6 +655,15 @@ def _find_tz_aware_columns(*, rows: Sequence[Mapping[str, Any]], columns: Sequen
     return tz_aware_columns
 
 
+def _database_dialect_name(database_url: str) -> str:
+    drivername = sa.engine.make_url(database_url).drivername
+    return drivername.split("+", maxsplit=1)[0]
+
+
+def _is_async_database_url(database_url: str) -> bool:
+    return "+" in sa.engine.make_url(database_url).drivername
+
+
 async def _run_store(
     *,
     browser: Browser,
@@ -763,6 +774,17 @@ async def _run_store(
 
         ingest_result: TdLeadsIngestResult | None = None
         if config.database_url:
+            if run_id not in _DB_MODE_LOGGED_RUN_IDS:
+                _DB_MODE_LOGGED_RUN_IDS.add(run_id)
+                log_event(
+                    logger=logger,
+                    phase="store",
+                    message="TD leads ingest DB mode",
+                    run_id=run_id,
+                    db_dialect=_database_dialect_name(config.database_url),
+                    db_url_async=_is_async_database_url(config.database_url),
+                    db_code_path="async_session_scope",
+                )
             ingest_result = await ingest_td_crm_leads_rows(
                 rows=all_rows,
                 run_id=run_id,

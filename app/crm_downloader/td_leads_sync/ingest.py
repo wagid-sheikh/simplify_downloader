@@ -42,8 +42,8 @@ def _crm_leads_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("run_env", sa.String(length=32), nullable=False),
         sa.Column("source_file", sa.Text()),
         sa.Column("scraped_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
         sa.UniqueConstraint("lead_uid", name="uq_crm_leads_uid"),
     )
 
@@ -78,10 +78,8 @@ async def ingest_td_crm_leads_rows(
     upserted = 0
 
     async with session_scope(database_url) as session:
-        bind = session.get_bind()
-        if bind is not None:
-            with bind.begin() as conn:
-                metadata.create_all(bind=conn)
+        connection = await session.connection()
+        await connection.run_sync(metadata.create_all)
 
         for row in rows:
             values = {
