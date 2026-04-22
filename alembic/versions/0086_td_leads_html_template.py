@@ -7,7 +7,7 @@ import sqlalchemy as sa
 
 
 revision = "0086_td_leads_html_template"
-down_revision = "0085_td_leads_add_duration_fields"
+down_revision = "0085_td_leads_duration"
 branch_labels = None
 depends_on = None
 
