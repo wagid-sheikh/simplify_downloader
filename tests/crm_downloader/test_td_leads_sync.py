@@ -314,6 +314,82 @@ def test_td_leads_tables_html_renders_store_sections_bucket_tables_and_rows() ->
     assert "more rows in artifact" not in tables_html
 
 
+def test_td_leads_tables_html_sorts_bucket_rows_by_created_datetime_desc_with_unparsable_last() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-html-sort",
+        run_env="local",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={
+            "A817": StoreLeadResult(
+                store_code="A817",
+                rows=[
+                    {
+                        "status_bucket": "pending",
+                        "pickup_code": "P-legacy-1",
+                        "customer_name": "Legacy One",
+                        "mobile": "9000000001",
+                        "address": "Area 1",
+                        "pickup_date": "not-a-date",
+                        "pickup_time": "—",
+                    },
+                    {
+                        "status_bucket": "pending",
+                        "pickup_code": "P-2",
+                        "customer_name": "Recent",
+                        "mobile": "9000000002",
+                        "address": "Area 2",
+                        "pickup_date": "21 Apr 2026 3:03:39 PM",
+                        "pickup_time": "3:03:39 PM",
+                    },
+                    {
+                        "status_bucket": "pending",
+                        "pickup_code": "P-3",
+                        "customer_name": "Most Recent",
+                        "mobile": "9000000003",
+                        "address": "Area 3",
+                        "pickup_date": "22 Apr 2026 9:03:39 PM",
+                        "pickup_time": "9:03:39 PM",
+                    },
+                    {
+                        "status_bucket": "pending",
+                        "pickup_code": "P-legacy-2",
+                        "customer_name": "Legacy Two",
+                        "mobile": "9000000004",
+                        "address": "Area 4",
+                        "pickup_date": "older-text",
+                        "pickup_time": "—",
+                    },
+                    {
+                        "status_bucket": "completed",
+                        "pickup_code": "C-1",
+                        "customer_name": "Completed One",
+                        "mobile": "9111111111",
+                        "address": "Area 5",
+                        "pickup_date": "20 Apr 2026 10:00:00 AM",
+                        "pickup_time": "10:00 AM",
+                    },
+                    {
+                        "status_bucket": "completed",
+                        "pickup_code": "C-2",
+                        "customer_name": "Completed Recent",
+                        "mobile": "9111111112",
+                        "address": "Area 6",
+                        "pickup_date": "22 Apr 2026 11:00:00 AM",
+                        "pickup_time": "11:00 AM",
+                    },
+                ],
+            )
+        },
+    )
+
+    tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert tables_html.index("Most Recent") < tables_html.index("Recent")
+    assert tables_html.index("Recent") < tables_html.index("Legacy One")
+    assert tables_html.index("Legacy One") < tables_html.index("Legacy Two")
+    assert tables_html.index("Completed Recent") < tables_html.index("Completed One")
+
+
 def test_write_store_artifact_fails_when_tz_aware_values_remain(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     events: list[dict[str, object]] = []
     monkeypatch.setattr(
