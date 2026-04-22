@@ -288,7 +288,7 @@ def _scheduler_url_for_store(store_code: str) -> str:
 
 async def _ensure_scheduler_page(page: Page, *, store: TdStore, logger: JsonLogger) -> bool:
     target_url = _scheduler_url_for_store(store.store_code)
-    url_pattern = re.compile(r".*/frmHomePickUpScheduler(?:\\.aspx)?(?:\\?.*)?$", re.IGNORECASE)
+    url_pattern = re.compile(r".*/frmHomePickUpScheduler(?:\.aspx)?(?:\?.*)?$", re.IGNORECASE)
     entry_selector = ",".join((SCHEDULER_HOME_ALERT_SELECTOR, *SCHEDULER_FALLBACK_SELECTORS))
 
     async def _wait_for_scheduler_ready() -> None:
@@ -363,7 +363,7 @@ async def _ensure_scheduler_page(page: Page, *, store: TdStore, logger: JsonLogg
 
 async def _scrape_grid_rows(page: Page, *, grid_selector: str) -> tuple[list[str], list[dict[str, Any]]]:
     payload = await page.evaluate(
-        """
+        r"""
         ({ gridSelector }) => {
           const table = document.querySelector(gridSelector);
           if (!table) {
@@ -410,7 +410,7 @@ async def _scrape_grid_rows(page: Page, *, grid_selector: str) -> tuple[list[str
 
 async def _available_pager_args(page: Page, *, grid_selector: str) -> list[str]:
     values = await page.evaluate(
-        """
+        r"""
         ({ gridSelector }) => {
           const table = document.querySelector(gridSelector);
           if (!table) {
@@ -420,7 +420,7 @@ async def _available_pager_args(page: Page, *, grid_selector: str) -> list[str]:
           const args = [];
           for (const link of links) {
             const href = link.getAttribute('href') || '';
-            const match = href.match(/Page\$[0-9]+/i);
+            const match = href.match(/Page\$\d+/i);
             if (match) {
               args.push(match[0]);
             }
@@ -435,7 +435,7 @@ async def _available_pager_args(page: Page, *, grid_selector: str) -> list[str]:
 
 async def _postback_page_arg(page: Page, *, arg: str) -> None:
     await page.evaluate(
-        """
+        r"""
         ({ eventArgument }) => {
           const targetInput = document.querySelector('input[name="__EVENTTARGET"]');
           if (targetInput) {
