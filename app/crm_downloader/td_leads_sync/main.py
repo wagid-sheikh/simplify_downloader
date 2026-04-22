@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import html
 import os
 import re
 from collections import defaultdict
@@ -95,6 +96,102 @@ OUTPUT_COLUMNS = [
 
 DATETIME_LIKE_OUTPUT_COLUMNS = frozenset({"pickup_date", "scraped_at", "started_at", "finished_at", "created_at"})
 _DB_MODE_LOGGED_RUN_IDS: set[str] = set()
+TD_LEADS_HTML_TABLE_ROW_LIMIT = 50
+TD_LEADS_STATUS_BUCKETS: tuple[str, ...] = ("pending", "completed", "cancelled")
+
+
+def _parse_pickup_datetime(raw: Any) -> datetime | None:
+    if isinstance(raw, datetime):
+        value = raw
+    elif raw is None:
+        return None
+    else:
+        text = str(raw).strip()
+        if not text:
+            return None
+        value = datetime.fromisoformat(text.replace("Z", "+00:00")) if "T" in text or "+" in text else None
+        if value is None:
+            for fmt in ("%d %b %Y %I:%M %p", "%d %b %Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                with contextlib.suppress(ValueError):
+                    return datetime.strptime(text, fmt)
+            return None
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _lead_sort_key(row: Mapping[str, Any]) -> tuple[datetime, str]:
+    pickup_dt = _parse_pickup_datetime(row.get("pickup_date")) or datetime.min
+    pickup_id = str(row.get("pickup_id") or row.get("pickup_no") or "")
+    return pickup_dt, pickup_id
+
+
+def _build_html_status_table(*, rows: Sequence[Mapping[str, Any]], title: str) -> str:
+    header = (
+        "<tr>"
+        "<th align='left'>Customer</th>"
+        "<th align='left'>Mobile</th>"
+        "<th align='left'>Pickup ID</th>"
+        "<th align='left'>Created Date</th>"
+        "<th align='left'>Status</th>"
+        "</tr>"
+    )
+    ordered_rows = sorted(rows, key=_lead_sort_key, reverse=True)
+    visible_rows = ordered_rows[:TD_LEADS_HTML_TABLE_ROW_LIMIT]
+    hidden_count = max(0, len(ordered_rows) - len(visible_rows))
+    body_rows: list[str] = []
+    for row in visible_rows:
+        body_rows.append(
+            "<tr>"
+            f"<td>{html.escape(str(row.get('customer_name') or ''))}</td>"
+            f"<td>{html.escape(str(row.get('mobile') or ''))}</td>"
+            f"<td>{html.escape(str(row.get('pickup_id') or row.get('pickup_no') or ''))}</td>"
+            f"<td>{html.escape(str(row.get('pickup_date') or ''))}</td>"
+            f"<td>{html.escape(str(row.get('status_text') or row.get('status_bucket') or ''))}</td>"
+            "</tr>"
+        )
+    if not body_rows:
+        body_rows.append("<tr><td colspan='5'><em>No leads in this bucket.</em></td></tr>")
+    if hidden_count:
+        body_rows.append(f"<tr><td colspan='5'><em>... and {hidden_count} more.</em></td></tr>")
+
+    return (
+        f"<h4 style='margin:16px 0 8px 0;'>{html.escape(title)}</h4>"
+        "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse; width:100%; margin-bottom:12px;'>"
+        f"<thead>{header}</thead>"
+        f"<tbody>{''.join(body_rows)}</tbody>"
+        "</table>"
+    )
+
+
+def _build_td_leads_summary_html(*, summary: "LeadsRunSummary", duration_human: str) -> str:
+    ordered_results = sorted(summary.store_results.values(), key=lambda item: item.store_code)
+    total_stores = len(ordered_results)
+    total_leads = summary.total_rows()
+    per_store_totals = ", ".join(
+        f"{result.store_code}: {len(result.rows)}" for result in ordered_results
+    ) or "(none)"
+    blocks = [
+        "<div>",
+        "<h3>TD CRM Leads Sync Summary</h3>",
+        "<ul>",
+        f"<li><strong>Total stores processed:</strong> {total_stores}</li>",
+        f"<li><strong>Total leads:</strong> {total_leads}</li>",
+        f"<li><strong>Per-store totals:</strong> {html.escape(per_store_totals)}</li>",
+        f"<li><strong>Runtime duration:</strong> {html.escape(duration_human)}</li>",
+        "</ul>",
+    ]
+    for result in ordered_results:
+        blocks.append(f"<h3>Store {html.escape(result.store_code)}</h3>")
+        status_groups: dict[str, list[dict[str, Any]]] = {bucket: [] for bucket in TD_LEADS_STATUS_BUCKETS}
+        for row in result.rows:
+            bucket = str(row.get("status_bucket") or "").strip().lower()
+            if bucket in status_groups:
+                status_groups[bucket].append(row)
+        for bucket in TD_LEADS_STATUS_BUCKETS:
+            blocks.append(_build_html_status_table(rows=status_groups[bucket], title=bucket.capitalize()))
+    blocks.append("</div>")
+    return "".join(blocks)
 
 
 @dataclass
@@ -155,35 +252,29 @@ class LeadsRunSummary:
             for result in self.store_results.values()
         ]
 
+        ordered_store_results = sorted(self.store_results.values(), key=lambda item: item.store_code)
         summary_lines = [
             "TD CRM Leads Sync Summary",
             f"Run ID: {self.run_id}",
             f"Env: {self.run_env}",
             f"Report Date: {self.report_date.isoformat()}",
             f"Overall Status: {self.overall_status()}",
-            f"Total Rows: {self.total_rows()}",
+            f"Total Stores Processed: {len(ordered_store_results)}",
+            f"Total Leads: {self.total_rows()}",
             f"Duration: {duration_human}",
-            "",
-            "Store Details:",
+            "Per-store totals:",
         ]
-        for result in sorted(self.store_results.values(), key=lambda item: item.store_code):
+        for result in ordered_store_results:
             summary_lines.append(
                 f"- {result.store_code}: status={result.status}, rows={len(result.rows)}, "
                 f"pending={result.status_counts.get('pending', 0)}, "
                 f"completed={result.status_counts.get('completed', 0)}, "
                 f"cancelled={result.status_counts.get('cancelled', 0)}"
             )
-            for row in result.rows:
-                summary_lines.append(
-                    "  "
-                    f"status={row.get('status_bucket')}, "
-                    f"customer_name={row.get('customer_name') or ''}, "
-                    f"mobile={row.get('mobile') or ''}, "
-                    f"pickup_created_date={row.get('pickup_date') or ''}"
-                )
             if result.warnings:
                 for warning in result.warnings:
                     summary_lines.append(f"  warning={warning}")
+        summary_html = _build_td_leads_summary_html(summary=self, duration_human=duration_human)
 
         return {
             "pipeline_name": PIPELINE_NAME,
@@ -201,6 +292,8 @@ class LeadsRunSummary:
                     "total_rows": self.total_rows(),
                     "duration_seconds": elapsed_seconds,
                     "duration_human": duration_human,
+                    "summary_html": summary_html,
+                    "summary_table_row_limit": TD_LEADS_HTML_TABLE_ROW_LIMIT,
                     "stores": store_rows_payload,
                 }
             ),

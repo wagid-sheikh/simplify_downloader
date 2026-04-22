@@ -1284,6 +1284,8 @@ def _build_run_plan(
         html_context["started_at"] = _format_profiler_html_timestamp(context.get("started_at"))
         html_context["finished_at"] = _format_profiler_html_timestamp(context.get("finished_at"))
         body_html = _render_template(PROFILER_HTML_TEMPLATE, html_context)
+    elif pipeline_code == "td_crm_leads_sync" and context.get("summary_html"):
+        body_html = body
     return EmailPlan(
         profile_code=profile["code"],
         scope=profile["scope"],
@@ -2717,6 +2719,7 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[st
         "overall_status": run_data.get("overall_status"),
         "total_time_taken": run_data.get("total_time_taken"),
         "summary_text": run_data.get("summary_text", ""),
+        "summary_html": metrics_payload.get("summary_html") or "",
         "metrics_json": metrics_payload,
         "duration_seconds": duration_seconds,
         "duration_human": duration_human,
@@ -2810,6 +2813,7 @@ async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str
         "overall_status": run_data.get("overall_status"),
         "total_time_taken": run_data.get("total_time_taken"),
         "summary_text": run_data.get("summary_text", ""),
+        "summary_html": metrics_payload.get("summary_html") or "",
         "metrics_json": metrics_payload,
         "duration_seconds": duration_seconds,
         "duration_human": duration_human,
