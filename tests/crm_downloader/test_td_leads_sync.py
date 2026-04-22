@@ -13,6 +13,8 @@ from app.crm_downloader.td_leads_sync import ingest as td_leads_ingest
 from app.crm_downloader.td_leads_sync.main import (
     LeadsRunSummary,
     StoreLeadResult,
+    TD_LEADS_HTML_TABLE_ROW_LIMIT,
+    _build_td_leads_summary_html,
     _available_pager_args,
     _ensure_scheduler_page,
     _field_from_headers,
@@ -176,6 +178,110 @@ def test_run_summary_record_includes_duration_for_failed_store_runs() -> None:
     assert record["total_time_taken"] == "00:02:30"
     assert record["metrics_json"]["duration_seconds"] == 150
     assert record["metrics_json"]["duration_human"] == "00:02:30"
+
+
+def test_td_leads_summary_html_renders_store_sections_and_status_tables() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-1",
+        run_env="local",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={
+            "A817": StoreLeadResult(
+                store_code="A817",
+                rows=[
+                    {
+                        "status_bucket": "pending",
+                        "customer_name": "Nia",
+                        "mobile": "9000000000",
+                        "pickup_id": "P-10",
+                        "pickup_date": "2026-04-22T10:15:00+00:00",
+                        "status_text": "Pending",
+                    },
+                    {
+                        "status_bucket": "completed",
+                        "customer_name": "Raj",
+                        "mobile": "9111111111",
+                        "pickup_id": "C-2",
+                        "pickup_date": "2026-04-22T09:00:00+00:00",
+                        "status_text": "Completed",
+                    },
+                ],
+            )
+        },
+    )
+
+    summary_html = _build_td_leads_summary_html(summary=summary, duration_human="00:01:00")
+
+    assert "Store A817" in summary_html
+    assert "<h4 style='margin:16px 0 8px 0;'>Pending</h4>" in summary_html
+    assert "<h4 style='margin:16px 0 8px 0;'>Completed</h4>" in summary_html
+    assert "<h4 style='margin:16px 0 8px 0;'>Cancelled</h4>" in summary_html
+    assert "Total stores processed:</strong> 1" in summary_html
+    assert "Runtime duration:</strong> 00:01:00" in summary_html
+    assert "Nia" in summary_html
+    assert "Raj" in summary_html
+
+
+def test_td_leads_summary_html_includes_empty_bucket_message() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-2",
+        run_env="local",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={"A668": StoreLeadResult(store_code="A668", rows=[])},
+    )
+
+    summary_html = _build_td_leads_summary_html(summary=summary, duration_human="00:00:30")
+
+    assert summary_html.count("No leads in this bucket.") == 3
+
+
+def test_td_leads_summary_html_truncates_large_buckets_and_sorts_newest_first() -> None:
+    rows = [
+        {
+            "status_bucket": "pending",
+            "customer_name": f"Customer {index:03d}",
+            "mobile": "9999999999",
+            "pickup_id": f"P-{index:03d}",
+            "pickup_date": f"2026-04-22T00:{index:02d}:00+00:00",
+            "status_text": "Pending",
+        }
+        for index in range(TD_LEADS_HTML_TABLE_ROW_LIMIT + 2)
+    ]
+    summary = LeadsRunSummary(
+        run_id="run-3",
+        run_env="local",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={"A817": StoreLeadResult(store_code="A817", rows=rows)},
+    )
+
+    summary_html = _build_td_leads_summary_html(summary=summary, duration_human="00:05:00")
+
+    assert "... and 2 more." in summary_html
+    assert summary_html.index("Customer 051") < summary_html.index("Customer 050")
+    assert "Customer 000" not in summary_html
+
+
+def test_td_leads_run_summary_record_exposes_summary_html_in_metrics() -> None:
+    started_at = datetime(2026, 4, 22, 0, 0, tzinfo=timezone.utc)
+    finished_at = datetime(2026, 4, 22, 0, 1, tzinfo=timezone.utc)
+    summary = LeadsRunSummary(
+        run_id="run-4",
+        run_env="local",
+        report_date=started_at.date(),
+        started_at=started_at,
+        store_results={
+            "A668": StoreLeadResult(
+                store_code="A668",
+                rows=[{"status_bucket": "pending", "customer_name": "Ada", "pickup_date": "2026-04-22"}],
+            )
+        },
+    )
+
+    record = summary.build_record(finished_at=finished_at)
+
+    assert "Total Stores Processed: 1" in record["summary_text"]
+    assert "status=pending, customer_name=Ada" not in record["summary_text"]
+    assert "Store A668" in record["metrics_json"]["summary_html"]
 
 
 def test_write_store_artifact_fails_when_tz_aware_values_remain(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

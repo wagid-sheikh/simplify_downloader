@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.dashboard_downloader.notifications import (
     _build_fact_rows,
+    _build_run_plan,
     _build_store_plans,
     _build_uc_orders_context,
     _format_fact_sections_text,
@@ -233,3 +234,17 @@ def test_store_scope_td_uc_allows_global_recipient_without_documents() -> None:
     assert plans[0].store_code == "TD001"
     assert plans[0].to == ["ops@example.com"]
     assert plans[0].attachments == []
+
+
+def test_td_leads_run_plan_sets_html_body_when_summary_html_is_available() -> None:
+    plan = _build_run_plan(
+        pipeline_code="td_crm_leads_sync",
+        profile={"code": "run_summary", "scope": "run", "attach_mode": "none"},
+        template={"subject_template": "TD Leads {{ run_id }}", "body_template": "{{ summary_html or summary_text }}"},
+        recipients=[{"store_code": "ALL", "email_address": "ops@example.com", "display_name": None, "send_as": "to"}],
+        docs=[],
+        context={"run_id": "run-1", "summary_text": "plain summary", "summary_html": "<h3>HTML summary</h3>"},
+    )
+
+    assert plan is not None
+    assert plan.body_html == "<h3>HTML summary</h3>"
