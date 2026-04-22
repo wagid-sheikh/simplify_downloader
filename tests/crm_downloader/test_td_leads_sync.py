@@ -325,7 +325,8 @@ def test_td_leads_tables_html_renders_store_sections_bucket_tables_and_rows() ->
     assert "Raj" in tables_html
     assert "No cancelled leads." in tables_html
     assert "Pending 52" in tables_html
-    assert "<th align='left'>Pickup Code</th><th align='left'>Customer Name</th><th align='left'>Mobile</th><th align='left'>Address/Area</th><th align='left'>Pickup Created Date</th><th align='left'>Pickup Time</th>" in tables_html
+    assert "<th align='left'>Pickup Code</th><th align='left'>Customer Name</th><th align='left'>Mobile</th><th align='left'>Address/Area</th><th align='left'>Pickup Created Date/Time</th>" in tables_html
+    assert "Pickup Time</th>" not in tables_html
     assert "Priority / Status" not in tables_html
     assert "Pickup ID" not in tables_html
     assert "Urgent" not in tables_html
@@ -333,7 +334,7 @@ def test_td_leads_tables_html_renders_store_sections_bucket_tables_and_rows() ->
     assert "more rows in artifact" not in tables_html
 
 
-def test_td_leads_tables_html_sorts_bucket_rows_by_created_datetime_desc_with_unparsable_last() -> None:
+def test_td_leads_tables_html_sorts_bucket_rows_by_created_datetime_desc_in_all_buckets() -> None:
     summary = LeadsRunSummary(
         run_id="run-html-sort",
         run_env="local",
@@ -358,6 +359,7 @@ def test_td_leads_tables_html_sorts_bucket_rows_by_created_datetime_desc_with_un
                         "mobile": "9000000002",
                         "address": "Area 2",
                         "pickup_date": "21 Apr 2026 3:03:39 PM",
+                        "pickup_created_at": datetime(2026, 4, 21, 15, 3, 39),
                         "pickup_time": "3:03:39 PM",
                     },
                     {
@@ -367,6 +369,7 @@ def test_td_leads_tables_html_sorts_bucket_rows_by_created_datetime_desc_with_un
                         "mobile": "9000000003",
                         "address": "Area 3",
                         "pickup_date": "22 Apr 2026 9:03:39 PM",
+                        "pickup_created_at": datetime(2026, 4, 22, 21, 3, 39),
                         "pickup_time": "9:03:39 PM",
                     },
                     {
@@ -385,6 +388,7 @@ def test_td_leads_tables_html_sorts_bucket_rows_by_created_datetime_desc_with_un
                         "mobile": "9111111111",
                         "address": "Area 5",
                         "pickup_date": "20 Apr 2026 10:00:00 AM",
+                        "pickup_created_at": datetime(2026, 4, 20, 10, 0, 0),
                         "pickup_time": "10:00 AM",
                     },
                     {
@@ -394,7 +398,26 @@ def test_td_leads_tables_html_sorts_bucket_rows_by_created_datetime_desc_with_un
                         "mobile": "9111111112",
                         "address": "Area 6",
                         "pickup_date": "22 Apr 2026 11:00:00 AM",
+                        "pickup_created_at": datetime(2026, 4, 22, 11, 0, 0),
                         "pickup_time": "11:00 AM",
+                    },
+                    {
+                        "status_bucket": "cancelled",
+                        "pickup_code": "X-1",
+                        "customer_name": "Cancelled Earlier",
+                        "mobile": "9222222221",
+                        "address": "Area 7",
+                        "pickup_date": "19 Apr 2026 11:00:00 AM",
+                        "pickup_created_at": datetime(2026, 4, 19, 11, 0, 0),
+                    },
+                    {
+                        "status_bucket": "cancelled",
+                        "pickup_code": "X-2",
+                        "customer_name": "Cancelled Latest",
+                        "mobile": "9222222222",
+                        "address": "Area 8",
+                        "pickup_date": "22 Apr 2026 01:00:00 PM",
+                        "pickup_created_at": datetime(2026, 4, 22, 13, 0, 0),
                     },
                 ],
             )
@@ -407,6 +430,7 @@ def test_td_leads_tables_html_sorts_bucket_rows_by_created_datetime_desc_with_un
     assert tables_html.index("Recent") < tables_html.index("Legacy One")
     assert tables_html.index("Legacy One") < tables_html.index("Legacy Two")
     assert tables_html.index("Completed Recent") < tables_html.index("Completed One")
+    assert tables_html.index("Cancelled Latest") < tables_html.index("Cancelled Earlier")
 
 
 def test_write_store_artifact_fails_when_tz_aware_values_remain(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
