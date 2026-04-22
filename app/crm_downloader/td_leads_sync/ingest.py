@@ -80,8 +80,8 @@ async def ingest_td_crm_leads_rows(
     async with session_scope(database_url) as session:
         bind = session.get_bind()
         if bind is not None:
-            async with bind.begin() as conn:
-                await conn.run_sync(metadata.create_all)
+            with bind.begin() as conn:
+                metadata.create_all(bind=conn)
 
         for row in rows:
             values = {

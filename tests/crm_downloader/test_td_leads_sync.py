@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from contextlib import asynccontextmanager, contextmanager
 from types import SimpleNamespace
 
 import pytest
 
 from app.crm_downloader.td_leads_sync.ingest import build_lead_uid
+from app.crm_downloader.td_leads_sync import ingest as td_leads_ingest
 from app.crm_downloader.td_leads_sync.main import (
     _available_pager_args,
     _ensure_scheduler_page,
@@ -420,3 +422,60 @@ async def test_scrape_grid_rows_script_keeps_whitespace_regex_literal() -> None:
     assert rows == []
     script, _payload = page.evaluate_calls[0]
     assert r"replace(/\s+/g, ' ')" in script
+
+
+@pytest.mark.asyncio
+async def test_ingest_store_path_accepts_sync_bind_context_manager(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeConnection:
+        def _run_ddl_visitor(self, *_args, **_kwargs) -> None:
+            return None
+
+    class _FakeBind:
+        @contextmanager
+        def begin(self):
+            yield _FakeConnection()
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.executed: list[object] = []
+            self.committed = False
+
+        def get_bind(self) -> _FakeBind:
+            return _FakeBind()
+
+        async def execute(self, stmt: object) -> None:
+            self.executed.append(stmt)
+
+        async def commit(self) -> None:
+            self.committed = True
+
+    fake_session = _FakeSession()
+
+    @asynccontextmanager
+    async def _fake_session_scope(_database_url: str):
+        yield fake_session
+
+    monkeypatch.setattr(td_leads_ingest, "session_scope", _fake_session_scope)
+
+    result = await td_leads_ingest.ingest_td_crm_leads_rows(
+        rows=[
+            {
+                "store_code": "A668",
+                "status_bucket": "pending",
+                "pickup_id": "4434944",
+                "pickup_no": "A668-3025",
+                "mobile": "9599242207",
+                "pickup_date": "22 Apr 2026",
+                "pickup_time": "11:00 AM - 1:00 PM",
+            }
+        ],
+        run_id="run-1",
+        run_env="test",
+        source_file="A668-crm_leads.xlsx",
+        database_url="postgresql+asyncpg://user:pass@localhost/db",
+    )
+
+    assert result.rows_received == 1
+    assert result.rows_upserted == 1
+    assert fake_session.committed is True
+    assert len(fake_session.executed) == 1
