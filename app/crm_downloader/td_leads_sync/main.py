@@ -96,23 +96,16 @@ OUTPUT_COLUMNS = [
 
 DATETIME_LIKE_OUTPUT_COLUMNS = frozenset({"pickup_date", "scraped_at", "started_at", "finished_at", "created_at"})
 _DB_MODE_LOGGED_RUN_IDS: set[str] = set()
-TD_LEADS_HTML_TABLE_ROW_LIMIT = 50
-
-
 def _td_leads_bucket_rows(result: "StoreLeadResult", status_bucket: str) -> list[dict[str, Any]]:
     return [row for row in result.rows if str(row.get("status_bucket") or "").strip().lower() == status_bucket]
 
 
 def _build_td_leads_bucket_table_html(
     *,
-    store_code: str,
     bucket_label: str,
     rows: Sequence[Mapping[str, Any]],
-    row_limit: int,
     empty_text: str,
 ) -> str:
-    display_rows = list(rows[:row_limit]) if row_limit > 0 else list(rows)
-    hidden_count = max(0, len(rows) - len(display_rows))
     blocks = [
         f"<h5 style='margin:10px 0 6px 0;'>{html.escape(bucket_label)}</h5>",
         "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse; width:100%; margin-bottom:8px;'>",
@@ -128,9 +121,9 @@ def _build_td_leads_bucket_table_html(
         ),
         "<tbody>",
     ]
-    if not display_rows:
+    if not rows:
         blocks.append(f"<tr><td colspan='6'><em>{html.escape(empty_text)}</em></td></tr>")
-    for row in display_rows:
+    for row in rows:
         pickup_id = row.get("pickup_id") or row.get("pickup_no") or "—"
         priority_or_status = row.get("status_text") or row.get("special_instruction") or "—"
         blocks.append(
@@ -144,16 +137,10 @@ def _build_td_leads_bucket_table_html(
             "</tr>"
         )
     blocks.extend(["</tbody>", "</table>"])
-    if hidden_count:
-        blocks.append(
-            "<p style='margin:0 0 10px 0; font-size:12px; color:#555555;'>"
-            f"+{hidden_count} more rows in artifact for {html.escape(store_code)} {html.escape(bucket_label.lower())}."
-            "</p>"
-        )
     return "".join(blocks)
 
 
-def _build_td_leads_tables_html(*, summary: "LeadsRunSummary", row_limit: int) -> str:
+def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
     ordered_results = sorted(summary.store_results.values(), key=lambda item: item.store_code)
     if not ordered_results:
         return "<div><p><em>No row-level lead details captured for this run.</em></p></div>"
@@ -165,10 +152,8 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary", row_limit: int) -
             bucket_rows = _td_leads_bucket_rows(result, bucket_key)
             blocks.append(
                 _build_td_leads_bucket_table_html(
-                    store_code=result.store_code,
                     bucket_label=bucket_label,
                     rows=bucket_rows,
-                    row_limit=row_limit,
                     empty_text=f"No {bucket_label.lower()} leads.",
                 )
             )
@@ -335,7 +320,7 @@ class LeadsRunSummary:
                 for warning in result.warnings:
                     summary_lines.append(f"  warning={warning}")
         summary_html = _build_td_leads_summary_html(summary=self, duration_human=duration_human)
-        lead_tables_html = _build_td_leads_tables_html(summary=self, row_limit=TD_LEADS_HTML_TABLE_ROW_LIMIT)
+        lead_tables_html = _build_td_leads_tables_html(summary=self)
         combined_summary_html = f"{summary_html}{lead_tables_html}"
 
         return {
@@ -356,7 +341,6 @@ class LeadsRunSummary:
                     "duration_human": duration_human,
                     "summary_html": combined_summary_html,
                     "lead_tables_html": lead_tables_html,
-                    "summary_table_row_limit": TD_LEADS_HTML_TABLE_ROW_LIMIT,
                     "stores": store_rows_payload,
                 }
             ),
