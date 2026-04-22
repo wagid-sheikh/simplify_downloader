@@ -107,6 +107,8 @@ DATETIME_LIKE_OUTPUT_COLUMNS = frozenset({"pickup_date", "scraped_at", "started_
 _DB_MODE_LOGGED_RUN_IDS: set[str] = set()
 _IST = ZoneInfo("Asia/Kolkata")
 _UTC = ZoneInfo("UTC")
+
+
 def _td_leads_bucket_rows(result: "StoreLeadResult", status_bucket: str) -> list[dict[str, Any]]:
     bucket_rows = [row for row in result.rows if str(row.get("status_bucket") or "").strip().lower() == status_bucket]
     return _sort_td_leads_bucket_rows(bucket_rows)
@@ -135,18 +137,39 @@ def _parse_td_leads_created_datetime(value: Any) -> datetime | None:
 
 
 def _sort_td_leads_bucket_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-    parseable_rows: list[tuple[datetime, str, dict[str, Any]]] = []
-    unparsable_rows: list[dict[str, Any]] = []
-    for row in rows:
-        created_text = str(row.get("pickup_date") or "").strip()
-        created_dt = _parse_td_leads_created_datetime(created_text)
-        if created_dt is None:
-            unparsable_rows.append(row)
-            continue
-        parseable_rows.append((created_dt, created_text, row))
+    epoch = datetime(1970, 1, 1)
 
-    parseable_rows.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return [item[2] for item in parseable_rows] + unparsable_rows
+    def _sort_seconds(value: datetime) -> float:
+        comparable_value = value
+        if comparable_value.tzinfo is not None and comparable_value.utcoffset() is not None:
+            comparable_value = comparable_value.astimezone(timezone.utc).replace(tzinfo=None)
+        return (comparable_value - epoch).total_seconds()
+
+    def _resolve_created_at(row: Mapping[str, Any]) -> datetime | None:
+        created_value = row.get("pickup_created_at")
+        if isinstance(created_value, datetime):
+            return created_value
+        created_dt = _parse_td_leads_created_datetime(created_value)
+        if created_dt is not None:
+            return created_dt
+        return _parse_td_leads_created_datetime(row.get("pickup_date"))
+
+    keyed_rows: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    for idx, row in enumerate(rows):
+        resolved_created_at = _resolve_created_at(row)
+        canonical_text = str(row.get("pickup_date") or row.get("pickup_created_at") or "").strip()
+        pickup_code = str(row.get("pickup_code") or row.get("pickup_no") or row.get("pickup_id") or "").strip()
+        sort_key = (
+            0 if resolved_created_at is not None else 1,
+            -_sort_seconds(resolved_created_at) if resolved_created_at is not None else 0.0,
+            canonical_text.lower(),
+            pickup_code.lower(),
+            idx,
+        )
+        keyed_rows.append((sort_key, dict(row)))
+
+    keyed_rows.sort(key=lambda item: item[0])
+    return [item[1] for item in keyed_rows]
 
 
 def _build_td_leads_bucket_table_html(
@@ -164,24 +187,23 @@ def _build_td_leads_bucket_table_html(
             "<th align='left'>Customer Name</th>"
             "<th align='left'>Mobile</th>"
             "<th align='left'>Address/Area</th>"
-            "<th align='left'>Pickup Created Date</th>"
-            "<th align='left'>Pickup Time</th>"
+            "<th align='left'>Pickup Created Date/Time</th>"
             "</tr></thead>"
         ),
         "<tbody>",
     ]
     if not rows:
-        blocks.append(f"<tr><td colspan='6'><em>{html.escape(empty_text)}</em></td></tr>")
+        blocks.append(f"<tr><td colspan='5'><em>{html.escape(empty_text)}</em></td></tr>")
     for row in rows:
         pickup_code = row.get("pickup_code") or row.get("pickup_no") or row.get("pickup_id") or "—"
+        pickup_created_display = row.get("pickup_date") or row.get("pickup_created_at") or "—"
         blocks.append(
             "<tr>"
             f"<td>{html.escape(str(pickup_code))}</td>"
             f"<td>{html.escape(str(row.get('customer_name') or '—'))}</td>"
             f"<td>{html.escape(str(row.get('mobile') or '—'))}</td>"
             f"<td>{html.escape(str(row.get('address') or '—'))}</td>"
-            f"<td>{html.escape(str(row.get('pickup_date') or '—'))}</td>"
-            f"<td>{html.escape(str(row.get('pickup_time') or '—'))}</td>"
+            f"<td>{html.escape(str(pickup_created_display))}</td>"
             "</tr>"
         )
     blocks.extend(["</tbody>", "</table>"])
