@@ -13,6 +13,7 @@ from app.crm_downloader.td_leads_sync import ingest as td_leads_ingest
 from app.crm_downloader.td_leads_sync.main import (
     LeadsRunSummary,
     StoreLeadResult,
+    _collect_status_rows,
     _build_td_leads_summary_html,
     _build_td_leads_tables_html,
     _available_pager_args,
@@ -109,6 +110,15 @@ def test_field_from_headers_uses_header_name_mapping(field_name: str, expected: 
 
 def test_field_from_headers_returns_none_when_alias_not_present() -> None:
     assert _field_from_headers(headers=["Foo"], values=["Bar"], field_name="pickup_no") is None
+
+
+def test_field_from_headers_maps_created_datetime_header_aliases() -> None:
+    headers = ["Created Date/Time", "Created Datetime", "Created Date Time"]
+    values = ["21 Apr 2026 3:03:39 PM", "21 Apr 2026 4:03:39 PM", "21 Apr 2026 5:03:39 PM"]
+
+    resolved = _field_from_headers(headers=headers, values=values, field_name="pickup_created_at")
+
+    assert resolved == "21 Apr 2026 3:03:39 PM"
 
 
 def test_scraped_at_value_can_pass_through() -> None:
@@ -541,6 +551,11 @@ class _FakeEvaluatePage:
         return self.evaluate_result
 
 
+class _FakeLogger:
+    def info(self, **kwargs) -> None:
+        return None
+
+
 @pytest.mark.asyncio
 async def test_available_pager_args_uses_raw_regex_pattern_in_evaluate_script() -> None:
     page = _FakeEvaluatePage(["Page$1", "Page$2"])
@@ -578,6 +593,45 @@ async def test_scrape_grid_rows_script_keeps_whitespace_regex_literal() -> None:
 
 
 @pytest.mark.asyncio
+async def test_collect_status_rows_maps_combined_created_datetime_to_pickup_date_and_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _noop_switch_status(*args, **kwargs) -> None:
+        return None
+
+    async def _fake_scrape_grid_rows(*args, **kwargs):
+        return (
+            ["Pickup No.", "Customer Name", "Created Date/Time", "Mobile", "Status"],
+            [
+                {
+                    "pickup_id": "4434944",
+                    "values": ["A668-3025", "Moni", "21 Apr 2026 3:03:39 PM", "9599242207", "PENDING"],
+                }
+            ],
+        )
+
+    async def _no_pages(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.crm_downloader.td_leads_sync.main._switch_status", _noop_switch_status)
+    monkeypatch.setattr("app.crm_downloader.td_leads_sync.main._scrape_grid_rows", _fake_scrape_grid_rows)
+    monkeypatch.setattr("app.crm_downloader.td_leads_sync.main._available_pager_args", _no_pages)
+
+    rows, warnings = await _collect_status_rows(
+        page=SimpleNamespace(),
+        store_code="A668",
+        status_bucket="pending",
+        status_value="1",
+        grid_selector="#grdEntry",
+        logger=_FakeLogger(),
+    )
+
+    assert warnings == []
+    assert rows[0]["pickup_date"] == "21 Apr 2026 3:03:39 PM"
+    assert rows[0]["pickup_time"] == "3:03:39 PM"
+
+
+@pytest.mark.asyncio
 async def test_ingest_store_path_uses_async_session_scope_without_greenlet_errors(tmp_path) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_leads.db'}"
 
@@ -609,6 +663,61 @@ async def test_ingest_store_path_uses_async_session_scope_without_greenlet_error
         assert count == 1
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_combined_created_datetime_populates_ingest_payload_and_email_row_context(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_leads_created_datetime.db'}"
+    row = {
+        "store_code": "A668",
+        "status_bucket": "pending",
+        "pickup_id": "4434944",
+        "pickup_no": "A668-3025",
+        "customer_name": "Moni",
+        "mobile": "9599242207",
+        "pickup_date": "21 Apr 2026 3:03:39 PM",
+        "pickup_time": "3:03:39 PM",
+    }
+
+    ingest_result = await td_leads_ingest.ingest_td_crm_leads_rows(
+        rows=[row],
+        run_id="run-created-dt",
+        run_env="test",
+        source_file="A668-crm_leads.xlsx",
+        database_url=database_url,
+    )
+
+    assert ingest_result.rows_upserted == 1
+
+    engine = create_async_engine(database_url, future=True)
+    try:
+        async with engine.connect() as connection:
+            stored = (
+                await connection.execute(
+                    sa.text(
+                        """
+                        SELECT pickup_created_date, pickup_time
+                        FROM crm_leads
+                        WHERE pickup_id = :pickup_id
+                        """
+                    ),
+                    {"pickup_id": "4434944"},
+                )
+            ).mappings().one()
+        assert stored["pickup_created_date"] == "21 Apr 2026 3:03:39 PM"
+        assert stored["pickup_time"] == "3:03:39 PM"
+    finally:
+        await engine.dispose()
+
+    summary = LeadsRunSummary(
+        run_id="run-created-dt",
+        run_env="test",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={"A668": StoreLeadResult(store_code="A668", rows=[row])},
+    )
+    lead_tables_html = _build_td_leads_tables_html(summary=summary)
+    assert "21 Apr 2026 3:03:39 PM" in lead_tables_html
+    assert "3:03:39 PM" in lead_tables_html
 
 
 @pytest.mark.asyncio

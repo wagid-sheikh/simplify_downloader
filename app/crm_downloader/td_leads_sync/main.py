@@ -70,6 +70,13 @@ FIELD_ALIASES: Mapping[str, tuple[str, ...]] = {
     "mobile": ("mobile", "mobile no", "mobile no."),
     "pickup_date": ("pickup date", "pickup created date", "created date"),
     "pickup_time": ("pickup time", "time"),
+    "pickup_created_at": (
+        "created date/time",
+        "created date time",
+        "created datetime",
+        "pickup created date/time",
+        "pickup created datetime",
+    ),
     "special_instruction": ("special instruction", "instruction"),
     "status_text": ("status",),
     "reason": ("reason",),
@@ -615,7 +622,9 @@ async def _switch_status(page: Page, *, status_value: str, grid_selector: str) -
 
 
 def _normalize_header(header: str) -> str:
-    return " ".join(str(header or "").strip().lower().replace(".", "").split())
+    normalized = str(header or "").strip().lower().replace(".", "")
+    normalized = normalized.replace("/", " ")
+    return " ".join(normalized.split())
 
 
 def _field_from_headers(*, headers: Sequence[str], values: Sequence[str], field_name: str) -> str | None:
@@ -629,6 +638,24 @@ def _field_from_headers(*, headers: Sequence[str], values: Sequence[str], field_
                 value = str(values[idx] or "").strip()
                 return value or None
     return None
+
+
+def _parse_created_datetime(created_datetime_text: str | None) -> tuple[str | None, str | None]:
+    raw_value = str(created_datetime_text or "").strip()
+    if not raw_value:
+        return None, None
+
+    with contextlib.suppress(ValueError):
+        parsed = datetime.strptime(raw_value, "%d %b %Y %I:%M:%S %p")
+        pickup_time = parsed.strftime("%I:%M:%S %p").lstrip("0")
+        return raw_value, pickup_time or None
+
+    fallback_match = re.search(r"\b(\d{1,2}:\d{2}:\d{2}\s*[AP]M)\b", raw_value, flags=re.IGNORECASE)
+    if fallback_match:
+        pickup_time = fallback_match.group(1).upper().replace(" ", "")
+        pickup_time = f"{pickup_time[:-2]} {pickup_time[-2:]}"
+        return raw_value, pickup_time
+    return raw_value, None
 
 
 async def _collect_status_rows(
@@ -653,6 +680,15 @@ async def _collect_status_rows(
         scraped_at = aware_now(get_timezone())
         for raw_row in rows_payload:
             values = [str(value or "").strip() for value in raw_row.get("values") or []]
+            pickup_date = _field_from_headers(headers=headers, values=values, field_name="pickup_date")
+            pickup_time = _field_from_headers(headers=headers, values=values, field_name="pickup_time")
+            created_datetime_text = _field_from_headers(headers=headers, values=values, field_name="pickup_created_at")
+            if created_datetime_text:
+                parsed_pickup_date, parsed_pickup_time = _parse_created_datetime(created_datetime_text)
+                pickup_date = parsed_pickup_date or pickup_date
+                if parsed_pickup_time:
+                    pickup_time = parsed_pickup_time
+
             row = {
                 "store_code": store_code,
                 "status_bucket": status_bucket,
@@ -662,8 +698,8 @@ async def _collect_status_rows(
                 "customer_name": _field_from_headers(headers=headers, values=values, field_name="customer_name"),
                 "address": _field_from_headers(headers=headers, values=values, field_name="address"),
                 "mobile": _field_from_headers(headers=headers, values=values, field_name="mobile"),
-                "pickup_date": _field_from_headers(headers=headers, values=values, field_name="pickup_date"),
-                "pickup_time": _field_from_headers(headers=headers, values=values, field_name="pickup_time"),
+                "pickup_date": pickup_date,
+                "pickup_time": pickup_time,
                 "special_instruction": _field_from_headers(headers=headers, values=values, field_name="special_instruction"),
                 "status_text": _field_from_headers(headers=headers, values=values, field_name="status_text"),
                 "reason": _field_from_headers(headers=headers, values=values, field_name="reason"),
