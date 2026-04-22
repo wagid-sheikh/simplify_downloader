@@ -14,6 +14,7 @@ from app.crm_downloader.td_leads_sync.main import (
     LeadsRunSummary,
     StoreLeadResult,
     _build_td_leads_summary_html,
+    _build_td_leads_tables_html,
     _available_pager_args,
     _ensure_scheduler_page,
     _field_from_headers,
@@ -219,9 +220,6 @@ def test_td_leads_summary_html_renders_compact_summary_tables_and_footer_refs() 
     assert "A817" in summary_html
     assert "Total stores processed:</strong> 1" in summary_html
     assert "Runtime duration:</strong> 00:01:00" in summary_html
-    assert "Nia" not in summary_html
-    assert "Raj" not in summary_html
-    assert "crm_leads</code>" in summary_html
     assert "Reference run_id: <code>run-1</code>" in summary_html
 
 
@@ -246,8 +244,59 @@ def test_td_leads_run_summary_record_exposes_summary_html_in_metrics() -> None:
     assert "Total Stores Processed: 1" in record["summary_text"]
     assert "status=pending, customer_name=Ada" not in record["summary_text"]
     assert "Per-store summary" in record["metrics_json"]["summary_html"]
+    assert "Row-level lead tables" in record["metrics_json"]["summary_html"]
+    assert "Store A668" in record["metrics_json"]["lead_tables_html"]
     assert "A668" in record["metrics_json"]["summary_html"]
     assert "rows" not in record["metrics_json"]["stores"][0]
+
+
+def test_td_leads_tables_html_renders_store_sections_bucket_tables_and_rows() -> None:
+    pending_rows = [
+        {
+            "status_bucket": "pending",
+            "pickup_id": f"P-{index}",
+            "customer_name": f"Pending {index}",
+            "mobile": "9000000000",
+            "address": "Area 1",
+            "pickup_date": "2026-04-22 10:15",
+            "status_text": "Urgent",
+        }
+        for index in range(1, 53)
+    ]
+    summary = LeadsRunSummary(
+        run_id="run-html",
+        run_env="local",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={
+            "A817": StoreLeadResult(
+                store_code="A817",
+                rows=[
+                    *pending_rows,
+                    {
+                        "status_bucket": "completed",
+                        "pickup_id": "C-2",
+                        "customer_name": "Raj",
+                        "mobile": "9111111111",
+                        "address": "Area 2",
+                        "pickup_date": "2026-04-22 09:00",
+                        "status_text": "Done",
+                    },
+                ],
+            )
+        },
+    )
+
+    tables_html = _build_td_leads_tables_html(summary=summary, row_limit=50)
+
+    assert "Store A817" in tables_html
+    assert "<h5 style='margin:10px 0 6px 0;'>Pending</h5>" in tables_html
+    assert "<h5 style='margin:10px 0 6px 0;'>Completed</h5>" in tables_html
+    assert "<h5 style='margin:10px 0 6px 0;'>Cancelled</h5>" in tables_html
+    assert "Pending 1" in tables_html
+    assert "Raj" in tables_html
+    assert "No cancelled leads." in tables_html
+    assert "Pending 52" not in tables_html
+    assert "+2 more rows in artifact for A817 pending." in tables_html
 
 
 def test_write_store_artifact_fails_when_tz_aware_values_remain(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
