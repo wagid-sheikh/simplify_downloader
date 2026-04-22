@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -10,6 +11,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.crm_downloader.td_leads_sync.ingest import build_lead_uid
 from app.crm_downloader.td_leads_sync import ingest as td_leads_ingest
 from app.crm_downloader.td_leads_sync.main import (
+    LeadsRunSummary,
+    StoreLeadResult,
     _available_pager_args,
     _ensure_scheduler_page,
     _field_from_headers,
@@ -152,6 +155,27 @@ def test_find_tz_aware_columns_flags_remaining_tz_values() -> None:
     tz_columns = _find_tz_aware_columns(rows=rows, columns=["pickup_date", "scraped_at", "mobile"])
 
     assert tz_columns == {"scraped_at"}
+
+
+def test_run_summary_record_includes_duration_for_failed_store_runs() -> None:
+    started_at = datetime(2026, 4, 22, 0, 0, tzinfo=timezone.utc)
+    finished_at = datetime(2026, 4, 22, 0, 2, 30, tzinfo=timezone.utc)
+    summary = LeadsRunSummary(
+        run_id="run-1",
+        run_env="local",
+        report_date=started_at.date(),
+        started_at=started_at,
+        store_results={
+            "A668": StoreLeadResult(store_code="A668", status="error", message="store timed out"),
+        },
+    )
+
+    record = summary.build_record(finished_at=finished_at)
+
+    assert record["overall_status"] == "failed"
+    assert record["total_time_taken"] == "00:02:30"
+    assert record["metrics_json"]["duration_seconds"] == 150
+    assert record["metrics_json"]["duration_human"] == "00:02:30"
 
 
 def test_write_store_artifact_fails_when_tz_aware_values_remain(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -583,12 +607,18 @@ async def test_td_leads_seeded_run_notification_plans_email(tmp_path, monkeypatc
                 sa.text(
                     """
                     INSERT INTO pipeline_run_summaries (
-                        pipeline_name, run_id, run_env, report_date, overall_status, total_time_taken, summary_text, metrics_json
+                        pipeline_name, run_id, run_env, started_at, finished_at, report_date, overall_status,
+                        total_time_taken, summary_text, metrics_json
                     ) VALUES (
-                        'td_crm_leads_sync', 'run-1', 'local', '2026-04-22', 'success', '00:01:00', 'ok', '{}'
+                        'td_crm_leads_sync', 'run-1', 'local', '2026-04-22T00:00:00+00:00', '2026-04-22T00:01:00+00:00',
+                        '2026-04-22', 'success', '00:01:00', 'ok',
+                        :metrics_json
                     )
                     """
-                )
+                ),
+                {
+                    "metrics_json": json.dumps({"duration_seconds": 60, "duration_human": "00:01:00"}),
+                },
             )
             await connection.execute(
                 sa.text(
@@ -636,9 +666,20 @@ async def test_td_leads_seeded_run_notification_plans_email(tmp_path, monkeypatc
                 report_email_use_tls=app_config.report_email_use_tls,
             ),
         )
+        captured_context: dict[str, object] = {}
+
+        def _capture_plans(**kwargs):
+            captured_context.update(kwargs["context"])
+            return []
+
+        monkeypatch.setattr("app.dashboard_downloader.notifications._build_email_plans", _capture_plans)
 
         result = await send_notifications_for_run("td_crm_leads_sync", "run-1")
 
-        assert result["emails_planned"] > 0
+        assert result["emails_planned"] == 0
+        assert captured_context["started_at"] == "2026-04-22T00:00:00+00:00"
+        assert captured_context["finished_at"] == "2026-04-22T00:01:00+00:00"
+        assert captured_context["duration_seconds"] == 60
+        assert captured_context["duration_human"] == "00:01:00"
     finally:
         await engine.dispose()
