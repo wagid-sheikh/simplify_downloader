@@ -6,7 +6,13 @@ from types import SimpleNamespace
 import pytest
 
 from app.crm_downloader.td_leads_sync.ingest import build_lead_uid
-from app.crm_downloader.td_leads_sync.main import _ensure_scheduler_page, _field_from_headers
+from app.crm_downloader.td_leads_sync.main import (
+    _ensure_scheduler_page,
+    _field_from_headers,
+    _find_tz_aware_columns,
+    _sanitize_rows_for_xlsx_export,
+    _write_store_artifact,
+)
 
 
 def test_build_lead_uid_is_stable_for_same_business_identity() -> None:
@@ -105,6 +111,77 @@ def test_scraped_at_value_can_pass_through() -> None:
         "scraped_at": now_utc,
     }
     assert build_lead_uid(row)
+
+
+def test_sanitize_rows_for_xlsx_export_converts_tz_aware_datetime_and_iso_strings() -> None:
+    aware_value = datetime(2026, 4, 22, 6, 30, tzinfo=timezone.utc)
+    rows = [
+        {
+            "pickup_date": "2026-04-22T11:00:00+05:30",
+            "scraped_at": aware_value,
+            "mobile": "9999999999",
+        }
+    ]
+
+    sanitized = _sanitize_rows_for_xlsx_export(rows=rows)
+
+    assert sanitized[0]["pickup_date"] == datetime(2026, 4, 22, 11, 0)
+    assert sanitized[0]["scraped_at"] == datetime(2026, 4, 22, 6, 30)
+    assert sanitized[0]["scraped_at"].tzinfo is None
+    assert rows[0]["scraped_at"] is aware_value
+    assert rows[0]["pickup_date"] == "2026-04-22T11:00:00+05:30"
+
+
+def test_find_tz_aware_columns_flags_remaining_tz_values() -> None:
+    rows = [
+        {
+            "pickup_date": "22 Apr 2026",
+            "scraped_at": datetime(2026, 4, 22, 6, 30, tzinfo=timezone.utc),
+            "mobile": "9999999999",
+        }
+    ]
+
+    tz_columns = _find_tz_aware_columns(rows=rows, columns=["pickup_date", "scraped_at", "mobile"])
+
+    assert tz_columns == {"scraped_at"}
+
+
+def test_write_store_artifact_fails_when_tz_aware_values_remain(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.crm_downloader.td_leads_sync.main.log_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+    rows = [
+        {
+            "store_code": "A668",
+            "status_bucket": "pending",
+            "pickup_id": "1",
+            "pickup_no": "A668-1",
+            "customer_name": "Foo",
+            "address": "Bar",
+            "mobile": datetime(2026, 4, 22, 6, 30, tzinfo=timezone.utc),
+            "pickup_date": "22 Apr 2026",
+            "pickup_time": "11:00 AM - 1:00 PM",
+            "special_instruction": "",
+            "status_text": "PENDING",
+            "reason": "",
+            "source": "",
+            "user": "",
+            "scraped_at": datetime(2026, 4, 22, 6, 30, tzinfo=timezone.utc),
+        }
+    ]
+
+    with pytest.raises(ValueError, match="timezone-aware datetime values in columns: mobile"):
+        _write_store_artifact(
+            store_code="A668",
+            rows=rows,
+            output_dir=tmp_path,
+            logger=SimpleNamespace(),
+        )
+
+    assert events
+    assert events[-1]["tz_aware_columns"] == ["mobile"]
 
 
 class _FakeLocator:

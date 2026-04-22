@@ -91,6 +91,8 @@ OUTPUT_COLUMNS = [
     "scraped_at",
 ]
 
+DATETIME_LIKE_OUTPUT_COLUMNS = frozenset({"pickup_date", "scraped_at", "started_at", "finished_at", "created_at"})
+
 
 @dataclass
 class StoreLeadResult:
@@ -552,18 +554,79 @@ async def _collect_status_rows(
     return collected, warnings
 
 
-def _write_store_artifact(*, store_code: str, rows: Sequence[Mapping[str, Any]], output_dir: Path) -> Path:
+def _write_store_artifact(
+    *,
+    store_code: str,
+    rows: Sequence[Mapping[str, Any]],
+    output_dir: Path,
+    logger: JsonLogger,
+) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{store_code}-crm_leads.xlsx"
+
+    sanitized_rows = _sanitize_rows_for_xlsx_export(rows=rows)
+    tz_aware_columns = _find_tz_aware_columns(rows=sanitized_rows, columns=OUTPUT_COLUMNS)
+    if tz_aware_columns:
+        log_event(
+            logger=logger,
+            phase="artifact",
+            status="error",
+            message="TD leads XLSX payload contains timezone-aware datetimes after sanitization",
+            store_code=store_code,
+            tz_aware_columns=sorted(tz_aware_columns),
+        )
+        raise ValueError(
+            "TD leads XLSX export payload still contains timezone-aware datetime values in columns: "
+            + ", ".join(sorted(tz_aware_columns))
+        )
 
     workbook = openpyxl.Workbook()
     sheet = workbook.active
     sheet.title = "crm_leads"
     sheet.append(OUTPUT_COLUMNS)
-    for row in rows:
+    for row in sanitized_rows:
         sheet.append([row.get(column) for column in OUTPUT_COLUMNS])
     workbook.save(output_path)
     return output_path
+
+
+def _is_tz_aware_datetime(value: Any) -> bool:
+    return isinstance(value, datetime) and value.tzinfo is not None and value.utcoffset() is not None
+
+
+def _normalize_datetime_like_for_xlsx(value: Any) -> Any:
+    if _is_tz_aware_datetime(value):
+        return value.replace(tzinfo=None)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return value
+        normalized = stripped.replace("Z", "+00:00")
+        with contextlib.suppress(ValueError):
+            parsed = datetime.fromisoformat(normalized)
+            if _is_tz_aware_datetime(parsed):
+                return parsed.replace(tzinfo=None)
+    return value
+
+
+def _sanitize_rows_for_xlsx_export(*, rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    sanitized_rows: list[dict[str, Any]] = []
+    for row in rows:
+        sanitized = dict(row)
+        for column in DATETIME_LIKE_OUTPUT_COLUMNS:
+            if column in sanitized:
+                sanitized[column] = _normalize_datetime_like_for_xlsx(sanitized[column])
+        sanitized_rows.append(sanitized)
+    return sanitized_rows
+
+
+def _find_tz_aware_columns(*, rows: Sequence[Mapping[str, Any]], columns: Sequence[str]) -> set[str]:
+    tz_aware_columns: set[str] = set()
+    for row in rows:
+        for column in columns:
+            if _is_tz_aware_datetime(row.get(column)):
+                tz_aware_columns.add(column)
+    return tz_aware_columns
 
 
 async def _run_store(
@@ -671,6 +734,7 @@ async def _run_store(
             store_code=store.store_code,
             rows=all_rows,
             output_dir=default_download_dir(),
+            logger=logger,
         )
 
         ingest_result: TdLeadsIngestResult | None = None
