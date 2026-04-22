@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -38,6 +39,19 @@ from app.dashboard_downloader.run_summary import (
 PIPELINE_NAME = "td_crm_leads_sync"
 SCHEDULER_PATH = "/App/New_Admin/frmHomePickUpScheduler"
 NAV_TIMEOUT_MS = 90_000
+SCHEDULER_HOME_ALERT_SELECTOR = "#achrPickUp"
+SCHEDULER_FALLBACK_SELECTORS: tuple[str, ...] = (
+    "a[href*='frmHomePickUpScheduler.aspx']",
+    "a[href*='frmHomePickUpScheduler']",
+    "a[title*='PickUp']",
+    "a:has-text('PickUp Scheduler')",
+)
+SCHEDULER_READY_SELECTORS: tuple[str, ...] = (
+    "#drpStatus",
+    "#grdEntry",
+    "#grdCompleted",
+    "#grdCanceled",
+)
 
 STATUS_CONFIG: tuple[tuple[str, str, str], ...] = (
     ("pending", "1", "#grdEntry"),
@@ -271,18 +285,63 @@ def _scheduler_url_for_store(store_code: str) -> str:
 
 async def _ensure_scheduler_page(page: Page, *, store: TdStore, logger: JsonLogger) -> bool:
     target_url = _scheduler_url_for_store(store.store_code)
-    try:
-        await page.goto(target_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+    url_pattern = re.compile(r".*/frmHomePickUpScheduler(?:\\.aspx)?(?:\\?.*)?$", re.IGNORECASE)
+    entry_selector = ",".join((SCHEDULER_HOME_ALERT_SELECTOR, *SCHEDULER_FALLBACK_SELECTORS))
+
+    async def _wait_for_scheduler_ready() -> None:
+        for selector in SCHEDULER_READY_SELECTORS:
+            with contextlib.suppress(Exception):
+                await page.wait_for_selector(selector, timeout=5_000)
+                return
         await page.wait_for_selector("#drpStatus", timeout=NAV_TIMEOUT_MS)
+
+    branch_used = "unknown"
+    try:
+        await page.wait_for_selector(entry_selector, timeout=15_000)
+
+        if await page.locator(SCHEDULER_HOME_ALERT_SELECTOR).count():
+            branch_used = "home_alert_click"
+            async with page.expect_navigation(url=url_pattern, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS):
+                await page.click(SCHEDULER_HOME_ALERT_SELECTOR)
+        else:
+            fallback_selector_used: str | None = None
+            for selector in SCHEDULER_FALLBACK_SELECTORS:
+                if await page.locator(selector).count():
+                    fallback_selector_used = selector
+                    break
+
+            if fallback_selector_used:
+                branch_used = f"fallback_click:{fallback_selector_used}"
+                async with page.expect_navigation(url=url_pattern, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS):
+                    await page.click(fallback_selector_used)
+            else:
+                branch_used = "fallback_direct_url"
+                log_event(
+                    logger=logger,
+                    phase="navigation",
+                    status="warning",
+                    message="Pickup Scheduler click entrypoint missing; using controlled URL fallback",
+                    store_code=store.store_code,
+                    url=target_url,
+                )
+                await page.goto(target_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                await page.wait_for_url(url_pattern, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+
+        await _wait_for_scheduler_ready()
         log_event(
             logger=logger,
             phase="navigation",
             message="Opened Pickup Scheduler page",
             store_code=store.store_code,
-            url=target_url,
+            url=page.url,
+            navigation_branch=branch_used,
         )
         return True
     except Exception as exc:
+        final_url = page.url
+        final_title: str | None = None
+        with contextlib.suppress(Exception):
+            final_title = await page.title()
         log_event(
             logger=logger,
             phase="navigation",
@@ -290,6 +349,10 @@ async def _ensure_scheduler_page(page: Page, *, store: TdStore, logger: JsonLogg
             message="Failed to open Pickup Scheduler page",
             store_code=store.store_code,
             url=target_url,
+            navigation_branch=branch_used,
+            awaited_selectors=list(SCHEDULER_READY_SELECTORS),
+            final_url=final_url,
+            final_title=final_title,
             error=str(exc),
         )
         return False
