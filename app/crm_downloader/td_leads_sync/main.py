@@ -97,71 +97,6 @@ OUTPUT_COLUMNS = [
 DATETIME_LIKE_OUTPUT_COLUMNS = frozenset({"pickup_date", "scraped_at", "started_at", "finished_at", "created_at"})
 _DB_MODE_LOGGED_RUN_IDS: set[str] = set()
 TD_LEADS_HTML_TABLE_ROW_LIMIT = 50
-TD_LEADS_STATUS_BUCKETS: tuple[str, ...] = ("pending", "completed", "cancelled")
-
-
-def _parse_pickup_datetime(raw: Any) -> datetime | None:
-    if isinstance(raw, datetime):
-        value = raw
-    elif raw is None:
-        return None
-    else:
-        text = str(raw).strip()
-        if not text:
-            return None
-        value = datetime.fromisoformat(text.replace("Z", "+00:00")) if "T" in text or "+" in text else None
-        if value is None:
-            for fmt in ("%d %b %Y %I:%M %p", "%d %b %Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
-                with contextlib.suppress(ValueError):
-                    return datetime.strptime(text, fmt)
-            return None
-    if value.tzinfo is not None:
-        return value.astimezone(timezone.utc).replace(tzinfo=None)
-    return value
-
-
-def _lead_sort_key(row: Mapping[str, Any]) -> tuple[datetime, str]:
-    pickup_dt = _parse_pickup_datetime(row.get("pickup_date")) or datetime.min
-    pickup_id = str(row.get("pickup_id") or row.get("pickup_no") or "")
-    return pickup_dt, pickup_id
-
-
-def _build_html_status_table(*, rows: Sequence[Mapping[str, Any]], title: str) -> str:
-    header = (
-        "<tr>"
-        "<th align='left'>Customer</th>"
-        "<th align='left'>Mobile</th>"
-        "<th align='left'>Pickup ID</th>"
-        "<th align='left'>Created Date</th>"
-        "<th align='left'>Status</th>"
-        "</tr>"
-    )
-    ordered_rows = sorted(rows, key=_lead_sort_key, reverse=True)
-    visible_rows = ordered_rows[:TD_LEADS_HTML_TABLE_ROW_LIMIT]
-    hidden_count = max(0, len(ordered_rows) - len(visible_rows))
-    body_rows: list[str] = []
-    for row in visible_rows:
-        body_rows.append(
-            "<tr>"
-            f"<td>{html.escape(str(row.get('customer_name') or ''))}</td>"
-            f"<td>{html.escape(str(row.get('mobile') or ''))}</td>"
-            f"<td>{html.escape(str(row.get('pickup_id') or row.get('pickup_no') or ''))}</td>"
-            f"<td>{html.escape(str(row.get('pickup_date') or ''))}</td>"
-            f"<td>{html.escape(str(row.get('status_text') or row.get('status_bucket') or ''))}</td>"
-            "</tr>"
-        )
-    if not body_rows:
-        body_rows.append("<tr><td colspan='5'><em>No leads in this bucket.</em></td></tr>")
-    if hidden_count:
-        body_rows.append(f"<tr><td colspan='5'><em>... and {hidden_count} more.</em></td></tr>")
-
-    return (
-        f"<h4 style='margin:16px 0 8px 0;'>{html.escape(title)}</h4>"
-        "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse; width:100%; margin-bottom:12px;'>"
-        f"<thead>{header}</thead>"
-        f"<tbody>{''.join(body_rows)}</tbody>"
-        "</table>"
-    )
 
 
 def _build_td_leads_summary_html(*, summary: "LeadsRunSummary", duration_human: str) -> str:
@@ -181,15 +116,79 @@ def _build_td_leads_summary_html(*, summary: "LeadsRunSummary", duration_human: 
         f"<li><strong>Runtime duration:</strong> {html.escape(duration_human)}</li>",
         "</ul>",
     ]
+    blocks.extend(
+        [
+            "<h4 style='margin:16px 0 8px 0;'>Per-store summary</h4>",
+            "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse; width:100%; margin-bottom:12px;'>",
+            (
+                "<thead><tr>"
+                "<th align='left'>Store</th>"
+                "<th align='right'>Rows scraped</th>"
+                "<th align='right'>Rows ingested</th>"
+                "<th align='left'>Status</th>"
+                "<th align='left'>Artifact</th>"
+                "</tr></thead>"
+            ),
+            "<tbody>",
+        ]
+    )
+    if not ordered_results:
+        blocks.append("<tr><td colspan='5'><em>No stores processed.</em></td></tr>")
     for result in ordered_results:
-        blocks.append(f"<h3>Store {html.escape(result.store_code)}</h3>")
-        status_groups: dict[str, list[dict[str, Any]]] = {bucket: [] for bucket in TD_LEADS_STATUS_BUCKETS}
-        for row in result.rows:
-            bucket = str(row.get("status_bucket") or "").strip().lower()
-            if bucket in status_groups:
-                status_groups[bucket].append(row)
-        for bucket in TD_LEADS_STATUS_BUCKETS:
-            blocks.append(_build_html_status_table(rows=status_groups[bucket], title=bucket.capitalize()))
+        artifact_path = result.artifact_path or f"app/crm_downloader/data/{result.store_code}-crm_leads.xlsx"
+        blocks.append(
+            "<tr>"
+            f"<td>{html.escape(result.store_code)}</td>"
+            f"<td align='right'>{len(result.rows)}</td>"
+            f"<td align='right'>{result.ingested_rows}</td>"
+            f"<td>{html.escape(result.status)}</td>"
+            f"<td><code>{html.escape(artifact_path)}</code></td>"
+            "</tr>"
+        )
+    blocks.extend(["</tbody>", "</table>"])
+
+    blocks.extend(
+        [
+            "<h4 style='margin:16px 0 8px 0;'>Status bucket totals</h4>",
+            "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse; width:100%; margin-bottom:12px;'>",
+            (
+                "<thead><tr>"
+                "<th align='left'>Store</th>"
+                "<th align='right'>Pending</th>"
+                "<th align='right'>Completed</th>"
+                "<th align='right'>Cancelled</th>"
+                "</tr></thead>"
+            ),
+            "<tbody>",
+        ]
+    )
+    if not ordered_results:
+        blocks.append("<tr><td colspan='4'><em>No status totals available.</em></td></tr>")
+    for result in ordered_results:
+        blocks.append(
+            "<tr>"
+            f"<td>{html.escape(result.store_code)}</td>"
+            f"<td align='right'>{result.status_counts.get('pending', 0)}</td>"
+            f"<td align='right'>{result.status_counts.get('completed', 0)}</td>"
+            f"<td align='right'>{result.status_counts.get('cancelled', 0)}</td>"
+            "</tr>"
+        )
+    blocks.extend(["</tbody>", "</table>"])
+
+    blocks.extend(
+        [
+            "<p style='margin:12px 0 0 0; font-size:12px; color:#555555;'>",
+            (
+                "Full row-level details are available in per-store artifacts at "
+                "<code>app/crm_downloader/data/{STORE}-crm_leads.xlsx</code> and persisted in "
+                "<code>crm_leads</code> for this run."
+            ),
+            "</p>",
+            "<p style='margin:4px 0 0 0; font-size:12px; color:#555555;'>",
+            f"Reference run_id: <code>{html.escape(summary.run_id)}</code>",
+            "</p>",
+        ]
+    )
     blocks.append("</div>")
     return "".join(blocks)
 
@@ -239,15 +238,6 @@ class LeadsRunSummary:
                 "warnings": list(result.warnings),
                 "artifact_path": result.artifact_path,
                 "ingested_rows": result.ingested_rows,
-                "rows": [
-                    {
-                        "status": row.get("status_bucket"),
-                        "customer_name": row.get("customer_name"),
-                        "mobile": row.get("mobile"),
-                        "pickup_created_date": row.get("pickup_date"),
-                    }
-                    for row in result.rows
-                ],
             }
             for result in self.store_results.values()
         ]
