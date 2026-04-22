@@ -23,6 +23,7 @@ def _load_migration_module():
 
 
 migration = _load_migration_module()
+ALLOWED_ENVS = {"dev", "prod", "local", "any"}
 
 
 def _run_migration(connection: sa.Connection, fn: Callable[[], None], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -117,13 +118,26 @@ def test_seed_td_leads_notif_upgrade_and_downgrade(monkeypatch: pytest.MonkeyPat
         ).scalar_one()
         assert profile_id is not None
 
-        recipient = connection.execute(
-            sa.text(
-                "SELECT email_address FROM notification_recipients WHERE profile_id = :profile_id AND send_as = 'to'"
-            ),
+        profile_env = connection.execute(
+            sa.text("SELECT env FROM notification_profiles WHERE id = :profile_id"),
             {"profile_id": profile_id},
         ).scalar_one()
-        assert recipient == "wagid.sheikh@gmail.com"
+        assert profile_env == "any"
+        assert profile_env in ALLOWED_ENVS
+
+        recipient_row = connection.execute(
+            sa.text(
+                """
+                SELECT email_address, env
+                FROM notification_recipients
+                WHERE profile_id = :profile_id AND send_as = 'to'
+                """
+            ),
+            {"profile_id": profile_id},
+        ).one()
+        assert recipient_row.email_address == "wagid.sheikh@gmail.com"
+        assert recipient_row.env == "any"
+        assert recipient_row.env in ALLOWED_ENVS
 
     with engine.begin() as connection:
         _run_migration(connection, migration.downgrade, monkeypatch)
