@@ -105,8 +105,11 @@ OUTPUT_COLUMNS = [
 
 DATETIME_LIKE_OUTPUT_COLUMNS = frozenset({"pickup_date", "scraped_at", "started_at", "finished_at", "created_at"})
 _DB_MODE_LOGGED_RUN_IDS: set[str] = set()
+_DB_MODE_LOGGED_RUN_IDS_LOCK = asyncio.Lock()
 _IST = ZoneInfo("Asia/Kolkata")
 _UTC = ZoneInfo("UTC")
+TD_LEADS_MAX_WORKERS_DEFAULT = 2
+TD_LEADS_MAX_WORKERS_MIN = 1
 
 
 def _td_leads_bucket_rows(result: "StoreLeadResult", status_bucket: str) -> list[dict[str, Any]]:
@@ -416,6 +419,39 @@ class LeadsRunSummary:
             ),
             "created_at": self.started_at,
         }
+
+
+@dataclass
+class TdLeadsStoreWorkerResult:
+    store_code: str
+    result: StoreLeadResult
+    queued_at: datetime
+    queue_wait_ms: int
+    duration_ms: int
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_td_leads_concurrency_settings() -> tuple[int, int, bool]:
+    configured_workers = max(TD_LEADS_MAX_WORKERS_MIN, _env_int("TD_LEADS_MAX_WORKERS", TD_LEADS_MAX_WORKERS_DEFAULT))
+    parallel_enabled = _env_bool("TD_LEADS_PARALLEL_ENABLED", default=True)
+    effective_workers = configured_workers if parallel_enabled else 1
+    return configured_workers, effective_workers, parallel_enabled and effective_workers > 1
 
 
 async def _persist_run_summary(*, logger: JsonLogger, summary: LeadsRunSummary, finished_at: datetime) -> bool:
@@ -1020,8 +1056,11 @@ async def _run_store(
 
         ingest_result: TdLeadsIngestResult | None = None
         if config.database_url:
-            if run_id not in _DB_MODE_LOGGED_RUN_IDS:
-                _DB_MODE_LOGGED_RUN_IDS.add(run_id)
+            async with _DB_MODE_LOGGED_RUN_IDS_LOCK:
+                should_log_db_mode = run_id not in _DB_MODE_LOGGED_RUN_IDS
+                if should_log_db_mode:
+                    _DB_MODE_LOGGED_RUN_IDS.add(run_id)
+            if should_log_db_mode:
                 log_event(
                     logger=logger,
                     phase="store",
@@ -1077,6 +1116,81 @@ async def _run_store(
                 await context.close()
 
 
+async def _run_store_worker(
+    *,
+    browser: Browser,
+    store: TdStore,
+    logger: JsonLogger,
+    run_env: str,
+    run_id: str,
+    semaphore: asyncio.Semaphore,
+) -> TdLeadsStoreWorkerResult:
+    store_logger = logger.bind(store_code=store.store_code)
+    queued_at = datetime.now(timezone.utc)
+    await semaphore.acquire()
+    queue_wait_ms = int((datetime.now(timezone.utc) - queued_at).total_seconds() * 1000)
+    started_at = datetime.now(timezone.utc)
+    log_event(
+        logger=store_logger,
+        phase="store",
+        message="TD leads store worker start",
+        run_id=run_id,
+        queued_at=queued_at.isoformat(),
+        queue_wait_ms=queue_wait_ms,
+        concurrency_limited=True,
+    )
+    try:
+        result = await _run_store(
+            browser=browser,
+            store=store,
+            run_id=run_id,
+            run_env=run_env,
+            logger=store_logger,
+        )
+        duration_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
+        log_event(
+            logger=store_logger,
+            phase="store",
+            message="TD leads store worker complete",
+            run_id=run_id,
+            queue_wait_ms=queue_wait_ms,
+            duration_ms=duration_ms,
+            status=result.status,
+            rows=len(result.rows),
+            ingested_rows=result.ingested_rows,
+        )
+        return TdLeadsStoreWorkerResult(
+            store_code=store.store_code,
+            result=result,
+            queued_at=queued_at,
+            queue_wait_ms=queue_wait_ms,
+            duration_ms=duration_ms,
+        )
+    except Exception as exc:
+        duration_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
+        message = f"TD leads store worker failed: {exc}"
+        log_event(
+            logger=store_logger,
+            phase="store",
+            status="error",
+            message="TD leads store worker failed",
+            run_id=run_id,
+            queued_at=queued_at.isoformat(),
+            queue_wait_ms=queue_wait_ms,
+            duration_ms=duration_ms,
+            error=str(exc),
+        )
+        return TdLeadsStoreWorkerResult(
+            store_code=store.store_code,
+            result=StoreLeadResult(store_code=store.store_code, status="error", message=message),
+            queued_at=queued_at,
+            queue_wait_ms=queue_wait_ms,
+            duration_ms=duration_ms,
+        )
+    finally:
+        semaphore.release()
+
+
 async def main(
     *,
     run_env: str | None = None,
@@ -1104,24 +1218,65 @@ async def main(
             phase="init",
             status="warning",
             message="No TD stores with sync_orders_flag found; exiting",
+            run_id=resolved_run_id,
+            no_scoped_stores=True,
+        )
+    else:
+        configured_workers, max_workers, parallel_enabled = _resolve_td_leads_concurrency_settings()
+        log_event(
+            logger=logger,
+            phase="init",
+            message="Resolved TD leads concurrency settings",
+            run_id=resolved_run_id,
+            configured_concurrency=configured_workers,
+            effective_concurrency=max_workers,
+            parallel_mode_enabled=parallel_enabled,
         )
 
-    async with async_playwright() as playwright:
-        browser = await launch_browser(playwright=playwright, logger=logger)
-        try:
-            for store in stores:
-                store_logger = logger.bind(store_code=store.store_code)
-                store_result = await _run_store(
-                    browser=browser,
-                    store=store,
-                    run_id=resolved_run_id,
-                    run_env=resolved_run_env,
-                    logger=store_logger,
-                )
-                summary.store_results[store.store_code] = store_result
-        finally:
-            with contextlib.suppress(Exception):
-                await browser.close()
+        async with async_playwright() as playwright:
+            browser = await launch_browser(playwright=playwright, logger=logger)
+            try:
+                semaphore = asyncio.Semaphore(max_workers)
+                tasks = [
+                    asyncio.create_task(
+                        _run_store_worker(
+                            browser=browser,
+                            store=store,
+                            logger=logger,
+                            run_env=resolved_run_env,
+                            run_id=resolved_run_id,
+                            semaphore=semaphore,
+                        )
+                    )
+                    for store in stores
+                ]
+                worker_results = await asyncio.gather(*tasks, return_exceptions=True)
+                by_store_code: dict[str, StoreLeadResult] = {}
+                for worker_result in worker_results:
+                    if isinstance(worker_result, Exception):
+                        log_event(
+                            logger=logger,
+                            phase="store",
+                            status="error",
+                            message="Unhandled TD leads worker exception",
+                            run_id=resolved_run_id,
+                            error=str(worker_result),
+                        )
+                        continue
+                    by_store_code[worker_result.store_code] = worker_result.result
+
+                for store in stores:
+                    summary.store_results[store.store_code] = by_store_code.get(
+                        store.store_code,
+                        StoreLeadResult(
+                            store_code=store.store_code,
+                            status="error",
+                            message="Store worker did not return a result",
+                        ),
+                    )
+            finally:
+                with contextlib.suppress(Exception):
+                    await browser.close()
 
     finished_at = datetime.now(timezone.utc)
     persisted = await _persist_run_summary(logger=logger, summary=summary, finished_at=finished_at)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -10,6 +12,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.crm_downloader.td_leads_sync.ingest import build_lead_uid
 from app.crm_downloader.td_leads_sync import ingest as td_leads_ingest
+from app.crm_downloader.td_leads_sync import main as td_leads_main
 from app.crm_downloader.td_leads_sync.main import (
     LeadsRunSummary,
     StoreLeadResult,
@@ -1101,3 +1104,167 @@ async def test_td_leads_seeded_run_notification_plans_email(tmp_path, monkeypatc
         assert "Run run-1 complete in 00:01:00" in sent_plans[0].body
     finally:
         await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({}, (2, 2, True)),
+        ({"TD_LEADS_MAX_WORKERS": "0"}, (1, 1, False)),
+        ({"TD_LEADS_MAX_WORKERS": "5", "TD_LEADS_PARALLEL_ENABLED": "0"}, (5, 1, False)),
+        ({"TD_LEADS_MAX_WORKERS": "4", "TD_LEADS_PARALLEL_ENABLED": "1"}, (4, 4, True)),
+    ],
+)
+def test_resolve_td_leads_concurrency_settings(
+    monkeypatch: pytest.MonkeyPatch, env: dict[str, str], expected: tuple[int, int, bool]
+) -> None:
+    monkeypatch.delenv("TD_LEADS_MAX_WORKERS", raising=False)
+    monkeypatch.delenv("TD_LEADS_PARALLEL_ENABLED", raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    resolved = td_leads_main._resolve_td_leads_concurrency_settings()
+
+    assert resolved == expected
+
+
+@pytest.mark.asyncio
+async def test_td_leads_main_parallel_worker_path_reduces_elapsed(monkeypatch: pytest.MonkeyPatch) -> None:
+    stores = [SimpleNamespace(store_code="A"), SimpleNamespace(store_code="B"), SimpleNamespace(store_code="C")]
+    persisted_summaries = []
+    notifications: list[tuple[str, str]] = []
+
+    class _FakePlaywrightContext:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeBrowser:
+        async def close(self) -> None:
+            return None
+
+    async def _fake_start_summary(*, logger, summary):
+        return None
+
+    async def _fake_persist_summary(*, logger, summary, finished_at):
+        persisted_summaries.append(summary)
+        return True
+
+    async def _fake_notify(pipeline_name, run_id):
+        notifications.append((pipeline_name, run_id))
+        return {"emails_planned": 0, "emails_sent": 0, "errors": []}
+
+    async def _fake_run_store(*, browser, store, run_id, run_env, logger):
+        await asyncio.sleep(0.12)
+        return td_leads_main.StoreLeadResult(store_code=store.store_code, status="ok", message="ok")
+
+    monkeypatch.setattr(td_leads_main, "_load_td_order_stores", lambda logger, store_codes=None: asyncio.sleep(0, result=stores))
+    monkeypatch.setattr(td_leads_main, "_start_run_summary", _fake_start_summary)
+    monkeypatch.setattr(td_leads_main, "_persist_run_summary", _fake_persist_summary)
+    monkeypatch.setattr(td_leads_main, "send_notifications_for_run", _fake_notify)
+    monkeypatch.setattr(td_leads_main, "_resolve_td_leads_concurrency_settings", lambda: (2, 2, True))
+    monkeypatch.setattr(td_leads_main, "_run_store", _fake_run_store)
+    monkeypatch.setattr(td_leads_main, "async_playwright", lambda: _FakePlaywrightContext())
+    monkeypatch.setattr(td_leads_main, "launch_browser", lambda playwright, logger: asyncio.sleep(0, result=_FakeBrowser()))
+
+    started = time.perf_counter()
+    await td_leads_main.main(run_env="test", run_id="run-parallel")
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 0.35
+    assert len(persisted_summaries) == 1
+    assert list(persisted_summaries[0].store_results.keys()) == ["A", "B", "C"]
+    assert notifications == [("td_crm_leads_sync", "run-parallel")]
+
+
+@pytest.mark.asyncio
+async def test_td_leads_main_preserves_summary_store_order_when_workers_finish_out_of_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = [SimpleNamespace(store_code="S1"), SimpleNamespace(store_code="S2"), SimpleNamespace(store_code="S3")]
+    persisted_summaries = []
+    delays = {"S1": 0.1, "S2": 0.01, "S3": 0.05}
+
+    class _FakePlaywrightContext:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeBrowser:
+        async def close(self) -> None:
+            return None
+
+    async def _fake_run_store(*, browser, store, run_id, run_env, logger):
+        await asyncio.sleep(delays[store.store_code])
+        return td_leads_main.StoreLeadResult(store_code=store.store_code, status="ok")
+
+    monkeypatch.setattr(td_leads_main, "_load_td_order_stores", lambda logger, store_codes=None: asyncio.sleep(0, result=stores))
+    monkeypatch.setattr(td_leads_main, "_start_run_summary", lambda logger, summary: asyncio.sleep(0))
+    monkeypatch.setattr(
+        td_leads_main,
+        "_persist_run_summary",
+        lambda logger, summary, finished_at: persisted_summaries.append(summary) or asyncio.sleep(0, result=False),
+    )
+    monkeypatch.setattr(td_leads_main, "_resolve_td_leads_concurrency_settings", lambda: (3, 3, True))
+    monkeypatch.setattr(td_leads_main, "_run_store", _fake_run_store)
+    monkeypatch.setattr(td_leads_main, "async_playwright", lambda: _FakePlaywrightContext())
+    monkeypatch.setattr(td_leads_main, "launch_browser", lambda playwright, logger: asyncio.sleep(0, result=_FakeBrowser()))
+
+    await td_leads_main.main(run_env="test", run_id="run-order")
+
+    assert len(persisted_summaries) == 1
+    assert list(persisted_summaries[0].store_results.keys()) == ["S1", "S2", "S3"]
+
+
+@pytest.mark.asyncio
+async def test_td_leads_main_normalizes_store_worker_exceptions_and_persists_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = [SimpleNamespace(store_code="A"), SimpleNamespace(store_code="B")]
+    persisted_summaries = []
+    notifications: list[tuple[str, str]] = []
+
+    class _FakePlaywrightContext:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeBrowser:
+        async def close(self) -> None:
+            return None
+
+    async def _fake_run_store(*, browser, store, run_id, run_env, logger):
+        if store.store_code == "B":
+            raise RuntimeError("boom")
+        return td_leads_main.StoreLeadResult(store_code=store.store_code, status="ok")
+
+    async def _fake_notify(pipeline_name, run_id):
+        notifications.append((pipeline_name, run_id))
+        return {"emails_planned": 0, "emails_sent": 0, "errors": []}
+
+    monkeypatch.setattr(td_leads_main, "_load_td_order_stores", lambda logger, store_codes=None: asyncio.sleep(0, result=stores))
+    monkeypatch.setattr(td_leads_main, "_start_run_summary", lambda logger, summary: asyncio.sleep(0))
+    monkeypatch.setattr(
+        td_leads_main,
+        "_persist_run_summary",
+        lambda logger, summary, finished_at: persisted_summaries.append(summary) or asyncio.sleep(0, result=True),
+    )
+    monkeypatch.setattr(td_leads_main, "_resolve_td_leads_concurrency_settings", lambda: (2, 2, True))
+    monkeypatch.setattr(td_leads_main, "_run_store", _fake_run_store)
+    monkeypatch.setattr(td_leads_main, "send_notifications_for_run", _fake_notify)
+    monkeypatch.setattr(td_leads_main, "async_playwright", lambda: _FakePlaywrightContext())
+    monkeypatch.setattr(td_leads_main, "launch_browser", lambda playwright, logger: asyncio.sleep(0, result=_FakeBrowser()))
+
+    await td_leads_main.main(run_env="test", run_id="run-errors")
+
+    assert len(persisted_summaries) == 1
+    assert persisted_summaries[0].store_results["A"].status == "ok"
+    assert persisted_summaries[0].store_results["B"].status == "error"
+    assert "failed" in persisted_summaries[0].store_results["B"].message.lower()
+    assert notifications == [("td_crm_leads_sync", "run-errors")]

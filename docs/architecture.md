@@ -40,9 +40,19 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 ### 4) CRM order-sync pipelines
 - UC sync: `app/crm_downloader/uc_orders_sync/main.py`.
 - TD sync: `app/crm_downloader/td_orders_sync/main.py`.
+- TD leads sync: `app/crm_downloader/td_leads_sync/main.py`.
 - Shared window logic: `app/crm_downloader/orders_sync_window.py`.
 - Profiler/orchestrator over windows + stores: `app/crm_downloader/orders_sync_run_profiler/main.py`.
 - Data source behavior appears to include UI extraction plus TD API compare/source-mode switching.
+
+#### TD leads concurrency controls
+- `TD_LEADS_MAX_WORKERS` controls store-worker concurrency for TD leads sync.
+  - Default: `2`.
+  - Minimum effective value: `1`.
+- `TD_LEADS_PARALLEL_ENABLED` toggles parallel store execution for TD leads sync.
+  - Default: enabled (`true`).
+  - When disabled (`0/false/no/off`), effective concurrency is forced to `1` (sequential mode).
+- The pipeline logs resolved startup telemetry with configured/effective concurrency and parallel-mode status.
 
 ### 5) Reporting pipelines
 - Daily sales: `app/reports/daily_sales_report/`.
