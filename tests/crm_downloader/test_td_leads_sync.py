@@ -158,6 +158,24 @@ def test_scraped_at_value_can_pass_through() -> None:
     assert build_lead_uid(row)
 
 
+def test_coerce_pickup_created_at_accepts_date_only_created_date() -> None:
+    coerced = td_leads_ingest._coerce_pickup_created_at(
+        row={"pickup_created_at": None},
+        normalized_created_date="21 Apr 2026",
+    )
+
+    assert coerced is not None
+
+
+def test_coerce_pickup_created_at_converts_date_only_from_ist_midnight_to_utc() -> None:
+    coerced = td_leads_ingest._coerce_pickup_created_at(
+        row={"pickup_created_at": None},
+        normalized_created_date="21 Apr 2026",
+    )
+
+    assert coerced == datetime(2026, 4, 20, 18, 30, tzinfo=timezone.utc)
+
+
 def test_sanitize_rows_for_xlsx_export_converts_tz_aware_datetime_and_iso_strings() -> None:
     aware_value = datetime(2026, 4, 22, 6, 30, tzinfo=timezone.utc)
     rows = [

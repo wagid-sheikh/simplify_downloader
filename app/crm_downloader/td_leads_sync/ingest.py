@@ -93,6 +93,19 @@ def _coerce_pickup_created_at(row: Mapping[str, Any], *, normalized_created_date
             return datetime.strptime(normalized, fmt).replace(tzinfo=_IST).astimezone(_UTC)
         except ValueError:
             continue
+    try:
+        parsed_date = datetime.strptime(normalized, "%d %b %Y").date()
+        return datetime(
+            parsed_date.year,
+            parsed_date.month,
+            parsed_date.day,
+            0,
+            0,
+            0,
+            tzinfo=_IST,
+        ).astimezone(_UTC)
+    except ValueError:
+        pass
 
     try:
         parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
