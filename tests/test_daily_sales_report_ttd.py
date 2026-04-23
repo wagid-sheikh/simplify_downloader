@@ -90,6 +90,7 @@ def test_daily_sales_report_ttd_calculation_and_rendering() -> None:
         edited_orders_totals=None,
         edited_orders_summary=None,
         missed_leads=[],
+        lead_performance_summary=[],
     )
 
     html = _render_html(
@@ -168,6 +169,21 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
                 ],
             }
         ],
+        lead_performance_summary=[
+            {
+                "store": "UN",
+                "store_name": "Uttam Nagar",
+                "period_start": "2026-01-01",
+                "period_end": "2026-01-19",
+                "total_leads": 10,
+                "completed_leads": 8,
+                "cancelled_leads": 1,
+                "pending_leads": 1,
+                "conversion_pct": {"value": 80.0, "color": "YELLOW", "status": "HEALTHY"},
+                "cancelled_pct": {"value": 10.0, "color": "GREEN", "status": "EXCELLENT"},
+                "pending_pct": {"value": 10.0, "color": "RED", "status": "FOLLOW_UP_GAP"},
+            }
+        ],
     )
 
     html = _render_html(
@@ -181,6 +197,7 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
             "edited_orders_summary": report_data.edited_orders_summary,
             "edited_orders_totals": report_data.edited_orders_totals,
             "missed_leads": report_data.missed_leads,
+            "lead_performance_summary": report_data.lead_performance_summary,
         }
     )
 
@@ -189,5 +206,7 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
     assert "Missed Leads for this month" in html
     assert "Uttam Nagar New" in html
     assert "(9999999999, Alice), (8888888888, Bob)" in html
+    assert "Lead Performance Summary (MTD)" in html
+    assert "HEALTHY" in html
     assert "Sync Group" not in html
     assert html.index("Pickup & Delivery KPIs") < html.index("Missed Leads for this month")
