@@ -166,6 +166,10 @@ async def ingest_td_crm_leads_rows(
             update_values = dict(values)
             update_values.pop("lead_uid", None)
             update_values.pop("created_at", None)
+            update_values["pickup_created_at"] = sa.func.coalesce(
+                insert_stmt.excluded.pickup_created_at,
+                table.c.pickup_created_at,
+            )
             stmt = insert_stmt.on_conflict_do_update(index_elements=["lead_uid"], set_=update_values)
             await session.execute(stmt)
             upserted += 1
