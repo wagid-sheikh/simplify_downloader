@@ -19,7 +19,97 @@ class TdLeadsIngestResult:
     rows_upserted: int
     bucket_write_counts: dict[str, dict[str, int]]
     status_transitions: list[dict[str, Any]]
+    lead_change_details: dict[str, Any]
     task_stub: dict[str, Any]
+
+
+LEAD_CHANGE_DETAILS_GROUP_CAP = 20
+
+
+def _stable_lead_identity(values: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "lead_uid": str(values.get("lead_uid") or ""),
+        "pickup_id": values.get("pickup_id"),
+        "pickup_no": values.get("pickup_no"),
+        "store_code": values.get("store_code"),
+    }
+
+
+def _mobile_for_display(raw_mobile: Any) -> str | None:
+    mobile = str(raw_mobile or "").strip()
+    if not mobile:
+        return None
+    return mobile
+
+
+def _build_lead_change_payload(*, cap_per_group: int, rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    dedupe_keys: set[tuple[str, str, str]] = set()
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    overflow_counts: dict[str, int] = {}
+
+    def _group_key(row: Mapping[str, Any]) -> str:
+        action = str(row.get("action") or "").strip().lower()
+        current = str(row.get("current_status_bucket") or "").strip().lower()
+        previous = str(row.get("previous_status_bucket") or "").strip().lower()
+        if previous and previous != current:
+            return f"transition:{previous}->{current}"
+        return f"{action}:{current}"
+
+    for row in rows:
+        group_key = _group_key(row)
+        lead_identity = row.get("lead_identity") if isinstance(row.get("lead_identity"), Mapping) else {}
+        stable_id = str(lead_identity.get("lead_uid") or row.get("lead_uid") or "").strip()
+        fallback_key = "|".join(
+            (
+                stable_id,
+                str(lead_identity.get("pickup_id") or row.get("pickup_id") or "").strip(),
+                str(lead_identity.get("pickup_no") or row.get("pickup_no") or "").strip(),
+            )
+        )
+        identity_for_dedupe = stable_id or fallback_key
+        dedupe_key = (group_key, str(row.get("action") or ""), identity_for_dedupe)
+        if dedupe_key in dedupe_keys:
+            continue
+        dedupe_keys.add(dedupe_key)
+
+        grouped.setdefault(group_key, [])
+        if len(grouped[group_key]) >= cap_per_group:
+            overflow_counts[group_key] = overflow_counts.get(group_key, 0) + 1
+            continue
+        grouped[group_key].append(dict(row))
+
+    created_by_bucket: list[dict[str, Any]] = []
+    updated_by_bucket: list[dict[str, Any]] = []
+    transitions: list[dict[str, Any]] = []
+    for group_key in sorted(grouped):
+        rows_for_group = grouped[group_key]
+        overflow = overflow_counts.get(group_key, 0)
+        if group_key.startswith("created:"):
+            created_by_bucket.append(
+                {"status_bucket": group_key.split(":", 1)[1], "rows": rows_for_group, "overflow_count": overflow}
+            )
+        elif group_key.startswith("updated:"):
+            updated_by_bucket.append(
+                {"status_bucket": group_key.split(":", 1)[1], "rows": rows_for_group, "overflow_count": overflow}
+            )
+        elif group_key.startswith("transition:"):
+            route = group_key.split(":", 1)[1]
+            from_bucket, _, to_bucket = route.partition("->")
+            transitions.append(
+                {
+                    "from_status_bucket": from_bucket,
+                    "to_status_bucket": to_bucket,
+                    "rows": rows_for_group,
+                    "overflow_count": overflow,
+                }
+            )
+
+    return {
+        "cap_per_group": cap_per_group,
+        "created_by_bucket": created_by_bucket,
+        "updated_by_bucket": updated_by_bucket,
+        "transitions": transitions,
+    }
 
 
 def _crm_leads_table(metadata: sa.MetaData) -> sa.Table:
@@ -136,6 +226,7 @@ async def ingest_td_crm_leads_rows(
         "cancelled": {"created": 0, "updated": 0},
     }
     status_transitions: list[dict[str, Any]] = []
+    lead_change_rows: list[dict[str, Any]] = []
 
     async with session_scope(database_url) as session:
         connection = await session.connection()
@@ -211,6 +302,18 @@ async def ingest_td_crm_leads_rows(
                             "current_run_id": run_id,
                         }
                     )
+            lead_change_rows.append(
+                {
+                    "action": write_action,
+                    "current_status_bucket": status_bucket or None,
+                    "previous_status_bucket": (
+                        str(existing.get("status_bucket") or "").strip().lower() if existing and str(existing.get("status_bucket") or "").strip().lower() != status_bucket else None
+                    ),
+                    "customer_name": values.get("customer_name"),
+                    "mobile": _mobile_for_display(values.get("mobile")),
+                    "lead_identity": _stable_lead_identity(values),
+                }
+            )
             insert_stmt = (sqlite_insert(table) if use_sqlite else pg_insert(table)).values(**values)
             update_values = dict(values)
             update_values.pop("lead_uid", None)
@@ -235,6 +338,7 @@ async def ingest_td_crm_leads_rows(
         rows_upserted=upserted,
         bucket_write_counts=bucket_write_counts,
         status_transitions=status_transitions,
+        lead_change_details=_build_lead_change_payload(cap_per_group=LEAD_CHANGE_DETAILS_GROUP_CAP, rows=lead_change_rows),
         task_stub=task_stub,
     )
 

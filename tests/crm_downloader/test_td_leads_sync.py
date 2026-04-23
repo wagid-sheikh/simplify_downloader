@@ -259,6 +259,25 @@ def test_td_leads_summary_html_renders_compact_summary_tables_and_footer_refs() 
                 status_counts={"pending": 1, "completed": 1, "cancelled": 0},
                 ingested_rows=2,
                 artifact_path="app/crm_downloader/data/A817-crm_leads.xlsx",
+                lead_change_details={
+                    "created_by_bucket": [
+                        {
+                            "status_bucket": "pending",
+                            "rows": [
+                                {
+                                    "customer_name": "Nia",
+                                    "mobile": "9000000000",
+                                    "action": "created",
+                                    "current_status_bucket": "pending",
+                                    "previous_status_bucket": None,
+                                }
+                            ],
+                            "overflow_count": 2,
+                        }
+                    ],
+                    "updated_by_bucket": [],
+                    "transitions": [],
+                },
             )
         },
     )
@@ -269,6 +288,9 @@ def test_td_leads_summary_html_renders_compact_summary_tables_and_footer_refs() 
     assert "Status bucket totals" in summary_html
     assert "Upsert write actions by status bucket" in summary_html
     assert "Status transitions vs previous run" in summary_html
+    assert "Lead Changes (Actionable Details)" in summary_html
+    assert "Customer Name</th><th align='left'>Mobile</th><th align='left'>Action</th>" in summary_html
+    assert "+2 more" in summary_html
     assert "A817" in summary_html
     assert "Total stores processed:</strong> 1" in summary_html
     assert "Runtime duration:</strong> 00:01:00" in summary_html
@@ -314,6 +336,8 @@ def test_td_leads_run_summary_record_exposes_summary_html_in_metrics() -> None:
     assert "Row-level lead tables" in record["metrics_json"]["summary_html"]
     assert "Store A668" in record["metrics_json"]["lead_tables_html"]
     assert "A668" in record["metrics_json"]["summary_html"]
+    assert "lead_change_details" in record["metrics_json"]["stores"][0]
+    assert "lead_change_details" in record["metrics_json"]
     assert "rows" not in record["metrics_json"]["stores"][0]
 
 
@@ -1042,6 +1066,41 @@ async def test_ingest_captures_created_updated_counts_and_status_transitions(tmp
     assert transition["from_status_bucket"] == "pending"
     assert transition["to_status_bucket"] == "completed"
     assert second_result.task_stub["status"] == "open"
+    transition_groups = second_result.lead_change_details["transitions"]
+    assert transition_groups[0]["rows"][0]["customer_name"] == "Moni"
+    assert transition_groups[0]["rows"][0]["previous_status_bucket"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_ingest_lead_change_details_dedupes_and_caps_rows(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_leads_dedup_cap.db'}"
+    rows = []
+    for index in range(25):
+        rows.append(
+            {
+                "store_code": "A668",
+                "status_bucket": "pending",
+                "pickup_id": f"44349{index}",
+                "pickup_no": f"A668-{index}",
+                "customer_name": f"Lead {index}",
+                "mobile": "9599242207",
+                "pickup_created_date": "21 Apr 2026 3:03:39 PM",
+            }
+        )
+    rows.append(dict(rows[0]))
+
+    result = await td_leads_ingest.ingest_td_crm_leads_rows(
+        rows=rows,
+        run_id="run-dedupe-cap",
+        run_env="test",
+        source_file="A668-crm_leads.xlsx",
+        database_url=database_url,
+    )
+
+    created_groups = result.lead_change_details["created_by_bucket"]
+    assert created_groups[0]["status_bucket"] == "pending"
+    assert len(created_groups[0]["rows"]) == 20
+    assert created_groups[0]["overflow_count"] == 5
 
 
 @pytest.mark.asyncio

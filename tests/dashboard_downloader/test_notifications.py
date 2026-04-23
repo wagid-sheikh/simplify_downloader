@@ -253,6 +253,25 @@ def test_td_leads_run_plan_sets_html_body_when_summary_html_is_available() -> No
     assert plan.body_html == "<h3>HTML summary</h3>"
 
 
+def test_td_leads_run_plan_preserves_actionable_details_html() -> None:
+    actionable_html = (
+        "<h4>Lead Changes (Actionable Details)</h4>"
+        "<table><tr><td>Nia</td><td>9000000000</td><td>created</td></tr></table>"
+    )
+    plan = _build_run_plan(
+        pipeline_code="td_crm_leads_sync",
+        profile={"code": "run_summary", "scope": "run", "attach_mode": "none"},
+        template={"subject_template": "TD Leads {{ run_id }}", "body_template": "{{ summary_html }}"},
+        recipients=[{"store_code": "ALL", "email_address": "ops@example.com", "display_name": None, "send_as": "to"}],
+        docs=[],
+        context={"run_id": "run-2", "summary_text": "plain summary", "summary_html": actionable_html},
+    )
+
+    assert plan is not None
+    assert "Lead Changes (Actionable Details)" in (plan.body_html or "")
+    assert "Nia" in (plan.body_html or "")
+
+
 def test_derive_duration_fields_prefers_summary_timestamps_when_metrics_missing() -> None:
     started = datetime(2026, 4, 22, 0, 0, tzinfo=timezone.utc)
     finished = datetime(2026, 4, 22, 0, 1, 7, tzinfo=timezone.utc)

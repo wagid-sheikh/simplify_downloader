@@ -359,6 +359,67 @@ def _build_td_leads_summary_html(*, summary: "LeadsRunSummary", duration_human: 
 
     blocks.extend(
         [
+            "<h4 style='margin:16px 0 8px 0;'>Lead Changes (Actionable Details)</h4>",
+        ]
+    )
+    lead_changes_added = 0
+    for result in ordered_results:
+        lead_change_details = result.lead_change_details if isinstance(result.lead_change_details, Mapping) else {}
+        grouped_sets = (
+            ("Created by Bucket", lead_change_details.get("created_by_bucket")),
+            ("Updated by Bucket", lead_change_details.get("updated_by_bucket")),
+            ("Transitions (from → to)", lead_change_details.get("transitions")),
+        )
+        store_blocks: list[str] = []
+        for section_label, section_groups in grouped_sets:
+            if not isinstance(section_groups, list) or not section_groups:
+                continue
+            store_blocks.append(f"<h5 style='margin:10px 0 6px 0;'>{html.escape(section_label)}</h5>")
+            for group in section_groups:
+                if not isinstance(group, Mapping):
+                    continue
+                rows = group.get("rows") if isinstance(group.get("rows"), list) else []
+                if not rows:
+                    continue
+                lead_changes_added += len(rows)
+                group_title = group.get("status_bucket") or "bucket"
+                if section_label.startswith("Transitions"):
+                    from_bucket = group.get("from_status_bucket") or "—"
+                    to_bucket = group.get("to_status_bucket") or "—"
+                    group_title = f"{from_bucket} → {to_bucket}"
+                store_blocks.append(f"<p style='margin:6px 0 4px 0;'><strong>{html.escape(str(group_title))}</strong></p>")
+                store_blocks.append(
+                    "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse; width:100%; margin-bottom:8px;'>"
+                    "<thead><tr>"
+                    "<th align='left'>Customer Name</th>"
+                    "<th align='left'>Mobile</th>"
+                    "<th align='left'>Action</th>"
+                    "<th align='left'>Current Bucket</th>"
+                    "<th align='left'>Previous Bucket</th>"
+                    "</tr></thead><tbody>"
+                )
+                for row in rows:
+                    store_blocks.append(
+                        "<tr>"
+                        f"<td>{html.escape(str(row.get('customer_name') or '—'))}</td>"
+                        f"<td>{html.escape(str(row.get('mobile') or '—'))}</td>"
+                        f"<td>{html.escape(str(row.get('action') or '—'))}</td>"
+                        f"<td>{html.escape(str(row.get('current_status_bucket') or '—'))}</td>"
+                        f"<td>{html.escape(str(row.get('previous_status_bucket') or '—'))}</td>"
+                        "</tr>"
+                    )
+                store_blocks.append("</tbody></table>")
+                overflow_count = int(group.get("overflow_count") or 0)
+                if overflow_count > 0:
+                    store_blocks.append(f"<p style='margin:0 0 8px 0; color:#555555;'>+{overflow_count} more</p>")
+        if store_blocks:
+            blocks.append(f"<h5 style='margin:10px 0 6px 0;'>Store {html.escape(result.store_code)}</h5>")
+            blocks.extend(store_blocks)
+    if lead_changes_added == 0:
+        blocks.append("<p><em>No actionable lead changes captured.</em></p>")
+
+    blocks.extend(
+        [
             "<h4 style='margin:16px 0 8px 0;'>Status bucket totals</h4>",
             "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse; width:100%; margin-bottom:12px;'>",
             (
@@ -408,6 +469,7 @@ class StoreLeadResult:
     ingested_rows: int = 0
     bucket_write_counts: dict[str, dict[str, int]] = field(default_factory=dict)
     status_transitions: list[dict[str, Any]] = field(default_factory=list)
+    lead_change_details: dict[str, Any] = field(default_factory=dict)
     task_stub: dict[str, Any] | None = None
 
 
@@ -446,6 +508,7 @@ class LeadsRunSummary:
                 "ingested_rows": result.ingested_rows,
                 "bucket_write_counts": dict(result.bucket_write_counts),
                 "status_transitions": list(result.status_transitions),
+                "lead_change_details": dict(result.lead_change_details),
                 "task_stub": dict(result.task_stub or {}),
             }
             for result in self.store_results.values()
@@ -496,6 +559,9 @@ class LeadsRunSummary:
                     "summary_html": combined_summary_html,
                     "lead_tables_html": lead_tables_html,
                     "stores": store_rows_payload,
+                    "lead_change_details": {
+                        result.store_code: dict(result.lead_change_details) for result in self.store_results.values()
+                    },
                     "task_stubs": [dict(result.task_stub or {}) for result in self.store_results.values()],
                 }
             ),
@@ -1167,6 +1233,7 @@ async def _run_store(
         result.ingested_rows = ingest_result.rows_upserted if ingest_result else 0
         result.bucket_write_counts = dict(ingest_result.bucket_write_counts) if ingest_result else {}
         result.status_transitions = list(ingest_result.status_transitions) if ingest_result else []
+        result.lead_change_details = dict(ingest_result.lead_change_details) if ingest_result else {}
         result.task_stub = dict(ingest_result.task_stub) if ingest_result else None
         result.status = "warning" if warnings else "ok"
         result.message = "Completed" if not warnings else "Completed with warnings"

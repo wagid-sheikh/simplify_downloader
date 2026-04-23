@@ -449,6 +449,55 @@
     </table>
     {% endif %}
 
+    {% if td_leads_sync_lead_changes and td_leads_sync_lead_changes.stores %}
+    <div class="section-title">TD Leads Sync Lead Changes (Actionable Details)</div>
+    {% for store in td_leads_sync_lead_changes.stores %}
+    <div style="margin: 6px 0 2px 0;"><strong>Store {{ store.store_code or "--" }}</strong></div>
+    {% for group in store.created_by_bucket %}
+    {% if group.rows %}
+    <div style="margin: 4px 0 2px 0;">Created / {{ group.status_bucket or "--" }}</div>
+    <table class="compact-table micro-font">
+      <thead><tr><th class="label">Customer Name</th><th>Mobile</th><th>Current Bucket</th><th>Previous Bucket</th></tr></thead>
+      <tbody>
+        {% for row in group.rows %}
+        <tr><td class="label">{{ row.customer_name or "--" }}</td><td>{{ row.mobile or "--" }}</td><td>{{ row.current_status_bucket or "--" }}</td><td>{{ row.previous_status_bucket or "--" }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if group.overflow_count and group.overflow_count > 0 %}<div class="micro-font">+{{ group.overflow_count }} more</div>{% endif %}
+    {% endif %}
+    {% endfor %}
+    {% for group in store.updated_by_bucket %}
+    {% if group.rows %}
+    <div style="margin: 4px 0 2px 0;">Updated / {{ group.status_bucket or "--" }}</div>
+    <table class="compact-table micro-font">
+      <thead><tr><th class="label">Customer Name</th><th>Mobile</th><th>Current Bucket</th><th>Previous Bucket</th></tr></thead>
+      <tbody>
+        {% for row in group.rows %}
+        <tr><td class="label">{{ row.customer_name or "--" }}</td><td>{{ row.mobile or "--" }}</td><td>{{ row.current_status_bucket or "--" }}</td><td>{{ row.previous_status_bucket or "--" }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if group.overflow_count and group.overflow_count > 0 %}<div class="micro-font">+{{ group.overflow_count }} more</div>{% endif %}
+    {% endif %}
+    {% endfor %}
+    {% for group in store.transitions %}
+    {% if group.rows %}
+    <div style="margin: 4px 0 2px 0;">Transition / {{ group.from_status_bucket or "--" }} → {{ group.to_status_bucket or "--" }}</div>
+    <table class="compact-table micro-font">
+      <thead><tr><th class="label">Customer Name</th><th>Mobile</th><th>Current Bucket</th><th>Previous Bucket</th></tr></thead>
+      <tbody>
+        {% for row in group.rows %}
+        <tr><td class="label">{{ row.customer_name or "--" }}</td><td>{{ row.mobile or "--" }}</td><td>{{ row.current_status_bucket or "--" }}</td><td>{{ row.previous_status_bucket or "--" }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if group.overflow_count and group.overflow_count > 0 %}<div class="micro-font">+{{ group.overflow_count }} more</div>{% endif %}
+    {% endif %}
+    {% endfor %}
+    {% endfor %}
+    {% endif %}
+
     {% if edited_orders %}
     <div class="section-title">Edited/Underpaid Orders</div>
     {% if edited_orders_summary %}

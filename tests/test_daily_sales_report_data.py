@@ -446,6 +446,51 @@ async def test_fetch_daily_sales_report_exposes_td_leads_sync_metrics_payload(tm
     assert len(stores) == 1
     assert stores[0]["bucket_write_counts"]["pending"]["created"] == 1
     assert report.td_leads_sync_metrics["task_stub"]["status"] == "open"
+    assert report.td_leads_sync_lead_changes["stores"][0]["store_code"] == "UN"
+    assert report.td_leads_sync_lead_changes["stores"][0]["created_by_bucket"] == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_extracts_td_lead_change_details_payload(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_td_lead_changes.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 4, 23)
+
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD', 'TD Cost Center', 'value', 1)")
+        )
+        await session.execute(
+            sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1, 'CC-TD', 'UN', 'Uttam Nagar', 'TD')")
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO pipeline_run_summaries (
+                    pipeline_name, run_id, report_date, finished_at, created_at, metrics_json
+                ) VALUES (
+                    'td_crm_leads_sync', 'run-td-2', '2026-04-23', '2026-04-23 11:00:00', '2026-04-23 11:00:00',
+                    :metrics_json
+                )
+                """
+            ),
+            {
+                "metrics_json": """
+                {"stores":[{"store_code":"UN","lead_change_details":{"cap_per_group":20,"created_by_bucket":[{"status_bucket":"pending","rows":[{"customer_name":"Nia","mobile":"9000000000","action":"created","current_status_bucket":"pending","previous_status_bucket":null}],"overflow_count":1}],"updated_by_bucket":[],"transitions":[]}}]}
+                """
+            },
+        )
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    stores = report.td_leads_sync_lead_changes["stores"]
+    assert len(stores) == 1
+    assert stores[0]["store_code"] == "UN"
+    assert stores[0]["created_by_bucket"][0]["rows"][0]["customer_name"] == "Nia"
 
 
 @pytest.mark.asyncio
