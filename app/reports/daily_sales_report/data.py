@@ -70,6 +70,16 @@ class DailySalesReportData:
     edited_orders_totals: EditedOrderRow | None
     edited_orders_summary: EditedOrdersSummary | None
     missed_leads: List[Mapping[str, object]]
+    lead_performance_summary: List[Mapping[str, object]]
+
+
+LEAD_BENCHMARKS = {
+    "conversion_target": Decimal("85"),
+    "conversion_min": Decimal("70"),
+    "cancelled_target": Decimal("10"),
+    "cancelled_max": Decimal("20"),
+    "pending_max": Decimal("5"),
+}
 
 
 def _decimal(value: object | None) -> Decimal:
@@ -124,6 +134,47 @@ def _round_amount(value: Decimal) -> Decimal:
 
 def _truncate_amount(value: Decimal) -> Decimal:
     return value.to_integral_value(rounding=ROUND_DOWN)
+
+
+def _round_percentage(value: Decimal) -> Decimal:
+    return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _lead_metric_status_color(
+    *, metric: str, value: Decimal, total_leads: int
+) -> tuple[str, str]:
+    if total_leads <= 0:
+        return ("NEUTRAL", "NEUTRAL")
+
+    if metric == "conversion":
+        if value >= LEAD_BENCHMARKS["conversion_target"]:
+            return ("EXCELLENT", "GREEN")
+        if value >= LEAD_BENCHMARKS["conversion_min"]:
+            return ("HEALTHY", "YELLOW")
+        return ("POOR", "RED")
+
+    if metric == "cancelled":
+        if value <= LEAD_BENCHMARKS["cancelled_target"]:
+            return ("EXCELLENT", "GREEN")
+        if value <= LEAD_BENCHMARKS["cancelled_max"]:
+            return ("ACCEPTABLE", "YELLOW")
+        return ("HIGH_LEAKAGE", "RED")
+
+    if metric == "pending":
+        if value <= LEAD_BENCHMARKS["pending_max"]:
+            return ("CONTROLLED", "GREEN")
+        return ("FOLLOW_UP_GAP", "RED")
+
+    return ("NEUTRAL", "NEUTRAL")
+
+
+def _lead_metric_payload(*, metric: str, value: Decimal, total_leads: int) -> dict[str, object]:
+    status, color = _lead_metric_status_color(metric=metric, value=value, total_leads=total_leads)
+    return {
+        "value": float(value),
+        "color": color,
+        "status": status,
+    }
 
 
 def _calculate_ttd(target: Decimal, achieved: Decimal, day_of_month: int, days_in_month: int) -> Decimal:
@@ -428,6 +479,12 @@ async def fetch_daily_sales_report(
         sa.column("customer_type"),
         sa.column("pickup_date"),
         sa.column("is_order_placed"),
+    )
+    crm_leads = sa.table(
+        "crm_leads",
+        sa.column("store_code"),
+        sa.column("status_bucket"),
+        sa.column("pickup_created_at"),
     )
 
     previous_day = report_date - timedelta(days=1)
@@ -757,6 +814,8 @@ async def fetch_daily_sales_report(
 
     report_month_start = report_date.replace(day=1)
     report_next_month_start = (report_month_start + timedelta(days=32)).replace(day=1)
+    lead_period_start = ranges["start_month"]
+    lead_period_end = ranges["next_day"]
 
     td_store_master_primary = (
         sa.select(
@@ -815,6 +874,111 @@ async def fetch_daily_sales_report(
                 }
             )
 
+        normalized_status_bucket = sa.func.lower(sa.func.trim(sa.func.coalesce(crm_leads.c.status_bucket, "")))
+        normalized_lead_store_code = sa.func.upper(sa.func.trim(sa.func.coalesce(crm_leads.c.store_code, "")))
+        normalized_store_master_code = sa.func.upper(
+            sa.func.trim(sa.func.coalesce(store_master_primary.c.store_code, ""))
+        )
+
+        lead_agg = (
+            sa.select(
+                normalized_lead_store_code.label("store_code"),
+                sa.func.count().label("total_leads"),
+                sa.func.coalesce(
+                    sa.func.sum(sa.case((normalized_status_bucket == "completed", 1), else_=0)),
+                    0,
+                ).label("completed_leads"),
+                sa.func.coalesce(
+                    sa.func.sum(sa.case((normalized_status_bucket == "cancelled", 1), else_=0)),
+                    0,
+                ).label("cancelled_leads"),
+                sa.func.coalesce(
+                    sa.func.sum(sa.case((normalized_status_bucket == "pending", 1), else_=0)),
+                    0,
+                ).label("pending_leads"),
+            )
+            .where(crm_leads.c.pickup_created_at >= lead_period_start)
+            .where(crm_leads.c.pickup_created_at < lead_period_end)
+            .group_by(normalized_lead_store_code)
+            .subquery()
+        )
+
+        lead_summary_stmt = (
+            sa.select(
+                store_master_primary.c.store_code.label("store_code"),
+                store_master_primary.c.store_name.label("store_name"),
+                sa.func.coalesce(lead_agg.c.total_leads, 0).label("total_leads"),
+                sa.func.coalesce(lead_agg.c.completed_leads, 0).label("completed_leads"),
+                sa.func.coalesce(lead_agg.c.cancelled_leads, 0).label("cancelled_leads"),
+                sa.func.coalesce(lead_agg.c.pending_leads, 0).label("pending_leads"),
+            )
+            .select_from(
+                cost_center.join(
+                    store_master_primary,
+                    store_master_primary.c.cost_center == cost_center.c.cost_center,
+                ).outerjoin(lead_agg, lead_agg.c.store_code == normalized_store_master_code)
+            )
+            .where(cost_center.c.is_active.is_(True))
+            .order_by(store_master_primary.c.store_name)
+        )
+
+        lead_performance_summary: list[Mapping[str, object]] = []
+        lead_summary_result = await session.execute(lead_summary_stmt)
+        for entry in lead_summary_result.mappings():
+            total_leads = int(entry["total_leads"] or 0)
+            completed_leads = int(entry["completed_leads"] or 0)
+            cancelled_leads = int(entry["cancelled_leads"] or 0)
+            pending_leads = int(entry["pending_leads"] or 0)
+
+            if total_leads == 0:
+                conversion_pct = Decimal("0")
+                cancelled_pct = Decimal("0")
+                pending_pct = Decimal("0")
+            else:
+                total = Decimal(str(total_leads))
+                conversion_pct = _round_percentage((Decimal(str(completed_leads)) / total) * Decimal("100"))
+                cancelled_pct = _round_percentage((Decimal(str(cancelled_leads)) / total) * Decimal("100"))
+                pending_pct = _round_percentage((Decimal(str(pending_leads)) / total) * Decimal("100"))
+
+            lead_performance_summary.append(
+                {
+                    "store": str(entry["store_code"] or "--"),
+                    "store_name": str(entry["store_name"] or "--"),
+                    "period_type": "MTD",
+                    "period_start": report_month_start.isoformat(),
+                    "period_end": report_date.isoformat(),
+                    "total_leads": total_leads,
+                    "completed_leads": completed_leads,
+                    "cancelled_leads": cancelled_leads,
+                    "pending_leads": pending_leads,
+                    "conversion_pct": _lead_metric_payload(
+                        metric="conversion",
+                        value=conversion_pct,
+                        total_leads=total_leads,
+                    ),
+                    "cancelled_pct": _lead_metric_payload(
+                        metric="cancelled",
+                        value=cancelled_pct,
+                        total_leads=total_leads,
+                    ),
+                    "pending_pct": _lead_metric_payload(
+                        metric="pending",
+                        value=pending_pct,
+                        total_leads=total_leads,
+                    ),
+                    "conversion_gap": float(_round_percentage(conversion_pct - LEAD_BENCHMARKS["conversion_target"])),
+                    "cancelled_gap": float(_round_percentage(cancelled_pct - LEAD_BENCHMARKS["cancelled_target"])),
+                    "pending_gap": float(_round_percentage(pending_pct - LEAD_BENCHMARKS["pending_max"])),
+                    "benchmark": {
+                        "conversion_target": float(LEAD_BENCHMARKS["conversion_target"]),
+                        "conversion_min": float(LEAD_BENCHMARKS["conversion_min"]),
+                        "cancelled_target": float(LEAD_BENCHMARKS["cancelled_target"]),
+                        "cancelled_max": float(LEAD_BENCHMARKS["cancelled_max"]),
+                        "pending_max": float(LEAD_BENCHMARKS["pending_max"]),
+                    },
+                }
+            )
+
     return DailySalesReportData(
         report_date=report_date,
         rows=rows,
@@ -823,4 +987,5 @@ async def fetch_daily_sales_report(
         edited_orders_totals=edited_totals,
         edited_orders_summary=edited_orders_summary,
         missed_leads=missed_leads_grouped,
+        lead_performance_summary=lead_performance_summary,
     )
