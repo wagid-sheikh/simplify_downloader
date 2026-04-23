@@ -9,7 +9,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0088_backfill_crm_leads_created_at"
+revision = "0088_backfill_crmleadscreated_at"
 down_revision = "0087_crm_leads_created_at"
 branch_labels = None
 depends_on = None
