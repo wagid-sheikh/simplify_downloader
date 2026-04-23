@@ -113,6 +113,7 @@ def _build_context(data: DailySalesReportData, run_environment: str) -> dict[str
         "missed_leads": data.missed_leads,
         "cancelled_leads": data.cancelled_leads,
         "lead_performance_summary": data.lead_performance_summary,
+        "td_leads_sync_metrics": data.td_leads_sync_metrics,
     }
 
 

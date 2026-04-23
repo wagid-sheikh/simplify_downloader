@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
@@ -72,6 +73,39 @@ class DailySalesReportData:
     missed_leads: List[Mapping[str, object]]
     cancelled_leads: List[Mapping[str, object]]
     lead_performance_summary: List[Mapping[str, object]]
+    td_leads_sync_metrics: Mapping[str, object]
+
+
+def _safe_json_mapping(value: object) -> Mapping[str, object]:
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(parsed, Mapping):
+            return parsed
+    return {}
+
+
+def _build_td_leads_metrics_task_stub(
+    *, report_date: date, metrics_payload: Mapping[str, object]
+) -> Mapping[str, object]:
+    stores = metrics_payload.get("stores")
+    store_rows = stores if isinstance(stores, list) else []
+    transition_count = 0
+    for row in store_rows:
+        if isinstance(row, Mapping):
+            transitions = row.get("status_transitions")
+            if isinstance(transitions, list):
+                transition_count += len(transitions)
+    return {
+        "task_type": "daily_sales_td_leads_status_review",
+        "report_date": report_date.isoformat(),
+        "status": "open" if transition_count else "noop",
+        "total_transitions": transition_count,
+    }
 
 
 LEAD_BENCHMARKS = {
@@ -494,6 +528,15 @@ async def fetch_daily_sales_report(
         sa.column("customer_name"),
         sa.column("mobile"),
         sa.column("pickup_created_at"),
+    )
+    pipeline_run_summaries = sa.table(
+        "pipeline_run_summaries",
+        sa.column("pipeline_name"),
+        sa.column("run_id"),
+        sa.column("report_date"),
+        sa.column("finished_at"),
+        sa.column("created_at"),
+        sa.column("metrics_json"),
     )
 
     previous_day = report_date - timedelta(days=1)
@@ -918,6 +961,34 @@ async def fetch_daily_sales_report(
             for store_name, leads in sorted(cancelled_grouped_map.items())
         ]
 
+        td_leads_metrics_stmt = (
+            sa.select(
+                pipeline_run_summaries.c.run_id,
+                pipeline_run_summaries.c.metrics_json,
+            )
+            .where(pipeline_run_summaries.c.pipeline_name == "td_crm_leads_sync")
+            .where(pipeline_run_summaries.c.report_date == report_date)
+            .order_by(
+                pipeline_run_summaries.c.finished_at.desc(),
+                pipeline_run_summaries.c.created_at.desc(),
+            )
+            .limit(1)
+        )
+        td_leads_metrics_row = (await session.execute(td_leads_metrics_stmt)).mappings().first()
+        td_leads_metrics_payload = _safe_json_mapping(
+            td_leads_metrics_row.get("metrics_json") if td_leads_metrics_row else {}
+        )
+        td_leads_sync_metrics = {
+            "run_id": str(td_leads_metrics_row.get("run_id") or "") if td_leads_metrics_row else "",
+            "stores": td_leads_metrics_payload.get("stores")
+            if isinstance(td_leads_metrics_payload.get("stores"), list)
+            else [],
+            "task_stub": _build_td_leads_metrics_task_stub(
+                report_date=report_date,
+                metrics_payload=td_leads_metrics_payload,
+            ),
+        }
+
         normalized_store_code_expr = sa.func.upper(sa.func.trim(crm_leads.c.store_code))
         normalized_status_bucket_expr = sa.func.lower(sa.func.trim(crm_leads.c.status_bucket))
         normalized_store_master_code_expr = sa.func.upper(sa.func.trim(store_master_primary.c.store_code))
@@ -1031,4 +1102,5 @@ async def fetch_daily_sales_report(
         missed_leads=missed_leads_grouped,
         cancelled_leads=cancelled_leads_grouped,
         lead_performance_summary=lead_performance_summary,
+        td_leads_sync_metrics=td_leads_sync_metrics,
     )

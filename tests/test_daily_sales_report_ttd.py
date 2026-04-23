@@ -92,6 +92,7 @@ def test_daily_sales_report_ttd_calculation_and_rendering() -> None:
         missed_leads=[],
         cancelled_leads=[],
         lead_performance_summary=[],
+        td_leads_sync_metrics={},
     )
 
     html = _render_html(
@@ -106,6 +107,7 @@ def test_daily_sales_report_ttd_calculation_and_rendering() -> None:
             "edited_orders_totals": report_data.edited_orders_totals,
             "missed_leads": report_data.missed_leads,
             "cancelled_leads": report_data.cancelled_leads,
+            "td_leads_sync_metrics": report_data.td_leads_sync_metrics,
         }
     )
 
@@ -195,6 +197,7 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
                 "pending_pct": {"value": 10.0, "color": "RED", "status": "FOLLOW_UP_GAP"},
             }
         ],
+        td_leads_sync_metrics={},
     )
 
     html = _render_html(
@@ -210,6 +213,7 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
             "missed_leads": report_data.missed_leads,
             "cancelled_leads": report_data.cancelled_leads,
             "lead_performance_summary": report_data.lead_performance_summary,
+            "td_leads_sync_metrics": report_data.td_leads_sync_metrics,
         }
     )
 
@@ -245,6 +249,7 @@ def test_daily_sales_report_cancelled_leads_empty_state_rendering() -> None:
         missed_leads=[],
         cancelled_leads=[],
         lead_performance_summary=[],
+        td_leads_sync_metrics={},
     )
 
     html = _render_html(
@@ -260,6 +265,7 @@ def test_daily_sales_report_cancelled_leads_empty_state_rendering() -> None:
             "missed_leads": report_data.missed_leads,
             "cancelled_leads": report_data.cancelled_leads,
             "lead_performance_summary": report_data.lead_performance_summary,
+            "td_leads_sync_metrics": report_data.td_leads_sync_metrics,
         }
     )
 

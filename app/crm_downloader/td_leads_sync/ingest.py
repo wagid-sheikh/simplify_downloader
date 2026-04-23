@@ -17,6 +17,9 @@ from app.common.db import session_scope
 class TdLeadsIngestResult:
     rows_received: int
     rows_upserted: int
+    bucket_write_counts: dict[str, dict[str, int]]
+    status_transitions: list[dict[str, Any]]
+    task_stub: dict[str, Any]
 
 
 def _crm_leads_table(metadata: sa.MetaData) -> sa.Table:
@@ -52,15 +55,12 @@ def _crm_leads_table(metadata: sa.MetaData) -> sa.Table:
 
 def build_lead_uid(row: Mapping[str, Any]) -> str:
     normalized_created_date = _normalized_pickup_created_date(row)
-    normalized_pickup_time = str(row.get("pickup_time") or "").strip()
     parts = [
         str(row.get("store_code") or "").strip().upper(),
-        str(row.get("status_bucket") or "").strip().lower(),
         str(row.get("pickup_id") or "").strip(),
         str(row.get("pickup_no") or "").strip(),
         str(row.get("mobile") or "").strip(),
         normalized_created_date,
-        normalized_pickup_time,
     ]
     materialized = "|".join(parts)
     return sha256(materialized.encode("utf-8")).hexdigest()
@@ -130,17 +130,26 @@ async def ingest_td_crm_leads_rows(
 
     now_utc = datetime.now(timezone.utc)
     upserted = 0
+    bucket_write_counts: dict[str, dict[str, int]] = {
+        "pending": {"created": 0, "updated": 0},
+        "completed": {"created": 0, "updated": 0},
+        "cancelled": {"created": 0, "updated": 0},
+    }
+    status_transitions: list[dict[str, Any]] = []
 
     async with session_scope(database_url) as session:
         connection = await session.connection()
         await connection.run_sync(metadata.create_all)
 
+        prepared_rows: list[dict[str, Any]] = []
+        lead_uids: list[str] = []
         for row in rows:
             normalized_created_date = _normalized_pickup_created_date(row)
             normalized_pickup_time = str(row.get("pickup_time") or "").strip()
             pickup_created_at = _coerce_pickup_created_at(row, normalized_created_date=normalized_created_date)
+            lead_uid = build_lead_uid(row)
             values = {
-                "lead_uid": build_lead_uid(row),
+                "lead_uid": lead_uid,
                 "store_code": str(row.get("store_code") or "").upper(),
                 "status_bucket": str(row.get("status_bucket") or "").lower(),
                 "pickup_id": (str(row.get("pickup_id")).strip() or None) if row.get("pickup_id") is not None else None,
@@ -162,6 +171,46 @@ async def ingest_td_crm_leads_rows(
                 "scraped_at": row.get("scraped_at") or now_utc,
                 "updated_at": now_utc,
             }
+            prepared_rows.append(values)
+            lead_uids.append(lead_uid)
+
+        existing_by_uid: dict[str, dict[str, Any]] = {}
+        if lead_uids:
+            existing_stmt = sa.select(
+                table.c.lead_uid,
+                table.c.status_bucket,
+                table.c.run_id,
+            ).where(table.c.lead_uid.in_(lead_uids))
+            existing_rows = (await session.execute(existing_stmt)).mappings().all()
+            existing_by_uid = {str(row["lead_uid"]): dict(row) for row in existing_rows}
+
+        for values in prepared_rows:
+            existing = existing_by_uid.get(str(values["lead_uid"]))
+            write_action = "created" if existing is None else "updated"
+            status_bucket = str(values.get("status_bucket") or "").strip().lower()
+            if status_bucket in bucket_write_counts:
+                bucket_write_counts[status_bucket][write_action] += 1
+            else:
+                bucket_write_counts.setdefault(status_bucket, {"created": 0, "updated": 0})
+                bucket_write_counts[status_bucket][write_action] += 1
+
+            if existing is not None:
+                from_bucket = str(existing.get("status_bucket") or "").strip().lower()
+                to_bucket = status_bucket
+                if from_bucket and to_bucket and from_bucket != to_bucket:
+                    status_transitions.append(
+                        {
+                            "lead_uid": values["lead_uid"],
+                            "pickup_id": values.get("pickup_id"),
+                            "pickup_no": values.get("pickup_no"),
+                            "customer_name": values.get("customer_name"),
+                            "mobile": values.get("mobile"),
+                            "from_status_bucket": from_bucket,
+                            "to_status_bucket": to_bucket,
+                            "previous_run_id": existing.get("run_id"),
+                            "current_run_id": run_id,
+                        }
+                    )
             insert_stmt = (sqlite_insert(table) if use_sqlite else pg_insert(table)).values(**values)
             update_values = dict(values)
             update_values.pop("lead_uid", None)
@@ -175,7 +224,19 @@ async def ingest_td_crm_leads_rows(
             upserted += 1
         await session.commit()
 
-    return TdLeadsIngestResult(rows_received=len(rows), rows_upserted=upserted)
+    task_stub = {
+        "task_type": "td_leads_status_bucket_review",
+        "run_id": run_id,
+        "total_transitions": len(status_transitions),
+        "status": "open" if status_transitions else "noop",
+    }
+    return TdLeadsIngestResult(
+        rows_received=len(rows),
+        rows_upserted=upserted,
+        bucket_write_counts=bucket_write_counts,
+        status_transitions=status_transitions,
+        task_stub=task_stub,
+    )
 
 
 __all__ = ["TdLeadsIngestResult", "ingest_td_crm_leads_rows", "build_lead_uid"]

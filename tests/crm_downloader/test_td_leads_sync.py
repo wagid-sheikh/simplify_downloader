@@ -47,7 +47,7 @@ def test_build_lead_uid_is_stable_for_same_business_identity() -> None:
     assert uid_a == uid_b
 
 
-def test_build_lead_uid_changes_when_status_changes() -> None:
+def test_build_lead_uid_is_stable_when_status_changes() -> None:
     row = {
         "store_code": "A668",
         "status_bucket": "pending",
@@ -59,7 +59,7 @@ def test_build_lead_uid_changes_when_status_changes() -> None:
     }
     pending_uid = build_lead_uid(row)
     cancelled_uid = build_lead_uid({**row, "status_bucket": "cancelled"})
-    assert pending_uid != cancelled_uid
+    assert pending_uid == cancelled_uid
 
 
 def test_build_lead_uid_is_stable_when_pickup_time_is_derived_from_created_timestamp() -> None:
@@ -78,7 +78,7 @@ def test_build_lead_uid_is_stable_when_pickup_time_is_derived_from_created_times
         "pickup_time": None,
     }
 
-    assert build_lead_uid(row_with_explicit_time) != build_lead_uid(row_with_derived_time)
+    assert build_lead_uid(row_with_explicit_time) == build_lead_uid(row_with_derived_time)
 
 
 @pytest.mark.parametrize(
@@ -267,10 +267,27 @@ def test_td_leads_summary_html_renders_compact_summary_tables_and_footer_refs() 
 
     assert "Per-store summary" in summary_html
     assert "Status bucket totals" in summary_html
+    assert "Upsert write actions by status bucket" in summary_html
+    assert "Status transitions vs previous run" in summary_html
     assert "A817" in summary_html
     assert "Total stores processed:</strong> 1" in summary_html
     assert "Runtime duration:</strong> 00:01:00" in summary_html
     assert "Reference run_id: <code>run-1</code>" in summary_html
+
+
+def test_build_lead_uid_ignores_status_bucket_for_transition_tracking() -> None:
+    base_row = {
+        "store_code": "A668",
+        "pickup_id": "4434944",
+        "pickup_no": "A668-3025",
+        "mobile": "9599242207",
+        "pickup_created_date": "21 Apr 2026 3:03:39 PM",
+        "pickup_time": "11:00 AM - 1:00 PM",
+    }
+    pending_uid = build_lead_uid({**base_row, "status_bucket": "pending"})
+    completed_uid = build_lead_uid({**base_row, "status_bucket": "completed"})
+
+    assert pending_uid == completed_uid
 
 
 def test_td_leads_run_summary_record_exposes_summary_html_in_metrics() -> None:
@@ -988,6 +1005,43 @@ async def test_ingest_upsert_preserves_existing_pickup_created_at_when_new_value
         assert preserved_pickup_created_at.startswith("2026-04-21 09:33:39")
     else:
         assert preserved_pickup_created_at == datetime(2026, 4, 21, 9, 33, 39)
+
+
+@pytest.mark.asyncio
+async def test_ingest_captures_created_updated_counts_and_status_transitions(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_leads_transition_metrics.db'}"
+    base_row = {
+        "store_code": "A668",
+        "pickup_id": "4434944",
+        "pickup_no": "A668-3025",
+        "customer_name": "Moni",
+        "mobile": "9599242207",
+        "pickup_created_date": "21 Apr 2026 3:03:39 PM",
+        "pickup_time": "11:00 AM - 1:00 PM",
+    }
+
+    first_result = await td_leads_ingest.ingest_td_crm_leads_rows(
+        rows=[{**base_row, "status_bucket": "pending"}],
+        run_id="run-transition-1",
+        run_env="test",
+        source_file="A668-crm_leads.xlsx",
+        database_url=database_url,
+    )
+    second_result = await td_leads_ingest.ingest_td_crm_leads_rows(
+        rows=[{**base_row, "status_bucket": "completed"}],
+        run_id="run-transition-2",
+        run_env="test",
+        source_file="A668-crm_leads.xlsx",
+        database_url=database_url,
+    )
+
+    assert first_result.bucket_write_counts["pending"]["created"] == 1
+    assert second_result.bucket_write_counts["completed"]["updated"] == 1
+    assert len(second_result.status_transitions) == 1
+    transition = second_result.status_transitions[0]
+    assert transition["from_status_bucket"] == "pending"
+    assert transition["to_status_bucket"] == "completed"
+    assert second_result.task_stub["status"] == "open"
 
 
 @pytest.mark.asyncio
