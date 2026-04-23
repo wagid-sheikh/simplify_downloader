@@ -28,6 +28,7 @@ fi
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 LOG_DIR="${REPO_ROOT}/logs"
 LOCK_DIR="${REPO_ROOT}/tmp"
+GLOBAL_LOCK_DIR="${LOCK_DIR}/cron_heavy_pipelines.lock"
 RUN_LOCK_DIR="${LOCK_DIR}/cron_run_td_leads_sync.lock"
 
 TIMESTAMP="$(date '+%Y-%m-%d_%H-%M-%S')"
@@ -39,6 +40,12 @@ LOCK_HOST_FILE="${RUN_LOCK_DIR}/host"
 LOCK_CWD_FILE="${RUN_LOCK_DIR}/cwd"
 LOCK_CMD_FILE="${RUN_LOCK_DIR}/command"
 LOCK_PGID_FILE="${RUN_LOCK_DIR}/pgid"
+GLOBAL_LOCK_PID_FILE="${GLOBAL_LOCK_DIR}/pid"
+GLOBAL_LOCK_STARTED_AT_FILE="${GLOBAL_LOCK_DIR}/started_at"
+GLOBAL_LOCK_HOST_FILE="${GLOBAL_LOCK_DIR}/host"
+GLOBAL_LOCK_CWD_FILE="${GLOBAL_LOCK_DIR}/cwd"
+GLOBAL_LOCK_CMD_FILE="${GLOBAL_LOCK_DIR}/command"
+GLOBAL_LOCK_PGID_FILE="${GLOBAL_LOCK_DIR}/pgid"
 
 KILL_WAIT_SECONDS="${KILL_WAIT_SECONDS:-5}"
 LOCK_WAIT_SECONDS="${LOCK_WAIT_SECONDS:-300}"
@@ -59,6 +66,8 @@ cd "${REPO_ROOT}"
 export HOME="${CRON_HOME}"
 export PATH="${CRON_PATH}:${PATH}"
 export LANG="${LANG:-en_US.UTF-8}"
+
+GLOBAL_LOCK_ACQUIRED=0
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S %Z')] $*" >> "${LOG_FILE}"
@@ -159,6 +168,16 @@ remove_lock_artifacts() {
   rmdir "${RUN_LOCK_DIR}" 2>/dev/null || true
 }
 
+remove_global_lock_artifacts() {
+  rm -f "${GLOBAL_LOCK_PID_FILE}" 2>/dev/null || true
+  rm -f "${GLOBAL_LOCK_STARTED_AT_FILE}" 2>/dev/null || true
+  rm -f "${GLOBAL_LOCK_HOST_FILE}" 2>/dev/null || true
+  rm -f "${GLOBAL_LOCK_CWD_FILE}" 2>/dev/null || true
+  rm -f "${GLOBAL_LOCK_CMD_FILE}" 2>/dev/null || true
+  rm -f "${GLOBAL_LOCK_PGID_FILE}" 2>/dev/null || true
+  rmdir "${GLOBAL_LOCK_DIR}" 2>/dev/null || true
+}
+
 write_lock_metadata() {
   echo "$$" > "${LOCK_PID_FILE}"
   date '+%Y-%m-%d %H:%M:%S %Z' > "${LOCK_STARTED_AT_FILE}"
@@ -171,7 +190,7 @@ write_lock_metadata() {
 acquire_fresh_lock() {
   if mkdir "${RUN_LOCK_DIR}" 2>/dev/null; then
     write_lock_metadata "$@"
-    log "Lock acquired successfully. PID=$$"
+    log "[local lock] Lock acquired successfully. PID=$$"
     return 0
   fi
   return 1
@@ -192,7 +211,7 @@ acquire_lock_with_wait() {
       now="$(date +%s)"
       waited_seconds=$((now - wait_started_at))
       if [[ "${wait_started_logged}" -eq 1 ]]; then
-        log "Lock wait ended. total_wait_seconds=${waited_seconds}"
+        log "[local lock] Lock wait ended. total_wait_seconds=${waited_seconds}"
       fi
       return 0
     fi
@@ -204,21 +223,21 @@ acquire_lock_with_wait() {
       elapsed_secs="$(get_pid_elapsed_seconds "${existing_pid}" 2>/dev/null || true)"
 
       if [[ "${LOCK_WAIT_SECONDS}" -eq 0 ]]; then
-        log "Lock held by live PID=${existing_pid} and waiting disabled (LOCK_WAIT_SECONDS=0). Exiting."
+        log "[local lock] Lock held by live PID=${existing_pid} and waiting disabled (LOCK_WAIT_SECONDS=0). Exiting."
         exit 1
       fi
 
       if [[ "${wait_started_logged}" -eq 0 ]]; then
-        log "Lock wait started. owner_pid=${existing_pid} owner_elapsed_seconds=${elapsed_secs:-unknown} timeout_seconds=${LOCK_WAIT_SECONDS} poll_seconds=${LOCK_POLL_SECONDS}"
+        log "[local lock] Lock wait started. owner_pid=${existing_pid} owner_elapsed_seconds=${elapsed_secs:-unknown} timeout_seconds=${LOCK_WAIT_SECONDS} poll_seconds=${LOCK_POLL_SECONDS}"
         wait_started_logged=1
       fi
 
       if [[ "${waited_seconds}" -ge "${LOCK_WAIT_SECONDS}" ]]; then
-        log "Timed out waiting for lock after ${waited_seconds}s (timeout=${LOCK_WAIT_SECONDS}s, owner_pid=${existing_pid}). Exiting."
+        log "[local lock] Timed out waiting for lock after ${waited_seconds}s (timeout=${LOCK_WAIT_SECONDS}s, owner_pid=${existing_pid}). Exiting."
         exit 1
       fi
 
-      log "Lock still held by live PID=${existing_pid}; waited=${waited_seconds}s/${LOCK_WAIT_SECONDS}s. Sleeping ${LOCK_POLL_SECONDS}s before retry."
+      log "[local lock] Lock still held by live PID=${existing_pid}; waited=${waited_seconds}s/${LOCK_WAIT_SECONDS}s. Sleeping ${LOCK_POLL_SECONDS}s before retry."
       sleep "${LOCK_POLL_SECONDS}"
       continue
     fi
@@ -227,9 +246,69 @@ acquire_lock_with_wait() {
     now="$(date +%s)"
     waited_seconds=$((now - wait_started_at))
     if [[ "${wait_started_logged}" -eq 1 ]]; then
-      log "Lock wait ended after stale cleanup. total_wait_seconds=${waited_seconds}"
+      log "[local lock] Lock wait ended after stale cleanup. total_wait_seconds=${waited_seconds}"
     fi
     return 0
+  done
+}
+
+write_global_lock_metadata() {
+  echo "$$" > "${GLOBAL_LOCK_PID_FILE}"
+  date '+%Y-%m-%d %H:%M:%S %Z' > "${GLOBAL_LOCK_STARTED_AT_FILE}"
+  hostname > "${GLOBAL_LOCK_HOST_FILE}"
+  pwd > "${GLOBAL_LOCK_CWD_FILE}"
+  printf '%s\n' "$0 $*" > "${GLOBAL_LOCK_CMD_FILE}"
+  ps -o pgid= -p "$$" 2>/dev/null | awk '{$1=$1; print}' > "${GLOBAL_LOCK_PGID_FILE}" || true
+}
+
+acquire_global_lock_with_wait() {
+  local wait_started_at
+  local now
+  local waited_seconds
+  local existing_pid
+  local elapsed_secs
+  local wait_started_logged=0
+
+  wait_started_at="$(date +%s)"
+
+  while true; do
+    if mkdir "${GLOBAL_LOCK_DIR}" 2>/dev/null; then
+      write_global_lock_metadata "$@"
+      GLOBAL_LOCK_ACQUIRED=1
+      now="$(date +%s)"
+      waited_seconds=$((now - wait_started_at))
+      log "[global lock] Lock acquired successfully. PID=$$ total_wait_seconds=${waited_seconds}"
+      return 0
+    fi
+
+    existing_pid="$(safe_cat "${GLOBAL_LOCK_PID_FILE}")"
+    if [[ -n "${existing_pid}" ]] && pid_is_alive "${existing_pid}"; then
+      now="$(date +%s)"
+      waited_seconds=$((now - wait_started_at))
+      elapsed_secs="$(get_pid_elapsed_seconds "${existing_pid}" 2>/dev/null || true)"
+
+      if [[ "${LOCK_WAIT_SECONDS}" -eq 0 ]]; then
+        log "[global lock] Lock held by live PID=${existing_pid} and waiting disabled (LOCK_WAIT_SECONDS=0). Exiting."
+        exit 1
+      fi
+
+      if [[ "${wait_started_logged}" -eq 0 ]]; then
+        log "[global lock] Lock wait started. owner_pid=${existing_pid} owner_elapsed_seconds=${elapsed_secs:-unknown} timeout_seconds=${LOCK_WAIT_SECONDS} poll_seconds=${LOCK_POLL_SECONDS}"
+        wait_started_logged=1
+      fi
+
+      if [[ "${waited_seconds}" -ge "${LOCK_WAIT_SECONDS}" ]]; then
+        log "[global lock] Timed out waiting for lock after ${waited_seconds}s (timeout=${LOCK_WAIT_SECONDS}s, owner_pid=${existing_pid}). Exiting."
+        exit 1
+      fi
+
+      log "[global lock] Lock still held by live PID=${existing_pid}; waited=${waited_seconds}s/${LOCK_WAIT_SECONDS}s. Sleeping ${LOCK_POLL_SECONDS}s before retry."
+      sleep "${LOCK_POLL_SECONDS}"
+      continue
+    fi
+
+    log "[global lock] Removing stale lock artifacts."
+    rm -rf "${GLOBAL_LOCK_DIR}"
   done
 }
 
@@ -352,6 +431,9 @@ cleanup() {
   fi
 
   remove_lock_artifacts
+  if [[ "${GLOBAL_LOCK_ACQUIRED}" -eq 1 ]]; then
+    remove_global_lock_artifacts
+  fi
 }
 
 on_err() {
@@ -386,11 +468,14 @@ log "PATH=${PATH}"
 log "LANG=${LANG}"
 log "LOCK_WAIT_SECONDS=${LOCK_WAIT_SECONDS}"
 log "LOCK_POLL_SECONDS=${LOCK_POLL_SECONDS}"
+log "GLOBAL_LOCK_DIR=${GLOBAL_LOCK_DIR}"
+log "LOCAL_LOCK_DIR=${RUN_LOCK_DIR}"
 log "poetry=$(command -v poetry || echo NOT_FOUND)"
 log "shell_pid=$$"
 log "parent_pid=${PPID:-unknown}"
 log "hostname=$(hostname)"
 
+acquire_global_lock_with_wait "$@"
 acquire_lock_with_wait "$@"
 
 run_step() {
