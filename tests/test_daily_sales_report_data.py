@@ -134,6 +134,17 @@ def _create_tables(database_url: str) -> None:
                 """
             )
         )
+        conn.execute(
+            sa.text(
+                """
+                CREATE TABLE crm_leads (
+                    store_code TEXT,
+                    status_bucket TEXT,
+                    pickup_created_at TIMESTAMP
+                )
+                """
+            )
+        )
     engine.dispose()
 
 
@@ -195,6 +206,86 @@ async def test_fetch_daily_sales_report_missed_leads_td_only(tmp_path, monkeypat
             ],
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_created_at(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "daily_sales_report_lead_performance.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 4, 23)
+
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO cost_center (cost_center, description, target_type, is_active)
+                VALUES
+                    ('CC-UN', 'Uttam Nagar', 'value', 1),
+                    ('CC-KN', 'Kirti Nagar', 'value', 1)
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group)
+                VALUES
+                    (1, 'CC-UN', 'UN', 'Uttam Nagar', 'TD'),
+                    (2, 'CC-KN', 'KN', 'Kirti Nagar', 'TD')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO crm_leads (store_code, status_bucket, pickup_created_at) VALUES
+                    ('UN', 'completed', '2026-04-01 02:00:00+00:00'),
+                    ('UN', 'completed', '2026-04-22 12:00:00+00:00'),
+                    ('UN', 'cancelled', '2026-04-23 16:00:00+00:00'),
+                    ('UN', 'pending', '2026-04-10 05:00:00+00:00'),
+                    ('UN', 'completed', '2026-03-31 23:59:00+00:00'),
+                    ('UN', 'cancelled', '2026-04-24 00:10:00+00:00')
+                """
+            )
+        )
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    un_summary = next(item for item in report.lead_performance_summary if item["store"] == "UN")
+    kn_summary = next(item for item in report.lead_performance_summary if item["store"] == "KN")
+
+    assert un_summary["period_type"] == "MTD"
+    assert un_summary["period_start"] == "2026-04-01"
+    assert un_summary["period_end"] == "2026-04-23"
+    assert un_summary["total_leads"] == 4
+    assert un_summary["completed_leads"] == 2
+    assert un_summary["cancelled_leads"] == 1
+    assert un_summary["pending_leads"] == 1
+    assert un_summary["conversion_pct"] == {"value": 50.0, "color": "RED", "status": "POOR"}
+    assert un_summary["cancelled_pct"] == {"value": 25.0, "color": "RED", "status": "HIGH_LEAKAGE"}
+    assert un_summary["pending_pct"] == {"value": 25.0, "color": "RED", "status": "FOLLOW_UP_GAP"}
+    assert un_summary["benchmark"] == {
+        "conversion_target": 85.0,
+        "conversion_min": 70.0,
+        "cancelled_target": 10.0,
+        "cancelled_max": 20.0,
+        "pending_max": 5.0,
+    }
+    assert un_summary["conversion_gap"] == -35.0
+    assert un_summary["cancelled_gap"] == 15.0
+    assert un_summary["pending_gap"] == 20.0
+
+    assert kn_summary["total_leads"] == 0
+    assert kn_summary["conversion_pct"] == {"value": 0.0, "color": "NEUTRAL", "status": "NEUTRAL"}
+    assert kn_summary["cancelled_pct"] == {"value": 0.0, "color": "NEUTRAL", "status": "NEUTRAL"}
+    assert kn_summary["pending_pct"] == {"value": 0.0, "color": "NEUTRAL", "status": "NEUTRAL"}
 
 
 @pytest.mark.asyncio
