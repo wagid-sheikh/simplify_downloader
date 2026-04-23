@@ -147,6 +147,20 @@ def _create_tables(database_url: str) -> None:
                 """
             )
         )
+        conn.execute(
+            sa.text(
+                """
+                CREATE TABLE pipeline_run_summaries (
+                    pipeline_name TEXT,
+                    run_id TEXT,
+                    report_date DATE,
+                    finished_at TIMESTAMP,
+                    created_at TIMESTAMP,
+                    metrics_json JSON
+                )
+                """
+            )
+        )
     engine.dispose()
 
 
@@ -377,6 +391,61 @@ async def test_fetch_daily_sales_report_orders_sync_uses_updated_at_fallback(tmp
 
     td_row = next(row for row in report.rows if row.cost_center == "CC-TD")
     assert td_row.orders_sync_time == "07:25"
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_exposes_td_leads_sync_metrics_payload(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_td_leads_sync_metrics.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 4, 23)
+
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO cost_center (cost_center, description, target_type, is_active)
+                VALUES ('CC-TD', 'TD Cost Center', 'value', 1)
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group)
+                VALUES (1, 'CC-TD', 'UN', 'Uttam Nagar', 'TD')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO pipeline_run_summaries (
+                    pipeline_name, run_id, report_date, finished_at, created_at, metrics_json
+                ) VALUES (
+                    'td_crm_leads_sync', 'run-td-1', '2026-04-23', '2026-04-23 10:00:00', '2026-04-23 10:00:00',
+                    :metrics_json
+                )
+                """
+            ),
+            {
+                "metrics_json": """
+                {"stores":[{"store_code":"UN","bucket_write_counts":{"pending":{"created":1,"updated":2},"completed":{"created":3,"updated":4},"cancelled":{"created":5,"updated":6}},"status_transitions":[{"from_status_bucket":"pending","to_status_bucket":"completed"}]}]}
+                """
+            },
+        )
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    assert report.td_leads_sync_metrics["run_id"] == "run-td-1"
+    stores = report.td_leads_sync_metrics["stores"]
+    assert len(stores) == 1
+    assert stores[0]["bucket_write_counts"]["pending"]["created"] == 1
+    assert report.td_leads_sync_metrics["task_stub"]["status"] == "open"
 
 
 @pytest.mark.asyncio
