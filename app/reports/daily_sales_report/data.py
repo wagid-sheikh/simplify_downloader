@@ -70,6 +70,7 @@ class DailySalesReportData:
     edited_orders_totals: EditedOrderRow | None
     edited_orders_summary: EditedOrdersSummary | None
     missed_leads: List[Mapping[str, object]]
+    cancelled_leads: List[Mapping[str, object]]
     lead_performance_summary: List[Mapping[str, object]]
 
 
@@ -175,6 +176,12 @@ def _lead_metric_payload(*, metric: str, value: Decimal, total_leads: int) -> di
         "color": color,
         "status": status,
     }
+
+
+def _format_lead_contact(customer_name: object | None, mobile_number: object | None) -> str:
+    normalized_name = str(customer_name or "--")
+    normalized_mobile = str(mobile_number or "--")
+    return f"{normalized_name} ({normalized_mobile})"
 
 
 def _calculate_ttd(target: Decimal, achieved: Decimal, day_of_month: int, days_in_month: int) -> Decimal:
@@ -484,6 +491,8 @@ async def fetch_daily_sales_report(
         "crm_leads",
         sa.column("store_code"),
         sa.column("status_bucket"),
+        sa.column("customer_name"),
+        sa.column("mobile"),
         sa.column("pickup_created_at"),
     )
 
@@ -816,6 +825,7 @@ async def fetch_daily_sales_report(
     report_next_month_start = (report_month_start + timedelta(days=32)).replace(day=1)
     lead_period_start = ranges["start_month"]
     lead_period_end = ranges["next_day"]
+    monthly_lead_period_end = datetime.combine(report_next_month_start, time.min, tzinfo=tz)
 
     td_store_master_primary = (
         sa.select(
@@ -873,6 +883,40 @@ async def fetch_daily_sales_report(
                     "leads": leads,
                 }
             )
+
+        cancelled_leads_stmt = (
+            sa.select(
+                td_store_master_primary.c.store_name.label("store_name"),
+                crm_leads.c.customer_name,
+                crm_leads.c.mobile,
+            )
+            .select_from(
+                crm_leads.join(
+                    td_store_master_primary,
+                    sa.func.upper(sa.func.trim(td_store_master_primary.c.store_code))
+                    == sa.func.upper(sa.func.trim(crm_leads.c.store_code)),
+                )
+            )
+            .where(sa.func.lower(sa.func.trim(crm_leads.c.status_bucket)) == "cancelled")
+            .where(crm_leads.c.pickup_created_at >= lead_period_start)
+            .where(crm_leads.c.pickup_created_at < monthly_lead_period_end)
+            .order_by(
+                td_store_master_primary.c.store_name,
+                crm_leads.c.pickup_created_at,
+                crm_leads.c.customer_name,
+            )
+        )
+        cancelled_grouped_map: dict[str, list[str]] = {}
+        cancelled_leads_result = await session.execute(cancelled_leads_stmt)
+        for entry in cancelled_leads_result.mappings():
+            store_name = str(entry["store_name"] or "--")
+            cancelled_grouped_map.setdefault(store_name, []).append(
+                _format_lead_contact(entry["customer_name"], entry["mobile"])
+            )
+        cancelled_leads_grouped = [
+            {"store_name": store_name, "leads": leads}
+            for store_name, leads in sorted(cancelled_grouped_map.items())
+        ]
 
         normalized_store_code_expr = sa.func.upper(sa.func.trim(crm_leads.c.store_code))
         normalized_status_bucket_expr = sa.func.lower(sa.func.trim(crm_leads.c.status_bucket))
@@ -985,5 +1029,6 @@ async def fetch_daily_sales_report(
         edited_orders_totals=edited_totals,
         edited_orders_summary=edited_orders_summary,
         missed_leads=missed_leads_grouped,
+        cancelled_leads=cancelled_leads_grouped,
         lead_performance_summary=lead_performance_summary,
     )
