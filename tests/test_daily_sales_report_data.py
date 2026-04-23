@@ -140,6 +140,8 @@ def _create_tables(database_url: str) -> None:
                 CREATE TABLE crm_leads (
                     store_code TEXT,
                     status_bucket TEXT,
+                    customer_name TEXT,
+                    mobile TEXT,
                     pickup_created_at TIMESTAMP
                 )
                 """
@@ -286,6 +288,60 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
     assert kn_summary["conversion_pct"] == {"value": 0.0, "color": "NEUTRAL", "status": "NEUTRAL"}
     assert kn_summary["cancelled_pct"] == {"value": 0.0, "color": "NEUTRAL", "status": "NEUTRAL"}
     assert kn_summary["pending_pct"] == {"value": 0.0, "color": "NEUTRAL", "status": "NEUTRAL"}
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatting(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_cancelled_leads.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 4, 23)
+
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO cost_center (cost_center, description, target_type, is_active)
+                VALUES ('CC-TD', 'TD Cost Center', 'value', 1)
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group)
+                VALUES (1, 'CC-TD', ' un ', 'Uttam Nagar', 'TD')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO crm_leads (store_code, status_bucket, customer_name, mobile, pickup_created_at) VALUES
+                    ('UN', 'cancelled', 'April Cancelled', '9000000001', '2026-04-02 00:00:00'),
+                    ('UN', ' cancelled ', 'Second Cancelled', '9000000002', '2026-04-30 23:59:00'),
+                    ('UN', 'completed', 'Completed Lead', '9000000003', '2026-04-15 10:00:00'),
+                    ('UN', 'cancelled', 'March Cancelled', '9000000004', '2026-03-30 23:59:00'),
+                    ('UN', 'cancelled', 'May Cancelled', '9000000005', '2026-05-02 00:00:00')
+                """
+            )
+        )
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    assert report.cancelled_leads == [
+        {
+            "store_name": "Uttam Nagar",
+            "leads": [
+                "April Cancelled (9000000001)",
+                "Second Cancelled (9000000002)",
+            ],
+        }
+    ]
 
 
 @pytest.mark.asyncio

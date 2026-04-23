@@ -90,6 +90,7 @@ def test_daily_sales_report_ttd_calculation_and_rendering() -> None:
         edited_orders_totals=None,
         edited_orders_summary=None,
         missed_leads=[],
+        cancelled_leads=[],
         lead_performance_summary=[],
     )
 
@@ -104,6 +105,7 @@ def test_daily_sales_report_ttd_calculation_and_rendering() -> None:
             "edited_orders_summary": report_data.edited_orders_summary,
             "edited_orders_totals": report_data.edited_orders_totals,
             "missed_leads": report_data.missed_leads,
+            "cancelled_leads": report_data.cancelled_leads,
         }
     )
 
@@ -169,6 +171,15 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
                 ],
             }
         ],
+        cancelled_leads=[
+            {
+                "store_name": "Uttam Nagar",
+                "leads": [
+                    "Alice (9999999999)",
+                    "Bob (8888888888)",
+                ],
+            }
+        ],
         lead_performance_summary=[
             {
                 "store": "UN",
@@ -197,6 +208,7 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
             "edited_orders_summary": report_data.edited_orders_summary,
             "edited_orders_totals": report_data.edited_orders_totals,
             "missed_leads": report_data.missed_leads,
+            "cancelled_leads": report_data.cancelled_leads,
             "lead_performance_summary": report_data.lead_performance_summary,
         }
     )
@@ -206,6 +218,8 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
     assert "Missed Leads for this month" in html
     assert "Uttam Nagar New" in html
     assert "(9999999999, Alice), (8888888888, Bob)" in html
+    assert "Cancelled Leads for this Month" in html
+    assert "Alice (9999999999), Bob (8888888888)" in html
     assert "Lead Performance Summary (MTD)" in html
     assert "HEALTHY" in html
     assert "EXCELLENT" in html
@@ -215,3 +229,39 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
     assert "metric-red" in html
     assert "Sync Group" not in html
     assert html.index("Pickup & Delivery KPIs") < html.index("Missed Leads for this month")
+
+
+def test_daily_sales_report_cancelled_leads_empty_state_rendering() -> None:
+    report_date = date(2026, 1, 19)
+    rows = []
+    totals = _totals_row(rows)
+    report_data = DailySalesReportData(
+        report_date=report_date,
+        rows=rows,
+        totals=totals,
+        edited_orders=[],
+        edited_orders_totals=None,
+        edited_orders_summary=None,
+        missed_leads=[],
+        cancelled_leads=[],
+        lead_performance_summary=[],
+    )
+
+    html = _render_html(
+        {
+            "company_name": "The Shaw Ventures",
+            "report_date_display": report_date.strftime("%d-%b-%Y"),
+            "run_environment": "prod",
+            "rows": report_data.rows,
+            "totals": report_data.totals,
+            "edited_orders": report_data.edited_orders,
+            "edited_orders_summary": report_data.edited_orders_summary,
+            "edited_orders_totals": report_data.edited_orders_totals,
+            "missed_leads": report_data.missed_leads,
+            "cancelled_leads": report_data.cancelled_leads,
+            "lead_performance_summary": report_data.lead_performance_summary,
+        }
+    )
+
+    assert "Cancelled Leads for this Month" in html
+    assert ">None<" in html

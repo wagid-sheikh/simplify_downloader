@@ -355,6 +355,28 @@
     </table>
     {% endif %}
 
+    <div class="section-title">Cancelled Leads for this Month</div>
+    {% if cancelled_leads %}
+    <table class="micro-table missed-leads-table micro-font">
+      <thead>
+        <tr>
+          <th class="label">Store</th>
+          <th class="label">Leads</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for group in cancelled_leads %}
+        <tr>
+          <td class="label">{{ group.store_name }} (Cancelled Leads: {{ group.leads|length }})</td>
+          <td class="micro-leads-list">{{ group.leads | join(", ") }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="kpi-note">None</div>
+    {% endif %}
+
     {% if lead_performance_summary %}
     <div class="section-title">Lead Performance Summary (MTD)</div>
     <table class="compact-table micro-font">
