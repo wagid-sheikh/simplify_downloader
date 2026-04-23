@@ -925,6 +925,72 @@ async def test_ingest_populates_pickup_created_at_for_all_status_buckets(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_ingest_upsert_preserves_existing_pickup_created_at_when_new_value_is_unparseable(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_leads_pickup_created_at_upsert.db'}"
+    base_row = {
+        "store_code": "A668",
+        "status_bucket": "pending",
+        "pickup_id": "4434944",
+        "pickup_no": "A668-3025",
+        "customer_name": "Moni",
+        "mobile": "9599242207",
+        "pickup_time": "11:00 AM - 1:00 PM",
+    }
+    first_row = {
+        **base_row,
+        "pickup_created_date": "21 Apr 2026",
+        "pickup_created_at": "21 Apr 2026 3:03:39 PM",
+    }
+    second_row = {
+        **base_row,
+        "pickup_created_date": "21 Apr 2026",
+        "pickup_created_at": "not-a-date",
+    }
+
+    await td_leads_ingest.ingest_td_crm_leads_rows(
+        rows=[first_row],
+        run_id="run-pickup-created-at-initial",
+        run_env="test",
+        source_file="A668-crm_leads.xlsx",
+        database_url=database_url,
+    )
+
+    await td_leads_ingest.ingest_td_crm_leads_rows(
+        rows=[second_row],
+        run_id="run-pickup-created-at-upsert",
+        run_env="test",
+        source_file="A668-crm_leads.xlsx",
+        database_url=database_url,
+    )
+
+    engine = create_async_engine(database_url, future=True)
+    try:
+        async with engine.connect() as connection:
+            stored = (
+                await connection.execute(
+                    sa.text(
+                        """
+                        SELECT pickup_created_date, pickup_created_at
+                        FROM crm_leads
+                        WHERE lead_uid = :lead_uid
+                        """
+                    ),
+                        {"lead_uid": build_lead_uid(first_row)},
+                )
+            ).mappings().one()
+    finally:
+        await engine.dispose()
+
+    assert stored["pickup_created_date"] == "21 Apr 2026"
+    preserved_pickup_created_at = stored["pickup_created_at"]
+    assert preserved_pickup_created_at is not None
+    if isinstance(preserved_pickup_created_at, str):
+        assert preserved_pickup_created_at.startswith("2026-04-21 09:33:39")
+    else:
+        assert preserved_pickup_created_at == datetime(2026, 4, 21, 9, 33, 39)
+
+
+@pytest.mark.asyncio
 async def test_td_leads_seeded_run_notification_plans_email(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_leads_notif.db'}"
     engine = create_async_engine(database_url, future=True)
