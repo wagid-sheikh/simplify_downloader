@@ -39,6 +39,10 @@ PROFILES_DIR="${TD_PATHS[1]}"
 ensure_writable_dir "${DOWNLOAD_DIR}"
 ensure_writable_dir "${PROFILES_DIR}"
 
+# Optional TD leads worker tuning (defaults shown):
+# export TD_LEADS_MAX_WORKERS="${TD_LEADS_MAX_WORKERS:-2}"
+# export TD_LEADS_PARALLEL_ENABLED="${TD_LEADS_PARALLEL_ENABLED:-1}"
+
 echo "[alembic] Ensuring database migrations are up to date..."
 poetry run alembic upgrade head
 
