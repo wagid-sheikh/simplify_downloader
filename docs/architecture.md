@@ -81,6 +81,19 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 5. Run summary rows inserted/updated in `pipeline_run_summaries`.
 6. Notifications are planned from DB metadata and sent via SMTP.
 
+### Cron wrapper lock hierarchy
+
+For heavy cron wrappers in `scripts/` (including `cron_run_td_leads_sync.sh` and
+`cron_run_orders_and_reports.sh`), locking is intentionally layered:
+
+1. Acquire global lock: `tmp/cron_heavy_pipelines.lock`.
+2. Acquire per-script lock (for example `tmp/cron_run_td_leads_sync.lock`).
+3. Execute wrapper run steps.
+
+Operational logs explicitly label waits/acquisition as `[global lock]` vs
+`[local lock]` so operators can quickly identify whether contention is shared
+across heavy wrappers or specific to one wrapper.
+
 For order-sync profiler, the run additionally:
 - computes date windows per store,
 - runs TD/UC sync workers,
