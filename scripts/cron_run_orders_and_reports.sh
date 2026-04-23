@@ -43,8 +43,17 @@ LOCK_CMD_FILE="${RUN_LOCK_DIR}/command"
 LOCK_PGID_FILE="${RUN_LOCK_DIR}/pgid"
 
 KILL_WAIT_SECONDS="${KILL_WAIT_SECONDS:-5}"
+LOCK_WAIT_SECONDS="${LOCK_WAIT_SECONDS:-300}"
+LOCK_POLL_SECONDS="${LOCK_POLL_SECONDS:-5}"
 CRON_HOME="${CRON_HOME:-${HOME:-/tmp}}"
 CRON_PATH="${CRON_PATH:-/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
+
+if ! [[ "${LOCK_WAIT_SECONDS}" =~ ^[0-9]+$ ]]; then
+  LOCK_WAIT_SECONDS=300
+fi
+if ! [[ "${LOCK_POLL_SECONDS}" =~ ^[0-9]+$ ]] || [[ "${LOCK_POLL_SECONDS}" -eq 0 ]]; then
+  LOCK_POLL_SECONDS=5
+fi
 
 mkdir -p "${LOG_DIR}" "${LOCK_DIR}"
 cd "${REPO_ROOT}"
@@ -168,6 +177,62 @@ acquire_fresh_lock() {
     return 0
   fi
   return 1
+}
+
+acquire_lock_with_wait() {
+  local wait_started_at
+  local now
+  local waited_seconds
+  local existing_pid
+  local elapsed_secs
+  local wait_started_logged=0
+
+  wait_started_at="$(date +%s)"
+
+  while true; do
+    if acquire_fresh_lock "$@"; then
+      now="$(date +%s)"
+      waited_seconds=$((now - wait_started_at))
+      if [[ "${wait_started_logged}" -eq 1 ]]; then
+        log "Lock wait ended. total_wait_seconds=${waited_seconds}"
+      fi
+      return 0
+    fi
+
+    existing_pid="$(safe_cat "${LOCK_PID_FILE}")"
+    if [[ -n "${existing_pid}" ]] && pid_is_alive "${existing_pid}"; then
+      now="$(date +%s)"
+      waited_seconds=$((now - wait_started_at))
+      elapsed_secs="$(get_pid_elapsed_seconds "${existing_pid}" 2>/dev/null || true)"
+
+      if [[ "${LOCK_WAIT_SECONDS}" -eq 0 ]]; then
+        log "Lock held by live PID=${existing_pid} and waiting disabled (LOCK_WAIT_SECONDS=0). Exiting."
+        exit 1
+      fi
+
+      if [[ "${wait_started_logged}" -eq 0 ]]; then
+        log "Lock wait started. owner_pid=${existing_pid} owner_elapsed_seconds=${elapsed_secs:-unknown} timeout_seconds=${LOCK_WAIT_SECONDS} poll_seconds=${LOCK_POLL_SECONDS}"
+        wait_started_logged=1
+      fi
+
+      if [[ "${waited_seconds}" -ge "${LOCK_WAIT_SECONDS}" ]]; then
+        log "Timed out waiting for lock after ${waited_seconds}s (timeout=${LOCK_WAIT_SECONDS}s, owner_pid=${existing_pid}). Exiting."
+        exit 1
+      fi
+
+      log "Lock still held by live PID=${existing_pid}; waited=${waited_seconds}s/${LOCK_WAIT_SECONDS}s. Sleeping ${LOCK_POLL_SECONDS}s before retry."
+      sleep "${LOCK_POLL_SECONDS}"
+      continue
+    fi
+
+    maybe_cleanup_stale_lock "$@"
+    now="$(date +%s)"
+    waited_seconds=$((now - wait_started_at))
+    if [[ "${wait_started_logged}" -eq 1 ]]; then
+      log "Lock wait ended after stale cleanup. total_wait_seconds=${waited_seconds}"
+    fi
+    return 0
+  done
 }
 
 cleanup_stale_processes_if_any() {
@@ -321,14 +386,14 @@ log "LOG_FILE=${LOG_FILE}"
 log "HOME=${HOME}"
 log "PATH=${PATH}"
 log "LANG=${LANG}"
+log "LOCK_WAIT_SECONDS=${LOCK_WAIT_SECONDS}"
+log "LOCK_POLL_SECONDS=${LOCK_POLL_SECONDS}"
 log "poetry=$(command -v poetry || echo NOT_FOUND)"
 log "shell_pid=$$"
 log "parent_pid=${PPID:-unknown}"
 log "hostname=$(hostname)"
 
-if ! acquire_fresh_lock "$@"; then
-  maybe_cleanup_stale_lock "$@"
-fi
+acquire_lock_with_wait "$@"
 
 run_step() {
   local step_name="$1"
