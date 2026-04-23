@@ -208,5 +208,10 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
     assert "(9999999999, Alice), (8888888888, Bob)" in html
     assert "Lead Performance Summary (MTD)" in html
     assert "HEALTHY" in html
+    assert "EXCELLENT" in html
+    assert "FOLLOW_UP_GAP" in html
+    assert "metric-yellow" in html
+    assert "metric-green" in html
+    assert "metric-red" in html
     assert "Sync Group" not in html
     assert html.index("Pickup & Delivery KPIs") < html.index("Missed Leads for this month")

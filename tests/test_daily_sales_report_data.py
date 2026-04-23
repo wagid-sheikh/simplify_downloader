@@ -236,8 +236,8 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
                 """
                 INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group)
                 VALUES
-                    (1, 'CC-UN', 'UN', 'Uttam Nagar', 'TD'),
-                    (2, 'CC-KN', 'KN', 'Kirti Nagar', 'TD')
+                    (1, 'CC-UN', ' un ', 'Uttam Nagar', 'TD'),
+                    (2, 'CC-KN', ' kn ', 'Kirti Nagar', 'TD')
                 """
             )
         )
@@ -246,9 +246,9 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
                 """
                 INSERT INTO crm_leads (store_code, status_bucket, pickup_created_at) VALUES
                     ('UN', 'completed', '2026-04-01 02:00:00+00:00'),
-                    ('UN', 'completed', '2026-04-22 12:00:00+00:00'),
-                    ('UN', 'cancelled', '2026-04-23 16:00:00+00:00'),
-                    ('UN', 'pending', '2026-04-10 05:00:00+00:00'),
+                    (' un ', ' Completed ', '2026-04-22 12:00:00+00:00'),
+                    ('UN ', ' CANCELLED ', '2026-04-23 16:00:00+00:00'),
+                    (' un', ' pending ', '2026-04-10 05:00:00+00:00'),
                     ('UN', 'completed', '2026-03-31 23:59:00+00:00'),
                     ('UN', 'cancelled', '2026-04-24 00:10:00+00:00')
                 """

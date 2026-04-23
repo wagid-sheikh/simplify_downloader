@@ -874,32 +874,36 @@ async def fetch_daily_sales_report(
                 }
             )
 
+        normalized_store_code_expr = sa.func.upper(sa.func.trim(crm_leads.c.store_code))
+        normalized_status_bucket_expr = sa.func.lower(sa.func.trim(crm_leads.c.status_bucket))
+        normalized_store_master_code_expr = sa.func.upper(sa.func.trim(store_master_primary.c.store_code))
+
         lead_agg = (
             sa.select(
-                crm_leads.c.store_code.label("store_code"),
+                normalized_store_code_expr.label("store_code"),
                 sa.func.count().label("total_leads"),
                 sa.func.coalesce(
-                    sa.func.sum(sa.case((crm_leads.c.status_bucket == "completed", 1), else_=0)),
+                    sa.func.sum(sa.case((normalized_status_bucket_expr == "completed", 1), else_=0)),
                     0,
                 ).label("completed_leads"),
                 sa.func.coalesce(
-                    sa.func.sum(sa.case((crm_leads.c.status_bucket == "cancelled", 1), else_=0)),
+                    sa.func.sum(sa.case((normalized_status_bucket_expr == "cancelled", 1), else_=0)),
                     0,
                 ).label("cancelled_leads"),
                 sa.func.coalesce(
-                    sa.func.sum(sa.case((crm_leads.c.status_bucket == "pending", 1), else_=0)),
+                    sa.func.sum(sa.case((normalized_status_bucket_expr == "pending", 1), else_=0)),
                     0,
                 ).label("pending_leads"),
             )
             .where(crm_leads.c.pickup_created_at >= lead_period_start)
             .where(crm_leads.c.pickup_created_at < lead_period_end)
-            .group_by(crm_leads.c.store_code)
+            .group_by(normalized_store_code_expr)
             .subquery()
         )
 
         lead_summary_stmt = (
             sa.select(
-                store_master_primary.c.store_code.label("store_code"),
+                normalized_store_master_code_expr.label("store_code"),
                 store_master_primary.c.store_name.label("store_name"),
                 sa.func.coalesce(lead_agg.c.total_leads, 0).label("total_leads"),
                 sa.func.coalesce(lead_agg.c.completed_leads, 0).label("completed_leads"),
@@ -910,7 +914,7 @@ async def fetch_daily_sales_report(
                 cost_center.join(
                     store_master_primary,
                     store_master_primary.c.cost_center == cost_center.c.cost_center,
-                ).outerjoin(lead_agg, lead_agg.c.store_code == store_master_primary.c.store_code)
+                ).outerjoin(lead_agg, lead_agg.c.store_code == normalized_store_master_code_expr)
             )
             .where(cost_center.c.is_active.is_(True))
             .order_by(store_master_primary.c.store_name)
