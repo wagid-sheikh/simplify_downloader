@@ -59,6 +59,15 @@ Practical map of where to work for major capabilities.
 - **Related docs:** `docs/uc_orders_sync_runbook.md`, `docs/uc_page_htmls/*`.
 - **Notes/Risks:** Appears to include fallback/legacy selector paths; validate current production path before refactors.
 
+## 6.1) TD leads sync actionable summaries
+
+- **Purpose:** Scrape TD lead buckets, upsert leads, and emit both aggregate counts and capped actionable lead change rows.
+- **Primary paths:**
+  - `app/crm_downloader/td_leads_sync/{main.py,ingest.py}`
+  - `app/reports/daily_sales_report/{data.py,templates/daily_sales_report.html}`
+  - `app/dashboard_downloader/notifications.py`
+- **Operational behavior:** Lead-change rows are grouped (created/updated/transitions), deduped by stable lead identity, capped per group, and report `overflow_count` for truncated rows.
+
 ## 7) Orders sync run profiler (window orchestrator)
 
 - **Purpose:** Run TD/UC sync in date windows, aggregate status, detect missing windows, notify.

@@ -44,6 +44,9 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 - Shared window logic: `app/crm_downloader/orders_sync_window.py`.
 - Profiler/orchestrator over windows + stores: `app/crm_downloader/orders_sync_run_profiler/main.py`.
 - Data source behavior appears to include UI extraction plus TD API compare/source-mode switching.
+- TD leads sync run summaries include:
+  - aggregate bucket write counts and status transitions, and
+  - actionable lead-change payloads grouped by action/bucket + transitions, deduped by lead identity, with per-group truncation and `overflow_count` markers for email/report readability.
 
 #### TD leads concurrency controls
 - `TD_LEADS_MAX_WORKERS` controls store-worker concurrency for TD leads sync.

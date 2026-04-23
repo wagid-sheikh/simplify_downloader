@@ -74,6 +74,7 @@ class DailySalesReportData:
     cancelled_leads: List[Mapping[str, object]]
     lead_performance_summary: List[Mapping[str, object]]
     td_leads_sync_metrics: Mapping[str, object]
+    td_leads_sync_lead_changes: Mapping[str, object]
 
 
 def _safe_json_mapping(value: object) -> Mapping[str, object]:
@@ -106,6 +107,27 @@ def _build_td_leads_metrics_task_stub(
         "status": "open" if transition_count else "noop",
         "total_transitions": transition_count,
     }
+
+
+def _normalize_td_lead_change_details(value: object) -> Mapping[str, object]:
+    payload = _safe_json_mapping(value)
+    normalized_stores: list[dict[str, object]] = []
+
+    stores = payload.get("stores")
+    if isinstance(stores, list):
+        for entry in stores:
+            if not isinstance(entry, Mapping):
+                continue
+            normalized_stores.append(
+                {
+                    "store_code": str(entry.get("store_code") or ""),
+                    "created_by_bucket": entry.get("created_by_bucket") if isinstance(entry.get("created_by_bucket"), list) else [],
+                    "updated_by_bucket": entry.get("updated_by_bucket") if isinstance(entry.get("updated_by_bucket"), list) else [],
+                    "transitions": entry.get("transitions") if isinstance(entry.get("transitions"), list) else [],
+                    "cap_per_group": int(entry.get("cap_per_group") or 0),
+                }
+            )
+    return {"stores": normalized_stores}
 
 
 LEAD_BENCHMARKS = {
@@ -988,6 +1010,18 @@ async def fetch_daily_sales_report(
                 metrics_payload=td_leads_metrics_payload,
             ),
         }
+        td_leads_sync_lead_changes = _normalize_td_lead_change_details(
+            {
+                "stores": [
+                    {
+                        "store_code": store.get("store_code"),
+                        **_safe_json_mapping(store.get("lead_change_details")),
+                    }
+                    for store in td_leads_sync_metrics.get("stores", [])
+                    if isinstance(store, Mapping)
+                ]
+            }
+        )
 
         normalized_store_code_expr = sa.func.upper(sa.func.trim(crm_leads.c.store_code))
         normalized_status_bucket_expr = sa.func.lower(sa.func.trim(crm_leads.c.status_bucket))
@@ -1103,4 +1137,5 @@ async def fetch_daily_sales_report(
         cancelled_leads=cancelled_leads_grouped,
         lead_performance_summary=lead_performance_summary,
         td_leads_sync_metrics=td_leads_sync_metrics,
+        td_leads_sync_lead_changes=td_leads_sync_lead_changes,
     )
