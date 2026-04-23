@@ -23,7 +23,7 @@ class TdLeadsIngestResult:
     task_stub: dict[str, Any]
 
 
-LEAD_CHANGE_DETAILS_GROUP_CAP = 20
+LEAD_CHANGE_DETAILS_GROUP_CAP = 100
 
 
 def _stable_lead_identity(values: Mapping[str, Any]) -> dict[str, Any]:
