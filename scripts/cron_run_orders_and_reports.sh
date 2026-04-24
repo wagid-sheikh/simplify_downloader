@@ -519,24 +519,62 @@ acquire_lock_with_wait "$@"
 run_step() {
   local step_name="$1"
   local step_cmd="$2"
+  local max_attempts="${3:-1}"
+  local retry_delay_seconds="${4:-5}"
   local step_start
   local step_end
   local duration
+  local attempt=1
+  local rc=0
 
   section "Running ${step_name}"
   log "Command: ${step_cmd}"
+  log "Attempts configured: ${max_attempts}; retry_delay_seconds=${retry_delay_seconds}"
 
-  step_start="$(date +%s)"
-  bash -c "${step_cmd}" >> "${LOG_FILE}" 2>&1
-  step_end="$(date +%s)"
-  duration=$((step_end - step_start))
+  while [[ "${attempt}" -le "${max_attempts}" ]]; do
+    log "${step_name}: attempt ${attempt}/${max_attempts} starting"
+    step_start="$(date +%s)"
 
-  log "${step_name} completed successfully in ${duration}s"
+    if bash -c "${step_cmd}" >> "${LOG_FILE}" 2>&1; then
+      step_end="$(date +%s)"
+      duration=$((step_end - step_start))
+      log "${step_name}: attempt ${attempt}/${max_attempts} succeeded in ${duration}s"
+      return 0
+    fi
+
+    rc=$?
+    step_end="$(date +%s)"
+    duration=$((step_end - step_start))
+    log "WARNING: ${step_name}: attempt ${attempt}/${max_attempts} failed with exit_code=${rc} after ${duration}s"
+
+    attempt=$((attempt + 1))
+    if [[ "${attempt}" -le "${max_attempts}" ]]; then
+      log "${step_name}: sleeping ${retry_delay_seconds}s before retry"
+      sleep "${retry_delay_seconds}"
+    fi
+  done
+
+  log "ERROR: ${step_name} failed after ${max_attempts} attempts"
+  return "${rc}"
 }
 
-run_step "Script 1: orders_sync_run_profiler" "./scripts/orders_sync_run_profiler.sh"
-run_step "Script 2: daily_sales_report" "./scripts/run_local_reports_daily_sales.sh"
-run_step "Script 3: pending_deliveries" "./scripts/run_local_reports_pending_deliveries.sh"
+orders_rc=0
+daily_rc=0
+pending_rc=0
+
+run_step "Script 1: orders_sync_run_profiler" "./scripts/orders_sync_run_profiler.sh" 1 5 || orders_rc=$?
+run_step "Script 2: daily_sales_report" "./scripts/run_local_reports_daily_sales.sh" 3 10 || daily_rc=$?
+run_step "Script 3: pending_deliveries" "./scripts/run_local_reports_pending_deliveries.sh" 3 10 || pending_rc=$?
+
+section "RUN STATUS SUMMARY"
+log "orders_sync_run_profiler_rc=${orders_rc}"
+log "daily_sales_report_rc=${daily_rc}"
+log "pending_deliveries_rc=${pending_rc}"
+
+if [[ "${daily_rc}" -ne 0 && "${pending_rc}" -ne 0 ]]; then
+  log "ERROR: Both report pipelines failed."
+  exit 1
+fi
 
 section "CRON RUN FINISHED SUCCESSFULLY"
 exit 0
