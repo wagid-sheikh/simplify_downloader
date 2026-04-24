@@ -56,6 +56,15 @@ LOCK_POLL_SECONDS="${LOCK_POLL_SECONDS:-5}"
 SAFE_MODE="${SAFE_MODE:-1}"
 CRON_HOME="${CRON_HOME:-${HOME:-/tmp}}"
 CRON_PATH="${CRON_PATH:-/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
+ORDERS_MAX_ATTEMPTS="${ORDERS_MAX_ATTEMPTS:-1}"
+ORDERS_RETRY_DELAY_SECONDS="${ORDERS_RETRY_DELAY_SECONDS:-5}"
+DAILY_MAX_ATTEMPTS="${DAILY_MAX_ATTEMPTS:-3}"
+DAILY_RETRY_DELAY_SECONDS="${DAILY_RETRY_DELAY_SECONDS:-10}"
+PENDING_MAX_ATTEMPTS="${PENDING_MAX_ATTEMPTS:-3}"
+PENDING_RETRY_DELAY_SECONDS="${PENDING_RETRY_DELAY_SECONDS:-10}"
+DAILY_RESCUE_AFTER_PENDING_SUCCESS="${DAILY_RESCUE_AFTER_PENDING_SUCCESS:-1}"
+DAILY_RESCUE_MAX_ATTEMPTS="${DAILY_RESCUE_MAX_ATTEMPTS:-1}"
+DAILY_RESCUE_RETRY_DELAY_SECONDS="${DAILY_RESCUE_RETRY_DELAY_SECONDS:-5}"
 
 if ! [[ "${LOCK_WAIT_SECONDS}" =~ ^[0-9]+$ ]]; then
   LOCK_WAIT_SECONDS=300
@@ -65,6 +74,9 @@ if ! [[ "${LOCK_POLL_SECONDS}" =~ ^[0-9]+$ ]] || [[ "${LOCK_POLL_SECONDS}" -eq 0
 fi
 if ! [[ "${SAFE_MODE}" =~ ^[01]$ ]]; then
   SAFE_MODE=1
+fi
+if ! [[ "${DAILY_RESCUE_AFTER_PENDING_SUCCESS}" =~ ^[01]$ ]]; then
+  DAILY_RESCUE_AFTER_PENDING_SUCCESS=1
 fi
 
 mkdir -p "${LOG_DIR}" "${LOCK_DIR}"
@@ -506,6 +518,10 @@ log "LANG=${LANG}"
 log "LOCK_WAIT_SECONDS=${LOCK_WAIT_SECONDS}"
 log "LOCK_POLL_SECONDS=${LOCK_POLL_SECONDS}"
 log "SAFE_MODE=${SAFE_MODE}"
+log "ORDERS_MAX_ATTEMPTS=${ORDERS_MAX_ATTEMPTS} ORDERS_RETRY_DELAY_SECONDS=${ORDERS_RETRY_DELAY_SECONDS}"
+log "DAILY_MAX_ATTEMPTS=${DAILY_MAX_ATTEMPTS} DAILY_RETRY_DELAY_SECONDS=${DAILY_RETRY_DELAY_SECONDS}"
+log "PENDING_MAX_ATTEMPTS=${PENDING_MAX_ATTEMPTS} PENDING_RETRY_DELAY_SECONDS=${PENDING_RETRY_DELAY_SECONDS}"
+log "DAILY_RESCUE_AFTER_PENDING_SUCCESS=${DAILY_RESCUE_AFTER_PENDING_SUCCESS} DAILY_RESCUE_MAX_ATTEMPTS=${DAILY_RESCUE_MAX_ATTEMPTS} DAILY_RESCUE_RETRY_DELAY_SECONDS=${DAILY_RESCUE_RETRY_DELAY_SECONDS}"
 log "GLOBAL_LOCK_DIR=${GLOBAL_LOCK_DIR}"
 log "LOCAL_LOCK_DIR=${RUN_LOCK_DIR}"
 log "poetry=$(command -v poetry || echo NOT_FOUND)"
@@ -561,18 +577,42 @@ run_step() {
 orders_rc=0
 daily_rc=0
 pending_rc=0
+daily_rescue_rc=0
+run_started_epoch="$(date +%s)"
 
-run_step "Script 1: orders_sync_run_profiler" "./scripts/orders_sync_run_profiler.sh" 1 5 || orders_rc=$?
-run_step "Script 2: daily_sales_report" "./scripts/run_local_reports_daily_sales.sh" 3 10 || daily_rc=$?
-run_step "Script 3: pending_deliveries" "./scripts/run_local_reports_pending_deliveries.sh" 3 10 || pending_rc=$?
+run_step "Script 1: orders_sync_run_profiler" "./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" || orders_rc=$?
+run_step "Script 2: daily_sales_report" "./scripts/run_local_reports_daily_sales.sh" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" || daily_rc=$?
+run_step "Script 3: pending_deliveries" "./scripts/run_local_reports_pending_deliveries.sh" "${PENDING_MAX_ATTEMPTS}" "${PENDING_RETRY_DELAY_SECONDS}" || pending_rc=$?
+
+if [[ "${pending_rc}" -eq 0 && "${daily_rc}" -ne 0 && "${DAILY_RESCUE_AFTER_PENDING_SUCCESS}" -eq 1 ]]; then
+  section "OPTIONAL DAILY RESCUE PASS"
+  log "Pending deliveries succeeded while daily sales failed; running optional daily rescue pass."
+  run_step \
+    "Script 2B: daily_sales_report_rescue" \
+    "./scripts/run_local_reports_daily_sales.sh" \
+    "${DAILY_RESCUE_MAX_ATTEMPTS}" \
+    "${DAILY_RESCUE_RETRY_DELAY_SECONDS}" || daily_rescue_rc=$?
+
+  if [[ "${daily_rescue_rc}" -eq 0 ]]; then
+    daily_rc=0
+    log "Daily rescue pass succeeded; overriding daily_sales_report_rc to 0."
+  else
+    log "WARNING: Daily rescue pass failed with rc=${daily_rescue_rc}."
+  fi
+fi
+
+run_finished_epoch="$(date +%s)"
+run_duration_seconds=$((run_finished_epoch - run_started_epoch))
 
 section "RUN STATUS SUMMARY"
 log "orders_sync_run_profiler_rc=${orders_rc}"
 log "daily_sales_report_rc=${daily_rc}"
 log "pending_deliveries_rc=${pending_rc}"
+log "daily_sales_report_rescue_rc=${daily_rescue_rc}"
+log "total_duration_seconds=${run_duration_seconds}"
 
 if [[ "${daily_rc}" -ne 0 && "${pending_rc}" -ne 0 ]]; then
-  log "ERROR: Both report pipelines failed."
+  log "ERROR: Both report pipelines failed (daily_sales_report_rc=${daily_rc}, pending_deliveries_rc=${pending_rc})."
   exit 1
 fi
 
