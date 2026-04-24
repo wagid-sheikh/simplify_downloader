@@ -138,11 +138,24 @@ def _create_tables(database_url: str) -> None:
             sa.text(
                 """
                 CREATE TABLE crm_leads (
+                    lead_uid TEXT,
                     store_code TEXT,
                     status_bucket TEXT,
                     customer_name TEXT,
                     mobile TEXT,
-                    pickup_created_at TIMESTAMP
+                    pickup_created_at TIMESTAMP,
+                    reason TEXT,
+                    cancelled_flag TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            sa.text(
+                """
+                CREATE TABLE crm_leads_status_events (
+                    lead_uid TEXT,
+                    status_bucket TEXT
                 )
                 """
             )
@@ -279,14 +292,14 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
 
     assert un_summary["period_type"] == "MTD"
     assert un_summary["period_start"] == "2026-04-01"
-    assert un_summary["period_end"] == "2026-04-23"
-    assert un_summary["total_leads"] == 4
+    assert un_summary["period_end"] == "2026-04-30"
+    assert un_summary["total_leads"] == 5
     assert un_summary["completed_leads"] == 2
-    assert un_summary["cancelled_leads"] == 1
+    assert un_summary["cancelled_leads"] == 2
     assert un_summary["pending_leads"] == 1
-    assert un_summary["conversion_pct"] == {"value": 50.0, "color": "RED", "status": "POOR"}
-    assert un_summary["cancelled_pct"] == {"value": 25.0, "color": "RED", "status": "HIGH_LEAKAGE"}
-    assert un_summary["pending_pct"] == {"value": 25.0, "color": "RED", "status": "FOLLOW_UP_GAP"}
+    assert un_summary["conversion_pct"] == {"value": 40.0, "color": "RED", "status": "POOR"}
+    assert un_summary["cancelled_pct"] == {"value": 40.0, "color": "RED", "status": "HIGH_LEAKAGE"}
+    assert un_summary["pending_pct"] == {"value": 20.0, "color": "RED", "status": "FOLLOW_UP_GAP"}
     assert un_summary["benchmark"] == {
         "conversion_target": 85.0,
         "conversion_min": 70.0,
@@ -294,9 +307,9 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
         "cancelled_max": 20.0,
         "pending_max": 5.0,
     }
-    assert un_summary["conversion_gap"] == -35.0
-    assert un_summary["cancelled_gap"] == 15.0
-    assert un_summary["pending_gap"] == 20.0
+    assert un_summary["conversion_gap"] == -45.0
+    assert un_summary["cancelled_gap"] == 30.0
+    assert un_summary["pending_gap"] == 15.0
 
     assert kn_summary["total_leads"] == 0
     assert kn_summary["conversion_pct"] == {"value": 0.0, "color": "NEUTRAL", "status": "NEUTRAL"}
@@ -334,12 +347,22 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
         await session.execute(
             sa.text(
                 """
-                INSERT INTO crm_leads (store_code, status_bucket, customer_name, mobile, pickup_created_at) VALUES
-                    ('UN', 'cancelled', 'April Cancelled', '9000000001', '2026-04-02 00:00:00'),
-                    ('UN', ' cancelled ', 'Second Cancelled', '9000000002', '2026-04-30 23:59:00'),
-                    ('UN', 'completed', 'Completed Lead', '9000000003', '2026-04-15 10:00:00'),
-                    ('UN', 'cancelled', 'March Cancelled', '9000000004', '2026-03-30 23:59:00'),
-                    ('UN', 'cancelled', 'May Cancelled', '9000000005', '2026-05-02 00:00:00')
+                INSERT INTO crm_leads (
+                    lead_uid, store_code, status_bucket, customer_name, mobile, pickup_created_at, reason, cancelled_flag
+                ) VALUES
+                    ('L1', 'UN', 'cancelled', 'April Cancelled', '9000000001', '2026-04-02 00:00:00', NULL, 'store'),
+                    ('L2', 'UN', ' completed ', 'Customer Cancelled', '9000000002', '2026-04-30 23:59:00', 'Requested defer', 'customer'),
+                    ('L3', 'UN', 'completed', 'Completed Lead', '9000000003', '2026-04-15 10:00:00', NULL, NULL),
+                    ('L4', 'UN', 'cancelled', 'March Cancelled', '9000000004', '2026-03-30 23:59:00', NULL, 'store'),
+                    ('L5', 'UN', 'cancelled', 'May Cancelled', '9000000005', '2026-05-02 00:00:00', NULL, 'store')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO crm_leads_status_events (lead_uid, status_bucket) VALUES
+                    ('L2', 'cancelled')
                 """
             )
         )
@@ -350,9 +373,15 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
     assert report.cancelled_leads == [
         {
             "store_name": "Uttam Nagar",
-            "leads": [
-                "April Cancelled (9000000001)",
-                "Second Cancelled (9000000002)",
+            "total_cancelled_count": 2,
+            "customer_cancelled_count": 1,
+            "store_cancelled_rows": [
+                {
+                    "customer_name": "April Cancelled",
+                    "mobile": "9000000001",
+                    "flag": "store",
+                    "reason": "--",
+                }
             ],
         }
     ]

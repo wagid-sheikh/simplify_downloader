@@ -361,14 +361,24 @@
       <thead>
         <tr>
           <th class="label">Store</th>
-          <th class="label">Leads</th>
+          <th>Total Cancelled</th>
+          <th class="label">Store Cancelled Leads</th>
         </tr>
       </thead>
       <tbody>
         {% for group in cancelled_leads %}
         <tr>
-          <td class="label">{{ group.store_name }} (Cancelled Leads: {{ group.leads|length }})</td>
-          <td class="micro-leads-list">{{ group.leads | join(", ") }}</td>
+          <td class="label">{{ group.store_name }}</td>
+          <td>{{ group.total_cancelled_count }}</td>
+          <td class="micro-leads-list">
+            {% if group.store_cancelled_rows %}
+              {% for lead in group.store_cancelled_rows %}
+                {{ lead.customer_name }} ({{ lead.mobile }}){% if lead.flag or lead.reason %} [{{ lead.flag or "--" }}{% if lead.reason and lead.reason != "--" %}: {{ lead.reason }}{% endif %}]{% endif %}{% if not loop.last %}, {% endif %}
+              {% endfor %}
+            {% else %}
+              --
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>
