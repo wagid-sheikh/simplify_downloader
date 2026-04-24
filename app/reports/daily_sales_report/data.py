@@ -1005,6 +1005,10 @@ async def fetch_daily_sales_report(
             normalized_status_bucket_expr == "cancelled",
             event_is_cancelled_exists,
         )
+        final_status_bucket_expr = sa.case(
+            (is_cancelled_expr, "cancelled"),
+            else_=normalized_status_bucket_expr,
+        )
 
         lead_base = (
             sa.select(
@@ -1017,6 +1021,7 @@ async def fetch_daily_sales_report(
                 crm_leads_current.c.pickup_created_at.label("pickup_created_at"),
                 is_cancelled_expr.label("is_cancelled"),
                 normalized_status_bucket_expr.label("status_bucket"),
+                final_status_bucket_expr.label("final_status_bucket"),
             )
             .select_from(
                 crm_leads_current.join(
@@ -1086,8 +1091,7 @@ async def fetch_daily_sales_report(
                         sa.case(
                             (
                                 sa.and_(
-                                    lead_base.c.is_cancelled.is_(False),
-                                    lead_base.c.status_bucket == "completed",
+                                    lead_base.c.final_status_bucket == "completed",
                                 ),
                                 1,
                             ),
@@ -1097,7 +1101,7 @@ async def fetch_daily_sales_report(
                     0,
                 ).label("completed_leads"),
                 sa.func.coalesce(
-                    sa.func.sum(sa.case((lead_base.c.is_cancelled.is_(True), 1), else_=0)),
+                    sa.func.sum(sa.case((lead_base.c.final_status_bucket == "cancelled", 1), else_=0)),
                     0,
                 ).label("cancelled_leads"),
                 sa.func.coalesce(
@@ -1105,8 +1109,7 @@ async def fetch_daily_sales_report(
                         sa.case(
                             (
                                 sa.and_(
-                                    lead_base.c.is_cancelled.is_(False),
-                                    lead_base.c.status_bucket == "pending",
+                                    lead_base.c.final_status_bucket == "pending",
                                 ),
                                 1,
                             ),

@@ -273,13 +273,21 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
         await session.execute(
             sa.text(
                 """
-                INSERT INTO crm_leads_current (store_code, status_bucket, pickup_created_at) VALUES
-                    ('UN', 'completed', '2026-04-01 02:00:00+00:00'),
-                    (' un ', ' Completed ', '2026-04-22 12:00:00+00:00'),
-                    ('UN ', ' CANCELLED ', '2026-04-23 16:00:00+00:00'),
-                    (' un', ' pending ', '2026-04-10 05:00:00+00:00'),
-                    ('UN', 'completed', '2026-03-31 23:59:00+00:00'),
-                    ('UN', 'cancelled', '2026-04-24 00:10:00+00:00')
+                INSERT INTO crm_leads_current (lead_uid, store_code, status_bucket, pickup_created_at) VALUES
+                    ('U1', 'UN', 'completed', '2026-04-01 02:00:00+00:00'),
+                    ('U2', ' un ', ' Completed ', '2026-04-22 12:00:00+00:00'),
+                    ('U3', 'UN ', ' pending ', '2026-04-23 16:00:00+00:00'),
+                    ('U4', ' un', ' pending ', '2026-04-10 05:00:00+00:00'),
+                    ('U5', 'UN', 'completed', '2026-03-31 23:59:00+00:00'),
+                    ('U6', 'UN', 'cancelled', '2026-04-24 00:10:00+00:00')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO crm_leads_status_events (lead_uid, status_bucket) VALUES
+                    ('U3', 'cancelled')
                 """
             )
         )
@@ -385,6 +393,11 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
             ],
         }
     ]
+    un_summary = next(item for item in report.lead_performance_summary if item["store"] == "UN")
+    assert un_summary["total_leads"] == 3
+    assert un_summary["completed_leads"] == 1
+    assert un_summary["cancelled_leads"] == 2
+    assert un_summary["pending_leads"] == 0
 
 
 @pytest.mark.asyncio
