@@ -871,8 +871,8 @@ async def fetch_daily_sales_report(
         sum_orig_distinct = Decimal("0")
         sum_new_distinct = Decimal("0")
         net_loss_distinct = Decimal("0")
-        for (cost_center, _order_number), values in distinct_map.items():
-            per_store_counts[cost_center] = per_store_counts.get(cost_center, 0) + 1
+        for (cost_center_code, _order_number), values in distinct_map.items():
+            per_store_counts[cost_center_code] = per_store_counts.get(cost_center_code, 0) + 1
             sum_orig_distinct += values["orig_value"]
             sum_new_distinct += values["new_value"]
             net_loss_distinct += values["orig_value"] - values["new_value"]
