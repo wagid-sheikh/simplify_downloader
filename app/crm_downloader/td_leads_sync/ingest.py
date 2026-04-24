@@ -29,7 +29,6 @@ LEAD_CHANGE_DETAILS_GROUP_CAP = 100
 def _stable_lead_identity(values: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "lead_uid": str(values.get("lead_uid") or ""),
-        "pickup_id": values.get("pickup_id"),
         "pickup_no": values.get("pickup_no"),
         "store_code": values.get("store_code"),
     }
@@ -62,7 +61,6 @@ def _build_lead_change_payload(*, cap_per_group: int, rows: Sequence[Mapping[str
         fallback_key = "|".join(
             (
                 stable_id,
-                str(lead_identity.get("pickup_id") or row.get("pickup_id") or "").strip(),
                 str(lead_identity.get("pickup_no") or row.get("pickup_no") or "").strip(),
             )
         )
@@ -112,27 +110,25 @@ def _build_lead_change_payload(*, cap_per_group: int, rows: Sequence[Mapping[str
     }
 
 
-def _crm_leads_table(metadata: sa.MetaData) -> sa.Table:
+def _crm_leads_current_table(metadata: sa.MetaData) -> sa.Table:
     return sa.Table(
-        "crm_leads",
+        "crm_leads_current",
         metadata,
         sa.Column("id", sa.BigInteger().with_variant(sa.Integer(), "sqlite"), primary_key=True, autoincrement=True),
         sa.Column("lead_uid", sa.String(length=128), nullable=False),
         sa.Column("store_code", sa.String(length=8), nullable=False),
+        sa.Column("pickup_no", sa.String(length=64), nullable=False),
         sa.Column("status_bucket", sa.String(length=16), nullable=False),
-        sa.Column("pickup_id", sa.String(length=64)),
-        sa.Column("pickup_no", sa.String(length=64)),
         sa.Column("customer_name", sa.String(length=256)),
         sa.Column("address", sa.Text()),
         sa.Column("mobile", sa.String(length=32)),
-        sa.Column("pickup_created_date", sa.String(length=64)),
+        sa.Column("pickup_date", sa.String(length=64)),
         sa.Column("pickup_created_at", sa.DateTime(timezone=True)),
         sa.Column("pickup_time", sa.String(length=64)),
         sa.Column("special_instruction", sa.Text()),
-        sa.Column("status_text", sa.String(length=64)),
         sa.Column("reason", sa.String(length=128)),
         sa.Column("source", sa.String(length=128)),
-        sa.Column("user_name", sa.String(length=128)),
+        sa.Column("cancelled_flag", sa.String(length=16)),
         sa.Column("run_id", sa.String(length=64), nullable=False),
         sa.Column("run_env", sa.String(length=32), nullable=False),
         sa.Column("source_file", sa.Text()),
@@ -143,20 +139,40 @@ def _crm_leads_table(metadata: sa.MetaData) -> sa.Table:
     )
 
 
+def _crm_leads_event_table(metadata: sa.MetaData) -> sa.Table:
+    return sa.Table(
+        "crm_leads_status_events",
+        metadata,
+        sa.Column("id", sa.BigInteger().with_variant(sa.Integer(), "sqlite"), primary_key=True, autoincrement=True),
+        sa.Column("lead_uid", sa.String(length=128), nullable=False),
+        sa.Column("store_code", sa.String(length=8), nullable=False),
+        sa.Column("pickup_no", sa.String(length=64), nullable=False),
+        sa.Column("event_type", sa.String(length=32), nullable=False),
+        sa.Column("previous_status_bucket", sa.String(length=16)),
+        sa.Column("status_bucket", sa.String(length=16), nullable=False),
+        sa.Column("run_id", sa.String(length=64), nullable=False),
+        sa.Column("run_env", sa.String(length=32), nullable=False),
+        sa.Column("source_file", sa.Text()),
+        sa.Column("scraped_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+    )
+
+
 def build_lead_uid(row: Mapping[str, Any]) -> str:
-    normalized_created_date = _normalized_pickup_created_date(row)
+    normalized_store_code = str(row.get("store_code") or "").strip().upper()
+    normalized_pickup_no = str(row.get("pickup_no") or "").strip().upper()
     parts = [
-        str(row.get("store_code") or "").strip().upper(),
-        str(row.get("pickup_id") or "").strip(),
-        str(row.get("pickup_no") or "").strip(),
-        str(row.get("mobile") or "").strip(),
-        normalized_created_date,
+        normalized_store_code,
+        normalized_pickup_no,
     ]
     materialized = "|".join(parts)
     return sha256(materialized.encode("utf-8")).hexdigest()
 
 
-def _normalized_pickup_created_date(row: Mapping[str, Any]) -> str:
+def _normalized_pickup_created_text(row: Mapping[str, Any]) -> str:
+    created_text = str(row.get("pickup_created_at") or "").strip()
+    if created_text:
+        return created_text
     created_text = str(row.get("pickup_created_date") or "").strip()
     if created_text:
         return created_text
@@ -215,7 +231,8 @@ async def ingest_td_crm_leads_rows(
     database_url: str,
 ) -> TdLeadsIngestResult:
     metadata = sa.MetaData()
-    table = _crm_leads_table(metadata)
+    current_table = _crm_leads_current_table(metadata)
+    event_table = _crm_leads_event_table(metadata)
     use_sqlite = database_url.startswith("sqlite")
 
     now_utc = datetime.now(timezone.utc)
@@ -235,27 +252,30 @@ async def ingest_td_crm_leads_rows(
         prepared_rows: list[dict[str, Any]] = []
         lead_uids: list[str] = []
         for row in rows:
-            normalized_created_date = _normalized_pickup_created_date(row)
+            normalized_created_text = _normalized_pickup_created_text(row)
+            normalized_pickup_no = str(row.get("pickup_no") or "").strip().upper()
+            if not normalized_pickup_no:
+                continue
             normalized_pickup_time = str(row.get("pickup_time") or "").strip()
-            pickup_created_at = _coerce_pickup_created_at(row, normalized_created_date=normalized_created_date)
+            pickup_created_at = _coerce_pickup_created_at(row, normalized_created_date=normalized_created_text)
+            reason = (str(row.get("reason")).strip() or None) if row.get("reason") is not None else None
+            cancelled_flag = "customer" if reason else "store"
             lead_uid = build_lead_uid(row)
             values = {
                 "lead_uid": lead_uid,
                 "store_code": str(row.get("store_code") or "").upper(),
                 "status_bucket": str(row.get("status_bucket") or "").lower(),
-                "pickup_id": (str(row.get("pickup_id")).strip() or None) if row.get("pickup_id") is not None else None,
-                "pickup_no": (str(row.get("pickup_no")).strip() or None) if row.get("pickup_no") is not None else None,
+                "pickup_no": normalized_pickup_no,
                 "customer_name": (str(row.get("customer_name")).strip() or None) if row.get("customer_name") is not None else None,
                 "address": (str(row.get("address")).strip() or None) if row.get("address") is not None else None,
                 "mobile": (str(row.get("mobile")).strip() or None) if row.get("mobile") is not None else None,
-                "pickup_created_date": normalized_created_date or None,
+                "pickup_date": (str(row.get("pickup_date")).strip() or None) if row.get("pickup_date") is not None else None,
                 "pickup_created_at": pickup_created_at,
                 "pickup_time": normalized_pickup_time or None,
                 "special_instruction": (str(row.get("special_instruction")).strip() or None) if row.get("special_instruction") is not None else None,
-                "status_text": (str(row.get("status_text")).strip() or None) if row.get("status_text") is not None else None,
-                "reason": (str(row.get("reason")).strip() or None) if row.get("reason") is not None else None,
+                "reason": reason,
                 "source": (str(row.get("source")).strip() or None) if row.get("source") is not None else None,
-                "user_name": (str(row.get("user") or row.get("user_name") or "").strip() or None),
+                "cancelled_flag": cancelled_flag,
                 "run_id": run_id,
                 "run_env": run_env,
                 "source_file": source_file,
@@ -268,10 +288,10 @@ async def ingest_td_crm_leads_rows(
         existing_by_uid: dict[str, dict[str, Any]] = {}
         if lead_uids:
             existing_stmt = sa.select(
-                table.c.lead_uid,
-                table.c.status_bucket,
-                table.c.run_id,
-            ).where(table.c.lead_uid.in_(lead_uids))
+                current_table.c.lead_uid,
+                current_table.c.status_bucket,
+                current_table.c.run_id,
+            ).where(current_table.c.lead_uid.in_(lead_uids))
             existing_rows = (await session.execute(existing_stmt)).mappings().all()
             existing_by_uid = {str(row["lead_uid"]): dict(row) for row in existing_rows}
 
@@ -292,7 +312,6 @@ async def ingest_td_crm_leads_rows(
                     status_transitions.append(
                         {
                             "lead_uid": values["lead_uid"],
-                            "pickup_id": values.get("pickup_id"),
                             "pickup_no": values.get("pickup_no"),
                             "customer_name": values.get("customer_name"),
                             "mobile": values.get("mobile"),
@@ -314,16 +333,49 @@ async def ingest_td_crm_leads_rows(
                     "lead_identity": _stable_lead_identity(values),
                 }
             )
-            insert_stmt = (sqlite_insert(table) if use_sqlite else pg_insert(table)).values(**values)
+            should_insert_event = False
+            event_values: dict[str, Any] = {}
+            if existing is None:
+                should_insert_event = True
+                event_values = {
+                    "lead_uid": values["lead_uid"],
+                    "store_code": values["store_code"],
+                    "pickup_no": values["pickup_no"],
+                    "event_type": "new_lead",
+                    "previous_status_bucket": None,
+                    "status_bucket": status_bucket,
+                    "run_id": run_id,
+                    "run_env": run_env,
+                    "source_file": source_file,
+                    "scraped_at": values["scraped_at"],
+                }
+            elif str(existing.get("status_bucket") or "").strip().lower() != status_bucket:
+                should_insert_event = True
+                event_values = {
+                    "lead_uid": values["lead_uid"],
+                    "store_code": values["store_code"],
+                    "pickup_no": values["pickup_no"],
+                    "event_type": "status_transition",
+                    "previous_status_bucket": str(existing.get("status_bucket") or "").strip().lower() or None,
+                    "status_bucket": status_bucket,
+                    "run_id": run_id,
+                    "run_env": run_env,
+                    "source_file": source_file,
+                    "scraped_at": values["scraped_at"],
+                }
+
+            insert_stmt = (sqlite_insert(current_table) if use_sqlite else pg_insert(current_table)).values(**values)
             update_values = dict(values)
             update_values.pop("lead_uid", None)
             update_values.pop("created_at", None)
             update_values["pickup_created_at"] = sa.func.coalesce(
                 insert_stmt.excluded.pickup_created_at,
-                table.c.pickup_created_at,
+                current_table.c.pickup_created_at,
             )
             stmt = insert_stmt.on_conflict_do_update(index_elements=["lead_uid"], set_=update_values)
             await session.execute(stmt)
+            if should_insert_event:
+                await session.execute(sa.insert(event_table).values(**event_values))
             upserted += 1
         await session.commit()
 
