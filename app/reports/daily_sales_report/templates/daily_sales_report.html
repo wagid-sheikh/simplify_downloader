@@ -362,7 +362,7 @@
         <tr>
           <th class="label">Store</th>
           <th>Total Cancelled</th>
-          <th class="label">Store Cancelled Leads</th>
+          <th class="label">Store-Cancelled Lead Rows</th>
         </tr>
       </thead>
       <tbody>
@@ -373,7 +373,7 @@
           <td class="micro-leads-list">
             {% if group.store_cancelled_rows %}
               {% for lead in group.store_cancelled_rows %}
-                {{ lead.customer_name }} ({{ lead.mobile }}){% if lead.flag or lead.reason %} [{{ lead.flag or "--" }}{% if lead.reason and lead.reason != "--" %}: {{ lead.reason }}{% endif %}]{% endif %}{% if not loop.last %}, {% endif %}
+                ({{ lead.customer_name }}, {{ lead.mobile }}, {{ lead.flag or "--" }}, {{ lead.reason or "--" }}){% if not loop.last %}, {% endif %}
               {% endfor %}
             {% else %}
               --

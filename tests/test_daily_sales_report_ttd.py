@@ -258,8 +258,9 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
     assert "Cancelled Leads for this Month" in html
     assert "Uttam Nagar" in html
     assert ">3<" in html
-    assert "Alice (9999999999) [store]" in html
-    assert "Bob (8888888888) [store: No stock]" in html
+    assert "(Alice, 9999999999, store, --)" in html
+    assert "(Bob, 8888888888, store, No stock)" in html
+    assert "Customer Cancelled" not in html
     assert "Lead Performance Summary (MTD)" in html
     assert "HEALTHY" in html
     assert "EXCELLENT" in html
