@@ -62,8 +62,8 @@ def test_build_lead_uid_is_stable_when_status_changes() -> None:
     assert pending_uid == cancelled_uid
 
 
-def test_build_lead_uid_is_stable_when_pickup_time_is_derived_from_created_timestamp() -> None:
-    row_with_explicit_time = {
+def test_build_lead_uid_uses_store_code_and_pickup_no_identity_only() -> None:
+    row_with_mobile = {
         "store_code": "A668",
         "status_bucket": "pending",
         "pickup_id": "4434944",
@@ -73,12 +73,14 @@ def test_build_lead_uid_is_stable_when_pickup_time_is_derived_from_created_times
         "pickup_created_date": "21 Apr 2026 3:03:39 PM",
         "pickup_time": "3:03:39 PM",
     }
-    row_with_derived_time = {
-        **row_with_explicit_time,
-        "pickup_time": None,
+    row_without_mobile = {
+        **row_with_mobile,
+        "mobile": "",
+        "pickup_date": "22 Apr 2026",
+        "pickup_created_date": "22 Apr 2026 8:03:39 AM",
     }
 
-    assert build_lead_uid(row_with_explicit_time) == build_lead_uid(row_with_derived_time)
+    assert build_lead_uid(row_with_mobile) == build_lead_uid(row_without_mobile)
 
 
 @pytest.mark.parametrize(
@@ -841,7 +843,7 @@ async def test_ingest_store_path_uses_async_session_scope_without_greenlet_error
     engine = create_async_engine(database_url, future=True)
     try:
         async with engine.connect() as connection:
-            count = await connection.scalar(sa.text("SELECT COUNT(*) FROM crm_leads"))
+            count = await connection.scalar(sa.text("SELECT COUNT(*) FROM crm_leads_current"))
         assert count == 1
     finally:
         await engine.dispose()
@@ -880,15 +882,15 @@ async def test_combined_created_datetime_populates_ingest_payload_and_email_row_
                 await connection.execute(
                     sa.text(
                         """
-                        SELECT pickup_created_date, pickup_created_at, pickup_time
-                        FROM crm_leads
-                        WHERE pickup_id = :pickup_id
+                        SELECT pickup_date, pickup_created_at, pickup_time
+                        FROM crm_leads_current
+                        WHERE pickup_no = :pickup_no
                         """
                     ),
-                    {"pickup_id": "4434944"},
+                    {"pickup_no": "A668-3025"},
                 )
             ).mappings().one()
-        assert stored["pickup_created_date"] == "21 Apr 2026 3:03:39 PM"
+        assert stored["pickup_date"] == "21 Apr 2026"
         assert stored["pickup_created_at"] is not None
         assert stored["pickup_time"] is None
     finally:
@@ -925,7 +927,7 @@ async def test_ingest_populates_pickup_created_at_for_all_status_buckets(tmp_pat
             "store_code": "A668",
             "status_bucket": bucket,
             "pickup_id": f"4434944-{bucket}",
-            "pickup_no": "A668-3025",
+            "pickup_no": f"A668-3025-{bucket}",
             "customer_name": "Moni",
             "mobile": "9599242207",
             "pickup_created_date": created_text,
@@ -952,7 +954,7 @@ async def test_ingest_populates_pickup_created_at_for_all_status_buckets(tmp_pat
                     sa.text(
                         """
                         SELECT status_bucket, pickup_created_at
-                        FROM crm_leads
+                        FROM crm_leads_current
                         ORDER BY status_bucket
                         """
                     )
@@ -979,11 +981,13 @@ async def test_ingest_upsert_preserves_existing_pickup_created_at_when_new_value
     }
     first_row = {
         **base_row,
+        "pickup_date": "21 Apr 2026",
         "pickup_created_date": "21 Apr 2026",
         "pickup_created_at": "21 Apr 2026 3:03:39 PM",
     }
     second_row = {
         **base_row,
+        "pickup_date": "21 Apr 2026",
         "pickup_created_date": "21 Apr 2026",
         "pickup_created_at": "not-a-date",
     }
@@ -1011,8 +1015,8 @@ async def test_ingest_upsert_preserves_existing_pickup_created_at_when_new_value
                 await connection.execute(
                     sa.text(
                         """
-                        SELECT pickup_created_date, pickup_created_at
-                        FROM crm_leads
+                        SELECT pickup_date, pickup_created_at
+                        FROM crm_leads_current
                         WHERE lead_uid = :lead_uid
                         """
                     ),
@@ -1022,7 +1026,7 @@ async def test_ingest_upsert_preserves_existing_pickup_created_at_when_new_value
     finally:
         await engine.dispose()
 
-    assert stored["pickup_created_date"] == "21 Apr 2026"
+    assert stored["pickup_date"] == "21 Apr 2026"
     preserved_pickup_created_at = stored["pickup_created_at"]
     assert preserved_pickup_created_at is not None
     if isinstance(preserved_pickup_created_at, str):
@@ -1070,6 +1074,150 @@ async def test_ingest_captures_created_updated_counts_and_status_transitions(tmp
     assert transition_groups[0]["rows"][0]["customer_name"] == "Moni"
     assert transition_groups[0]["rows"][0]["previous_status_bucket"] == "pending"
 
+    engine = create_async_engine(database_url, future=True)
+    try:
+        async with engine.connect() as connection:
+            event_rows = (
+                await connection.execute(
+                    sa.text(
+                        """
+                        SELECT event_type, previous_status_bucket, status_bucket
+                        FROM crm_leads_status_events
+                        ORDER BY id
+                        """
+                    )
+                )
+            ).mappings().all()
+    finally:
+        await engine.dispose()
+
+    assert [row["event_type"] for row in event_rows] == ["new_lead", "status_transition"]
+    assert event_rows[1]["previous_status_bucket"] == "pending"
+    assert event_rows[1]["status_bucket"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_ingest_first_run_emits_new_events_for_all_rows(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_leads_first_run_new.db'}"
+    rows = [
+        {"store_code": "A668", "status_bucket": "pending", "pickup_no": "A668-1", "pickup_date": "21 Apr 2026"},
+        {"store_code": "A668", "status_bucket": "completed", "pickup_no": "A668-2", "pickup_date": "21 Apr 2026"},
+    ]
+
+    result = await td_leads_ingest.ingest_td_crm_leads_rows(
+        rows=rows,
+        run_id="run-first",
+        run_env="test",
+        source_file="A668-crm_leads.xlsx",
+        database_url=database_url,
+    )
+
+    assert result.bucket_write_counts["pending"]["created"] == 1
+    assert result.bucket_write_counts["completed"]["created"] == 1
+    assert result.status_transitions == []
+
+    engine = create_async_engine(database_url, future=True)
+    try:
+        async with engine.connect() as connection:
+            event_count = await connection.scalar(sa.text("SELECT COUNT(*) FROM crm_leads_status_events"))
+    finally:
+        await engine.dispose()
+
+    assert event_count == 2
+
+
+@pytest.mark.asyncio
+async def test_ingest_reopen_transition_records_event(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_leads_reopen.db'}"
+    base_row = {"store_code": "A668", "pickup_no": "A668-3025", "pickup_date": "21 Apr 2026"}
+
+    await td_leads_ingest.ingest_td_crm_leads_rows(
+        rows=[{**base_row, "status_bucket": "pending"}],
+        run_id="run-reopen-1",
+        run_env="test",
+        source_file="A668-crm_leads.xlsx",
+        database_url=database_url,
+    )
+    await td_leads_ingest.ingest_td_crm_leads_rows(
+        rows=[{**base_row, "status_bucket": "completed"}],
+        run_id="run-reopen-2",
+        run_env="test",
+        source_file="A668-crm_leads.xlsx",
+        database_url=database_url,
+    )
+    result = await td_leads_ingest.ingest_td_crm_leads_rows(
+        rows=[{**base_row, "status_bucket": "pending"}],
+        run_id="run-reopen-3",
+        run_env="test",
+        source_file="A668-crm_leads.xlsx",
+        database_url=database_url,
+    )
+
+    assert len(result.status_transitions) == 1
+    assert result.status_transitions[0]["from_status_bucket"] == "completed"
+    assert result.status_transitions[0]["to_status_bucket"] == "pending"
+
+    engine = create_async_engine(database_url, future=True)
+    try:
+        async with engine.connect() as connection:
+            latest_event = (
+                await connection.execute(
+                    sa.text(
+                        """
+                        SELECT event_type, previous_status_bucket, status_bucket
+                        FROM crm_leads_status_events
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """
+                    )
+                )
+            ).mappings().one()
+    finally:
+        await engine.dispose()
+
+    assert latest_event["event_type"] == "status_transition"
+    assert latest_event["previous_status_bucket"] == "completed"
+    assert latest_event["status_bucket"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_ingest_sets_cancelled_flag_from_reason(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_leads_cancelled_flag.db'}"
+    rows = [
+        {"store_code": "A668", "status_bucket": "cancelled", "pickup_no": "A668-10", "reason": "", "pickup_date": "22 Apr 2026"},
+        {"store_code": "A668", "status_bucket": "cancelled", "pickup_no": "A668-11", "reason": "Customer unavailable", "pickup_date": "22 Apr 2026"},
+    ]
+
+    await td_leads_ingest.ingest_td_crm_leads_rows(
+        rows=rows,
+        run_id="run-cancelled-flag",
+        run_env="test",
+        source_file="A668-crm_leads.xlsx",
+        database_url=database_url,
+    )
+
+    engine = create_async_engine(database_url, future=True)
+    try:
+        async with engine.connect() as connection:
+            persisted = (
+                await connection.execute(
+                    sa.text(
+                        """
+                        SELECT pickup_no, cancelled_flag
+                        FROM crm_leads_current
+                        ORDER BY pickup_no
+                        """
+                    )
+                )
+            ).mappings().all()
+    finally:
+        await engine.dispose()
+
+    assert persisted == [
+        {"pickup_no": "A668-10", "cancelled_flag": "store"},
+        {"pickup_no": "A668-11", "cancelled_flag": "customer"},
+    ]
+
 
 @pytest.mark.asyncio
 async def test_ingest_lead_change_details_dedupes_and_caps_rows(tmp_path) -> None:
@@ -1099,8 +1247,8 @@ async def test_ingest_lead_change_details_dedupes_and_caps_rows(tmp_path) -> Non
 
     created_groups = result.lead_change_details["created_by_bucket"]
     assert created_groups[0]["status_bucket"] == "pending"
-    assert len(created_groups[0]["rows"]) == 20
-    assert created_groups[0]["overflow_count"] == 5
+    assert len(created_groups[0]["rows"]) == 25
+    assert created_groups[0]["overflow_count"] == 0
 
 
 @pytest.mark.asyncio
