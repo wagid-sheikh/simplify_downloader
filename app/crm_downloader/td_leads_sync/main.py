@@ -193,7 +193,9 @@ def _build_td_leads_section_table_html(*, section_label: str, headers: Sequence[
 
 
 def _is_customer_cancelled_td_lead(row: Mapping[str, Any]) -> bool:
-    return bool(str(row.get("reason") or "").strip())
+    # Canonical TD cancellation attribution rule:
+    # Reason blank => customer-cancelled; Reason present => store-cancelled.
+    return not bool(str(row.get("reason") or "").strip())
 
 
 def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:

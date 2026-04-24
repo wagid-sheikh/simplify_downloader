@@ -358,8 +358,8 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
                 INSERT INTO crm_leads_current (
                     lead_uid, store_code, status_bucket, customer_name, mobile, pickup_created_at, reason, cancelled_flag
                 ) VALUES
-                    ('L1', 'UN', 'cancelled', 'April Cancelled', '9000000001', '2026-04-02 00:00:00', NULL, 'store'),
-                    ('L2', 'UN', ' completed ', 'Customer Cancelled', '9000000002', '2026-04-30 23:59:00', 'Requested defer', 'customer'),
+                    ('L1', 'UN', 'cancelled', 'Customer Cancelled', '9000000001', '2026-04-02 00:00:00', NULL, 'customer'),
+                    ('L2', 'UN', ' completed ', 'Store Cancelled', '9000000002', '2026-04-30 23:59:00', 'Requested defer', 'store'),
                     ('L3', 'UN', 'completed', 'Completed Lead', '9000000003', '2026-04-15 10:00:00', NULL, NULL),
                     ('L4', 'UN', 'cancelled', 'March Cancelled', '9000000004', '2026-03-30 23:59:00', NULL, 'store'),
                     ('L5', 'UN', 'cancelled', 'May Cancelled', '9000000005', '2026-05-02 00:00:00', NULL, 'store')
@@ -385,10 +385,10 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
             "customer_cancelled_count": 1,
             "store_cancelled_rows": [
                 {
-                    "customer_name": "April Cancelled",
-                    "mobile": "9000000001",
+                    "customer_name": "Store Cancelled",
+                    "mobile": "9000000002",
                     "flag": "store",
-                    "reason": "--",
+                    "reason": "Requested defer",
                 }
             ],
         }

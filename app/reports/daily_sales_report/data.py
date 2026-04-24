@@ -1035,12 +1035,32 @@ async def fetch_daily_sales_report(
             .subquery()
         )
 
+        derived_cancelled_flag_expr = sa.case(
+            (
+                sa.or_(
+                    lead_base.c.cancelled_flag.is_(None),
+                    lead_base.c.cancelled_flag == "",
+                ),
+                sa.case(
+                    (
+                        sa.or_(
+                            lead_base.c.reason.is_(None),
+                            sa.func.trim(lead_base.c.reason) == "",
+                        ),
+                        "customer",
+                    ),
+                    else_="store",
+                ),
+            ),
+            else_=lead_base.c.cancelled_flag,
+        )
+
         cancelled_leads_stmt = (
             sa.select(
                 lead_base.c.store_name,
                 lead_base.c.customer_name,
                 lead_base.c.mobile,
-                sa.func.coalesce(lead_base.c.cancelled_flag, "store").label("cancelled_flag"),
+                derived_cancelled_flag_expr.label("cancelled_flag"),
                 lead_base.c.reason,
             )
             .where(lead_base.c.is_cancelled.is_(True))

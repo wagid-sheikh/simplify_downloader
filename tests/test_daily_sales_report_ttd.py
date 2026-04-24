@@ -179,14 +179,8 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
             {
                 "store_name": "Uttam Nagar",
                 "total_cancelled_count": 3,
-                "customer_cancelled_count": 1,
+                "customer_cancelled_count": 2,
                 "store_cancelled_rows": [
-                    {
-                        "customer_name": "Alice",
-                        "mobile": "9999999999",
-                        "flag": "store",
-                        "reason": "--",
-                    },
                     {
                         "customer_name": "Bob",
                         "mobile": "8888888888",
@@ -258,8 +252,8 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
     assert "Cancelled Leads for this Month" in html
     assert "Uttam Nagar" in html
     assert ">3<" in html
-    assert "(Alice, 9999999999, store, --)" in html
     assert "(Bob, 8888888888, store, No stock)" in html
+    assert "(Alice, 9999999999, store, --)" not in html
     assert "Customer Cancelled" not in html
     assert "Lead Performance Summary (MTD)" in html
     assert "HEALTHY" in html

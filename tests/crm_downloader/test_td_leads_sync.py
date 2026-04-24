@@ -502,14 +502,14 @@ def test_td_leads_tables_html_hides_customer_cancelled_rows_but_keeps_counts() -
                         "status_bucket": "cancelled",
                         "customer_name": "Customer Cancelled",
                         "mobile": "9888888888",
-                        "reason": "Customer not available",
+                        "reason": "",
                         "pickup_date": "22 Apr 2026 09:00:00 AM",
                     },
                     {
                         "status_bucket": "cancelled",
                         "customer_name": "Store Cancelled",
                         "mobile": "9777777777",
-                        "reason": "",
+                        "reason": "No inventory",
                         "pickup_date": "22 Apr 2026 08:00:00 AM",
                     },
                 ],
@@ -521,7 +521,14 @@ def test_td_leads_tables_html_hides_customer_cancelled_rows_but_keeps_counts() -
 
     assert "Leads Marked as Cancelled (2)" in tables_html
     assert "Store Cancelled" in tables_html
+    assert "No inventory" in tables_html
     assert "Customer Cancelled" not in tables_html
+
+
+def test_is_customer_cancelled_td_lead_uses_blank_reason_rule() -> None:
+    assert td_leads_main._is_customer_cancelled_td_lead({"reason": ""}) is True
+    assert td_leads_main._is_customer_cancelled_td_lead({"reason": None}) is True
+    assert td_leads_main._is_customer_cancelled_td_lead({"reason": "No inventory"}) is False
 
 
 def test_td_leads_tables_html_renders_none_for_empty_sections() -> None:
@@ -1226,6 +1233,7 @@ async def test_ingest_sets_cancelled_flag_from_reason(tmp_path) -> None:
     rows = [
         {"store_code": "A668", "status_bucket": "cancelled", "pickup_no": "A668-10", "reason": "", "pickup_date": "22 Apr 2026"},
         {"store_code": "A668", "status_bucket": "cancelled", "pickup_no": "A668-11", "reason": "Customer unavailable", "pickup_date": "22 Apr 2026"},
+        {"store_code": "A668", "status_bucket": "pending", "pickup_no": "A668-12", "reason": "", "pickup_date": "22 Apr 2026"},
     ]
 
     await td_leads_ingest.ingest_td_crm_leads_rows(
@@ -1254,8 +1262,9 @@ async def test_ingest_sets_cancelled_flag_from_reason(tmp_path) -> None:
         await engine.dispose()
 
     assert persisted == [
-        {"pickup_no": "A668-10", "cancelled_flag": "store"},
-        {"pickup_no": "A668-11", "cancelled_flag": "customer"},
+        {"pickup_no": "A668-10", "cancelled_flag": "customer"},
+        {"pickup_no": "A668-11", "cancelled_flag": "store"},
+        {"pickup_no": "A668-12", "cancelled_flag": None},
     ]
 
 
