@@ -537,8 +537,8 @@ async def fetch_daily_sales_report(
         sa.column("pickup_date"),
         sa.column("is_order_placed"),
     )
-    crm_leads = sa.table(
-        "crm_leads",
+    crm_leads_current = sa.table(
+        "crm_leads_current",
         sa.column("lead_uid"),
         sa.column("store_code"),
         sa.column("status_bucket"),
@@ -991,14 +991,14 @@ async def fetch_daily_sales_report(
             }
         )
 
-        normalized_store_code_expr = sa.func.upper(sa.func.trim(crm_leads.c.store_code))
-        normalized_status_bucket_expr = sa.func.lower(sa.func.trim(crm_leads.c.status_bucket))
+        normalized_store_code_expr = sa.func.upper(sa.func.trim(crm_leads_current.c.store_code))
+        normalized_status_bucket_expr = sa.func.lower(sa.func.trim(crm_leads_current.c.status_bucket))
         normalized_store_master_code_expr = sa.func.upper(sa.func.trim(store_master_primary.c.store_code))
-        normalized_cancelled_flag_expr = sa.func.lower(sa.func.trim(crm_leads.c.cancelled_flag))
+        normalized_cancelled_flag_expr = sa.func.lower(sa.func.trim(crm_leads_current.c.cancelled_flag))
         event_is_cancelled_exists = sa.exists(
             sa.select(sa.literal(1))
             .select_from(crm_leads_status_events)
-            .where(crm_leads_status_events.c.lead_uid == crm_leads.c.lead_uid)
+            .where(crm_leads_status_events.c.lead_uid == crm_leads_current.c.lead_uid)
             .where(sa.func.lower(sa.func.trim(crm_leads_status_events.c.status_bucket)) == "cancelled")
         )
         is_cancelled_expr = sa.or_(
@@ -1010,23 +1010,23 @@ async def fetch_daily_sales_report(
             sa.select(
                 normalized_store_code_expr.label("store_code"),
                 td_store_master_primary.c.store_name.label("store_name"),
-                crm_leads.c.customer_name.label("customer_name"),
-                crm_leads.c.mobile.label("mobile"),
-                crm_leads.c.reason.label("reason"),
+                crm_leads_current.c.customer_name.label("customer_name"),
+                crm_leads_current.c.mobile.label("mobile"),
+                crm_leads_current.c.reason.label("reason"),
                 normalized_cancelled_flag_expr.label("cancelled_flag"),
-                crm_leads.c.pickup_created_at.label("pickup_created_at"),
+                crm_leads_current.c.pickup_created_at.label("pickup_created_at"),
                 is_cancelled_expr.label("is_cancelled"),
                 normalized_status_bucket_expr.label("status_bucket"),
             )
             .select_from(
-                crm_leads.join(
+                crm_leads_current.join(
                     td_store_master_primary,
                     sa.func.upper(sa.func.trim(td_store_master_primary.c.store_code))
                     == normalized_store_code_expr,
                 )
             )
-            .where(crm_leads.c.pickup_created_at >= lead_period_start)
-            .where(crm_leads.c.pickup_created_at < lead_period_end)
+            .where(crm_leads_current.c.pickup_created_at >= lead_period_start)
+            .where(crm_leads_current.c.pickup_created_at < lead_period_end)
             .subquery()
         )
 

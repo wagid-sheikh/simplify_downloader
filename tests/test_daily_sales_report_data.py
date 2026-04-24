@@ -137,7 +137,7 @@ def _create_tables(database_url: str) -> None:
         conn.execute(
             sa.text(
                 """
-                CREATE TABLE crm_leads (
+                CREATE TABLE crm_leads_current (
                     lead_uid TEXT,
                     store_code TEXT,
                     status_bucket TEXT,
@@ -273,7 +273,7 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
         await session.execute(
             sa.text(
                 """
-                INSERT INTO crm_leads (store_code, status_bucket, pickup_created_at) VALUES
+                INSERT INTO crm_leads_current (store_code, status_bucket, pickup_created_at) VALUES
                     ('UN', 'completed', '2026-04-01 02:00:00+00:00'),
                     (' un ', ' Completed ', '2026-04-22 12:00:00+00:00'),
                     ('UN ', ' CANCELLED ', '2026-04-23 16:00:00+00:00'),
@@ -347,7 +347,7 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
         await session.execute(
             sa.text(
                 """
-                INSERT INTO crm_leads (
+                INSERT INTO crm_leads_current (
                     lead_uid, store_code, status_bucket, customer_name, mobile, pickup_created_at, reason, cancelled_flag
                 ) VALUES
                     ('L1', 'UN', 'cancelled', 'April Cancelled', '9000000001', '2026-04-02 00:00:00', NULL, 'store'),
