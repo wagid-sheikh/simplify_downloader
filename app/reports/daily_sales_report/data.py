@@ -234,12 +234,6 @@ def _lead_metric_payload(*, metric: str, value: Decimal, total_leads: int) -> di
     }
 
 
-def _format_lead_contact(customer_name: object | None, mobile_number: object | None) -> str:
-    normalized_name = str(customer_name or "--")
-    normalized_mobile = str(mobile_number or "--")
-    return f"{normalized_name} ({normalized_mobile})"
-
-
 def _calculate_ttd(target: Decimal, achieved: Decimal, day_of_month: int, days_in_month: int) -> Decimal:
     if days_in_month <= 0:
         return Decimal("0")
@@ -545,11 +539,19 @@ async def fetch_daily_sales_report(
     )
     crm_leads = sa.table(
         "crm_leads",
+        sa.column("lead_uid"),
         sa.column("store_code"),
         sa.column("status_bucket"),
         sa.column("customer_name"),
         sa.column("mobile"),
         sa.column("pickup_created_at"),
+        sa.column("reason"),
+        sa.column("cancelled_flag"),
+    )
+    crm_leads_status_events = sa.table(
+        "crm_leads_status_events",
+        sa.column("lead_uid"),
+        sa.column("status_bucket"),
     )
     pipeline_run_summaries = sa.table(
         "pipeline_run_summaries",
@@ -888,9 +890,9 @@ async def fetch_daily_sales_report(
 
     report_month_start = report_date.replace(day=1)
     report_next_month_start = (report_month_start + timedelta(days=32)).replace(day=1)
-    lead_period_start = ranges["start_month"]
-    lead_period_end = ranges["next_day"]
     monthly_lead_period_end = datetime.combine(report_next_month_start, time.min, tzinfo=tz)
+    lead_period_start = datetime.combine(report_month_start, time.min, tzinfo=tz)
+    lead_period_end = monthly_lead_period_end
 
     td_store_master_primary = (
         sa.select(
@@ -949,40 +951,6 @@ async def fetch_daily_sales_report(
                 }
             )
 
-        cancelled_leads_stmt = (
-            sa.select(
-                td_store_master_primary.c.store_name.label("store_name"),
-                crm_leads.c.customer_name,
-                crm_leads.c.mobile,
-            )
-            .select_from(
-                crm_leads.join(
-                    td_store_master_primary,
-                    sa.func.upper(sa.func.trim(td_store_master_primary.c.store_code))
-                    == sa.func.upper(sa.func.trim(crm_leads.c.store_code)),
-                )
-            )
-            .where(sa.func.lower(sa.func.trim(crm_leads.c.status_bucket)) == "cancelled")
-            .where(crm_leads.c.pickup_created_at >= lead_period_start)
-            .where(crm_leads.c.pickup_created_at < monthly_lead_period_end)
-            .order_by(
-                td_store_master_primary.c.store_name,
-                crm_leads.c.pickup_created_at,
-                crm_leads.c.customer_name,
-            )
-        )
-        cancelled_grouped_map: dict[str, list[str]] = {}
-        cancelled_leads_result = await session.execute(cancelled_leads_stmt)
-        for entry in cancelled_leads_result.mappings():
-            store_name = str(entry["store_name"] or "--")
-            cancelled_grouped_map.setdefault(store_name, []).append(
-                _format_lead_contact(entry["customer_name"], entry["mobile"])
-            )
-        cancelled_leads_grouped = [
-            {"store_name": store_name, "leads": leads}
-            for store_name, leads in sorted(cancelled_grouped_map.items())
-        ]
-
         td_leads_metrics_stmt = (
             sa.select(
                 pipeline_run_summaries.c.run_id,
@@ -1026,27 +994,130 @@ async def fetch_daily_sales_report(
         normalized_store_code_expr = sa.func.upper(sa.func.trim(crm_leads.c.store_code))
         normalized_status_bucket_expr = sa.func.lower(sa.func.trim(crm_leads.c.status_bucket))
         normalized_store_master_code_expr = sa.func.upper(sa.func.trim(store_master_primary.c.store_code))
+        normalized_cancelled_flag_expr = sa.func.lower(sa.func.trim(crm_leads.c.cancelled_flag))
+        event_is_cancelled_exists = sa.exists(
+            sa.select(sa.literal(1))
+            .select_from(crm_leads_status_events)
+            .where(crm_leads_status_events.c.lead_uid == crm_leads.c.lead_uid)
+            .where(sa.func.lower(sa.func.trim(crm_leads_status_events.c.status_bucket)) == "cancelled")
+        )
+        is_cancelled_expr = sa.or_(
+            normalized_status_bucket_expr == "cancelled",
+            event_is_cancelled_exists,
+        )
 
-        lead_agg = (
+        lead_base = (
             sa.select(
                 normalized_store_code_expr.label("store_code"),
-                sa.func.count().label("total_leads"),
-                sa.func.coalesce(
-                    sa.func.sum(sa.case((normalized_status_bucket_expr == "completed", 1), else_=0)),
-                    0,
-                ).label("completed_leads"),
-                sa.func.coalesce(
-                    sa.func.sum(sa.case((normalized_status_bucket_expr == "cancelled", 1), else_=0)),
-                    0,
-                ).label("cancelled_leads"),
-                sa.func.coalesce(
-                    sa.func.sum(sa.case((normalized_status_bucket_expr == "pending", 1), else_=0)),
-                    0,
-                ).label("pending_leads"),
+                td_store_master_primary.c.store_name.label("store_name"),
+                crm_leads.c.customer_name.label("customer_name"),
+                crm_leads.c.mobile.label("mobile"),
+                crm_leads.c.reason.label("reason"),
+                normalized_cancelled_flag_expr.label("cancelled_flag"),
+                crm_leads.c.pickup_created_at.label("pickup_created_at"),
+                is_cancelled_expr.label("is_cancelled"),
+                normalized_status_bucket_expr.label("status_bucket"),
+            )
+            .select_from(
+                crm_leads.join(
+                    td_store_master_primary,
+                    sa.func.upper(sa.func.trim(td_store_master_primary.c.store_code))
+                    == normalized_store_code_expr,
+                )
             )
             .where(crm_leads.c.pickup_created_at >= lead_period_start)
             .where(crm_leads.c.pickup_created_at < lead_period_end)
-            .group_by(normalized_store_code_expr)
+            .subquery()
+        )
+
+        cancelled_leads_stmt = (
+            sa.select(
+                lead_base.c.store_name,
+                lead_base.c.customer_name,
+                lead_base.c.mobile,
+                sa.func.coalesce(lead_base.c.cancelled_flag, "store").label("cancelled_flag"),
+                lead_base.c.reason,
+            )
+            .where(lead_base.c.is_cancelled.is_(True))
+            .order_by(
+                lead_base.c.store_name,
+                lead_base.c.pickup_created_at,
+                lead_base.c.customer_name,
+            )
+        )
+        cancelled_grouped_map: dict[str, dict[str, object]] = {}
+        cancelled_leads_result = await session.execute(cancelled_leads_stmt)
+        for entry in cancelled_leads_result.mappings():
+            store_name = str(entry["store_name"] or "--")
+            group = cancelled_grouped_map.setdefault(
+                store_name,
+                {
+                    "store_name": store_name,
+                    "total_cancelled_count": 0,
+                    "customer_cancelled_count": 0,
+                    "store_cancelled_rows": [],
+                },
+            )
+            group["total_cancelled_count"] = int(group["total_cancelled_count"]) + 1
+            cancelled_flag = str(entry["cancelled_flag"] or "store").lower()
+            if cancelled_flag == "customer":
+                group["customer_cancelled_count"] = int(group["customer_cancelled_count"]) + 1
+                continue
+            cast_rows = group["store_cancelled_rows"]
+            if isinstance(cast_rows, list):
+                cast_rows.append(
+                    {
+                        "customer_name": str(entry["customer_name"] or "--"),
+                        "mobile": str(entry["mobile"] or "--"),
+                        "flag": cancelled_flag,
+                        "reason": str(entry["reason"] or "--"),
+                    }
+                )
+        cancelled_leads_grouped = [
+            cancelled_grouped_map[store_name] for store_name in sorted(cancelled_grouped_map.keys())
+        ]
+
+        lead_agg = (
+            sa.select(
+                lead_base.c.store_code.label("store_code"),
+                sa.func.count().label("total_leads"),
+                sa.func.coalesce(
+                    sa.func.sum(
+                        sa.case(
+                            (
+                                sa.and_(
+                                    lead_base.c.is_cancelled.is_(False),
+                                    lead_base.c.status_bucket == "completed",
+                                ),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("completed_leads"),
+                sa.func.coalesce(
+                    sa.func.sum(sa.case((lead_base.c.is_cancelled.is_(True), 1), else_=0)),
+                    0,
+                ).label("cancelled_leads"),
+                sa.func.coalesce(
+                    sa.func.sum(
+                        sa.case(
+                            (
+                                sa.and_(
+                                    lead_base.c.is_cancelled.is_(False),
+                                    lead_base.c.status_bucket == "pending",
+                                ),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("pending_leads"),
+            )
+            .select_from(lead_base)
+            .group_by(lead_base.c.store_code)
             .subquery()
         )
 
@@ -1093,7 +1164,7 @@ async def fetch_daily_sales_report(
                     "store_name": str(entry["store_name"] or "--"),
                     "period_type": "MTD",
                     "period_start": report_month_start.isoformat(),
-                    "period_end": report_date.isoformat(),
+                    "period_end": (report_next_month_start - timedelta(days=1)).isoformat(),
                     "total_leads": total_leads,
                     "completed_leads": completed_leads,
                     "cancelled_leads": cancelled_leads,
