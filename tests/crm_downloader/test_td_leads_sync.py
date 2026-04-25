@@ -694,6 +694,93 @@ def test_td_leads_tables_html_marks_only_new_cancelled_transitions() -> None:
     assert "Customer Transition" not in tables_html
 
 
+def test_td_leads_tables_html_unchanged_snapshot_run_has_no_cancelled_entries() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-cancelled-unchanged-snapshot",
+        run_env="local",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={
+            "A817": StoreLeadResult(
+                store_code="A817",
+                rows=[
+                    {
+                        "status_bucket": "cancelled",
+                        "pickup_no": "A817-K1",
+                        "customer_name": "Already Cancelled",
+                        "mobile": "9333333333",
+                        "reason": "No inventory",
+                        "source": "Dashboard",
+                    }
+                ],
+                status_transitions=[],
+                lead_change_details={"transitions": []},
+            )
+        },
+    )
+
+    tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "No new leads/status changed across all stores." in tables_html
+    assert "Leads Marked as Cancelled" not in tables_html
+    assert "Already Cancelled" not in tables_html
+
+
+def test_td_leads_tables_html_pending_to_cancelled_transition_is_listed_once() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-cancelled-deduped-once",
+        run_env="local",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={
+            "A817": StoreLeadResult(
+                store_code="A817",
+                rows=[
+                    {
+                        "status_bucket": "cancelled",
+                        "pickup_no": "A817-K2",
+                        "customer_name": "Resolved From Current Row",
+                        "mobile": "9222222222",
+                        "reason": "Inventory delayed",
+                        "source": "App",
+                    }
+                ],
+                status_transitions=[
+                    {
+                        "lead_uid": "uid-a817-k2",
+                        "pickup_no": "A817-K2",
+                        "from_status_bucket": "pending",
+                        "to_status_bucket": "cancelled",
+                        "customer_name": "Stale Transition Name",
+                        "mobile": "9000000000",
+                    }
+                ],
+                lead_change_details={
+                    "transitions": [
+                        {
+                            "to_status_bucket": "cancelled",
+                            "rows": [
+                                {
+                                    "lead_uid": "uid-a817-k2",
+                                    "pickup_no": "A817-K2",
+                                    "from_status_bucket": "pending",
+                                    "customer_name": "Another Stale Name",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            )
+        },
+    )
+
+    tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "Leads Marked as Cancelled (1 transitions this run)" in tables_html
+    assert tables_html.count("Resolved From Current Row") == 1
+    assert "Stale Transition Name" not in tables_html
+    assert "Inventory delayed" in tables_html
+    assert "App" in tables_html
+
+
 def test_is_customer_cancelled_td_lead_uses_helper_consistent_resolution() -> None:
     assert td_leads_main._is_customer_cancelled_td_lead({"reason": ""}) is True
     assert td_leads_main._is_customer_cancelled_td_lead({"reason": None}) is True
