@@ -60,7 +60,11 @@ def _create_tables(database_url: str) -> None:
                     cost_center TEXT,
                     order_number TEXT,
                     order_date TIMESTAMP,
-                    net_amount NUMERIC
+                    net_amount NUMERIC,
+                    gross_amount NUMERIC,
+                    default_due_date TIMESTAMP,
+                    source_system TEXT,
+                    recovery_status TEXT
                 )
                 """
             )
@@ -679,3 +683,57 @@ async def test_fetch_daily_sales_report_collections_preaggregated_by_normalized_
     assert td_row.collections_mtd == 235
     assert td_row.collections_count_ftd == 1
     assert td_row.collections_count_mtd == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_manual_recovery_sections(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_manual_recovery.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 4, 25)
+
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO cost_center (cost_center, description, target_type, is_active)
+                VALUES ('CC-TD', 'TD Store', 'value', 1), ('CC-UC', 'UC Store', 'value', 1)
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders (
+                    cost_center, order_number, order_date, net_amount, gross_amount,
+                    default_due_date, source_system, recovery_status
+                ) VALUES
+                    ('CC-TD', 'TD-R1', '2026-04-20 10:00:00', 100, 120, '2026-04-20 10:00:00', 'TumbleDry', 'TO_BE_RECOVERED'),
+                    ('CC-TD', 'TD-R2', '2026-03-10 10:00:00', 200, 230, '2026-03-10 10:00:00', 'TumbleDry', 'TO_BE_RECOVERED'),
+                    ('CC-UC', 'UC-C1', '2026-01-10 10:00:00', 50, 300, '2026-01-10 10:00:00', 'UClean', 'TO_BE_COMPENSATED'),
+                    ('CC-TD', 'TD-X1', '2026-02-10 10:00:00', 90, 100, '2026-02-10 10:00:00', 'TumbleDry', 'COMPENSATED')
+                """
+            )
+        )
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    assert len(report.to_be_recovered) == 1
+    recovered = report.to_be_recovered[0]
+    assert recovered.cost_center == "CC-TD"
+    assert recovered.order_count == 2
+    assert recovered.total_amount_at_risk == 300
+    recovered_aging = {bucket.label: bucket.order_count for bucket in recovered.aging_split}
+    assert recovered_aging == {"0-30": 1, "31-60": 1, "61-90": 0, ">90": 0}
+
+    assert len(report.to_be_compensated) == 1
+    compensated = report.to_be_compensated[0]
+    assert compensated.cost_center == "CC-UC"
+    assert compensated.order_count == 1
+    assert compensated.total_amount_at_risk == 300
+    compensated_aging = {bucket.label: bucket.order_count for bucket in compensated.aging_split}
+    assert compensated_aging == {"0-30": 0, "31-60": 0, "61-90": 0, ">90": 1}
