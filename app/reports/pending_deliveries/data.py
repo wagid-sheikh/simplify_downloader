@@ -64,6 +64,7 @@ class PendingDeliveriesReportData:
     cost_center_sections: List[PendingDeliveriesCostCenterSection]
     total_pending_amount: Decimal
     total_count: int
+    manual_recovery_rows: List[PendingDeliveryRow]
 
 
 def _decimal(value: object | None) -> Decimal:
@@ -162,6 +163,7 @@ async def fetch_pending_deliveries_report(
     database_url: str,
     report_date: date,
     skip_uc_pending_delivery: bool,
+    include_aged_unresolved_recovery_rows: bool = False,
 ) -> PendingDeliveriesReportData:
     metadata = sa.MetaData()
     orders = _orders_table(metadata)
@@ -270,6 +272,7 @@ async def fetch_pending_deliveries_report(
 
     tz = get_timezone()
     rows: list[PendingDeliveryRow] = []
+    manual_recovery_rows: list[PendingDeliveryRow] = []
 
     async with session_scope(database_url) as session:
         results = await session.execute(stmt)
@@ -308,6 +311,104 @@ async def fetch_pending_deliveries_report(
                 )
             )
 
+        recovery_orders = sa.table(
+            "orders",
+            sa.column("cost_center"),
+            sa.column("store_code"),
+            sa.column("order_number"),
+            sa.column("customer_name"),
+            sa.column("order_date"),
+            sa.column("default_due_date"),
+            sa.column("source_system"),
+            sa.column("gross_amount"),
+            sa.column("net_amount"),
+            sa.column("recovery_status"),
+        )
+        manual_recovery_filters: list[sa.ColumnElement[bool]] = [
+            recovery_orders.c.recovery_status.in_(
+                ("TO_BE_RECOVERED", "TO_BE_COMPENSATED")
+            )
+        ]
+        if include_aged_unresolved_recovery_rows:
+            manual_recovery_filters.append(
+                sa.and_(
+                    recovery_orders.c.recovery_status.is_not(None),
+                    recovery_orders.c.recovery_status.not_in(
+                        ("RECOVERED", "COMPENSATED")
+                    ),
+                )
+            )
+
+        manual_recovery_amount_expr = sa.func.coalesce(
+            sa.case(
+                (
+                    recovery_orders.c.source_system == "TumbleDry",
+                    recovery_orders.c.net_amount,
+                ),
+                else_=recovery_orders.c.gross_amount,
+            ),
+            0,
+        )
+        manual_recovery_stmt = (
+            sa.select(
+                recovery_orders.c.cost_center,
+                recovery_orders.c.store_code,
+                recovery_orders.c.order_number,
+                recovery_orders.c.customer_name,
+                recovery_orders.c.order_date,
+                recovery_orders.c.default_due_date,
+                recovery_orders.c.source_system,
+                manual_recovery_amount_expr.label("amount_at_risk"),
+            )
+            .where(sa.or_(*manual_recovery_filters))
+            .order_by(
+                recovery_orders.c.cost_center,
+                recovery_orders.c.default_due_date,
+                recovery_orders.c.order_date,
+                recovery_orders.c.order_number,
+            )
+        )
+        if skip_uc_pending_delivery:
+            manual_recovery_stmt = manual_recovery_stmt.where(
+                recovery_orders.c.source_system != "UClean"
+            )
+
+        try:
+            manual_recovery_results = await session.execute(manual_recovery_stmt)
+        except sa.exc.DBAPIError:
+            manual_recovery_results = None
+
+        if manual_recovery_results is not None:
+            for record in manual_recovery_results.mappings():
+                order_date = record.get("order_date")
+                if not isinstance(order_date, datetime):
+                    continue
+                default_due_date = record.get("default_due_date")
+                if not isinstance(default_due_date, datetime):
+                    default_due_date = order_date
+                order_date_local = _resolve_order_date(order_date, tz)
+                default_due_date_local = _resolve_business_date(default_due_date, tz)
+                age_days = max(0, (report_date - default_due_date_local).days)
+                amount_at_risk = _decimal(record.get("amount_at_risk"))
+                manual_recovery_rows.append(
+                    PendingDeliveryRow(
+                        cost_center=str(record.get("cost_center") or ""),
+                        store_code=str(record.get("store_code") or ""),
+                        order_number=str(record.get("order_number") or ""),
+                        customer_name=str(record.get("customer_name") or ""),
+                        order_date=order_date_local,
+                        default_due_date=default_due_date_local,
+                        age_days=age_days,
+                        gross_amount=amount_at_risk,
+                        paid_amount=Decimal("0"),
+                        pending_amount=amount_at_risk,
+                        adjustments=Decimal("0"),
+                        is_edited_order=False,
+                        is_duplicate=False,
+                        source_system=str(record.get("source_system") or ""),
+                    )
+                )
+
     summary_sections = _build_summary_sections(rows)
     cost_center_sections = _build_cost_center_sections(rows)
     total_pending_amount = sum(
@@ -320,4 +421,5 @@ async def fetch_pending_deliveries_report(
         cost_center_sections=cost_center_sections,
         total_pending_amount=total_pending_amount,
         total_count=total_count,
+        manual_recovery_rows=manual_recovery_rows,
     )

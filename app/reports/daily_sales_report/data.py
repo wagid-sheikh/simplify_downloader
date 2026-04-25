@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from typing import Iterable, List, Mapping
@@ -63,6 +63,22 @@ class EditedOrdersSummary:
 
 
 @dataclass
+class RecoveryAgingSplit:
+    label: str
+    order_count: int
+    total_amount_at_risk: Decimal
+
+
+@dataclass
+class RecoverySectionRow:
+    cost_center: str
+    cost_center_name: str
+    order_count: int
+    total_amount_at_risk: Decimal
+    aging_split: List[RecoveryAgingSplit]
+
+
+@dataclass
 class DailySalesReportData:
     report_date: date
     rows: List[DailySalesRow]
@@ -75,6 +91,8 @@ class DailySalesReportData:
     lead_performance_summary: List[Mapping[str, object]]
     td_leads_sync_metrics: Mapping[str, object]
     td_leads_sync_lead_changes: Mapping[str, object]
+    to_be_recovered: List[RecoverySectionRow] = field(default_factory=list)
+    to_be_compensated: List[RecoverySectionRow] = field(default_factory=list)
 
 
 LEAD_BENCHMARKS = {
@@ -85,6 +103,9 @@ LEAD_BENCHMARKS = {
     "pending_max": Decimal("5"),
 }
 
+MANUAL_RECOVERY_STATUSES = ("TO_BE_RECOVERED", "TO_BE_COMPENSATED")
+MANUAL_RECOVERY_AGING_BUCKETS = ("0-30", "31-60", "61-90", ">90")
+
 
 def _decimal(value: object | None) -> Decimal:
     if value is None:
@@ -92,6 +113,105 @@ def _decimal(value: object | None) -> Decimal:
     if isinstance(value, Decimal):
         return value
     return Decimal(str(value))
+
+
+def _to_local_date(value: object | None, tz) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    parsed_dt = _parse_orders_sync_timestamp(value, tz=tz)
+    if parsed_dt is None:
+        return None
+    return parsed_dt.date()
+
+
+def _manual_recovery_age_bucket(age_days: int) -> str:
+    if age_days <= 30:
+        return "0-30"
+    if age_days <= 60:
+        return "31-60"
+    if age_days <= 90:
+        return "61-90"
+    return ">90"
+
+
+def _new_recovery_aging_split() -> dict[str, RecoveryAgingSplit]:
+    return {
+        bucket: RecoveryAgingSplit(
+            label=bucket,
+            order_count=0,
+            total_amount_at_risk=Decimal("0"),
+        )
+        for bucket in MANUAL_RECOVERY_AGING_BUCKETS
+    }
+
+
+def _build_manual_recovery_sections(
+    records: Iterable[Mapping[str, object]],
+    *,
+    report_date: date,
+    tz,
+) -> tuple[list[RecoverySectionRow], list[RecoverySectionRow]]:
+    grouped: dict[str, dict[str, object]] = {}
+
+    for record in records:
+        recovery_status = str(record.get("recovery_status") or "").upper()
+        if recovery_status not in MANUAL_RECOVERY_STATUSES:
+            continue
+
+        cost_center = str(record.get("cost_center") or "")
+        cost_center_name = str(record.get("description") or cost_center)
+        group = grouped.setdefault(
+            f"{recovery_status}:{cost_center}",
+            {
+                "status": recovery_status,
+                "cost_center": cost_center,
+                "cost_center_name": cost_center_name,
+                "order_count": 0,
+                "total_amount_at_risk": Decimal("0"),
+                "aging_split": _new_recovery_aging_split(),
+            },
+        )
+
+        source_system = str(record.get("source_system") or "")
+        net_amount = _decimal(record.get("net_amount"))
+        gross_amount = _decimal(record.get("gross_amount"))
+        amount_at_risk = net_amount if source_system == "TumbleDry" else gross_amount
+        if amount_at_risk < 0:
+            amount_at_risk = Decimal("0")
+
+        default_due_date = _to_local_date(record.get("default_due_date"), tz)
+        order_date = _to_local_date(record.get("order_date"), tz)
+        age_anchor_date = default_due_date or order_date or report_date
+        age_days = max(0, (report_date - age_anchor_date).days)
+        bucket = _manual_recovery_age_bucket(age_days)
+
+        aging_split = group["aging_split"][bucket]
+        aging_split.order_count += 1
+        aging_split.total_amount_at_risk += amount_at_risk
+
+        group["order_count"] += 1
+        group["total_amount_at_risk"] += amount_at_risk
+
+    recovered: list[RecoverySectionRow] = []
+    compensated: list[RecoverySectionRow] = []
+
+    for key in sorted(grouped.keys(), key=lambda value: (value.split(":", 1)[0], value.split(":", 1)[1])):
+        item = grouped[key]
+        section_row = RecoverySectionRow(
+            cost_center=str(item["cost_center"]),
+            cost_center_name=str(item["cost_center_name"]),
+            order_count=int(item["order_count"]),
+            total_amount_at_risk=item["total_amount_at_risk"],
+            aging_split=[item["aging_split"][bucket] for bucket in MANUAL_RECOVERY_AGING_BUCKETS],
+        )
+        if item["status"] == "TO_BE_RECOVERED":
+            recovered.append(section_row)
+        else:
+            compensated.append(section_row)
+
+    return recovered, compensated
 
 
 def _date_range(report_date: date, tz) -> dict[str, datetime]:
@@ -439,6 +559,10 @@ async def fetch_daily_sales_report(
         sa.column("order_number"),
         sa.column("order_date"),
         sa.column("net_amount"),
+        sa.column("gross_amount"),
+        sa.column("default_due_date"),
+        sa.column("source_system"),
+        sa.column("recovery_status"),
     )
     orders_sync_log = sa.table(
         "orders_sync_log",
@@ -789,6 +913,34 @@ async def fetch_daily_sales_report(
                 )
             )
 
+        manual_recovery_stmt = (
+            sa.select(
+                orders.c.cost_center,
+                sa.func.coalesce(store_master_primary.c.store_name, cost_center.c.description).label("description"),
+                orders.c.source_system,
+                orders.c.net_amount,
+                orders.c.gross_amount,
+                orders.c.order_date,
+                orders.c.default_due_date,
+                orders.c.recovery_status,
+            )
+            .select_from(
+                orders.join(cost_center, cost_center.c.cost_center == orders.c.cost_center).outerjoin(
+                    store_master_primary,
+                    store_master_primary.c.cost_center == orders.c.cost_center,
+                )
+            )
+            .where(cost_center.c.is_active.is_(True))
+            .where(orders.c.recovery_status.in_(MANUAL_RECOVERY_STATUSES))
+            .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
+        )
+        manual_recovery_result = await session.execute(manual_recovery_stmt)
+        to_be_recovered, to_be_compensated = _build_manual_recovery_sections(
+            manual_recovery_result.mappings(),
+            report_date=report_date,
+            tz=tz,
+        )
+
     totals = _totals_row(rows)
     totals.ttd = _calculate_ttd(totals.target, totals.achieved, day_of_month, days_in_month)
     edited_totals = _edited_totals(edited_rows)
@@ -1111,4 +1263,6 @@ async def fetch_daily_sales_report(
         lead_performance_summary=lead_performance_summary,
         td_leads_sync_metrics=td_leads_sync_metrics,
         td_leads_sync_lead_changes=td_leads_sync_lead_changes,
+        to_be_recovered=to_be_recovered,
+        to_be_compensated=to_be_compensated,
     )
