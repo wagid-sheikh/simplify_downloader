@@ -19,6 +19,8 @@ class TdLeadsIngestResult:
     rows_received: int
     rows_upserted: int
     bucket_write_counts: dict[str, dict[str, int]]
+    pickup_created_at_null_count: int
+    pickup_created_at_null_counts_by_bucket: dict[str, int]
     status_transitions: list[dict[str, Any]]
     lead_change_details: dict[str, Any]
     task_stub: dict[str, Any]
@@ -171,21 +173,21 @@ def build_lead_uid(row: Mapping[str, Any]) -> str:
 
 
 def _normalized_pickup_created_text(row: Mapping[str, Any]) -> str:
-    created_text = str(row.get("pickup_created_text") or "").strip()
-    if created_text:
-        return created_text
+    pickup_created_text = str(row.get("pickup_created_text") or "").strip()
+    if pickup_created_text:
+        return pickup_created_text
 
-    created_at = row.get("pickup_created_at")
-    if isinstance(created_at, datetime):
-        return created_at.isoformat()
+    pickup_created_at = row.get("pickup_created_at")
+    if isinstance(pickup_created_at, datetime):
+        return pickup_created_at.isoformat()
 
-    created_text = str(created_at or "").strip()
-    if created_text:
-        return created_text
+    pickup_created_at_text = str(pickup_created_at or "").strip()
+    if pickup_created_at_text:
+        return pickup_created_at_text
 
-    created_text = str(row.get("pickup_created_date") or "").strip()
-    if created_text:
-        return created_text
+    pickup_created_date = str(row.get("pickup_created_date") or "").strip()
+    if pickup_created_date:
+        return pickup_created_date
 
     pickup_date = str(row.get("pickup_date") or "").strip()
     if pickup_date:
@@ -257,6 +259,12 @@ async def ingest_td_crm_leads_rows(
         "completed": {"created": 0, "updated": 0},
         "cancelled": {"created": 0, "updated": 0},
     }
+    pickup_created_at_null_count = 0
+    pickup_created_at_null_counts_by_bucket: dict[str, int] = {
+        "pending": 0,
+        "completed": 0,
+        "cancelled": 0,
+    }
     status_transitions: list[dict[str, Any]] = []
     lead_change_rows: list[dict[str, Any]] = []
 
@@ -274,6 +282,11 @@ async def ingest_td_crm_leads_rows(
             normalized_pickup_time = str(row.get("pickup_time") or "").strip()
             pickup_created_at = _coerce_pickup_created_at(row, normalized_created_date=normalized_created_text)
             status_bucket = str(row.get("status_bucket") or "").lower()
+            if pickup_created_at is None:
+                pickup_created_at_null_count += 1
+                pickup_created_at_null_counts_by_bucket[status_bucket] = (
+                    pickup_created_at_null_counts_by_bucket.get(status_bucket, 0) + 1
+                )
             reason = (str(row.get("reason")).strip() or None) if row.get("reason") is not None else None
             cancelled_flag = None
             if status_bucket == "cancelled":
@@ -407,6 +420,8 @@ async def ingest_td_crm_leads_rows(
         rows_received=len(rows),
         rows_upserted=upserted,
         bucket_write_counts=bucket_write_counts,
+        pickup_created_at_null_count=pickup_created_at_null_count,
+        pickup_created_at_null_counts_by_bucket=pickup_created_at_null_counts_by_bucket,
         status_transitions=status_transitions,
         lead_change_details=_build_lead_change_payload(cap_per_group=LEAD_CHANGE_DETAILS_GROUP_CAP, rows=lead_change_rows),
         task_stub=task_stub,

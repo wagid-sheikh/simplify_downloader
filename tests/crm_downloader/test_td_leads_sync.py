@@ -189,6 +189,15 @@ def test_coerce_pickup_created_at_converts_date_only_from_ist_midnight_to_utc() 
     assert coerced == datetime(2026, 4, 20, 18, 30, tzinfo=timezone.utc)
 
 
+def test_coerce_pickup_created_at_normalizes_repeated_whitespace() -> None:
+    coerced = td_leads_ingest._coerce_pickup_created_at(
+        row={"pickup_created_at": None},
+        normalized_created_date="21   Apr   2026   3:03:39    PM",
+    )
+
+    assert coerced == datetime(2026, 4, 21, 9, 33, 39, tzinfo=timezone.utc)
+
+
 def test_normalized_pickup_created_text_falls_back_to_pickup_date_when_created_missing() -> None:
     normalized = td_leads_ingest._normalized_pickup_created_text(
         {
@@ -1441,22 +1450,42 @@ async def test_combined_created_datetime_populates_ingest_payload_and_email_row_
 
 
 @pytest.mark.asyncio
-async def test_ingest_populates_pickup_created_at_for_all_status_buckets(tmp_path) -> None:
+async def test_ingest_pickup_created_at_uses_fallback_without_overwriting_pickup_date(tmp_path) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_leads_created_at_all_buckets.db'}"
-    created_text = "21 Apr 2026 3:03:39 PM"
     rows = [
         {
             "store_code": "A668",
-            "status_bucket": bucket,
-            "pickup_id": f"4434944-{bucket}",
-            "pickup_no": f"A668-3025-{bucket}",
+            "status_bucket": "pending",
+            "pickup_id": "4434944-pending",
+            "pickup_no": "A668-3025-pending",
             "customer_name": "Moni",
             "mobile": "9599242207",
             "pickup_date": "21 Apr 2026",
-            "pickup_created_at": created_text if bucket == "pending" else None,
+            "pickup_created_at": "21 Apr 2026 3:03:39 PM",
+            "pickup_time": "11:00 AM - 1:00 PM",
+        },
+        {
+            "store_code": "A668",
+            "status_bucket": "completed",
+            "pickup_id": "4434944-completed",
+            "pickup_no": "A668-3025-completed",
+            "customer_name": "Moni",
+            "mobile": "9599242207",
+            "pickup_date": "22 Apr 2026",
+            "pickup_created_at": None,
+            "pickup_time": "11:00 AM - 1:00 PM",
+        },
+        {
+            "store_code": "A668",
+            "status_bucket": "cancelled",
+            "pickup_id": "4434944-cancelled",
+            "pickup_no": "A668-3025-cancelled",
+            "customer_name": "Moni",
+            "mobile": "9599242207",
+            "pickup_date": "23 Apr 2026",
+            "pickup_created_at": None,
             "pickup_time": "11:00 AM - 1:00 PM",
         }
-        for bucket in ("pending", "completed", "cancelled")
     ]
 
     ingest_result = await td_leads_ingest.ingest_td_crm_leads_rows(
@@ -1487,8 +1516,25 @@ async def test_ingest_populates_pickup_created_at_for_all_status_buckets(tmp_pat
         await engine.dispose()
 
     assert [row["status_bucket"] for row in stored_rows] == ["cancelled", "completed", "pending"]
-    assert all(row["pickup_created_at"] is not None for row in stored_rows)
-    assert all(row["pickup_date"] == "21 Apr 2026" for row in stored_rows)
+    created_at_by_bucket = {row["status_bucket"]: row["pickup_created_at"] for row in stored_rows}
+    pickup_date_by_bucket = {row["status_bucket"]: row["pickup_date"] for row in stored_rows}
+
+    def _as_iso(value: object) -> str:
+        if isinstance(value, datetime):
+            return value.isoformat(sep=" ", timespec="seconds")
+        return str(value)
+
+    assert all(created_at_by_bucket[bucket] is not None for bucket in ("pending", "completed", "cancelled"))
+    assert _as_iso(created_at_by_bucket["pending"]).startswith("2026-04-21 09:33:39")
+    assert _as_iso(created_at_by_bucket["completed"]).startswith("2026-04-21 18:30:00")
+    assert _as_iso(created_at_by_bucket["cancelled"]).startswith("2026-04-22 18:30:00")
+    assert pickup_date_by_bucket == {
+        "pending": "21 Apr 2026",
+        "completed": "22 Apr 2026",
+        "cancelled": "23 Apr 2026",
+    }
+    assert ingest_result.pickup_created_at_null_count == 0
+    assert ingest_result.pickup_created_at_null_counts_by_bucket == {"pending": 0, "completed": 0, "cancelled": 0}
 
 
 @pytest.mark.asyncio

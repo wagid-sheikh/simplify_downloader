@@ -278,6 +278,7 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
                     ('U2', ' un ', ' Completed ', '2026-04-22 12:00:00+00:00'),
                     ('U3', 'UN ', ' pending ', '2026-04-23 16:00:00+00:00'),
                     ('U4', ' un', ' pending ', '2026-04-10 05:00:00+00:00'),
+                    ('U8', 'UN', 'cancelled', '2026-04-01 12:00:00+00:00'),
                     ('U5', 'UN', 'completed', '2026-03-31 23:59:00+00:00'),
                     ('U6', 'UN', 'cancelled', '2026-04-24 00:10:00+00:00'),
                     ('U7', 'UN', 'completed', '2026-04-11 00:10:00+00:00')
@@ -303,13 +304,13 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
     assert un_summary["period_type"] == "MTD"
     assert un_summary["period_start"] == "2026-04-01"
     assert un_summary["period_end"] == "2026-04-30"
-    assert un_summary["total_leads"] == 6
+    assert un_summary["total_leads"] == 7
     assert un_summary["completed_leads"] == 3
-    assert un_summary["cancelled_leads"] == 1
+    assert un_summary["cancelled_leads"] == 2
     assert un_summary["pending_leads"] == 2
-    assert un_summary["conversion_pct"] == {"value": 50.0, "color": "RED", "status": "POOR"}
-    assert un_summary["cancelled_pct"] == {"value": 16.67, "color": "YELLOW", "status": "ACCEPTABLE"}
-    assert un_summary["pending_pct"] == {"value": 33.33, "color": "RED", "status": "FOLLOW_UP_GAP"}
+    assert un_summary["conversion_pct"] == {"value": 42.86, "color": "RED", "status": "POOR"}
+    assert un_summary["cancelled_pct"] == {"value": 28.57, "color": "RED", "status": "HIGH_LEAKAGE"}
+    assert un_summary["pending_pct"] == {"value": 28.57, "color": "RED", "status": "FOLLOW_UP_GAP"}
     assert un_summary["benchmark"] == {
         "conversion_target": 85.0,
         "conversion_min": 70.0,
@@ -317,9 +318,9 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
         "cancelled_max": 20.0,
         "pending_max": 5.0,
     }
-    assert un_summary["conversion_gap"] == -35.0
-    assert un_summary["cancelled_gap"] == 6.67
-    assert un_summary["pending_gap"] == 28.33
+    assert un_summary["conversion_gap"] == -42.14
+    assert un_summary["cancelled_gap"] == 18.57
+    assert un_summary["pending_gap"] == 23.57
 
     assert kn_summary["total_leads"] == 0
     assert kn_summary["conversion_pct"] == {"value": 0.0, "color": "NEUTRAL", "status": "NEUTRAL"}
