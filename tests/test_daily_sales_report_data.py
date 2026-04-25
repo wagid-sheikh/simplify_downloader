@@ -361,6 +361,7 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
                     lead_uid, store_code, status_bucket, customer_name, mobile, pickup_created_at, reason, cancelled_flag
                 ) VALUES
                     ('L1', 'UN', 'cancelled', 'Customer Cancelled', '9000000001', '2026-04-02 00:00:00', NULL, 'customer'),
+                    ('L7', 'UN', 'cancelled', 'Persisted Store Flag', '9000000007', '2026-04-08 00:00:00', '   ', 'store'),
                     ('L2', 'UN', ' completed ', 'Reopened Completed', '9000000002', '2026-04-30 23:59:00', 'Requested defer', 'store'),
                     ('L6', 'UN', ' pending ', 'Reopened Pending', '9000000006', '2026-04-12 11:59:00', NULL, 'store'),
                     ('L3', 'UN', 'completed', 'Completed Lead', '9000000003', '2026-04-15 10:00:00', NULL, NULL),
@@ -385,15 +386,22 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
     assert report.cancelled_leads == [
         {
             "store_name": "Uttam Nagar",
-            "total_cancelled_count": 1,
+            "total_cancelled_count": 2,
             "customer_cancelled_count": 1,
-            "store_cancelled_rows": [],
+            "store_cancelled_rows": [
+                {
+                    "customer_name": "Persisted Store Flag",
+                    "mobile": "9000000007",
+                    "flag": "store",
+                    "reason": "--",
+                }
+            ],
         }
     ]
     un_summary = next(item for item in report.lead_performance_summary if item["store"] == "UN")
-    assert un_summary["total_leads"] == 4
+    assert un_summary["total_leads"] == 5
     assert un_summary["completed_leads"] == 2
-    assert un_summary["cancelled_leads"] == 1
+    assert un_summary["cancelled_leads"] == 2
     assert un_summary["pending_leads"] == 1
 
 

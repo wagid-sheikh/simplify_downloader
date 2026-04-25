@@ -682,10 +682,12 @@ def test_td_leads_tables_html_marks_only_new_cancelled_transitions() -> None:
     assert "Customer Transition" not in tables_html
 
 
-def test_is_customer_cancelled_td_lead_uses_blank_reason_rule() -> None:
+def test_is_customer_cancelled_td_lead_uses_helper_consistent_resolution() -> None:
     assert td_leads_main._is_customer_cancelled_td_lead({"reason": ""}) is True
     assert td_leads_main._is_customer_cancelled_td_lead({"reason": None}) is True
     assert td_leads_main._is_customer_cancelled_td_lead({"reason": "No inventory"}) is False
+    assert td_leads_main._is_customer_cancelled_td_lead({"cancelled_flag": "customer", "reason": "No inventory"}) is True
+    assert td_leads_main._is_customer_cancelled_td_lead({"cancelled_flag": "store", "reason": ""}) is False
 
 
 def test_td_leads_tables_html_renders_none_for_empty_sections() -> None:
