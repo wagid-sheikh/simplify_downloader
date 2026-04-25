@@ -170,13 +170,23 @@ def build_lead_uid(row: Mapping[str, Any]) -> str:
 
 
 def _normalized_pickup_created_text(row: Mapping[str, Any]) -> str:
-    created_text = str(row.get("pickup_created_at") or "").strip()
+    created_text = str(row.get("pickup_created_text") or "").strip()
     if created_text:
         return created_text
+
+    created_at = row.get("pickup_created_at")
+    if isinstance(created_at, datetime):
+        return created_at.isoformat()
+
+    created_text = str(created_at or "").strip()
+    if created_text:
+        return created_text
+
     created_text = str(row.get("pickup_created_date") or "").strip()
     if created_text:
         return created_text
-    return str(row.get("pickup_date") or "").strip()
+
+    return ""
 
 
 _IST = ZoneInfo("Asia/Kolkata")

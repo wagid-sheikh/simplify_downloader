@@ -69,9 +69,11 @@ FIELD_ALIASES: Mapping[str, tuple[str, ...]] = {
     "customer_name": ("customer name", "name"),
     "address": ("address",),
     "mobile": ("mobile", "mobile no", "mobile no."),
-    "pickup_date": ("pickup date", "pickup created date", "created date"),
+    "pickup_date": ("pickup date",),
     "pickup_time": ("pickup time", "time"),
     "pickup_created_at": (
+        "created date",
+        "pickup created date",
         "created date/time",
         "created date time",
         "created datetime",
@@ -94,6 +96,8 @@ OUTPUT_COLUMNS = [
     "address",
     "mobile",
     "pickup_date",
+    "pickup_created_text",
+    "pickup_created_at",
     "pickup_time",
     "special_instruction",
     "status_text",
@@ -103,7 +107,7 @@ OUTPUT_COLUMNS = [
     "scraped_at",
 ]
 
-DATETIME_LIKE_OUTPUT_COLUMNS = frozenset({"pickup_date", "scraped_at", "started_at", "finished_at", "created_at"})
+DATETIME_LIKE_OUTPUT_COLUMNS = frozenset({"pickup_created_at", "scraped_at", "started_at", "finished_at", "created_at"})
 _DB_MODE_LOGGED_RUN_IDS: set[str] = set()
 _DB_MODE_LOGGED_RUN_IDS_LOCK = asyncio.Lock()
 _IST = ZoneInfo("Asia/Kolkata")
@@ -155,12 +159,12 @@ def _sort_td_leads_bucket_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str,
         created_dt = _parse_td_leads_created_datetime(created_value)
         if created_dt is not None:
             return created_dt
-        return _parse_td_leads_created_datetime(row.get("pickup_date"))
+        return _parse_td_leads_created_datetime(row.get("pickup_created_text"))
 
     keyed_rows: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     for idx, row in enumerate(rows):
         resolved_created_at = _resolve_created_at(row)
-        canonical_text = str(row.get("pickup_date") or row.get("pickup_created_at") or "").strip()
+        canonical_text = str(row.get("pickup_created_text") or row.get("pickup_created_at") or row.get("pickup_date") or "").strip()
         pickup_code = str(row.get("pickup_code") or row.get("pickup_no") or row.get("pickup_id") or "").strip()
         sort_key = (
             0 if resolved_created_at is not None else 1,
@@ -196,6 +200,25 @@ def _is_customer_cancelled_td_lead(row: Mapping[str, Any]) -> bool:
     # Canonical TD cancellation attribution rule:
     # Reason blank => customer-cancelled; Reason present => store-cancelled.
     return not bool(str(row.get("reason") or "").strip())
+
+
+def _format_pickup_created_display(row: Mapping[str, Any]) -> str:
+    created_text = str(row.get("pickup_created_text") or "").strip()
+    if created_text:
+        return created_text
+
+    created_at = row.get("pickup_created_at")
+    if isinstance(created_at, datetime):
+        normalized = created_at
+        if normalized.tzinfo is None or normalized.utcoffset() is None:
+            normalized = normalized.replace(tzinfo=timezone.utc)
+        return normalized.astimezone(timezone.utc).strftime("%d %b %Y %I:%M:%S %p UTC")
+
+    created_at_text = str(created_at or "").strip()
+    if created_at_text:
+        return created_at_text
+
+    return "None"
 
 
 def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
@@ -255,7 +278,7 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
         pending_rows = _td_leads_bucket_rows(result, "pending")
         pending_detail_rows: list[list[str]] = []
         for row in pending_rows:
-            created_display = row.get("pickup_date") or row.get("pickup_created_at") or "None"
+            created_display = _format_pickup_created_display(row)
             pending_detail_rows.append(
                 [
                     str(row.get("customer_name") or "None"),
@@ -786,11 +809,8 @@ async def _collect_status_rows(
             values = [str(value or "").strip() for value in raw_row.get("values") or []]
             pickup_date = _field_from_headers(headers=headers, values=values, field_name="pickup_date")
             pickup_time = _field_from_headers(headers=headers, values=values, field_name="pickup_time")
-            created_datetime_text = _field_from_headers(headers=headers, values=values, field_name="pickup_created_at")
-            pickup_created_at = None
-            if created_datetime_text:
-                parsed_pickup_date, pickup_created_at = _parse_created_datetime(created_datetime_text)
-                pickup_date = parsed_pickup_date or pickup_date
+            pickup_created_text = _field_from_headers(headers=headers, values=values, field_name="pickup_created_at")
+            _, pickup_created_at = _parse_created_datetime(pickup_created_text)
 
             row = {
                 "store_code": store_code,
@@ -803,6 +823,7 @@ async def _collect_status_rows(
                 "mobile": _field_from_headers(headers=headers, values=values, field_name="mobile"),
                 "pickup_date": pickup_date,
                 "pickup_time": pickup_time,
+                "pickup_created_text": pickup_created_text,
                 "pickup_created_at": pickup_created_at,
                 "special_instruction": _field_from_headers(headers=headers, values=values, field_name="special_instruction"),
                 "status_text": _field_from_headers(headers=headers, values=values, field_name="status_text"),

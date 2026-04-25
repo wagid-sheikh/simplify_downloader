@@ -144,6 +144,17 @@ def test_field_from_headers_maps_created_datetime_header_aliases() -> None:
 
     assert resolved == "21 Apr 2026 3:03:39 PM"
 
+def test_field_from_headers_does_not_treat_created_date_as_pickup_date() -> None:
+    headers = ["Created Date", "Pickup No."]
+    values = ["21 Apr 2026", "A668-3025"]
+
+    resolved_pickup_date = _field_from_headers(headers=headers, values=values, field_name="pickup_date")
+    resolved_created = _field_from_headers(headers=headers, values=values, field_name="pickup_created_at")
+
+    assert resolved_pickup_date is None
+    assert resolved_created == "21 Apr 2026"
+
+
 
 def test_scraped_at_value_can_pass_through() -> None:
     now_utc = datetime.now(timezone.utc)
@@ -182,7 +193,8 @@ def test_sanitize_rows_for_xlsx_export_converts_tz_aware_datetime_and_iso_string
     aware_value = datetime(2026, 4, 22, 6, 30, tzinfo=timezone.utc)
     rows = [
         {
-            "pickup_date": "2026-04-22T11:00:00+05:30",
+            "pickup_date": "22 Apr 2026",
+            "pickup_created_at": "2026-04-22T11:00:00+05:30",
             "scraped_at": aware_value,
             "mobile": "9999999999",
         }
@@ -190,11 +202,13 @@ def test_sanitize_rows_for_xlsx_export_converts_tz_aware_datetime_and_iso_string
 
     sanitized = _sanitize_rows_for_xlsx_export(rows=rows)
 
-    assert sanitized[0]["pickup_date"] == datetime(2026, 4, 22, 11, 0)
+    assert sanitized[0]["pickup_date"] == "22 Apr 2026"
+    assert sanitized[0]["pickup_created_at"] == datetime(2026, 4, 22, 11, 0)
     assert sanitized[0]["scraped_at"] == datetime(2026, 4, 22, 6, 30)
     assert sanitized[0]["scraped_at"].tzinfo is None
     assert rows[0]["scraped_at"] is aware_value
-    assert rows[0]["pickup_date"] == "2026-04-22T11:00:00+05:30"
+    assert rows[0]["pickup_date"] == "22 Apr 2026"
+    assert rows[0]["pickup_created_at"] == "2026-04-22T11:00:00+05:30"
 
 
 def test_find_tz_aware_columns_flags_remaining_tz_values() -> None:
@@ -257,7 +271,7 @@ def test_td_leads_summary_html_renders_business_sections_and_footer_refs() -> No
                         "pickup_id": "C-2",
                         "pickup_date": "2026-04-22T09:00:00+00:00",
                         "status_text": "Cancelled",
-                        "reason": "",
+                        "reason": "No inventory",
                     },
                 ],
                 status_counts={"pending": 1, "completed": 0, "cancelled": 1},
@@ -371,7 +385,7 @@ def test_td_leads_tables_html_renders_three_business_sections_per_store() -> Non
                         "pickup_no": "A817-C2",
                         "customer_name": "Raj",
                         "mobile": "9111111111",
-                        "reason": "",
+                        "reason": "No inventory",
                         "pickup_date": "2026-04-22 09:00",
                         "source": "Walk-in",
                     },
@@ -466,6 +480,7 @@ def test_td_leads_tables_html_sorts_pending_and_cancelled_rows_by_created_dateti
                         "address": "Area 7",
                         "pickup_date": "19 Apr 2026 11:00:00 AM",
                         "pickup_created_at": datetime(2026, 4, 19, 11, 0, 0),
+                        "reason": "No slot",
                     },
                     {
                         "status_bucket": "cancelled",
@@ -475,6 +490,7 @@ def test_td_leads_tables_html_sorts_pending_and_cancelled_rows_by_created_dateti
                         "address": "Area 8",
                         "pickup_date": "22 Apr 2026 01:00:00 PM",
                         "pickup_created_at": datetime(2026, 4, 22, 13, 0, 0),
+                        "reason": "No inventory",
                     },
                 ],
             )
@@ -487,6 +503,41 @@ def test_td_leads_tables_html_sorts_pending_and_cancelled_rows_by_created_dateti
     assert tables_html.index("Recent") < tables_html.index("Legacy One")
     assert tables_html.index("Legacy One") < tables_html.index("Legacy Two")
     assert tables_html.index("Cancelled Latest") < tables_html.index("Cancelled Earlier")
+
+
+
+
+def test_td_leads_tables_html_pending_prefers_pickup_created_text_then_falls_back_to_pickup_created_at() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-pending-display",
+        run_env="local",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={
+            "A817": StoreLeadResult(
+                store_code="A817",
+                rows=[
+                    {
+                        "status_bucket": "pending",
+                        "customer_name": "Text First",
+                        "mobile": "9000000001",
+                        "pickup_created_text": "21 Apr 2026 3:03:39 PM",
+                        "pickup_created_at": datetime(2026, 4, 21, 9, 33, 39, tzinfo=timezone.utc),
+                    },
+                    {
+                        "status_bucket": "pending",
+                        "customer_name": "Datetime Fallback",
+                        "mobile": "9000000002",
+                        "pickup_created_at": datetime(2026, 4, 21, 9, 33, 39, tzinfo=timezone.utc),
+                    },
+                ],
+            )
+        },
+    )
+
+    tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "21 Apr 2026 3:03:39 PM" in tables_html
+    assert "21 Apr 2026 09:33:39 AM UTC" in tables_html
 
 
 def test_td_leads_tables_html_hides_customer_cancelled_rows_but_keeps_counts() -> None:
@@ -857,8 +908,49 @@ async def test_collect_status_rows_maps_combined_created_datetime_to_pickup_crea
     )
 
     assert warnings == []
-    assert rows[0]["pickup_date"] == "21 Apr 2026 3:03:39 PM"
+    assert rows[0]["pickup_date"] is None
     assert rows[0]["pickup_time"] is None
+    assert rows[0]["pickup_created_text"] == "21 Apr 2026 3:03:39 PM"
+    assert rows[0]["pickup_created_at"] == datetime(2026, 4, 21, 9, 33, 39, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_collect_status_rows_keeps_pickup_date_when_pickup_date_column_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _noop_switch_status(*args, **kwargs) -> None:
+        return None
+
+    async def _fake_scrape_grid_rows(*args, **kwargs):
+        return (
+            ["Pickup No.", "Pickup Date", "Created Date/Time", "Mobile", "Status"],
+            [
+                {
+                    "pickup_id": "4434944",
+                    "values": ["A668-3025", "22 Apr 2026", "21 Apr 2026 3:03:39 PM", "9599242207", "PENDING"],
+                }
+            ],
+        )
+
+    async def _no_pages(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.crm_downloader.td_leads_sync.main._switch_status", _noop_switch_status)
+    monkeypatch.setattr("app.crm_downloader.td_leads_sync.main._scrape_grid_rows", _fake_scrape_grid_rows)
+    monkeypatch.setattr("app.crm_downloader.td_leads_sync.main._available_pager_args", _no_pages)
+
+    rows, warnings = await _collect_status_rows(
+        page=SimpleNamespace(),
+        store_code="A668",
+        status_bucket="pending",
+        status_value="1",
+        grid_selector="#grdEntry",
+        logger=_FakeLogger(),
+    )
+
+    assert warnings == []
+    assert rows[0]["pickup_date"] == "22 Apr 2026"
+    assert rows[0]["pickup_created_text"] == "21 Apr 2026 3:03:39 PM"
     assert rows[0]["pickup_created_at"] == datetime(2026, 4, 21, 9, 33, 39, tzinfo=timezone.utc)
 
 
@@ -953,7 +1045,7 @@ async def test_combined_created_datetime_populates_ingest_payload_and_email_row_
                 rows=[
                     {
                         **row,
-                        "pickup_date": row["pickup_created_date"],
+                        "pickup_created_text": row["pickup_created_date"],
                         "pickup_time": None,
                     }
                 ],
