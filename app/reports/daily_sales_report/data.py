@@ -63,41 +63,13 @@ class EditedOrdersSummary:
 
 
 @dataclass
-class RecoveryAgingSplit:
-    label: str
-    order_count: int
-    total_amount_at_risk: Decimal
-
-
-@dataclass
-class RecoverySectionRow:
+class RecoveryOrderRow:
     cost_center: str
-    cost_center_name: str
-    order_count: int
-    total_amount_at_risk: Decimal
-    aging_split: List[RecoveryAgingSplit]
-
-
-@dataclass
-class RecoveryLifecycleRow:
-    cost_center: str
-    cost_center_name: str
     order_number: str
-    recovery_status: str
-    recovery_opened_at: date | None
-    recovery_closed_at: date | None
-    recovery_expected_resolution_date: date | None
-    open_age_days: int
-    is_overdue: bool
-    closure_turnaround_days: int | None
-
-
-@dataclass
-class RecoveryBacklogTotals:
-    opening_backlog: int = 0
-    newly_tagged: int = 0
-    closed_today: int = 0
-    net_backlog_movement: int = 0
+    order_date: date | None
+    customer_name: str
+    mobile_number: str
+    order_value: Decimal
 
 
 @dataclass
@@ -113,10 +85,10 @@ class DailySalesReportData:
     lead_performance_summary: List[Mapping[str, object]]
     td_leads_sync_metrics: Mapping[str, object]
     td_leads_sync_lead_changes: Mapping[str, object]
-    to_be_recovered: List[RecoverySectionRow] = field(default_factory=list)
-    to_be_compensated: List[RecoverySectionRow] = field(default_factory=list)
-    recovery_lifecycle_closed: List[RecoveryLifecycleRow] = field(default_factory=list)
-    recovery_backlog_totals: RecoveryBacklogTotals = field(default_factory=RecoveryBacklogTotals)
+    to_be_recovered: List[RecoveryOrderRow] = field(default_factory=list)
+    to_be_compensated: List[RecoveryOrderRow] = field(default_factory=list)
+    to_be_recovered_total_order_value: Decimal = Decimal("0")
+    to_be_compensated_total_order_value: Decimal = Decimal("0")
 
 
 LEAD_BENCHMARKS = {
@@ -128,8 +100,6 @@ LEAD_BENCHMARKS = {
 }
 
 MANUAL_RECOVERY_STATUSES = ("TO_BE_RECOVERED", "TO_BE_COMPENSATED")
-RECOVERY_CLOSED_STATUSES = ("RECOVERED", "COMPENSATED", "WRITE_OFF")
-MANUAL_RECOVERY_AGING_BUCKETS = ("0-30", "31-60", "61-90", ">90")
 
 
 def _decimal(value: object | None) -> Decimal:
@@ -151,146 +121,45 @@ def _to_local_date(value: object | None, tz) -> date | None:
     return parsed_dt.date()
 
 
-def _manual_recovery_age_bucket(age_days: int) -> str:
-    if age_days <= 30:
-        return "0-30"
-    if age_days <= 60:
-        return "31-60"
-    if age_days <= 90:
-        return "61-90"
-    return ">90"
-
-
-def _new_recovery_aging_split() -> dict[str, RecoveryAgingSplit]:
-    return {
-        bucket: RecoveryAgingSplit(
-            label=bucket,
-            order_count=0,
-            total_amount_at_risk=Decimal("0"),
-        )
-        for bucket in MANUAL_RECOVERY_AGING_BUCKETS
-    }
-
-
 def _build_manual_recovery_sections(
     records: Iterable[Mapping[str, object]],
     *,
-    report_date: date,
     tz,
-) -> tuple[
-    list[RecoverySectionRow],
-    list[RecoverySectionRow],
-    list[RecoveryLifecycleRow],
-    RecoveryBacklogTotals,
-]:
-    grouped: dict[str, dict[str, object]] = {}
-    closed_lifecycle_rows: list[RecoveryLifecycleRow] = []
-    opening_backlog = 0
-    newly_tagged = 0
-    closed_today = 0
-
+) -> tuple[list[RecoveryOrderRow], list[RecoveryOrderRow], Decimal, Decimal]:
+    recovered_rows: list[RecoveryOrderRow] = []
+    compensated_rows: list[RecoveryOrderRow] = []
+    recovered_total_order_value = Decimal("0")
+    compensated_total_order_value = Decimal("0")
     for record in records:
         recovery_status = str(record.get("recovery_status") or "").upper()
-        if recovery_status not in MANUAL_RECOVERY_STATUSES and recovery_status not in RECOVERY_CLOSED_STATUSES:
+        if recovery_status not in MANUAL_RECOVERY_STATUSES:
             continue
 
-        recovery_opened_at = _to_local_date(record.get("recovery_opened_at"), tz)
-        recovery_closed_at = _to_local_date(record.get("recovery_closed_at"), tz)
-        recovery_expected_resolution_date = _to_local_date(record.get("recovery_expected_resolution_date"), tz)
-
-        if recovery_status in MANUAL_RECOVERY_STATUSES:
-            if recovery_opened_at is not None and recovery_opened_at < report_date:
-                opening_backlog += 1
-            if recovery_opened_at == report_date:
-                newly_tagged += 1
-        if recovery_status in RECOVERY_CLOSED_STATUSES and recovery_closed_at == report_date:
-            closed_today += 1
-
         cost_center = str(record.get("cost_center") or "")
-        cost_center_name = str(record.get("description") or cost_center)
-
         source_system = str(record.get("source_system") or "")
         net_amount = _decimal(record.get("net_amount"))
         gross_amount = _decimal(record.get("gross_amount"))
-        amount_at_risk = net_amount if source_system == "TumbleDry" else gross_amount
-        if amount_at_risk < 0:
-            amount_at_risk = Decimal("0")
-
-        default_due_date = _to_local_date(record.get("default_due_date"), tz)
         order_date = _to_local_date(record.get("order_date"), tz)
-        age_anchor_date = recovery_opened_at or default_due_date or order_date or report_date
-        age_days = max(0, (report_date - age_anchor_date).days)
-        is_overdue = (
-            recovery_expected_resolution_date is not None
-            and recovery_expected_resolution_date < report_date
-            and recovery_status in MANUAL_RECOVERY_STATUSES
+        order_value = net_amount if source_system == "TumbleDry" else gross_amount
+        if order_value < 0:
+            order_value = Decimal("0")
+        order_row = RecoveryOrderRow(
+            cost_center=cost_center,
+            order_number=str(record.get("order_number") or ""),
+            order_date=order_date,
+            customer_name=str(record.get("customer_name") or ""),
+            mobile_number=str(record.get("mobile_number") or ""),
+            order_value=order_value,
         )
-
-        if recovery_status in MANUAL_RECOVERY_STATUSES:
-            group = grouped.setdefault(
-                f"{recovery_status}:{cost_center}",
-                {
-                    "status": recovery_status,
-                    "cost_center": cost_center,
-                    "cost_center_name": cost_center_name,
-                    "order_count": 0,
-                    "total_amount_at_risk": Decimal("0"),
-                    "aging_split": _new_recovery_aging_split(),
-                },
-            )
-            bucket = _manual_recovery_age_bucket(age_days)
-            aging_split = group["aging_split"][bucket]
-            aging_split.order_count += 1
-            aging_split.total_amount_at_risk += amount_at_risk
-
-            group["order_count"] += 1
-            group["total_amount_at_risk"] += amount_at_risk
-            continue
-
-        closure_turnaround_days: int | None = None
-        if recovery_opened_at is not None and recovery_closed_at is not None:
-            closure_turnaround_days = max(0, (recovery_closed_at - recovery_opened_at).days)
-        closed_lifecycle_rows.append(
-            RecoveryLifecycleRow(
-                cost_center=cost_center,
-                cost_center_name=cost_center_name,
-                order_number=str(record.get("order_number") or ""),
-                recovery_status=recovery_status,
-                recovery_opened_at=recovery_opened_at,
-                recovery_closed_at=recovery_closed_at,
-                recovery_expected_resolution_date=recovery_expected_resolution_date,
-                open_age_days=age_days,
-                is_overdue=is_overdue,
-                closure_turnaround_days=closure_turnaround_days,
-            )
-        )
-
-    recovered: list[RecoverySectionRow] = []
-    compensated: list[RecoverySectionRow] = []
-
-    for key in sorted(grouped.keys(), key=lambda value: (value.split(":", 1)[0], value.split(":", 1)[1])):
-        item = grouped[key]
-        section_row = RecoverySectionRow(
-            cost_center=str(item["cost_center"]),
-            cost_center_name=str(item["cost_center_name"]),
-            order_count=int(item["order_count"]),
-            total_amount_at_risk=item["total_amount_at_risk"],
-            aging_split=[item["aging_split"][bucket] for bucket in MANUAL_RECOVERY_AGING_BUCKETS],
-        )
-        if item["status"] == "TO_BE_RECOVERED":
-            recovered.append(section_row)
+        if recovery_status == "TO_BE_RECOVERED":
+            recovered_rows.append(order_row)
+            recovered_total_order_value += order_value
         else:
-            compensated.append(section_row)
-
-    closed_lifecycle_rows.sort(key=lambda row: (row.cost_center, row.recovery_closed_at or report_date, row.order_number))
-
-    backlog_totals = RecoveryBacklogTotals(
-        opening_backlog=opening_backlog,
-        newly_tagged=newly_tagged,
-        closed_today=closed_today,
-        net_backlog_movement=newly_tagged - closed_today,
-    )
-    return recovered, compensated, closed_lifecycle_rows, backlog_totals
+            compensated_rows.append(order_row)
+            compensated_total_order_value += order_value
+    recovered_rows.sort(key=lambda row: (row.cost_center, row.order_date or date.min, row.order_number))
+    compensated_rows.sort(key=lambda row: (row.cost_center, row.order_date or date.min, row.order_number))
+    return recovered_rows, compensated_rows, recovered_total_order_value, compensated_total_order_value
 
 
 def _date_range(report_date: date, tz) -> dict[str, datetime]:
@@ -637,6 +506,8 @@ async def fetch_daily_sales_report(
         sa.column("cost_center"),
         sa.column("order_number"),
         sa.column("order_date"),
+        sa.column("customer_name"),
+        sa.column("mobile_number"),
         sa.column("net_amount"),
         sa.column("gross_amount"),
         sa.column("default_due_date"),
@@ -998,17 +869,14 @@ async def fetch_daily_sales_report(
         manual_recovery_stmt = (
             sa.select(
                 orders.c.cost_center,
-                sa.func.coalesce(store_master_primary.c.store_name, cost_center.c.description).label("description"),
                 orders.c.order_number,
+                orders.c.customer_name,
+                orders.c.mobile_number,
                 orders.c.source_system,
                 orders.c.net_amount,
                 orders.c.gross_amount,
                 orders.c.order_date,
-                orders.c.default_due_date,
                 orders.c.recovery_status,
-                orders.c.recovery_opened_at,
-                orders.c.recovery_closed_at,
-                orders.c.recovery_expected_resolution_date,
             )
             .select_from(
                 orders.join(cost_center, cost_center.c.cost_center == orders.c.cost_center).outerjoin(
@@ -1017,19 +885,18 @@ async def fetch_daily_sales_report(
                 )
             )
             .where(cost_center.c.is_active.is_(True))
-            .where(
-                sa.or_(
-                    orders.c.recovery_status.in_(MANUAL_RECOVERY_STATUSES + RECOVERY_CLOSED_STATUSES),
-                    orders.c.recovery_opened_at.is_not(None),
-                )
-            )
+            .where(orders.c.recovery_status.in_(MANUAL_RECOVERY_STATUSES))
             .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
         )
         manual_recovery_result = await session.execute(manual_recovery_stmt)
-        to_be_recovered, to_be_compensated, recovery_lifecycle_closed, recovery_backlog_totals = (
+        (
+            to_be_recovered,
+            to_be_compensated,
+            to_be_recovered_total_order_value,
+            to_be_compensated_total_order_value,
+        ) = (
             _build_manual_recovery_sections(
             manual_recovery_result.mappings(),
-            report_date=report_date,
             tz=tz,
         )
         )
@@ -1358,6 +1225,6 @@ async def fetch_daily_sales_report(
         td_leads_sync_lead_changes=td_leads_sync_lead_changes,
         to_be_recovered=to_be_recovered,
         to_be_compensated=to_be_compensated,
-        recovery_lifecycle_closed=recovery_lifecycle_closed,
-        recovery_backlog_totals=recovery_backlog_totals,
+        to_be_recovered_total_order_value=to_be_recovered_total_order_value,
+        to_be_compensated_total_order_value=to_be_compensated_total_order_value,
     )
