@@ -472,6 +472,9 @@ class LeadsRunSummary:
     def total_rows(self) -> int:
         return sum(len(result.rows) for result in self.store_results.values())
 
+    def has_new_leads(self) -> bool:
+        return any(_count_td_leads_created_events(result) > 0 for result in self.store_results.values())
+
     def build_record(self, *, finished_at: datetime) -> dict[str, Any]:
         elapsed_seconds = max(0, int((finished_at - self.started_at).total_seconds()))
         hh, mm, ss = elapsed_seconds // 3600, (elapsed_seconds % 3600) // 60, elapsed_seconds % 60
@@ -535,6 +538,7 @@ class LeadsRunSummary:
                     "total_rows": self.total_rows(),
                     "duration_seconds": elapsed_seconds,
                     "duration_human": duration_human,
+                    "has_new_leads": self.has_new_leads(),
                     "summary_html": summary_html,
                     "lead_tables_html": lead_tables_html,
                     "stores": store_rows_payload,
