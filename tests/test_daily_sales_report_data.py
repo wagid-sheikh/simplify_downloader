@@ -60,6 +60,8 @@ def _create_tables(database_url: str) -> None:
                     cost_center TEXT,
                     order_number TEXT,
                     order_date TIMESTAMP,
+                    customer_name TEXT,
+                    mobile_number TEXT,
                     net_amount NUMERIC,
                     gross_amount NUMERIC,
                     default_due_date TIMESTAMP,
@@ -711,14 +713,14 @@ async def test_fetch_daily_sales_report_manual_recovery_sections(tmp_path, monke
             sa.text(
                 """
                 INSERT INTO orders (
-                    cost_center, order_number, order_date, net_amount, gross_amount,
-                    default_due_date, source_system, recovery_status,
+                    cost_center, order_number, order_date, customer_name, mobile_number,
+                    net_amount, gross_amount, default_due_date, source_system, recovery_status,
                     recovery_opened_at, recovery_closed_at, recovery_expected_resolution_date
                 ) VALUES
-                    ('CC-TD', 'TD-R1', '2026-04-20 10:00:00', 100, 120, '2026-04-20 10:00:00', 'TumbleDry', 'TO_BE_RECOVERED', '2026-04-20 10:00:00', NULL, '2026-04-23'),
-                    ('CC-TD', 'TD-R2', '2026-03-10 10:00:00', 200, 230, '2026-03-10 10:00:00', 'TumbleDry', 'TO_BE_RECOVERED', '2026-03-10 10:00:00', NULL, '2026-04-05'),
-                    ('CC-UC', 'UC-C1', '2026-01-10 10:00:00', 50, 300, '2026-01-10 10:00:00', 'UClean', 'TO_BE_COMPENSATED', '2026-01-10 10:00:00', NULL, '2026-02-15'),
-                    ('CC-TD', 'TD-X1', '2026-02-10 10:00:00', 90, 100, '2026-02-10 10:00:00', 'TumbleDry', 'COMPENSATED', '2026-04-10 09:00:00', '2026-04-25 11:30:00', '2026-04-22')
+                    ('CC-TD', 'TD-R1', '2026-04-20 10:00:00', 'Asha', '9000000001', 100, 120, '2026-04-20 10:00:00', 'TumbleDry', 'TO_BE_RECOVERED', '2026-04-20 10:00:00', NULL, '2026-04-23'),
+                    ('CC-TD', 'TD-R2', '2026-03-10 10:00:00', 'Ira', '9000000002', 200, 230, '2026-03-10 10:00:00', 'TumbleDry', 'TO_BE_RECOVERED', '2026-03-10 10:00:00', NULL, '2026-04-05'),
+                    ('CC-UC', 'UC-C1', '2026-01-10 10:00:00', 'Meera', '9000000003', 50, 300, '2026-01-10 10:00:00', 'UClean', 'TO_BE_COMPENSATED', '2026-01-10 10:00:00', NULL, '2026-02-15'),
+                    ('CC-TD', 'TD-X1', '2026-02-10 10:00:00', 'Nia', '9000000004', 90, 100, '2026-02-10 10:00:00', 'TumbleDry', 'COMPENSATED', '2026-04-10 09:00:00', '2026-04-25 11:30:00', '2026-04-22')
                 """
             )
         )
@@ -726,30 +728,16 @@ async def test_fetch_daily_sales_report_manual_recovery_sections(tmp_path, monke
 
     report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
 
-    assert len(report.to_be_recovered) == 1
-    recovered = report.to_be_recovered[0]
-    assert recovered.cost_center == "CC-TD"
-    assert recovered.order_count == 2
-    assert recovered.total_amount_at_risk == 300
-    recovered_aging = {bucket.label: bucket.order_count for bucket in recovered.aging_split}
-    assert recovered_aging == {"0-30": 1, "31-60": 1, "61-90": 0, ">90": 0}
+    assert len(report.to_be_recovered) == 2
+    assert [row.order_number for row in report.to_be_recovered] == ["TD-R2", "TD-R1"]
+    assert report.to_be_recovered[0].customer_name == "Ira"
+    assert report.to_be_recovered[1].mobile_number == "9000000001"
+    assert report.to_be_recovered_total_order_value == 300
 
     assert len(report.to_be_compensated) == 1
     compensated = report.to_be_compensated[0]
     assert compensated.cost_center == "CC-UC"
-    assert compensated.order_count == 1
-    assert compensated.total_amount_at_risk == 300
-    compensated_aging = {bucket.label: bucket.order_count for bucket in compensated.aging_split}
-    assert compensated_aging == {"0-30": 0, "31-60": 0, "61-90": 0, ">90": 1}
-
-    assert report.recovery_backlog_totals.opening_backlog == 3
-    assert report.recovery_backlog_totals.newly_tagged == 0
-    assert report.recovery_backlog_totals.closed_today == 1
-    assert report.recovery_backlog_totals.net_backlog_movement == -1
-
-    assert len(report.recovery_lifecycle_closed) == 1
-    closed_row = report.recovery_lifecycle_closed[0]
-    assert closed_row.order_number == "TD-X1"
-    assert closed_row.open_age_days == 15
-    assert closed_row.is_overdue is False
-    assert closed_row.closure_turnaround_days == 15
+    assert compensated.order_number == "UC-C1"
+    assert compensated.customer_name == "Meera"
+    assert compensated.mobile_number == "9000000003"
+    assert report.to_be_compensated_total_order_value == 300
