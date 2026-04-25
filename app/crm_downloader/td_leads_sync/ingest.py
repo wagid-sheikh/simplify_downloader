@@ -187,6 +187,10 @@ def _normalized_pickup_created_text(row: Mapping[str, Any]) -> str:
     if created_text:
         return created_text
 
+    pickup_date = str(row.get("pickup_date") or "").strip()
+    if pickup_date:
+        return pickup_date
+
     return ""
 
 
