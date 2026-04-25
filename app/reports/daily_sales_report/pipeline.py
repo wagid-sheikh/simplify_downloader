@@ -58,12 +58,31 @@ def _format_indian_number(value: int) -> str:
     return ",".join(chunks + [last_three])
 
 
+def _format_ddmmyyyy(value: object | None) -> str:
+    if value is None:
+        return "--"
+    if isinstance(value, datetime):
+        return value.date().strftime("%d-%m-%Y")
+    if isinstance(value, date):
+        return value.strftime("%d-%m-%Y")
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return "--"
+        try:
+            return date.fromisoformat(text).strftime("%d-%m-%Y")
+        except ValueError:
+            return text
+    return str(value)
+
+
 def _render_html(context: Mapping[str, object]) -> str:
     env = Environment(
         loader=FileSystemLoader(str(TEMPLATE_DIR)),
         autoescape=select_autoescape(["html", "xml"]),
     )
     env.filters["format_amount"] = _format_amount
+    env.filters["format_ddmmyyyy"] = _format_ddmmyyyy
     template = env.get_template(TEMPLATE_NAME)
     return template.render(**context)
 

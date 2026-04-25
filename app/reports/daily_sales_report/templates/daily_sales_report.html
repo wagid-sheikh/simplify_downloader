@@ -430,7 +430,7 @@
         {% for lead in lead_performance_summary %}
         <tr>
           <td class="label">{{ lead.store }}{% if lead.store_name %} - {{ lead.store_name }}{% endif %}</td>
-          <td class="label">{{ lead.period_start }} to {{ lead.period_end }}</td>
+          <td class="label">{{ lead.period_start | format_ddmmyyyy }} to {{ lead.period_end | format_ddmmyyyy }}</td>
           <td>{{ lead.total_leads }}</td>
           <td>{{ lead.completed_leads }}</td>
           <td>{{ lead.cancelled_leads }}</td>
@@ -520,7 +520,7 @@
           <td>{{ loop.index }}</td>
           <td class="label">{{ row.cost_center }}</td>
           <td class="label">{{ row.order_number }}</td>
-          <td>{{ row.order_date or "--" }}</td>
+          <td>{{ row.order_date | format_ddmmyyyy }}</td>
           <td class="label">{{ row.customer_name or "--" }}</td>
           <td class="label">{{ row.mobile_number or "--" }}</td>
           <td>{{ row.order_value | format_amount }}</td>
@@ -558,7 +558,7 @@
           <td>{{ loop.index }}</td>
           <td class="label">{{ row.cost_center }}</td>
           <td class="label">{{ row.order_number }}</td>
-          <td>{{ row.order_date or "--" }}</td>
+          <td>{{ row.order_date | format_ddmmyyyy }}</td>
           <td class="label">{{ row.customer_name or "--" }}</td>
           <td class="label">{{ row.mobile_number or "--" }}</td>
           <td>{{ row.order_value | format_amount }}</td>
