@@ -995,16 +995,11 @@ async def fetch_daily_sales_report(
         normalized_status_bucket_expr = sa.func.lower(sa.func.trim(crm_leads_current.c.status_bucket))
         normalized_store_master_code_expr = sa.func.upper(sa.func.trim(store_master_primary.c.store_code))
         normalized_cancelled_flag_expr = sa.func.lower(sa.func.trim(crm_leads_current.c.cancelled_flag))
-        event_is_cancelled_exists = sa.exists(
-            sa.select(sa.literal(1))
-            .select_from(crm_leads_status_events)
-            .where(crm_leads_status_events.c.lead_uid == crm_leads_current.c.lead_uid)
-            .where(sa.func.lower(sa.func.trim(crm_leads_status_events.c.status_bucket)) == "cancelled")
-        )
-        is_cancelled_expr = sa.or_(
-            normalized_status_bucket_expr == "cancelled",
-            event_is_cancelled_exists,
-        )
+        # Current-state KPI policy:
+        # final_status_bucket comes only from crm_leads_current.status_bucket.
+        # Historical events are transition analytics input and must not override
+        # the current status for KPI/cancelled cohort classification.
+        is_cancelled_expr = normalized_status_bucket_expr == "cancelled"
         final_status_bucket_expr = sa.case(
             (is_cancelled_expr, "cancelled"),
             else_=normalized_status_bucket_expr,
@@ -1063,7 +1058,10 @@ async def fetch_daily_sales_report(
                 derived_cancelled_flag_expr.label("cancelled_flag"),
                 lead_base.c.reason,
             )
-            .where(lead_base.c.is_cancelled.is_(True))
+            # Cancelled monthly table policy:
+            # use current-cancelled cohort only (final status at report time),
+            # not "ever hit cancelled" transition cohort.
+            .where(lead_base.c.final_status_bucket == "cancelled")
             .order_by(
                 lead_base.c.store_name,
                 lead_base.c.pickup_created_at,
