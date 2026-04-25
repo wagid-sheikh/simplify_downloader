@@ -189,6 +189,19 @@ def test_coerce_pickup_created_at_converts_date_only_from_ist_midnight_to_utc() 
     assert coerced == datetime(2026, 4, 20, 18, 30, tzinfo=timezone.utc)
 
 
+def test_normalized_pickup_created_text_falls_back_to_pickup_date_when_created_missing() -> None:
+    normalized = td_leads_ingest._normalized_pickup_created_text(
+        {
+            "pickup_date": "21 Apr 2026",
+            "pickup_created_at": None,
+            "pickup_created_text": None,
+            "pickup_created_date": None,
+        }
+    )
+
+    assert normalized == "21 Apr 2026"
+
+
 def test_sanitize_rows_for_xlsx_export_converts_tz_aware_datetime_and_iso_strings() -> None:
     aware_value = datetime(2026, 4, 22, 6, 30, tzinfo=timezone.utc)
     rows = [
@@ -550,7 +563,7 @@ def test_td_leads_tables_html_sorts_pending_and_cancelled_rows_by_created_dateti
 
 
 
-def test_td_leads_tables_html_pending_prefers_pickup_created_text_then_falls_back_to_pickup_created_at() -> None:
+def test_td_leads_tables_html_pending_prefers_pickup_created_text_then_falls_back_to_effective_created() -> None:
     summary = LeadsRunSummary(
         run_id="run-pending-display",
         run_env="local",
@@ -574,6 +587,13 @@ def test_td_leads_tables_html_pending_prefers_pickup_created_text_then_falls_bac
                         "pickup_created_at": datetime(2026, 4, 21, 9, 33, 39, tzinfo=timezone.utc),
                         "pickup_no": "A817-2",
                     },
+                    {
+                        "status_bucket": "pending",
+                        "customer_name": "Pickup Date Fallback",
+                        "mobile": "9000000003",
+                        "pickup_date": "22 Apr 2026",
+                        "pickup_no": "A817-3",
+                    },
                 ],
                 lead_change_details={
                     "created_by_bucket": [
@@ -581,6 +601,7 @@ def test_td_leads_tables_html_pending_prefers_pickup_created_text_then_falls_bac
                             "rows": [
                                 {"lead_identity": {"pickup_no": "A817-1"}},
                                 {"lead_identity": {"pickup_no": "A817-2"}},
+                                {"lead_identity": {"pickup_no": "A817-3"}},
                             ]
                         }
                     ]
@@ -593,6 +614,7 @@ def test_td_leads_tables_html_pending_prefers_pickup_created_text_then_falls_bac
 
     assert "21 Apr 2026 3:03:39 PM" in tables_html
     assert "21 Apr 2026 09:33:39 AM UTC" in tables_html
+    assert "22 Apr 2026" in tables_html
 
 
 def test_td_leads_tables_html_hides_customer_cancelled_rows_but_keeps_counts() -> None:
@@ -1430,7 +1452,8 @@ async def test_ingest_populates_pickup_created_at_for_all_status_buckets(tmp_pat
             "pickup_no": f"A668-3025-{bucket}",
             "customer_name": "Moni",
             "mobile": "9599242207",
-            "pickup_created_date": created_text,
+            "pickup_date": "21 Apr 2026",
+            "pickup_created_at": created_text if bucket == "pending" else None,
             "pickup_time": "11:00 AM - 1:00 PM",
         }
         for bucket in ("pending", "completed", "cancelled")
@@ -1453,7 +1476,7 @@ async def test_ingest_populates_pickup_created_at_for_all_status_buckets(tmp_pat
                 await connection.execute(
                     sa.text(
                         """
-                        SELECT status_bucket, pickup_created_at
+                        SELECT status_bucket, pickup_date, pickup_created_at
                         FROM crm_leads_current
                         ORDER BY status_bucket
                         """
@@ -1465,6 +1488,7 @@ async def test_ingest_populates_pickup_created_at_for_all_status_buckets(tmp_pat
 
     assert [row["status_bucket"] for row in stored_rows] == ["cancelled", "completed", "pending"]
     assert all(row["pickup_created_at"] is not None for row in stored_rows)
+    assert all(row["pickup_date"] == "21 Apr 2026" for row in stored_rows)
 
 
 @pytest.mark.asyncio

@@ -160,12 +160,17 @@ def _sort_td_leads_bucket_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str,
         created_dt = _parse_td_leads_created_datetime(created_value)
         if created_dt is not None:
             return created_dt
-        return _parse_td_leads_created_datetime(row.get("pickup_created_text"))
+        created_dt = _parse_td_leads_created_datetime(row.get("pickup_created_text"))
+        if created_dt is not None:
+            return created_dt
+        return _parse_td_leads_created_datetime(row.get("pickup_date"))
 
     keyed_rows: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     for idx, row in enumerate(rows):
         resolved_created_at = _resolve_created_at(row)
-        canonical_text = str(row.get("pickup_created_text") or row.get("pickup_created_at") or "").strip()
+        canonical_text = str(
+            row.get("pickup_created_text") or row.get("pickup_created_at") or row.get("pickup_date") or ""
+        ).strip()
         pickup_code = str(row.get("pickup_code") or row.get("pickup_no") or row.get("pickup_id") or "").strip()
         sort_key = (
             0 if resolved_created_at is not None else 1,
@@ -216,6 +221,10 @@ def _format_pickup_created_display(row: Mapping[str, Any]) -> str:
     created_at_text = str(created_at or "").strip()
     if created_at_text:
         return created_at_text
+
+    pickup_date_text = str(row.get("pickup_date") or "").strip()
+    if pickup_date_text:
+        return pickup_date_text
 
     return "None"
 
