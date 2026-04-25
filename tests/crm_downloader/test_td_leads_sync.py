@@ -232,7 +232,7 @@ def test_run_summary_record_includes_duration_for_failed_store_runs() -> None:
     assert record["metrics_json"]["duration_human"] == "00:02:30"
 
 
-def test_td_leads_summary_html_renders_compact_summary_tables_and_footer_refs() -> None:
+def test_td_leads_summary_html_renders_business_sections_and_footer_refs() -> None:
     summary = LeadsRunSummary(
         run_id="run-1",
         run_env="local",
@@ -250,15 +250,17 @@ def test_td_leads_summary_html_renders_compact_summary_tables_and_footer_refs() 
                         "status_text": "Pending",
                     },
                     {
-                        "status_bucket": "completed",
+                        "status_bucket": "cancelled",
                         "customer_name": "Raj",
                         "mobile": "9111111111",
+                        "pickup_no": "A817-2",
                         "pickup_id": "C-2",
                         "pickup_date": "2026-04-22T09:00:00+00:00",
-                        "status_text": "Completed",
+                        "status_text": "Cancelled",
+                        "reason": "",
                     },
                 ],
-                status_counts={"pending": 1, "completed": 1, "cancelled": 0},
+                status_counts={"pending": 1, "completed": 0, "cancelled": 1},
                 ingested_rows=2,
                 artifact_path="app/crm_downloader/data/A817-crm_leads.xlsx",
                 lead_change_details={
@@ -272,6 +274,7 @@ def test_td_leads_summary_html_renders_compact_summary_tables_and_footer_refs() 
                                     "action": "created",
                                     "current_status_bucket": "pending",
                                     "previous_status_bucket": None,
+                                    "lead_identity": {"pickup_no": "A817-1"},
                                 }
                             ],
                             "overflow_count": 2,
@@ -286,17 +289,16 @@ def test_td_leads_summary_html_renders_compact_summary_tables_and_footer_refs() 
 
     summary_html = _build_td_leads_summary_html(summary=summary, duration_human="00:01:00")
 
-    assert "Per-store summary" in summary_html
-    assert "Status bucket totals" in summary_html
-    assert "Upsert write actions by status bucket" in summary_html
-    assert "Status transitions vs previous run" in summary_html
-    assert "Lead Changes (Actionable Details)" in summary_html
-    assert "Customer Name</th><th align='left'>Mobile</th><th align='left'>Action</th>" in summary_html
-    assert "+2 more" in summary_html
+    assert "Lead details by store" in summary_html
+    assert "New Leads created" in summary_html
+    assert "Leads Marked as Cancelled" in summary_html
+    assert "Pending Leads" in summary_html
     assert "A817" in summary_html
     assert "Total stores processed:</strong> 1" in summary_html
     assert "Runtime duration:</strong> 00:01:00" in summary_html
     assert "Reference run_id: <code>run-1</code>" in summary_html
+    assert "Completed</h5>" not in summary_html
+    assert "Converted" not in summary_html
 
 
 def test_build_lead_uid_ignores_status_bucket_for_transition_tracking() -> None:
@@ -334,8 +336,7 @@ def test_td_leads_run_summary_record_exposes_summary_html_in_metrics() -> None:
 
     assert "Total Stores Processed: 1" in record["summary_text"]
     assert "status=pending, customer_name=Ada" not in record["summary_text"]
-    assert "Per-store summary" in record["metrics_json"]["summary_html"]
-    assert "Row-level lead tables" in record["metrics_json"]["summary_html"]
+    assert "Lead details by store" in record["metrics_json"]["summary_html"]
     assert "Store A668" in record["metrics_json"]["lead_tables_html"]
     assert "A668" in record["metrics_json"]["summary_html"]
     assert "lead_change_details" in record["metrics_json"]["stores"][0]
@@ -343,7 +344,7 @@ def test_td_leads_run_summary_record_exposes_summary_html_in_metrics() -> None:
     assert "rows" not in record["metrics_json"]["stores"][0]
 
 
-def test_td_leads_tables_html_renders_store_sections_bucket_tables_and_rows() -> None:
+def test_td_leads_tables_html_renders_three_business_sections_per_store() -> None:
     pending_rows = [
         {
             "status_bucket": "pending",
@@ -366,15 +367,30 @@ def test_td_leads_tables_html_renders_store_sections_bucket_tables_and_rows() ->
                 rows=[
                     *pending_rows,
                     {
-                        "status_bucket": "completed",
-                        "pickup_code": "C-2",
+                        "status_bucket": "cancelled",
+                        "pickup_no": "A817-C2",
                         "customer_name": "Raj",
                         "mobile": "9111111111",
-                        "address": "Area 2",
+                        "reason": "",
                         "pickup_date": "2026-04-22 09:00",
-                        "pickup_time": "09:00 AM - 11:00 AM",
+                        "source": "Walk-in",
                     },
                 ],
+                lead_change_details={
+                    "created_by_bucket": [
+                        {
+                            "status_bucket": "pending",
+                            "rows": [
+                                {
+                                    "customer_name": "Pending 1",
+                                    "mobile": "9000000000",
+                                    "lead_identity": {"pickup_no": "P-1"},
+                                }
+                            ],
+                            "overflow_count": 0,
+                        }
+                    ]
+                },
             )
         },
     )
@@ -382,23 +398,20 @@ def test_td_leads_tables_html_renders_store_sections_bucket_tables_and_rows() ->
     tables_html = _build_td_leads_tables_html(summary=summary)
 
     assert "Store A817" in tables_html
-    assert "<h5 style='margin:10px 0 6px 0;'>Pending</h5>" in tables_html
-    assert "<h5 style='margin:10px 0 6px 0;'>Completed</h5>" in tables_html
-    assert "<h5 style='margin:10px 0 6px 0;'>Cancelled</h5>" in tables_html
+    assert "<h5 style='margin:10px 0 6px 0;'>New Leads created (1)</h5>" in tables_html
+    assert "<h5 style='margin:10px 0 6px 0;'>Leads Marked as Cancelled (1)</h5>" in tables_html
+    assert "<h5 style='margin:10px 0 6px 0;'>Pending Leads (52)</h5>" in tables_html
     assert "Pending 1" in tables_html
     assert "Raj" in tables_html
-    assert "No cancelled leads." in tables_html
     assert "Pending 52" in tables_html
-    assert "<th align='left'>Pickup Code</th><th align='left'>Customer Name</th><th align='left'>Mobile</th><th align='left'>Address/Area</th><th align='left'>Pickup Created Date/Time</th>" in tables_html
-    assert "Pickup Time</th>" not in tables_html
-    assert "Priority / Status" not in tables_html
-    assert "Pickup ID" not in tables_html
-    assert "Urgent" not in tables_html
-    assert "Done" not in tables_html
-    assert "more rows in artifact" not in tables_html
+    assert "<th align='left'>Customer Name</th><th align='left'>Mobile Number</th><th align='left'>Source</th>" in tables_html
+    assert "<th align='left'>Customer Name</th><th align='left'>Mobile Number</th><th align='left'>Flag</th><th align='left'>Reason</th>" in tables_html
+    assert "<th align='left'>Customer Name</th><th align='left'>Mobile Number</th><th align='left'>Created Date/Time</th><th align='left'>Source</th>" in tables_html
+    assert "Completed</h5>" not in tables_html
+    assert "Converted" not in tables_html
 
 
-def test_td_leads_tables_html_sorts_bucket_rows_by_created_datetime_desc_in_all_buckets() -> None:
+def test_td_leads_tables_html_sorts_pending_and_cancelled_rows_by_created_datetime_desc() -> None:
     summary = LeadsRunSummary(
         run_id="run-html-sort",
         run_env="local",
@@ -446,26 +459,6 @@ def test_td_leads_tables_html_sorts_bucket_rows_by_created_datetime_desc_in_all_
                         "pickup_time": "—",
                     },
                     {
-                        "status_bucket": "completed",
-                        "pickup_code": "C-1",
-                        "customer_name": "Completed One",
-                        "mobile": "9111111111",
-                        "address": "Area 5",
-                        "pickup_date": "20 Apr 2026 10:00:00 AM",
-                        "pickup_created_at": datetime(2026, 4, 20, 10, 0, 0),
-                        "pickup_time": "10:00 AM",
-                    },
-                    {
-                        "status_bucket": "completed",
-                        "pickup_code": "C-2",
-                        "customer_name": "Completed Recent",
-                        "mobile": "9111111112",
-                        "address": "Area 6",
-                        "pickup_date": "22 Apr 2026 11:00:00 AM",
-                        "pickup_created_at": datetime(2026, 4, 22, 11, 0, 0),
-                        "pickup_time": "11:00 AM",
-                    },
-                    {
                         "status_bucket": "cancelled",
                         "pickup_code": "X-1",
                         "customer_name": "Cancelled Earlier",
@@ -493,8 +486,62 @@ def test_td_leads_tables_html_sorts_bucket_rows_by_created_datetime_desc_in_all_
     assert tables_html.index("Most Recent") < tables_html.index("Recent")
     assert tables_html.index("Recent") < tables_html.index("Legacy One")
     assert tables_html.index("Legacy One") < tables_html.index("Legacy Two")
-    assert tables_html.index("Completed Recent") < tables_html.index("Completed One")
     assert tables_html.index("Cancelled Latest") < tables_html.index("Cancelled Earlier")
+
+
+def test_td_leads_tables_html_hides_customer_cancelled_rows_but_keeps_counts() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-cancel-policy",
+        run_env="local",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={
+            "A817": StoreLeadResult(
+                store_code="A817",
+                rows=[
+                    {
+                        "status_bucket": "cancelled",
+                        "customer_name": "Customer Cancelled",
+                        "mobile": "9888888888",
+                        "reason": "",
+                        "pickup_date": "22 Apr 2026 09:00:00 AM",
+                    },
+                    {
+                        "status_bucket": "cancelled",
+                        "customer_name": "Store Cancelled",
+                        "mobile": "9777777777",
+                        "reason": "No inventory",
+                        "pickup_date": "22 Apr 2026 08:00:00 AM",
+                    },
+                ],
+            )
+        },
+    )
+
+    tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "Leads Marked as Cancelled (2)" in tables_html
+    assert "Store Cancelled" in tables_html
+    assert "No inventory" in tables_html
+    assert "Customer Cancelled" not in tables_html
+
+
+def test_is_customer_cancelled_td_lead_uses_blank_reason_rule() -> None:
+    assert td_leads_main._is_customer_cancelled_td_lead({"reason": ""}) is True
+    assert td_leads_main._is_customer_cancelled_td_lead({"reason": None}) is True
+    assert td_leads_main._is_customer_cancelled_td_lead({"reason": "No inventory"}) is False
+
+
+def test_td_leads_tables_html_renders_none_for_empty_sections() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-empty-sections",
+        run_env="local",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={"A817": StoreLeadResult(store_code="A817", rows=[])},
+    )
+
+    tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert tables_html.count("<em>None</em>") == 3
 
 
 def test_write_store_artifact_fails_when_tz_aware_values_remain(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -915,7 +962,7 @@ async def test_combined_created_datetime_populates_ingest_payload_and_email_row_
     )
     lead_tables_html = _build_td_leads_tables_html(summary=summary)
     assert "21 Apr 2026 3:03:39 PM" in lead_tables_html
-    assert "—" in lead_tables_html
+    assert "None" in lead_tables_html
 
 
 @pytest.mark.asyncio
@@ -1186,6 +1233,7 @@ async def test_ingest_sets_cancelled_flag_from_reason(tmp_path) -> None:
     rows = [
         {"store_code": "A668", "status_bucket": "cancelled", "pickup_no": "A668-10", "reason": "", "pickup_date": "22 Apr 2026"},
         {"store_code": "A668", "status_bucket": "cancelled", "pickup_no": "A668-11", "reason": "Customer unavailable", "pickup_date": "22 Apr 2026"},
+        {"store_code": "A668", "status_bucket": "pending", "pickup_no": "A668-12", "reason": "", "pickup_date": "22 Apr 2026"},
     ]
 
     await td_leads_ingest.ingest_td_crm_leads_rows(
@@ -1214,8 +1262,9 @@ async def test_ingest_sets_cancelled_flag_from_reason(tmp_path) -> None:
         await engine.dispose()
 
     assert persisted == [
-        {"pickup_no": "A668-10", "cancelled_flag": "store"},
-        {"pickup_no": "A668-11", "cancelled_flag": "customer"},
+        {"pickup_no": "A668-10", "cancelled_flag": "customer"},
+        {"pickup_no": "A668-11", "cancelled_flag": "store"},
+        {"pickup_no": "A668-12", "cancelled_flag": None},
     ]
 
 

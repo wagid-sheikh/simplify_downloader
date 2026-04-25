@@ -258,13 +258,16 @@ async def ingest_td_crm_leads_rows(
                 continue
             normalized_pickup_time = str(row.get("pickup_time") or "").strip()
             pickup_created_at = _coerce_pickup_created_at(row, normalized_created_date=normalized_created_text)
+            status_bucket = str(row.get("status_bucket") or "").lower()
             reason = (str(row.get("reason")).strip() or None) if row.get("reason") is not None else None
-            cancelled_flag = "customer" if reason else "store"
+            cancelled_flag = None
+            if status_bucket == "cancelled":
+                cancelled_flag = "customer" if not reason else "store"
             lead_uid = build_lead_uid(row)
             values = {
                 "lead_uid": lead_uid,
                 "store_code": str(row.get("store_code") or "").upper(),
-                "status_bucket": str(row.get("status_bucket") or "").lower(),
+                "status_bucket": status_bucket,
                 "pickup_no": normalized_pickup_no,
                 "customer_name": (str(row.get("customer_name")).strip() or None) if row.get("customer_name") is not None else None,
                 "address": (str(row.get("address")).strip() or None) if row.get("address") is not None else None,

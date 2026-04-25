@@ -175,42 +175,27 @@ def _sort_td_leads_bucket_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str,
     return [item[1] for item in keyed_rows]
 
 
-def _build_td_leads_bucket_table_html(
-    *,
-    bucket_label: str,
-    rows: Sequence[Mapping[str, Any]],
-    empty_text: str,
-) -> str:
+def _build_td_leads_section_table_html(*, section_label: str, headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
+    header_html = "".join(f"<th align='left'>{html.escape(column)}</th>" for column in headers)
     blocks = [
-        f"<h5 style='margin:10px 0 6px 0;'>{html.escape(bucket_label)}</h5>",
+        f"<h5 style='margin:10px 0 6px 0;'>{html.escape(section_label)}</h5>",
         "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse; width:100%; margin-bottom:8px;'>",
-        (
-            "<thead><tr>"
-            "<th align='left'>Pickup Code</th>"
-            "<th align='left'>Customer Name</th>"
-            "<th align='left'>Mobile</th>"
-            "<th align='left'>Address/Area</th>"
-            "<th align='left'>Pickup Created Date/Time</th>"
-            "</tr></thead>"
-        ),
+        f"<thead><tr>{header_html}</tr></thead>",
         "<tbody>",
     ]
     if not rows:
-        blocks.append(f"<tr><td colspan='5'><em>{html.escape(empty_text)}</em></td></tr>")
-    for row in rows:
-        pickup_code = row.get("pickup_code") or row.get("pickup_no") or row.get("pickup_id") or "—"
-        pickup_created_display = row.get("pickup_date") or row.get("pickup_created_at") or "—"
-        blocks.append(
-            "<tr>"
-            f"<td>{html.escape(str(pickup_code))}</td>"
-            f"<td>{html.escape(str(row.get('customer_name') or '—'))}</td>"
-            f"<td>{html.escape(str(row.get('mobile') or '—'))}</td>"
-            f"<td>{html.escape(str(row.get('address') or '—'))}</td>"
-            f"<td>{html.escape(str(pickup_created_display))}</td>"
-            "</tr>"
-        )
+        blocks.append(f"<tr><td colspan='{len(headers)}'><em>None</em></td></tr>")
+    else:
+        for row in rows:
+            blocks.append("<tr>" + "".join(f"<td>{html.escape(str(value or 'None'))}</td>" for value in row) + "</tr>")
     blocks.extend(["</tbody>", "</table>"])
     return "".join(blocks)
+
+
+def _is_customer_cancelled_td_lead(row: Mapping[str, Any]) -> bool:
+    # Canonical TD cancellation attribution rule:
+    # Reason blank => customer-cancelled; Reason present => store-cancelled.
+    return not bool(str(row.get("reason") or "").strip())
 
 
 def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
@@ -218,18 +203,89 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
     if not ordered_results:
         return "<div><p><em>No row-level lead details captured for this run.</em></p></div>"
 
-    blocks: list[str] = ["<div>", "<h4 style='margin:16px 0 8px 0;'>Row-level lead tables</h4>"]
+    blocks: list[str] = ["<div>", "<h4 style='margin:16px 0 8px 0;'>Lead details by store</h4>"]
     for result in ordered_results:
         blocks.append(f"<h4 style='margin:16px 0 8px 0;'>Store {html.escape(result.store_code)}</h4>")
-        for bucket_key, bucket_label in (("pending", "Pending"), ("completed", "Completed"), ("cancelled", "Cancelled")):
-            bucket_rows = _td_leads_bucket_rows(result, bucket_key)
-            blocks.append(
-                _build_td_leads_bucket_table_html(
-                    bucket_label=bucket_label,
-                    rows=bucket_rows,
-                    empty_text=f"No {bucket_label.lower()} leads.",
+
+        row_by_pickup_no = {
+            str(row.get("pickup_no") or "").strip().upper(): row
+            for row in result.rows
+            if str(row.get("pickup_no") or "").strip()
+        }
+        row_by_pickup_id = {
+            str(row.get("pickup_id") or "").strip().upper(): row
+            for row in result.rows
+            if str(row.get("pickup_id") or "").strip()
+        }
+
+        lead_change_details = result.lead_change_details if isinstance(result.lead_change_details, Mapping) else {}
+        created_groups = lead_change_details.get("created_by_bucket") if isinstance(lead_change_details.get("created_by_bucket"), list) else []
+        created_rows: list[list[str]] = []
+        for group in created_groups:
+            if not isinstance(group, Mapping):
+                continue
+            group_rows = group.get("rows") if isinstance(group.get("rows"), list) else []
+            for created_row in group_rows:
+                lead_identity = created_row.get("lead_identity") if isinstance(created_row.get("lead_identity"), Mapping) else {}
+                pickup_no = str(lead_identity.get("pickup_no") or "").strip().upper()
+                pickup_id = str(lead_identity.get("pickup_id") or "").strip().upper()
+                matching_row = row_by_pickup_no.get(pickup_no) or row_by_pickup_id.get(pickup_id) or {}
+                created_rows.append(
+                    [
+                        str(created_row.get("customer_name") or matching_row.get("customer_name") or "None"),
+                        str(created_row.get("mobile") or matching_row.get("mobile") or "None"),
+                        str(matching_row.get("source") or "None"),
+                    ]
                 )
+
+        cancelled_rows = _td_leads_bucket_rows(result, "cancelled")
+        cancelled_total = len(cancelled_rows)
+        cancelled_store_only = [row for row in cancelled_rows if not _is_customer_cancelled_td_lead(row)]
+        cancelled_detail_rows: list[list[str]] = []
+        for row in cancelled_store_only:
+            cancelled_detail_rows.append(
+                [
+                    str(row.get("customer_name") or "None"),
+                    str(row.get("mobile") or "None"),
+                    "Store Cancelled",
+                    str(row.get("reason") or "None"),
+                ]
             )
+
+        pending_rows = _td_leads_bucket_rows(result, "pending")
+        pending_detail_rows: list[list[str]] = []
+        for row in pending_rows:
+            created_display = row.get("pickup_date") or row.get("pickup_created_at") or "None"
+            pending_detail_rows.append(
+                [
+                    str(row.get("customer_name") or "None"),
+                    str(row.get("mobile") or "None"),
+                    str(created_display),
+                    str(row.get("source") or "None"),
+                ]
+            )
+
+        blocks.append(
+            _build_td_leads_section_table_html(
+                section_label=f"New Leads created ({len(created_rows)})",
+                headers=("Customer Name", "Mobile Number", "Source"),
+                rows=created_rows,
+            )
+        )
+        blocks.append(
+            _build_td_leads_section_table_html(
+                section_label=f"Leads Marked as Cancelled ({cancelled_total})",
+                headers=("Customer Name", "Mobile Number", "Flag", "Reason"),
+                rows=cancelled_detail_rows,
+            )
+        )
+        blocks.append(
+            _build_td_leads_section_table_html(
+                section_label=f"Pending Leads ({len(pending_rows)})",
+                headers=("Customer Name", "Mobile Number", "Created Date/Time", "Source"),
+                rows=pending_detail_rows,
+            )
+        )
     blocks.append("</div>")
     return "".join(blocks)
 
@@ -238,223 +294,22 @@ def _build_td_leads_summary_html(*, summary: "LeadsRunSummary", duration_human: 
     ordered_results = sorted(summary.store_results.values(), key=lambda item: item.store_code)
     total_stores = len(ordered_results)
     total_leads = summary.total_rows()
-    per_store_totals = ", ".join(
-        f"{result.store_code}: {len(result.rows)}" for result in ordered_results
-    ) or "(none)"
     blocks = [
         "<div>",
         "<h3>TD CRM Leads Sync Summary</h3>",
         "<ul>",
         f"<li><strong>Total stores processed:</strong> {total_stores}</li>",
         f"<li><strong>Total leads:</strong> {total_leads}</li>",
-        f"<li><strong>Per-store totals:</strong> {html.escape(per_store_totals)}</li>",
         f"<li><strong>Runtime duration:</strong> {html.escape(duration_human)}</li>",
         "</ul>",
+        "<p style='margin:4px 0 0 0; font-size:12px; color:#555555;'>",
+        f"Reference run_id: <code>{html.escape(summary.run_id)}</code>",
+        "</p>",
+        _build_td_leads_tables_html(summary=summary),
+        "</div>",
     ]
-    blocks.extend(
-        [
-            "<h4 style='margin:16px 0 8px 0;'>Per-store summary</h4>",
-            "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse; width:100%; margin-bottom:12px;'>",
-            (
-                "<thead><tr>"
-                "<th align='left'>Store</th>"
-                "<th align='right'>Rows scraped</th>"
-                "<th align='right'>Rows ingested</th>"
-                "<th align='left'>Status</th>"
-                "<th align='left'>Artifact</th>"
-                "</tr></thead>"
-            ),
-            "<tbody>",
-        ]
-    )
-    if not ordered_results:
-        blocks.append("<tr><td colspan='5'><em>No stores processed.</em></td></tr>")
-    for result in ordered_results:
-        artifact_path = result.artifact_path or f"app/crm_downloader/data/{result.store_code}-crm_leads.xlsx"
-        blocks.append(
-            "<tr>"
-            f"<td>{html.escape(result.store_code)}</td>"
-            f"<td align='right'>{len(result.rows)}</td>"
-            f"<td align='right'>{result.ingested_rows}</td>"
-            f"<td>{html.escape(result.status)}</td>"
-            f"<td><code>{html.escape(artifact_path)}</code></td>"
-            "</tr>"
-        )
-    blocks.extend(["</tbody>", "</table>"])
-
-    blocks.extend(
-        [
-            "<h4 style='margin:16px 0 8px 0;'>Upsert write actions by status bucket</h4>",
-            "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse; width:100%; margin-bottom:12px;'>",
-            (
-                "<thead><tr>"
-                "<th align='left'>Store</th>"
-                "<th align='right'>Pending Created</th>"
-                "<th align='right'>Pending Updated</th>"
-                "<th align='right'>Completed Created</th>"
-                "<th align='right'>Completed Updated</th>"
-                "<th align='right'>Cancelled Created</th>"
-                "<th align='right'>Cancelled Updated</th>"
-                "</tr></thead>"
-            ),
-            "<tbody>",
-        ]
-    )
-    if not ordered_results:
-        blocks.append("<tr><td colspan='7'><em>No upsert action metrics available.</em></td></tr>")
-    for result in ordered_results:
-        pending = result.bucket_write_counts.get("pending", {})
-        completed = result.bucket_write_counts.get("completed", {})
-        cancelled = result.bucket_write_counts.get("cancelled", {})
-        blocks.append(
-            "<tr>"
-            f"<td>{html.escape(result.store_code)}</td>"
-            f"<td align='right'>{pending.get('created', 0)}</td>"
-            f"<td align='right'>{pending.get('updated', 0)}</td>"
-            f"<td align='right'>{completed.get('created', 0)}</td>"
-            f"<td align='right'>{completed.get('updated', 0)}</td>"
-            f"<td align='right'>{cancelled.get('created', 0)}</td>"
-            f"<td align='right'>{cancelled.get('updated', 0)}</td>"
-            "</tr>"
-        )
-    blocks.extend(["</tbody>", "</table>"])
-
-    blocks.extend(
-        [
-            "<h4 style='margin:16px 0 8px 0;'>Status transitions vs previous run</h4>",
-            "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse; width:100%; margin-bottom:12px;'>",
-            (
-                "<thead><tr>"
-                "<th align='left'>Store</th>"
-                "<th align='left'>Lead</th>"
-                "<th align='left'>Customer</th>"
-                "<th align='left'>Mobile</th>"
-                "<th align='left'>From</th>"
-                "<th align='left'>To</th>"
-                "<th align='left'>Previous Run</th>"
-                "</tr></thead>"
-            ),
-            "<tbody>",
-        ]
-    )
-    transition_rows_added = 0
-    for result in ordered_results:
-        for transition in result.status_transitions:
-            transition_rows_added += 1
-            lead_display = transition.get("pickup_no") or transition.get("pickup_id") or transition.get("lead_uid") or "—"
-            blocks.append(
-                "<tr>"
-                f"<td>{html.escape(result.store_code)}</td>"
-                f"<td>{html.escape(str(lead_display))}</td>"
-                f"<td>{html.escape(str(transition.get('customer_name') or '—'))}</td>"
-                f"<td>{html.escape(str(transition.get('mobile') or '—'))}</td>"
-                f"<td>{html.escape(str(transition.get('from_status_bucket') or '—'))}</td>"
-                f"<td>{html.escape(str(transition.get('to_status_bucket') or '—'))}</td>"
-                f"<td>{html.escape(str(transition.get('previous_run_id') or '—'))}</td>"
-                "</tr>"
-            )
-    if transition_rows_added == 0:
-        blocks.append("<tr><td colspan='7'><em>No status transitions detected.</em></td></tr>")
-    blocks.extend(["</tbody>", "</table>"])
-
-    blocks.extend(
-        [
-            "<h4 style='margin:16px 0 8px 0;'>Lead Changes (Actionable Details)</h4>",
-        ]
-    )
-    lead_changes_added = 0
-    for result in ordered_results:
-        lead_change_details = result.lead_change_details if isinstance(result.lead_change_details, Mapping) else {}
-        grouped_sets = (
-            ("Created by Bucket", lead_change_details.get("created_by_bucket")),
-            ("Updated by Bucket", lead_change_details.get("updated_by_bucket")),
-            ("Transitions (from → to)", lead_change_details.get("transitions")),
-        )
-        store_blocks: list[str] = []
-        for section_label, section_groups in grouped_sets:
-            if not isinstance(section_groups, list) or not section_groups:
-                continue
-            store_blocks.append(f"<h5 style='margin:10px 0 6px 0;'>{html.escape(section_label)}</h5>")
-            for group in section_groups:
-                if not isinstance(group, Mapping):
-                    continue
-                rows = group.get("rows") if isinstance(group.get("rows"), list) else []
-                if not rows:
-                    continue
-                lead_changes_added += len(rows)
-                group_title = group.get("status_bucket") or "bucket"
-                if section_label.startswith("Transitions"):
-                    from_bucket = group.get("from_status_bucket") or "—"
-                    to_bucket = group.get("to_status_bucket") or "—"
-                    group_title = f"{from_bucket} → {to_bucket}"
-                store_blocks.append(f"<p style='margin:6px 0 4px 0;'><strong>{html.escape(str(group_title))}</strong></p>")
-                store_blocks.append(
-                    "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse; width:100%; margin-bottom:8px;'>"
-                    "<thead><tr>"
-                    "<th align='left'>Customer Name</th>"
-                    "<th align='left'>Mobile</th>"
-                    "<th align='left'>Action</th>"
-                    "<th align='left'>Current Bucket</th>"
-                    "<th align='left'>Previous Bucket</th>"
-                    "</tr></thead><tbody>"
-                )
-                for row in rows:
-                    store_blocks.append(
-                        "<tr>"
-                        f"<td>{html.escape(str(row.get('customer_name') or '—'))}</td>"
-                        f"<td>{html.escape(str(row.get('mobile') or '—'))}</td>"
-                        f"<td>{html.escape(str(row.get('action') or '—'))}</td>"
-                        f"<td>{html.escape(str(row.get('current_status_bucket') or '—'))}</td>"
-                        f"<td>{html.escape(str(row.get('previous_status_bucket') or '—'))}</td>"
-                        "</tr>"
-                    )
-                store_blocks.append("</tbody></table>")
-                overflow_count = int(group.get("overflow_count") or 0)
-                if overflow_count > 0:
-                    store_blocks.append(f"<p style='margin:0 0 8px 0; color:#555555;'>+{overflow_count} more</p>")
-        if store_blocks:
-            blocks.append(f"<h5 style='margin:10px 0 6px 0;'>Store {html.escape(result.store_code)}</h5>")
-            blocks.extend(store_blocks)
-    if lead_changes_added == 0:
-        blocks.append("<p><em>No actionable lead changes captured.</em></p>")
-
-    blocks.extend(
-        [
-            "<h4 style='margin:16px 0 8px 0;'>Status bucket totals</h4>",
-            "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse; width:100%; margin-bottom:12px;'>",
-            (
-                "<thead><tr>"
-                "<th align='left'>Store</th>"
-                "<th align='right'>Pending</th>"
-                "<th align='right'>Completed</th>"
-                "<th align='right'>Cancelled</th>"
-                "</tr></thead>"
-            ),
-            "<tbody>",
-        ]
-    )
-    if not ordered_results:
-        blocks.append("<tr><td colspan='4'><em>No status totals available.</em></td></tr>")
-    for result in ordered_results:
-        blocks.append(
-            "<tr>"
-            f"<td>{html.escape(result.store_code)}</td>"
-            f"<td align='right'>{result.status_counts.get('pending', 0)}</td>"
-            f"<td align='right'>{result.status_counts.get('completed', 0)}</td>"
-            f"<td align='right'>{result.status_counts.get('cancelled', 0)}</td>"
-            "</tr>"
-        )
-    blocks.extend(["</tbody>", "</table>"])
-
-    blocks.extend(
-        [
-            "<p style='margin:4px 0 0 0; font-size:12px; color:#555555;'>",
-            f"Reference run_id: <code>{html.escape(summary.run_id)}</code>",
-            "</p>",
-        ]
-    )
-    blocks.append("</div>")
     return "".join(blocks)
+
 
 
 @dataclass
@@ -538,7 +393,6 @@ class LeadsRunSummary:
                     summary_lines.append(f"  warning={warning}")
         summary_html = _build_td_leads_summary_html(summary=self, duration_human=duration_human)
         lead_tables_html = _build_td_leads_tables_html(summary=self)
-        combined_summary_html = f"{summary_html}{lead_tables_html}"
 
         return {
             "pipeline_name": PIPELINE_NAME,
@@ -556,7 +410,7 @@ class LeadsRunSummary:
                     "total_rows": self.total_rows(),
                     "duration_seconds": elapsed_seconds,
                     "duration_human": duration_human,
-                    "summary_html": combined_summary_html,
+                    "summary_html": summary_html,
                     "lead_tables_html": lead_tables_html,
                     "stores": store_rows_payload,
                     "lead_change_details": {
