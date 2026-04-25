@@ -441,7 +441,7 @@ async def test_fetch_daily_sales_report_orders_sync_uses_updated_at_fallback(tmp
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_exposes_td_leads_sync_metrics_payload(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_deprecates_td_leads_sync_payload(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "daily_sales_report_td_leads_sync_metrics.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -488,17 +488,12 @@ async def test_fetch_daily_sales_report_exposes_td_leads_sync_metrics_payload(tm
 
     report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
 
-    assert report.td_leads_sync_metrics["run_id"] == "run-td-1"
-    stores = report.td_leads_sync_metrics["stores"]
-    assert len(stores) == 1
-    assert stores[0]["bucket_write_counts"]["pending"]["created"] == 1
-    assert report.td_leads_sync_metrics["task_stub"]["status"] == "open"
-    assert report.td_leads_sync_lead_changes["stores"][0]["store_code"] == "UN"
-    assert report.td_leads_sync_lead_changes["stores"][0]["created_by_bucket"] == []
+    assert report.td_leads_sync_metrics == {}
+    assert report.td_leads_sync_lead_changes == {}
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_extracts_td_lead_change_details_payload(tmp_path, monkeypatch) -> None:
+async def test_fetch_daily_sales_report_deprecates_td_lead_change_details_payload(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "daily_sales_report_td_lead_changes.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -534,10 +529,8 @@ async def test_fetch_daily_sales_report_extracts_td_lead_change_details_payload(
         await session.commit()
 
     report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
-    stores = report.td_leads_sync_lead_changes["stores"]
-    assert len(stores) == 1
-    assert stores[0]["store_code"] == "UN"
-    assert stores[0]["created_by_bucket"][0]["rows"][0]["customer_name"] == "Nia"
+    assert report.td_leads_sync_metrics == {}
+    assert report.td_leads_sync_lead_changes == {}
 
 
 @pytest.mark.asyncio
