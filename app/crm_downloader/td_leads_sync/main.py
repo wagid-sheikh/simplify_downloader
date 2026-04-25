@@ -165,7 +165,7 @@ def _sort_td_leads_bucket_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str,
     keyed_rows: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     for idx, row in enumerate(rows):
         resolved_created_at = _resolve_created_at(row)
-        canonical_text = str(row.get("pickup_created_text") or row.get("pickup_created_at") or row.get("pickup_date") or "").strip()
+        canonical_text = str(row.get("pickup_created_text") or row.get("pickup_created_at") or "").strip()
         pickup_code = str(row.get("pickup_code") or row.get("pickup_no") or row.get("pickup_id") or "").strip()
         sort_key = (
             0 if resolved_created_at is not None else 1,
@@ -346,9 +346,7 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
             created_at = _parse_td_leads_created_datetime(matching_row.get("pickup_created_at")) or _parse_td_leads_created_datetime(
                 matching_row.get("pickup_created_text")
             )
-            created_text = str(
-                matching_row.get("pickup_created_text") or matching_row.get("pickup_created_at") or matching_row.get("pickup_date") or ""
-            ).strip()
+            created_text = str(matching_row.get("pickup_created_text") or matching_row.get("pickup_created_at") or "").strip()
             return (
                 0 if created_at is not None else 1,
                 -(created_at.replace(tzinfo=None) - datetime(1970, 1, 1)).total_seconds() if created_at is not None else 0.0,
@@ -915,8 +913,8 @@ async def _collect_status_rows(
             values = [str(value or "").strip() for value in raw_row.get("values") or []]
             pickup_date = _field_from_headers(headers=headers, values=values, field_name="pickup_date")
             pickup_time = _field_from_headers(headers=headers, values=values, field_name="pickup_time")
-            pickup_created_text = _field_from_headers(headers=headers, values=values, field_name="pickup_created_at")
-            _, pickup_created_at = _parse_created_datetime(pickup_created_text)
+            raw_pickup_created_text = _field_from_headers(headers=headers, values=values, field_name="pickup_created_at")
+            pickup_created_text, pickup_created_at = _parse_created_datetime(raw_pickup_created_text)
 
             row = {
                 "store_code": store_code,
