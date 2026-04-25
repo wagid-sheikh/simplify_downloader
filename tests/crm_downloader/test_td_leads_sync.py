@@ -1231,6 +1231,46 @@ async def test_collect_status_rows_maps_combined_created_datetime_to_pickup_crea
 
 
 @pytest.mark.asyncio
+async def test_collect_status_rows_maps_created_date_header_to_created_fields_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _noop_switch_status(*args, **kwargs) -> None:
+        return None
+
+    async def _fake_scrape_grid_rows(*args, **kwargs):
+        return (
+            ["Pickup No.", "Customer Name", "Created Date", "Mobile", "Status"],
+            [
+                {
+                    "pickup_id": "4434944",
+                    "values": ["A668-3025", "Moni", "21 Apr 2026 3:03:39 PM", "9599242207", "PENDING"],
+                }
+            ],
+        )
+
+    async def _no_pages(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr("app.crm_downloader.td_leads_sync.main._switch_status", _noop_switch_status)
+    monkeypatch.setattr("app.crm_downloader.td_leads_sync.main._scrape_grid_rows", _fake_scrape_grid_rows)
+    monkeypatch.setattr("app.crm_downloader.td_leads_sync.main._available_pager_args", _no_pages)
+
+    rows, warnings = await _collect_status_rows(
+        page=SimpleNamespace(),
+        store_code="A668",
+        status_bucket="pending",
+        status_value="1",
+        grid_selector="#grdEntry",
+        logger=_FakeLogger(),
+    )
+
+    assert warnings == []
+    assert rows[0]["pickup_date"] is None
+    assert rows[0]["pickup_created_text"] == "21 Apr 2026 3:03:39 PM"
+    assert rows[0]["pickup_created_at"] == datetime(2026, 4, 21, 9, 33, 39, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
 async def test_collect_status_rows_keeps_pickup_date_when_pickup_date_column_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
