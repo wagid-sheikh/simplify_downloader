@@ -18,6 +18,7 @@ import sqlalchemy as sa
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from app.common.date_utils import aware_now, get_timezone
+from app.common.lead_rules import is_customer_cancelled
 from app.config import config
 from app.crm_downloader.browser import launch_browser
 from app.crm_downloader.config import default_download_dir
@@ -197,9 +198,7 @@ def _build_td_leads_section_table_html(*, section_label: str, headers: Sequence[
 
 
 def _is_customer_cancelled_td_lead(row: Mapping[str, Any]) -> bool:
-    # Canonical TD cancellation attribution rule:
-    # Reason blank => customer-cancelled; Reason present => store-cancelled.
-    return not bool(str(row.get("reason") or "").strip())
+    return is_customer_cancelled(cancelled_flag=row.get("cancelled_flag"), reason=row.get("reason"))
 
 
 def _format_pickup_created_display(row: Mapping[str, Any]) -> str:

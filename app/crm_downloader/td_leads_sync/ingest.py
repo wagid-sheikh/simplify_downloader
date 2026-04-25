@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.common.db import session_scope
+from app.common.lead_rules import cancelled_flag_from_reason
 
 
 @dataclass
@@ -272,7 +273,7 @@ async def ingest_td_crm_leads_rows(
             reason = (str(row.get("reason")).strip() or None) if row.get("reason") is not None else None
             cancelled_flag = None
             if status_bucket == "cancelled":
-                cancelled_flag = "customer" if not reason else "store"
+                cancelled_flag = cancelled_flag_from_reason(reason)
             lead_uid = build_lead_uid(row)
             values = {
                 "lead_uid": lead_uid,

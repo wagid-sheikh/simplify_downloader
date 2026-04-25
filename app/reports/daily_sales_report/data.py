@@ -10,6 +10,7 @@ import sqlalchemy as sa
 
 from app.common.date_utils import get_timezone
 from app.common.db import session_scope
+from app.common.lead_rules import resolve_cancelled_flag
 
 
 @dataclass
@@ -1030,32 +1031,12 @@ async def fetch_daily_sales_report(
             .subquery()
         )
 
-        derived_cancelled_flag_expr = sa.case(
-            (
-                sa.or_(
-                    lead_base.c.cancelled_flag.is_(None),
-                    lead_base.c.cancelled_flag == "",
-                ),
-                sa.case(
-                    (
-                        sa.or_(
-                            lead_base.c.reason.is_(None),
-                            sa.func.trim(lead_base.c.reason) == "",
-                        ),
-                        "customer",
-                    ),
-                    else_="store",
-                ),
-            ),
-            else_=lead_base.c.cancelled_flag,
-        )
-
         cancelled_leads_stmt = (
             sa.select(
                 lead_base.c.store_name,
                 lead_base.c.customer_name,
                 lead_base.c.mobile,
-                derived_cancelled_flag_expr.label("cancelled_flag"),
+                lead_base.c.cancelled_flag,
                 lead_base.c.reason,
             )
             # Cancelled monthly table policy:
@@ -1082,7 +1063,7 @@ async def fetch_daily_sales_report(
                 },
             )
             group["total_cancelled_count"] = int(group["total_cancelled_count"]) + 1
-            cancelled_flag = str(entry["cancelled_flag"] or "store").lower()
+            cancelled_flag = resolve_cancelled_flag(cancelled_flag=entry["cancelled_flag"], reason=entry["reason"])
             if cancelled_flag == "customer":
                 group["customer_cancelled_count"] = int(group["customer_cancelled_count"]) + 1
                 continue
@@ -1093,7 +1074,7 @@ async def fetch_daily_sales_report(
                         "customer_name": str(entry["customer_name"] or "--"),
                         "mobile": str(entry["mobile"] or "--"),
                         "flag": cancelled_flag,
-                        "reason": str(entry["reason"] or "--"),
+                        "reason": (str(entry["reason"] or "").strip() or "--"),
                     }
                 )
         cancelled_leads_grouped = [
