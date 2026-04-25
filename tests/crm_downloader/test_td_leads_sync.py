@@ -390,6 +390,13 @@ def test_td_leads_tables_html_renders_three_business_sections_per_store() -> Non
                         "source": "Walk-in",
                     },
                 ],
+                status_transitions=[
+                    {
+                        "pickup_no": "A817-C2",
+                        "from_status_bucket": "pending",
+                        "to_status_bucket": "cancelled",
+                    }
+                ],
                 lead_change_details={
                     "created_by_bucket": [
                         {
@@ -413,13 +420,13 @@ def test_td_leads_tables_html_renders_three_business_sections_per_store() -> Non
 
     assert "Store A817" in tables_html
     assert "<h5 style='margin:10px 0 6px 0;'>New Leads created (1)</h5>" in tables_html
-    assert "<h5 style='margin:10px 0 6px 0;'>Leads Marked as Cancelled (1)</h5>" in tables_html
+    assert "<h5 style='margin:10px 0 6px 0;'>Leads Marked as Cancelled (1 transitions this run)</h5>" in tables_html
     assert "<h5 style='margin:10px 0 6px 0;'>Pending Leads (52)</h5>" in tables_html
     assert "Pending 1" in tables_html
     assert "Raj" in tables_html
     assert "Pending 52" in tables_html
     assert "<th align='left'>Customer Name</th><th align='left'>Mobile Number</th><th align='left'>Source</th>" in tables_html
-    assert "<th align='left'>Customer Name</th><th align='left'>Mobile Number</th><th align='left'>Flag</th><th align='left'>Reason</th>" in tables_html
+    assert "<th align='left'>Customer Name</th><th align='left'>Mobile Number</th><th align='left'>Flag</th><th align='left'>Reason</th><th align='left'>Source</th>" in tables_html
     assert "<th align='left'>Customer Name</th><th align='left'>Mobile Number</th><th align='left'>Created Date/Time</th><th align='left'>Source</th>" in tables_html
     assert "Completed</h5>" not in tables_html
     assert "Converted" not in tables_html
@@ -475,6 +482,7 @@ def test_td_leads_tables_html_sorts_pending_and_cancelled_rows_by_created_dateti
                     {
                         "status_bucket": "cancelled",
                         "pickup_code": "X-1",
+                        "pickup_no": "A817-C1",
                         "customer_name": "Cancelled Earlier",
                         "mobile": "9222222221",
                         "address": "Area 7",
@@ -485,6 +493,7 @@ def test_td_leads_tables_html_sorts_pending_and_cancelled_rows_by_created_dateti
                     {
                         "status_bucket": "cancelled",
                         "pickup_code": "X-2",
+                        "pickup_no": "A817-C2",
                         "customer_name": "Cancelled Latest",
                         "mobile": "9222222222",
                         "address": "Area 8",
@@ -492,6 +501,10 @@ def test_td_leads_tables_html_sorts_pending_and_cancelled_rows_by_created_dateti
                         "pickup_created_at": datetime(2026, 4, 22, 13, 0, 0),
                         "reason": "No inventory",
                     },
+                ],
+                status_transitions=[
+                    {"pickup_no": "A817-C1", "from_status_bucket": "pending", "to_status_bucket": "cancelled"},
+                    {"pickup_no": "A817-C2", "from_status_bucket": "pending", "to_status_bucket": "cancelled"},
                 ],
             )
         },
@@ -551,6 +564,7 @@ def test_td_leads_tables_html_hides_customer_cancelled_rows_but_keeps_counts() -
                 rows=[
                     {
                         "status_bucket": "cancelled",
+                        "pickup_no": "A817-CC",
                         "customer_name": "Customer Cancelled",
                         "mobile": "9888888888",
                         "reason": "",
@@ -558,11 +572,16 @@ def test_td_leads_tables_html_hides_customer_cancelled_rows_but_keeps_counts() -
                     },
                     {
                         "status_bucket": "cancelled",
+                        "pickup_no": "A817-SC",
                         "customer_name": "Store Cancelled",
                         "mobile": "9777777777",
                         "reason": "No inventory",
                         "pickup_date": "22 Apr 2026 08:00:00 AM",
                     },
+                ],
+                status_transitions=[
+                    {"pickup_no": "A817-CC", "from_status_bucket": "pending", "to_status_bucket": "cancelled"},
+                    {"pickup_no": "A817-SC", "from_status_bucket": "pending", "to_status_bucket": "cancelled"},
                 ],
             )
         },
@@ -570,10 +589,97 @@ def test_td_leads_tables_html_hides_customer_cancelled_rows_but_keeps_counts() -
 
     tables_html = _build_td_leads_tables_html(summary=summary)
 
-    assert "Leads Marked as Cancelled (2)" in tables_html
+    assert "Leads Marked as Cancelled (2 transitions this run)" in tables_html
     assert "Store Cancelled" in tables_html
     assert "No inventory" in tables_html
     assert "Customer Cancelled" not in tables_html
+
+
+def test_td_leads_tables_html_does_not_mark_unchanged_cancelled_leads_as_new_transitions() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-cancelled-unchanged",
+        run_env="local",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={
+            "A817": StoreLeadResult(
+                store_code="A817",
+                rows=[
+                    {
+                        "status_bucket": "cancelled",
+                        "pickup_no": "A817-CX1",
+                        "customer_name": "Existing Cancelled",
+                        "mobile": "9666666666",
+                        "reason": "No inventory",
+                    }
+                ],
+                status_transitions=[],
+                lead_change_details={"transitions": []},
+            )
+        },
+    )
+
+    tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "Leads Marked as Cancelled (0 transitions this run)" in tables_html
+    assert "Existing Cancelled" not in tables_html
+
+
+def test_td_leads_tables_html_marks_only_new_cancelled_transitions() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-cancelled-new-transitions",
+        run_env="local",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={
+            "A817": StoreLeadResult(
+                store_code="A817",
+                rows=[
+                    {
+                        "status_bucket": "cancelled",
+                        "pickup_no": "A817-CN1",
+                        "customer_name": "Store Transition",
+                        "mobile": "9555555555",
+                        "reason": "No rider available",
+                        "source": "App",
+                    },
+                    {
+                        "status_bucket": "cancelled",
+                        "pickup_no": "A817-CN2",
+                        "customer_name": "Customer Transition",
+                        "mobile": "9444444444",
+                        "reason": "",
+                        "source": "Call Center",
+                    },
+                ],
+                lead_change_details={
+                    "transitions": [
+                        {
+                            "to_status_bucket": "cancelled",
+                            "rows": [
+                                {
+                                    "lead_identity": {"pickup_no": "A817-CN1"},
+                                    "customer_name": "Store Transition",
+                                    "mobile": "9555555555",
+                                },
+                                {
+                                    "lead_identity": {"pickup_no": "A817-CN2"},
+                                    "customer_name": "Customer Transition",
+                                    "mobile": "9444444444",
+                                },
+                            ],
+                        }
+                    ]
+                },
+            )
+        },
+    )
+
+    tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "Leads Marked as Cancelled (2 transitions this run)" in tables_html
+    assert "Store Transition" in tables_html
+    assert "No rider available" in tables_html
+    assert "App" in tables_html
+    assert "Customer Transition" not in tables_html
 
 
 def test_is_customer_cancelled_td_lead_uses_blank_reason_rule() -> None:
