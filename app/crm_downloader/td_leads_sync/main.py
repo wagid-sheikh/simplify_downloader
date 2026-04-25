@@ -261,17 +261,89 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                     ]
                 )
 
-        cancelled_rows = _td_leads_bucket_rows(result, "cancelled")
-        cancelled_total = len(cancelled_rows)
-        cancelled_store_only = [row for row in cancelled_rows if not _is_customer_cancelled_td_lead(row)]
+        transition_groups = (
+            lead_change_details.get("transitions") if isinstance(lead_change_details.get("transitions"), list) else []
+        )
+        cancelled_transitions: list[dict[str, Any]] = []
+        seen_cancelled_transition_keys: set[tuple[str, str, str]] = set()
+
+        def _append_cancelled_transition(*, transition: Mapping[str, Any], fallback_row: Mapping[str, Any] | None = None) -> None:
+            if str(transition.get("to_status_bucket") or "").strip().lower() != "cancelled":
+                return
+
+            lead_uid = str(transition.get("lead_uid") or "").strip()
+            pickup_no = str(transition.get("pickup_no") or "").strip().upper()
+            if not pickup_no:
+                lead_identity = transition.get("lead_identity") if isinstance(transition.get("lead_identity"), Mapping) else {}
+                pickup_no = str(lead_identity.get("pickup_no") or "").strip().upper()
+            dedupe_key = (lead_uid, pickup_no, "cancelled")
+            if dedupe_key in seen_cancelled_transition_keys:
+                return
+            seen_cancelled_transition_keys.add(dedupe_key)
+            cancelled_transitions.append(
+                {
+                    "pickup_no": pickup_no,
+                    "customer_name": transition.get("customer_name"),
+                    "mobile": transition.get("mobile"),
+                    "reason": transition.get("reason"),
+                    "source": transition.get("source"),
+                    "fallback_row": dict(fallback_row or {}),
+                }
+            )
+
+        for group in transition_groups:
+            if not isinstance(group, Mapping):
+                continue
+            if str(group.get("to_status_bucket") or "").strip().lower() != "cancelled":
+                continue
+            group_rows = group.get("rows") if isinstance(group.get("rows"), list) else []
+            for transition_row in group_rows:
+                if not isinstance(transition_row, Mapping):
+                    continue
+                _append_cancelled_transition(
+                    transition={**dict(transition_row), "to_status_bucket": group.get("to_status_bucket")},
+                )
+
+        for transition in result.status_transitions:
+            if not isinstance(transition, Mapping):
+                continue
+            _append_cancelled_transition(transition=transition)
+
+        def _cancelled_transition_sort_key(transition: Mapping[str, Any]) -> tuple[Any, ...]:
+            transition_pickup_no = str(transition.get("pickup_no") or "").strip().upper()
+            matching_row = row_by_pickup_no.get(transition_pickup_no) or transition.get("fallback_row") or {}
+            created_at = _parse_td_leads_created_datetime(matching_row.get("pickup_created_at")) or _parse_td_leads_created_datetime(
+                matching_row.get("pickup_created_text")
+            )
+            created_text = str(
+                matching_row.get("pickup_created_text") or matching_row.get("pickup_created_at") or matching_row.get("pickup_date") or ""
+            ).strip()
+            return (
+                0 if created_at is not None else 1,
+                -(created_at.replace(tzinfo=None) - datetime(1970, 1, 1)).total_seconds() if created_at is not None else 0.0,
+                created_text.lower(),
+                transition_pickup_no.lower(),
+            )
+
+        cancelled_transitions = sorted(cancelled_transitions, key=_cancelled_transition_sort_key)
+        cancelled_total = len(cancelled_transitions)
         cancelled_detail_rows: list[list[str]] = []
-        for row in cancelled_store_only:
+        for transition in cancelled_transitions:
+            transition_pickup_no = str(transition.get("pickup_no") or "").strip().upper()
+            matching_row = row_by_pickup_no.get(transition_pickup_no) or transition.get("fallback_row") or {}
+            resolved_reason = str(transition.get("reason") or matching_row.get("reason") or "").strip()
+            resolved_source = str(transition.get("source") or matching_row.get("source") or "None")
+            resolved_customer_name = str(transition.get("customer_name") or matching_row.get("customer_name") or "None")
+            resolved_mobile = str(transition.get("mobile") or matching_row.get("mobile") or "None")
+            if _is_customer_cancelled_td_lead({"reason": resolved_reason}):
+                continue
             cancelled_detail_rows.append(
                 [
-                    str(row.get("customer_name") or "None"),
-                    str(row.get("mobile") or "None"),
+                    resolved_customer_name,
+                    resolved_mobile,
                     "Store Cancelled",
-                    str(row.get("reason") or "None"),
+                    resolved_reason or "None",
+                    resolved_source,
                 ]
             )
 
@@ -297,8 +369,8 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
         )
         blocks.append(
             _build_td_leads_section_table_html(
-                section_label=f"Leads Marked as Cancelled ({cancelled_total})",
-                headers=("Customer Name", "Mobile Number", "Flag", "Reason"),
+                section_label=f"Leads Marked as Cancelled ({cancelled_total} transitions this run)",
+                headers=("Customer Name", "Mobile Number", "Flag", "Reason", "Source"),
                 rows=cancelled_detail_rows,
             )
         )
