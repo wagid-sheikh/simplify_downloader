@@ -10,6 +10,30 @@
 
 ## Initial reconstructed decisions
 
+### DL-006
+- **Date:** 2026-04-25
+- **Status:** Active
+- **Decision:** Standardize manual `orders` recovery updates (SQL/admin UI) using
+  explicit status/category transitions and append-only notes.
+- **Context:** Store operations for TD/UC need one consistent procedure for
+  force-paid unlock recovery, damage-claim compensation, and final closure so
+  downstream reporting interprets records uniformly.
+- **Evidence:** `alembic/versions/0092_orders_recovery_tracking.py` defines
+  allowed recovery statuses/categories; daily sales report tests already use
+  `TO_BE_RECOVERED` and `TO_BE_COMPENSATED` buckets.
+- **Implications:**
+  - Force-paid unlock actions must use:
+    - `recovery_status='TO_BE_RECOVERED'`
+    - `recovery_category='CRM_FORCED_PAID_90D'`
+  - Damage claims must use:
+    - `recovery_status='TO_BE_COMPENSATED'`
+    - `recovery_category='DAMAGE_CLAIM'`
+  - Closures must move to one of `RECOVERED`, `COMPENSATED`, or `WRITE_OFF`.
+  - `recovery_notes` is append-only and should include reason + ticket/claim
+    reference and actor/timestamp metadata.
+- **Follow-up:** Ensure any internal admin UI/input forms enforce these enum
+  values and append-style note behavior rather than free-form overwrite.
+
 ### DL-001
 - **Date:** Date unknown (reconstructed from repository state)
 - **Status:** Active

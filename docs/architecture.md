@@ -113,6 +113,64 @@ For order-sync profiler, the run additionally:
   - `td_sync_compare_log`,
   - ingest tables (`missed_leads`, `undelivered_orders`, etc.).
 
+### Orders manual recovery workflow (TD + UC operations)
+
+`orders` includes manual recovery-tracking fields introduced by migration
+`0092_orders_recovery_tracking`:
+- `recovery_status`
+- `recovery_category`
+- `recovery_notes`
+- `recovery_marked_at`
+- `recovery_marked_by`
+
+Use the following standard lifecycle for both TumbleDry and UClean stores so
+reporting and aging buckets remain consistent:
+
+1. **CRM force-paid done for unlock**
+   - Set `recovery_status='TO_BE_RECOVERED'`.
+   - Set `recovery_category='CRM_FORCED_PAID_90D'`.
+   - Set `recovery_notes` with reason and ticket/reference.
+2. **Damage case identified**
+   - Set `recovery_status='TO_BE_COMPENSATED'`.
+   - Set `recovery_category='DAMAGE_CLAIM'`.
+   - Set `recovery_notes` with claim details.
+3. **Closure**
+   - Set `recovery_status` to one of:
+     - `RECOVERED`
+     - `COMPENSATED`
+     - `WRITE_OFF`
+   - Keep note history append-only in `recovery_notes` (do not overwrite prior
+     context).
+
+#### SQL update template (admin UI should mirror this contract)
+
+Use parameterized updates in admin SQL consoles / backend tooling:
+
+```sql
+UPDATE orders
+SET
+    recovery_status = :recovery_status,
+    recovery_category = :recovery_category,
+    recovery_notes = CONCAT(
+        COALESCE(recovery_notes || E'\n', ''),
+        TO_CHAR(NOW(), 'YYYY-MM-DD HH24:MI:SS TZ'),
+        ' | ',
+        :actor,
+        ' | ',
+        :note
+    ),
+    recovery_marked_at = NOW(),
+    recovery_marked_by = :actor_user_id
+WHERE id = :order_id;
+```
+
+Operational notes:
+- Always append to `recovery_notes`; never replace existing text.
+- Include ticket/reference IDs in note lines for force-paid and damage-claim
+  actions.
+- If an admin UI is used, enforce the same enum values and append-style notes
+  behavior to match SQL operations.
+
 ## CI/CD and deployment shape
 
 - CI (`.github/workflows/ci.yml`): on push to `main`, install via Poetry, run pytest.
