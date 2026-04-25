@@ -974,7 +974,6 @@ async def fetch_daily_sales_report(
                     {
                         "customer_name": str(entry["customer_name"] or "--"),
                         "mobile": str(entry["mobile"] or "--"),
-                        "flag": cancelled_flag,
                         "reason": (str(entry["reason"] or "").strip() or "--"),
                     }
                 )

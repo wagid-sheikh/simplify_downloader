@@ -110,6 +110,24 @@
       .missed-leads-table td {
         padding: 1px 3px;
       }
+      .cancelled-leads-table th:nth-child(1),
+      .cancelled-leads-table td:nth-child(1) {
+        width: 22%;
+        text-align: left;
+        vertical-align: top;
+      }
+      .cancelled-leads-table th:nth-child(2),
+      .cancelled-leads-table td:nth-child(2) {
+        width: 11%;
+        vertical-align: top;
+      }
+      .cancelled-leads-table th:nth-child(3),
+      .cancelled-leads-table td:nth-child(3) {
+        width: 67%;
+        text-align: left;
+        vertical-align: top;
+        word-break: break-word;
+      }
       .micro-table th:first-child,
       .micro-table td:first-child {
         width: 24%;
@@ -357,12 +375,12 @@
 
     <div class="section-title">Cancelled Leads for this Month</div>
     {% if cancelled_leads %}
-    <table class="micro-table missed-leads-table micro-font">
+    <table class="micro-table missed-leads-table cancelled-leads-table micro-font">
       <thead>
         <tr>
           <th class="label">Store</th>
           <th>Total Cancelled</th>
-          <th class="label">Store-Cancelled Lead Rows</th>
+          <th class="label">Store-Cancelled Leads</th>
         </tr>
       </thead>
       <tbody>
@@ -373,7 +391,7 @@
           <td class="micro-leads-list">
             {% if group.store_cancelled_rows %}
               {% for lead in group.store_cancelled_rows %}
-                ({{ lead.customer_name }}, {{ lead.mobile }}, {{ lead.flag or "--" }}, {{ lead.reason or "--" }}){% if not loop.last %}, {% endif %}
+                ({{ lead.mobile }}, {{ lead.customer_name }} - {{ lead.reason or "--" }}){% if not loop.last %}, {% endif %}
               {% endfor %}
             {% else %}
               --
