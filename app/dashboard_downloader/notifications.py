@@ -2726,6 +2726,13 @@ def _uc_summary_text_from_payload(
     )
 
 
+def _resolve_subject_prefix(*, pipeline_name: str, metrics_payload: Mapping[str, Any]) -> str:
+    if pipeline_name != "td_crm_leads_sync":
+        return ""
+    has_new_leads = bool(metrics_payload.get("has_new_leads"))
+    return "NEW LEADS " if has_new_leads else ""
+
+
 async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[str, Any]:
     result: dict[str, Any] = {"emails_planned": 0, "emails_sent": 0, "errors": []}
     resources, errors = await _load_notification_resources(pipeline_name, run_id)
@@ -2761,6 +2768,7 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[st
         "summary_html": metrics_payload.get("summary_html") or "",
         "lead_tables_html": metrics_payload.get("lead_tables_html") or "",
         "metrics_json": metrics_payload,
+        "subject_prefix": _resolve_subject_prefix(pipeline_name=pipeline_name, metrics_payload=metrics_payload),
         "duration_seconds": duration_seconds,
         "duration_human": duration_human,
         "missing_windows_by_store": profiler_missing_windows,
@@ -2855,6 +2863,7 @@ async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str
         "summary_html": metrics_payload.get("summary_html") or "",
         "lead_tables_html": metrics_payload.get("lead_tables_html") or "",
         "metrics_json": metrics_payload,
+        "subject_prefix": _resolve_subject_prefix(pipeline_name=pipeline_name, metrics_payload=metrics_payload),
         "duration_seconds": duration_seconds,
         "duration_human": duration_human,
     }

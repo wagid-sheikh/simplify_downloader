@@ -352,10 +352,40 @@ def test_td_leads_run_summary_record_exposes_summary_html_in_metrics() -> None:
     assert "status=pending, customer_name=Ada" not in record["summary_text"]
     assert "No new leads/status changed across all stores." in record["metrics_json"]["summary_html"]
     assert "No new leads/status changed across all stores." in record["metrics_json"]["lead_tables_html"]
+    assert record["metrics_json"]["has_new_leads"] is False
     assert "A668" in record["summary_text"]
     assert "lead_change_details" in record["metrics_json"]["stores"][0]
     assert "lead_change_details" in record["metrics_json"]
     assert "rows" not in record["metrics_json"]["stores"][0]
+
+
+def test_td_leads_run_summary_record_marks_has_new_leads_true_when_created_events_exist() -> None:
+    started_at = datetime(2026, 4, 22, 0, 0, tzinfo=timezone.utc)
+    finished_at = datetime(2026, 4, 22, 0, 1, tzinfo=timezone.utc)
+    summary = LeadsRunSummary(
+        run_id="run-new",
+        run_env="local",
+        report_date=started_at.date(),
+        started_at=started_at,
+        store_results={
+            "A668": StoreLeadResult(
+                store_code="A668",
+                lead_change_details={
+                    "created_by_bucket": [
+                        {
+                            "status_bucket": "pending",
+                            "rows": [{"lead_identity": {"lead_uid": "lead-1"}}],
+                            "overflow_count": 0,
+                        }
+                    ]
+                },
+            )
+        },
+    )
+
+    record = summary.build_record(finished_at=finished_at)
+
+    assert record["metrics_json"]["has_new_leads"] is True
 
 
 def test_td_leads_tables_html_renders_three_business_sections_per_store() -> None:
@@ -1684,7 +1714,16 @@ async def test_ingest_lead_change_details_dedupes_and_caps_rows(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_td_leads_seeded_run_notification_plans_email(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("has_new_leads", "expected_subject"),
+    [
+        (True, "NEW LEADS TD Leads run-1"),
+        (False, "TD Leads run-1"),
+    ],
+)
+async def test_td_leads_seeded_run_notification_plans_email(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, has_new_leads: bool, expected_subject: str
+) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_leads_notif.db'}"
     engine = create_async_engine(database_url, future=True)
 
@@ -1815,7 +1854,7 @@ async def test_td_leads_seeded_run_notification_plans_email(tmp_path, monkeypatc
                     """
                 ),
                 {
-                    "metrics_json": json.dumps({"summary_html": "<div>ok</div>"}),
+                    "metrics_json": json.dumps({"summary_html": "<div>ok</div>", "has_new_leads": has_new_leads}),
                 },
             )
             await connection.execute(
@@ -1835,7 +1874,7 @@ async def test_td_leads_seeded_run_notification_plans_email(tmp_path, monkeypatc
                     INSERT INTO email_templates (
                         profile_id, name, subject_template, body_template, is_active
                     ) VALUES (
-                        10, 'run_summary', 'TD Leads {{ run_id }}', 'Run {{ run_id }} complete in {{ duration_human }}', 1
+                        10, 'run_summary', '{{ subject_prefix }}TD Leads {{ run_id }}', 'Run {{ run_id }} complete in {{ duration_human }}', 1
                     )
                     """
                 )
@@ -1877,6 +1916,7 @@ async def test_td_leads_seeded_run_notification_plans_email(tmp_path, monkeypatc
         assert result["emails_planned"] == 1
         assert result["emails_sent"] == 1
         assert len(sent_plans) == 1
+        assert sent_plans[0].subject == expected_subject
         assert "00:01:00" in sent_plans[0].body
         assert "Run run-1 complete in 00:01:00" in sent_plans[0].body
     finally:
