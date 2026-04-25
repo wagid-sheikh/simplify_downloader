@@ -64,7 +64,10 @@ def _create_tables(database_url: str) -> None:
                     gross_amount NUMERIC,
                     default_due_date TIMESTAMP,
                     source_system TEXT,
-                    recovery_status TEXT
+                    recovery_status TEXT,
+                    recovery_opened_at TIMESTAMP,
+                    recovery_closed_at TIMESTAMP,
+                    recovery_expected_resolution_date DATE
                 )
                 """
             )
@@ -709,12 +712,13 @@ async def test_fetch_daily_sales_report_manual_recovery_sections(tmp_path, monke
                 """
                 INSERT INTO orders (
                     cost_center, order_number, order_date, net_amount, gross_amount,
-                    default_due_date, source_system, recovery_status
+                    default_due_date, source_system, recovery_status,
+                    recovery_opened_at, recovery_closed_at, recovery_expected_resolution_date
                 ) VALUES
-                    ('CC-TD', 'TD-R1', '2026-04-20 10:00:00', 100, 120, '2026-04-20 10:00:00', 'TumbleDry', 'TO_BE_RECOVERED'),
-                    ('CC-TD', 'TD-R2', '2026-03-10 10:00:00', 200, 230, '2026-03-10 10:00:00', 'TumbleDry', 'TO_BE_RECOVERED'),
-                    ('CC-UC', 'UC-C1', '2026-01-10 10:00:00', 50, 300, '2026-01-10 10:00:00', 'UClean', 'TO_BE_COMPENSATED'),
-                    ('CC-TD', 'TD-X1', '2026-02-10 10:00:00', 90, 100, '2026-02-10 10:00:00', 'TumbleDry', 'COMPENSATED')
+                    ('CC-TD', 'TD-R1', '2026-04-20 10:00:00', 100, 120, '2026-04-20 10:00:00', 'TumbleDry', 'TO_BE_RECOVERED', '2026-04-20 10:00:00', NULL, '2026-04-23'),
+                    ('CC-TD', 'TD-R2', '2026-03-10 10:00:00', 200, 230, '2026-03-10 10:00:00', 'TumbleDry', 'TO_BE_RECOVERED', '2026-03-10 10:00:00', NULL, '2026-04-05'),
+                    ('CC-UC', 'UC-C1', '2026-01-10 10:00:00', 50, 300, '2026-01-10 10:00:00', 'UClean', 'TO_BE_COMPENSATED', '2026-01-10 10:00:00', NULL, '2026-02-15'),
+                    ('CC-TD', 'TD-X1', '2026-02-10 10:00:00', 90, 100, '2026-02-10 10:00:00', 'TumbleDry', 'COMPENSATED', '2026-04-10 09:00:00', '2026-04-25 11:30:00', '2026-04-22')
                 """
             )
         )
@@ -737,3 +741,15 @@ async def test_fetch_daily_sales_report_manual_recovery_sections(tmp_path, monke
     assert compensated.total_amount_at_risk == 300
     compensated_aging = {bucket.label: bucket.order_count for bucket in compensated.aging_split}
     assert compensated_aging == {"0-30": 0, "31-60": 0, "61-90": 0, ">90": 1}
+
+    assert report.recovery_backlog_totals.opening_backlog == 3
+    assert report.recovery_backlog_totals.newly_tagged == 0
+    assert report.recovery_backlog_totals.closed_today == 1
+    assert report.recovery_backlog_totals.net_backlog_movement == -1
+
+    assert len(report.recovery_lifecycle_closed) == 1
+    closed_row = report.recovery_lifecycle_closed[0]
+    assert closed_row.order_number == "TD-X1"
+    assert closed_row.open_age_days == 15
+    assert closed_row.is_overdue is False
+    assert closed_row.closure_turnaround_days == 15
