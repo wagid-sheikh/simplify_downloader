@@ -220,14 +220,54 @@ def _format_pickup_created_display(row: Mapping[str, Any]) -> str:
     return "None"
 
 
+
+
+def _count_td_leads_created_events(result: "StoreLeadResult") -> int:
+    lead_change_details = result.lead_change_details if isinstance(result.lead_change_details, Mapping) else {}
+    created_groups = lead_change_details.get("created_by_bucket") if isinstance(lead_change_details.get("created_by_bucket"), list) else []
+    created_count = 0
+    for group in created_groups:
+        if not isinstance(group, Mapping):
+            continue
+        group_rows = group.get("rows") if isinstance(group.get("rows"), list) else []
+        created_count += len(group_rows)
+    return created_count
+
+
+def _count_td_leads_status_transitions(result: "StoreLeadResult") -> int:
+    lead_change_details = result.lead_change_details if isinstance(result.lead_change_details, Mapping) else {}
+    transition_groups = lead_change_details.get("transitions") if isinstance(lead_change_details.get("transitions"), list) else []
+    grouped_count = 0
+    for group in transition_groups:
+        if not isinstance(group, Mapping):
+            continue
+        group_rows = group.get("rows") if isinstance(group.get("rows"), list) else []
+        grouped_count += len(group_rows)
+
+    flat_count = len([item for item in result.status_transitions if isinstance(item, Mapping)])
+    return max(grouped_count, flat_count)
+
+
+def _td_leads_store_has_changes(result: "StoreLeadResult") -> bool:
+    created_count = _count_td_leads_created_events(result)
+    transition_count = _count_td_leads_status_transitions(result)
+    return (created_count + transition_count) > 0
+
 def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
     ordered_results = sorted(summary.store_results.values(), key=lambda item: item.store_code)
     if not ordered_results:
         return "<div><p><em>No row-level lead details captured for this run.</em></p></div>"
 
+    if all(not _td_leads_store_has_changes(result) for result in ordered_results):
+        return "<div><p><em>No new leads/status changed across all stores.</em></p></div>"
+
     blocks: list[str] = ["<div>", "<h4 style='margin:16px 0 8px 0;'>Lead details by store</h4>"]
     for result in ordered_results:
         blocks.append(f"<h4 style='margin:16px 0 8px 0;'>Store {html.escape(result.store_code)}</h4>")
+
+        if not _td_leads_store_has_changes(result):
+            blocks.append("<p><em>No new leads/status changed.</em></p>")
+            continue
 
         row_by_pickup_no = {
             str(row.get("pickup_no") or "").strip().upper(): row
