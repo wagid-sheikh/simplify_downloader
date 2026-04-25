@@ -393,7 +393,6 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
                 {
                     "customer_name": "Persisted Store Flag",
                     "mobile": "9000000007",
-                    "flag": "store",
                     "reason": "--",
                 }
             ],
