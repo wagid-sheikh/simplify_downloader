@@ -350,9 +350,9 @@ def test_td_leads_run_summary_record_exposes_summary_html_in_metrics() -> None:
 
     assert "Total Stores Processed: 1" in record["summary_text"]
     assert "status=pending, customer_name=Ada" not in record["summary_text"]
-    assert "Lead details by store" in record["metrics_json"]["summary_html"]
-    assert "Store A668" in record["metrics_json"]["lead_tables_html"]
-    assert "A668" in record["metrics_json"]["summary_html"]
+    assert "No new leads/status changed across all stores." in record["metrics_json"]["summary_html"]
+    assert "No new leads/status changed across all stores." in record["metrics_json"]["lead_tables_html"]
+    assert "A668" in record["summary_text"]
     assert "lead_change_details" in record["metrics_json"]["stores"][0]
     assert "lead_change_details" in record["metrics_json"]
     assert "rows" not in record["metrics_json"]["stores"][0]
@@ -535,14 +535,26 @@ def test_td_leads_tables_html_pending_prefers_pickup_created_text_then_falls_bac
                         "mobile": "9000000001",
                         "pickup_created_text": "21 Apr 2026 3:03:39 PM",
                         "pickup_created_at": datetime(2026, 4, 21, 9, 33, 39, tzinfo=timezone.utc),
+                        "pickup_no": "A817-1",
                     },
                     {
                         "status_bucket": "pending",
                         "customer_name": "Datetime Fallback",
                         "mobile": "9000000002",
                         "pickup_created_at": datetime(2026, 4, 21, 9, 33, 39, tzinfo=timezone.utc),
+                        "pickup_no": "A817-2",
                     },
                 ],
+                lead_change_details={
+                    "created_by_bucket": [
+                        {
+                            "rows": [
+                                {"lead_identity": {"pickup_no": "A817-1"}},
+                                {"lead_identity": {"pickup_no": "A817-2"}},
+                            ]
+                        }
+                    ]
+                },
             )
         },
     )
@@ -620,7 +632,7 @@ def test_td_leads_tables_html_does_not_mark_unchanged_cancelled_leads_as_new_tra
 
     tables_html = _build_td_leads_tables_html(summary=summary)
 
-    assert "Leads Marked as Cancelled (0 transitions this run)" in tables_html
+    assert "No new leads/status changed across all stores." in tables_html
     assert "Existing Cancelled" not in tables_html
 
 
@@ -690,7 +702,7 @@ def test_is_customer_cancelled_td_lead_uses_helper_consistent_resolution() -> No
     assert td_leads_main._is_customer_cancelled_td_lead({"cancelled_flag": "store", "reason": ""}) is False
 
 
-def test_td_leads_tables_html_renders_none_for_empty_sections() -> None:
+def test_td_leads_tables_html_renders_compact_run_message_for_unchanged_empty_store() -> None:
     summary = LeadsRunSummary(
         run_id="run-empty-sections",
         run_env="local",
@@ -700,7 +712,86 @@ def test_td_leads_tables_html_renders_none_for_empty_sections() -> None:
 
     tables_html = _build_td_leads_tables_html(summary=summary)
 
-    assert tables_html.count("<em>None</em>") == 3
+    assert "No new leads/status changed across all stores." in tables_html
+    assert "<table" not in tables_html
+
+
+def test_td_leads_tables_html_shows_compact_store_message_when_no_changes() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-no-store-changes",
+        run_env="local",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={
+            "A817": StoreLeadResult(
+                store_code="A817",
+                rows=[
+                    {
+                        "status_bucket": "pending",
+                        "customer_name": "Existing Pending",
+                        "pickup_no": "A817-1",
+                    }
+                ],
+                lead_change_details={"created_by_bucket": [], "transitions": []},
+                status_transitions=[],
+            )
+        },
+    )
+
+    tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "Store A817" not in tables_html
+    assert "No new leads/status changed across all stores." in tables_html
+    assert "<table" not in tables_html
+
+
+def test_td_leads_tables_html_mixes_changed_and_unchanged_store_sections() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-mixed-changes",
+        run_env="local",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={
+            "A817": StoreLeadResult(
+                store_code="A817",
+                rows=[{"status_bucket": "pending", "customer_name": "Legacy", "pickup_no": "A817-1"}],
+                lead_change_details={"created_by_bucket": [], "transitions": []},
+                status_transitions=[],
+            ),
+            "A668": StoreLeadResult(
+                store_code="A668",
+                rows=[
+                    {
+                        "status_bucket": "pending",
+                        "customer_name": "New Lead",
+                        "mobile": "9000000000",
+                        "pickup_no": "A668-1",
+                    }
+                ],
+                lead_change_details={
+                    "created_by_bucket": [
+                        {
+                            "rows": [
+                                {
+                                    "customer_name": "New Lead",
+                                    "mobile": "9000000000",
+                                    "lead_identity": {"pickup_no": "A668-1"},
+                                }
+                            ]
+                        }
+                    ],
+                    "transitions": [],
+                },
+                status_transitions=[],
+            ),
+        },
+    )
+
+    tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "Lead details by store" in tables_html
+    assert "Store A817" in tables_html
+    assert "Store A668" in tables_html
+    assert "No new leads/status changed." in tables_html
+    assert "New Leads created (1)" in tables_html
 
 
 def test_write_store_artifact_fails_when_tz_aware_values_remain(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -1157,6 +1248,11 @@ async def test_combined_created_datetime_populates_ingest_payload_and_email_row_
                         "pickup_time": None,
                     }
                 ],
+                lead_change_details={
+                    "created_by_bucket": [
+                        {"rows": [{"lead_identity": {"pickup_no": "A668-3025"}}]}
+                    ]
+                },
             )
         },
     )
