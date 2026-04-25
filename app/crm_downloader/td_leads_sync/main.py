@@ -455,6 +455,8 @@ class StoreLeadResult:
     artifact_path: str | None = None
     ingested_rows: int = 0
     bucket_write_counts: dict[str, dict[str, int]] = field(default_factory=dict)
+    pickup_created_at_null_count: int = 0
+    pickup_created_at_null_counts_by_bucket: dict[str, int] = field(default_factory=dict)
     status_transitions: list[dict[str, Any]] = field(default_factory=list)
     lead_change_details: dict[str, Any] = field(default_factory=dict)
     task_stub: dict[str, Any] | None = None
@@ -497,12 +499,21 @@ class LeadsRunSummary:
                 "artifact_path": result.artifact_path,
                 "ingested_rows": result.ingested_rows,
                 "bucket_write_counts": dict(result.bucket_write_counts),
+                "pickup_created_at_null_count": result.pickup_created_at_null_count,
+                "pickup_created_at_null_counts_by_bucket": dict(result.pickup_created_at_null_counts_by_bucket),
                 "status_transitions": list(result.status_transitions),
                 "lead_change_details": dict(result.lead_change_details),
                 "task_stub": dict(result.task_stub or {}),
             }
             for result in self.store_results.values()
         ]
+        pickup_created_at_null_count = sum(result.pickup_created_at_null_count for result in self.store_results.values())
+        pickup_created_at_null_counts_by_bucket: dict[str, int] = {}
+        for result in self.store_results.values():
+            for bucket, count in result.pickup_created_at_null_counts_by_bucket.items():
+                pickup_created_at_null_counts_by_bucket[bucket] = pickup_created_at_null_counts_by_bucket.get(bucket, 0) + int(
+                    count
+                )
 
         ordered_store_results = sorted(self.store_results.values(), key=lambda item: item.store_code)
         summary_lines = [
@@ -546,6 +557,8 @@ class LeadsRunSummary:
                     "duration_seconds": elapsed_seconds,
                     "duration_human": duration_human,
                     "has_new_leads": self.has_new_leads(),
+                    "pickup_created_at_null_count": pickup_created_at_null_count,
+                    "pickup_created_at_null_counts_by_bucket": pickup_created_at_null_counts_by_bucket,
                     "summary_html": summary_html,
                     "lead_tables_html": lead_tables_html,
                     "stores": store_rows_payload,
@@ -1220,6 +1233,10 @@ async def _run_store(
         result.artifact_path = str(artifact_path)
         result.ingested_rows = ingest_result.rows_upserted if ingest_result else 0
         result.bucket_write_counts = dict(ingest_result.bucket_write_counts) if ingest_result else {}
+        result.pickup_created_at_null_count = ingest_result.pickup_created_at_null_count if ingest_result else 0
+        result.pickup_created_at_null_counts_by_bucket = (
+            dict(ingest_result.pickup_created_at_null_counts_by_bucket) if ingest_result else {}
+        )
         result.status_transitions = list(ingest_result.status_transitions) if ingest_result else []
         result.lead_change_details = dict(ingest_result.lead_change_details) if ingest_result else {}
         result.task_stub = dict(ingest_result.task_stub) if ingest_result else None
@@ -1236,6 +1253,8 @@ async def _run_store(
             warnings=warnings or None,
             artifact_path=str(artifact_path),
             ingested_rows=result.ingested_rows,
+            pickup_created_at_null_count=result.pickup_created_at_null_count,
+            pickup_created_at_null_counts_by_bucket=result.pickup_created_at_null_counts_by_bucket,
         )
         return result
     except Exception as exc:
