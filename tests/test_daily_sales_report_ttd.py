@@ -1,7 +1,13 @@
 from datetime import date
 from decimal import Decimal
 
-from app.reports.daily_sales_report.data import DailySalesReportData, DailySalesRow, _calculate_ttd, _totals_row
+from app.reports.daily_sales_report.data import (
+    DailySalesReportData,
+    DailySalesRow,
+    RecoveryOrderRow,
+    _calculate_ttd,
+    _totals_row,
+)
 from app.reports.daily_sales_report.pipeline import _render_html
 
 
@@ -221,6 +227,28 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
                 }
             ]
         },
+        to_be_recovered=[
+            RecoveryOrderRow(
+                cost_center="UN",
+                order_number="ORD-REC-1",
+                order_date=date(2026, 1, 3),
+                customer_name="Chris",
+                mobile_number="9999999998",
+                order_value=Decimal("1250"),
+            )
+        ],
+        to_be_compensated=[
+            RecoveryOrderRow(
+                cost_center="KN",
+                order_number="ORD-COMP-1",
+                order_date=date(2026, 1, 4),
+                customer_name="Dana",
+                mobile_number="9999999997",
+                order_value=Decimal("840"),
+            )
+        ],
+        to_be_recovered_total_order_value=Decimal("1250"),
+        to_be_compensated_total_order_value=Decimal("840"),
     )
 
     html = _render_html(
@@ -236,6 +264,10 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
             "missed_leads": report_data.missed_leads,
             "cancelled_leads": report_data.cancelled_leads,
             "lead_performance_summary": report_data.lead_performance_summary,
+            "to_be_recovered": report_data.to_be_recovered,
+            "to_be_compensated": report_data.to_be_compensated,
+            "to_be_recovered_total_order_value": report_data.to_be_recovered_total_order_value,
+            "to_be_compensated_total_order_value": report_data.to_be_compensated_total_order_value,
         }
     )
 
@@ -259,6 +291,9 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
     assert "metric-yellow" in html
     assert "metric-green" in html
     assert "metric-red" in html
+    assert "01-01-2026 to 19-01-2026" in html
+    assert "03-01-2026" in html
+    assert "04-01-2026" in html
     assert "Sync Group" not in html
     assert html.index("Pickup & Delivery KPIs") < html.index("Missed Leads for this month")
     assert "TD Leads Sync Upsert Metrics (Latest Run)" not in html
