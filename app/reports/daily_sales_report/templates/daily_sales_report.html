@@ -97,6 +97,11 @@
         font-weight: 600;
         margin-bottom: 8px;
       }
+      .management-footer {
+        text-align: left;
+        font-size: 10px;
+        background: #f8fafc;
+      }
       .micro-table {
         font-size: 9px;
         table-layout: fixed;
@@ -307,6 +312,15 @@
           <td>{{ totals.reqd_per_day | format_amount }}</td>
           <td class="center">--</td>
         </tr>
+        <tr>
+          {% set rb = recovery_backlog_totals if recovery_backlog_totals is defined else none %}
+          <td class="management-footer" colspan="14">
+            Recovery Backlog (Mgmt): Opening Backlog {{ rb.opening_backlog if rb else 0 }} |
+            Newly Tagged {{ rb.newly_tagged if rb else 0 }} |
+            Closed Today {{ rb.closed_today if rb else 0 }} |
+            Net Movement {{ rb.net_backlog_movement if rb else 0 }}
+          </td>
+        </tr>
       </tbody>
     </table>
 
@@ -491,6 +505,42 @@
           <td>{{ edited_orders_totals.loss | format_amount }}</td>
         </tr>
         {% endif %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    {% if recovery_lifecycle_closed is defined and recovery_lifecycle_closed %}
+    <div class="section-title">Recovery Closures (Today)</div>
+    <table class="compact-table micro-font">
+      <thead>
+        <tr>
+          <th class="label">#</th>
+          <th class="label">Cost Center</th>
+          <th class="label">Order Number</th>
+          <th>Status</th>
+          <th>Opened At</th>
+          <th>Expected Resolution</th>
+          <th>Closed At</th>
+          <th>Open Age (Days)</th>
+          <th>Overdue</th>
+          <th>Closure Turnaround (Days)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in recovery_lifecycle_closed %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td class="label">{{ row.cost_center_name }}</td>
+          <td class="label">{{ row.order_number }}</td>
+          <td>{{ row.recovery_status }}</td>
+          <td>{{ row.recovery_opened_at or "--" }}</td>
+          <td>{{ row.recovery_expected_resolution_date or "--" }}</td>
+          <td>{{ row.recovery_closed_at or "--" }}</td>
+          <td>{{ row.open_age_days }}</td>
+          <td>{{ "YES" if row.is_overdue else "NO" }}</td>
+          <td>{{ row.closure_turnaround_days if row.closure_turnaround_days is not none else "--" }}</td>
+        </tr>
+        {% endfor %}
       </tbody>
     </table>
     {% endif %}
