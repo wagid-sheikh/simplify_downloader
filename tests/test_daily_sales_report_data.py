@@ -279,7 +279,8 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
                     ('U3', 'UN ', ' pending ', '2026-04-23 16:00:00+00:00'),
                     ('U4', ' un', ' pending ', '2026-04-10 05:00:00+00:00'),
                     ('U5', 'UN', 'completed', '2026-03-31 23:59:00+00:00'),
-                    ('U6', 'UN', 'cancelled', '2026-04-24 00:10:00+00:00')
+                    ('U6', 'UN', 'cancelled', '2026-04-24 00:10:00+00:00'),
+                    ('U7', 'UN', 'completed', '2026-04-11 00:10:00+00:00')
                 """
             )
         )
@@ -287,7 +288,8 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
             sa.text(
                 """
                 INSERT INTO crm_leads_status_events (lead_uid, status_bucket) VALUES
-                    ('U3', 'cancelled')
+                    ('U3', 'cancelled'),
+                    ('U7', 'cancelled')
                 """
             )
         )
@@ -301,13 +303,13 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
     assert un_summary["period_type"] == "MTD"
     assert un_summary["period_start"] == "2026-04-01"
     assert un_summary["period_end"] == "2026-04-30"
-    assert un_summary["total_leads"] == 5
-    assert un_summary["completed_leads"] == 2
-    assert un_summary["cancelled_leads"] == 2
-    assert un_summary["pending_leads"] == 1
-    assert un_summary["conversion_pct"] == {"value": 40.0, "color": "RED", "status": "POOR"}
-    assert un_summary["cancelled_pct"] == {"value": 40.0, "color": "RED", "status": "HIGH_LEAKAGE"}
-    assert un_summary["pending_pct"] == {"value": 20.0, "color": "RED", "status": "FOLLOW_UP_GAP"}
+    assert un_summary["total_leads"] == 6
+    assert un_summary["completed_leads"] == 3
+    assert un_summary["cancelled_leads"] == 1
+    assert un_summary["pending_leads"] == 2
+    assert un_summary["conversion_pct"] == {"value": 50.0, "color": "RED", "status": "POOR"}
+    assert un_summary["cancelled_pct"] == {"value": 16.67, "color": "YELLOW", "status": "ACCEPTABLE"}
+    assert un_summary["pending_pct"] == {"value": 33.33, "color": "RED", "status": "FOLLOW_UP_GAP"}
     assert un_summary["benchmark"] == {
         "conversion_target": 85.0,
         "conversion_min": 70.0,
@@ -315,9 +317,9 @@ async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_crea
         "cancelled_max": 20.0,
         "pending_max": 5.0,
     }
-    assert un_summary["conversion_gap"] == -45.0
-    assert un_summary["cancelled_gap"] == 30.0
-    assert un_summary["pending_gap"] == 15.0
+    assert un_summary["conversion_gap"] == -35.0
+    assert un_summary["cancelled_gap"] == 6.67
+    assert un_summary["pending_gap"] == 28.33
 
     assert kn_summary["total_leads"] == 0
     assert kn_summary["conversion_pct"] == {"value": 0.0, "color": "NEUTRAL", "status": "NEUTRAL"}
@@ -359,7 +361,8 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
                     lead_uid, store_code, status_bucket, customer_name, mobile, pickup_created_at, reason, cancelled_flag
                 ) VALUES
                     ('L1', 'UN', 'cancelled', 'Customer Cancelled', '9000000001', '2026-04-02 00:00:00', NULL, 'customer'),
-                    ('L2', 'UN', ' completed ', 'Store Cancelled', '9000000002', '2026-04-30 23:59:00', 'Requested defer', 'store'),
+                    ('L2', 'UN', ' completed ', 'Reopened Completed', '9000000002', '2026-04-30 23:59:00', 'Requested defer', 'store'),
+                    ('L6', 'UN', ' pending ', 'Reopened Pending', '9000000006', '2026-04-12 11:59:00', NULL, 'store'),
                     ('L3', 'UN', 'completed', 'Completed Lead', '9000000003', '2026-04-15 10:00:00', NULL, NULL),
                     ('L4', 'UN', 'cancelled', 'March Cancelled', '9000000004', '2026-03-30 23:59:00', NULL, 'store'),
                     ('L5', 'UN', 'cancelled', 'May Cancelled', '9000000005', '2026-05-02 00:00:00', NULL, 'store')
@@ -370,7 +373,8 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
             sa.text(
                 """
                 INSERT INTO crm_leads_status_events (lead_uid, status_bucket) VALUES
-                    ('L2', 'cancelled')
+                    ('L2', 'cancelled'),
+                    ('L6', 'cancelled')
                 """
             )
         )
@@ -381,23 +385,16 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
     assert report.cancelled_leads == [
         {
             "store_name": "Uttam Nagar",
-            "total_cancelled_count": 2,
+            "total_cancelled_count": 1,
             "customer_cancelled_count": 1,
-            "store_cancelled_rows": [
-                {
-                    "customer_name": "Store Cancelled",
-                    "mobile": "9000000002",
-                    "flag": "store",
-                    "reason": "Requested defer",
-                }
-            ],
+            "store_cancelled_rows": [],
         }
     ]
     un_summary = next(item for item in report.lead_performance_summary if item["store"] == "UN")
-    assert un_summary["total_leads"] == 3
-    assert un_summary["completed_leads"] == 1
-    assert un_summary["cancelled_leads"] == 2
-    assert un_summary["pending_leads"] == 0
+    assert un_summary["total_leads"] == 4
+    assert un_summary["completed_leads"] == 2
+    assert un_summary["cancelled_leads"] == 1
+    assert un_summary["pending_leads"] == 1
 
 
 @pytest.mark.asyncio
