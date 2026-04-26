@@ -2730,7 +2730,33 @@ def _resolve_subject_prefix(*, pipeline_name: str, metrics_payload: Mapping[str,
     if pipeline_name != "td_crm_leads_sync":
         return ""
     has_new_leads = bool(metrics_payload.get("has_new_leads"))
-    return "NEW LEADS " if has_new_leads else ""
+    has_cancelled_leads = bool(metrics_payload.get("has_cancelled_leads"))
+    if not has_cancelled_leads:
+        lead_change_details = metrics_payload.get("lead_change_details")
+        stores_payload: list[Any] = []
+        if isinstance(lead_change_details, Mapping):
+            stores_payload.extend(lead_change_details.values())
+        elif isinstance(lead_change_details, list):
+            stores_payload.extend(lead_change_details)
+
+        for store_details in stores_payload:
+            if not isinstance(store_details, Mapping):
+                continue
+            transitions = store_details.get("transitions")
+            if not isinstance(transitions, list):
+                continue
+            for transition in transitions:
+                if not isinstance(transition, Mapping):
+                    continue
+                from_bucket = str(transition.get("from_status_bucket") or "").strip().lower()
+                to_bucket = str(transition.get("to_status_bucket") or "").strip().lower()
+                if to_bucket == "cancelled" and from_bucket in {"pending", "completed"}:
+                    has_cancelled_leads = True
+                    break
+            if has_cancelled_leads:
+                break
+
+    return "NEW LEADS " if (has_new_leads or has_cancelled_leads) else ""
 
 
 async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[str, Any]:
