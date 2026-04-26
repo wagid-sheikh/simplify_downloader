@@ -1482,6 +1482,7 @@ async def test_combined_created_datetime_populates_ingest_payload_and_email_row_
         "pickup_created_date": "21 Apr 2026 3:03:39 PM",
         "pickup_created_at": datetime(2026, 4, 21, 9, 33, 39, tzinfo=timezone.utc),
         "pickup_time": None,
+        "customer_type": "Existing",
     }
 
     ingest_result = await td_leads_ingest.ingest_td_crm_leads_rows(
@@ -1501,7 +1502,7 @@ async def test_combined_created_datetime_populates_ingest_payload_and_email_row_
                 await connection.execute(
                     sa.text(
                         """
-                        SELECT pickup_date, pickup_created_at, pickup_time
+                        SELECT pickup_date, pickup_created_at, pickup_time, customer_type
                         FROM crm_leads_current
                         WHERE pickup_no = :pickup_no
                         """
@@ -1512,6 +1513,7 @@ async def test_combined_created_datetime_populates_ingest_payload_and_email_row_
         assert stored["pickup_date"] == "21 Apr 2026"
         assert stored["pickup_created_at"] is not None
         assert stored["pickup_time"] is None
+        assert stored["customer_type"] == "Existing"
     finally:
         await engine.dispose()
 

@@ -131,6 +131,7 @@ def _crm_leads_current_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("special_instruction", sa.Text()),
         sa.Column("reason", sa.String(length=128)),
         sa.Column("source", sa.String(length=128)),
+        sa.Column("customer_type", sa.String(length=64)),
         sa.Column("cancelled_flag", sa.String(length=16)),
         sa.Column("run_id", sa.String(length=64), nullable=False),
         sa.Column("run_env", sa.String(length=32), nullable=False),
@@ -306,6 +307,7 @@ async def ingest_td_crm_leads_rows(
                 "special_instruction": (str(row.get("special_instruction")).strip() or None) if row.get("special_instruction") is not None else None,
                 "reason": reason,
                 "source": (str(row.get("source")).strip() or None) if row.get("source") is not None else None,
+                "customer_type": (str(row.get("customer_type")).strip() or None) if row.get("customer_type") is not None else None,
                 "cancelled_flag": cancelled_flag,
                 "run_id": run_id,
                 "run_env": run_env,
@@ -361,6 +363,9 @@ async def ingest_td_crm_leads_rows(
                     ),
                     "customer_name": values.get("customer_name"),
                     "mobile": _mobile_for_display(values.get("mobile")),
+                    "source": values.get("source"),
+                    "customer_type": values.get("customer_type"),
+                    "pickup_created_text": normalized_created_text,
                     "lead_identity": _stable_lead_identity(values),
                 }
             )
