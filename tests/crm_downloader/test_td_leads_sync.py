@@ -16,7 +16,8 @@ from app.crm_downloader.td_leads_sync import main as td_leads_main
 from app.crm_downloader.td_leads_sync.main import (
     LeadsRunSummary,
     StoreLeadResult,
-    _build_td_lead_payload,
+    _build_td_cancelled_lead_payload,
+    _build_td_new_lead_payload,
     _collect_status_rows,
     _build_td_leads_summary_html,
     _build_td_leads_tables_html,
@@ -96,6 +97,7 @@ def test_build_lead_uid_uses_store_code_and_pickup_no_identity_only() -> None:
         ("status_text", "CANCELLED"),
         ("reason", "enquiry"),
         ("source", "Facebook"),
+        ("customer_type", "Existing"),
         ("user", "Super Admin"),
     ],
 )
@@ -112,6 +114,7 @@ def test_field_from_headers_uses_header_name_mapping(field_name: str, expected: 
         "Status",
         "Reason",
         "Source",
+        "Customer Type",
         "User",
     ]
     values = [
@@ -126,6 +129,7 @@ def test_field_from_headers_uses_header_name_mapping(field_name: str, expected: 
         "CANCELLED",
         "enquiry",
         "Facebook",
+        "Existing",
         "Super Admin",
     ]
 
@@ -482,40 +486,55 @@ def test_td_leads_tables_html_renders_three_business_sections_per_store() -> Non
     assert "<th align='left'>Lead Details</th><th align='left'>Copy</th>" in tables_html
     assert "<th align='left'>Lead Details</th><th align='left'>Cancellation Context</th><th align='left'>Copy</th>" in tables_html
     assert "<th align='left'>Customer Name</th><th align='left'>Mobile Number</th><th align='left'>Created Date/Time</th><th align='left'>Source</th>" in tables_html
-    assert "A817, Pending 1, 9000000000, None, Retail" in tables_html
-    assert "A817, Raj, 9111111111, Walk-in, None" in tables_html
+    assert "A817, Pending 1, 9000000000, None, Retail, None" in tables_html
+    assert "A817, Raj, 9111111111, No inventory" in tables_html
     assert "Store Cancelled | No inventory" in tables_html
-    assert "onclick='if(navigator.clipboard&amp;&amp;navigator.clipboard.writeText)" in tables_html
+    assert "onclick='var v=" in tables_html
     assert "Completed</h5>" not in tables_html
     assert "Converted" not in tables_html
 
 
-def test_build_td_lead_payload_formats_order_and_normalization() -> None:
-    payload = _build_td_lead_payload(
+def test_build_td_new_lead_payload_formats_order_and_normalization() -> None:
+    payload = _build_td_new_lead_payload(
         store_code=" A817 ",
         row={
             "customer_name": "  Alice  ",
             "mobile": " 9000000000 ",
             "source": " Walk-in ",
             "customer_type": " Retail ",
+            "pickup_created_text": "22 Apr 2026 11:00:00 AM",
         },
     )
 
-    assert payload == "A817, Alice, 9000000000, Walk-in, Retail"
+    assert payload == "A817, Alice, 9000000000, Walk-in, Retail, 22 Apr 2026 11:00:00 AM"
 
 
-def test_build_td_lead_payload_uses_none_for_missing_values() -> None:
-    payload = _build_td_lead_payload(
+def test_build_td_new_lead_payload_uses_none_for_missing_values() -> None:
+    payload = _build_td_new_lead_payload(
         store_code="A817",
         row={
             "customer_name": "  ",
             "mobile": None,
             "source": "",
             "customer_type": None,
+            "pickup_created_text": None,
         },
     )
 
-    assert payload == "A817, None, None, None, None"
+    assert payload == "A817, None, None, None, None, None"
+
+
+def test_build_td_cancelled_lead_payload_formats_order_and_normalization() -> None:
+    payload = _build_td_cancelled_lead_payload(
+        store_code=" A817 ",
+        row={
+            "customer_name": "  Alice  ",
+            "mobile": " 9000000000 ",
+            "reason": " No inventory ",
+        },
+    )
+
+    assert payload == "A817, Alice, 9000000000, No inventory"
 
 
 def test_td_leads_tables_html_escapes_untrusted_payload_values_and_keeps_copy_control_html() -> None:
@@ -546,7 +565,7 @@ def test_td_leads_tables_html_escapes_untrusted_payload_values_and_keeps_copy_co
 
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in tables_html
     assert "<script>alert(1)</script>" not in tables_html
-    assert "<a href='#' onclick='if(navigator.clipboard&amp;&amp;navigator.clipboard.writeText)" in tables_html
+    assert "href='javascript:void(0)'" in tables_html
 
 
 def test_td_leads_tables_html_sorts_pending_and_cancelled_rows_by_created_datetime_desc() -> None:
@@ -729,7 +748,7 @@ def test_td_leads_tables_html_hides_customer_cancelled_rows_but_keeps_counts() -
 
     assert "Leads Marked as Cancelled (2 transitions this run)" in tables_html
     assert "Store Cancelled | No inventory" in tables_html
-    assert "A817, Store Cancelled, 9777777777, None, None" in tables_html
+    assert "A817, Store Cancelled, 9777777777, No inventory" in tables_html
     assert "Customer Cancelled" not in tables_html
 
 
@@ -814,7 +833,7 @@ def test_td_leads_tables_html_marks_only_new_cancelled_transitions() -> None:
     tables_html = _build_td_leads_tables_html(summary=summary)
 
     assert "Leads Marked as Cancelled (2 transitions this run)" in tables_html
-    assert "A817, Store Transition, 9555555555, App, None" in tables_html
+    assert "A817, Store Transition, 9555555555, No rider available" in tables_html
     assert "Store Cancelled | No rider available" in tables_html
     assert "Customer Transition" not in tables_html
 
@@ -900,7 +919,7 @@ def test_td_leads_tables_html_pending_to_cancelled_transition_is_listed_once() -
     tables_html = _build_td_leads_tables_html(summary=summary)
 
     assert "Leads Marked as Cancelled (1 transitions this run)" in tables_html
-    assert "A817, Resolved From Current Row, 9222222222, App, None" in tables_html
+    assert "A817, Resolved From Current Row, 9222222222, Inventory delayed" in tables_html
     assert "Stale Transition Name" not in tables_html
     assert "Store Cancelled | Inventory delayed" in tables_html
 
