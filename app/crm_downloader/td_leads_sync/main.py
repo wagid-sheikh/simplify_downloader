@@ -86,6 +86,7 @@ FIELD_ALIASES: Mapping[str, tuple[str, ...]] = {
     "status_text": ("status",),
     "reason": ("reason",),
     "source": ("source",),
+    "customer_type": ("customer type", "customer type."),
     "user": ("user",),
 }
 
@@ -105,6 +106,7 @@ OUTPUT_COLUMNS = [
     "status_text",
     "reason",
     "source",
+    "customer_type",
     "user",
     "scraped_at",
 ]
@@ -290,26 +292,46 @@ def _normalized_td_lead_payload_value(value: Any) -> str:
     return normalized or "None"
 
 
-def _build_td_lead_payload(*, store_code: str, row: Mapping[str, Any]) -> str:
+def _build_td_new_lead_payload(*, store_code: str, row: Mapping[str, Any]) -> str:
     ordered_values = (
         _normalized_td_lead_payload_value(store_code),
         _normalized_td_lead_payload_value(row.get("customer_name")),
         _normalized_td_lead_payload_value(row.get("mobile")),
         _normalized_td_lead_payload_value(row.get("source")),
         _normalized_td_lead_payload_value(row.get("customer_type")),
+        _normalized_td_lead_payload_value(_format_pickup_created_display(row)),
     )
     return ", ".join(ordered_values)
 
 
-def _build_td_lead_copy_control_html(*, payload: str) -> str:
+def _build_td_cancelled_lead_payload(*, store_code: str, row: Mapping[str, Any]) -> str:
+    ordered_values = (
+        _normalized_td_lead_payload_value(store_code),
+        _normalized_td_lead_payload_value(row.get("customer_name")),
+        _normalized_td_lead_payload_value(row.get("mobile")),
+        _normalized_td_lead_payload_value(row.get("reason")),
+    )
+    return ", ".join(ordered_values)
+
+
+def _build_td_lead_copy_control_html(*, payload: str, button_id: str) -> str:
     escaped_payload = html.escape(payload)
+    payload_json = json.dumps(payload)
     onclick_js = (
+        "var v="
+        f"{payload_json};"
         "if(navigator.clipboard&&navigator.clipboard.writeText){"
-        f"navigator.clipboard.writeText({json.dumps(payload)});"
-        "}return false;"
+        "navigator.clipboard.writeText(v).catch(function(){"
+        "var t=document.createElement(\"textarea\");t.value=v;document.body.appendChild(t);"
+        "t.select();document.execCommand(\"copy\");document.body.removeChild(t);"
+        "});"
+        "}else{var t=document.createElement(\"textarea\");t.value=v;document.body.appendChild(t);"
+        "t.select();document.execCommand(\"copy\");document.body.removeChild(t);}"
+        "return false;"
     )
     return (
-        f"<a href='#' onclick='{html.escape(onclick_js, quote=True)}'>Copy</a>"
+        f"<a id='{html.escape(button_id, quote=True)}' href='javascript:void(0)' "
+        f"onclick='{html.escape(onclick_js, quote=True)}'>📋 Copy</a>"
         f"<div style='margin-top:4px;'><code style='white-space:pre-wrap;'>{escaped_payload}</code></div>"
     )
 
@@ -371,11 +393,12 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                     "source": created_row.get("source") or matching_row.get("source"),
                     "customer_type": created_row.get("customer_type") or matching_row.get("customer_type"),
                 }
-                payload = _build_td_lead_payload(store_code=result.store_code, row=payload_row)
+                payload = _build_td_new_lead_payload(store_code=result.store_code, row=payload_row)
+                copy_id = f"td-new-copy-{html.escape(result.store_code.lower(), quote=True)}-{len(created_rows)}"
                 created_rows.append(
                     [
                         payload,
-                        _build_td_lead_copy_control_html(payload=payload),
+                        _build_td_lead_copy_control_html(payload=payload, button_id=copy_id),
                     ]
                 )
 
@@ -441,12 +464,13 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
             resolved_reason = str(matching_row.get("reason") or "").strip()
             if _is_customer_cancelled_td_lead({"reason": resolved_reason}):
                 continue
-            payload = _build_td_lead_payload(store_code=result.store_code, row=matching_row)
+            payload = _build_td_cancelled_lead_payload(store_code=result.store_code, row=matching_row)
+            copy_id = f"td-cancel-copy-{html.escape(result.store_code.lower(), quote=True)}-{len(cancelled_detail_rows)}"
             cancelled_detail_rows.append(
                 [
                     payload,
                     _build_td_cancelled_context(row=matching_row),
-                    _build_td_lead_copy_control_html(payload=payload),
+                    _build_td_lead_copy_control_html(payload=payload, button_id=copy_id),
                 ]
             )
 
@@ -1023,6 +1047,7 @@ async def _collect_status_rows(
                 "status_text": _field_from_headers(headers=headers, values=values, field_name="status_text"),
                 "reason": _field_from_headers(headers=headers, values=values, field_name="reason"),
                 "source": _field_from_headers(headers=headers, values=values, field_name="source"),
+                "customer_type": _field_from_headers(headers=headers, values=values, field_name="customer_type"),
                 "user": _field_from_headers(headers=headers, values=values, field_name="user"),
                 "scraped_at": scraped_at,
             }
