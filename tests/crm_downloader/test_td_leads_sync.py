@@ -1825,14 +1825,19 @@ async def test_ingest_lead_change_details_dedupes_and_caps_rows(tmp_path) -> Non
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("has_new_leads", "expected_subject"),
+    ("has_new_leads", "has_cancelled_from_active", "expected_subject"),
     [
-        (True, "NEW LEADS TD Leads run-1"),
-        (False, "TD Leads run-1"),
+        (True, False, "NEW LEADS TD Leads run-1"),
+        (False, True, "NEW LEADS TD Leads run-1"),
+        (False, False, "TD Leads run-1"),
     ],
 )
 async def test_td_leads_seeded_run_notification_plans_email(
-    tmp_path, monkeypatch: pytest.MonkeyPatch, has_new_leads: bool, expected_subject: str
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    has_new_leads: bool,
+    has_cancelled_from_active: bool,
+    expected_subject: str,
 ) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_leads_notif.db'}"
     engine = create_async_engine(database_url, future=True)
@@ -1964,7 +1969,27 @@ async def test_td_leads_seeded_run_notification_plans_email(
                     """
                 ),
                 {
-                    "metrics_json": json.dumps({"summary_html": "<div>ok</div>", "has_new_leads": has_new_leads}),
+                    "metrics_json": json.dumps(
+                        {
+                            "summary_html": "<div>ok</div>",
+                            "has_new_leads": has_new_leads,
+                            "lead_change_details": {
+                                "A817": {
+                                    "transitions": (
+                                        [
+                                            {
+                                                "from_status_bucket": "pending",
+                                                "to_status_bucket": "cancelled",
+                                                "rows": [{"pickup_no": "A817-1"}],
+                                            }
+                                        ]
+                                        if has_cancelled_from_active
+                                        else []
+                                    )
+                                }
+                            },
+                        }
+                    ),
                 },
             )
             await connection.execute(
