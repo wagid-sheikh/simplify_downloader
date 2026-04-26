@@ -16,6 +16,7 @@ from app.crm_downloader.td_leads_sync import main as td_leads_main
 from app.crm_downloader.td_leads_sync.main import (
     LeadsRunSummary,
     StoreLeadResult,
+    _build_td_lead_payload,
     _collect_status_rows,
     _build_td_leads_summary_html,
     _build_td_leads_tables_html,
@@ -457,6 +458,7 @@ def test_td_leads_tables_html_renders_three_business_sections_per_store() -> Non
                                 {
                                     "customer_name": "Pending 1",
                                     "mobile": "9000000000",
+                                    "customer_type": "Retail",
                                     "lead_identity": {"pickup_no": "P-1"},
                                 }
                             ],
@@ -477,11 +479,72 @@ def test_td_leads_tables_html_renders_three_business_sections_per_store() -> Non
     assert "Pending 1" in tables_html
     assert "Raj" in tables_html
     assert "Pending 52" in tables_html
-    assert "<th align='left'>Customer Name</th><th align='left'>Mobile Number</th><th align='left'>Source</th>" in tables_html
+    assert "<th align='left'>Lead Details</th><th align='left'>Copy</th>" in tables_html
     assert "<th align='left'>Customer Name</th><th align='left'>Mobile Number</th><th align='left'>Flag</th><th align='left'>Reason</th><th align='left'>Source</th>" in tables_html
     assert "<th align='left'>Customer Name</th><th align='left'>Mobile Number</th><th align='left'>Created Date/Time</th><th align='left'>Source</th>" in tables_html
+    assert "A817, Pending 1, 9000000000, None, Retail" in tables_html
+    assert "onclick='if(navigator.clipboard&amp;&amp;navigator.clipboard.writeText)" in tables_html
     assert "Completed</h5>" not in tables_html
     assert "Converted" not in tables_html
+
+
+def test_build_td_lead_payload_formats_order_and_normalization() -> None:
+    payload = _build_td_lead_payload(
+        store_code=" A817 ",
+        row={
+            "customer_name": "  Alice  ",
+            "mobile": " 9000000000 ",
+            "source": " Walk-in ",
+            "customer_type": " Retail ",
+        },
+    )
+
+    assert payload == "A817, Alice, 9000000000, Walk-in, Retail"
+
+
+def test_build_td_lead_payload_uses_none_for_missing_values() -> None:
+    payload = _build_td_lead_payload(
+        store_code="A817",
+        row={
+            "customer_name": "  ",
+            "mobile": None,
+            "source": "",
+            "customer_type": None,
+        },
+    )
+
+    assert payload == "A817, None, None, None, None"
+
+
+def test_td_leads_tables_html_escapes_untrusted_payload_values_and_keeps_copy_control_html() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-html-safe",
+        run_env="local",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={
+            "A817": StoreLeadResult(
+                store_code="A817",
+                rows=[
+                    {
+                        "status_bucket": "pending",
+                        "pickup_no": "A817-1",
+                        "customer_name": "<script>alert(1)</script>",
+                        "mobile": "9000000000",
+                        "source": "Web & App",
+                    }
+                ],
+                lead_change_details={
+                    "created_by_bucket": [{"rows": [{"lead_identity": {"pickup_no": "A817-1"}}]}],
+                },
+            )
+        },
+    )
+
+    tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in tables_html
+    assert "<script>alert(1)</script>" not in tables_html
+    assert "<a href='#' onclick='if(navigator.clipboard&amp;&amp;navigator.clipboard.writeText)" in tables_html
 
 
 def test_td_leads_tables_html_sorts_pending_and_cancelled_rows_by_created_datetime_desc() -> None:

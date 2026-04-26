@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import contextlib
 import html
+import json
 import os
 import re
 from collections import defaultdict
@@ -186,6 +187,21 @@ def _sort_td_leads_bucket_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str,
 
 
 def _build_td_leads_section_table_html(*, section_label: str, headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
+    return _build_td_leads_section_table_html_with_rich_cells(
+        section_label=section_label,
+        headers=headers,
+        rows=rows,
+        rich_html_columns=None,
+    )
+
+
+def _build_td_leads_section_table_html_with_rich_cells(
+    *,
+    section_label: str,
+    headers: Sequence[str],
+    rows: Sequence[Sequence[Any]],
+    rich_html_columns: set[int] | None,
+) -> str:
     header_html = "".join(f"<th align='left'>{html.escape(column)}</th>" for column in headers)
     blocks = [
         f"<h5 style='margin:10px 0 6px 0;'>{html.escape(section_label)}</h5>",
@@ -197,7 +213,13 @@ def _build_td_leads_section_table_html(*, section_label: str, headers: Sequence[
         blocks.append(f"<tr><td colspan='{len(headers)}'><em>None</em></td></tr>")
     else:
         for row in rows:
-            blocks.append("<tr>" + "".join(f"<td>{html.escape(str(value or 'None'))}</td>" for value in row) + "</tr>")
+            rendered_cells: list[str] = []
+            for cell_index, value in enumerate(row):
+                if rich_html_columns and cell_index in rich_html_columns:
+                    rendered_cells.append(f"<td>{str(value or 'None')}</td>")
+                else:
+                    rendered_cells.append(f"<td>{html.escape(str(value or 'None'))}</td>")
+            blocks.append("<tr>" + "".join(rendered_cells) + "</tr>")
     blocks.extend(["</tbody>", "</table>"])
     return "".join(blocks)
 
@@ -262,6 +284,35 @@ def _td_leads_store_has_changes(result: "StoreLeadResult") -> bool:
     transition_count = _count_td_leads_status_transitions(result)
     return (created_count + transition_count) > 0
 
+
+def _normalized_td_lead_payload_value(value: Any) -> str:
+    normalized = str(value or "").strip()
+    return normalized or "None"
+
+
+def _build_td_lead_payload(*, store_code: str, row: Mapping[str, Any]) -> str:
+    ordered_values = (
+        _normalized_td_lead_payload_value(store_code),
+        _normalized_td_lead_payload_value(row.get("customer_name")),
+        _normalized_td_lead_payload_value(row.get("mobile")),
+        _normalized_td_lead_payload_value(row.get("source")),
+        _normalized_td_lead_payload_value(row.get("customer_type")),
+    )
+    return ", ".join(ordered_values)
+
+
+def _build_td_lead_copy_control_html(*, payload: str) -> str:
+    escaped_payload = html.escape(payload)
+    onclick_js = (
+        "if(navigator.clipboard&&navigator.clipboard.writeText){"
+        f"navigator.clipboard.writeText({json.dumps(payload)});"
+        "}return false;"
+    )
+    return (
+        f"<a href='#' onclick='{html.escape(onclick_js, quote=True)}'>Copy</a>"
+        f"<div style='margin-top:4px;'><code style='white-space:pre-wrap;'>{escaped_payload}</code></div>"
+    )
+
 def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
     ordered_results = sorted(summary.store_results.values(), key=lambda item: item.store_code)
     if not ordered_results:
@@ -301,11 +352,17 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                 pickup_no = str(lead_identity.get("pickup_no") or "").strip().upper()
                 pickup_id = str(lead_identity.get("pickup_id") or "").strip().upper()
                 matching_row = row_by_pickup_no.get(pickup_no) or row_by_pickup_id.get(pickup_id) or {}
+                payload_row = {
+                    "customer_name": created_row.get("customer_name") or matching_row.get("customer_name"),
+                    "mobile": created_row.get("mobile") or matching_row.get("mobile"),
+                    "source": created_row.get("source") or matching_row.get("source"),
+                    "customer_type": created_row.get("customer_type") or matching_row.get("customer_type"),
+                }
+                payload = _build_td_lead_payload(store_code=result.store_code, row=payload_row)
                 created_rows.append(
                     [
-                        str(created_row.get("customer_name") or matching_row.get("customer_name") or "None"),
-                        str(created_row.get("mobile") or matching_row.get("mobile") or "None"),
-                        str(matching_row.get("source") or "None"),
+                        payload,
+                        _build_td_lead_copy_control_html(payload=payload),
                     ]
                 )
 
@@ -398,10 +455,11 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
             )
 
         blocks.append(
-            _build_td_leads_section_table_html(
+            _build_td_leads_section_table_html_with_rich_cells(
                 section_label=f"New Leads created ({len(created_rows)})",
-                headers=("Customer Name", "Mobile Number", "Source"),
+                headers=("Lead Details", "Copy"),
                 rows=created_rows,
+                rich_html_columns={1},
             )
         )
         blocks.append(
