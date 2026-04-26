@@ -313,6 +313,19 @@ def _build_td_lead_copy_control_html(*, payload: str) -> str:
         f"<div style='margin-top:4px;'><code style='white-space:pre-wrap;'>{escaped_payload}</code></div>"
     )
 
+
+def _build_td_cancelled_context(*, row: Mapping[str, Any]) -> str:
+    cancelled_flag = str(row.get("cancelled_flag") or "").strip().lower()
+    if cancelled_flag == "customer":
+        classification = "Customer Cancelled"
+    elif cancelled_flag == "store":
+        classification = "Store Cancelled"
+    else:
+        classification = "Store Cancelled"
+    reason = str(row.get("reason") or "").strip() or "None"
+    return f"{classification} | {reason}"
+
+
 def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
     ordered_results = sorted(summary.store_results.values(), key=lambda item: item.store_code)
     if not ordered_results:
@@ -426,18 +439,14 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
         for transition_pickup_no in cancelled_transition_pickup_nos:
             matching_row = row_by_pickup_no.get(transition_pickup_no) or {}
             resolved_reason = str(matching_row.get("reason") or "").strip()
-            resolved_source = str(matching_row.get("source") or "None")
-            resolved_customer_name = str(matching_row.get("customer_name") or "None")
-            resolved_mobile = str(matching_row.get("mobile") or "None")
             if _is_customer_cancelled_td_lead({"reason": resolved_reason}):
                 continue
+            payload = _build_td_lead_payload(store_code=result.store_code, row=matching_row)
             cancelled_detail_rows.append(
                 [
-                    resolved_customer_name,
-                    resolved_mobile,
-                    "Store Cancelled",
-                    resolved_reason or "None",
-                    resolved_source,
+                    payload,
+                    _build_td_cancelled_context(row=matching_row),
+                    _build_td_lead_copy_control_html(payload=payload),
                 ]
             )
 
@@ -463,10 +472,11 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
             )
         )
         blocks.append(
-            _build_td_leads_section_table_html(
+            _build_td_leads_section_table_html_with_rich_cells(
                 section_label=f"Leads Marked as Cancelled ({cancelled_total} transitions this run)",
-                headers=("Customer Name", "Mobile Number", "Flag", "Reason", "Source"),
+                headers=("Lead Details", "Cancellation Context", "Copy"),
                 rows=cancelled_detail_rows,
+                rich_html_columns={2},
             )
         )
         blocks.append(

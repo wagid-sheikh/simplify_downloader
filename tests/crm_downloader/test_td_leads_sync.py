@@ -480,9 +480,11 @@ def test_td_leads_tables_html_renders_three_business_sections_per_store() -> Non
     assert "Raj" in tables_html
     assert "Pending 52" in tables_html
     assert "<th align='left'>Lead Details</th><th align='left'>Copy</th>" in tables_html
-    assert "<th align='left'>Customer Name</th><th align='left'>Mobile Number</th><th align='left'>Flag</th><th align='left'>Reason</th><th align='left'>Source</th>" in tables_html
+    assert "<th align='left'>Lead Details</th><th align='left'>Cancellation Context</th><th align='left'>Copy</th>" in tables_html
     assert "<th align='left'>Customer Name</th><th align='left'>Mobile Number</th><th align='left'>Created Date/Time</th><th align='left'>Source</th>" in tables_html
     assert "A817, Pending 1, 9000000000, None, Retail" in tables_html
+    assert "A817, Raj, 9111111111, Walk-in, None" in tables_html
+    assert "Store Cancelled | No inventory" in tables_html
     assert "onclick='if(navigator.clipboard&amp;&amp;navigator.clipboard.writeText)" in tables_html
     assert "Completed</h5>" not in tables_html
     assert "Converted" not in tables_html
@@ -726,8 +728,8 @@ def test_td_leads_tables_html_hides_customer_cancelled_rows_but_keeps_counts() -
     tables_html = _build_td_leads_tables_html(summary=summary)
 
     assert "Leads Marked as Cancelled (2 transitions this run)" in tables_html
-    assert "Store Cancelled" in tables_html
-    assert "No inventory" in tables_html
+    assert "Store Cancelled | No inventory" in tables_html
+    assert "A817, Store Cancelled, 9777777777, None, None" in tables_html
     assert "Customer Cancelled" not in tables_html
 
 
@@ -812,9 +814,8 @@ def test_td_leads_tables_html_marks_only_new_cancelled_transitions() -> None:
     tables_html = _build_td_leads_tables_html(summary=summary)
 
     assert "Leads Marked as Cancelled (2 transitions this run)" in tables_html
-    assert "Store Transition" in tables_html
-    assert "No rider available" in tables_html
-    assert "App" in tables_html
+    assert "A817, Store Transition, 9555555555, App, None" in tables_html
+    assert "Store Cancelled | No rider available" in tables_html
     assert "Customer Transition" not in tables_html
 
 
@@ -899,10 +900,9 @@ def test_td_leads_tables_html_pending_to_cancelled_transition_is_listed_once() -
     tables_html = _build_td_leads_tables_html(summary=summary)
 
     assert "Leads Marked as Cancelled (1 transitions this run)" in tables_html
-    assert tables_html.count("Resolved From Current Row") == 1
+    assert "A817, Resolved From Current Row, 9222222222, App, None" in tables_html
     assert "Stale Transition Name" not in tables_html
-    assert "Inventory delayed" in tables_html
-    assert "App" in tables_html
+    assert "Store Cancelled | Inventory delayed" in tables_html
 
 
 def test_is_customer_cancelled_td_lead_uses_helper_consistent_resolution() -> None:
@@ -911,6 +911,17 @@ def test_is_customer_cancelled_td_lead_uses_helper_consistent_resolution() -> No
     assert td_leads_main._is_customer_cancelled_td_lead({"reason": "No inventory"}) is False
     assert td_leads_main._is_customer_cancelled_td_lead({"cancelled_flag": "customer", "reason": "No inventory"}) is True
     assert td_leads_main._is_customer_cancelled_td_lead({"cancelled_flag": "store", "reason": ""}) is False
+
+
+def test_build_td_cancelled_context_combines_classification_and_reason_fallback() -> None:
+    assert (
+        td_leads_main._build_td_cancelled_context(row={"cancelled_flag": "store", "reason": "No inventory"})
+        == "Store Cancelled | No inventory"
+    )
+    assert (
+        td_leads_main._build_td_cancelled_context(row={"cancelled_flag": "store", "reason": ""})
+        == "Store Cancelled | None"
+    )
 
 
 def test_td_leads_tables_html_renders_compact_run_message_for_unchanged_empty_store() -> None:
