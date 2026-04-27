@@ -10,6 +10,18 @@
 
 ## Initial reconstructed decisions
 
+### DL-007
+- **Date:** 2026-04-27
+- **Status:** Active
+- **Decision:** Remove configurable UC skip toggle for pending deliveries and always include UC rows unless excluded by core pending filters.
+- **Context:** Pending deliveries now relies on recovery-status business rules instead of a source-system toggle, and startup config should not depend on legacy `SKIP_UC_Pending_Delivery`.
+- **Evidence:** `app/config.py`, `app/reports/pending_deliveries/data.py`, and pending-deliveries tests.
+- **Implications:**
+  - `SKIP_UC_Pending_Delivery` is no longer a required runtime config key.
+  - Pending deliveries main dataset excludes recovery statuses `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` before bucket/detail aggregation.
+  - UC rows continue to appear in pending deliveries when they satisfy standard pending filters.
+- **Follow-up:** Keep migration cleanup in place so legacy `system_config` rows do not imply obsolete behavior.
+
 ### DL-006
 - **Date:** 2026-04-25
 - **Status:** Active

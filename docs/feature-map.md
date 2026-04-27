@@ -87,7 +87,7 @@ Practical map of where to work for major capabilities.
   - `app/dashboard_downloader/pipelines/{dashboard_weekly.py,dashboard_monthly.py,reporting.py}`
   - `app/dashboard_downloader/templates/*`
 - **Dependencies:** `documents` table, report notification templates/profiles.
-- **Notes/Risks:** Rendering failures and zero-data scenarios are handled differently per pipeline; keep behavior consistent.
+- **Notes/Risks:** Rendering failures and zero-data scenarios are handled differently per pipeline; keep behavior consistent. Pending deliveries now always includes TD+UC rows and excludes recovery-status orders (`TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`) from main aging buckets/details.
 
 ## 9) Lead assignment workflow
 
