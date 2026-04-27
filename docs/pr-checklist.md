@@ -28,6 +28,7 @@ Use this before requesting review.
 - [ ] I reviewed impacts to pipeline codes, notification profiles, and template expectations.
 - [ ] I reviewed impacts to `pipeline_run_summaries`, `orders_sync_log`, or `documents` payload structure if touched.
 - [ ] If extraction/ingest semantics changed, I reviewed dedupe/row-count/audit implications.
+- [ ] For pending deliveries changes, I validated recovery-status exclusions (`TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`) in both summary buckets and detailed rows.
 
 ## 5) Deployment and ops impact
 

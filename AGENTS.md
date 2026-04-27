@@ -61,6 +61,10 @@ Container paths:
    - `pipelines`, `notification_profiles`, `email_templates`, `notification_recipients` are runtime dependencies.
 6. **Date windows are centralized**
    - Use `app/common/date_utils.py` for timezone-aware daily/weekly/monthly logic.
+7. **Pending deliveries contract**
+   - Pending deliveries main buckets/details include both TD and UC sources by default.
+   - Orders with recovery statuses `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF` are excluded from pending-deliveries aging buckets/details.
+
 
 ## Change discipline (required)
 
