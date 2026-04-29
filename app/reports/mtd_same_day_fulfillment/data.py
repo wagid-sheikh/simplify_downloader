@@ -8,23 +8,8 @@ import sqlalchemy as sa
 
 from app.common.date_utils import get_timezone
 from app.common.db import session_scope
+from app.reports.same_day_fulfillment import build_line_items_agg, coerce_datetime, same_day_date_expr, string_list_agg
 
-
-def _string_list_agg(*, dialect_name: str, value_expr, separator: str):
-    if dialect_name == "postgresql":
-        return sa.func.string_agg(value_expr, sa.literal(separator))
-    return sa.func.group_concat(value_expr, separator)
-
-
-def _coerce_datetime(value: datetime | str | None) -> datetime | None:
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, str):
-        try:
-            return datetime.fromisoformat(value)
-        except ValueError:
-            return None
-    return None
 
 
 @dataclass
@@ -78,18 +63,7 @@ async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date
     start_month = datetime.combine(report_date.replace(day=1), time.min, tzinfo=tz)
     next_day = datetime.combine(report_date, time.min, tzinfo=tz) + timedelta(days=1)
 
-    line_item_name = sa.func.trim(
-        sa.func.coalesce(order_line_items.c.service_name, "") + sa.literal(" ") + sa.func.coalesce(order_line_items.c.garment_name, "")
-    )
-    line_items_agg = (
-        sa.select(
-            order_line_items.c.cost_center.label("cost_center"),
-            order_line_items.c.order_number.label("order_number"),
-            _string_list_agg(dialect_name=dialect_name, value_expr=line_item_name, separator=", ").label("line_items"),
-        )
-        .group_by(order_line_items.c.cost_center, order_line_items.c.order_number)
-        .subquery()
-    )
+    line_items_agg = build_line_items_agg(order_line_items=order_line_items, dialect_name=dialect_name)
 
     stmt = (
         sa.select(
@@ -100,7 +74,7 @@ async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date
             orders.c.mobile_number,
             line_items_agg.c.line_items,
             sa.func.max(sales.c.payment_date).label("payment_date"),
-            sa.func.max(sales.c.payment_mode).label("payment_mode"),
+            string_list_agg(dialect_name=dialect_name, value_expr=sa.func.coalesce(sales.c.payment_mode, ""), separator=", ").label("payment_mode"),
             orders.c.net_amount,
             sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)).label("payment_received"),
         )
@@ -120,8 +94,10 @@ async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date
         )
         .where(orders.c.order_date >= start_month)
         .where(orders.c.order_date < next_day)
-        .where(sales.c.payment_date >= start_month)
-        .where(sales.c.payment_date < next_day)
+        .where(
+            same_day_date_expr(dialect_name=dialect_name, dt_expr=orders.c.order_date, timezone_name=str(tz))
+            == same_day_date_expr(dialect_name=dialect_name, dt_expr=sales.c.payment_date, timezone_name=str(tz))
+        )
         .group_by(
             store_master.c.store_code,
             orders.c.order_number,
@@ -138,8 +114,8 @@ async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date
     async with session_scope(database_url) as session:
         result = await session.execute(stmt)
         for entry in result.mappings():
-            order_date = _coerce_datetime(entry["order_date"])
-            payment_date = _coerce_datetime(entry["payment_date"])
+            order_date = coerce_datetime(entry["order_date"])
+            payment_date = coerce_datetime(entry["payment_date"])
             hours = None
             if order_date is not None and payment_date is not None:
                 hours = round((payment_date - order_date).total_seconds() / 3600, 2)
