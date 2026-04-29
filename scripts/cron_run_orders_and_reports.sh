@@ -546,6 +546,7 @@ run_step() {
   local duration
   local attempt=1
   local rc=0
+  local attempt_log_file
 
   section "Running ${step_name}"
   log "Command: ${step_cmd}"
@@ -555,13 +556,28 @@ run_step() {
     log "${step_name}: attempt ${attempt}/${max_attempts} starting"
     step_start="$(date +%s)"
 
-    if bash -c "${step_cmd}" >> "${LOG_FILE}" 2>&1; then
+    attempt_log_file="$(mktemp "${LOCK_DIR}/cron_step_attempt.XXXXXX.log")"
+
+    if bash -c "${step_cmd}" > "${attempt_log_file}" 2>&1; then
+      cat "${attempt_log_file}" >> "${LOG_FILE}"
+      rm -f "${attempt_log_file}" 2>/dev/null || true
       step_end="$(date +%s)"
       duration=$((step_end - step_start))
       log "${step_name}: attempt ${attempt}/${max_attempts} succeeded in ${duration}s"
       return 0
     else
       rc=$?
+      cat "${attempt_log_file}" >> "${LOG_FILE}"
+
+      if is_deterministic_sql_programming_error "${attempt_log_file}"; then
+        step_end="$(date +%s)"
+        duration=$((step_end - step_start))
+        log "ERROR: ${step_name}: deterministic SQL programming error detected; failing fast without retries (exit_code=${rc}, duration=${duration}s)."
+        log "ERROR: ${step_name}: root cause class matched one of UndefinedFunctionError, UndefinedColumnError, or SQLAlchemy ProgrammingError."
+        rm -f "${attempt_log_file}" 2>/dev/null || true
+        return "${rc}"
+      fi
+      rm -f "${attempt_log_file}" 2>/dev/null || true
     fi
     step_end="$(date +%s)"
     duration=$((step_end - step_start))
@@ -576,6 +592,22 @@ run_step() {
 
   log "ERROR: ${step_name} failed after ${max_attempts} attempts"
   return "${rc}"
+}
+
+is_deterministic_sql_programming_error() {
+  local output_file="$1"
+
+  if [[ ! -f "${output_file}" ]]; then
+    return 1
+  fi
+
+  if rg -q \
+    "UndefinedFunctionError|UndefinedColumnError|psycopg2\\.errors\\.UndefinedFunction|psycopg2\\.errors\\.UndefinedColumn|sqlalchemy\\.exc\\.ProgrammingError|ProgrammingError" \
+    "${output_file}"; then
+    return 0
+  fi
+
+  return 1
 }
 
 orders_rc=0
