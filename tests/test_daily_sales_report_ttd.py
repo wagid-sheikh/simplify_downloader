@@ -5,10 +5,11 @@ from app.reports.daily_sales_report.data import (
     DailySalesReportData,
     DailySalesRow,
     RecoveryOrderRow,
+    SameDayFulfillmentRow,
     _calculate_ttd,
     _totals_row,
 )
-from app.reports.daily_sales_report.pipeline import _render_html
+from app.reports.daily_sales_report.pipeline import _build_context, _render_html
 
 
 def test_daily_sales_report_ttd_calculation_and_rendering() -> None:
@@ -339,3 +340,43 @@ def test_daily_sales_report_cancelled_leads_empty_state_rendering() -> None:
 
     assert "Cancelled Leads for this Month" in html
     assert ">None<" in html
+
+
+def test_daily_sales_report_same_day_only_template_rendering() -> None:
+    report = DailySalesReportData(
+        report_date=date(2026, 4, 29),
+        rows=[],
+        totals=_totals_row([]),
+        edited_orders=[],
+        edited_orders_summary={},
+        edited_orders_totals={},
+        missed_leads=[],
+        cancelled_leads=[],
+        lead_performance_summary=[],
+        td_leads_sync_metrics={},
+        td_leads_sync_lead_changes={},
+        to_be_recovered=[],
+        to_be_compensated=[],
+        to_be_recovered_total_order_value=Decimal("0"),
+        to_be_compensated_total_order_value=Decimal("0"),
+        same_day_fulfillment_rows=[
+            SameDayFulfillmentRow(
+                store_code="TD01",
+                order_number="ORD-1",
+                order_date=date(2026, 4, 29),
+                customer_name="Jane",
+                mobile_number="9999999999",
+                line_items="Shirt x1",
+                delivery_or_payment_date=date(2026, 4, 29),
+                payment_mode="UPI",
+                hours=Decimal("2.5"),
+                net_amount=Decimal("500"),
+                payment_received=Decimal("500"),
+            )
+        ],
+    )
+    html = _render_html(_build_context(report, "prod"), template_name="daily_sales_same_day_report.html")
+
+    assert "Same-Day Fulfillment Detail Report" in html
+    assert "ORD-1" in html
+    assert "Payment Received" in html

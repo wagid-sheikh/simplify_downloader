@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      @page { size: A4 landscape; margin: 12mm; }
+      body { font-family: "Inter", "Helvetica", Arial, sans-serif; color: #111; margin: 24px; }
+      .title { text-align: center; font-weight: 700; font-size: 20px; margin-bottom: 4px; }
+      .subtitle { text-align: center; font-weight: 700; font-size: 16px; margin-bottom: 12px; }
+      table { width: 100%; border-collapse: collapse; font-size: 11px; }
+      th, td { border: 1px solid #222; padding: 5px 6px; text-align: left; vertical-align: top; }
+      th { background: #f6f6f6; font-weight: 700; }
+      .numeric { text-align: right; }
+      .empty-state { margin-top: 10px; text-align: center; color: #4b5563; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="title">{{ company_name }}</div>
+    <div class="subtitle">Same-Day Fulfillment Detail Report for: {{ report_date_display }}</div>
+
+    {% if same_day_fulfillment_rows %}
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Store</th>
+          <th>Order Number</th>
+          <th>Customer</th>
+          <th>Mobile</th>
+          <th>Order Date</th>
+          <th>Fulfillment Date</th>
+          <th>Garments</th>
+          <th class="numeric">Net Amount</th>
+          <th class="numeric">Payment Received</th>
+          <th class="numeric">Hours</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in same_day_fulfillment_rows %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>{{ row.store_code }}</td>
+          <td>{{ row.order_number }}</td>
+          <td>{{ row.customer_name }}</td>
+          <td>{{ row.mobile_number }}</td>
+          <td>{{ row.order_date | format_ddmmyyyy }}</td>
+          <td>{{ row.delivery_or_payment_date | format_ddmmyyyy }}</td>
+          <td>{{ row.line_items }}</td>
+          <td class="numeric">{{ row.net_amount | format_amount }}</td>
+          <td class="numeric">{{ row.payment_received | format_amount }}</td>
+          <td class="numeric">{{ row.hours }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">No same-day fulfillment rows found for this report date.</div>
+    {% endif %}
+  </body>
+</html>
