@@ -5,7 +5,7 @@ from typing import Sequence
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-from app.reports.shared.formatters import format_amount, format_ddmmyyyy
+from app.reports.shared.formatters import format_amount, format_ddmmyyyy, format_hhmm_ampm
 from app.reports.shared.same_day_fulfillment import build_store_summary, format_duration_hours, format_duration_minutes, group_rows_by_store
 
 from .data import MTDSameDayFulfillmentRow
@@ -27,6 +27,7 @@ def render_html(
     )
     env.filters["format_amount"] = format_amount
     env.filters["format_ddmmyyyy"] = format_ddmmyyyy
+    env.filters["format_hhmm_ampm"] = format_hhmm_ampm
     template = env.get_template("report.html")
     return template.render(
         rows=rows,

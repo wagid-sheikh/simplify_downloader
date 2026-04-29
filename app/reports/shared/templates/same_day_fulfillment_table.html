@@ -52,8 +52,8 @@
     <tr>
       <td>{{ loop.index }}</td>
       <td class="label">{{ row.order_number or "--" }}</td>
-      <td>{{ row.order_date | format_ddmmyyyy }}</td>
-      <td>{{ row.delivery_or_payment_date | format_ddmmyyyy }}</td>
+      <td>{{ row.order_date | format_ddmmyyyy }}<br><span class="micro-font">{{ row.order_date | format_hhmm_ampm }}</span></td>
+      <td>{{ row.delivery_or_payment_date | format_ddmmyyyy }}<br><span class="micro-font">{{ row.delivery_or_payment_date | format_hhmm_ampm }}</span></td>
       <td class="label customer-wrap">{{ row.customer_name or "--" }}{% if row.mobile_number %}<br>{{ row.mobile_number }}{% endif %}</td>
       <td class="label wrapped-text">{{ row.line_items or "--" }}</td>
       <td class="label">{{ row.payment_mode or "--" }}</td>

@@ -93,6 +93,8 @@ def test_render_html_groups_store_and_formats_duration() -> None:
     html = render_html(rows=rows, report_date_display='29-Apr-2026', mtd_start_display='01-Apr-2026', mtd_end_display='29-Apr-2026')
     assert "Store: S1" in html and "Store: S2" in html
     assert "2 min" in html and "14 min" in html and "5 hrs 23 min" in html and "0 min" in html
+    assert "10-04-2026<br><span class=\"micro-font\">10:00 AM</span>" in html
+    assert "10-04-2026<br><span class=\"micro-font\">10:02 AM</span>" in html
     assert "Store Code</th>" in html  # summary only
     assert "Customer</th>" in html
     assert "Store Code</th>" in html and "Order Number" in html

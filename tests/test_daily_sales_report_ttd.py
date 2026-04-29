@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from app.reports.daily_sales_report.data import (
@@ -363,11 +363,11 @@ def test_daily_sales_report_same_day_section_uses_shared_table_partial() -> None
             SameDayFulfillmentRow(
                 store_code="TD01",
                 order_number="ORD-1",
-                order_date=date(2026, 4, 29),
+                order_date=datetime(2026, 4, 29, 9, 5),
                 customer_name="Jane",
                 mobile_number="9999999999",
                 line_items="Shirt x1",
-                delivery_or_payment_date=date(2026, 4, 29),
+                delivery_or_payment_date=datetime(2026, 4, 29, 10, 45),
                 payment_mode="UPI",
                 hours=Decimal("2.5"),
                 net_amount=Decimal("500"),
@@ -385,3 +385,5 @@ def test_daily_sales_report_same_day_section_uses_shared_table_partial() -> None
     assert "Customer</th>" in html
     assert "2 hrs 30 min" in html
     assert "Payment Received" in html
+    assert "29-04-2026<br><span class=\"micro-font\">09:05 AM</span>" in html
+    assert "29-04-2026<br><span class=\"micro-font\">10:45 AM</span>" in html
