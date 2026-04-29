@@ -21,11 +21,25 @@ class MTDSameDayFulfillmentRow:
 
 
 async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date) -> list[MTDSameDayFulfillmentRow]:
-    metadata = sa.MetaData()
-    engine = sa.create_engine(database_url.replace('+aiosqlite', ''))
-    orders = sa.Table("orders", metadata, autoload_with=engine)
-    sales = sa.Table("sales", metadata, autoload_with=engine)
-    store_master = sa.Table("store_master", metadata, autoload_with=engine)
+    orders = sa.table(
+        "orders",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("order_date"),
+        sa.column("net_amount"),
+    )
+    sales = sa.table(
+        "sales",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("payment_date"),
+        sa.column("payment_received"),
+    )
+    store_master = sa.table(
+        "store_master",
+        sa.column("cost_center"),
+        sa.column("store_code"),
+    )
 
     tz = get_timezone()
     start_month = datetime.combine(report_date.replace(day=1), time.min, tzinfo=tz)
