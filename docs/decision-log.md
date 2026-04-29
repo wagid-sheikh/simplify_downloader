@@ -121,3 +121,5 @@
 - **Evidence:** Code paths, migrations, tests, or docs that support this.
 - **Implications:** Technical and operational consequences.
 - **Follow-up:** Required next actions, validation, or cleanup.
+
+- 2026-04-29: Same-day fulfillment reporting (Daily + MTD) now exposes `net_amount` and aggregated `payment_received` (sum per order within report window) to improve financial visibility for split-payment orders.

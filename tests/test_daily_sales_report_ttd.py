@@ -299,6 +299,8 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
     assert "TD Leads Sync Upsert Metrics (Latest Run)" not in html
     assert "TD Leads Sync Lead Changes (Actionable Details)" not in html
     assert "Alice" in html
+    assert "Net Amount" in html
+    assert "Payment Received" in html
 
 
 def test_daily_sales_report_cancelled_leads_empty_state_rendering() -> None:

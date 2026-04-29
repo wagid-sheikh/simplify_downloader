@@ -301,9 +301,33 @@ async def test_fetch_daily_sales_report_same_day_fulfillment_rows(tmp_path, monk
     assert row.payment_mode == "UPI"
     assert "Dryclean Shirt" in row.line_items
     assert "Steam Trouser" in row.line_items
+    assert row.net_amount == 500
+    assert row.payment_received == 500
     assert str(row.hours) == "4.50"
 
 
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_same_day_fulfillment_aggregates_multiple_payments(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_same_day_multi.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 4, 29)
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
+        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
+        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, gross_amount, source_system) VALUES ('CC1','O200', :order_dt, 'Ravi', '9000000000', 500, 500, 'TumbleDry')"), {"order_dt": "2026-04-29T09:00:00+05:30"})
+        await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode, adjustments, is_edited_order) VALUES ('CC1','O200', :p1, 300, 'UPI', 0, 0),('CC1','O200', :p2, 200, 'Cash', 0, 0)"), {"p1": "2026-04-29T11:00:00+05:30", "p2": "2026-04-29T12:00:00+05:30"})
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    row = report.same_day_fulfillment_rows[0]
+    assert row.payment_received == 500
+    assert "Cash" in row.payment_mode
+    assert "UPI" in row.payment_mode
 @pytest.mark.asyncio
 async def test_fetch_daily_sales_report_lead_performance_summary_mtd_pickup_created_at(
     tmp_path, monkeypatch
