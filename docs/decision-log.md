@@ -135,3 +135,30 @@
 - **Follow-up:** Required next actions, validation, or cleanup.
 
 - 2026-04-29: Same-day fulfillment reporting (Daily + MTD) now exposes `net_amount` and aggregated `payment_received` (sum per order within report window) to improve financial visibility for split-payment orders.
+
+### DL-006
+- **Date:** 2026-04-29
+- **Status:** Active
+- **Decision:** Daily same-day SQL now uses dialect-aware string aggregation (`string_agg` for PostgreSQL, `group_concat` for SQLite) to keep one query contract portable across runtime/test databases.
+- **Context:** Same-day fulfillment line-item and payment-mode concatenation was vulnerable to backend-specific SQL behavior.
+- **Evidence:** `app/reports/daily_sales_report/data.py`, `tests/test_daily_sales_report_data.py`.
+- **Implications:** Daily report semantics stay unchanged (same-day filters, row grouping, summed payment_received), while query compilation remains valid for both production and test dialects.
+- **Follow-up:** Keep portability tests whenever adding new SQL aggregate concatenations.
+
+### DL-007
+- **Date:** 2026-04-29
+- **Status:** Active
+- **Decision:** Cron report wrapper exits non-zero if any required report step fails after retries.
+- **Context:** Partial success previously masked failed report pipelines in final cron status.
+- **Evidence:** `scripts/cron_run_orders_and_reports.sh`, `tests/test_cron_run_orders_and_reports.py`.
+- **Implications:** Operators and monitors can treat cron exit code as strict health signal for required report generation.
+- **Follow-up:** Preserve retry behavior, but never downgrade required-step failures to success.
+
+### DL-008
+- **Date:** 2026-04-29
+- **Status:** Active
+- **Decision:** Daily Sales notification second attachment is explicitly treated as an MTD same-day artifact with month-start→report-date window and distinct document metadata.
+- **Context:** Operators must differentiate daily same-day section (report-date window) from tailed MTD attachment (month-to-date window).
+- **Evidence:** `app/reports/daily_sales_report/pipeline.py`, `app/reports/mtd_same_day_fulfillment/data.py`, `tests/test_daily_sales_report_pipeline.py`.
+- **Implications:** Attachment naming/doc_type/window text remain unambiguous in persisted documents and PDFs.
+- **Follow-up:** Keep window labels explicit in templates and pipeline logs.
