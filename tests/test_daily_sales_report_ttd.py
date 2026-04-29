@@ -383,5 +383,5 @@ def test_daily_sales_report_same_day_section_uses_shared_table_partial() -> None
     assert "Payment Date" in html
     assert "Delivery/Payment Date" not in html
     assert "Customer</th>" in html
-    assert "150 min" in html
+    assert "2 hrs 30 min" in html
     assert "Payment Received" in html

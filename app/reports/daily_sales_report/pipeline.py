@@ -26,7 +26,7 @@ from app.dashboard_downloader.report_generator import render_pdf_with_configured
 from app.reports.mtd_same_day_fulfillment.data import fetch_mtd_same_day_fulfillment
 from app.reports.mtd_same_day_fulfillment.render import render_html as render_mtd_same_day_html
 from app.reports.shared.formatters import format_amount, format_ddmmyyyy
-from app.reports.shared.same_day_fulfillment import build_store_summary, format_duration_hours, group_rows_by_store
+from app.reports.shared.same_day_fulfillment import build_store_summary, format_duration_hours, format_duration_minutes, group_rows_by_store
 
 from .data import DailySalesReportData, fetch_daily_sales_report
 
@@ -110,6 +110,7 @@ def _build_context(data: DailySalesReportData, run_environment: str) -> dict[str
         "same_day_grouped_rows_by_store": group_rows_by_store(data.same_day_fulfillment_rows),
         "same_day_store_summary_rows": build_store_summary(data.same_day_fulfillment_rows),
         "format_duration_hours": format_duration_hours,
+        "format_duration_minutes": format_duration_minutes,
     }
 
 

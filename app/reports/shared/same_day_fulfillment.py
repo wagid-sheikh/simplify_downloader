@@ -25,14 +25,20 @@ class SameDayFulfillmentRecord:
     payment_received: Any
 
 
+def format_duration_minutes(total_minutes: int | None) -> str:
+    if total_minutes is None:
+        return "--"
+    if total_minutes < 60:
+        return f"{total_minutes} min"
+    duration_hours, duration_minutes = divmod(total_minutes, 60)
+    hour_label = "hr" if duration_hours == 1 else "hrs"
+    return f"{duration_hours} {hour_label} {duration_minutes} min"
+
+
 def format_duration_hours(hours: float | Decimal | None) -> str:
     if hours is None:
         return "--"
-    minutes = round(float(hours) * 60)
-    if minutes < 60:
-        return f"{minutes} min"
-    duration_hours, duration_minutes = divmod(minutes, 60)
-    return f"{duration_hours}h {duration_minutes}m"
+    return format_duration_minutes(round(float(hours) * 60))
 
 
 def group_rows_by_store(rows: list[Any]) -> list[tuple[str, list[Any]]]:
