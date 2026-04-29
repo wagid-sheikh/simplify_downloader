@@ -162,7 +162,6 @@ async def fetch_pending_deliveries_report(
     *,
     database_url: str,
     report_date: date,
-    skip_uc_pending_delivery: bool,
     include_aged_unresolved_recovery_rows: bool = False,
 ) -> PendingDeliveriesReportData:
     metadata = sa.MetaData()
@@ -228,6 +227,15 @@ async def fetch_pending_deliveries_report(
         else_=pending_amount_expr,
     )
 
+    excluded_recovery_statuses = (
+        "TO_BE_RECOVERED",
+        "TO_BE_COMPENSATED",
+        "RECOVERED",
+        "COMPENSATED",
+        "WRITE_OFF",
+    )
+    recovery_status_col = sa.literal_column("orders.recovery_status")
+
     stmt = (
         sa.select(
             orders.c.cost_center,
@@ -254,6 +262,12 @@ async def fetch_pending_deliveries_report(
             )
         )
         .where(orders.c.order_status == "Pending")
+        .where(
+            sa.or_(
+                recovery_status_col.is_(None),
+                recovery_status_col.not_in(excluded_recovery_statuses),
+            )
+        )
         .group_by(
             orders.c.cost_center,
             orders.c.store_code,
@@ -266,9 +280,6 @@ async def fetch_pending_deliveries_report(
         )
         .having(report_pending_amount_expr > 0)
     )
-
-    if skip_uc_pending_delivery:
-        stmt = stmt.where(orders.c.source_system != "UClean")
 
     tz = get_timezone()
     rows: list[PendingDeliveryRow] = []
@@ -368,11 +379,6 @@ async def fetch_pending_deliveries_report(
                 recovery_orders.c.order_number,
             )
         )
-        if skip_uc_pending_delivery:
-            manual_recovery_stmt = manual_recovery_stmt.where(
-                recovery_orders.c.source_system != "UClean"
-            )
-
         try:
             manual_recovery_results = await session.execute(manual_recovery_stmt)
         except sa.exc.DBAPIError:

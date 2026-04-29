@@ -124,7 +124,6 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
         data = await fetch_pending_deliveries_report(
             database_url=database_url,
             report_date=resolved_date,
-            skip_uc_pending_delivery=config.skip_uc_pending_delivery,
         )
         tracker.mark_phase("load_data", "ok")
         log_event(

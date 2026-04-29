@@ -73,6 +73,19 @@ class RecoveryOrderRow:
 
 
 @dataclass
+class SameDayFulfillmentRow:
+    store_code: str
+    order_number: str
+    order_date: datetime | None
+    customer_name: str
+    mobile_number: str
+    line_items: str
+    delivery_or_payment_date: datetime | None
+    payment_mode: str
+    hours: Decimal | None
+
+
+@dataclass
 class DailySalesReportData:
     report_date: date
     rows: List[DailySalesRow]
@@ -89,6 +102,7 @@ class DailySalesReportData:
     to_be_compensated: List[RecoveryOrderRow] = field(default_factory=list)
     to_be_recovered_total_order_value: Decimal = Decimal("0")
     to_be_compensated_total_order_value: Decimal = Decimal("0")
+    same_day_fulfillment_rows: List[SameDayFulfillmentRow] = field(default_factory=list)
 
 
 LEAD_BENCHMARKS = {
@@ -529,9 +543,17 @@ async def fetch_daily_sales_report(
         sa.column("cost_center"),
         sa.column("payment_date"),
         sa.column("payment_received"),
+        sa.column("payment_mode"),
         sa.column("adjustments"),
         sa.column("order_number"),
         sa.column("is_edited_order"),
+    )
+    order_line_items = sa.table(
+        "order_line_items",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("service_name"),
+        sa.column("garment_name"),
     )
     store_master = sa.table(
         "store_master",
@@ -724,6 +746,7 @@ async def fetch_daily_sales_report(
     )
 
     rows: list[DailySalesRow] = []
+    same_day_rows: list[SameDayFulfillmentRow] = []
     async with session_scope(database_url) as session:
         result = await session.execute(stmt)
         target_updates: list[dict[str, object]] = []
@@ -900,6 +923,80 @@ async def fetch_daily_sales_report(
             tz=tz,
         )
         )
+
+        line_items_stmt = (
+            sa.select(
+                order_line_items.c.cost_center.label("cost_center"),
+                order_line_items.c.order_number.label("order_number"),
+                sa.func.group_concat(
+                    sa.func.trim(
+                        sa.func.coalesce(order_line_items.c.service_name, "")
+                        + sa.literal(" ")
+                        + sa.func.coalesce(order_line_items.c.garment_name, "")
+                    ),
+                    ", ",
+                ).label("line_items"),
+            )
+            .group_by(order_line_items.c.cost_center, order_line_items.c.order_number)
+        )
+        line_items_result = await session.execute(line_items_stmt)
+        line_items_map = {
+            (str(entry["cost_center"]), str(entry["order_number"])): str(entry["line_items"] or "")
+            for entry in line_items_result.mappings()
+        }
+
+        same_day_stmt = (
+            sa.select(
+                orders.c.cost_center,
+                sa.func.coalesce(store_master_primary.c.store_code, "").label("store_code"),
+                orders.c.order_number,
+                orders.c.order_date,
+                orders.c.customer_name,
+                orders.c.mobile_number,
+                sa.func.max(sales.c.payment_date).label("payment_date"),
+                sa.func.group_concat(sa.func.distinct(sa.func.coalesce(sales.c.payment_mode, ""))).label("payment_mode"),
+            )
+            .select_from(
+                orders.join(
+                    sales,
+                    sa.and_(orders.c.cost_center == sales.c.cost_center, orders.c.order_number == sales.c.order_number),
+                ).outerjoin(store_master_primary, store_master_primary.c.cost_center == orders.c.cost_center)
+            )
+            .where(orders.c.order_date >= ranges["start_day"])
+            .where(orders.c.order_date < ranges["next_day"])
+            .where(sales.c.payment_date >= ranges["start_day"])
+            .where(sales.c.payment_date < ranges["next_day"])
+            .group_by(
+                orders.c.cost_center,
+                store_master_primary.c.store_code,
+                orders.c.order_number,
+                orders.c.order_date,
+                orders.c.customer_name,
+                orders.c.mobile_number,
+            )
+            .order_by(orders.c.cost_center, orders.c.order_number)
+        )
+        same_day_result = await session.execute(same_day_stmt)
+        for entry in same_day_result.mappings():
+            key = (str(entry["cost_center"] or ""), str(entry["order_number"] or ""))
+            order_dt = _parse_orders_sync_timestamp(entry["order_date"], tz=tz)
+            payment_dt = _parse_orders_sync_timestamp(entry["payment_date"], tz=tz)
+            hours = None
+            if order_dt and payment_dt:
+                hours = Decimal(str((payment_dt - order_dt).total_seconds() / 3600)).quantize(Decimal("0.01"))
+            same_day_rows.append(
+                SameDayFulfillmentRow(
+                    store_code=str(entry["store_code"] or ""),
+                    order_number=key[1],
+                    order_date=order_dt,
+                    customer_name=str(entry["customer_name"] or ""),
+                    mobile_number=str(entry["mobile_number"] or ""),
+                    line_items=line_items_map.get(key, ""),
+                    delivery_or_payment_date=payment_dt,
+                    payment_mode=str(entry["payment_mode"] or ""),
+                    hours=hours,
+                )
+            )
 
     totals = _totals_row(rows)
     totals.ttd = _calculate_ttd(totals.target, totals.achieved, day_of_month, days_in_month)
@@ -1227,4 +1324,5 @@ async def fetch_daily_sales_report(
         to_be_compensated=to_be_compensated,
         to_be_recovered_total_order_value=to_be_recovered_total_order_value,
         to_be_compensated_total_order_value=to_be_compensated_total_order_value,
+        same_day_fulfillment_rows=same_day_rows,
     )

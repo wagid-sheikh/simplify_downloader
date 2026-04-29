@@ -29,6 +29,8 @@ def _create_tables(database_url: str) -> None:
     _sales_table(metadata)
     engine = sa.create_engine(database_url.replace("+aiosqlite", ""))
     metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(sa.text("ALTER TABLE orders ADD COLUMN recovery_status TEXT"))
     engine.dispose()
 
 
@@ -44,33 +46,45 @@ async def _insert_order_and_sale(
     net_amount: Decimal,
     payment_received: Decimal,
     adjustments: Decimal,
+    recovery_status: str | None = None,
 ) -> None:
     async with session_scope(database_url) as session:
         metadata = sa.MetaData()
         orders = _orders_table(metadata)
         sales = _sales_table(metadata)
-        await session.execute(
-            sa.insert(orders).values(
-                run_id="test-run",
-                run_date=now,
-                cost_center="UN3668",
-                store_code="A668",
-                source_system=source_system,
-                order_number=order_number,
-                invoice_number=f"INV-{order_number}",
-                order_date=order_date,
-                customer_name=f"Customer-{order_number}",
-                mobile_number="9999999999",
-                package_flag=False,
-                due_date=default_due_date,
-                default_due_date=default_due_date,
-                complete_processing_by=default_due_date,
-                gross_amount=gross_amount,
-                net_amount=net_amount,
-                order_status="Pending",
-                created_at=now,
+        order_values = {
+            "run_id": "test-run",
+            "run_date": now,
+            "cost_center": "UN3668",
+            "store_code": "A668",
+            "source_system": source_system,
+            "order_number": order_number,
+            "invoice_number": f"INV-{order_number}",
+            "order_date": order_date,
+            "customer_name": f"Customer-{order_number}",
+            "mobile_number": "9999999999",
+            "package_flag": False,
+            "due_date": default_due_date,
+            "default_due_date": default_due_date,
+            "complete_processing_by": default_due_date,
+            "gross_amount": gross_amount,
+            "net_amount": net_amount,
+            "order_status": "Pending",
+            "created_at": now,
+        }
+        await session.execute(sa.insert(orders).values(**order_values))
+        if recovery_status is not None:
+            await session.execute(
+                sa.text(
+                    "UPDATE orders SET recovery_status = :recovery_status "
+                    "WHERE cost_center = :cost_center AND order_number = :order_number"
+                ),
+                {
+                    "recovery_status": recovery_status,
+                    "cost_center": "UN3668",
+                    "order_number": order_number,
+                },
             )
-        )
         await session.execute(
             sa.insert(sales).values(
                 run_id="test-run",
@@ -164,7 +178,6 @@ async def test_fetch_pending_deliveries_package_pending_tolerance(tmp_path, monk
     data = await fetch_pending_deliveries_report(
         database_url=database_url,
         report_date=date(2025, 5, 20),
-        skip_uc_pending_delivery=False,
     )
 
     assert data.total_count == 1
@@ -183,7 +196,7 @@ async def test_fetch_pending_deliveries_package_pending_tolerance(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_fetch_pending_deliveries_includes_td_and_uc_when_not_skipped(
+async def test_fetch_pending_deliveries_includes_td_and_uc_orders(
     tmp_path, monkeypatch
 ) -> None:
     db_path = tmp_path / "pending_deliveries_mixed.db"
@@ -225,7 +238,6 @@ async def test_fetch_pending_deliveries_includes_td_and_uc_when_not_skipped(
     data = await fetch_pending_deliveries_report(
         database_url=database_url,
         report_date=date(2025, 5, 20),
-        skip_uc_pending_delivery=False,
     )
 
     assert data.total_count == 2
@@ -240,10 +252,10 @@ async def test_fetch_pending_deliveries_includes_td_and_uc_when_not_skipped(
 
 
 @pytest.mark.asyncio
-async def test_fetch_pending_deliveries_excludes_uc_when_skip_flag_enabled(
+async def test_fetch_pending_deliveries_excludes_recovery_statuses_from_main_buckets(
     tmp_path, monkeypatch
 ) -> None:
-    db_path = tmp_path / "pending_deliveries_skip_uc.db"
+    db_path = tmp_path / "pending_deliveries_recovery_statuses.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
     await _register_sqlite_greatest(database_url)
@@ -254,17 +266,40 @@ async def test_fetch_pending_deliveries_excludes_uc_when_skip_flag_enabled(
     order_date = datetime(2025, 5, 1, 10, 0, tzinfo=tz)
     default_due_date = datetime(2025, 5, 1, 10, 0, tzinfo=tz)
 
+    excluded_statuses = [
+        "TO_BE_RECOVERED",
+        "TO_BE_COMPENSATED",
+        "RECOVERED",
+        "COMPENSATED",
+        "WRITE_OFF",
+    ]
+    for status in excluded_statuses:
+        await _insert_order_and_sale(
+            database_url=database_url,
+            now=now,
+            order_date=order_date,
+            default_due_date=default_due_date,
+            source_system="UClean",
+            order_number=f"EX-{status}",
+            gross_amount=Decimal("100.00"),
+            net_amount=Decimal("100.00"),
+            payment_received=Decimal("50.00"),
+            adjustments=Decimal("0.00"),
+            recovery_status=status,
+        )
+
     await _insert_order_and_sale(
         database_url=database_url,
         now=now,
         order_date=order_date,
         default_due_date=default_due_date,
         source_system="TumbleDry",
-        order_number="TD-001",
-        gross_amount=Decimal("100.00"),
-        net_amount=Decimal("100.00"),
-        payment_received=Decimal("60.00"),
-        adjustments=Decimal("10.00"),
+        order_number="ALLOWED-NULL",
+        gross_amount=Decimal("120.00"),
+        net_amount=Decimal("120.00"),
+        payment_received=Decimal("20.00"),
+        adjustments=Decimal("0.00"),
+        recovery_status=None,
     )
     await _insert_order_and_sale(
         database_url=database_url,
@@ -272,21 +307,33 @@ async def test_fetch_pending_deliveries_excludes_uc_when_skip_flag_enabled(
         order_date=order_date,
         default_due_date=default_due_date,
         source_system="UClean",
-        order_number="UC-001",
-        gross_amount=Decimal("200.00"),
-        net_amount=Decimal("200.00"),
-        payment_received=Decimal("50.00"),
-        adjustments=Decimal("25.00"),
+        order_number="ALLOWED-CUSTOM",
+        gross_amount=Decimal("130.00"),
+        net_amount=Decimal("130.00"),
+        payment_received=Decimal("30.00"),
+        adjustments=Decimal("0.00"),
+        recovery_status="IN_PROGRESS",
     )
 
     data = await fetch_pending_deliveries_report(
         database_url=database_url,
         report_date=date(2025, 5, 20),
-        skip_uc_pending_delivery=True,
     )
 
-    assert data.total_count == 1
-    assert data.total_pending_amount == Decimal("30.00")
-    detail_rows = [row for bucket in data.cost_center_sections[0].buckets for row in bucket.rows]
-    assert [row.order_number for row in detail_rows] == ["TD-001"]
-    assert [row.source_system for row in detail_rows] == ["TumbleDry"]
+    summary_rows = [
+        row
+        for section in data.summary_sections
+        for bucket in section.buckets
+        for row in bucket.rows
+    ]
+    detail_rows = [
+        row
+        for section in data.cost_center_sections
+        for bucket in section.buckets
+        for row in bucket.rows
+    ]
+
+    assert {row.order_number for row in summary_rows} == {"ALLOWED-NULL", "ALLOWED-CUSTOM"}
+    assert {row.order_number for row in detail_rows} == {"ALLOWED-NULL", "ALLOWED-CUSTOM"}
+    assert data.total_count == 2
+    assert data.total_pending_amount == Decimal("200.00")

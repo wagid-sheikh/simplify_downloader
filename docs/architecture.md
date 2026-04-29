@@ -62,6 +62,7 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 - Pending deliveries: `app/reports/pending_deliveries/`.
 - Store/week/month reporting helpers: `app/dashboard_downloader/run_store_reports.py` + `app/dashboard_downloader/pipelines/`.
 - PDF rendering centralized through report renderer wrappers.
+- Pending deliveries aging buckets/details exclude orders whose `recovery_status` is one of `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, or `WRITE_OFF`; `NULL`/other statuses remain eligible.
 
 ### 6) Lead assignment pipeline
 - `app/lead_assignment/pipeline.py` orchestrates:

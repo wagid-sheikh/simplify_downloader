@@ -10,6 +10,36 @@
 
 ## Initial reconstructed decisions
 
+### DL-008
+- **Date:** 2026-04-29
+- **Status:** Proposed
+- **Decision:** Add a dedicated same-day fulfillment section in Daily Sales Report for orders created and delivered/paid on the same business day.
+- **Context:** Code review confirms the current Daily Sales Report aggregates orders and collections into KPI totals, but does not expose line-level same-day create+deliver rows. Pending Deliveries intentionally filters only `order_status == "Pending"`, so same-day fulfilled orders never appear there either, creating an operator visibility gap for rapid-turnaround orders.
+- **Evidence:** `app/reports/daily_sales_report/data.py` aggregates by date windows via `orders.order_date` and `sales.payment_date` but has no extracted detail dataset for same-day fulfillment rows; template sections currently render KPI totals and recovery/lead blocks only. `app/reports/pending_deliveries/data.py` explicitly restricts dataset to pending orders.
+- **Implications:**
+  - Daily Sales PDF can under-communicate high-velocity operational wins where order creation and completion happen on the same day.
+  - Pending Deliveries behavior should remain unchanged because fulfilled orders are out of scope for pending aging buckets.
+- **Follow-up (implementation task):**
+  1. Extend `DailySalesReportData` with `same_day_fulfillment_rows` and aggregate metadata (count, optional totals).
+  2. Add query in `app/reports/daily_sales_report/data.py` joining orders + sales (+ garments if needed) constrained to the report day where `local(order_date) == report_date` and `local(delivery/payment_date) == report_date`.
+  3. Build concatenated line-item text in the format `service_name + garment_name` per order (`STRING_AGG`/DB-equivalent with deterministic ordering).
+  4. Compute `hours` as elapsed time between order creation timestamp and fulfillment timestamp (delivery timestamp preferred, fallback payment timestamp if delivery timestamp is absent).
+  5. Render a new table section in `app/reports/daily_sales_report/templates/daily_sales_report.html` with columns: `store_code, order_number, order_date, customer_name, mobile_number, line_items, delivery/payment_date, hours`.
+  6. Add/update tests under `tests/reports/daily_sales_report/` for: inclusion criteria, timezone boundary handling, concatenation formatting, and hours calculation.
+  7. Keep `app/reports/pending_deliveries/*` logic unchanged except for optional explanatory note/test asserting fulfilled same-day orders are excluded by design.
+
+### DL-007
+- **Date:** 2026-04-27
+- **Status:** Active
+- **Decision:** Remove configurable UC skip toggle for pending deliveries and always include UC rows unless excluded by core pending filters.
+- **Context:** Pending deliveries now relies on recovery-status business rules instead of a source-system toggle, and startup config should not depend on legacy `SKIP_UC_Pending_Delivery`.
+- **Evidence:** `app/config.py`, `app/reports/pending_deliveries/data.py`, and pending-deliveries tests.
+- **Implications:**
+  - `SKIP_UC_Pending_Delivery` is no longer a required runtime config key.
+  - Pending deliveries main dataset excludes recovery statuses `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` before bucket/detail aggregation.
+  - UC rows continue to appear in pending deliveries when they satisfy standard pending filters.
+- **Follow-up:** Keep migration cleanup in place so legacy `system_config` rows do not imply obsolete behavior.
+
 ### DL-006
 - **Date:** 2026-04-25
 - **Status:** Active
