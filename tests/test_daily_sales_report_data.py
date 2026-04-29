@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql, sqlite
 
 from app.common.db import session_scope
 import importlib.util
@@ -825,20 +826,82 @@ async def test_fetch_daily_sales_report_manual_recovery_sections(tmp_path, monke
     assert report.to_be_compensated_total_order_value == 300
 
 
-def test_string_agg_helper_compiles_for_postgres_and_sqlite() -> None:
-    expr_pg = _data_module._string_agg(
+def test_string_list_agg_helper_compiles_for_postgres_and_sqlite() -> None:
+    expr_pg = _data_module._string_list_agg(
         dialect_name="postgresql",
         value_expr=sa.literal_column("payment_mode"),
         separator=", ",
     )
-    expr_sqlite = _data_module._string_agg(
+    expr_sqlite = _data_module._string_list_agg(
         dialect_name="sqlite",
         value_expr=sa.literal_column("payment_mode"),
         separator=", ",
     )
 
-    pg_sql = str(sa.select(expr_pg).compile(dialect=sa.dialects.postgresql.dialect()))
-    sqlite_sql = str(sa.select(expr_sqlite).compile(dialect=sa.dialects.sqlite.dialect()))
+    pg_sql = str(sa.select(expr_pg).compile(dialect=postgresql.dialect()))
+    sqlite_sql = str(sa.select(expr_sqlite).compile(dialect=sqlite.dialect()))
 
     assert "string_agg" in pg_sql.lower()
     assert "group_concat" in sqlite_sql.lower()
+
+
+def test_same_day_aggregation_statements_compile_with_postgres_safe_functions() -> None:
+    order_line_items = sa.table(
+        "order_line_items",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("service_name"),
+        sa.column("garment_name"),
+    )
+    sales = sa.table(
+        "sales",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("payment_mode"),
+        sa.column("payment_received"),
+        sa.column("payment_date"),
+    )
+    orders = sa.table(
+        "orders",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("order_date"),
+    )
+
+    line_items_stmt = sa.select(
+        _data_module._string_list_agg(
+            dialect_name="postgresql",
+            value_expr=sa.func.trim(
+                sa.func.coalesce(order_line_items.c.service_name, "")
+                + sa.literal(" ")
+                + sa.func.coalesce(order_line_items.c.garment_name, "")
+            ),
+            separator=", ",
+        )
+    ).group_by(order_line_items.c.cost_center, order_line_items.c.order_number)
+
+    same_day_stmt = (
+        sa.select(
+            _data_module._string_list_agg(
+                dialect_name="postgresql",
+                value_expr=sa.func.coalesce(sales.c.payment_mode, ""),
+                separator=", ",
+            ).label("payment_mode"),
+            sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)).label("payment_received"),
+        )
+        .select_from(
+            orders.join(
+                sales,
+                sa.and_(orders.c.cost_center == sales.c.cost_center, orders.c.order_number == sales.c.order_number),
+            )
+        )
+        .group_by(orders.c.cost_center, orders.c.order_number, orders.c.order_date)
+    )
+
+    line_items_sql = str(line_items_stmt.compile(dialect=postgresql.dialect())).lower()
+    same_day_sql = str(same_day_stmt.compile(dialect=postgresql.dialect())).lower()
+
+    assert "string_agg" in line_items_sql
+    assert "group_concat" not in line_items_sql
+    assert "string_agg" in same_day_sql
+    assert "group_concat" not in same_day_sql

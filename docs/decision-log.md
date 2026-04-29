@@ -152,7 +152,7 @@
 - **Context:** Partial success previously masked failed report pipelines in final cron status.
 - **Evidence:** `scripts/cron_run_orders_and_reports.sh`, `tests/test_cron_run_orders_and_reports.py`.
 - **Implications:** Operators and monitors can treat cron exit code as strict health signal for required report generation.
-- **Follow-up:** Preserve retry behavior, but never downgrade required-step failures to success.
+- **Follow-up:** Preserve retry behavior, but never downgrade required-step failures to success (including optional daily rescue attempts).
 
 ### DL-008
 - **Date:** 2026-04-29

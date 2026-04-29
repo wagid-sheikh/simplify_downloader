@@ -600,8 +600,7 @@ if [[ "${pending_rc}" -eq 0 && "${daily_rc}" -ne 0 && "${DAILY_RESCUE_AFTER_PEND
     "${DAILY_RESCUE_RETRY_DELAY_SECONDS}" || daily_rescue_rc=$?
 
   if [[ "${daily_rescue_rc}" -eq 0 ]]; then
-    daily_rc=0
-    log "Daily rescue pass succeeded; overriding daily_sales_report_rc to 0."
+    log "Daily rescue pass succeeded; preserving original daily_sales_report_rc=${daily_rc} for required-step status."
   else
     log "WARNING: Daily rescue pass failed with rc=${daily_rescue_rc}."
   fi

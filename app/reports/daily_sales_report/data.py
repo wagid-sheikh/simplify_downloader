@@ -137,7 +137,7 @@ def _to_local_date(value: object | None, tz) -> date | None:
     return parsed_dt.date()
 
 
-def _string_agg(*, dialect_name: str, value_expr, separator: str):
+def _string_list_agg(*, dialect_name: str, value_expr, separator: str):
     if dialect_name == "postgresql":
         return sa.func.string_agg(value_expr, sa.literal(separator))
     return sa.func.group_concat(value_expr, separator)
@@ -938,7 +938,7 @@ async def fetch_daily_sales_report(
             sa.select(
                 order_line_items.c.cost_center.label("cost_center"),
                 order_line_items.c.order_number.label("order_number"),
-                _string_agg(
+                _string_list_agg(
                     dialect_name=dialect_name,
                     value_expr=sa.func.trim(
                         sa.func.coalesce(order_line_items.c.service_name, "")
@@ -968,7 +968,7 @@ async def fetch_daily_sales_report(
                 sa.func.max(sales.c.payment_date).label("payment_date"),
                 # For orders with multiple payment rows on report date, aggregate to a single deterministic value.
                 sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)).label("payment_received"),
-                _string_agg(
+                _string_list_agg(
                     dialect_name=dialect_name,
                     value_expr=sa.func.coalesce(sales.c.payment_mode, ""),
                     separator=", ",
