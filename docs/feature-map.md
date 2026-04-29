@@ -132,5 +132,5 @@ Practical map of where to work for major capabilities.
 - Daily and MTD same-day fulfillment outputs now include Net Amount and Payment Received columns (payment rows are summed per order for deterministic multi-payment reporting).
 
 - Query portability: daily same-day line-item/payment-mode concatenation is dialect-aware (`string_agg` on PostgreSQL, `group_concat` on SQLite) while preserving existing same-day grouping and payment sum behavior.
-- Failure propagation policy: `scripts/cron_run_orders_and_reports.sh` must exit non-zero when any required report pipeline fails after retries (daily sales, MTD same-day, pending deliveries).
+- Failure propagation policy: `scripts/cron_run_orders_and_reports.sh` must exit non-zero when any required report pipeline fails after retries (daily sales, MTD same-day, pending deliveries), and optional rescue attempts cannot mask a failed required daily run.
 - Attachment contract: Daily Sales email has two distinct artifacts—(1) in-report same-day section scoped to report date, and (2) tailed MTD same-day attachment scoped from month start through report date, with separate metadata/doc_type.
