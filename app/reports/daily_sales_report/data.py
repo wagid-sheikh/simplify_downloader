@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from app.common.date_utils import get_timezone
 from app.common.db import session_scope
 from app.common.lead_rules import resolve_cancelled_flag
-from app.reports.same_day_fulfillment import build_line_items_agg, same_day_date_expr, string_list_agg
+from app.reports.shared.same_day_fulfillment import fetch_same_day_fulfillment_rows, same_day_date_expr, string_list_agg
 
 
 @dataclass
@@ -927,78 +927,34 @@ async def fetch_daily_sales_report(
         )
         )
 
-        dialect_name = session.bind.dialect.name if session.bind is not None else ""
-
-        line_items_agg = build_line_items_agg(order_line_items=order_line_items, dialect_name=dialect_name)
-
-        same_day_stmt = (
-            sa.select(
-                orders.c.cost_center,
-                sa.func.coalesce(store_master_primary.c.store_code, "").label("store_code"),
-                orders.c.order_number,
-                orders.c.order_date,
-                orders.c.customer_name,
-                orders.c.mobile_number,
-                orders.c.net_amount,
-                line_items_agg.c.line_items,
-                sa.func.max(sales.c.payment_date).label("payment_date"),
-                # For orders with multiple payment rows on report date, aggregate to a single deterministic value.
-                sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)).label("payment_received"),
-                string_list_agg(
-                    dialect_name=dialect_name,
-                    value_expr=sa.func.coalesce(sales.c.payment_mode, ""),
-                    separator=", ",
-                ).label("payment_mode"),
-            )
-            .select_from(
-                orders.join(
-                    sales,
-                    sa.and_(orders.c.cost_center == sales.c.cost_center, orders.c.order_number == sales.c.order_number),
-                )
-                .outerjoin(store_master_primary, store_master_primary.c.cost_center == orders.c.cost_center)
-                .outerjoin(
-                    line_items_agg,
-                    sa.and_(orders.c.cost_center == line_items_agg.c.cost_center, orders.c.order_number == line_items_agg.c.order_number),
-                )
-            )
-            .where(orders.c.order_date >= ranges["start_day"])
-            .where(orders.c.order_date < ranges["next_day"])
-            .where(
-                same_day_date_expr(dialect_name=dialect_name, dt_expr=orders.c.order_date, timezone_name=str(tz))
-                == same_day_date_expr(dialect_name=dialect_name, dt_expr=sales.c.payment_date, timezone_name=str(tz))
-            )
-            .group_by(
-                orders.c.cost_center,
-                store_master_primary.c.store_code,
-                orders.c.order_number,
-                orders.c.order_date,
-                orders.c.customer_name,
-                orders.c.mobile_number,
-                orders.c.net_amount,
-                line_items_agg.c.line_items,
-            )
-            .order_by(orders.c.order_date, orders.c.order_number)
+        records = await fetch_same_day_fulfillment_rows(
+            session=session,
+            orders=orders,
+            sales=sales,
+            order_line_items=order_line_items,
+            store_master=store_master_primary,
+            start_datetime=ranges["start_day"],
+            end_datetime=ranges["next_day"],
+            timezone_name=str(tz),
         )
-        same_day_result = await session.execute(same_day_stmt)
-        for entry in same_day_result.mappings():
-            key = (str(entry["cost_center"] or ""), str(entry["order_number"] or ""))
-            order_dt = _parse_orders_sync_timestamp(entry["order_date"], tz=tz)
-            payment_dt = _parse_orders_sync_timestamp(entry["payment_date"], tz=tz)
+        for record in records:
+            order_dt = _parse_orders_sync_timestamp(record.order_date, tz=tz)
+            payment_dt = _parse_orders_sync_timestamp(record.payment_date, tz=tz)
             hours = None
             if order_dt and payment_dt:
                 hours = Decimal(str((payment_dt - order_dt).total_seconds() / 3600)).quantize(Decimal("0.01"))
             same_day_rows.append(
                 SameDayFulfillmentRow(
-                    store_code=str(entry["store_code"] or ""),
-                    order_number=key[1],
+                    store_code=record.store_code,
+                    order_number=record.order_number,
                     order_date=order_dt,
-                    customer_name=str(entry["customer_name"] or ""),
-                    mobile_number=str(entry["mobile_number"] or ""),
-                    line_items=str(entry["line_items"] or ""),
+                    customer_name=str(record.customer_name or ""),
+                    mobile_number=str(record.mobile_number or ""),
+                    line_items=str(record.line_items or ""),
                     delivery_or_payment_date=payment_dt,
-                    payment_mode=str(entry["payment_mode"] or ""),
-                    net_amount=_decimal(entry["net_amount"]) if entry.get("net_amount") is not None else None,
-                    payment_received=_decimal(entry["payment_received"]) if entry.get("payment_received") is not None else None,
+                    payment_mode=str(record.payment_mode or ""),
+                    net_amount=_decimal(record.net_amount) if record.net_amount is not None else None,
+                    payment_received=_decimal(record.payment_received) if record.payment_received is not None else None,
                     hours=hours,
                 )
             )

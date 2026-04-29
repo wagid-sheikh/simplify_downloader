@@ -8,8 +8,7 @@ import sqlalchemy as sa
 
 from app.common.date_utils import get_timezone
 from app.common.db import session_scope
-from app.reports.same_day_fulfillment import build_line_items_agg, coerce_datetime, same_day_date_expr, string_list_agg
-
+from app.reports.shared.same_day_fulfillment import fetch_same_day_fulfillment_rows
 
 
 @dataclass
@@ -59,78 +58,37 @@ async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date
     )
 
     tz = get_timezone()
-    dialect_name = sa.engine.make_url(database_url).get_backend_name()
     start_month = datetime.combine(report_date.replace(day=1), time.min, tzinfo=tz)
     next_day = datetime.combine(report_date, time.min, tzinfo=tz) + timedelta(days=1)
 
-    line_items_agg = build_line_items_agg(order_line_items=order_line_items, dialect_name=dialect_name)
-
-    stmt = (
-        sa.select(
-            sa.func.coalesce(store_master.c.store_code, "").label("store_code"),
-            orders.c.order_number,
-            orders.c.order_date,
-            orders.c.customer_name,
-            orders.c.mobile_number,
-            line_items_agg.c.line_items,
-            sa.func.max(sales.c.payment_date).label("payment_date"),
-            string_list_agg(dialect_name=dialect_name, value_expr=sa.func.coalesce(sales.c.payment_mode, ""), separator=", ").label("payment_mode"),
-            orders.c.net_amount,
-            sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)).label("payment_received"),
-        )
-        .select_from(
-            orders.join(
-                sales,
-                sa.and_(orders.c.cost_center == sales.c.cost_center, orders.c.order_number == sales.c.order_number),
-            )
-            .outerjoin(
-                line_items_agg,
-                sa.and_(
-                    orders.c.cost_center == line_items_agg.c.cost_center,
-                    orders.c.order_number == line_items_agg.c.order_number,
-                ),
-            )
-            .outerjoin(store_master, store_master.c.cost_center == orders.c.cost_center)
-        )
-        .where(orders.c.order_date >= start_month)
-        .where(orders.c.order_date < next_day)
-        .where(
-            same_day_date_expr(dialect_name=dialect_name, dt_expr=orders.c.order_date, timezone_name=str(tz))
-            == same_day_date_expr(dialect_name=dialect_name, dt_expr=sales.c.payment_date, timezone_name=str(tz))
-        )
-        .group_by(
-            store_master.c.store_code,
-            orders.c.order_number,
-            orders.c.order_date,
-            orders.c.customer_name,
-            orders.c.mobile_number,
-            line_items_agg.c.line_items,
-            orders.c.net_amount,
-        )
-        .order_by(orders.c.order_date, orders.c.order_number)
-    )
-
     rows: list[MTDSameDayFulfillmentRow] = []
     async with session_scope(database_url) as session:
-        result = await session.execute(stmt)
-        for entry in result.mappings():
-            order_date = coerce_datetime(entry["order_date"])
-            payment_date = coerce_datetime(entry["payment_date"])
+        records = await fetch_same_day_fulfillment_rows(
+            session=session,
+            orders=orders,
+            sales=sales,
+            order_line_items=order_line_items,
+            store_master=store_master,
+            start_datetime=start_month,
+            end_datetime=next_day,
+            timezone_name=str(tz),
+        )
+        for record in records:
             hours = None
-            if order_date is not None and payment_date is not None:
-                hours = round((payment_date - order_date).total_seconds() / 3600, 2)
+            if record.order_date is not None and record.payment_date is not None:
+                hours = round((record.payment_date - record.order_date).total_seconds() / 3600, 2)
 
             rows.append(MTDSameDayFulfillmentRow(
-                store_code=str(entry["store_code"] or ""),
-                order_number=str(entry["order_number"] or ""),
-                order_date=order_date,
-                customer_name=str(entry["customer_name"]) if entry["customer_name"] is not None else None,
-                mobile_number=str(entry["mobile_number"]) if entry["mobile_number"] is not None else None,
-                line_items=str(entry["line_items"]) if entry["line_items"] is not None else None,
-                delivery_or_payment_date=payment_date,
-                payment_mode=str(entry["payment_mode"]) if entry["payment_mode"] is not None else None,
+                store_code=record.store_code,
+                order_number=record.order_number,
+                order_date=record.order_date,
+                customer_name=record.customer_name,
+                mobile_number=record.mobile_number,
+                line_items=record.line_items,
+                delivery_or_payment_date=record.payment_date,
+                payment_mode=record.payment_mode,
                 hours=hours,
-                net_amount=Decimal(str(entry["net_amount"])) if entry["net_amount"] is not None else None,
-                payment_received=Decimal(str(entry["payment_received"])) if entry["payment_received"] is not None else None,
+                net_amount=Decimal(str(record.net_amount)) if record.net_amount is not None else None,
+                payment_received=Decimal(str(record.payment_received)) if record.payment_received is not None else None,
             ))
     return rows
