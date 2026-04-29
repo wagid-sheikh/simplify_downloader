@@ -10,6 +10,7 @@ import sqlalchemy as sa
 from app.common.date_utils import get_timezone
 from app.common.db import session_scope
 from app.common.lead_rules import resolve_cancelled_flag
+from app.reports.shared.line_items_summary import summarize_line_items
 from app.reports.shared.same_day_fulfillment import fetch_same_day_fulfillment_rows, same_day_date_expr, string_list_agg
 
 
@@ -950,7 +951,7 @@ async def fetch_daily_sales_report(
                     order_date=order_dt,
                     customer_name=str(record.customer_name or ""),
                     mobile_number=str(record.mobile_number or ""),
-                    line_items=str(record.line_items or ""),
+                    line_items=summarize_line_items(record.line_item_rows),
                     delivery_or_payment_date=payment_dt,
                     payment_mode=str(record.payment_mode or ""),
                     net_amount=_decimal(record.net_amount) if record.net_amount is not None else None,

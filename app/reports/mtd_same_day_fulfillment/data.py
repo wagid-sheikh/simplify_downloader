@@ -8,6 +8,7 @@ import sqlalchemy as sa
 
 from app.common.date_utils import get_timezone
 from app.common.db import session_scope
+from app.reports.shared.line_items_summary import summarize_line_items
 from app.reports.shared.same_day_fulfillment import fetch_same_day_fulfillment_rows
 
 
@@ -84,7 +85,7 @@ async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date
                 order_date=record.order_date,
                 customer_name=record.customer_name,
                 mobile_number=record.mobile_number,
-                line_items=record.line_items,
+                line_items=summarize_line_items(record.line_item_rows),
                 delivery_or_payment_date=record.payment_date,
                 payment_mode=record.payment_mode,
                 hours=hours,
