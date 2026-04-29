@@ -556,9 +556,9 @@ run_step() {
       duration=$((step_end - step_start))
       log "${step_name}: attempt ${attempt}/${max_attempts} succeeded in ${duration}s"
       return 0
+    else
+      rc=$?
     fi
-
-    rc=$?
     step_end="$(date +%s)"
     duration=$((step_end - step_start))
     log "WARNING: ${step_name}: attempt ${attempt}/${max_attempts} failed with exit_code=${rc} after ${duration}s"
