@@ -47,3 +47,20 @@ def format_ddmmyyyy(value: object | None) -> str:
         except ValueError:
             return text
     return str(value)
+
+
+def format_hhmm_ampm(value: object | None) -> str:
+    if value is None:
+        return "--"
+    if isinstance(value, datetime):
+        return value.strftime("%I:%M %p")
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return "--"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return "--"
+        return parsed.strftime("%I:%M %p")
+    return "--"
