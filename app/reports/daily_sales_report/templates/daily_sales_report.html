@@ -169,6 +169,17 @@
       .store-heading-row td { background: #ececec; font-weight: 700; text-align: left; }
       .wrapped-text, .customer-wrap { white-space: normal; word-break: break-word; }
       .summary-table { margin-bottom: 8px; }
+      .same-day-detail-table { table-layout: fixed; }
+      .same-day-detail-table th:nth-child(3),
+      .same-day-detail-table td:nth-child(3),
+      .same-day-detail-table th:nth-child(4),
+      .same-day-detail-table td:nth-child(4) { width: 11%; }
+      .same-day-detail-table th:nth-child(6),
+      .same-day-detail-table td:nth-child(6) { width: 20%; }
+      .same-day-detail-table th:nth-child(3),
+      .same-day-detail-table th:nth-child(4) { white-space: nowrap; }
+      .same-day-detail-table td:nth-child(5),
+      .same-day-detail-table td:nth-child(6) { white-space: normal; word-break: break-word; }
       @media print {
         body,
         table,
