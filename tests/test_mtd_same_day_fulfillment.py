@@ -13,8 +13,8 @@ import app.reports.mtd_same_day_fulfillment.data as mtd_data
 def _create_tables(database_url: str) -> None:
     engine = sa.create_engine(database_url.replace('+aiosqlite', ''))
     with engine.begin() as conn:
-        conn.execute(sa.text("CREATE TABLE orders (cost_center TEXT, order_number TEXT, order_date TIMESTAMP, net_amount NUMERIC)"))
-        conn.execute(sa.text("CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_date TIMESTAMP, payment_received NUMERIC)"))
+        conn.execute(sa.text("CREATE TABLE orders (cost_center TEXT, order_number TEXT, order_date TIMESTAMP, customer_name TEXT, mobile_number TEXT, line_items TEXT, net_amount NUMERIC)"))
+        conn.execute(sa.text("CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_date TIMESTAMP, payment_mode TEXT, payment_received NUMERIC)"))
         conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT, store_code TEXT)"))
     engine.dispose()
 
@@ -28,8 +28,8 @@ async def test_fetch_mtd_same_day_fulfillment_filters_and_aggregates(tmp_path, m
 
     async with session_scope(database_url) as session:
         await session.execute(sa.text("INSERT INTO store_master (cost_center, store_code) VALUES ('CC1', 'S1')"))
-        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, net_amount) VALUES ('CC1','O1','2026-04-10T09:00:00+05:30',800),('CC1','O2','2026-03-30T09:00:00+05:30',700)"))
-        await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_received) VALUES ('CC1','O1','2026-04-10T10:00:00+05:30',500),('CC1','O1','2026-04-10T11:00:00+05:30',300),('CC1','O2','2026-04-10T11:00:00+05:30',700)"))
+        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, line_items, net_amount) VALUES ('CC1','O1','2026-04-10T09:00:00+05:30','Alice','9999999999','Item A',800),('CC1','O2','2026-03-30T09:00:00+05:30','Bob','8888888888','Item B',700)"))
+        await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES ('CC1','O1','2026-04-10T10:00:00+05:30','UPI',500),('CC1','O1','2026-04-10T11:00:00+05:30','UPI',300),('CC1','O2','2026-04-10T11:00:00+05:30','CARD',700)"))
         await session.commit()
 
     rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=date(2026,4,29))
@@ -53,8 +53,8 @@ async def test_fetch_mtd_same_day_fulfillment_does_not_use_create_engine(tmp_pat
 
     async with session_scope(database_url) as session:
         await session.execute(sa.text("INSERT INTO store_master (cost_center, store_code) VALUES ('CC1', 'S1')"))
-        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, net_amount) VALUES ('CC1','O1','2026-04-10T09:00:00+05:30',800)"))
-        await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_received) VALUES ('CC1','O1','2026-04-10T10:00:00+05:30',800)"))
+        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, line_items, net_amount) VALUES ('CC1','O1','2026-04-10T09:00:00+05:30','Alice','9999999999','Item A',800)"))
+        await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES ('CC1','O1','2026-04-10T10:00:00+05:30','UPI',800)"))
         await session.commit()
 
     rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=date(2026, 4, 29))
@@ -64,5 +64,8 @@ async def test_fetch_mtd_same_day_fulfillment_does_not_use_create_engine(tmp_pat
 
 def test_render_html_includes_financial_columns() -> None:
     html = render_html(rows=[], report_date_display='29-Apr-2026', mtd_start_display='01-Apr-2026', mtd_end_display='29-Apr-2026')
+    assert 'Store Code' in html
+    assert 'Delivery/Payment Date' in html
+    assert 'Hours' in html
     assert 'Net Amount' in html
     assert 'Payment Received' in html

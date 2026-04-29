@@ -23,6 +23,9 @@ def _create_tables(database_url: str) -> None:
                     cost_center TEXT,
                     order_number TEXT,
                     order_date TIMESTAMP,
+                    customer_name TEXT,
+                    mobile_number TEXT,
+                    line_items TEXT,
                     net_amount NUMERIC
                 )
                 """
@@ -35,6 +38,7 @@ def _create_tables(database_url: str) -> None:
                     cost_center TEXT,
                     order_number TEXT,
                     payment_date TIMESTAMP,
+                    payment_mode TEXT,
                     payment_received NUMERIC
                 )
                 """
@@ -81,22 +85,22 @@ async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(tmp_path
         await session.execute(
             sa.text(
                 """
-                INSERT INTO orders (cost_center, order_number, order_date, net_amount)
+                INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, line_items, net_amount)
                 VALUES
-                    ('CC1', 'RPT-DATE-1', '2026-04-29T09:00:00+05:30', 900),
-                    ('CC1', 'IN-MONTH-1', '2026-04-10T09:00:00+05:30', 800),
-                    ('CC1', 'OUT-MONTH-1', '2026-03-31T09:00:00+05:30', 700)
+                    ('CC1', 'RPT-DATE-1', '2026-04-29T09:00:00+05:30', 'Alice', '9999999999', 'Item A', 900),
+                    ('CC1', 'IN-MONTH-1', '2026-04-10T09:00:00+05:30', 'Bob', '8888888888', 'Item B', 800),
+                    ('CC1', 'OUT-MONTH-1', '2026-03-31T09:00:00+05:30', 'Cora', '7777777777', 'Item C', 700)
                 """
             )
         )
         await session.execute(
             sa.text(
                 """
-                INSERT INTO sales (cost_center, order_number, payment_date, payment_received)
+                INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received)
                 VALUES
-                    ('CC1', 'RPT-DATE-1', '2026-04-29T10:00:00+05:30', 900),
-                    ('CC1', 'IN-MONTH-1', '2026-04-10T10:00:00+05:30', 800),
-                    ('CC1', 'OUT-MONTH-1', '2026-04-29T10:00:00+05:30', 700)
+                    ('CC1', 'RPT-DATE-1', '2026-04-29T10:00:00+05:30', 'UPI', 900),
+                    ('CC1', 'IN-MONTH-1', '2026-04-10T10:00:00+05:30', 'CARD', 800),
+                    ('CC1', 'OUT-MONTH-1', '2026-04-29T10:00:00+05:30', 'CASH', 700)
                 """
             )
         )
@@ -202,8 +206,8 @@ async def test_daily_pipeline_reaches_render_when_mtd_fetch_invoked_without_refl
     report_date = date(2026, 4, 29)
     async with session_scope(database_url) as session:
         await session.execute(sa.text("INSERT INTO store_master (cost_center, store_code) VALUES ('CC1', 'S1')"))
-        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, net_amount) VALUES ('CC1', 'RPT-1', '2026-04-29T09:00:00+05:30', 900)"))
-        await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_received) VALUES ('CC1', 'RPT-1', '2026-04-29T10:00:00+05:30', 900)"))
+        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, line_items, net_amount) VALUES ('CC1', 'RPT-1', '2026-04-29T09:00:00+05:30', 'Alice', '9999999999', 'Item A', 900)"))
+        await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES ('CC1', 'RPT-1', '2026-04-29T10:00:00+05:30', 'UPI', 900)"))
         await session.commit()
 
     monkeypatch.setattr(pipeline, "config", SimpleNamespace(database_url=database_url, pdf_render_timeout_seconds=30))

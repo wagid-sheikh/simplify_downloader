@@ -1,13 +1,24 @@
 <!doctype html>
 <html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { font-family: "Inter", "Helvetica", Arial, sans-serif; color: #111; margin: 24px; }
+      .section-title { text-align: center; font-weight: 700; margin: 18px 0 8px; }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      th, td { border: 1px solid #222; padding: 6px 8px; text-align: right; }
+      th { background: #f6f6f6; font-weight: 700; }
+      td.label, th.label { text-align: left; }
+      td.center { text-align: center; }
+      .compact-table th, .compact-table td { padding: 4px 6px; }
+      .micro-font { font-size: 8px; line-height: 1.2; }
+    </style>
+  </head>
   <body>
     <h2>MTD Same-Day Fulfillment (Month Start to Report Date)</h2>
     <p>Window: {{ mtd_start_display }} to {{ mtd_end_display }} (Report Date: {{ report_date_display }})</p>
-    <table>
-      <thead><tr><th>Order</th><th>Net Amount</th><th>Payment Received</th></tr></thead>
-      <tbody>
-      {% for row in rows %}<tr><td>{{ row.order_number }}</td><td>{{ row.net_amount | format_amount if row.net_amount is not none else '--' }}</td><td>{{ row.payment_received | format_amount if row.payment_received is not none else '--' }}</td></tr>{% endfor %}
-      </tbody>
-    </table>
+    {% set same_day_title = "Same-Day Fulfillment" %}
+    {% set same_day_rows = rows %}
+    {% include "same_day_fulfillment_table.html" %}
   </body>
 </html>
