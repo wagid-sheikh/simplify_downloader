@@ -1,329 +1,1063 @@
-[2026-04-29 23:22:39 IST] ================================================================
-[2026-04-29 23:22:39 IST] CRON RUN STARTED
-[2026-04-29 23:22:39 IST] ================================================================
-[2026-04-29 23:22:39 IST] ENV_FILE=/Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron.env
-[2026-04-29 23:22:39 IST] REPO_ROOT=/Users/wagidsheikh/crm_backend/simplify_downloader
-[2026-04-29 23:22:39 IST] LOG_FILE=/Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_orders_and_reports_2026-04-29_23-22-39.log
-[2026-04-29 23:22:39 IST] HOME=/Users/wagidsheikh
-[2026-04-29 23:22:39 IST] PATH=/Users/wagidsheikh/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/Library/PostgreSQL/14/bin:/Users/wagidsheikh/.local/bin:/Users/wagidsheikh/.pyenv/shims:/Users/wagidsheikh/bin:/Users/wagidsheikh/.nvm/versions/node/v20.11.0/bin:/Users/wagidsheikh/opt/anaconda3/bin:/usr/local/bin:/usr/local/sbin:/Library/Frameworks/Python.framework/Versions/3.7/bin:/Library/Frameworks/Python.framework/Versions/3.10/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Applications/VMware Fusion.app/Contents/Public:/opt/X11/bin:/Library/Apple/usr/bin
-[2026-04-29 23:22:39 IST] LANG=en_US.UTF-8
-[2026-04-29 23:22:39 IST] LOCK_WAIT_SECONDS=300
-[2026-04-29 23:22:39 IST] LOCK_POLL_SECONDS=5
-[2026-04-29 23:22:39 IST] SAFE_MODE=1
-[2026-04-29 23:22:39 IST] ORDERS_MAX_ATTEMPTS=1 ORDERS_RETRY_DELAY_SECONDS=5
-[2026-04-29 23:22:39 IST] DAILY_MAX_ATTEMPTS=3 DAILY_RETRY_DELAY_SECONDS=10
-[2026-04-29 23:22:39 IST] MTD_SAME_DAY_MAX_ATTEMPTS=3 MTD_SAME_DAY_RETRY_DELAY_SECONDS=10
-[2026-04-29 23:22:39 IST] PENDING_MAX_ATTEMPTS=3 PENDING_RETRY_DELAY_SECONDS=10
-[2026-04-29 23:22:39 IST] DAILY_RESCUE_AFTER_PENDING_SUCCESS=1 DAILY_RESCUE_MAX_ATTEMPTS=1 DAILY_RESCUE_RETRY_DELAY_SECONDS=5
-[2026-04-29 23:22:39 IST] GLOBAL_LOCK_DIR=/Users/wagidsheikh/crm_backend/simplify_downloader/tmp/cron_heavy_pipelines.lock
-[2026-04-29 23:22:39 IST] LOCAL_LOCK_DIR=/Users/wagidsheikh/crm_backend/simplify_downloader/tmp/cron_run_orders_and_reports.lock
-[2026-04-29 23:22:39 IST] poetry=/Users/wagidsheikh/.local/bin/poetry
-[2026-04-29 23:22:39 IST] shell_pid=46290
-[2026-04-29 23:22:39 IST] parent_pid=59230
-[2026-04-29 23:22:39 IST] hostname=Wagids-MacBook-Pro.local
-[2026-04-29 23:22:39 IST] [global lock] Lock acquired successfully. PID=46290 total_wait_seconds=0
-[2026-04-29 23:22:39 IST] [local lock] Lock acquired successfully. PID=46290
-[2026-04-29 23:22:39 IST] ================================================================
-[2026-04-29 23:22:39 IST] Running Script 1: orders_sync_run_profiler
-[2026-04-29 23:22:39 IST] ================================================================
-[2026-04-29 23:22:39 IST] Command: ./scripts/orders_sync_run_profiler.sh
-[2026-04-29 23:22:39 IST] Attempts configured: 1; retry_delay_seconds=5
-[2026-04-29 23:22:39 IST] Script 1: orders_sync_run_profiler: attempt 1/1 starting
-Missing required environment variable: SECRET_KEY
-Traceback (most recent call last):
-  File "<frozen runpy>", line 198, in _run_module_as_main
-  File "<frozen runpy>", line 88, in _run_code
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/orders_sync_run_profiler/main.py", line 19, in <module>
-    from app.config import config
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 474, in <module>
-    config = Config.load_from_env_and_db()
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 350, in load_from_env_and_db
-    env_values = _load_env_values()
-                 ^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 137, in _load_env_values
-    return {key: _require_env(key) for key in ENV_ONLY_KEYS}
-                 ^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 127, in _require_env
-    raise ConfigError(message)
-app.config.ConfigError: Missing required environment variable: SECRET_KEY
-[2026-04-29 23:22:41 IST] WARNING: Script 1: orders_sync_run_profiler: attempt 1/1 failed with exit_code=1 after 2s
-[2026-04-29 23:22:41 IST] ERROR: Script 1: orders_sync_run_profiler failed after 1 attempts
-[2026-04-29 23:22:41 IST] ================================================================
-[2026-04-29 23:22:41 IST] Running Script 2: daily_sales_report
-[2026-04-29 23:22:41 IST] ================================================================
-[2026-04-29 23:22:41 IST] Command: ./scripts/run_local_reports_daily_sales.sh
-[2026-04-29 23:22:41 IST] Attempts configured: 3; retry_delay_seconds=10
-[2026-04-29 23:22:41 IST] Script 2: daily_sales_report: attempt 1/3 starting
-Missing required environment variable: SECRET_KEY
-Traceback (most recent call last):
-  File "<frozen runpy>", line 198, in _run_module_as_main
-  File "<frozen runpy>", line 88, in _run_code
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 139, in <module>
-    raise SystemExit(main())
-                     ^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 116, in main
-    from app.reports.daily_sales_report.main import main as daily_sales_report_main
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/__init__.py", line 3, in <module>
-    from .pipeline import run_pipeline
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/pipeline.py", line 13, in <module>
-    from app.config import config
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 474, in <module>
-    config = Config.load_from_env_and_db()
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 350, in load_from_env_and_db
-    env_values = _load_env_values()
-                 ^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 137, in _load_env_values
-    return {key: _require_env(key) for key in ENV_ONLY_KEYS}
-                 ^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 127, in _require_env
-    raise ConfigError(message)
-app.config.ConfigError: Missing required environment variable: SECRET_KEY
-[2026-04-29 23:22:43 IST] WARNING: Script 2: daily_sales_report: attempt 1/3 failed with exit_code=1 after 2s
-[2026-04-29 23:22:43 IST] Script 2: daily_sales_report: sleeping 10s before retry
-[2026-04-29 23:22:53 IST] Script 2: daily_sales_report: attempt 2/3 starting
-Missing required environment variable: SECRET_KEY
-Traceback (most recent call last):
-  File "<frozen runpy>", line 198, in _run_module_as_main
-  File "<frozen runpy>", line 88, in _run_code
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 139, in <module>
-    raise SystemExit(main())
-                     ^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 116, in main
-    from app.reports.daily_sales_report.main import main as daily_sales_report_main
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/__init__.py", line 3, in <module>
-    from .pipeline import run_pipeline
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/pipeline.py", line 13, in <module>
-    from app.config import config
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 474, in <module>
-    config = Config.load_from_env_and_db()
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 350, in load_from_env_and_db
-    env_values = _load_env_values()
-                 ^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 137, in _load_env_values
-    return {key: _require_env(key) for key in ENV_ONLY_KEYS}
-                 ^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 127, in _require_env
-    raise ConfigError(message)
-app.config.ConfigError: Missing required environment variable: SECRET_KEY
-[2026-04-29 23:22:54 IST] WARNING: Script 2: daily_sales_report: attempt 2/3 failed with exit_code=1 after 1s
-[2026-04-29 23:22:54 IST] Script 2: daily_sales_report: sleeping 10s before retry
-[2026-04-29 23:23:04 IST] Script 2: daily_sales_report: attempt 3/3 starting
-Missing required environment variable: SECRET_KEY
-Traceback (most recent call last):
-  File "<frozen runpy>", line 198, in _run_module_as_main
-  File "<frozen runpy>", line 88, in _run_code
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 139, in <module>
-    raise SystemExit(main())
-                     ^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 116, in main
-    from app.reports.daily_sales_report.main import main as daily_sales_report_main
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/__init__.py", line 3, in <module>
-    from .pipeline import run_pipeline
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/pipeline.py", line 13, in <module>
-    from app.config import config
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 474, in <module>
-    config = Config.load_from_env_and_db()
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 350, in load_from_env_and_db
-    env_values = _load_env_values()
-                 ^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 137, in _load_env_values
-    return {key: _require_env(key) for key in ENV_ONLY_KEYS}
-                 ^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 127, in _require_env
-    raise ConfigError(message)
-app.config.ConfigError: Missing required environment variable: SECRET_KEY
-[2026-04-29 23:23:06 IST] WARNING: Script 2: daily_sales_report: attempt 3/3 failed with exit_code=1 after 2s
-[2026-04-29 23:23:06 IST] ERROR: Script 2: daily_sales_report failed after 3 attempts
-[2026-04-29 23:23:06 IST] ================================================================
-[2026-04-29 23:23:06 IST] Running Script 3: mtd_same_day_fulfillment_report
-[2026-04-29 23:23:06 IST] ================================================================
-[2026-04-29 23:23:06 IST] Command: ./scripts/run_local_reports_mtd_same_day_fulfillment.sh
-[2026-04-29 23:23:06 IST] Attempts configured: 3; retry_delay_seconds=10
-[2026-04-29 23:23:06 IST] Script 3: mtd_same_day_fulfillment_report: attempt 1/3 starting
-Missing required environment variable: SECRET_KEY
-Traceback (most recent call last):
-  File "<frozen runpy>", line 198, in _run_module_as_main
-  File "<frozen runpy>", line 88, in _run_code
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 139, in <module>
-    raise SystemExit(main())
-                     ^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 128, in main
-    from app.reports.mtd_same_day_fulfillment.main import main as mtd_same_day_fulfillment_main
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/__init__.py", line 4, in <module>
-    from .pipeline import run_pipeline
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/pipeline.py", line 9, in <module>
-    from app.config import config
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 474, in <module>
-    config = Config.load_from_env_and_db()
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 350, in load_from_env_and_db
-    env_values = _load_env_values()
-                 ^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 137, in _load_env_values
-    return {key: _require_env(key) for key in ENV_ONLY_KEYS}
-                 ^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 127, in _require_env
-    raise ConfigError(message)
-app.config.ConfigError: Missing required environment variable: SECRET_KEY
-[2026-04-29 23:23:08 IST] WARNING: Script 3: mtd_same_day_fulfillment_report: attempt 1/3 failed with exit_code=1 after 2s
-[2026-04-29 23:23:08 IST] Script 3: mtd_same_day_fulfillment_report: sleeping 10s before retry
-[2026-04-29 23:23:18 IST] Script 3: mtd_same_day_fulfillment_report: attempt 2/3 starting
-Missing required environment variable: SECRET_KEY
-Traceback (most recent call last):
-  File "<frozen runpy>", line 198, in _run_module_as_main
-  File "<frozen runpy>", line 88, in _run_code
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 139, in <module>
-    raise SystemExit(main())
-                     ^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 128, in main
-    from app.reports.mtd_same_day_fulfillment.main import main as mtd_same_day_fulfillment_main
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/__init__.py", line 4, in <module>
-    from .pipeline import run_pipeline
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/pipeline.py", line 9, in <module>
-    from app.config import config
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 474, in <module>
-    config = Config.load_from_env_and_db()
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 350, in load_from_env_and_db
-    env_values = _load_env_values()
-                 ^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 137, in _load_env_values
-    return {key: _require_env(key) for key in ENV_ONLY_KEYS}
-                 ^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 127, in _require_env
-    raise ConfigError(message)
-app.config.ConfigError: Missing required environment variable: SECRET_KEY
-[2026-04-29 23:23:19 IST] WARNING: Script 3: mtd_same_day_fulfillment_report: attempt 2/3 failed with exit_code=1 after 1s
-[2026-04-29 23:23:19 IST] Script 3: mtd_same_day_fulfillment_report: sleeping 10s before retry
-[2026-04-29 23:23:29 IST] Script 3: mtd_same_day_fulfillment_report: attempt 3/3 starting
-Missing required environment variable: SECRET_KEY
-Traceback (most recent call last):
-  File "<frozen runpy>", line 198, in _run_module_as_main
-  File "<frozen runpy>", line 88, in _run_code
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 139, in <module>
-    raise SystemExit(main())
-                     ^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 128, in main
-    from app.reports.mtd_same_day_fulfillment.main import main as mtd_same_day_fulfillment_main
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/__init__.py", line 4, in <module>
-    from .pipeline import run_pipeline
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/pipeline.py", line 9, in <module>
-    from app.config import config
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 474, in <module>
-    config = Config.load_from_env_and_db()
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 350, in load_from_env_and_db
-    env_values = _load_env_values()
-                 ^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 137, in _load_env_values
-    return {key: _require_env(key) for key in ENV_ONLY_KEYS}
-                 ^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 127, in _require_env
-    raise ConfigError(message)
-app.config.ConfigError: Missing required environment variable: SECRET_KEY
-[2026-04-29 23:23:31 IST] WARNING: Script 3: mtd_same_day_fulfillment_report: attempt 3/3 failed with exit_code=1 after 2s
-[2026-04-29 23:23:31 IST] ERROR: Script 3: mtd_same_day_fulfillment_report failed after 3 attempts
-[2026-04-29 23:23:31 IST] ================================================================
-[2026-04-29 23:23:31 IST] Running Script 4: pending_deliveries
-[2026-04-29 23:23:31 IST] ================================================================
-[2026-04-29 23:23:31 IST] Command: ./scripts/run_local_reports_pending_deliveries.sh
-[2026-04-29 23:23:31 IST] Attempts configured: 3; retry_delay_seconds=10
-[2026-04-29 23:23:31 IST] Script 4: pending_deliveries: attempt 1/3 starting
-Missing required environment variable: SECRET_KEY
+[2026-04-30 00:12:08 IST] ================================================================
+[2026-04-30 00:12:08 IST] CRON RUN STARTED
+[2026-04-30 00:12:08 IST] ================================================================
+[2026-04-30 00:12:08 IST] ENV_FILE=/Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron.env
+[2026-04-30 00:12:08 IST] REPO_ROOT=/Users/wagidsheikh/crm_backend/simplify_downloader
+[2026-04-30 00:12:08 IST] LOG_FILE=/Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_orders_and_reports_2026-04-30_00-12-08.log
+[2026-04-30 00:12:08 IST] HOME=/Users/wagidsheikh
+[2026-04-30 00:12:08 IST] PATH=/Users/wagidsheikh/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/Library/PostgreSQL/14/bin:/Users/wagidsheikh/.local/bin:/Users/wagidsheikh/.pyenv/shims:/Users/wagidsheikh/bin:/Users/wagidsheikh/.nvm/versions/node/v20.11.0/bin:/Users/wagidsheikh/opt/anaconda3/bin:/usr/local/bin:/usr/local/sbin:/Library/Frameworks/Python.framework/Versions/3.7/bin:/Library/Frameworks/Python.framework/Versions/3.10/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Applications/VMware Fusion.app/Contents/Public:/opt/X11/bin:/Library/Apple/usr/bin
+[2026-04-30 00:12:08 IST] LANG=en_US.UTF-8
+[2026-04-30 00:12:08 IST] LOCK_WAIT_SECONDS=300
+[2026-04-30 00:12:08 IST] LOCK_POLL_SECONDS=5
+[2026-04-30 00:12:08 IST] SAFE_MODE=1
+[2026-04-30 00:12:08 IST] ORDERS_MAX_ATTEMPTS=1 ORDERS_RETRY_DELAY_SECONDS=5
+[2026-04-30 00:12:08 IST] DAILY_MAX_ATTEMPTS=3 DAILY_RETRY_DELAY_SECONDS=10
+[2026-04-30 00:12:08 IST] MTD_SAME_DAY_MAX_ATTEMPTS=3 MTD_SAME_DAY_RETRY_DELAY_SECONDS=10
+[2026-04-30 00:12:08 IST] PENDING_MAX_ATTEMPTS=3 PENDING_RETRY_DELAY_SECONDS=10
+[2026-04-30 00:12:08 IST] DAILY_RESCUE_AFTER_PENDING_SUCCESS=1 DAILY_RESCUE_MAX_ATTEMPTS=1 DAILY_RESCUE_RETRY_DELAY_SECONDS=5
+[2026-04-30 00:12:08 IST] GLOBAL_LOCK_DIR=/Users/wagidsheikh/crm_backend/simplify_downloader/tmp/cron_heavy_pipelines.lock
+[2026-04-30 00:12:08 IST] LOCAL_LOCK_DIR=/Users/wagidsheikh/crm_backend/simplify_downloader/tmp/cron_run_orders_and_reports.lock
+[2026-04-30 00:12:08 IST] poetry=/Users/wagidsheikh/.local/bin/poetry
+[2026-04-30 00:12:08 IST] shell_pid=51726
+[2026-04-30 00:12:08 IST] parent_pid=59230
+[2026-04-30 00:12:08 IST] hostname=Wagids-MacBook-Pro.local
+[2026-04-30 00:12:08 IST] [global lock] Lock acquired successfully. PID=51726 total_wait_seconds=0
+[2026-04-30 00:12:08 IST] [local lock] Lock acquired successfully. PID=51726
+[2026-04-30 00:12:08 IST] ================================================================
+[2026-04-30 00:12:08 IST] Running Script 1: orders_sync_run_profiler
+[2026-04-30 00:12:08 IST] ================================================================
+[2026-04-30 00:12:08 IST] Command: ./scripts/orders_sync_run_profiler.sh
+[2026-04-30 00:12:08 IST] Attempts configured: 1; retry_delay_seconds=5
+[2026-04-30 00:12:08 IST] Script 1: orders_sync_run_profiler: attempt 1/1 starting
+{"run_id": "20260429_184210779213", "phase": "logger", "status": "ok", "message": "Initialized JSON logger", "log_file_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/logs/simplify_downloader.jsonl", "log_file_source": "env:JSON_LOG_FILE", "ts": "2026-04-29T18:42:10.779745+00:00"}
+{"run_id": "20260429_184210779213", "phase": "init", "status": "ok", "message": "Loaded store rows", "sync_group": "UC", "store_count": 2, "stores": ["UC567", "UC610"], "ts": "2026-04-29T18:42:10.873331+00:00"}
+{"run_id": "20260429_184210779213", "phase": "store", "status": "ok", "message": "Computed window plan", "store_code": "UC567", "start_date": "2026-04-28", "end_date": "2026-04-30", "window_days": 90, "overlap_days": 2, "window_count": 1, "ts": "2026-04-29T18:42:10.880881+00:00"}
+{"run_id": "20260429_184210779213", "phase": "window", "status": "ok", "message": "Running orders sync window", "store_code": "UC567", "from_date": "2026-04-28", "to_date": "2026-04-30", "window_index": 1, "window_attempt": 1, "window_run_id": "20260429_184210779213_UC567_001_attempt1", "ts": "2026-04-29T18:42:10.881042+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "logger", "status": "ok", "message": "Initialized JSON logger", "log_file_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/logs/simplify_downloader.jsonl", "log_file_source": "env:JSON_LOG_FILE", "ts": "2026-04-29T18:42:10.881393+00:00"}
+{"run_id": "20260429_184210779213", "phase": "init", "status": "ok", "message": "Loaded store rows", "sync_group": "TD", "store_count": 2, "stores": ["A817", "A668"], "ts": "2026-04-29T18:42:10.919572+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "init", "status": "ok", "message": "Loaded UC store rows", "store_count": 1, "stores": ["UC567"], "ts": "2026-04-29T18:42:10.926131+00:00"}
+{"run_id": "20260429_184210779213", "phase": "store", "status": "ok", "message": "Computed window plan", "store_code": "A817", "start_date": "2026-04-28", "end_date": "2026-04-30", "window_days": 90, "overlap_days": 2, "window_count": 1, "ts": "2026-04-29T18:42:10.971019+00:00"}
+{"run_id": "20260429_184210779213", "phase": "window", "status": "ok", "message": "Running orders sync window", "store_code": "A817", "from_date": "2026-04-28", "to_date": "2026-04-30", "window_index": 1, "window_attempt": 1, "window_run_id": "20260429_184210779213_A817_001", "ts": "2026-04-29T18:42:10.971160+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "phase": "logger", "status": "ok", "message": "Initialized JSON logger", "log_file_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/logs/simplify_downloader.jsonl", "log_file_source": "env:JSON_LOG_FILE", "ts": "2026-04-29T18:42:10.971518+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "phase": "ingest", "status": "ok", "message": "Resolved TD ingest source for mode", "source_mode": "api_only", "ingest_source": "api_rows", "ts": "2026-04-29T18:42:10.971593+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "phase": "init", "status": "ok", "message": "Loaded TD store rows", "store_count": 1, "stores": ["A817"], "ts": "2026-04-29T18:42:10.974523+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "phase": "window_resolution", "status": "ok", "message": "Resolved TD per-store effective date window", "store_code": "A817", "window_start": "2026-04-28", "window_end": "2026-04-30", "window_source": "explicit_from_date", "explicit_from_date": "2026-04-28", "last_success_window_end": null, "overlap_days": 2, "backfill_days": 90, "window_days": 90, "ts": "2026-04-29T18:42:10.974667+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "run_summary", "status": "ok", "message": "Run summary inserted at start", "overall_status": "running", "ts": "2026-04-29T18:42:10.976116+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "init", "status": "ok", "message": "Starting UC orders sync discovery flow", "run_env": "production", "from_date": "2026-04-28", "to_date": "2026-04-30", "ts": "2026-04-29T18:42:10.976205+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "init", "status": "ok", "message": "Pipeline DOM logging configuration", "pipeline_skip_dom_logging": true, "ts": "2026-04-29T18:42:10.976274+00:00"}
+{"run_id": "20260429_184210779213", "phase": "store", "status": "ok", "message": "Computed window plan", "store_code": "UC610", "start_date": "2026-04-28", "end_date": "2026-04-30", "window_days": 90, "overlap_days": 2, "window_count": 1, "ts": "2026-04-29T18:42:10.976863+00:00"}
+{"run_id": "20260429_184210779213", "phase": "window", "status": "ok", "message": "Running orders sync window", "store_code": "UC610", "from_date": "2026-04-28", "to_date": "2026-04-30", "window_index": 1, "window_attempt": 1, "window_run_id": "20260429_184210779213_UC610_001_attempt1", "ts": "2026-04-29T18:42:10.976950+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "logger", "status": "ok", "message": "Initialized JSON logger", "log_file_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/logs/simplify_downloader.jsonl", "log_file_source": "env:JSON_LOG_FILE", "ts": "2026-04-29T18:42:10.977300+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "init", "status": "ok", "message": "Loaded UC store rows", "store_count": 1, "stores": ["UC610"], "ts": "2026-04-29T18:42:10.990851+00:00"}
+{"run_id": "20260429_184210779213", "phase": "store", "status": "ok", "message": "Computed window plan", "store_code": "A668", "start_date": "2026-04-28", "end_date": "2026-04-30", "window_days": 90, "overlap_days": 2, "window_count": 1, "ts": "2026-04-29T18:42:11.100469+00:00"}
+{"run_id": "20260429_184210779213", "phase": "window", "status": "ok", "message": "Running orders sync window", "store_code": "A668", "from_date": "2026-04-28", "to_date": "2026-04-30", "window_index": 1, "window_attempt": 1, "window_run_id": "20260429_184210779213_A668_001", "ts": "2026-04-29T18:42:11.100590+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "phase": "logger", "status": "ok", "message": "Initialized JSON logger", "log_file_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/logs/simplify_downloader.jsonl", "log_file_source": "env:JSON_LOG_FILE", "ts": "2026-04-29T18:42:11.101016+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "phase": "ingest", "status": "ok", "message": "Resolved TD ingest source for mode", "source_mode": "api_only", "ingest_source": "api_rows", "ts": "2026-04-29T18:42:11.101092+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "phase": "run_summary", "status": "ok", "message": "Run summary inserted at start", "overall_status": "running", "ts": "2026-04-29T18:42:11.101724+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "phase": "init", "status": "ok", "message": "Starting TD orders sync discovery flow", "run_env": "production", "from_date": "2026-04-28", "to_date": "2026-04-30", "ts": "2026-04-29T18:42:11.101803+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "phase": "init", "status": "ok", "message": "Pipeline DOM logging configuration", "pipeline_skip_dom_logging": true, "ts": "2026-04-29T18:42:11.101863+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "phase": "init", "status": "ok", "message": "Loaded TD store rows", "store_count": 1, "stores": ["A668"], "ts": "2026-04-29T18:42:11.104888+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "phase": "window_resolution", "status": "ok", "message": "Resolved TD per-store effective date window", "store_code": "A668", "window_start": "2026-04-28", "window_end": "2026-04-30", "window_source": "explicit_from_date", "explicit_from_date": "2026-04-28", "last_success_window_end": null, "overlap_days": 2, "backfill_days": 90, "window_days": 90, "ts": "2026-04-29T18:42:11.105006+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "phase": "store", "status": "ok", "message": "Resolved TD store concurrency settings", "source_mode": "api_only", "configured_concurrency": 2, "concurrency_enabled": true, "allow_non_api_only_concurrency": true, "ts": "2026-04-29T18:42:11.105708+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "run_summary", "status": "ok", "message": "Run summary inserted at start", "overall_status": "running", "ts": "2026-04-29T18:42:11.145187+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "init", "status": "ok", "message": "Starting UC orders sync discovery flow", "run_env": "production", "from_date": "2026-04-28", "to_date": "2026-04-30", "ts": "2026-04-29T18:42:11.145426+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "init", "status": "ok", "message": "Pipeline DOM logging configuration", "pipeline_skip_dom_logging": true, "ts": "2026-04-29T18:42:11.145505+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "phase": "run_summary", "status": "ok", "message": "Run summary inserted at start", "overall_status": "running", "ts": "2026-04-29T18:42:11.146257+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "phase": "init", "status": "ok", "message": "Starting TD orders sync discovery flow", "run_env": "production", "from_date": "2026-04-28", "to_date": "2026-04-30", "ts": "2026-04-29T18:42:11.146367+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "phase": "init", "status": "ok", "message": "Pipeline DOM logging configuration", "pipeline_skip_dom_logging": true, "ts": "2026-04-29T18:42:11.146434+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "phase": "store", "status": "ok", "message": "Resolved TD store concurrency settings", "source_mode": "api_only", "configured_concurrency": 2, "concurrency_enabled": true, "allow_non_api_only_concurrency": true, "ts": "2026-04-29T18:42:11.156109+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "init", "status": "ok", "message": "Launching Playwright with local Chrome executable", "backend": "local_chrome", "executable_path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "headless": true, "ts": "2026-04-29T18:42:11.524660+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "phase": "init", "status": "ok", "message": "Launching Playwright with local Chrome executable", "backend": "local_chrome", "executable_path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "headless": true, "ts": "2026-04-29T18:42:11.557909+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "init", "status": "ok", "message": "Launching Playwright with local Chrome executable", "backend": "local_chrome", "executable_path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "headless": true, "ts": "2026-04-29T18:42:11.611268+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "phase": "init", "status": "ok", "message": "Launching Playwright with local Chrome executable", "backend": "local_chrome", "executable_path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "headless": true, "ts": "2026-04-29T18:42:11.650553+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "store", "status": "ok", "message": "Starting UC store discovery", "store_code": "UC567", "store_name": "Sector 56, Gurgaon", "run_env": "production", "ts": "2026-04-29T18:42:12.535655+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "store", "status": "ok", "message": "TD store worker start", "from_date": "2026-04-28", "to_date": "2026-04-30", "queue_wait_ms": 0, "concurrency_limited": true, "ts": "2026-04-29T18:42:12.644806+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "store", "status": "ok", "message": "Starting TD orders store discovery", "run_env": "production", "from_date": "2026-04-28", "to_date": "2026-04-30", "window_start": "2026-04-28", "window_end": "2026-04-30", "source_mode": "api_only", "ts": "2026-04-29T18:42:12.654699+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "store", "status": "ok", "message": "Starting UC store discovery", "store_code": "UC610", "store_name": "Sushant Lok 1, Gurgaon", "run_env": "production", "ts": "2026-04-29T18:42:12.664341+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "store", "status": "ok", "message": "TD store worker start", "from_date": "2026-04-28", "to_date": "2026-04-30", "queue_wait_ms": 0, "concurrency_limited": true, "ts": "2026-04-29T18:42:12.667918+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "store", "status": "ok", "message": "Starting TD orders store discovery", "run_env": "production", "from_date": "2026-04-28", "to_date": "2026-04-30", "window_start": "2026-04-28", "window_end": "2026-04-30", "source_mode": "api_only", "ts": "2026-04-29T18:42:12.674094+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "orders_sync_log", "status": "info", "message": "orders_sync_log_upserted", "log_id": 636, "ts": "2026-04-29T18:42:13.080115+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "orders_sync_log", "status": "info", "message": "orders_sync_log_upserted", "log_id": 637, "ts": "2026-04-29T18:42:13.081745+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "orders_sync_log", "status": "info", "message": "Inserted orders sync log row", "log_id": 635, "store_code": "UC567", "ts": "2026-04-29T18:42:13.093360+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "orders_sync_log", "status": "info", "message": "Verified orders sync log row exists", "log_id": 635, "store_code": "UC567", "ts": "2026-04-29T18:42:13.093520+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "orders_sync_log", "status": "info", "message": "Inserted orders sync log row", "log_id": 638, "store_code": "UC610", "ts": "2026-04-29T18:42:13.094279+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "orders_sync_log", "status": "info", "message": "Verified orders sync log row exists", "log_id": 638, "store_code": "UC610", "ts": "2026-04-29T18:42:13.094418+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "session", "status": "ok", "message": "Redacted auth/session diagnostics", "window_start": "2026-04-28", "window_end": "2026-04-30", "source_mode": "api_only", "cookies_found": true, "token_found": false, "token_expiry": null, "ts": "2026-04-29T18:42:14.191062+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "session", "status": "ok", "message": "Storage state found; probing session validity", "storage_state": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/profiles/A668_storage_state.json", "ts": "2026-04-29T18:42:14.191471+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "session", "status": "ok", "message": "Redacted auth/session diagnostics", "window_start": "2026-04-28", "window_end": "2026-04-30", "source_mode": "api_only", "cookies_found": true, "token_found": false, "token_expiry": null, "ts": "2026-04-29T18:42:14.203049+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "session", "status": "ok", "message": "Storage state found; probing session validity", "storage_state": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/profiles/A817_storage_state.json", "ts": "2026-04-29T18:42:14.203234+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "login", "status": "ok", "message": "Reusing existing storage state", "store_code": "UC610", "storage_state": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/profiles/UC610_storage_state.json", "ts": "2026-04-29T18:42:14.357451+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "login", "status": "ok", "message": "Reusing existing storage state", "store_code": "UC567", "storage_state": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/profiles/UC567_storage_state.json", "ts": "2026-04-29T18:42:14.393439+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "session", "status": "warning", "message": "Probed session with existing storage state", "response_status": 200, "final_url": "https://subs.quickdrycleaning.com/Login", "contains_store_code": false, "verification_seen": false, "login_detected": true, "nav_visible": false, "home_card_visible": false, "state_valid": false, "invalid_reason": "login_form_visible", "probe_error": null, "probe_target": "https://subs.quickdrycleaning.com/a668/App/home?EventClick=True", "contains_store_path": false, "ts": "2026-04-29T18:42:20.101830+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "session", "status": "ok", "message": "Storage state probe invalid; performing login", "storage_state": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/profiles/A668_storage_state.json", "probe_reason": "login_form_visible", "probe_valid": false, "verification_seen": false, "nav_visible": false, "home_card_visible": false, "re_login_performed": true, "ts": "2026-04-29T18:42:20.102593+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "session", "status": "warning", "message": "Probed session with existing storage state", "response_status": 200, "final_url": "https://subs.quickdrycleaning.com/Login", "contains_store_code": false, "verification_seen": false, "login_detected": true, "nav_visible": false, "home_card_visible": false, "state_valid": false, "invalid_reason": "login_form_visible", "probe_error": null, "probe_target": "https://subs.quickdrycleaning.com/a817/App/home?EventClick=True", "contains_store_path": false, "ts": "2026-04-29T18:42:20.269276+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "session", "status": "ok", "message": "Storage state probe invalid; performing login", "storage_state": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/profiles/A817_storage_state.json", "probe_reason": "login_form_visible", "probe_valid": false, "verification_seen": false, "nav_visible": false, "home_card_visible": false, "re_login_performed": true, "ts": "2026-04-29T18:42:20.269541+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "login", "status": "ok", "message": "Completed login attempt", "final_url": "https://subs.quickdrycleaning.com/a668/App/home?EventClick=True", "contains_store_code": true, "post_login_wait_completed": "url_contains_store_code", "post_login_wait_error": null, "submit_error": null, "selectors": {"username": "#txtUserId", "password": "#txtPassword", "store_code": "#txtBranchPin", "submit": "#btnLogin"}, "ts": "2026-04-29T18:42:21.238685+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "session", "status": "ok", "message": "Login completed; session ready", "final_url": "https://subs.quickdrycleaning.com/a668/App/home?EventClick=True", "storage_state": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/profiles/A668_storage_state.json", "probe_reason": "login_form_visible", "probe_valid": false, "login_performed": true, "re_login_performed": true, "ts": "2026-04-29T18:42:21.238984+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "session", "status": "ok", "message": "Session ready after OTP/verification wait", "storage_state": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/profiles/A668_storage_state.json", "final_url": "https://subs.quickdrycleaning.com/a668/App/home?EventClick=True", "verification_seen": false, "login_performed": true, "ts": "2026-04-29T18:42:21.239341+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "login", "status": "ok", "message": "Completed login attempt", "final_url": "https://subs.quickdrycleaning.com/a817/App/home?EventClick=True", "contains_store_code": true, "post_login_wait_completed": "url_contains_store_code", "post_login_wait_error": null, "submit_error": null, "selectors": {"username": "#txtUserId", "password": "#txtPassword", "store_code": "#txtBranchPin", "submit": "#btnLogin"}, "ts": "2026-04-29T18:42:21.410223+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "session", "status": "ok", "message": "Login completed; session ready", "final_url": "https://subs.quickdrycleaning.com/a817/App/home?EventClick=True", "storage_state": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/profiles/A817_storage_state.json", "probe_reason": "login_form_visible", "probe_valid": false, "login_performed": true, "re_login_performed": true, "ts": "2026-04-29T18:42:21.410474+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "session", "status": "ok", "message": "Session ready after OTP/verification wait", "storage_state": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/profiles/A817_storage_state.json", "final_url": "https://subs.quickdrycleaning.com/a817/App/home?EventClick=True", "verification_seen": false, "login_performed": true, "ts": "2026-04-29T18:42:21.410670+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "login", "status": "ok", "message": "Home page ready after login/verification", "final_url": "https://subs.quickdrycleaning.com/a668/App/home?EventClick=True", "nav_selector": "#achrOrderReport", "nav_visible": true, "home_card_visible": false, "ts": "2026-04-29T18:42:23.109050+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "home", "status": "ok", "message": "Navigation controls snapshot skipped because DOM logging is disabled", "ts": "2026-04-29T18:42:23.109279+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "session", "status": "ok", "message": "Stored refreshed session state after home detection", "storage_state": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/profiles/A668_storage_state.json", "verification_seen": false, "ts": "2026-04-29T18:42:23.163360+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "orders", "status": "ok", "message": "Nav root missing; proceeding with direct click", "nav_root_visible": false, "locator_strategy": "reports_nav_selector", "initial_probe": true, "ts": "2026-04-29T18:42:23.238689+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "login", "status": "ok", "message": "Home page ready after login/verification", "final_url": "https://subs.quickdrycleaning.com/a817/App/home?EventClick=True", "nav_selector": "#achrOrderReport", "nav_visible": true, "home_card_visible": false, "ts": "2026-04-29T18:42:23.368736+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "home", "status": "ok", "message": "Navigation controls snapshot skipped because DOM logging is disabled", "ts": "2026-04-29T18:42:23.369190+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "session", "status": "ok", "message": "Stored refreshed session state after home detection", "storage_state": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/profiles/A817_storage_state.json", "verification_seen": false, "ts": "2026-04-29T18:42:23.386084+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "session", "status": "ok", "message": "Persisted storage state for A817 after home detection", "storage_state": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/profiles/A817_storage_state.json", "session_reused": true, "refreshed": true, "ts": "2026-04-29T18:42:23.386272+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "orders", "status": "ok", "message": "Nav root missing; proceeding with direct click", "nav_root_visible": false, "locator_strategy": "reports_nav_selector", "initial_probe": true, "ts": "2026-04-29T18:42:23.443576+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "orders", "status": "ok", "message": "Nav root missing; proceeding with direct click", "nav_root_visible": false, "attempt": 1, "ts": "2026-04-29T18:42:58.311047+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "orders", "status": "ok", "message": "Nav root missing; proceeding with direct click", "nav_root_visible": false, "attempt": 1, "ts": "2026-04-29T18:42:58.499285+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "orders", "status": "ok", "message": "Orders left-nav snapshot skipped because DOM logging is disabled", "context": "orders_iframe:attempt_1:success", "sales_only_mode": false, "nav_url": "https://subs.quickdrycleaning.com/a668/App/Reports/OrderReport?ClearContent=4-3-2026%200:12:24", "ts": "2026-04-29T18:42:59.545885+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "orders", "status": "ok", "message": "Navigated to Orders container via Reports entry", "final_url": "https://subs.quickdrycleaning.com/a668/App/Reports/OrderReport?ClearContent=4-3-2026%200:12:24", "nav_selector": "#achrOrderReport", "locator_strategy": "reports_nav_selector", "attempt": 1, "ts": "2026-04-29T18:42:59.546070+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "orders", "status": "ok", "message": "Orders left-nav snapshot skipped because DOM logging is disabled", "context": "orders_iframe:attempt_1:success", "sales_only_mode": false, "nav_url": "https://subs.quickdrycleaning.com/a817/App/Reports/OrderReport?ClearContent=4-3-2026%200:12:24", "ts": "2026-04-29T18:42:59.925483+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "orders", "status": "ok", "message": "Navigated to Orders container via Reports entry", "final_url": "https://subs.quickdrycleaning.com/a817/App/Reports/OrderReport?ClearContent=4-3-2026%200:12:24", "nav_selector": "#achrOrderReport", "locator_strategy": "reports_nav_selector", "attempt": 1, "ts": "2026-04-29T18:42:59.925610+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "orders", "status": "ok", "message": "Report container ready; iframe attached", "final_url": "https://subs.quickdrycleaning.com/a668/App/Reports/OrderReport?ClearContent=4-3-2026%200:12:24", "page_title": "Quick DryCleaners", "iframe_src_hostname": "reports.quickdrycleaning.com", "iframe_src_prefix": "https://reports.quickdrycleaning.com/en/order-report?token=eyJhb", "iframe_src_length": 751, "iframe_attached": true, "ts": "2026-04-29T18:42:59.979733+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "api", "status": "ok", "message": "auth_source_fast_path", "iframe_src_hostname": "reports.quickdrycleaning.com", "ts": "2026-04-29T18:42:59.979965+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "api", "status": "ok", "message": "Prepared API client from per-store session artifact", "storage_state": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/profiles/A668_storage_state.json", "artifact_has_cookies": true, "artifact_has_origins": true, "source_mode": "api_only", "context_source": "iframe", "ts": "2026-04-29T18:42:59.982727+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "orders", "status": "ok", "message": "Report container ready; iframe attached", "final_url": "https://subs.quickdrycleaning.com/a817/App/Reports/OrderReport?ClearContent=4-3-2026%200:12:24", "page_title": "Quick DryCleaners", "iframe_src_hostname": "reports.quickdrycleaning.com", "iframe_src_prefix": "https://reports.quickdrycleaning.com/en/order-report?token=eyJhb", "iframe_src_length": 751, "iframe_attached": true, "ts": "2026-04-29T18:43:00.067241+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "api", "status": "ok", "message": "auth_source_fast_path", "iframe_src_hostname": "reports.quickdrycleaning.com", "ts": "2026-04-29T18:43:00.067386+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "api", "status": "ok", "message": "Prepared API client from per-store session artifact", "storage_state": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/profiles/A817_storage_state.json", "artifact_has_cookies": true, "artifact_has_origins": true, "source_mode": "api_only", "context_source": "iframe", "ts": "2026-04-29T18:43:00.068318+00:00"}
+garments_fetch_completeness
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "api", "status": "ok", "message": "Persisted TD API artifacts", "source_mode": "api_only", "context_source": "iframe", "artifact_dir": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data", "artifact_paths": {"orders_raw": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A817_td_api_orders_20260428_20260430.json", "sales_raw": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A817_td_api_sales_20260428_20260430.json", "garments_raw": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A817_td_api_garments_20260428_20260430.json", "orders_excel": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A817_td_api_orders_20260428_20260430.xlsx", "sales_excel": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A817_td_api_sales_20260428_20260430.xlsx", "garments_excel": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A817_td_api_garments_20260428_20260430.xlsx"}, "human_readable_export_enabled": true, "human_readable_artifact_paths": ["/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A817_td_api_orders_20260428_20260430.xlsx", "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A817_td_api_sales_20260428_20260430.xlsx", "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A817_td_api_garments_20260428_20260430.xlsx"], "warnings": [], "ts": "2026-04-29T18:43:02.489298+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "api", "status": "ok", "message": "Fetched TD API reports", "source_mode": "api_only", "context_source": "iframe", "orders_cookie_shape_attempted": false, "orders_cookie_shape_success": false, "orders_cookie_shape_failure_reason": null, "orders_cookie_shape_fallback_used": false, "orders_cookie_shape_runtime_delta_ms": null, "orders_rows": 17, "sales_rows": 30, "garments_rows": 112, "orders_summary_rows_filtered": 1, "sales_summary_rows_filtered": 1, "endpoint_errors": {}, "endpoint_error_diagnostics": {"present": false, "endpoint_count": 0}, "ts": "2026-04-29T18:43:02.489458+00:00"}
+garments_fetch_completeness
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "api", "status": "ok", "message": "Persisted TD API artifacts", "source_mode": "api_only", "context_source": "iframe", "artifact_dir": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data", "artifact_paths": {"orders_raw": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A668_td_api_orders_20260428_20260430.json", "sales_raw": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A668_td_api_sales_20260428_20260430.json", "garments_raw": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A668_td_api_garments_20260428_20260430.json", "orders_excel": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A668_td_api_orders_20260428_20260430.xlsx", "sales_excel": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A668_td_api_sales_20260428_20260430.xlsx", "garments_excel": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A668_td_api_garments_20260428_20260430.xlsx"}, "human_readable_export_enabled": true, "human_readable_artifact_paths": ["/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A668_td_api_orders_20260428_20260430.xlsx", "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A668_td_api_sales_20260428_20260430.xlsx", "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A668_td_api_garments_20260428_20260430.xlsx"], "warnings": [], "ts": "2026-04-29T18:43:02.703337+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "api", "status": "ok", "message": "Fetched TD API reports", "source_mode": "api_only", "context_source": "iframe", "orders_cookie_shape_attempted": false, "orders_cookie_shape_success": false, "orders_cookie_shape_failure_reason": null, "orders_cookie_shape_fallback_used": false, "orders_cookie_shape_runtime_delta_ms": null, "orders_rows": 17, "sales_rows": 8, "garments_rows": 176, "orders_summary_rows_filtered": 1, "sales_summary_rows_filtered": 1, "endpoint_errors": {}, "endpoint_error_diagnostics": {"present": false, "endpoint_count": 0}, "ts": "2026-04-29T18:43:02.703467+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "ingest", "status": "ok", "message": "TD API Orders rows ingested", "source_mode": "api_only", "staging_rows": 17, "final_rows": 17, "phone_fallback_rows": 0, "phone_fallback_unique_values": 0, "phone_fallback_top_invalid_values": [], "ts": "2026-04-29T18:43:02.955696+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "ingest", "status": "ok", "message": "TD API Orders rows ingested", "source_mode": "api_only", "staging_rows": 17, "final_rows": 17, "phone_fallback_rows": 0, "phone_fallback_unique_values": 0, "phone_fallback_top_invalid_values": [], "ts": "2026-04-29T18:43:02.965403+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "sales_ingest", "status": "ok", "message": "TD API Sales rows ingested", "source_mode": "api_only", "staging_rows": 8, "final_rows": 8, "phone_fallback_rows": 0, "phone_fallback_unique_values": 0, "phone_fallback_top_invalid_values": [], "ts": "2026-04-29T18:43:03.066419+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "window_summary", "status": "warning", "message": "TD garments per-store run summary", "garments_budget_state": "within_budget", "garments_fetch_completeness": "incomplete", "garments_final_row_count": 176, "ts": "2026-04-29T18:43:03.066605+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "orders_sync_log", "status": "ok", "message": "Resolved TD outcome dimensions for orders sync log update", "data_source_decision": "api_primary", "data_ingest_status": "success", "ingest_status": "success", "observability_warnings": ["garments_data_risk: incomplete fetch under budget pressure"], "failure_stage": null, "ts": "2026-04-29T18:43:03.066727+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "compare", "status": "ok", "message": "Filtered non-order summary rows before verdict computation", "orders_ui_summary_rows_filtered": 0, "orders_api_summary_rows_filtered": 0, "sales_ui_summary_rows_filtered": 0, "sales_api_summary_rows_filtered": 0, "ts": "2026-04-29T18:43:03.071465+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "compare", "status": "ok", "message": "TD UI/API row-count verification", "window_start": "2026-04-28", "window_end": "2026-04-30", "source_mode": "api_only", "orders_rows_for_compare": 17, "orders_warning_rows": 0, "sales_rows_for_compare": 8, "sales_warning_rows": 0, "orders_api_rows": 17, "sales_api_rows": 8, "garments_api_rows": 176, "ts": "2026-04-29T18:43:03.071554+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "compare", "status": "ok", "message": "TD UI/API compare metrics", "window_start": "2026-04-28", "window_end": "2026-04-30", "source_mode": "api_only", "compare_metrics": {"total_rows": 17, "matched_rows": 17, "missing_in_api": 0, "missing_in_ui": 0, "amount_mismatches": 0, "status_mismatches": 0, "dataset_health": {"ready": true, "degraded_reason": null, "endpoint_error": null, "endpoint_success": true, "endpoint_final_error_class": null, "endpoint_attempts": 1, "pages_fetched": 1, "reported_total_pages": null, "total_rows": 18, "reported_total_rows": 17}}, "sales_compare_metrics": {"total_rows": 8, "matched_rows": 8, "missing_in_api": 0, "missing_in_ui": 0, "amount_mismatches": 0, "status_mismatches": 0, "dataset_health": {"ready": true, "degraded_reason": null, "endpoint_error": null, "endpoint_success": true, "endpoint_final_error_class": null, "endpoint_attempts": 1, "pages_fetched": 1, "reported_total_pages": null, "total_rows": 9, "reported_total_rows": 8}}, "endpoint_health_summary": {"orders": {"ready": true, "degraded_reason": null, "endpoint_error": null, "endpoint_success": true, "endpoint_final_error_class": null, "endpoint_attempts": 1, "pages_fetched": 1, "reported_total_pages": null, "total_rows": 18, "reported_total_rows": 17}, "sales": {"ready": true, "degraded_reason": null, "endpoint_error": null, "endpoint_success": true, "endpoint_final_error_class": null, "endpoint_attempts": 1, "pages_fetched": 1, "reported_total_pages": null, "total_rows": 9, "reported_total_rows": 8}}, "endpoint_failure_summary": {"orders": null, "sales": null, "garments": null}, "endpoint_errors": {}, "endpoint_error_diagnostics": {"present": false, "endpoint_count": 0}, "orders_api_health": {"ready": true, "degraded_reason": null, "endpoint_error": null, "endpoint_success": true, "endpoint_final_error_class": null, "endpoint_attempts": 1, "pages_fetched": 1, "reported_total_pages": null, "total_rows": 18, "reported_total_rows": 17}, "sales_api_health": {"ready": true, "degraded_reason": null, "endpoint_error": null, "endpoint_success": true, "endpoint_final_error_class": null, "endpoint_attempts": 1, "pages_fetched": 1, "reported_total_pages": null, "total_rows": 9, "reported_total_rows": 8}, "api_request_metadata": {"request_count": 4}, "auth_diagnostics": {"token_found": false, "token_source": null, "cookies_found": true}, "ts": "2026-04-29T18:43:03.071683+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "sales_ingest", "status": "ok", "message": "TD API Sales rows ingested", "source_mode": "api_only", "staging_rows": 30, "final_rows": 30, "phone_fallback_rows": 0, "phone_fallback_unique_values": 0, "phone_fallback_top_invalid_values": [], "ts": "2026-04-29T18:43:03.268271+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "window_summary", "status": "warning", "message": "TD garments per-store run summary", "garments_budget_state": "within_budget", "garments_fetch_completeness": "incomplete", "garments_final_row_count": 112, "ts": "2026-04-29T18:43:03.268442+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "orders_sync_log", "status": "ok", "message": "Resolved TD outcome dimensions for orders sync log update", "data_source_decision": "api_primary", "data_ingest_status": "success", "ingest_status": "success", "observability_warnings": ["garments_data_risk: incomplete fetch under budget pressure"], "failure_stage": null, "ts": "2026-04-29T18:43:03.268548+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "compare", "status": "ok", "message": "Filtered non-order summary rows before verdict computation", "orders_ui_summary_rows_filtered": 0, "orders_api_summary_rows_filtered": 0, "sales_ui_summary_rows_filtered": 0, "sales_api_summary_rows_filtered": 0, "ts": "2026-04-29T18:43:03.276932+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "compare", "status": "ok", "message": "TD UI/API row-count verification", "window_start": "2026-04-28", "window_end": "2026-04-30", "source_mode": "api_only", "orders_rows_for_compare": 17, "orders_warning_rows": 0, "sales_rows_for_compare": 30, "sales_warning_rows": 0, "orders_api_rows": 17, "sales_api_rows": 30, "garments_api_rows": 112, "ts": "2026-04-29T18:43:03.277027+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "compare", "status": "ok", "message": "TD UI/API compare metrics", "window_start": "2026-04-28", "window_end": "2026-04-30", "source_mode": "api_only", "compare_metrics": {"total_rows": 17, "matched_rows": 17, "missing_in_api": 0, "missing_in_ui": 0, "amount_mismatches": 0, "status_mismatches": 0, "dataset_health": {"ready": true, "degraded_reason": null, "endpoint_error": null, "endpoint_success": true, "endpoint_final_error_class": null, "endpoint_attempts": 1, "pages_fetched": 1, "reported_total_pages": null, "total_rows": 18, "reported_total_rows": 17}}, "sales_compare_metrics": {"total_rows": 30, "matched_rows": 30, "missing_in_api": 0, "missing_in_ui": 0, "amount_mismatches": 0, "status_mismatches": 0, "dataset_health": {"ready": true, "degraded_reason": null, "endpoint_error": null, "endpoint_success": true, "endpoint_final_error_class": null, "endpoint_attempts": 1, "pages_fetched": 1, "reported_total_pages": null, "total_rows": 31, "reported_total_rows": 30}}, "endpoint_health_summary": {"orders": {"ready": true, "degraded_reason": null, "endpoint_error": null, "endpoint_success": true, "endpoint_final_error_class": null, "endpoint_attempts": 1, "pages_fetched": 1, "reported_total_pages": null, "total_rows": 18, "reported_total_rows": 17}, "sales": {"ready": true, "degraded_reason": null, "endpoint_error": null, "endpoint_success": true, "endpoint_final_error_class": null, "endpoint_attempts": 1, "pages_fetched": 1, "reported_total_pages": null, "total_rows": 31, "reported_total_rows": 30}}, "endpoint_failure_summary": {"orders": null, "sales": null, "garments": null}, "endpoint_errors": {}, "endpoint_error_diagnostics": {"present": false, "endpoint_count": 0}, "orders_api_health": {"ready": true, "degraded_reason": null, "endpoint_error": null, "endpoint_success": true, "endpoint_final_error_class": null, "endpoint_attempts": 1, "pages_fetched": 1, "reported_total_pages": null, "total_rows": 18, "reported_total_rows": 17}, "sales_api_health": {"ready": true, "degraded_reason": null, "endpoint_error": null, "endpoint_success": true, "endpoint_final_error_class": null, "endpoint_attempts": 1, "pages_fetched": 1, "reported_total_pages": null, "total_rows": 31, "reported_total_rows": 30}, "api_request_metadata": {"request_count": 4}, "auth_diagnostics": {"token_found": false, "token_source": null, "cookies_found": true}, "ts": "2026-04-29T18:43:03.277137+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "garment_ingest", "status": "ok", "message": "TD garment sync completed", "row_count": 112, "source_id_duplicates": 0, "metric_definition": "Counts unexpected duplicate occurrences of non-empty source IDs (api_line_item_id/api_garment_id); repeated same-item orders without source IDs are not counted.", "changed_rows": 0, "late_updates": 0, "orphan_rows": 0, "ts": "2026-04-29T18:43:03.903452+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "garment_ingest", "status": "ok", "message": "TD garments endpoint health summary", "garments_health": {"pages_attempted": 1, "timeout_count": 0, "retry_success_count": 0, "final_row_count": 112, "orphan_rows": 0}, "ts": "2026-04-29T18:43:03.903562+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "window_summary", "status": "ok", "message": "TD store summary", "from_date": "2026-04-28", "to_date": "2026-04-30", "orders_downloaded_path": null, "sales_downloaded_path": null, "orders_staging_rows": 17, "orders_final_rows": 17, "sales_staging_rows": 30, "sales_final_rows": 30, "orders_ingest_status": "success", "sales_ingest_status": "success", "orders_ingested_rows": 17, "sales_ingested_rows": 30, "final_status": "success", "source_mode": "api_only", "data_source_decision": "api_primary", "data_ingest_status": "success", "ingest_status": "success", "compare_status": "pass", "observability_warnings": ["garments_data_risk: incomplete fetch under budget pressure"], "durations_ms": {"store_execution_ms": 51300}, "failure_stage": null, "ts": "2026-04-29T18:43:03.955488+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "store_code": "A817", "phase": "store", "status": "warning", "message": "TD store worker complete", "queue_wait_ms": 0, "duration_ms": 51380, "store_outcome": "success", "warning_count": 1, "ts": "2026-04-29T18:43:04.025442+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "garment_ingest", "status": "ok", "message": "TD garment sync completed", "row_count": 176, "source_id_duplicates": 0, "metric_definition": "Counts unexpected duplicate occurrences of non-empty source IDs (api_line_item_id/api_garment_id); repeated same-item orders without source IDs are not counted.", "changed_rows": 0, "late_updates": 0, "orphan_rows": 0, "ts": "2026-04-29T18:43:04.414660+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "garment_ingest", "status": "ok", "message": "TD garments endpoint health summary", "garments_health": {"pages_attempted": 1, "timeout_count": 0, "retry_success_count": 0, "final_row_count": 176, "orphan_rows": 0}, "ts": "2026-04-29T18:43:04.414791+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "window_summary", "status": "ok", "message": "TD store summary", "from_date": "2026-04-28", "to_date": "2026-04-30", "orders_downloaded_path": null, "sales_downloaded_path": null, "orders_staging_rows": 17, "orders_final_rows": 17, "sales_staging_rows": 8, "sales_final_rows": 8, "orders_ingest_status": "success", "sales_ingest_status": "success", "orders_ingested_rows": 17, "sales_ingested_rows": 8, "final_status": "success", "source_mode": "api_only", "data_source_decision": "api_primary", "data_ingest_status": "success", "ingest_status": "success", "compare_status": "pass", "observability_warnings": ["garments_data_risk: incomplete fetch under budget pressure"], "durations_ms": {"store_execution_ms": 51745}, "failure_stage": null, "ts": "2026-04-29T18:43:04.419304+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "store_code": "A668", "phase": "store", "status": "warning", "message": "TD store worker complete", "queue_wait_ms": 0, "duration_ms": 51815, "store_outcome": "success", "warning_count": 1, "ts": "2026-04-29T18:43:04.483329+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "phase": "notifications", "status": "ok", "message": "TD orders sync discovery flow complete; notifying", "run_env": "production", "ts": "2026-04-29T18:43:05.021542+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "phase": "reconciliation", "status": "ok", "message": "Skipping TD shadow readiness reconciliation artifact persistence", "ts": "2026-04-29T18:43:05.025861+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "phase": "notifications", "status": "ok", "message": "TD orders sync discovery flow complete; notifying", "run_env": "production", "ts": "2026-04-29T18:43:05.027360+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "phase": "reconciliation", "status": "ok", "message": "Skipping TD shadow readiness reconciliation artifact persistence", "ts": "2026-04-29T18:43:05.030877+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "phase": "run_summary", "status": "ok", "message": "Run summary updated", "overall_status": "success", "ts": "2026-04-29T18:43:05.065113+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "phase": "run_summary", "status": "ok", "message": "Run summary updated", "overall_status": "success", "ts": "2026-04-29T18:43:05.069456+00:00"}
+{"run_id": "20260429_184210779213_A817_001", "phase": "notifications", "status": "ok", "message": "TD orders sync notification summary", "run_env": "production", "emails_planned": 1, "emails_sent": 1, "notification_errors": [], "ts": "2026-04-29T18:43:14.269142+00:00"}
+{"run_id": "20260429_184210779213_A668_001", "phase": "notifications", "status": "ok", "message": "TD orders sync notification summary", "run_env": "production", "emails_planned": 1, "emails_sent": 1, "notification_errors": [], "ts": "2026-04-29T18:43:23.287731+00:00"}
+{"run_id": "20260429_184210779213", "phase": "window_result", "status": "ok", "message": "Window completed", "store_code": "A817", "pipeline_name": "td_orders_sync", "window_run_id": "20260429_184210779213_A817_001", "window_index": 1, "from_date": "2026-04-28", "to_date": "2026-04-30", "window_status": "success", "status_note": null, "error_message": null, "download_paths": {"orders": {"download_path": null, "filenames": ["A817_td_orders_20260428_20260430.xlsx"]}, "sales": {"download_path": null, "filenames": ["A817_td_sales_20260428_20260430.xlsx"]}}, "ingestion_counts": {"primary": {"rows_downloaded": 17, "final_updated": null, "rows_ingested": 17, "staging_updated": null, "staging_rows": 17, "final_inserted": null, "final_rows": 17, "staging_inserted": null}, "secondary": {"rows_downloaded": 30, "final_updated": null, "rows_ingested": 30, "staging_updated": null, "staging_rows": 30, "final_inserted": null, "final_rows": 30, "staging_inserted": null}}, "primary_metrics": {"primary_rows_downloaded": 17, "primary_rows_ingested": 17, "primary_staging_rows": 17, "primary_staging_inserted": null, "primary_staging_updated": null, "primary_final_inserted": null, "primary_final_updated": null, "primary_final_rows": 17}, "secondary_metrics": {"secondary_rows_downloaded": 30, "secondary_rows_ingested": 30, "secondary_staging_rows": 30, "secondary_staging_inserted": null, "secondary_staging_updated": null, "secondary_final_inserted": null, "secondary_final_updated": null, "secondary_final_rows": 30}, "ts": "2026-04-29T18:43:23.297447+00:00"}
+{"run_id": "20260429_184210779213", "phase": "window_result", "status": "ok", "message": "Window completed", "store_code": "A668", "pipeline_name": "td_orders_sync", "window_run_id": "20260429_184210779213_A668_001", "window_index": 1, "from_date": "2026-04-28", "to_date": "2026-04-30", "window_status": "success", "status_note": null, "error_message": null, "download_paths": {"orders": {"download_path": null, "filenames": ["A668_td_orders_20260428_20260430.xlsx"]}, "sales": {"download_path": null, "filenames": ["A668_td_sales_20260428_20260430.xlsx"]}}, "ingestion_counts": {"primary": {"rows_downloaded": 17, "final_updated": null, "rows_ingested": 17, "staging_updated": null, "staging_rows": 17, "final_inserted": null, "final_rows": 17, "staging_inserted": null}, "secondary": {"rows_downloaded": 8, "final_updated": null, "rows_ingested": 8, "staging_updated": null, "staging_rows": 8, "final_inserted": null, "final_rows": 8, "staging_inserted": null}}, "primary_metrics": {"primary_rows_downloaded": 17, "primary_rows_ingested": 17, "primary_staging_rows": 17, "primary_staging_inserted": null, "primary_staging_updated": null, "primary_final_inserted": null, "primary_final_updated": null, "primary_final_rows": 17}, "secondary_metrics": {"secondary_rows_downloaded": 8, "secondary_rows_ingested": 8, "secondary_staging_rows": 8, "secondary_staging_inserted": null, "secondary_staging_updated": null, "secondary_final_inserted": null, "secondary_final_updated": null, "secondary_final_rows": 8}, "ts": "2026-04-29T18:43:23.299382+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "navigation", "status": "warning", "message": "Timed out waiting for home URL", "store_code": "UC610", "home_url": "https://store.ucleanlaundry.com/dashboard", "current_url": "https://storepanel.ucleanlaundry.com/dashboard", "source": "session", "ts": "2026-04-29T18:43:45.389363+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "navigation", "status": "ok", "message": "Home page ready", "store_code": "UC610", "home_url": "https://store.ucleanlaundry.com/dashboard", "selector": "nav", "current_url": "https://storepanel.ucleanlaundry.com/dashboard", "source": "session", "ts": "2026-04-29T18:43:45.425751+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "archive_api", "status": "ok", "message": "Resolved archive bearer token diagnostics", "store_code": "UC610", "token_source_type": "localStorage_direct_key", "token_length": 140, "ts": "2026-04-29T18:43:45.442017+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "archive_api", "status": "ok", "message": "Archive token key candidates detected in localStorage", "store_code": "UC610", "candidate_local_storage_keys": ["uclean_auth_token"], "ts": "2026-04-29T18:43:45.442146+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "navigation", "status": "warning", "message": "Timed out waiting for home URL", "store_code": "UC567", "home_url": "https://store.ucleanlaundry.com/dashboard", "current_url": "https://storepanel.ucleanlaundry.com/dashboard", "source": "session", "ts": "2026-04-29T18:43:46.214744+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "navigation", "status": "ok", "message": "Home page ready", "store_code": "UC567", "home_url": "https://store.ucleanlaundry.com/dashboard", "selector": "nav", "current_url": "https://storepanel.ucleanlaundry.com/dashboard", "source": "session", "ts": "2026-04-29T18:43:46.245410+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "archive_api", "status": "ok", "message": "Resolved archive bearer token diagnostics", "store_code": "UC567", "token_source_type": "localStorage_direct_key", "token_length": 140, "ts": "2026-04-29T18:43:46.270540+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "archive_api", "status": "ok", "message": "Archive token key candidates detected in localStorage", "store_code": "UC567", "candidate_local_storage_keys": ["uclean_auth_token"], "ts": "2026-04-29T18:43:46.270691+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "gst_api_extract", "status": "ok", "message": "GST API experimental extraction complete", "store_code": "UC610", "gst_rows": 6, "base_rows": 6, "order_detail_rows": 11, "payment_detail_rows": 9, "booking_lookup_hits": 6, "booking_lookup_misses": 0, "delivered_rows_scanned": 9, "delivered_rows_matched_gst": 0, "delivered_payment_rows_produced": 9, "gst_orders_without_payments": 6, "invoice_retry_count": 0, "skipped_order_counters": {}, "ts": "2026-04-29T18:43:48.224837+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "gst_api_extract", "status": "ok", "message": "GST lifecycle extraction files generated", "store_code": "UC610", "gst_file": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC610_uc_gst_20260428_20260430.xlsx", "gst_base_order_info_file": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC610-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC610_001_attempt1.xlsx", "gst_order_details_file": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC610-uc_gst-order_details_20260428_20260430_20260429_184210779213_UC610_001_attempt1.xlsx", "gst_payment_details_file": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC610-uc_gst-payment_details_20260428_20260430_20260429_184210779213_UC610_001_attempt1.xlsx", "gst_rows": 6, "base_rows": 6, "order_detail_rows": 11, "payment_detail_rows": 9, "ts": "2026-04-29T18:43:48.254648+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "download", "status": "ok", "message": "Using GST API extracted output", "store_code": "UC610", "download_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC610_uc_gst_20260428_20260430.xlsx", "row_count": 6, "ts": "2026-04-29T18:43:48.254800+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "ingest", "status": "ok", "message": "GST ingest completed", "store_code": "UC610", "staging_rows": 6, "final_rows": 6, "staging_inserted": 0, "staging_updated": 6, "final_inserted": 0, "final_updated": 6, "ts": "2026-04-29T18:43:48.369225+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "navigation", "status": "ok", "message": "Navigating to Archive Orders", "store_code": "UC610", "current_url": "https://storepanel.ucleanlaundry.com/dashboard", "ts": "2026-04-29T18:43:48.369335+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "navigation", "status": "ok", "message": "Navigating to Archive Orders via direct URL", "store_code": "UC610", "target_url": "https://store.ucleanlaundry.com/archive", "ts": "2026-04-29T18:43:48.369394+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "navigation", "status": "ok", "message": "Archive Orders URL confirmed", "store_code": "UC610", "current_url": "https://storepanel.ucleanlaundry.com/dashboard", "ts": "2026-04-29T18:43:49.196384+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "archive_api_extract", "status": "info", "message": "Archive API extraction execution retired; using GST-derived staging feed", "store_code": "UC610", "ts": "2026-04-29T18:43:49.196577+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "archive_ingest", "status": "ok", "message": "uc_archive_ingest_from_gst_staging_feed", "base_file": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC610-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC610_001_attempt1.xlsx", "order_details_file": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC610-uc_gst-order_details_20260428_20260430_20260429_184210779213_UC610_001_attempt1.xlsx", "payment_details_file": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC610-uc_gst-payment_details_20260428_20260430_20260429_184210779213_UC610_001_attempt1.xlsx", "ts": "2026-04-29T18:43:49.247962+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "archive_ingest", "status": "info", "message": "UC archive ingest completed from GST-centric staging feed", "store_code": "UC610", "files": {"base": {"parsed": 6, "inserted": 0, "updated": 6, "rejected": 0, "warnings": 0, "reject_reasons": {}, "warning_breakdown": {}, "warning_samples": {}, "warning_samples_truncated": false, "warning_samples_total_available": 0}, "order_details": {"parsed": 11, "inserted": 0, "updated": 11, "rejected": 0, "warnings": 0, "reject_reasons": {}, "warning_breakdown": {}, "warning_samples": {}, "warning_samples_truncated": false, "warning_samples_total_available": 0}, "payment_details": {"parsed": 9, "inserted": 0, "updated": 9, "rejected": 0, "warnings": 0, "reject_reasons": {}, "warning_breakdown": {}, "warning_samples": {}, "warning_samples_truncated": false, "warning_samples_total_available": 0}}, "rejects": 0, "ts": "2026-04-29T18:43:49.355560+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "gst_publish_orders", "status": "info", "message": "UC archive order-details publish completed", "store_code": "UC610", "metrics": {"inserted": 0, "updated": 6, "skipped": 0, "warnings": 0, "reason_codes": {}}, "ts": "2026-04-29T18:43:49.383427+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "gst_publish_order_line_items", "status": "info", "message": "UC archive order-details line-item publish completed", "store_code": "UC610", "metrics": {"inserted": 0, "updated": 11, "skipped": 0, "warnings": 0, "reason_codes": {}, "line_item_serial_validation": {"scoped_rows": 11, "orders_with_min_order_id_not_1": 0, "orders_with_duplicate_order_number_order_id": 0, "single_line_orders_with_order_id_not_1": 0, "sample_limit": 5, "samples": {"min_order_id_not_1": [], "duplicate_order_number_order_id": [], "max_order_id_outliers": [{"order_number": "UC610-1306", "max_order_id": 5, "min_order_id": 1, "line_count": 5}, {"order_number": "UC610-1311", "max_order_id": 2, "min_order_id": 1, "line_count": 2}, {"order_number": "UC610-1307", "max_order_id": 1, "min_order_id": 1, "line_count": 1}, {"order_number": "UC610-1308", "max_order_id": 1, "min_order_id": 1, "line_count": 1}, {"order_number": "UC610-1309", "max_order_id": 1, "min_order_id": 1, "line_count": 1}]}}}, "ts": "2026-04-29T18:43:49.707114+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "gst_publish_sales", "status": "info", "message": "UC archive payment publish completed", "store_code": "UC610", "metrics": {"inserted": 0, "updated": 9, "skipped": 0, "warnings": 0, "reason_codes": {}, "publish_parent_match_rate": 1.0, "missing_parent_count": 0, "preflight_warning": null, "preflight_diagnostics": {"total_archive_payment_keys": 9, "matched_parent_keys": 9, "missing_parent_keys": 0, "coverage": 1.0, "sample_missing_keys": [], "sample_parent_lookup_keys_not_in_archive_payment_set": ["UC610:1226", "UC610:1227", "UC610:1242", "UC610:1246", "UC610:1290"], "parent_lookup_keys_not_in_archive_payment_set_count": 9, "sample_parent_lookup_keys_not_in_archive_payment_set_derivation": "sorted(parent_lookup_keys - archive_payment_keys)[:5]"}, "post_publish_verification": {"touched_rows": 9, "order_type_null_rows": 9, "customer_address_primary_rows": 9, "customer_address_fallback_rows": 0, "customer_address_null_or_blank_rows": 0}}, "ts": "2026-04-29T18:43:49.812204+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "store", "status": "ok", "message": "UC store discovery complete", "store_code": "UC610", "final_url": "https://storepanel.ucleanlaundry.com/dashboard", "ts": "2026-04-29T18:43:49.812568+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "window_result", "status": "ok", "message": "UC Archive Orders window completed", "store_code": "UC610", "from_date": "2026-04-28", "to_date": "2026-04-30", "window_status": "success", "status_note": null, "error_message": null, "attempt_no": 1, "download_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC610-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC610_001_attempt1.xlsx", "final_rows": 6, "rows_downloaded": 6, "unique_inserted": 0, "overlap_duplicates_updated": 6, "rows_skipped_invalid": 0, "rows_skipped_invalid_reasons": {}, "reason_codes": [], "footer_total": null, "pre_filter_footer_total": null, "footer_baseline_source": null, "footer_baseline_stable": false, "base_rows_extracted": 6, "rows_missing_estimate": null, "primary_metrics": {"primary_rows_downloaded": 6, "primary_rows_ingested": 6, "primary_staging_rows": 6, "primary_staging_inserted": 0, "primary_staging_updated": 6, "primary_final_inserted": 0, "primary_final_updated": 6}, "secondary_metrics": {"secondary_rows_downloaded": null, "secondary_rows_ingested": null, "secondary_staging_rows": null, "secondary_staging_inserted": null, "secondary_staging_updated": null, "secondary_final_inserted": null, "secondary_final_updated": null}, "ts": "2026-04-29T18:43:49.815064+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "uc_window", "status": "ok", "message": "UC Archive Orders window complete", "store_code": "UC610", "from_date": "2026-04-28", "to_date": "2026-04-30", "archive_download_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC610-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC610_001_attempt1.xlsx", "archive_rows": 6, "final_status": "success", "skip_reason": null, "attempt_no": 1, "ts": "2026-04-29T18:43:49.815176+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "notifications", "status": "ok", "message": "UC orders sync discovery flow complete; notifying", "run_env": "production", "ts": "2026-04-29T18:43:50.185571+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "run_summary", "status": "ok", "message": "Run summary updated", "overall_status": "success", "ts": "2026-04-29T18:43:50.201969+00:00"}
+{"run_id": "20260429_184210779213_UC610_001_attempt1", "phase": "notifications", "status": "ok", "message": "UC orders sync notification summary", "run_env": "production", "emails_planned": 1, "emails_sent": 1, "notification_errors": [], "ts": "2026-04-29T18:43:59.262302+00:00"}
+{"run_id": "20260429_184210779213", "phase": "window_result", "status": "ok", "message": "Window completed", "store_code": "UC610", "pipeline_name": "uc_orders_sync", "window_run_id": "20260429_184210779213_UC610_001", "window_index": 1, "from_date": "2026-04-28", "to_date": "2026-04-30", "window_status": "success", "status_note": null, "error_message": null, "download_paths": {"gst": {"download_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC610-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC610_001_attempt1.xlsx", "filenames": "UC610_uc_gst_20260428_20260430.xlsx"}}, "ingestion_counts": {"primary": {"rows_downloaded": 6, "final_updated": 6, "rows_ingested": 6, "staging_updated": 6, "staging_rows": 6, "final_inserted": 0, "final_rows": null, "staging_inserted": 0}, "secondary": {"rows_downloaded": null, "final_updated": null, "rows_ingested": null, "staging_updated": null, "staging_rows": null, "final_inserted": null, "final_rows": null, "label": "not applicable", "staging_inserted": null}, "gst": {"rows_downloaded": 6, "final_updated": null, "rows_ingested": null, "staging_updated": null, "staging_rows": null, "final_inserted": null, "final_rows": null, "staging_inserted": null}}, "primary_metrics": {"primary_rows_downloaded": 6, "primary_rows_ingested": 6, "primary_staging_rows": 6, "primary_staging_inserted": 0, "primary_staging_updated": 6, "primary_final_inserted": 0, "primary_final_updated": 6, "primary_final_rows": null}, "secondary_metrics": {"secondary_rows_downloaded": null, "secondary_rows_ingested": null, "secondary_staging_rows": null, "secondary_staging_inserted": null, "secondary_staging_updated": null, "secondary_final_inserted": null, "secondary_final_updated": null, "secondary_final_rows": null, "secondary_label": "not applicable"}, "ts": "2026-04-29T18:43:59.277845+00:00"}
+{"run_id": "20260429_184210779213", "phase": "uc_window_log", "status": "ok", "message": "UC window ingestion snapshot", "store_code": "UC610", "pipeline_name": "uc_orders_sync", "window_run_id": "20260429_184210779213_UC610_001", "window_index": 1, "from_date": "2026-04-28", "to_date": "2026-04-30", "window_status": "success", "download_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC610-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC610_001_attempt1.xlsx", "staging_rows": 6, "final_rows": 6, "warning_count": 0, "ingest_success": true, "ingest_failure_reason": null, "attempt_no": 1, "orders_sync_log_id": 638, "ts": "2026-04-29T18:43:59.278089+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "gst_api_extract", "status": "ok", "message": "GST API experimental extraction complete", "store_code": "UC567", "gst_rows": 13, "base_rows": 13, "order_detail_rows": 15, "payment_detail_rows": 11, "booking_lookup_hits": 13, "booking_lookup_misses": 0, "delivered_rows_scanned": 10, "delivered_rows_matched_gst": 2, "delivered_payment_rows_produced": 11, "gst_orders_without_payments": 11, "invoice_retry_count": 0, "skipped_order_counters": {}, "ts": "2026-04-29T18:43:59.352213+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "gst_api_extract", "status": "ok", "message": "GST lifecycle extraction files generated", "store_code": "UC567", "gst_file": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC567_uc_gst_20260428_20260430.xlsx", "gst_base_order_info_file": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC567-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC567_001_attempt1.xlsx", "gst_order_details_file": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC567-uc_gst-order_details_20260428_20260430_20260429_184210779213_UC567_001_attempt1.xlsx", "gst_payment_details_file": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC567-uc_gst-payment_details_20260428_20260430_20260429_184210779213_UC567_001_attempt1.xlsx", "gst_rows": 13, "base_rows": 13, "order_detail_rows": 15, "payment_detail_rows": 11, "ts": "2026-04-29T18:43:59.384424+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "download", "status": "ok", "message": "Using GST API extracted output", "store_code": "UC567", "download_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC567_uc_gst_20260428_20260430.xlsx", "row_count": 13, "ts": "2026-04-29T18:43:59.384543+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "ingest", "status": "ok", "message": "GST ingest completed", "store_code": "UC567", "staging_rows": 13, "final_rows": 13, "staging_inserted": 0, "staging_updated": 13, "final_inserted": 0, "final_updated": 13, "ts": "2026-04-29T18:43:59.474378+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "navigation", "status": "ok", "message": "Navigating to Archive Orders", "store_code": "UC567", "current_url": "https://storepanel.ucleanlaundry.com/dashboard", "ts": "2026-04-29T18:43:59.474494+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "navigation", "status": "ok", "message": "Navigating to Archive Orders via direct URL", "store_code": "UC567", "target_url": "https://store.ucleanlaundry.com/archive", "ts": "2026-04-29T18:43:59.474571+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "navigation", "status": "ok", "message": "Archive Orders URL confirmed", "store_code": "UC567", "current_url": "https://storepanel.ucleanlaundry.com/dashboard", "ts": "2026-04-29T18:44:00.167817+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "archive_api_extract", "status": "info", "message": "Archive API extraction execution retired; using GST-derived staging feed", "store_code": "UC567", "ts": "2026-04-29T18:44:00.168003+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "archive_ingest", "status": "ok", "message": "uc_archive_ingest_from_gst_staging_feed", "base_file": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC567-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC567_001_attempt1.xlsx", "order_details_file": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC567-uc_gst-order_details_20260428_20260430_20260429_184210779213_UC567_001_attempt1.xlsx", "payment_details_file": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC567-uc_gst-payment_details_20260428_20260430_20260429_184210779213_UC567_001_attempt1.xlsx", "ts": "2026-04-29T18:44:00.174706+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "archive_ingest", "status": "info", "message": "UC archive ingest completed from GST-centric staging feed", "store_code": "UC567", "files": {"base": {"parsed": 13, "inserted": 0, "updated": 13, "rejected": 0, "warnings": 2, "reject_reasons": {}, "warning_breakdown": {"normalization_applied": 2}, "warning_samples": {"normalization_applied": [{"warning_code": "status_normalized:UPI/Wallet App->UPI_WALLET_APP", "store_code": "UC567", "source_file": "UC567-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC567_001_attempt1.xlsx", "row_locator": "row:2"}, {"warning_code": "status_normalized:UPI/Wallet App->UPI_WALLET_APP", "store_code": "UC567", "source_file": "UC567-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC567_001_attempt1.xlsx", "row_locator": "row:4"}]}, "warning_samples_truncated": false, "warning_samples_total_available": 2}, "order_details": {"parsed": 15, "inserted": 0, "updated": 15, "rejected": 0, "warnings": 0, "reject_reasons": {}, "warning_breakdown": {}, "warning_samples": {}, "warning_samples_truncated": false, "warning_samples_total_available": 0}, "payment_details": {"parsed": 11, "inserted": 0, "updated": 11, "rejected": 0, "warnings": 0, "reject_reasons": {}, "warning_breakdown": {}, "warning_samples": {}, "warning_samples_truncated": false, "warning_samples_total_available": 0}}, "rejects": 0, "ts": "2026-04-29T18:44:00.347171+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "gst_publish_orders", "status": "info", "message": "UC archive order-details publish completed", "store_code": "UC567", "metrics": {"inserted": 0, "updated": 13, "skipped": 0, "warnings": 0, "reason_codes": {}}, "ts": "2026-04-29T18:44:00.378653+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "gst_publish_order_line_items", "status": "info", "message": "UC archive order-details line-item publish completed", "store_code": "UC567", "metrics": {"inserted": 0, "updated": 15, "skipped": 0, "warnings": 0, "reason_codes": {}, "line_item_serial_validation": {"scoped_rows": 15, "orders_with_min_order_id_not_1": 0, "orders_with_duplicate_order_number_order_id": 0, "single_line_orders_with_order_id_not_1": 0, "sample_limit": 5, "samples": {"min_order_id_not_1": [], "duplicate_order_number_order_id": [], "max_order_id_outliers": [{"order_number": "UC567-1703", "max_order_id": 2, "min_order_id": 1, "line_count": 2}, {"order_number": "UC567-1708", "max_order_id": 2, "min_order_id": 1, "line_count": 2}, {"order_number": "UC567-1700", "max_order_id": 1, "min_order_id": 1, "line_count": 1}, {"order_number": "UC567-1701", "max_order_id": 1, "min_order_id": 1, "line_count": 1}, {"order_number": "UC567-1702", "max_order_id": 1, "min_order_id": 1, "line_count": 1}]}}}, "ts": "2026-04-29T18:44:00.632491+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "gst_publish_sales", "status": "info", "message": "UC archive payment publish completed", "store_code": "UC567", "metrics": {"inserted": 0, "updated": 11, "skipped": 0, "warnings": 0, "reason_codes": {}, "publish_parent_match_rate": 1.0, "missing_parent_count": 0, "preflight_warning": null, "preflight_diagnostics": {"total_archive_payment_keys": 10, "matched_parent_keys": 10, "missing_parent_keys": 0, "coverage": 1.0, "sample_missing_keys": [], "sample_parent_lookup_keys_not_in_archive_payment_set": ["UC567:1686", "UC567:1689", "UC567:1690", "UC567:1693", "UC567:1694"], "parent_lookup_keys_not_in_archive_payment_set_count": 10, "sample_parent_lookup_keys_not_in_archive_payment_set_derivation": "sorted(parent_lookup_keys - archive_payment_keys)[:5]"}, "post_publish_verification": {"touched_rows": 10, "order_type_null_rows": 10, "customer_address_primary_rows": 10, "customer_address_fallback_rows": 0, "customer_address_null_or_blank_rows": 0}}, "ts": "2026-04-29T18:44:00.720451+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "store", "status": "ok", "message": "UC store discovery complete", "store_code": "UC567", "final_url": "https://storepanel.ucleanlaundry.com/dashboard", "ts": "2026-04-29T18:44:00.720717+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "window_result", "status": "ok", "message": "UC Archive Orders window completed", "store_code": "UC567", "from_date": "2026-04-28", "to_date": "2026-04-30", "window_status": "success", "status_note": null, "error_message": null, "attempt_no": 1, "download_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC567-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC567_001_attempt1.xlsx", "final_rows": 13, "rows_downloaded": 13, "unique_inserted": 0, "overlap_duplicates_updated": 13, "rows_skipped_invalid": 0, "rows_skipped_invalid_reasons": {}, "reason_codes": [], "footer_total": null, "pre_filter_footer_total": null, "footer_baseline_source": null, "footer_baseline_stable": false, "base_rows_extracted": 13, "rows_missing_estimate": null, "primary_metrics": {"primary_rows_downloaded": 13, "primary_rows_ingested": 13, "primary_staging_rows": 13, "primary_staging_inserted": 0, "primary_staging_updated": 13, "primary_final_inserted": 0, "primary_final_updated": 13}, "secondary_metrics": {"secondary_rows_downloaded": null, "secondary_rows_ingested": null, "secondary_staging_rows": null, "secondary_staging_inserted": null, "secondary_staging_updated": null, "secondary_final_inserted": null, "secondary_final_updated": null}, "ts": "2026-04-29T18:44:00.723554+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "uc_window", "status": "ok", "message": "UC Archive Orders window complete", "store_code": "UC567", "from_date": "2026-04-28", "to_date": "2026-04-30", "archive_download_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC567-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC567_001_attempt1.xlsx", "archive_rows": 13, "final_status": "success", "skip_reason": null, "attempt_no": 1, "ts": "2026-04-29T18:44:00.723672+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "notifications", "status": "ok", "message": "UC orders sync discovery flow complete; notifying", "run_env": "production", "ts": "2026-04-29T18:44:01.130335+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "run_summary", "status": "ok", "message": "Run summary updated", "overall_status": "success", "ts": "2026-04-29T18:44:01.153074+00:00"}
+{"run_id": "20260429_184210779213_UC567_001_attempt1", "phase": "notifications", "status": "ok", "message": "UC orders sync notification summary", "run_env": "production", "emails_planned": 1, "emails_sent": 1, "notification_errors": [], "ts": "2026-04-29T18:44:10.486895+00:00"}
+{"run_id": "20260429_184210779213", "phase": "window_result", "status": "ok", "message": "Window completed", "store_code": "UC567", "pipeline_name": "uc_orders_sync", "window_run_id": "20260429_184210779213_UC567_001", "window_index": 1, "from_date": "2026-04-28", "to_date": "2026-04-30", "window_status": "success", "status_note": null, "error_message": null, "download_paths": {"gst": {"download_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC567-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC567_001_attempt1.xlsx", "filenames": "UC567_uc_gst_20260428_20260430.xlsx"}}, "ingestion_counts": {"primary": {"rows_downloaded": 13, "final_updated": 13, "rows_ingested": 13, "staging_updated": 13, "staging_rows": 13, "final_inserted": 0, "final_rows": null, "staging_inserted": 0}, "secondary": {"rows_downloaded": null, "final_updated": null, "rows_ingested": null, "staging_updated": null, "staging_rows": null, "final_inserted": null, "final_rows": null, "label": "not applicable", "staging_inserted": null}, "gst": {"rows_downloaded": 13, "final_updated": null, "rows_ingested": null, "staging_updated": null, "staging_rows": null, "final_inserted": null, "final_rows": null, "staging_inserted": null}}, "primary_metrics": {"primary_rows_downloaded": 13, "primary_rows_ingested": 13, "primary_staging_rows": 13, "primary_staging_inserted": 0, "primary_staging_updated": 13, "primary_final_inserted": 0, "primary_final_updated": 13, "primary_final_rows": null}, "secondary_metrics": {"secondary_rows_downloaded": null, "secondary_rows_ingested": null, "secondary_staging_rows": null, "secondary_staging_inserted": null, "secondary_staging_updated": null, "secondary_final_inserted": null, "secondary_final_updated": null, "secondary_final_rows": null, "secondary_label": "not applicable"}, "ts": "2026-04-29T18:44:10.495559+00:00"}
+{"run_id": "20260429_184210779213", "phase": "uc_window_log", "status": "ok", "message": "UC window ingestion snapshot", "store_code": "UC567", "pipeline_name": "uc_orders_sync", "window_run_id": "20260429_184210779213_UC567_001", "window_index": 1, "from_date": "2026-04-28", "to_date": "2026-04-30", "window_status": "success", "download_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC567-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC567_001_attempt1.xlsx", "staging_rows": 13, "final_rows": 13, "warning_count": 2, "ingest_success": true, "ingest_failure_reason": null, "attempt_no": 1, "orders_sync_log_id": 635, "ts": "2026-04-29T18:44:10.495766+00:00"}
+{"run_id": "20260429_184210779213", "phase": "notifications", "status": "ok", "message": "Orders sync profiler notification summary", "run_env": "production", "emails_planned": 1, "emails_sent": 1, "notification_errors": [], "ts": "2026-04-29T18:44:19.827330+00:00"}
+{"run_id": "20260429_184210779213", "phase": "summary", "status": "ok", "message": "Orders sync profiler summary", "run_env": "production", "total_windows": 4, "status_counts": {"success": 4, "success_with_warnings": 0, "partial": 0, "failed": 0, "skipped": 0}, "pipeline_totals": {"TD": {"window_count": 2, "status_counts": {"success": 2, "success_with_warnings": 0, "partial": 0, "failed": 0, "skipped": 0}, "ingestion_totals": {"rows_downloaded": 0, "rows_ingested": 0, "staging_rows": 0, "final_rows": 0, "staging_inserted": 0, "staging_updated": 0, "final_inserted": 0, "final_updated": 0}}, "UC": {"window_count": 2, "status_counts": {"success": 2, "success_with_warnings": 0, "partial": 0, "failed": 0, "skipped": 0}, "ingestion_totals": {"rows_downloaded": 0, "rows_ingested": 0, "staging_rows": 0, "final_rows": 0, "staging_inserted": 0, "staging_updated": 0, "final_inserted": 0, "final_updated": 0}}}, "store_totals": {"A817": {"pipeline_group": "TD", "pipeline_name": "td_orders_sync", "cost_center": "KN3817", "overall_status": "success", "run_id": "20260429_184210779213_A817", "window_count": 1, "status_counts": {"success": 1, "success_with_warnings": 0, "partial": 0, "failed": 0, "skipped": 0}, "window_audit": [{"window_index": 1, "from_date": "2026-04-28", "to_date": "2026-04-30", "status": "success", "status_note": null, "status_conflict": false, "error_message": null, "download_paths": {"orders": {"download_path": null, "filenames": ["A817_td_orders_20260428_20260430.xlsx"]}, "sales": {"download_path": null, "filenames": ["A817_td_sales_20260428_20260430.xlsx"]}}, "ingestion_counts": {"primary": {"rows_downloaded": 17, "final_updated": null, "rows_ingested": 17, "staging_updated": null, "staging_rows": 17, "final_inserted": null, "final_rows": 17, "staging_inserted": null}, "secondary": {"rows_downloaded": 30, "final_updated": null, "rows_ingested": 30, "staging_updated": null, "staging_rows": 30, "final_inserted": null, "final_rows": 30, "staging_inserted": null}}, "ingestion_totals": {"rows_downloaded": 47, "rows_ingested": 47, "staging_rows": 47, "final_rows": 47, "staging_inserted": 0, "staging_updated": 0, "final_inserted": 0, "final_updated": 0}, "attempt_no": 1, "attempt_run_id": "20260429_184210779213_A817_001", "orders_sync_log_id": 636, "attempts": [{"attempt_no": 1, "attempt_run_id": "20260429_184210779213_A817_001", "status": "success", "status_note": null, "status_conflict": false, "error_message": null, "download_paths": {"orders": {"download_path": null, "filenames": ["A817_td_orders_20260428_20260430.xlsx"]}, "sales": {"download_path": null, "filenames": ["A817_td_sales_20260428_20260430.xlsx"]}}, "ingestion_counts": {"primary": {"rows_downloaded": 17, "final_updated": null, "rows_ingested": 17, "staging_updated": null, "staging_rows": 17, "final_inserted": null, "final_rows": 17, "staging_inserted": null}, "secondary": {"rows_downloaded": 30, "final_updated": null, "rows_ingested": 30, "staging_updated": null, "staging_rows": 30, "final_inserted": null, "final_rows": 30, "staging_inserted": null}}, "orders_sync_log_id": 636}], "warning_count": 0}], "ingestion_totals": {"rows_downloaded": 47, "rows_ingested": 47, "staging_rows": 47, "final_rows": 47, "staging_inserted": 0, "staging_updated": 0, "final_inserted": 0, "final_updated": 0}}, "A668": {"pipeline_group": "TD", "pipeline_name": "td_orders_sync", "cost_center": "UN3668", "overall_status": "success", "run_id": "20260429_184210779213_A668", "window_count": 1, "status_counts": {"success": 1, "success_with_warnings": 0, "partial": 0, "failed": 0, "skipped": 0}, "window_audit": [{"window_index": 1, "from_date": "2026-04-28", "to_date": "2026-04-30", "status": "success", "status_note": null, "status_conflict": false, "error_message": null, "download_paths": {"orders": {"download_path": null, "filenames": ["A668_td_orders_20260428_20260430.xlsx"]}, "sales": {"download_path": null, "filenames": ["A668_td_sales_20260428_20260430.xlsx"]}}, "ingestion_counts": {"primary": {"rows_downloaded": 17, "final_updated": null, "rows_ingested": 17, "staging_updated": null, "staging_rows": 17, "final_inserted": null, "final_rows": 17, "staging_inserted": null}, "secondary": {"rows_downloaded": 8, "final_updated": null, "rows_ingested": 8, "staging_updated": null, "staging_rows": 8, "final_inserted": null, "final_rows": 8, "staging_inserted": null}}, "ingestion_totals": {"rows_downloaded": 25, "rows_ingested": 25, "staging_rows": 25, "final_rows": 25, "staging_inserted": 0, "staging_updated": 0, "final_inserted": 0, "final_updated": 0}, "attempt_no": 1, "attempt_run_id": "20260429_184210779213_A668_001", "orders_sync_log_id": 637, "attempts": [{"attempt_no": 1, "attempt_run_id": "20260429_184210779213_A668_001", "status": "success", "status_note": null, "status_conflict": false, "error_message": null, "download_paths": {"orders": {"download_path": null, "filenames": ["A668_td_orders_20260428_20260430.xlsx"]}, "sales": {"download_path": null, "filenames": ["A668_td_sales_20260428_20260430.xlsx"]}}, "ingestion_counts": {"primary": {"rows_downloaded": 17, "final_updated": null, "rows_ingested": 17, "staging_updated": null, "staging_rows": 17, "final_inserted": null, "final_rows": 17, "staging_inserted": null}, "secondary": {"rows_downloaded": 8, "final_updated": null, "rows_ingested": 8, "staging_updated": null, "staging_rows": 8, "final_inserted": null, "final_rows": 8, "staging_inserted": null}}, "orders_sync_log_id": 637}], "warning_count": 0}], "ingestion_totals": {"rows_downloaded": 25, "rows_ingested": 25, "staging_rows": 25, "final_rows": 25, "staging_inserted": 0, "staging_updated": 0, "final_inserted": 0, "final_updated": 0}}, "UC567": {"pipeline_group": "UC", "pipeline_name": "uc_orders_sync", "cost_center": "SC3567", "overall_status": "success", "run_id": "20260429_184210779213_UC567", "window_count": 1, "status_counts": {"success": 1, "success_with_warnings": 0, "partial": 0, "failed": 0, "skipped": 0}, "window_audit": [{"window_index": 1, "from_date": "2026-04-28", "to_date": "2026-04-30", "status": "success", "status_note": null, "status_conflict": false, "error_message": null, "download_paths": {"gst": {"download_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC567-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC567_001_attempt1.xlsx", "filenames": "UC567_uc_gst_20260428_20260430.xlsx"}}, "ingestion_counts": {"primary": {"rows_downloaded": 13, "final_updated": 13, "rows_ingested": 13, "staging_updated": 13, "staging_rows": 13, "final_inserted": 0, "final_rows": null, "staging_inserted": 0}, "secondary": {"rows_downloaded": null, "final_updated": null, "rows_ingested": null, "staging_updated": null, "staging_rows": null, "final_inserted": null, "final_rows": null, "label": "not applicable", "staging_inserted": null}, "gst": {"rows_downloaded": 13, "final_updated": null, "rows_ingested": null, "staging_updated": null, "staging_rows": null, "final_inserted": null, "final_rows": null, "staging_inserted": null}}, "ingestion_totals": {"rows_downloaded": 13, "rows_ingested": 13, "staging_rows": 13, "final_rows": 0, "staging_inserted": 0, "staging_updated": 13, "final_inserted": 0, "final_updated": 13}, "attempt_no": 1, "attempt_run_id": "20260429_184210779213_UC567_001_attempt1", "orders_sync_log_id": 635, "attempts": [{"attempt_no": 1, "attempt_run_id": "20260429_184210779213_UC567_001_attempt1", "status": "success", "status_note": null, "status_conflict": false, "error_message": null, "download_paths": {"gst": {"download_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC567-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC567_001_attempt1.xlsx", "filenames": "UC567_uc_gst_20260428_20260430.xlsx"}}, "ingestion_counts": {"primary": {"rows_downloaded": 13, "final_updated": 13, "rows_ingested": 13, "staging_updated": 13, "staging_rows": 13, "final_inserted": 0, "final_rows": null, "staging_inserted": 0}, "secondary": {"rows_downloaded": null, "final_updated": null, "rows_ingested": null, "staging_updated": null, "staging_rows": null, "final_inserted": null, "final_rows": null, "label": "not applicable", "staging_inserted": null}, "gst": {"rows_downloaded": 13, "final_updated": null, "rows_ingested": null, "staging_updated": null, "staging_rows": null, "final_inserted": null, "final_rows": null, "staging_inserted": null}}, "orders_sync_log_id": 635}], "warning_count": 2}], "ingestion_totals": {"rows_downloaded": 13, "rows_ingested": 13, "staging_rows": 13, "final_rows": 0, "staging_inserted": 0, "staging_updated": 13, "final_inserted": 0, "final_updated": 13}}, "UC610": {"pipeline_group": "UC", "pipeline_name": "uc_orders_sync", "cost_center": "SL1610", "overall_status": "success", "run_id": "20260429_184210779213_UC610", "window_count": 1, "status_counts": {"success": 1, "success_with_warnings": 0, "partial": 0, "failed": 0, "skipped": 0}, "window_audit": [{"window_index": 1, "from_date": "2026-04-28", "to_date": "2026-04-30", "status": "success", "status_note": null, "status_conflict": false, "error_message": null, "download_paths": {"gst": {"download_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC610-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC610_001_attempt1.xlsx", "filenames": "UC610_uc_gst_20260428_20260430.xlsx"}}, "ingestion_counts": {"primary": {"rows_downloaded": 6, "final_updated": 6, "rows_ingested": 6, "staging_updated": 6, "staging_rows": 6, "final_inserted": 0, "final_rows": null, "staging_inserted": 0}, "secondary": {"rows_downloaded": null, "final_updated": null, "rows_ingested": null, "staging_updated": null, "staging_rows": null, "final_inserted": null, "final_rows": null, "label": "not applicable", "staging_inserted": null}, "gst": {"rows_downloaded": 6, "final_updated": null, "rows_ingested": null, "staging_updated": null, "staging_rows": null, "final_inserted": null, "final_rows": null, "staging_inserted": null}}, "ingestion_totals": {"rows_downloaded": 6, "rows_ingested": 6, "staging_rows": 6, "final_rows": 0, "staging_inserted": 0, "staging_updated": 6, "final_inserted": 0, "final_updated": 6}, "attempt_no": 1, "attempt_run_id": "20260429_184210779213_UC610_001_attempt1", "orders_sync_log_id": 638, "attempts": [{"attempt_no": 1, "attempt_run_id": "20260429_184210779213_UC610_001_attempt1", "status": "success", "status_note": null, "status_conflict": false, "error_message": null, "download_paths": {"gst": {"download_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/UC610-uc_gst-base_order_info_20260428_20260430_20260429_184210779213_UC610_001_attempt1.xlsx", "filenames": "UC610_uc_gst_20260428_20260430.xlsx"}}, "ingestion_counts": {"primary": {"rows_downloaded": 6, "final_updated": 6, "rows_ingested": 6, "staging_updated": 6, "staging_rows": 6, "final_inserted": 0, "final_rows": null, "staging_inserted": 0}, "secondary": {"rows_downloaded": null, "final_updated": null, "rows_ingested": null, "staging_updated": null, "staging_rows": null, "final_inserted": null, "final_rows": null, "label": "not applicable", "staging_inserted": null}, "gst": {"rows_downloaded": 6, "final_updated": null, "rows_ingested": null, "staging_updated": null, "staging_rows": null, "final_inserted": null, "final_rows": null, "staging_inserted": null}}, "orders_sync_log_id": 638}], "warning_count": 0}], "ingestion_totals": {"rows_downloaded": 6, "rows_ingested": 6, "staging_rows": 6, "final_rows": 0, "staging_inserted": 0, "staging_updated": 6, "final_inserted": 0, "final_updated": 6}}}, "store_window_counts": {"A817": 1, "A668": 1, "UC567": 1, "UC610": 1}, "missing_windows": null, "ingestion_grand_totals": {"rows_downloaded": 0, "rows_ingested": 0, "staging_rows": 0, "final_rows": 0, "staging_inserted": 0, "staging_updated": 0, "final_inserted": 0, "final_updated": 0}, "overall_status": "success", "ts": "2026-04-29T18:44:19.827552+00:00"}
+[2026-04-30 00:14:20 IST] Script 1: orders_sync_run_profiler: attempt 1/1 succeeded in 132s
+[2026-04-30 00:14:20 IST] ================================================================
+[2026-04-30 00:14:20 IST] Running Script 2: daily_sales_report
+[2026-04-30 00:14:20 IST] ================================================================
+[2026-04-30 00:14:20 IST] Command: ./scripts/run_local_reports_daily_sales.sh
+[2026-04-30 00:14:20 IST] Attempts configured: 3; retry_delay_seconds=10
+[2026-04-30 00:14:20 IST] Script 2: daily_sales_report: attempt 1/3 starting
+{"run_id": "20260429_184422867970", "phase": "logger", "status": "ok", "message": "Initialized JSON logger", "log_file_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/logs/simplify_downloader.jsonl", "log_file_source": "env:JSON_LOG_FILE", "ts": "2026-04-29T18:44:22.868406+00:00"}
+{"run_id": "20260429_184422867970", "phase": "orchestrator", "status": "ok", "message": "starting daily sales report pipeline", "report_date": "2026-04-30", "run_env": "prod", "force": true, "ts": "2026-04-29T18:44:22.868583+00:00"}
+{"run_id": "20260429_184422867970", "phase": "load_data", "status": "ok", "message": "daily sales report data loaded", "report_date": "2026-04-30", "rows": 4, "edited_orders": 0, "ts": "2026-04-29T18:44:23.134975+00:00"}
 Traceback (most recent call last):
   File "<frozen runpy>", line 198, in _run_module_as_main
   File "<frozen runpy>", line 88, in _run_code
   File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 139, in <module>
     raise SystemExit(main())
                      ^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 122, in main
-    from app.reports.pending_deliveries.main import main as pending_deliveries_main
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/pending_deliveries/main.py", line 8, in <module>
-    from .pipeline import run_pipeline
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/pending_deliveries/pipeline.py", line 9, in <module>
-    from app.config import config
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 474, in <module>
-    config = Config.load_from_env_and_db()
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 350, in load_from_env_and_db
-    env_values = _load_env_values()
-                 ^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 137, in _load_env_values
-    return {key: _require_env(key) for key in ENV_ONLY_KEYS}
-                 ^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 127, in _require_env
-    raise ConfigError(message)
-app.config.ConfigError: Missing required environment variable: SECRET_KEY
-[2026-04-29 23:23:32 IST] WARNING: Script 4: pending_deliveries: attempt 1/3 failed with exit_code=1 after 1s
-[2026-04-29 23:23:32 IST] Script 4: pending_deliveries: sleeping 10s before retry
-[2026-04-29 23:23:42 IST] Script 4: pending_deliveries: attempt 2/3 starting
-Missing required environment variable: SECRET_KEY
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 119, in main
+    daily_sales_report_main()
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/main.py", line 33, in main
+    run_pipeline(report_date=report_date, env=args.env, force=args.force)
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/pipeline.py", line 388, in run_pipeline
+    asyncio.run(_run(report_date, env, force))
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/runners.py", line 194, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/base_events.py", line 686, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/pipeline.py", line 207, in _run
+    mtd_rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/data.py", line 26, in fetch_mtd_same_day_fulfillment
+    orders = sa.Table("orders", metadata, autoload_with=engine)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 2, in __new__
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/deprecations.py", line 281, in warned
+    return fn(*args, **kwargs)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 429, in __new__
+    return cls._new(*args, **kw)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 483, in _new
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 479, in _new
+    table.__init__(name, metadata, *args, _no_init=False, **kw)  # type: ignore[misc] # noqa: E501
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 861, in __init__
+    self._autoload(
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 891, in _autoload
+    insp = inspection.inspect(autoload_with)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/inspection.py", line 140, in inspect
+    ret = reg(subject)
+          ^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 313, in _engine_insp
+    return Inspector._construct(Inspector._init_engine, bind)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 246, in _construct
+    init(self, bind)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 257, in _init_engine
+    engine.connect().close()
+    ^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3277, in connect
+    return self._connection_cls(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 143, in __init__
+    self._dbapi_connection = engine.raw_connection()
+                             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3301, in raw_connection
+    return self.pool.connect()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 447, in connect
+    return _ConnectionFairy._checkout(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 1264, in _checkout
+    fairy = _ConnectionRecord.checkout(pool)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 711, in checkout
+    rec = pool._do_get()
+          ^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/impl.py", line 177, in _do_get
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/impl.py", line 175, in _do_get
+    return self._create_connection()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 388, in _create_connection
+    return _ConnectionRecord(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 673, in __init__
+    self.__connect()
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 899, in __connect
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 895, in __connect
+    self.dbapi_connection = connection = pool._invoke_creator(self)
+                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/create.py", line 661, in connect
+    return dialect.connect(*cargs, **cparams)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 629, in connect
+    return self.loaded_dbapi.connect(*cargs, **cparams)  # type: ignore[no-any-return]  # NOQA: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 955, in connect
+    await_only(creator_fn(*arg, **kw)),
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 123, in await_only
+    raise exc.MissingGreenlet(
+sqlalchemy.exc.MissingGreenlet: greenlet_spawn has not been called; can't call await_only() here. Was IO attempted in an unexpected place? (Background on this error at: https://sqlalche.me/e/20/xd2s)
+[2026-04-30 00:14:23 IST] WARNING: Script 2: daily_sales_report: attempt 1/3 failed with exit_code=1 after 3s
+[2026-04-30 00:14:23 IST] Script 2: daily_sales_report: sleeping 10s before retry
+[2026-04-30 00:14:33 IST] Script 2: daily_sales_report: attempt 2/3 starting
+{"run_id": "20260429_184435053603", "phase": "logger", "status": "ok", "message": "Initialized JSON logger", "log_file_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/logs/simplify_downloader.jsonl", "log_file_source": "env:JSON_LOG_FILE", "ts": "2026-04-29T18:44:35.053975+00:00"}
+{"run_id": "20260429_184435053603", "phase": "orchestrator", "status": "ok", "message": "starting daily sales report pipeline", "report_date": "2026-04-30", "run_env": "prod", "force": true, "ts": "2026-04-29T18:44:35.054125+00:00"}
+{"run_id": "20260429_184435053603", "phase": "load_data", "status": "ok", "message": "daily sales report data loaded", "report_date": "2026-04-30", "rows": 4, "edited_orders": 0, "ts": "2026-04-29T18:44:35.308748+00:00"}
 Traceback (most recent call last):
   File "<frozen runpy>", line 198, in _run_module_as_main
   File "<frozen runpy>", line 88, in _run_code
   File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 139, in <module>
     raise SystemExit(main())
                      ^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 122, in main
-    from app.reports.pending_deliveries.main import main as pending_deliveries_main
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/pending_deliveries/main.py", line 8, in <module>
-    from .pipeline import run_pipeline
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/pending_deliveries/pipeline.py", line 9, in <module>
-    from app.config import config
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 474, in <module>
-    config = Config.load_from_env_and_db()
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 350, in load_from_env_and_db
-    env_values = _load_env_values()
-                 ^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 137, in _load_env_values
-    return {key: _require_env(key) for key in ENV_ONLY_KEYS}
-                 ^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 127, in _require_env
-    raise ConfigError(message)
-app.config.ConfigError: Missing required environment variable: SECRET_KEY
-[2026-04-29 23:23:44 IST] WARNING: Script 4: pending_deliveries: attempt 2/3 failed with exit_code=1 after 2s
-[2026-04-29 23:23:44 IST] Script 4: pending_deliveries: sleeping 10s before retry
-[2026-04-29 23:23:54 IST] Script 4: pending_deliveries: attempt 3/3 starting
-Missing required environment variable: SECRET_KEY
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 119, in main
+    daily_sales_report_main()
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/main.py", line 33, in main
+    run_pipeline(report_date=report_date, env=args.env, force=args.force)
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/pipeline.py", line 388, in run_pipeline
+    asyncio.run(_run(report_date, env, force))
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/runners.py", line 194, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/base_events.py", line 686, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/pipeline.py", line 207, in _run
+    mtd_rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/data.py", line 26, in fetch_mtd_same_day_fulfillment
+    orders = sa.Table("orders", metadata, autoload_with=engine)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 2, in __new__
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/deprecations.py", line 281, in warned
+    return fn(*args, **kwargs)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 429, in __new__
+    return cls._new(*args, **kw)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 483, in _new
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 479, in _new
+    table.__init__(name, metadata, *args, _no_init=False, **kw)  # type: ignore[misc] # noqa: E501
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 861, in __init__
+    self._autoload(
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 891, in _autoload
+    insp = inspection.inspect(autoload_with)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/inspection.py", line 140, in inspect
+    ret = reg(subject)
+          ^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 313, in _engine_insp
+    return Inspector._construct(Inspector._init_engine, bind)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 246, in _construct
+    init(self, bind)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 257, in _init_engine
+    engine.connect().close()
+    ^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3277, in connect
+    return self._connection_cls(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 143, in __init__
+    self._dbapi_connection = engine.raw_connection()
+                             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3301, in raw_connection
+    return self.pool.connect()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 447, in connect
+    return _ConnectionFairy._checkout(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 1264, in _checkout
+    fairy = _ConnectionRecord.checkout(pool)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 711, in checkout
+    rec = pool._do_get()
+          ^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/impl.py", line 177, in _do_get
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/impl.py", line 175, in _do_get
+    return self._create_connection()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 388, in _create_connection
+    return _ConnectionRecord(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 673, in __init__
+    self.__connect()
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 899, in __connect
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 895, in __connect
+    self.dbapi_connection = connection = pool._invoke_creator(self)
+                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/create.py", line 661, in connect
+    return dialect.connect(*cargs, **cparams)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 629, in connect
+    return self.loaded_dbapi.connect(*cargs, **cparams)  # type: ignore[no-any-return]  # NOQA: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 955, in connect
+    await_only(creator_fn(*arg, **kw)),
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 123, in await_only
+    raise exc.MissingGreenlet(
+sqlalchemy.exc.MissingGreenlet: greenlet_spawn has not been called; can't call await_only() here. Was IO attempted in an unexpected place? (Background on this error at: https://sqlalche.me/e/20/xd2s)
+[2026-04-30 00:14:35 IST] WARNING: Script 2: daily_sales_report: attempt 2/3 failed with exit_code=1 after 2s
+[2026-04-30 00:14:35 IST] Script 2: daily_sales_report: sleeping 10s before retry
+[2026-04-30 00:14:45 IST] Script 2: daily_sales_report: attempt 3/3 starting
+{"run_id": "20260429_184447135103", "phase": "logger", "status": "ok", "message": "Initialized JSON logger", "log_file_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/logs/simplify_downloader.jsonl", "log_file_source": "env:JSON_LOG_FILE", "ts": "2026-04-29T18:44:47.135460+00:00"}
+{"run_id": "20260429_184447135103", "phase": "orchestrator", "status": "ok", "message": "starting daily sales report pipeline", "report_date": "2026-04-30", "run_env": "prod", "force": true, "ts": "2026-04-29T18:44:47.135603+00:00"}
+{"run_id": "20260429_184447135103", "phase": "load_data", "status": "ok", "message": "daily sales report data loaded", "report_date": "2026-04-30", "rows": 4, "edited_orders": 0, "ts": "2026-04-29T18:44:47.389563+00:00"}
 Traceback (most recent call last):
   File "<frozen runpy>", line 198, in _run_module_as_main
   File "<frozen runpy>", line 88, in _run_code
   File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 139, in <module>
     raise SystemExit(main())
                      ^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 122, in main
-    from app.reports.pending_deliveries.main import main as pending_deliveries_main
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/pending_deliveries/main.py", line 8, in <module>
-    from .pipeline import run_pipeline
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/pending_deliveries/pipeline.py", line 9, in <module>
-    from app.config import config
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 474, in <module>
-    config = Config.load_from_env_and_db()
-             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 350, in load_from_env_and_db
-    env_values = _load_env_values()
-                 ^^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 137, in _load_env_values
-    return {key: _require_env(key) for key in ENV_ONLY_KEYS}
-                 ^^^^^^^^^^^^^^^^^
-  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/config.py", line 127, in _require_env
-    raise ConfigError(message)
-app.config.ConfigError: Missing required environment variable: SECRET_KEY
-[2026-04-29 23:23:55 IST] WARNING: Script 4: pending_deliveries: attempt 3/3 failed with exit_code=1 after 1s
-[2026-04-29 23:23:55 IST] ERROR: Script 4: pending_deliveries failed after 3 attempts
-[2026-04-29 23:23:55 IST] ================================================================
-[2026-04-29 23:23:55 IST] RUN STATUS SUMMARY
-[2026-04-29 23:23:55 IST] ================================================================
-[2026-04-29 23:23:55 IST] orders_sync_run_profiler_rc=1
-[2026-04-29 23:23:55 IST] daily_sales_report_rc=1
-[2026-04-29 23:23:55 IST] mtd_same_day_fulfillment_report_rc=1
-[2026-04-29 23:23:55 IST] pending_deliveries_rc=1
-[2026-04-29 23:23:55 IST] daily_sales_report_rescue_rc=0
-[2026-04-29 23:23:55 IST] total_duration_seconds=76
-[2026-04-29 23:23:55 IST] ERROR: All report pipelines failed (daily_sales_report_rc=1, mtd_same_day_fulfillment_report_rc=1, pending_deliveries_rc=1).
-[2026-04-29 23:23:55 IST] Run exiting with non-zero status=1 via trap=EXIT
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 119, in main
+    daily_sales_report_main()
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/main.py", line 33, in main
+    run_pipeline(report_date=report_date, env=args.env, force=args.force)
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/pipeline.py", line 388, in run_pipeline
+    asyncio.run(_run(report_date, env, force))
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/runners.py", line 194, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/base_events.py", line 686, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/pipeline.py", line 207, in _run
+    mtd_rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/data.py", line 26, in fetch_mtd_same_day_fulfillment
+    orders = sa.Table("orders", metadata, autoload_with=engine)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 2, in __new__
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/deprecations.py", line 281, in warned
+    return fn(*args, **kwargs)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 429, in __new__
+    return cls._new(*args, **kw)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 483, in _new
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 479, in _new
+    table.__init__(name, metadata, *args, _no_init=False, **kw)  # type: ignore[misc] # noqa: E501
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 861, in __init__
+    self._autoload(
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 891, in _autoload
+    insp = inspection.inspect(autoload_with)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/inspection.py", line 140, in inspect
+    ret = reg(subject)
+          ^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 313, in _engine_insp
+    return Inspector._construct(Inspector._init_engine, bind)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 246, in _construct
+    init(self, bind)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 257, in _init_engine
+    engine.connect().close()
+    ^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3277, in connect
+    return self._connection_cls(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 143, in __init__
+    self._dbapi_connection = engine.raw_connection()
+                             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3301, in raw_connection
+    return self.pool.connect()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 447, in connect
+    return _ConnectionFairy._checkout(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 1264, in _checkout
+    fairy = _ConnectionRecord.checkout(pool)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 711, in checkout
+    rec = pool._do_get()
+          ^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/impl.py", line 177, in _do_get
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/impl.py", line 175, in _do_get
+    return self._create_connection()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 388, in _create_connection
+    return _ConnectionRecord(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 673, in __init__
+    self.__connect()
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 899, in __connect
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 895, in __connect
+    self.dbapi_connection = connection = pool._invoke_creator(self)
+                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/create.py", line 661, in connect
+    return dialect.connect(*cargs, **cparams)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 629, in connect
+    return self.loaded_dbapi.connect(*cargs, **cparams)  # type: ignore[no-any-return]  # NOQA: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 955, in connect
+    await_only(creator_fn(*arg, **kw)),
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 123, in await_only
+    raise exc.MissingGreenlet(
+sqlalchemy.exc.MissingGreenlet: greenlet_spawn has not been called; can't call await_only() here. Was IO attempted in an unexpected place? (Background on this error at: https://sqlalche.me/e/20/xd2s)
+[2026-04-30 00:14:47 IST] WARNING: Script 2: daily_sales_report: attempt 3/3 failed with exit_code=1 after 2s
+[2026-04-30 00:14:47 IST] ERROR: Script 2: daily_sales_report failed after 3 attempts
+[2026-04-30 00:14:47 IST] ================================================================
+[2026-04-30 00:14:47 IST] Running Script 3: mtd_same_day_fulfillment_report
+[2026-04-30 00:14:47 IST] ================================================================
+[2026-04-30 00:14:47 IST] Command: ./scripts/run_local_reports_mtd_same_day_fulfillment.sh
+[2026-04-30 00:14:47 IST] Attempts configured: 3; retry_delay_seconds=10
+[2026-04-30 00:14:47 IST] Script 3: mtd_same_day_fulfillment_report: attempt 1/3 starting
+{"run_id": "20260429_184449207947", "phase": "logger", "status": "ok", "message": "Initialized JSON logger", "log_file_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/logs/simplify_downloader.jsonl", "log_file_source": "env:JSON_LOG_FILE", "ts": "2026-04-29T18:44:49.208327+00:00"}
+{"run_id": "20260429_184449207947", "phase": "orchestrator", "status": "ok", "message": "starting MTD same-day fulfillment report pipeline", "report_date": "2026-04-30", "run_env": "prod", "force": true, "ts": "2026-04-29T18:44:49.208471+00:00"}
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 139, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 131, in main
+    mtd_same_day_fulfillment_main()
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/main.py", line 33, in main
+    run_pipeline(report_date=report_date, env=args.env, force=args.force)
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/pipeline.py", line 253, in run_pipeline
+    asyncio.run(_run(report_date, env, force))
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/runners.py", line 194, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/base_events.py", line 686, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/pipeline.py", line 106, in _run
+    rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/data.py", line 26, in fetch_mtd_same_day_fulfillment
+    orders = sa.Table("orders", metadata, autoload_with=engine)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 2, in __new__
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/deprecations.py", line 281, in warned
+    return fn(*args, **kwargs)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 429, in __new__
+    return cls._new(*args, **kw)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 483, in _new
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 479, in _new
+    table.__init__(name, metadata, *args, _no_init=False, **kw)  # type: ignore[misc] # noqa: E501
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 861, in __init__
+    self._autoload(
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 891, in _autoload
+    insp = inspection.inspect(autoload_with)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/inspection.py", line 140, in inspect
+    ret = reg(subject)
+          ^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 313, in _engine_insp
+    return Inspector._construct(Inspector._init_engine, bind)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 246, in _construct
+    init(self, bind)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 257, in _init_engine
+    engine.connect().close()
+    ^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3277, in connect
+    return self._connection_cls(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 143, in __init__
+    self._dbapi_connection = engine.raw_connection()
+                             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3301, in raw_connection
+    return self.pool.connect()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 447, in connect
+    return _ConnectionFairy._checkout(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 1264, in _checkout
+    fairy = _ConnectionRecord.checkout(pool)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 711, in checkout
+    rec = pool._do_get()
+          ^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/impl.py", line 177, in _do_get
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/impl.py", line 175, in _do_get
+    return self._create_connection()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 388, in _create_connection
+    return _ConnectionRecord(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 673, in __init__
+    self.__connect()
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 899, in __connect
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 895, in __connect
+    self.dbapi_connection = connection = pool._invoke_creator(self)
+                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/create.py", line 661, in connect
+    return dialect.connect(*cargs, **cparams)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 629, in connect
+    return self.loaded_dbapi.connect(*cargs, **cparams)  # type: ignore[no-any-return]  # NOQA: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 955, in connect
+    await_only(creator_fn(*arg, **kw)),
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 123, in await_only
+    raise exc.MissingGreenlet(
+sqlalchemy.exc.MissingGreenlet: greenlet_spawn has not been called; can't call await_only() here. Was IO attempted in an unexpected place? (Background on this error at: https://sqlalche.me/e/20/xd2s)
+[2026-04-30 00:14:49 IST] WARNING: Script 3: mtd_same_day_fulfillment_report: attempt 1/3 failed with exit_code=1 after 2s
+[2026-04-30 00:14:49 IST] Script 3: mtd_same_day_fulfillment_report: sleeping 10s before retry
+[2026-04-30 00:14:59 IST] Script 3: mtd_same_day_fulfillment_report: attempt 2/3 starting
+{"run_id": "20260429_184501035259", "phase": "logger", "status": "ok", "message": "Initialized JSON logger", "log_file_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/logs/simplify_downloader.jsonl", "log_file_source": "env:JSON_LOG_FILE", "ts": "2026-04-29T18:45:01.035622+00:00"}
+{"run_id": "20260429_184501035259", "phase": "orchestrator", "status": "ok", "message": "starting MTD same-day fulfillment report pipeline", "report_date": "2026-04-30", "run_env": "prod", "force": true, "ts": "2026-04-29T18:45:01.035768+00:00"}
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 139, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 131, in main
+    mtd_same_day_fulfillment_main()
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/main.py", line 33, in main
+    run_pipeline(report_date=report_date, env=args.env, force=args.force)
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/pipeline.py", line 253, in run_pipeline
+    asyncio.run(_run(report_date, env, force))
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/runners.py", line 194, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/base_events.py", line 686, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/pipeline.py", line 106, in _run
+    rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/data.py", line 26, in fetch_mtd_same_day_fulfillment
+    orders = sa.Table("orders", metadata, autoload_with=engine)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 2, in __new__
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/deprecations.py", line 281, in warned
+    return fn(*args, **kwargs)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 429, in __new__
+    return cls._new(*args, **kw)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 483, in _new
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 479, in _new
+    table.__init__(name, metadata, *args, _no_init=False, **kw)  # type: ignore[misc] # noqa: E501
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 861, in __init__
+    self._autoload(
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 891, in _autoload
+    insp = inspection.inspect(autoload_with)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/inspection.py", line 140, in inspect
+    ret = reg(subject)
+          ^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 313, in _engine_insp
+    return Inspector._construct(Inspector._init_engine, bind)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 246, in _construct
+    init(self, bind)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 257, in _init_engine
+    engine.connect().close()
+    ^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3277, in connect
+    return self._connection_cls(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 143, in __init__
+    self._dbapi_connection = engine.raw_connection()
+                             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3301, in raw_connection
+    return self.pool.connect()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 447, in connect
+    return _ConnectionFairy._checkout(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 1264, in _checkout
+    fairy = _ConnectionRecord.checkout(pool)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 711, in checkout
+    rec = pool._do_get()
+          ^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/impl.py", line 177, in _do_get
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/impl.py", line 175, in _do_get
+    return self._create_connection()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 388, in _create_connection
+    return _ConnectionRecord(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 673, in __init__
+    self.__connect()
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 899, in __connect
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 895, in __connect
+    self.dbapi_connection = connection = pool._invoke_creator(self)
+                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/create.py", line 661, in connect
+    return dialect.connect(*cargs, **cparams)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 629, in connect
+    return self.loaded_dbapi.connect(*cargs, **cparams)  # type: ignore[no-any-return]  # NOQA: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 955, in connect
+    await_only(creator_fn(*arg, **kw)),
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 123, in await_only
+    raise exc.MissingGreenlet(
+sqlalchemy.exc.MissingGreenlet: greenlet_spawn has not been called; can't call await_only() here. Was IO attempted in an unexpected place? (Background on this error at: https://sqlalche.me/e/20/xd2s)
+[2026-04-30 00:15:01 IST] WARNING: Script 3: mtd_same_day_fulfillment_report: attempt 2/3 failed with exit_code=1 after 2s
+[2026-04-30 00:15:01 IST] Script 3: mtd_same_day_fulfillment_report: sleeping 10s before retry
+[2026-04-30 00:15:11 IST] Script 3: mtd_same_day_fulfillment_report: attempt 3/3 starting
+{"run_id": "20260429_184512997339", "phase": "logger", "status": "ok", "message": "Initialized JSON logger", "log_file_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/logs/simplify_downloader.jsonl", "log_file_source": "env:JSON_LOG_FILE", "ts": "2026-04-29T18:45:12.997691+00:00"}
+{"run_id": "20260429_184512997339", "phase": "orchestrator", "status": "ok", "message": "starting MTD same-day fulfillment report pipeline", "report_date": "2026-04-30", "run_env": "prod", "force": true, "ts": "2026-04-29T18:45:12.997827+00:00"}
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 139, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 131, in main
+    mtd_same_day_fulfillment_main()
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/main.py", line 33, in main
+    run_pipeline(report_date=report_date, env=args.env, force=args.force)
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/pipeline.py", line 253, in run_pipeline
+    asyncio.run(_run(report_date, env, force))
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/runners.py", line 194, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/base_events.py", line 686, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/pipeline.py", line 106, in _run
+    rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/data.py", line 26, in fetch_mtd_same_day_fulfillment
+    orders = sa.Table("orders", metadata, autoload_with=engine)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 2, in __new__
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/deprecations.py", line 281, in warned
+    return fn(*args, **kwargs)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 429, in __new__
+    return cls._new(*args, **kw)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 483, in _new
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 479, in _new
+    table.__init__(name, metadata, *args, _no_init=False, **kw)  # type: ignore[misc] # noqa: E501
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 861, in __init__
+    self._autoload(
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 891, in _autoload
+    insp = inspection.inspect(autoload_with)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/inspection.py", line 140, in inspect
+    ret = reg(subject)
+          ^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 313, in _engine_insp
+    return Inspector._construct(Inspector._init_engine, bind)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 246, in _construct
+    init(self, bind)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 257, in _init_engine
+    engine.connect().close()
+    ^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3277, in connect
+    return self._connection_cls(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 143, in __init__
+    self._dbapi_connection = engine.raw_connection()
+                             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3301, in raw_connection
+    return self.pool.connect()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 447, in connect
+    return _ConnectionFairy._checkout(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 1264, in _checkout
+    fairy = _ConnectionRecord.checkout(pool)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 711, in checkout
+    rec = pool._do_get()
+          ^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/impl.py", line 177, in _do_get
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/impl.py", line 175, in _do_get
+    return self._create_connection()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 388, in _create_connection
+    return _ConnectionRecord(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 673, in __init__
+    self.__connect()
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 899, in __connect
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 895, in __connect
+    self.dbapi_connection = connection = pool._invoke_creator(self)
+                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/create.py", line 661, in connect
+    return dialect.connect(*cargs, **cparams)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 629, in connect
+    return self.loaded_dbapi.connect(*cargs, **cparams)  # type: ignore[no-any-return]  # NOQA: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 955, in connect
+    await_only(creator_fn(*arg, **kw)),
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 123, in await_only
+    raise exc.MissingGreenlet(
+sqlalchemy.exc.MissingGreenlet: greenlet_spawn has not been called; can't call await_only() here. Was IO attempted in an unexpected place? (Background on this error at: https://sqlalche.me/e/20/xd2s)
+[2026-04-30 00:15:13 IST] WARNING: Script 3: mtd_same_day_fulfillment_report: attempt 3/3 failed with exit_code=1 after 2s
+[2026-04-30 00:15:13 IST] ERROR: Script 3: mtd_same_day_fulfillment_report failed after 3 attempts
+[2026-04-30 00:15:13 IST] ================================================================
+[2026-04-30 00:15:13 IST] Running Script 4: pending_deliveries
+[2026-04-30 00:15:13 IST] ================================================================
+[2026-04-30 00:15:13 IST] Command: ./scripts/run_local_reports_pending_deliveries.sh
+[2026-04-30 00:15:13 IST] Attempts configured: 3; retry_delay_seconds=10
+[2026-04-30 00:15:13 IST] Script 4: pending_deliveries: attempt 1/3 starting
+{"run_id": "20260429_184515091978", "phase": "logger", "status": "ok", "message": "Initialized JSON logger", "log_file_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/logs/simplify_downloader.jsonl", "log_file_source": "env:JSON_LOG_FILE", "ts": "2026-04-29T18:45:15.092356+00:00"}
+{"run_id": "20260429_184515091978", "phase": "orchestrator", "status": "ok", "message": "starting pending deliveries report pipeline", "report_date": "2026-04-30", "run_env": "prod", "force": true, "ts": "2026-04-29T18:45:15.092497+00:00"}
+{"run_id": "20260429_184515091978", "phase": "load_data", "status": "ok", "message": "pending deliveries report data loaded", "report_date": "2026-04-30", "rows": 1311, "ts": "2026-04-29T18:45:15.242004+00:00"}
+{"run_id": "20260429_184515091978", "phase": "render_html", "status": "ok", "message": "rendered pending deliveries report html", "report_date": "2026-04-30", "ts": "2026-04-29T18:45:15.297149+00:00"}
+{"run_id": "20260429_184515091978", "phase": "render_pdf", "status": "info", "message": "rendering pdf with configured browser", "pdf_render_backend": "local_chrome", "pdf_render_headless": true, "chrome_exec": "Google Chrome", "executable_source": "config.pdf_render_chrome_executable", "ts": "2026-04-29T18:45:15.932287+00:00"}
+{"run_id": "20260429_184515091978", "phase": "render_pdf", "status": "ok", "message": "rendered pending deliveries report pdf", "report_date": "2026-04-30", "file_path": "app/reports/output_files/reports.pending_deliveries_2026-04-30.pdf", "ts": "2026-04-29T18:45:18.578397+00:00"}
+{"run_id": "20260429_184515091978", "phase": "persist_documents", "status": "ok", "message": "saved pending deliveries report document", "report_date": "2026-04-30", "file_path": "app/reports/output_files/reports.pending_deliveries_2026-04-30.pdf", "ts": "2026-04-29T18:45:18.631038+00:00"}
+{"run_id": "20260429_184515091978", "phase": "send_email", "status": "ok", "message": "notification sent", "report_date": "2026-04-30", "emails_planned": 1, "emails_sent": 1, "notification_errors": [], "ts": "2026-04-29T18:45:31.196873+00:00"}
+{"run_id": "20260429_184515091978", "phase": "orchestrator", "status": "ok", "message": "pending deliveries report pipeline complete", "report_date": "2026-04-30", "ts": "2026-04-29T18:45:31.202656+00:00"}
+[2026-04-30 00:15:31 IST] Script 4: pending_deliveries: attempt 1/3 succeeded in 18s
+[2026-04-30 00:15:31 IST] ================================================================
+[2026-04-30 00:15:31 IST] OPTIONAL DAILY RESCUE PASS
+[2026-04-30 00:15:31 IST] ================================================================
+[2026-04-30 00:15:31 IST] Pending deliveries succeeded while daily sales failed; running optional daily rescue pass.
+[2026-04-30 00:15:31 IST] ================================================================
+[2026-04-30 00:15:31 IST] Running Script 2B: daily_sales_report_rescue
+[2026-04-30 00:15:31 IST] ================================================================
+[2026-04-30 00:15:31 IST] Command: ./scripts/run_local_reports_daily_sales.sh
+[2026-04-30 00:15:31 IST] Attempts configured: 1; retry_delay_seconds=5
+[2026-04-30 00:15:31 IST] Script 2B: daily_sales_report_rescue: attempt 1/1 starting
+{"run_id": "20260429_184533042195", "phase": "logger", "status": "ok", "message": "Initialized JSON logger", "log_file_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/logs/simplify_downloader.jsonl", "log_file_source": "env:JSON_LOG_FILE", "ts": "2026-04-29T18:45:33.042543+00:00"}
+{"run_id": "20260429_184533042195", "phase": "orchestrator", "status": "ok", "message": "starting daily sales report pipeline", "report_date": "2026-04-30", "run_env": "prod", "force": true, "ts": "2026-04-29T18:45:33.042687+00:00"}
+{"run_id": "20260429_184533042195", "phase": "load_data", "status": "ok", "message": "daily sales report data loaded", "report_date": "2026-04-30", "rows": 4, "edited_orders": 0, "ts": "2026-04-29T18:45:33.292393+00:00"}
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 139, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/__main__.py", line 119, in main
+    daily_sales_report_main()
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/main.py", line 33, in main
+    run_pipeline(report_date=report_date, env=args.env, force=args.force)
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/pipeline.py", line 388, in run_pipeline
+    asyncio.run(_run(report_date, env, force))
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/runners.py", line 194, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/base_events.py", line 686, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/daily_sales_report/pipeline.py", line 207, in _run
+    mtd_rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/reports/mtd_same_day_fulfillment/data.py", line 26, in fetch_mtd_same_day_fulfillment
+    orders = sa.Table("orders", metadata, autoload_with=engine)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<string>", line 2, in __new__
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/deprecations.py", line 281, in warned
+    return fn(*args, **kwargs)  # type: ignore[no-any-return]
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 429, in __new__
+    return cls._new(*args, **kw)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 483, in _new
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 479, in _new
+    table.__init__(name, metadata, *args, _no_init=False, **kw)  # type: ignore[misc] # noqa: E501
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 861, in __init__
+    self._autoload(
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/schema.py", line 891, in _autoload
+    insp = inspection.inspect(autoload_with)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/inspection.py", line 140, in inspect
+    ret = reg(subject)
+          ^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 313, in _engine_insp
+    return Inspector._construct(Inspector._init_engine, bind)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 246, in _construct
+    init(self, bind)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/reflection.py", line 257, in _init_engine
+    engine.connect().close()
+    ^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3277, in connect
+    return self._connection_cls(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 143, in __init__
+    self._dbapi_connection = engine.raw_connection()
+                             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 3301, in raw_connection
+    return self.pool.connect()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 447, in connect
+    return _ConnectionFairy._checkout(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 1264, in _checkout
+    fairy = _ConnectionRecord.checkout(pool)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 711, in checkout
+    rec = pool._do_get()
+          ^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/impl.py", line 177, in _do_get
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/impl.py", line 175, in _do_get
+    return self._create_connection()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 388, in _create_connection
+    return _ConnectionRecord(self)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 673, in __init__
+    self.__connect()
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 899, in __connect
+    with util.safe_reraise():
+         ^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/langhelpers.py", line 224, in __exit__
+    raise exc_value.with_traceback(exc_tb)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/pool/base.py", line 895, in __connect
+    self.dbapi_connection = connection = pool._invoke_creator(self)
+                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/create.py", line 661, in connect
+    return dialect.connect(*cargs, **cparams)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 629, in connect
+    return self.loaded_dbapi.connect(*cargs, **cparams)  # type: ignore[no-any-return]  # NOQA: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 955, in connect
+    await_only(creator_fn(*arg, **kw)),
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 123, in await_only
+    raise exc.MissingGreenlet(
+sqlalchemy.exc.MissingGreenlet: greenlet_spawn has not been called; can't call await_only() here. Was IO attempted in an unexpected place? (Background on this error at: https://sqlalche.me/e/20/xd2s)
+[2026-04-30 00:15:33 IST] WARNING: Script 2B: daily_sales_report_rescue: attempt 1/1 failed with exit_code=1 after 2s
+[2026-04-30 00:15:33 IST] ERROR: Script 2B: daily_sales_report_rescue failed after 1 attempts
+[2026-04-30 00:15:33 IST] WARNING: Daily rescue pass failed with rc=1.
+[2026-04-30 00:15:33 IST] ================================================================
+[2026-04-30 00:15:33 IST] RUN STATUS SUMMARY
+[2026-04-30 00:15:33 IST] ================================================================
+[2026-04-30 00:15:33 IST] orders_sync_run_profiler_rc=0
+[2026-04-30 00:15:33 IST] daily_sales_report_rc=1
+[2026-04-30 00:15:33 IST] mtd_same_day_fulfillment_report_rc=1
+[2026-04-30 00:15:33 IST] pending_deliveries_rc=0
+[2026-04-30 00:15:33 IST] daily_sales_report_rescue_rc=1
+[2026-04-30 00:15:33 IST] total_duration_seconds=205
+[2026-04-30 00:15:33 IST] ================================================================
+[2026-04-30 00:15:33 IST] CRON RUN FINISHED SUCCESSFULLY
+[2026-04-30 00:15:33 IST] ================================================================
+[2026-04-30 00:15:33 IST] Run completed successfully via trap=EXIT
