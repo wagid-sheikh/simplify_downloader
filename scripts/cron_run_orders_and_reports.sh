@@ -618,8 +618,8 @@ log "pending_deliveries_rc=${pending_rc}"
 log "daily_sales_report_rescue_rc=${daily_rescue_rc}"
 log "total_duration_seconds=${run_duration_seconds}"
 
-if [[ "${daily_rc}" -ne 0 && "${mtd_same_day_rc}" -ne 0 && "${pending_rc}" -ne 0 ]]; then
-  log "ERROR: All report pipelines failed (daily_sales_report_rc=${daily_rc}, mtd_same_day_fulfillment_report_rc=${mtd_same_day_rc}, pending_deliveries_rc=${pending_rc})."
+if [[ "${daily_rc}" -ne 0 || "${mtd_same_day_rc}" -ne 0 || "${pending_rc}" -ne 0 ]]; then
+  log "ERROR: One or more required report pipelines failed (daily_sales_report_rc=${daily_rc}, mtd_same_day_fulfillment_report_rc=${mtd_same_day_rc}, pending_deliveries_rc=${pending_rc})."
   exit 1
 fi
 
