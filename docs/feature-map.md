@@ -92,7 +92,7 @@ Practical map of where to work for major capabilities.
   2. `scripts/run_local_reports_mtd_same_day_fulfillment.sh`
   3. `scripts/run_local_reports_pending_deliveries.sh`
 - **Dependencies:** `documents` table, report notification templates/profiles.
-- **Notes/Risks:** Rendering failures and zero-data scenarios are handled differently per pipeline; keep behavior consistent. Pending deliveries now always includes TD+UC rows and excludes recovery-status orders (`TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`) from main aging buckets/details.
+- **Notes/Risks:** Rendering failures and zero-data scenarios are handled differently per pipeline; keep behavior consistent. For same-day table layout, `app/reports/daily_sales_report/templates/daily_sales_report.html` and `app/reports/shared/templates/same_day_fulfillment_table.html` are the authoritative sources (legacy standalone same-day template removed). Pending deliveries now always includes TD+UC rows and excludes recovery-status orders (`TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`) from main aging buckets/details.
 
 ## 9) Lead assignment workflow
 
