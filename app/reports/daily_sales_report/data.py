@@ -928,7 +928,7 @@ async def fetch_daily_sales_report(
             sa.select(
                 order_line_items.c.cost_center.label("cost_center"),
                 order_line_items.c.order_number.label("order_number"),
-                sa.func.group_concat(
+                sa.func.aggregate_strings(
                     sa.func.trim(
                         sa.func.coalesce(order_line_items.c.service_name, "")
                         + sa.literal(" ")
@@ -954,7 +954,10 @@ async def fetch_daily_sales_report(
                 orders.c.customer_name,
                 orders.c.mobile_number,
                 sa.func.max(sales.c.payment_date).label("payment_date"),
-                sa.func.group_concat(sa.func.distinct(sa.func.coalesce(sales.c.payment_mode, ""))).label("payment_mode"),
+                sa.func.aggregate_strings(
+                    sa.func.distinct(sa.func.coalesce(sales.c.payment_mode, "")),
+                    ", ",
+                ).label("payment_mode"),
             )
             .select_from(
                 orders.join(
