@@ -6,7 +6,7 @@ from typing import Sequence
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.reports.shared.formatters import format_amount, format_ddmmyyyy
-from app.reports.shared.same_day_fulfillment import build_store_summary, format_duration_hours, group_rows_by_store
+from app.reports.shared.same_day_fulfillment import build_store_summary, format_duration_hours, format_duration_minutes, group_rows_by_store
 
 from .data import MTDSameDayFulfillmentRow
 
@@ -33,6 +33,7 @@ def render_html(
         grouped_rows_by_store=group_rows_by_store(list(rows)),
         store_summary_rows=build_store_summary(list(rows)),
         format_duration_hours=format_duration_hours,
+        format_duration_minutes=format_duration_minutes,
         report_date_display=report_date_display,
         mtd_start_display=mtd_start_display,
         mtd_end_display=mtd_end_display,

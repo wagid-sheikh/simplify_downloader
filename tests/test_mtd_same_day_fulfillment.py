@@ -11,6 +11,7 @@ from app.common.db import session_scope
 from app.reports.mtd_same_day_fulfillment.data import fetch_mtd_same_day_fulfillment
 from app.reports.mtd_same_day_fulfillment.data import MTDSameDayFulfillmentRow
 from app.reports.mtd_same_day_fulfillment.render import render_html
+from app.reports.shared.same_day_fulfillment import format_duration_minutes
 import app.reports.mtd_same_day_fulfillment.data as mtd_data
 
 
@@ -91,7 +92,7 @@ def test_render_html_groups_store_and_formats_duration() -> None:
     ]
     html = render_html(rows=rows, report_date_display='29-Apr-2026', mtd_start_display='01-Apr-2026', mtd_end_display='29-Apr-2026')
     assert "Store: S1" in html and "Store: S2" in html
-    assert "2 min" in html and "14 min" in html and "5h 23m" in html and "0 min" in html
+    assert "2 min" in html and "14 min" in html and "5 hrs 23 min" in html and "0 min" in html
     assert "Store Code</th>" in html  # summary only
     assert "Customer</th>" in html
     assert "Store Code</th>" in html and "Order Number" in html
@@ -158,3 +159,11 @@ async def test_fetch_mtd_same_day_fulfillment_date_only_and_mtd_window(tmp_path,
     order_numbers = {row.order_number for row in rows}
     assert 'O3' not in order_numbers
     assert 'O4' not in order_numbers
+
+
+def test_format_duration_minutes_examples() -> None:
+    assert format_duration_minutes(0) == "0 min"
+    assert format_duration_minutes(14) == "14 min"
+    assert format_duration_minutes(60) == "1 hr 0 min"
+    assert format_duration_minutes(181) == "3 hrs 1 min"
+    assert format_duration_minutes(566) == "9 hrs 26 min"

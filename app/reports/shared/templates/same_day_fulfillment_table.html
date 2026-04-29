@@ -19,9 +19,9 @@
       <td>{{ row.total_orders }}</td>
       <td>{{ row.total_net_amount | format_amount }}</td>
       <td>{{ row.total_payment_received | format_amount }}</td>
-      <td>{{ (row.avg_minutes ~ " min") if row.avg_minutes is not none else "--" }}</td>
-      <td>{{ (row.fastest_minutes ~ " min") if row.fastest_minutes is not none else "--" }}</td>
-      <td>{{ (row.slowest_minutes ~ " min") if row.slowest_minutes is not none else "--" }}</td>
+      <td>{{ format_duration_minutes(row.avg_minutes) }}</td>
+      <td>{{ format_duration_minutes(row.fastest_minutes) }}</td>
+      <td>{{ format_duration_minutes(row.slowest_minutes) }}</td>
     </tr>
     {% endfor %}
     {% else %}
