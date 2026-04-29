@@ -166,6 +166,9 @@
         background: #e5e7eb;
         color: #374151;
       }
+      .store-heading-row td { background: #ececec; font-weight: 700; text-align: left; }
+      .wrapped-text, .customer-wrap { white-space: normal; word-break: break-word; }
+      .summary-table { margin-bottom: 8px; }
       @media print {
         body,
         table,
@@ -501,7 +504,8 @@
     {% endif %}
 
     {% set same_day_title = "Same-Day Fulfillment (Created & Delivered/Paid on Report Date)" %}
-    {% set same_day_rows = same_day_fulfillment_rows %}
+    {% set same_day_grouped_rows_by_store = same_day_grouped_rows_by_store %}
+    {% set same_day_store_summary_rows = same_day_store_summary_rows %}
     {% include "same_day_fulfillment_table.html" %}
 
     <div class="section-title">To be Recovered</div>
