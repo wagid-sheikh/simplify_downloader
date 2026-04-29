@@ -1,41 +1,70 @@
 <div class="section-title">{{ same_day_title }}</div>
+<table class="compact-table micro-font summary-table">
+  <thead>
+    <tr>
+      <th class="label">Store Code</th>
+      <th>Total Orders</th>
+      <th>Net Amount</th>
+      <th>Payment Received</th>
+      <th>Avg Time</th>
+      <th>Fastest</th>
+      <th>Slowest</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% if same_day_store_summary_rows %}
+    {% for row in same_day_store_summary_rows %}
+    <tr>
+      <td class="label">{{ row.store_code }}</td>
+      <td>{{ row.total_orders }}</td>
+      <td>{{ row.total_net_amount | format_amount }}</td>
+      <td>{{ row.total_payment_received | format_amount }}</td>
+      <td>{{ (row.avg_minutes ~ " min") if row.avg_minutes is not none else "--" }}</td>
+      <td>{{ (row.fastest_minutes ~ " min") if row.fastest_minutes is not none else "--" }}</td>
+      <td>{{ (row.slowest_minutes ~ " min") if row.slowest_minutes is not none else "--" }}</td>
+    </tr>
+    {% endfor %}
+    {% else %}
+    <tr><td class="center" colspan="7">No records</td></tr>
+    {% endif %}
+  </tbody>
+</table>
 <table class="compact-table micro-font">
   <thead>
     <tr>
       <th class="label">#</th>
-      <th class="label">Store Code</th>
       <th class="label">Order Number</th>
       <th>Order Date</th>
-      <th class="label">Customer Name</th>
-      <th class="label">Mobile Number</th>
+      <th class="label">Payment Date</th>
+      <th class="label">Customer</th>
       <th class="label">Line Items</th>
-      <th>Delivery/Payment Date</th>
       <th class="label">Payment Mode</th>
       <th>Net Amount</th>
       <th>Payment Received</th>
-      <th>Hours</th>
+      <th>Time</th>
     </tr>
   </thead>
   <tbody>
-    {% if same_day_rows %}
-    {% for row in same_day_rows %}
+    {% if same_day_grouped_rows_by_store %}
+    {% for store_code, store_rows in same_day_grouped_rows_by_store %}
+    <tr class="store-heading-row"><td class="label" colspan="10">Store: {{ store_code }}</td></tr>
+    {% for row in store_rows %}
     <tr>
       <td>{{ loop.index }}</td>
-      <td class="label">{{ row.store_code or "--" }}</td>
       <td class="label">{{ row.order_number or "--" }}</td>
       <td>{{ row.order_date | format_ddmmyyyy }}</td>
-      <td class="label">{{ row.customer_name or "--" }}</td>
-      <td class="label">{{ row.mobile_number or "--" }}</td>
-      <td class="label">{{ row.line_items or "--" }}</td>
       <td>{{ row.delivery_or_payment_date | format_ddmmyyyy }}</td>
+      <td class="label customer-wrap">{{ row.customer_name or "--" }}{% if row.mobile_number %}<br>{{ row.mobile_number }}{% endif %}</td>
+      <td class="label wrapped-text">{{ row.line_items or "--" }}</td>
       <td class="label">{{ row.payment_mode or "--" }}</td>
       <td>{{ row.net_amount | format_amount if row.net_amount is not none else "--" }}</td>
       <td>{{ row.payment_received | format_amount if row.payment_received is not none else "--" }}</td>
-      <td>{{ "%.2f"|format(row.hours) if row.hours is not none else "--" }}</td>
+      <td>{{ format_duration_hours(row.hours) }}</td>
     </tr>
     {% endfor %}
+    {% endfor %}
     {% else %}
-    <tr><td class="center" colspan="12">No records</td></tr>
+    <tr><td class="center" colspan="10">No records</td></tr>
     {% endif %}
   </tbody>
 </table>

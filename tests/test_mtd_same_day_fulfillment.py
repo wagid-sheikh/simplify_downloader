@@ -9,6 +9,7 @@ import sqlalchemy as sa
 
 from app.common.db import session_scope
 from app.reports.mtd_same_day_fulfillment.data import fetch_mtd_same_day_fulfillment
+from app.reports.mtd_same_day_fulfillment.data import MTDSameDayFulfillmentRow
 from app.reports.mtd_same_day_fulfillment.render import render_html
 import app.reports.mtd_same_day_fulfillment.data as mtd_data
 
@@ -73,11 +74,27 @@ async def test_fetch_mtd_same_day_fulfillment_does_not_use_create_engine(tmp_pat
 
 def test_render_html_includes_financial_columns() -> None:
     html = render_html(rows=[], report_date_display='29-Apr-2026', mtd_start_display='01-Apr-2026', mtd_end_display='29-Apr-2026')
-    assert 'Store Code' in html
-    assert 'Delivery/Payment Date' in html
-    assert 'Hours' in html
+    assert 'The Shaw Ventures' in html
+    assert 'MTD Same-Day Orders (Delivered within same calendar day)' in html
+    assert 'Payment Date' in html
+    assert 'Store: ' not in html
     assert 'Net Amount' in html
     assert 'Payment Received' in html
+
+
+def test_render_html_groups_store_and_formats_duration() -> None:
+    rows = [
+        MTDSameDayFulfillmentRow("S1", "A2", datetime(2026, 4, 10, 10), "Alice", "999", "Wash", datetime(2026, 4, 10, 10, 2), "UPI", 0.04, 10, 10),
+        MTDSameDayFulfillmentRow("S1", "A1", datetime(2026, 4, 10, 9), "Bob", None, "Iron", datetime(2026, 4, 10, 9, 14), "CARD", 0.23, 20, 20),
+        MTDSameDayFulfillmentRow("S2", "B1", datetime(2026, 4, 10, 8), "Cara", "888", "Dry", datetime(2026, 4, 10, 13, 23), "CASH", 5.39, 30, 30),
+        MTDSameDayFulfillmentRow("S2", "B2", datetime(2026, 4, 10, 7), "Dan", "777", "Steam", datetime(2026, 4, 10, 7), "UPI", 0.00, 40, 40),
+    ]
+    html = render_html(rows=rows, report_date_display='29-Apr-2026', mtd_start_display='01-Apr-2026', mtd_end_display='29-Apr-2026')
+    assert "Store: S1" in html and "Store: S2" in html
+    assert "2 min" in html and "14 min" in html and "5h 23m" in html and "0 min" in html
+    assert "Store Code</th>" in html  # summary only
+    assert "Customer</th>" in html
+    assert "Store Code</th>" in html and "Order Number" in html
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 import sqlalchemy as sa
@@ -22,6 +23,54 @@ class SameDayFulfillmentRecord:
     payment_mode: str | None
     net_amount: Any
     payment_received: Any
+
+
+def format_duration_hours(hours: float | Decimal | None) -> str:
+    if hours is None:
+        return "--"
+    minutes = round(float(hours) * 60)
+    if minutes < 60:
+        return f"{minutes} min"
+    duration_hours, duration_minutes = divmod(minutes, 60)
+    return f"{duration_hours}h {duration_minutes}m"
+
+
+def group_rows_by_store(rows: list[Any]) -> list[tuple[str, list[Any]]]:
+    grouped: dict[str, list[Any]] = defaultdict(list)
+    for row in rows:
+        store_code = str(getattr(row, "store_code", "") or "").strip() or "--"
+        grouped[store_code].append(row)
+
+    sorted_groups: list[tuple[str, list[Any]]] = []
+    for store_code in sorted(grouped):
+        store_rows = sorted(
+            grouped[store_code],
+            key=lambda row: (
+                getattr(row, "order_date", None) or datetime.min,
+                str(getattr(row, "order_number", "") or ""),
+            ),
+            reverse=True,
+        )
+        sorted_groups.append((store_code, store_rows))
+    return sorted_groups
+
+
+def build_store_summary(rows: list[Any]) -> list[dict[str, Any]]:
+    summary_rows: list[dict[str, Any]] = []
+    for store_code, store_rows in group_rows_by_store(rows):
+        durations = [round(float(value) * 60) for value in (getattr(row, "hours", None) for row in store_rows) if value is not None]
+        summary_rows.append(
+            {
+                "store_code": store_code,
+                "total_orders": len(store_rows),
+                "total_net_amount": sum((getattr(row, "net_amount", Decimal("0")) or Decimal("0")) for row in store_rows),
+                "total_payment_received": sum((getattr(row, "payment_received", Decimal("0")) or Decimal("0")) for row in store_rows),
+                "avg_minutes": (round(sum(durations) / len(durations)) if durations else None),
+                "fastest_minutes": (min(durations) if durations else None),
+                "slowest_minutes": (max(durations) if durations else None),
+            }
+        )
+    return summary_rows
 
 
 

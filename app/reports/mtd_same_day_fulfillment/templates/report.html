@@ -12,13 +12,18 @@
       td.center { text-align: center; }
       .compact-table th, .compact-table td { padding: 4px 6px; }
       .micro-font { font-size: 8px; line-height: 1.2; }
+      .store-heading-row td { background: #ececec; font-weight: 700; text-align: left; }
+      .wrapped-text, .customer-wrap { white-space: normal; word-break: break-word; }
+      .summary-table { margin-bottom: 8px; }
     </style>
   </head>
   <body>
-    <h2>MTD Same-Day Fulfillment (Month Start to Report Date)</h2>
+    <h2>The Shaw Ventures</h2>
+    <div><strong>MTD Same-Day Orders (Delivered within same calendar day)</strong></div>
     <p>Window: {{ mtd_start_display }} to {{ mtd_end_display }} (Report Date: {{ report_date_display }})</p>
     {% set same_day_title = "Same-Day Fulfillment" %}
-    {% set same_day_rows = rows %}
+    {% set same_day_grouped_rows_by_store = grouped_rows_by_store %}
+    {% set same_day_store_summary_rows = store_summary_rows %}
     {% include "same_day_fulfillment_table.html" %}
   </body>
 </html>

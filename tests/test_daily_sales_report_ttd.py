@@ -378,5 +378,10 @@ def test_daily_sales_report_same_day_section_uses_shared_table_partial() -> None
     html = _render_html(_build_context(report, "prod"))
 
     assert "Same-Day Fulfillment (Created &amp; Delivered/Paid on Report Date)" in html
+    assert "Store: TD01" in html
     assert "ORD-1" in html
+    assert "Payment Date" in html
+    assert "Delivery/Payment Date" not in html
+    assert "Customer</th>" in html
+    assert "150 min" in html
     assert "Payment Received" in html
