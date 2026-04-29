@@ -23,11 +23,13 @@ from app.dashboard_downloader.pipelines.base import (
 )
 from app.dashboard_downloader.report_generator import render_pdf_with_configured_browser
 
+from app.reports.mtd_same_day_fulfillment.data import fetch_mtd_same_day_fulfillment
+from app.reports.mtd_same_day_fulfillment.render import render_html as render_mtd_same_day_html
+
 from .data import DailySalesReportData, fetch_daily_sales_report
 
 PIPELINE_NAME = "reports.daily_sales_report"
 TEMPLATE_NAME = "daily_sales_report.html"
-SAME_DAY_TEMPLATE_NAME = "daily_sales_same_day_report.html"
 TEMPLATE_DIR = Path("app") / "reports" / "daily_sales_report" / "templates"
 OUTPUT_ROOT = Path("app") / "reports" / "output_files"
 
@@ -202,18 +204,30 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
 
         context = _build_context(data, run_env)
         html = _render_html(context)
-        same_day_html = _render_html(context, template_name=SAME_DAY_TEMPLATE_NAME)
+        mtd_rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
+        mtd_start = resolved_date.replace(day=1)
+        mtd_end = resolved_date
+        same_day_html = render_mtd_same_day_html(
+            rows=mtd_rows,
+            report_date_display=resolved_date.strftime("%d-%b-%Y"),
+            mtd_start_display=mtd_start.strftime("%d-%b-%Y"),
+            mtd_end_display=mtd_end.strftime("%d-%b-%Y"),
+        )
         tracker.mark_phase("render_html", "ok")
         log_event(
             logger=logger,
             phase="render_html",
             message="rendered daily sales report html",
             report_date=resolved_date.isoformat(),
+            pipeline_name=PIPELINE_NAME,
+            mtd_start=mtd_start.isoformat(),
+            mtd_end=mtd_end.isoformat(),
+            mtd_row_count=len(mtd_rows),
         )
 
         OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
         output_path = OUTPUT_ROOT / f"{PIPELINE_NAME}_{resolved_date.isoformat()}.pdf"
-        same_day_output_path = OUTPUT_ROOT / f"{PIPELINE_NAME}_same_day_{resolved_date.isoformat()}.pdf"
+        same_day_output_path = OUTPUT_ROOT / f"reports.mtd_same_day_fulfillment_{resolved_date.isoformat()}.pdf"
         if output_path.exists():
             output_path.unlink()
         if same_day_output_path.exists():
@@ -244,7 +258,11 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 message="daily sales report pdf render timed out",
                 report_date=resolved_date.isoformat(),
                 file_path=str(output_path),
-            same_day_file_path=str(same_day_output_path),
+                same_day_file_path=str(same_day_output_path),
+                pipeline_name=PIPELINE_NAME,
+                mtd_start=mtd_start.isoformat(),
+                mtd_end=mtd_end.isoformat(),
+                mtd_row_count=len(mtd_rows),
                 error=str(exc),
             )
             finished_at = datetime.now(timezone.utc)
@@ -259,6 +277,10 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             report_date=resolved_date.isoformat(),
             file_path=str(output_path),
             same_day_file_path=str(same_day_output_path),
+            pipeline_name=PIPELINE_NAME,
+            mtd_start=mtd_start.isoformat(),
+            mtd_end=mtd_end.isoformat(),
+            mtd_row_count=len(mtd_rows),
         )
 
         await _persist_document(
@@ -273,7 +295,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             run_id=run_id,
             report_date=resolved_date,
             file_path=same_day_output_path,
-            doc_type="daily_sales_report_same_day_pdf",
+            doc_type="mtd_same_day_fulfillment_pdf",
         )
         tracker.mark_phase("persist_documents", "ok")
         log_event(
@@ -283,6 +305,10 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             report_date=resolved_date.isoformat(),
             file_path=str(output_path),
             same_day_file_path=str(same_day_output_path),
+            pipeline_name=PIPELINE_NAME,
+            mtd_start=mtd_start.isoformat(),
+            mtd_end=mtd_end.isoformat(),
+            mtd_row_count=len(mtd_rows),
         )
 
         tracker.metrics = {

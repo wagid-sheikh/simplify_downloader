@@ -288,9 +288,9 @@ from pathlib import Path
 from app.dashboard_downloader.notifications import DocumentRecord
 
 
-def test_run_plan_all_docs_for_run_includes_daily_and_same_day_documents(tmp_path) -> None:
+def test_run_plan_all_docs_for_run_includes_daily_and_mtd_documents(tmp_path) -> None:
     main_pdf = tmp_path / "daily.pdf"
-    same_day_pdf = tmp_path / "daily_same_day.pdf"
+    same_day_pdf = tmp_path / "mtd_same_day.pdf"
     main_pdf.write_bytes(b"daily")
     same_day_pdf.write_bytes(b"same-day")
 
@@ -301,7 +301,7 @@ def test_run_plan_all_docs_for_run_includes_daily_and_same_day_documents(tmp_pat
         recipients=[{"store_code": "ALL", "email_address": "ops@example.com", "display_name": None, "send_as": "to"}],
         docs=[
             DocumentRecord(doc_type="daily_sales_report_pdf", store_code=None, path=Path(main_pdf)),
-            DocumentRecord(doc_type="daily_sales_report_same_day_pdf", store_code=None, path=Path(same_day_pdf)),
+            DocumentRecord(doc_type="mtd_same_day_fulfillment_pdf", store_code=None, path=Path(same_day_pdf)),
         ],
         context={"report_date": "2026-04-29"},
     )

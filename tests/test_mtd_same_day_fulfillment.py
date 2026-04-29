@@ -40,6 +40,6 @@ async def test_fetch_mtd_same_day_fulfillment_filters_and_aggregates(tmp_path, m
 
 
 def test_render_html_includes_financial_columns() -> None:
-    html = render_html(rows=[], report_date_display='29-Apr-2026')
+    html = render_html(rows=[], report_date_display='29-Apr-2026', mtd_start_display='01-Apr-2026', mtd_end_display='29-Apr-2026')
     assert 'Net Amount' in html
     assert 'Payment Received' in html
