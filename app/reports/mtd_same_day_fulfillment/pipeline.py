@@ -247,4 +247,4 @@ def run_pipeline(report_date: date | None = None, env: str | None = None, force:
     asyncio.run(_run(report_date, env, force))
 
 
-__all__ = ["run_pipeline"]
+__all__ = ["PIPELINE_NAME", "run_pipeline"]
