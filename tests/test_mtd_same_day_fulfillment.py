@@ -1,5 +1,8 @@
-from datetime import date
+from contextlib import asynccontextmanager
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
+
+from sqlalchemy.dialects import postgresql
 
 import pytest
 import sqlalchemy as sa
@@ -40,6 +43,7 @@ async def test_fetch_mtd_same_day_fulfillment_filters_and_aggregates(tmp_path, m
     assert rows[0].line_items == "Wash Shirt, Iron Pant"
     assert rows[0].net_amount == 800
     assert rows[0].payment_received == 800
+    assert rows[0].hours == 2.0
 
 
 @pytest.mark.asyncio
@@ -74,3 +78,47 @@ def test_render_html_includes_financial_columns() -> None:
     assert 'Hours' in html
     assert 'Net Amount' in html
     assert 'Payment Received' in html
+
+
+@pytest.mark.asyncio
+async def test_fetch_mtd_same_day_fulfillment_postgres_sql_has_no_strftime_and_hours_from_python(monkeypatch) -> None:
+    monkeypatch.setattr(mtd_data, 'get_timezone', lambda: ZoneInfo('Asia/Kolkata'))
+
+    captured = {}
+
+    class _Result:
+        def mappings(self):
+            return [
+                {
+                    "store_code": "S1",
+                    "order_number": "O1",
+                    "order_date": datetime(2026, 4, 10, 9, 0),
+                    "customer_name": "Alice",
+                    "mobile_number": "9999999999",
+                    "line_items": "Wash Shirt",
+                    "payment_date": datetime(2026, 4, 10, 11, 30),
+                    "payment_mode": "UPI",
+                    "net_amount": 800,
+                    "payment_received": 800,
+                }
+            ]
+
+    class _Session:
+        async def execute(self, stmt):
+            captured["stmt"] = stmt
+            return _Result()
+
+    @asynccontextmanager
+    async def _fake_session_scope(_database_url: str):
+        yield _Session()
+
+    monkeypatch.setattr(mtd_data, 'session_scope', _fake_session_scope)
+
+    rows = await fetch_mtd_same_day_fulfillment(
+        database_url='postgresql+asyncpg://user:pass@localhost/db',
+        report_date=date(2026, 4, 29),
+    )
+
+    compiled = str(captured["stmt"].compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    assert "strftime" not in compiled.lower()
+    assert rows[0].hours == 2.5
