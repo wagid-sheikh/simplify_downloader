@@ -162,3 +162,12 @@
 - **Evidence:** `app/reports/daily_sales_report/pipeline.py`, `app/reports/mtd_same_day_fulfillment/data.py`, `tests/test_daily_sales_report_pipeline.py`.
 - **Implications:** Attachment naming/doc_type/window text remain unambiguous in persisted documents and PDFs.
 - **Follow-up:** Keep window labels explicit in templates and pipeline logs.
+
+### DL-009
+- **Date:** 2026-04-29
+- **Status:** Active
+- **Decision:** Same-day fulfillment row selection and line-item aggregation are centralized in `app/reports/shared/same_day_fulfillment.py` and reused by both Daily and MTD reports, with same-day defined as local date equality between order and payment timestamps.
+- **Context:** Daily and MTD reports previously duplicated near-identical SQL for same-day filtering, payment aggregation, and line-item concatenation.
+- **Evidence:** `app/reports/shared/same_day_fulfillment.py`, `app/reports/daily_sales_report/data.py`, `app/reports/mtd_same_day_fulfillment/data.py`, `tests/test_same_day_fulfillment_shared.py`.
+- **Implications:** Canonical behavior stays consistent across report pipelines while allowing each caller to pass its own window boundaries (daily window vs month-to-date window).
+- **Follow-up:** Route future same-day rule or aggregation changes through the shared helper and keep report-level tests as integration coverage.
