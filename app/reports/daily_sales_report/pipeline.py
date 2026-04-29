@@ -136,6 +136,7 @@ def _build_context(data: DailySalesReportData, run_environment: str) -> dict[str
         "to_be_compensated": data.to_be_compensated,
         "to_be_recovered_total_order_value": data.to_be_recovered_total_order_value,
         "to_be_compensated_total_order_value": data.to_be_compensated_total_order_value,
+        "same_day_fulfillment_rows": data.same_day_fulfillment_rows,
     }
 
 

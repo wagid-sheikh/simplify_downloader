@@ -500,6 +500,44 @@
     </table>
     {% endif %}
 
+    <div class="section-title">Same-Day Fulfillment (Created & Delivered/Paid on Report Date)</div>
+    <table class="compact-table micro-font">
+      <thead>
+        <tr>
+          <th class="label">#</th>
+          <th class="label">Store Code</th>
+          <th class="label">Order Number</th>
+          <th>Order Date</th>
+          <th class="label">Customer Name</th>
+          <th class="label">Mobile Number</th>
+          <th class="label">Line Items</th>
+          <th>Delivery/Payment Date</th>
+          <th class="label">Payment Mode</th>
+          <th>Hours</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if same_day_fulfillment_rows %}
+        {% for row in same_day_fulfillment_rows %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td class="label">{{ row.store_code or "--" }}</td>
+          <td class="label">{{ row.order_number }}</td>
+          <td>{{ row.order_date | format_ddmmyyyy }}</td>
+          <td class="label">{{ row.customer_name or "--" }}</td>
+          <td class="label">{{ row.mobile_number or "--" }}</td>
+          <td class="label">{{ row.line_items or "--" }}</td>
+          <td>{{ row.delivery_or_payment_date | format_ddmmyyyy }}</td>
+          <td class="label">{{ row.payment_mode or "--" }}</td>
+          <td>{{ "%.2f"|format(row.hours) if row.hours is not none else "--" }}</td>
+        </tr>
+        {% endfor %}
+        {% else %}
+        <tr><td class="center" colspan="10">No records</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+
     <div class="section-title">To be Recovered</div>
     <table class="compact-table micro-font">
       <thead>
