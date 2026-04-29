@@ -113,7 +113,13 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             rows=len(rows),
         )
 
-        html = render_html(rows=rows, report_date_display=resolved_date.strftime("%d-%b-%Y"))
+        mtd_start = resolved_date.replace(day=1)
+        html = render_html(
+            rows=rows,
+            report_date_display=resolved_date.strftime("%d-%b-%Y"),
+            mtd_start_display=mtd_start.strftime("%d-%b-%Y"),
+            mtd_end_display=resolved_date.strftime("%d-%b-%Y"),
+        )
         tracker.mark_phase("render_html", "ok")
         log_event(
             logger=logger,
