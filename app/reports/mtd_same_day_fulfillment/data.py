@@ -16,6 +16,17 @@ def _string_list_agg(*, dialect_name: str, value_expr, separator: str):
     return sa.func.group_concat(value_expr, separator)
 
 
+def _coerce_datetime(value: datetime | str | None) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
+
+
 @dataclass
 class MTDSameDayFulfillmentRow:
     store_code: str
@@ -90,7 +101,6 @@ async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date
             line_items_agg.c.line_items,
             sa.func.max(sales.c.payment_date).label("payment_date"),
             sa.func.max(sales.c.payment_mode).label("payment_mode"),
-            ((sa.func.strftime("%s", sa.func.max(sales.c.payment_date)) - sa.func.strftime("%s", orders.c.order_date)) / 3600.0).label("hours"),
             orders.c.net_amount,
             sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)).label("payment_received"),
         )
@@ -128,16 +138,22 @@ async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date
     async with session_scope(database_url) as session:
         result = await session.execute(stmt)
         for entry in result.mappings():
+            order_date = _coerce_datetime(entry["order_date"])
+            payment_date = _coerce_datetime(entry["payment_date"])
+            hours = None
+            if order_date is not None and payment_date is not None:
+                hours = round((payment_date - order_date).total_seconds() / 3600, 2)
+
             rows.append(MTDSameDayFulfillmentRow(
                 store_code=str(entry["store_code"] or ""),
                 order_number=str(entry["order_number"] or ""),
-                order_date=entry["order_date"],
+                order_date=order_date,
                 customer_name=str(entry["customer_name"]) if entry["customer_name"] is not None else None,
                 mobile_number=str(entry["mobile_number"]) if entry["mobile_number"] is not None else None,
                 line_items=str(entry["line_items"]) if entry["line_items"] is not None else None,
-                delivery_or_payment_date=entry["payment_date"],
+                delivery_or_payment_date=payment_date,
                 payment_mode=str(entry["payment_mode"]) if entry["payment_mode"] is not None else None,
-                hours=float(entry["hours"]) if entry["hours"] is not None else None,
+                hours=hours,
                 net_amount=Decimal(str(entry["net_amount"])) if entry["net_amount"] is not None else None,
                 payment_received=Decimal(str(entry["payment_received"])) if entry["payment_received"] is not None else None,
             ))
