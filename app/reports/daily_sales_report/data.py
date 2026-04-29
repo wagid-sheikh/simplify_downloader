@@ -10,6 +10,7 @@ import sqlalchemy as sa
 from app.common.date_utils import get_timezone
 from app.common.db import session_scope
 from app.common.lead_rules import resolve_cancelled_flag
+from app.reports.same_day_fulfillment import build_line_items_agg, same_day_date_expr, string_list_agg
 
 
 @dataclass
@@ -135,12 +136,6 @@ def _to_local_date(value: object | None, tz) -> date | None:
     if parsed_dt is None:
         return None
     return parsed_dt.date()
-
-
-def _string_list_agg(*, dialect_name: str, value_expr, separator: str):
-    if dialect_name == "postgresql":
-        return sa.func.string_agg(value_expr, sa.literal(separator))
-    return sa.func.group_concat(value_expr, separator)
 
 
 def _build_manual_recovery_sections(
@@ -934,27 +929,7 @@ async def fetch_daily_sales_report(
 
         dialect_name = session.bind.dialect.name if session.bind is not None else ""
 
-        line_items_stmt = (
-            sa.select(
-                order_line_items.c.cost_center.label("cost_center"),
-                order_line_items.c.order_number.label("order_number"),
-                _string_list_agg(
-                    dialect_name=dialect_name,
-                    value_expr=sa.func.trim(
-                        sa.func.coalesce(order_line_items.c.service_name, "")
-                        + sa.literal(" ")
-                        + sa.func.coalesce(order_line_items.c.garment_name, "")
-                    ),
-                    separator=", ",
-                ).label("line_items"),
-            )
-            .group_by(order_line_items.c.cost_center, order_line_items.c.order_number)
-        )
-        line_items_result = await session.execute(line_items_stmt)
-        line_items_map = {
-            (str(entry["cost_center"]), str(entry["order_number"])): str(entry["line_items"] or "")
-            for entry in line_items_result.mappings()
-        }
+        line_items_agg = build_line_items_agg(order_line_items=order_line_items, dialect_name=dialect_name)
 
         same_day_stmt = (
             sa.select(
@@ -965,10 +940,11 @@ async def fetch_daily_sales_report(
                 orders.c.customer_name,
                 orders.c.mobile_number,
                 orders.c.net_amount,
+                line_items_agg.c.line_items,
                 sa.func.max(sales.c.payment_date).label("payment_date"),
                 # For orders with multiple payment rows on report date, aggregate to a single deterministic value.
                 sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)).label("payment_received"),
-                _string_list_agg(
+                string_list_agg(
                     dialect_name=dialect_name,
                     value_expr=sa.func.coalesce(sales.c.payment_mode, ""),
                     separator=", ",
@@ -978,12 +954,19 @@ async def fetch_daily_sales_report(
                 orders.join(
                     sales,
                     sa.and_(orders.c.cost_center == sales.c.cost_center, orders.c.order_number == sales.c.order_number),
-                ).outerjoin(store_master_primary, store_master_primary.c.cost_center == orders.c.cost_center)
+                )
+                .outerjoin(store_master_primary, store_master_primary.c.cost_center == orders.c.cost_center)
+                .outerjoin(
+                    line_items_agg,
+                    sa.and_(orders.c.cost_center == line_items_agg.c.cost_center, orders.c.order_number == line_items_agg.c.order_number),
+                )
             )
             .where(orders.c.order_date >= ranges["start_day"])
             .where(orders.c.order_date < ranges["next_day"])
-            .where(sales.c.payment_date >= ranges["start_day"])
-            .where(sales.c.payment_date < ranges["next_day"])
+            .where(
+                same_day_date_expr(dialect_name=dialect_name, dt_expr=orders.c.order_date, timezone_name=str(tz))
+                == same_day_date_expr(dialect_name=dialect_name, dt_expr=sales.c.payment_date, timezone_name=str(tz))
+            )
             .group_by(
                 orders.c.cost_center,
                 store_master_primary.c.store_code,
@@ -992,8 +975,9 @@ async def fetch_daily_sales_report(
                 orders.c.customer_name,
                 orders.c.mobile_number,
                 orders.c.net_amount,
+                line_items_agg.c.line_items,
             )
-            .order_by(orders.c.cost_center, orders.c.order_number)
+            .order_by(orders.c.order_date, orders.c.order_number)
         )
         same_day_result = await session.execute(same_day_stmt)
         for entry in same_day_result.mappings():
@@ -1010,7 +994,7 @@ async def fetch_daily_sales_report(
                     order_date=order_dt,
                     customer_name=str(entry["customer_name"] or ""),
                     mobile_number=str(entry["mobile_number"] or ""),
-                    line_items=line_items_map.get(key, ""),
+                    line_items=str(entry["line_items"] or ""),
                     delivery_or_payment_date=payment_dt,
                     payment_mode=str(entry["payment_mode"] or ""),
                     net_amount=_decimal(entry["net_amount"]) if entry.get("net_amount") is not None else None,

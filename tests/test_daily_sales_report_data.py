@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 import pytest
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql, sqlite
+from app.reports.same_day_fulfillment import same_day_date_expr
 
 from app.common.db import session_scope
 import importlib.util
@@ -827,12 +828,12 @@ async def test_fetch_daily_sales_report_manual_recovery_sections(tmp_path, monke
 
 
 def test_string_list_agg_helper_compiles_for_postgres_and_sqlite() -> None:
-    expr_pg = _data_module._string_list_agg(
+    expr_pg = _data_module.string_list_agg(
         dialect_name="postgresql",
         value_expr=sa.literal_column("payment_mode"),
         separator=", ",
     )
-    expr_sqlite = _data_module._string_list_agg(
+    expr_sqlite = _data_module.string_list_agg(
         dialect_name="sqlite",
         value_expr=sa.literal_column("payment_mode"),
         separator=", ",
@@ -869,7 +870,7 @@ def test_same_day_aggregation_statements_compile_with_postgres_safe_functions() 
     )
 
     line_items_stmt = sa.select(
-        _data_module._string_list_agg(
+        _data_module.string_list_agg(
             dialect_name="postgresql",
             value_expr=sa.func.trim(
                 sa.func.coalesce(order_line_items.c.service_name, "")
@@ -882,7 +883,7 @@ def test_same_day_aggregation_statements_compile_with_postgres_safe_functions() 
 
     same_day_stmt = (
         sa.select(
-            _data_module._string_list_agg(
+            _data_module.string_list_agg(
                 dialect_name="postgresql",
                 value_expr=sa.func.coalesce(sales.c.payment_mode, ""),
                 separator=", ",
@@ -905,3 +906,28 @@ def test_same_day_aggregation_statements_compile_with_postgres_safe_functions() 
     assert "group_concat" not in line_items_sql
     assert "string_agg" in same_day_sql
     assert "group_concat" not in same_day_sql
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_same_day_fulfillment_ignores_time_component(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_same_day_date_only.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 4, 29)
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
+        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
+        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, gross_amount, source_system) VALUES ('CC1','O300', '2026-04-29 23:50:00', 'Ravi', '9000000000', 500, 500, 'TumbleDry')"))
+        await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode, adjustments, is_edited_order) VALUES ('CC1','O300', '2026-04-30 00:05:00', 500, 'UPI', 0, 0)"))
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    assert report.same_day_fulfillment_rows == []
+
+
+def test_same_day_postgres_expression_has_no_strftime() -> None:
+    expr = same_day_date_expr(dialect_name="postgresql", dt_expr=sa.column("order_date"), timezone_name="Asia/Kolkata")
+    compiled = str(expr.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    assert "strftime" not in compiled.lower()

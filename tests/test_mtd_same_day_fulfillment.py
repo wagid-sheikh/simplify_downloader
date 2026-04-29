@@ -34,7 +34,7 @@ async def test_fetch_mtd_same_day_fulfillment_filters_and_aggregates(tmp_path, m
         await session.execute(sa.text("INSERT INTO store_master (cost_center, store_code) VALUES ('CC1', 'S1')"))
         await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount) VALUES ('CC1','O1','2026-04-10T09:00:00+05:30','Alice','9999999999',800),('CC1','O2','2026-03-30T09:00:00+05:30','Bob','8888888888',700)"))
         await session.execute(sa.text("INSERT INTO order_line_items (cost_center, order_number, service_name, garment_name) VALUES ('CC1','O1','Wash','Shirt'),('CC1','O1','Iron','Pant'),('CC1','O2','Dry','Coat')"))
-        await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES ('CC1','O1','2026-04-10T10:00:00+05:30','UPI',500),('CC1','O1','2026-04-10T11:00:00+05:30','UPI',300),('CC1','O2','2026-04-10T11:00:00+05:30','CARD',700)"))
+        await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES ('CC1','O1','2026-04-10T10:00:00+05:30','UPI',500),('CC1','O1','2026-04-10T11:00:00+05:30','UPI',300),('CC1','O2','2026-04-10T11:00:00+05:30','CARD',700),('CC1','O1','2026-04-11T00:10:00+05:30','CASH',50)"))
         await session.commit()
 
     rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=date(2026,4,29))
@@ -122,3 +122,22 @@ async def test_fetch_mtd_same_day_fulfillment_postgres_sql_has_no_strftime_and_h
     compiled = str(captured["stmt"].compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
     assert "strftime" not in compiled.lower()
     assert rows[0].hours == 2.5
+
+
+@pytest.mark.asyncio
+async def test_fetch_mtd_same_day_fulfillment_date_only_and_mtd_window(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / 'mtd_same_day_window.db'
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    monkeypatch.setattr(mtd_data, 'get_timezone', lambda: ZoneInfo('Asia/Kolkata'))
+
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("INSERT INTO store_master (cost_center, store_code) VALUES ('CC1', 'S1')"))
+        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount) VALUES ('CC1','O3','2026-04-29 23:50:00','Late','777',600),('CC1','O4','2026-03-31 23:50:00','Old','666',400)"))
+        await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES ('CC1','O3','2026-04-30 00:05:00','UPI',600),('CC1','O4','2026-04-01 00:05:00','UPI',400)"))
+        await session.commit()
+
+    rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=date(2026, 4, 29))
+    order_numbers = {row.order_number for row in rows}
+    assert 'O3' not in order_numbers
+    assert 'O4' not in order_numbers
