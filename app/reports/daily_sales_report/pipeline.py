@@ -169,34 +169,47 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
 
         context = _build_context(data, run_env)
         html = _render_html(context)
+        mtd_attachment_generated = True
+        mtd_rows = []
+        same_day_html: str | None = None
+        mtd_attachment_error: str | None = None
         try:
             mtd_rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
         except Exception as exc:
-            tracker.mark_phase("render_html", "error")
+            mtd_attachment_generated = False
+            mtd_attachment_error = str(exc)
+            tracker.mark_phase("render_html", "warning")
+            tracker.add_summary(f"MTD attachment generation failed during data load ({exc}).")
+            tracker.overall = "warning"
             log_event(
                 logger=logger,
                 phase="render_html",
-                status="error",
-                message="failed to fetch mtd same-day fulfillment data",
+                status="warning",
+                message="failed to fetch mtd same-day fulfillment data; continuing daily report generation",
                 report_date=resolved_date.isoformat(),
                 database_backend=database_url.split("://", 1)[0],
                 function_name="fetch_mtd_same_day_fulfillment",
                 error=str(exc),
             )
-            raise
         mtd_start = resolved_date.replace(day=1)
         mtd_end = resolved_date
-        same_day_html = render_mtd_same_day_html(
-            rows=mtd_rows,
-            report_date_display=resolved_date.strftime("%d-%b-%Y"),
-            mtd_start_display=mtd_start.strftime("%d-%b-%Y"),
-            mtd_end_display=mtd_end.strftime("%d-%b-%Y"),
-        )
-        tracker.mark_phase("render_html", "ok")
+        if mtd_attachment_generated:
+            same_day_html = render_mtd_same_day_html(
+                rows=mtd_rows,
+                report_date_display=resolved_date.strftime("%d-%b-%Y"),
+                mtd_start_display=mtd_start.strftime("%d-%b-%Y"),
+                mtd_end_display=mtd_end.strftime("%d-%b-%Y"),
+            )
+            tracker.mark_phase("render_html", "ok")
         log_event(
             logger=logger,
             phase="render_html",
-            message="rendered daily sales report html",
+            status="warning" if not mtd_attachment_generated else "ok",
+            message=(
+                "rendered daily sales report html; skipped MTD attachment"
+                if not mtd_attachment_generated
+                else "rendered daily sales report html"
+            ),
             report_date=resolved_date.isoformat(),
             pipeline_name=PIPELINE_NAME,
             mtd_start=mtd_start.isoformat(),
@@ -218,12 +231,13 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 pdf_options={"format": "A4", "landscape": True},
                 logger=logger,
             )
-            await render_pdf_with_configured_browser(
-                same_day_html,
-                same_day_output_path,
-                pdf_options={"format": "A4", "landscape": True},
-                logger=logger,
-            )
+            if mtd_attachment_generated and same_day_html is not None:
+                await render_pdf_with_configured_browser(
+                    same_day_html,
+                    same_day_output_path,
+                    pdf_options={"format": "A4", "landscape": True},
+                    logger=logger,
+                )
         except asyncio.TimeoutError as exc:
             tracker.mark_phase("render_pdf", "error")
             tracker.add_summary(
@@ -248,11 +262,16 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             record = tracker.build_record(finished_at)
             await persist_summary_record(database_url, record)
             return
-        tracker.mark_phase("render_pdf", "ok")
+        tracker.mark_phase("render_pdf", "warning" if not mtd_attachment_generated else "ok")
         log_event(
             logger=logger,
             phase="render_pdf",
-            message="rendered daily sales report pdf",
+            status="warning" if not mtd_attachment_generated else "ok",
+            message=(
+                "rendered daily sales report pdf; skipped MTD attachment pdf"
+                if not mtd_attachment_generated
+                else "rendered daily sales report pdf"
+            ),
             report_date=resolved_date.isoformat(),
             file_path=str(output_path),
             same_day_file_path=str(same_day_output_path),
@@ -269,18 +288,24 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             file_path=output_path,
             doc_type="daily_sales_report_pdf",
         )
-        await _persist_document(
-            database_url=database_url,
-            run_id=run_id,
-            report_date=resolved_date,
-            file_path=same_day_output_path,
-            doc_type="mtd_same_day_fulfillment_pdf",
-        )
-        tracker.mark_phase("persist_documents", "ok")
+        if mtd_attachment_generated:
+            await _persist_document(
+                database_url=database_url,
+                run_id=run_id,
+                report_date=resolved_date,
+                file_path=same_day_output_path,
+                doc_type="mtd_same_day_fulfillment_pdf",
+            )
+        tracker.mark_phase("persist_documents", "warning" if not mtd_attachment_generated else "ok")
         log_event(
             logger=logger,
             phase="persist_documents",
-            message="saved daily sales report document",
+            status="warning" if not mtd_attachment_generated else "ok",
+            message=(
+                "saved daily sales report document; MTD attachment document skipped"
+                if not mtd_attachment_generated
+                else "saved daily sales report document"
+            ),
             report_date=resolved_date.isoformat(),
             file_path=str(output_path),
             same_day_file_path=str(same_day_output_path),
@@ -294,11 +319,18 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             "report_date": resolved_date.isoformat(),
             "rows": len(data.rows),
             "edited_orders": len(data.edited_orders),
+            "mtd_attachment_generated": mtd_attachment_generated,
+            "mtd_attachment_row_count": len(mtd_rows),
+            "mtd_attachment_error": mtd_attachment_error,
         }
         tracker.add_summary(
             f"Daily sales report generated for {resolved_date.isoformat()} with "
             f"{len(data.rows)} cost centers and {len(data.edited_orders)} edited orders."
         )
+        if not mtd_attachment_generated:
+            tracker.add_summary(
+                "MTD same-day fulfillment attachment was not generated; daily sales report PDF was still produced."
+            )
 
         pre_finished_at = datetime.now(timezone.utc)
         pre_record = tracker.build_record(pre_finished_at)
