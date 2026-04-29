@@ -10,6 +10,18 @@
 
 ## Initial reconstructed decisions
 
+### DL-009
+- **Date:** 2026-04-29
+- **Status:** Active
+- **Decision:** Run `reports.mtd_same_day_fulfillment` as a separate tailed report in the cron reports block (between Daily Sales and Pending Deliveries), with its own retry envelope and notification metadata contract.
+- **Context:** Same-day fulfillment was introduced as a distinct report pipeline and should be production-orchestrated independently instead of relying on Daily Sales attachments only.
+- **Evidence:** `scripts/cron_run_orders_and_reports.sh` now executes `run_local_reports_mtd_same_day_fulfillment.sh` as its own report step with dedicated attempt/retry env knobs. `alembic/versions/0096_seed_mtd_same_day_notif.py` seeds `pipelines`, `notification_profiles`, `email_templates`, and `notification_recipients` records for `reports.mtd_same_day_fulfillment`.
+- **Implications:**
+  - Cron logs and run summaries now show explicit success/failure for MTD same-day fulfillment as an independent report stage.
+  - Notification delivery for this report is DB-contract driven and can be managed via profile/template/recipient rows without code changes.
+  - Full report-block failure condition should evaluate daily + MTD same-day + pending pipelines together.
+- **Follow-up:** Keep migration tests validating seed + cleanup behavior to protect this metadata contract.
+
 ### DL-008
 - **Date:** 2026-04-29
 - **Status:** Proposed
@@ -121,3 +133,5 @@
 - **Evidence:** Code paths, migrations, tests, or docs that support this.
 - **Implications:** Technical and operational consequences.
 - **Follow-up:** Required next actions, validation, or cleanup.
+
+- 2026-04-29: Same-day fulfillment reporting (Daily + MTD) now exposes `net_amount` and aggregated `payment_received` (sum per order within report window) to improve financial visibility for split-payment orders.

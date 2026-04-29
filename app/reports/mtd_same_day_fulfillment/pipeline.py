@@ -2,11 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime, timezone
-from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
-from typing import Mapping
-
-from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.common.date_utils import aware_now, get_timezone
 from app.common.db import session_scope
@@ -23,71 +19,13 @@ from app.dashboard_downloader.pipelines.base import (
 )
 from app.dashboard_downloader.report_generator import render_pdf_with_configured_browser
 
-from app.reports.mtd_same_day_fulfillment.data import fetch_mtd_same_day_fulfillment
-from app.reports.mtd_same_day_fulfillment.render import render_html as render_mtd_same_day_html
+from .data import fetch_mtd_same_day_fulfillment
+from .render import render_html
 
-from .data import DailySalesReportData, fetch_daily_sales_report
-
-PIPELINE_NAME = "reports.daily_sales_report"
-TEMPLATE_NAME = "daily_sales_report.html"
-TEMPLATE_DIR = Path("app") / "reports" / "daily_sales_report" / "templates"
+PIPELINE_NAME = "reports.mtd_same_day_fulfillment"
+TEMPLATE_NAME = "report.html"
+TEMPLATE_DIR = Path("app") / "reports" / "mtd_same_day_fulfillment" / "templates"
 OUTPUT_ROOT = Path("app") / "reports" / "output_files"
-
-
-def _format_amount(value: Decimal | int | float | None) -> str:
-    if value is None:
-        return "0"
-    try:
-        numeric = Decimal(str(value))
-    except Exception:  # pragma: no cover - defensive
-        return "0"
-    rounded = int(numeric.to_integral_value(rounding=ROUND_HALF_UP))
-    sign = "-" if rounded < 0 else ""
-    return f"{sign}{_format_indian_number(abs(rounded))}"
-
-
-def _format_indian_number(value: int) -> str:
-    digits = str(value)
-    if len(digits) <= 3:
-        return digits
-    last_three = digits[-3:]
-    remaining = digits[:-3]
-    chunks: list[str] = []
-    while len(remaining) > 2:
-        chunks.insert(0, remaining[-2:])
-        remaining = remaining[:-2]
-    if remaining:
-        chunks.insert(0, remaining)
-    return ",".join(chunks + [last_three])
-
-
-def _format_ddmmyyyy(value: object | None) -> str:
-    if value is None:
-        return "--"
-    if isinstance(value, datetime):
-        return value.date().strftime("%d-%m-%Y")
-    if isinstance(value, date):
-        return value.strftime("%d-%m-%Y")
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return "--"
-        try:
-            return date.fromisoformat(text).strftime("%d-%m-%Y")
-        except ValueError:
-            return text
-    return str(value)
-
-
-def _render_html(context: Mapping[str, object], template_name: str = TEMPLATE_NAME) -> str:
-    env = Environment(
-        loader=FileSystemLoader(str(TEMPLATE_DIR)),
-        autoescape=select_autoescape(["html", "xml"]),
-    )
-    env.filters["format_amount"] = _format_amount
-    env.filters["format_ddmmyyyy"] = _format_ddmmyyyy
-    template = env.get_template(template_name)
-    return template.render(**context)
 
 
 async def _persist_document(
@@ -96,12 +34,11 @@ async def _persist_document(
     run_id: str,
     report_date: date,
     file_path: Path,
-    doc_type: str,
 ) -> None:
     async with session_scope(database_url) as session:
         await session.execute(
             documents.insert().values(
-                doc_type=doc_type,
+                doc_type="mtd_same_day_fulfillment_pdf",
                 doc_subtype="pipeline_report",
                 doc_date=report_date,
                 reference_name_1="pipeline",
@@ -122,28 +59,6 @@ async def _persist_document(
         await session.commit()
 
 
-def _build_context(data: DailySalesReportData, run_environment: str) -> dict[str, object]:
-    report_date_display = data.report_date.strftime("%d-%b-%Y")
-    return {
-        "company_name": "The Shaw Ventures",
-        "report_date_display": report_date_display,
-        "run_environment": run_environment,
-        "rows": data.rows,
-        "totals": data.totals,
-        "edited_orders": data.edited_orders,
-        "edited_orders_summary": data.edited_orders_summary,
-        "edited_orders_totals": data.edited_orders_totals,
-        "missed_leads": data.missed_leads,
-        "cancelled_leads": data.cancelled_leads,
-        "lead_performance_summary": data.lead_performance_summary,
-        "to_be_recovered": data.to_be_recovered,
-        "to_be_compensated": data.to_be_compensated,
-        "to_be_recovered_total_order_value": data.to_be_recovered_total_order_value,
-        "to_be_compensated_total_order_value": data.to_be_compensated_total_order_value,
-        "same_day_fulfillment_rows": data.same_day_fulfillment_rows,
-    }
-
-
 async def _run(report_date: date | None, env: str | None, force: bool) -> None:
     run_env = resolve_run_env(env)
     run_id = new_run_id()
@@ -154,13 +69,13 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
     try:
         if not database_url:
             tracker.mark_phase("load_data", "error")
-            tracker.add_summary("Database URL is missing; cannot generate daily sales report.")
+            tracker.add_summary("Database URL is missing; cannot generate MTD same-day fulfillment report.")
             tracker.overall = "error"
             log_event(
                 logger=logger,
                 phase="load_data",
                 status="error",
-                message="Database URL is missing; cannot generate daily sales report.",
+                message="Database URL is missing; cannot generate MTD same-day fulfillment report.",
             )
             return
 
@@ -170,7 +85,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
         log_event(
             logger=logger,
             phase="orchestrator",
-            message="starting daily sales report pipeline",
+            message="starting MTD same-day fulfillment report pipeline",
             report_date=resolved_date.isoformat(),
             run_env=run_env,
             force=force,
@@ -182,56 +97,43 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 logger=logger,
                 phase="orchestrator",
                 status="warning",
-                message="daily sales report already generated; skipping",
+                message="MTD same-day fulfillment report already generated; skipping",
                 report_date=resolved_date.isoformat(),
                 existing_status=existing.get("overall_status"),
             )
             return
 
-        data = await fetch_daily_sales_report(
-            database_url=database_url,
-            report_date=resolved_date,
-        )
+        rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
         tracker.mark_phase("load_data", "ok")
         log_event(
             logger=logger,
             phase="load_data",
-            message="daily sales report data loaded",
+            message="MTD same-day fulfillment report data loaded",
             report_date=resolved_date.isoformat(),
-            rows=len(data.rows),
-            edited_orders=len(data.edited_orders),
+            rows=len(rows),
         )
 
-        context = _build_context(data, run_env)
-        html = _render_html(context)
-        mtd_rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
         mtd_start = resolved_date.replace(day=1)
-        mtd_end = resolved_date
-        same_day_html = render_mtd_same_day_html(
-            rows=mtd_rows,
+        html = render_html(
+            rows=rows,
             report_date_display=resolved_date.strftime("%d-%b-%Y"),
             mtd_start_display=mtd_start.strftime("%d-%b-%Y"),
-            mtd_end_display=mtd_end.strftime("%d-%b-%Y"),
+            mtd_end_display=resolved_date.strftime("%d-%b-%Y"),
         )
         tracker.mark_phase("render_html", "ok")
         log_event(
             logger=logger,
             phase="render_html",
-            message="rendered daily sales report html",
+            message="rendered MTD same-day fulfillment report html",
             report_date=resolved_date.isoformat(),
-            pipeline_name=PIPELINE_NAME,
-            mtd_start=mtd_start.isoformat(),
-            mtd_end=mtd_end.isoformat(),
-            mtd_row_count=len(mtd_rows),
+            template_name=TEMPLATE_NAME,
+            template_dir=str(TEMPLATE_DIR),
         )
 
         OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
         output_path = OUTPUT_ROOT / f"{PIPELINE_NAME}_{resolved_date.isoformat()}.pdf"
-        same_day_output_path = OUTPUT_ROOT / f"reports.mtd_same_day_fulfillment_{resolved_date.isoformat()}.pdf"
         if output_path.exists():
             output_path.unlink()
-        if same_day_output_path.exists():
-            same_day_output_path.unlink()
         try:
             await render_pdf_with_configured_browser(
                 html,
@@ -239,48 +141,31 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 pdf_options={"format": "A4", "landscape": True},
                 logger=logger,
             )
-            await render_pdf_with_configured_browser(
-                same_day_html,
-                same_day_output_path,
-                pdf_options={"format": "A4", "landscape": True},
-                logger=logger,
-            )
         except asyncio.TimeoutError as exc:
             tracker.mark_phase("render_pdf", "error")
-            tracker.add_summary(
-                f"PDF rendering timed out after {config.pdf_render_timeout_seconds}s."
-            )
+            tracker.add_summary(f"PDF rendering timed out after {config.pdf_render_timeout_seconds}s.")
             tracker.overall = "error"
             log_event(
                 logger=logger,
                 phase="render_pdf",
                 status="error",
-                message="daily sales report pdf render timed out",
+                message="MTD same-day fulfillment report pdf render timed out",
                 report_date=resolved_date.isoformat(),
                 file_path=str(output_path),
-                same_day_file_path=str(same_day_output_path),
-                pipeline_name=PIPELINE_NAME,
-                mtd_start=mtd_start.isoformat(),
-                mtd_end=mtd_end.isoformat(),
-                mtd_row_count=len(mtd_rows),
                 error=str(exc),
             )
             finished_at = datetime.now(timezone.utc)
             record = tracker.build_record(finished_at)
             await persist_summary_record(database_url, record)
             return
+
         tracker.mark_phase("render_pdf", "ok")
         log_event(
             logger=logger,
             phase="render_pdf",
-            message="rendered daily sales report pdf",
+            message="rendered MTD same-day fulfillment report pdf",
             report_date=resolved_date.isoformat(),
             file_path=str(output_path),
-            same_day_file_path=str(same_day_output_path),
-            pipeline_name=PIPELINE_NAME,
-            mtd_start=mtd_start.isoformat(),
-            mtd_end=mtd_end.isoformat(),
-            mtd_row_count=len(mtd_rows),
         )
 
         await _persist_document(
@@ -288,37 +173,19 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             run_id=run_id,
             report_date=resolved_date,
             file_path=output_path,
-            doc_type="daily_sales_report_pdf",
-        )
-        await _persist_document(
-            database_url=database_url,
-            run_id=run_id,
-            report_date=resolved_date,
-            file_path=same_day_output_path,
-            doc_type="mtd_same_day_fulfillment_pdf",
         )
         tracker.mark_phase("persist_documents", "ok")
         log_event(
             logger=logger,
             phase="persist_documents",
-            message="saved daily sales report document",
+            message="saved MTD same-day fulfillment report document",
             report_date=resolved_date.isoformat(),
             file_path=str(output_path),
-            same_day_file_path=str(same_day_output_path),
-            pipeline_name=PIPELINE_NAME,
-            mtd_start=mtd_start.isoformat(),
-            mtd_end=mtd_end.isoformat(),
-            mtd_row_count=len(mtd_rows),
         )
 
-        tracker.metrics = {
-            "report_date": resolved_date.isoformat(),
-            "rows": len(data.rows),
-            "edited_orders": len(data.edited_orders),
-        }
+        tracker.metrics = {"report_date": resolved_date.isoformat(), "rows": len(rows)}
         tracker.add_summary(
-            f"Daily sales report generated for {resolved_date.isoformat()} with "
-            f"{len(data.rows)} cost centers and {len(data.edited_orders)} edited orders."
+            f"MTD same-day fulfillment report generated for {resolved_date.isoformat()} with {len(rows)} rows."
         )
 
         pre_finished_at = datetime.now(timezone.utc)
@@ -374,7 +241,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
         log_event(
             logger=logger,
             phase="orchestrator",
-            message="daily sales report pipeline complete",
+            message="MTD same-day fulfillment report pipeline complete",
             report_date=resolved_date.isoformat(),
             status=tracker.overall or "ok",
         )
@@ -382,10 +249,8 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
         logger.close()
 
 
-def run_pipeline(
-    report_date: date | None = None, env: str | None = None, force: bool = False
-) -> None:
+def run_pipeline(report_date: date | None = None, env: str | None = None, force: bool = False) -> None:
     asyncio.run(_run(report_date, env, force))
 
 
-__all__ = ["run_pipeline"]
+__all__ = ["PIPELINE_NAME", "run_pipeline"]

@@ -5,4 +5,4 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
-exec poetry run python -m app report daily-sales --env prod --force "$@"
+exec poetry run python -m app report mtd-same-day-fulfillment --env prod --force "$@"

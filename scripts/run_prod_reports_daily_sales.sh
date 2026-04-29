@@ -15,4 +15,4 @@ for arg in "$@"; do
   fi
 done
 
-exec poetry run python -m app.reports.daily_sales_report.main ${FORCE_FLAG} "${EXTRA_ARGS[@]}"
+exec poetry run python -m app report daily-sales --env prod ${FORCE_FLAG} "${EXTRA_ARGS[@]}"
