@@ -49,6 +49,10 @@ async def test_fetch_same_day_fulfillment_rows_filters_window_and_aggregates(tmp
 
     assert [row.order_number for row in rows] == ['O1']
     assert rows[0].line_items == 'Wash Shirt, Iron Pant'
+    assert rows[0].line_item_rows == [
+        {'service_name': 'Wash', 'garment_name': 'Shirt'},
+        {'service_name': 'Iron', 'garment_name': 'Pant'},
+    ]
     assert str(rows[0].payment_received) == '800'
 
 

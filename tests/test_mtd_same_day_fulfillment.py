@@ -40,7 +40,7 @@ async def test_fetch_mtd_same_day_fulfillment_filters_and_aggregates(tmp_path, m
     rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=date(2026,4,29))
     assert len(rows) == 1
     assert rows[0].order_number == 'O1'
-    assert rows[0].line_items == "Wash Shirt, Iron Pant"
+    assert rows[0].line_items == "Iron Pant × 1 | Wash Shirt × 1"
     assert rows[0].net_amount == 800
     assert rows[0].payment_received == 800
     assert rows[0].hours == 2.0
@@ -68,7 +68,7 @@ async def test_fetch_mtd_same_day_fulfillment_does_not_use_create_engine(tmp_pat
     rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=date(2026, 4, 29))
     assert len(rows) == 1
     assert rows[0].order_number == "O1"
-    assert rows[0].line_items == "Wash, Trouser"
+    assert rows[0].line_items == "Trouser × 1 | Wash × 1"
 
 
 def test_render_html_includes_financial_columns() -> None:

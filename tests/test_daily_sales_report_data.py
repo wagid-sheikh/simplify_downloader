@@ -301,8 +301,7 @@ async def test_fetch_daily_sales_report_same_day_fulfillment_rows(tmp_path, monk
     assert row.store_code == "S1"
     assert row.order_number == "O100"
     assert row.payment_mode == "UPI"
-    assert "Dryclean Shirt" in row.line_items
-    assert "Steam Trouser" in row.line_items
+    assert row.line_items == "Dryclean Shirt × 1 | Steam Trouser × 1"
     assert row.net_amount == 500
     assert row.payment_received == 500
     assert str(row.hours) == "4.50"

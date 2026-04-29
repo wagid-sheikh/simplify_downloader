@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -16,12 +17,20 @@ class SameDayFulfillmentRecord:
     customer_name: str | None
     mobile_number: str | None
     line_items: str | None
+    line_item_rows: list[dict[str, str]]
     payment_date: datetime | None
     payment_mode: str | None
     net_amount: Any
     payment_received: Any
 
 
+
+
+def _line_item_struct(service_name: object | None, garment_name: object | None) -> dict[str, str]:
+    return {
+        "service_name": str(service_name) if service_name is not None else "",
+        "garment_name": str(garment_name) if garment_name is not None else "",
+    }
 def string_list_agg(*, dialect_name: str, value_expr: Any, separator: str):
     if dialect_name == "postgresql":
         return sa.func.string_agg(value_expr, sa.literal(separator))
@@ -126,17 +135,43 @@ async def fetch_same_day_fulfillment_rows(
     )
 
     result = await session.execute(stmt)
+    entries = list(result.mappings())
+
+    order_keys = {(str(entry.get("cost_center") or ""), str(entry.get("order_number") or "")) for entry in entries}
+    line_items_by_order: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
+    if order_keys:
+        keys_filter = sa.tuple_(order_line_items.c.cost_center, order_line_items.c.order_number).in_(list(order_keys))
+        line_items_stmt = (
+            sa.select(
+                order_line_items.c.cost_center,
+                order_line_items.c.order_number,
+                order_line_items.c.service_name,
+                order_line_items.c.garment_name,
+            )
+            .where(keys_filter)
+            .order_by(order_line_items.c.cost_center, order_line_items.c.order_number)
+        )
+        line_items_result = await session.execute(line_items_stmt)
+        for item in line_items_result.mappings():
+            key = (str(item.get("cost_center") or ""), str(item.get("order_number") or ""))
+            line_items_by_order[key].append(
+                _line_item_struct(item.get("service_name"), item.get("garment_name"))
+            )
+
     rows: list[SameDayFulfillmentRecord] = []
-    for entry in result.mappings():
+    for entry in entries:
+        cost_center = str(entry.get("cost_center") or "")
+        order_number = str(entry.get("order_number") or "")
         rows.append(
             SameDayFulfillmentRecord(
-                cost_center=str(entry.get("cost_center") or ""),
+                cost_center=cost_center,
                 store_code=str(entry["store_code"] or ""),
-                order_number=str(entry["order_number"] or ""),
+                order_number=order_number,
                 order_date=coerce_datetime(entry["order_date"]),
                 customer_name=str(entry["customer_name"]) if entry["customer_name"] is not None else None,
                 mobile_number=str(entry["mobile_number"]) if entry["mobile_number"] is not None else None,
                 line_items=str(entry["line_items"]) if entry["line_items"] is not None else None,
+                line_item_rows=line_items_by_order.get((cost_center, order_number), []),
                 payment_date=coerce_datetime(entry["payment_date"]),
                 payment_mode=str(entry["payment_mode"]) if entry["payment_mode"] is not None else None,
                 net_amount=entry["net_amount"],
