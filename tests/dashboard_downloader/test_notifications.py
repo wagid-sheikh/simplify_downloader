@@ -283,3 +283,28 @@ def test_derive_duration_fields_prefers_summary_timestamps_when_metrics_missing(
 
     assert duration_seconds == 67
     assert duration_human == "00:01:07"
+
+from pathlib import Path
+from app.dashboard_downloader.notifications import DocumentRecord
+
+
+def test_run_plan_all_docs_for_run_includes_daily_and_same_day_documents(tmp_path) -> None:
+    main_pdf = tmp_path / "daily.pdf"
+    same_day_pdf = tmp_path / "daily_same_day.pdf"
+    main_pdf.write_bytes(b"daily")
+    same_day_pdf.write_bytes(b"same-day")
+
+    plan = _build_run_plan(
+        pipeline_code="reports.daily_sales_report",
+        profile={"code": "run_summary", "scope": "run", "attach_mode": "all_docs_for_run"},
+        template={"subject_template": "Daily {{ report_date }}", "body_template": "Summary"},
+        recipients=[{"store_code": "ALL", "email_address": "ops@example.com", "display_name": None, "send_as": "to"}],
+        docs=[
+            DocumentRecord(doc_type="daily_sales_report_pdf", store_code=None, path=Path(main_pdf)),
+            DocumentRecord(doc_type="daily_sales_report_same_day_pdf", store_code=None, path=Path(same_day_pdf)),
+        ],
+        context={"report_date": "2026-04-29"},
+    )
+
+    assert plan is not None
+    assert plan.attachments == [main_pdf, same_day_pdf]

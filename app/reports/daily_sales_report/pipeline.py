@@ -27,6 +27,7 @@ from .data import DailySalesReportData, fetch_daily_sales_report
 
 PIPELINE_NAME = "reports.daily_sales_report"
 TEMPLATE_NAME = "daily_sales_report.html"
+SAME_DAY_TEMPLATE_NAME = "daily_sales_same_day_report.html"
 TEMPLATE_DIR = Path("app") / "reports" / "daily_sales_report" / "templates"
 OUTPUT_ROOT = Path("app") / "reports" / "output_files"
 
@@ -76,14 +77,14 @@ def _format_ddmmyyyy(value: object | None) -> str:
     return str(value)
 
 
-def _render_html(context: Mapping[str, object]) -> str:
+def _render_html(context: Mapping[str, object], template_name: str = TEMPLATE_NAME) -> str:
     env = Environment(
         loader=FileSystemLoader(str(TEMPLATE_DIR)),
         autoescape=select_autoescape(["html", "xml"]),
     )
     env.filters["format_amount"] = _format_amount
     env.filters["format_ddmmyyyy"] = _format_ddmmyyyy
-    template = env.get_template(TEMPLATE_NAME)
+    template = env.get_template(template_name)
     return template.render(**context)
 
 
@@ -93,11 +94,12 @@ async def _persist_document(
     run_id: str,
     report_date: date,
     file_path: Path,
+    doc_type: str,
 ) -> None:
     async with session_scope(database_url) as session:
         await session.execute(
             documents.insert().values(
-                doc_type="daily_sales_report_pdf",
+                doc_type=doc_type,
                 doc_subtype="pipeline_report",
                 doc_date=report_date,
                 reference_name_1="pipeline",
@@ -200,6 +202,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
 
         context = _build_context(data, run_env)
         html = _render_html(context)
+        same_day_html = _render_html(context, template_name=SAME_DAY_TEMPLATE_NAME)
         tracker.mark_phase("render_html", "ok")
         log_event(
             logger=logger,
@@ -210,12 +213,21 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
 
         OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
         output_path = OUTPUT_ROOT / f"{PIPELINE_NAME}_{resolved_date.isoformat()}.pdf"
+        same_day_output_path = OUTPUT_ROOT / f"{PIPELINE_NAME}_same_day_{resolved_date.isoformat()}.pdf"
         if output_path.exists():
             output_path.unlink()
+        if same_day_output_path.exists():
+            same_day_output_path.unlink()
         try:
             await render_pdf_with_configured_browser(
                 html,
                 output_path,
+                pdf_options={"format": "A4", "landscape": True},
+                logger=logger,
+            )
+            await render_pdf_with_configured_browser(
+                same_day_html,
+                same_day_output_path,
                 pdf_options={"format": "A4", "landscape": True},
                 logger=logger,
             )
@@ -232,6 +244,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 message="daily sales report pdf render timed out",
                 report_date=resolved_date.isoformat(),
                 file_path=str(output_path),
+            same_day_file_path=str(same_day_output_path),
                 error=str(exc),
             )
             finished_at = datetime.now(timezone.utc)
@@ -245,6 +258,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             message="rendered daily sales report pdf",
             report_date=resolved_date.isoformat(),
             file_path=str(output_path),
+            same_day_file_path=str(same_day_output_path),
         )
 
         await _persist_document(
@@ -252,6 +266,14 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             run_id=run_id,
             report_date=resolved_date,
             file_path=output_path,
+            doc_type="daily_sales_report_pdf",
+        )
+        await _persist_document(
+            database_url=database_url,
+            run_id=run_id,
+            report_date=resolved_date,
+            file_path=same_day_output_path,
+            doc_type="daily_sales_report_same_day_pdf",
         )
         tracker.mark_phase("persist_documents", "ok")
         log_event(
@@ -260,6 +282,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             message="saved daily sales report document",
             report_date=resolved_date.isoformat(),
             file_path=str(output_path),
+            same_day_file_path=str(same_day_output_path),
         )
 
         tracker.metrics = {
