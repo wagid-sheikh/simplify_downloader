@@ -29,9 +29,13 @@ run_step() {
 echo "--- Dependency order: reports.daily_sales_report must run before reports.pending_deliveries ---"
 
 run_step "daily_sales_report" \
-  poetry run python -m app.reports.daily_sales_report.main "${EXTRA_ARGS[@]}"
+  poetry run python -m app report daily-sales --force "${EXTRA_ARGS[@]}"
 
 echo "--- Dependency order: reports.pending_deliveries runs immediately after reports.daily_sales_report ---"
 
 run_step "pending_deliveries" \
-  poetry run python -m app.reports.pending_deliveries.main "${EXTRA_ARGS[@]}"
+  poetry run python -m app report pending-deliveries --force "${EXTRA_ARGS[@]}"
+
+echo "--- Running report: mtd_same_day_fulfillment ---"
+run_step "mtd_same_day_fulfillment" \
+  poetry run python -m app report mtd-same-day-fulfillment --force "${EXTRA_ARGS[@]}"
