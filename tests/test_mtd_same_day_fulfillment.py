@@ -39,6 +39,29 @@ async def test_fetch_mtd_same_day_fulfillment_filters_and_aggregates(tmp_path, m
     assert rows[0].payment_received == 800
 
 
+@pytest.mark.asyncio
+async def test_fetch_mtd_same_day_fulfillment_does_not_use_create_engine(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / 'mtd_same_day_no_reflection.db'
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    monkeypatch.setattr(mtd_data, 'get_timezone', lambda: ZoneInfo('Asia/Kolkata'))
+
+    def _fail_create_engine(*args, **kwargs):
+        raise AssertionError("create_engine should not be used in fetch_mtd_same_day_fulfillment")
+
+    monkeypatch.setattr(mtd_data.sa, "create_engine", _fail_create_engine)
+
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("INSERT INTO store_master (cost_center, store_code) VALUES ('CC1', 'S1')"))
+        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, net_amount) VALUES ('CC1','O1','2026-04-10T09:00:00+05:30',800)"))
+        await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_received) VALUES ('CC1','O1','2026-04-10T10:00:00+05:30',800)"))
+        await session.commit()
+
+    rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=date(2026, 4, 29))
+    assert len(rows) == 1
+    assert rows[0].order_number == "O1"
+
+
 def test_render_html_includes_financial_columns() -> None:
     html = render_html(rows=[], report_date_display='29-Apr-2026', mtd_start_display='01-Apr-2026', mtd_end_display='29-Apr-2026')
     assert 'Net Amount' in html

@@ -204,7 +204,21 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
 
         context = _build_context(data, run_env)
         html = _render_html(context)
-        mtd_rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
+        try:
+            mtd_rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
+        except Exception as exc:
+            tracker.mark_phase("render_html", "error")
+            log_event(
+                logger=logger,
+                phase="render_html",
+                status="error",
+                message="failed to fetch mtd same-day fulfillment data",
+                report_date=resolved_date.isoformat(),
+                database_backend=database_url.split("://", 1)[0],
+                function_name="fetch_mtd_same_day_fulfillment",
+                error=str(exc),
+            )
+            raise
         mtd_start = resolved_date.replace(day=1)
         mtd_end = resolved_date
         same_day_html = render_mtd_same_day_html(
