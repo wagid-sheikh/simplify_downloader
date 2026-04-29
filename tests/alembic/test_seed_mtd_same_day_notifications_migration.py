@@ -111,6 +111,11 @@ def test_seed_mtd_same_day_notif_upgrade_and_downgrade(monkeypatch: pytest.Monke
             sa.text("SELECT id FROM pipelines WHERE code = 'reports.mtd_same_day_fulfillment'")
         ).scalar_one()
         assert pipeline_id is not None
+        pipeline_description = connection.execute(
+            sa.text("SELECT description FROM pipelines WHERE id = :pipeline_id"),
+            {"pipeline_id": pipeline_id},
+        ).scalar_one()
+        assert pipeline_description == "Reports Pipeline, MTD Same-Day Fulfillment"
 
         profile_row = connection.execute(
             sa.text(
@@ -123,15 +128,16 @@ def test_seed_mtd_same_day_notif_upgrade_and_downgrade(monkeypatch: pytest.Monke
             {"pipeline_id": pipeline_id},
         ).one()
         assert profile_row.code == "default"
+        assert profile_row.attach_mode == "all_docs_for_run"
         assert profile_row.scope == "run"
         assert profile_row.env == "any"
         assert profile_row.env in ALLOWED_ENVS
-        assert profile_row.attach_mode == "all_docs_for_run"
 
         template_row = connection.execute(
             sa.text(
                 """
                 SELECT name, subject_template
+                     , body_template
                 FROM email_templates
                 WHERE profile_id = :profile_id
                 """
@@ -140,6 +146,7 @@ def test_seed_mtd_same_day_notif_upgrade_and_downgrade(monkeypatch: pytest.Monke
         ).one()
         assert template_row.name == "default"
         assert "MTD Same-Day Fulfillment Report" in template_row.subject_template
+        assert "Run ID: {{ run_id }} | Env: {{ run_env }}" in template_row.body_template
 
         recipient_rows = connection.execute(
             sa.text(
@@ -161,4 +168,15 @@ def test_seed_mtd_same_day_notif_upgrade_and_downgrade(monkeypatch: pytest.Monke
         pipeline_count = connection.execute(
             sa.text("SELECT COUNT(*) FROM pipelines WHERE code = 'reports.mtd_same_day_fulfillment'")
         ).scalar_one()
+        profile_count = connection.execute(
+            sa.text(
+                """
+                SELECT COUNT(*)
+                FROM notification_profiles np
+                JOIN pipelines p ON np.pipeline_id = p.id
+                WHERE p.code = 'reports.mtd_same_day_fulfillment'
+                """
+            )
+        ).scalar_one()
         assert pipeline_count == 0
+        assert profile_count == 0

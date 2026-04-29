@@ -7,7 +7,8 @@ set -euo pipefail
 # macOS Big Sur compatible, production-grade cron wrapper for:
 #   1. orders_sync_run_profiler.sh
 #   2. run_local_reports_daily_sales.sh
-#   3. run_local_reports_pending_deliveries.sh
+#   3. run_local_reports_mtd_same_day_fulfillment.sh
+#   4. run_local_reports_pending_deliveries.sh
 #
 # Features:
 # - macOS-safe lock using mkdir
@@ -62,6 +63,8 @@ DAILY_MAX_ATTEMPTS="${DAILY_MAX_ATTEMPTS:-3}"
 DAILY_RETRY_DELAY_SECONDS="${DAILY_RETRY_DELAY_SECONDS:-10}"
 PENDING_MAX_ATTEMPTS="${PENDING_MAX_ATTEMPTS:-3}"
 PENDING_RETRY_DELAY_SECONDS="${PENDING_RETRY_DELAY_SECONDS:-10}"
+MTD_SAME_DAY_MAX_ATTEMPTS="${MTD_SAME_DAY_MAX_ATTEMPTS:-3}"
+MTD_SAME_DAY_RETRY_DELAY_SECONDS="${MTD_SAME_DAY_RETRY_DELAY_SECONDS:-10}"
 DAILY_RESCUE_AFTER_PENDING_SUCCESS="${DAILY_RESCUE_AFTER_PENDING_SUCCESS:-1}"
 DAILY_RESCUE_MAX_ATTEMPTS="${DAILY_RESCUE_MAX_ATTEMPTS:-1}"
 DAILY_RESCUE_RETRY_DELAY_SECONDS="${DAILY_RESCUE_RETRY_DELAY_SECONDS:-5}"
@@ -520,6 +523,7 @@ log "LOCK_POLL_SECONDS=${LOCK_POLL_SECONDS}"
 log "SAFE_MODE=${SAFE_MODE}"
 log "ORDERS_MAX_ATTEMPTS=${ORDERS_MAX_ATTEMPTS} ORDERS_RETRY_DELAY_SECONDS=${ORDERS_RETRY_DELAY_SECONDS}"
 log "DAILY_MAX_ATTEMPTS=${DAILY_MAX_ATTEMPTS} DAILY_RETRY_DELAY_SECONDS=${DAILY_RETRY_DELAY_SECONDS}"
+log "MTD_SAME_DAY_MAX_ATTEMPTS=${MTD_SAME_DAY_MAX_ATTEMPTS} MTD_SAME_DAY_RETRY_DELAY_SECONDS=${MTD_SAME_DAY_RETRY_DELAY_SECONDS}"
 log "PENDING_MAX_ATTEMPTS=${PENDING_MAX_ATTEMPTS} PENDING_RETRY_DELAY_SECONDS=${PENDING_RETRY_DELAY_SECONDS}"
 log "DAILY_RESCUE_AFTER_PENDING_SUCCESS=${DAILY_RESCUE_AFTER_PENDING_SUCCESS} DAILY_RESCUE_MAX_ATTEMPTS=${DAILY_RESCUE_MAX_ATTEMPTS} DAILY_RESCUE_RETRY_DELAY_SECONDS=${DAILY_RESCUE_RETRY_DELAY_SECONDS}"
 log "GLOBAL_LOCK_DIR=${GLOBAL_LOCK_DIR}"
@@ -577,12 +581,14 @@ run_step() {
 orders_rc=0
 daily_rc=0
 pending_rc=0
+mtd_same_day_rc=0
 daily_rescue_rc=0
 run_started_epoch="$(date +%s)"
 
 run_step "Script 1: orders_sync_run_profiler" "./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" || orders_rc=$?
 run_step "Script 2: daily_sales_report" "./scripts/run_local_reports_daily_sales.sh" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" || daily_rc=$?
-run_step "Script 3: pending_deliveries" "./scripts/run_local_reports_pending_deliveries.sh" "${PENDING_MAX_ATTEMPTS}" "${PENDING_RETRY_DELAY_SECONDS}" || pending_rc=$?
+run_step "Script 3: mtd_same_day_fulfillment_report" "./scripts/run_local_reports_mtd_same_day_fulfillment.sh" "${MTD_SAME_DAY_MAX_ATTEMPTS}" "${MTD_SAME_DAY_RETRY_DELAY_SECONDS}" || mtd_same_day_rc=$?
+run_step "Script 4: pending_deliveries" "./scripts/run_local_reports_pending_deliveries.sh" "${PENDING_MAX_ATTEMPTS}" "${PENDING_RETRY_DELAY_SECONDS}" || pending_rc=$?
 
 if [[ "${pending_rc}" -eq 0 && "${daily_rc}" -ne 0 && "${DAILY_RESCUE_AFTER_PENDING_SUCCESS}" -eq 1 ]]; then
   section "OPTIONAL DAILY RESCUE PASS"
@@ -607,12 +613,13 @@ run_duration_seconds=$((run_finished_epoch - run_started_epoch))
 section "RUN STATUS SUMMARY"
 log "orders_sync_run_profiler_rc=${orders_rc}"
 log "daily_sales_report_rc=${daily_rc}"
+log "mtd_same_day_fulfillment_report_rc=${mtd_same_day_rc}"
 log "pending_deliveries_rc=${pending_rc}"
 log "daily_sales_report_rescue_rc=${daily_rescue_rc}"
 log "total_duration_seconds=${run_duration_seconds}"
 
-if [[ "${daily_rc}" -ne 0 && "${pending_rc}" -ne 0 ]]; then
-  log "ERROR: Both report pipelines failed (daily_sales_report_rc=${daily_rc}, pending_deliveries_rc=${pending_rc})."
+if [[ "${daily_rc}" -ne 0 && "${mtd_same_day_rc}" -ne 0 && "${pending_rc}" -ne 0 ]]; then
+  log "ERROR: All report pipelines failed (daily_sales_report_rc=${daily_rc}, mtd_same_day_fulfillment_report_rc=${mtd_same_day_rc}, pending_deliveries_rc=${pending_rc})."
   exit 1
 fi
 

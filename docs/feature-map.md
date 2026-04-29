@@ -82,10 +82,15 @@ Practical map of where to work for major capabilities.
 - **Purpose:** Generate PDFs and persist/send report artifacts.
 - **Primary paths:**
   - `app/reports/daily_sales_report/*`
+  - `app/reports/mtd_same_day_fulfillment/*`
   - `app/reports/pending_deliveries/*`
   - `app/dashboard_downloader/run_store_reports.py`
   - `app/dashboard_downloader/pipelines/{dashboard_weekly.py,dashboard_monthly.py,reporting.py}`
   - `app/dashboard_downloader/templates/*`
+- **Cron orchestration tail order (production wrapper):**
+  1. `scripts/run_local_reports_daily_sales.sh`
+  2. `scripts/run_local_reports_mtd_same_day_fulfillment.sh`
+  3. `scripts/run_local_reports_pending_deliveries.sh`
 - **Dependencies:** `documents` table, report notification templates/profiles.
 - **Notes/Risks:** Rendering failures and zero-data scenarios are handled differently per pipeline; keep behavior consistent. Pending deliveries now always includes TD+UC rows and excludes recovery-status orders (`TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`) from main aging buckets/details.
 
