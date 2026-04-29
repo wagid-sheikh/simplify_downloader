@@ -123,3 +123,5 @@ Practical map of where to work for major capabilities.
   - `.github/workflows/{ci.yml,deploy-prod.yml}`
   - `docker-compose.yml`, `Dockerfile`
 - **Notes/Risks:** Script assumptions around env vars and alembic execution must stay aligned with `app/config.py` rules.
+
+- Daily and MTD same-day fulfillment outputs now include Net Amount and Payment Received columns (payment rows are summed per order for deterministic multi-payment reporting).

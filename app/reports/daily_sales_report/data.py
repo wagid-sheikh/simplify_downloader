@@ -82,6 +82,8 @@ class SameDayFulfillmentRow:
     line_items: str
     delivery_or_payment_date: datetime | None
     payment_mode: str
+    net_amount: Decimal | None
+    payment_received: Decimal | None
     hours: Decimal | None
 
 
@@ -953,11 +955,11 @@ async def fetch_daily_sales_report(
                 orders.c.order_date,
                 orders.c.customer_name,
                 orders.c.mobile_number,
+                orders.c.net_amount,
                 sa.func.max(sales.c.payment_date).label("payment_date"),
-                sa.func.aggregate_strings(
-                    sa.func.distinct(sa.func.coalesce(sales.c.payment_mode, "")),
-                    ", ",
-                ).label("payment_mode"),
+                # For orders with multiple payment rows on report date, aggregate to a single deterministic value.
+                sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)).label("payment_received"),
+                sa.func.aggregate_strings(sa.func.coalesce(sales.c.payment_mode, ""), ", ").label("payment_mode"),
             )
             .select_from(
                 orders.join(
@@ -976,6 +978,7 @@ async def fetch_daily_sales_report(
                 orders.c.order_date,
                 orders.c.customer_name,
                 orders.c.mobile_number,
+                orders.c.net_amount,
             )
             .order_by(orders.c.cost_center, orders.c.order_number)
         )
@@ -997,6 +1000,8 @@ async def fetch_daily_sales_report(
                     line_items=line_items_map.get(key, ""),
                     delivery_or_payment_date=payment_dt,
                     payment_mode=str(entry["payment_mode"] or ""),
+                    net_amount=_decimal(entry["net_amount"]) if entry.get("net_amount") is not None else None,
+                    payment_received=_decimal(entry["payment_received"]) if entry.get("payment_received") is not None else None,
                     hours=hours,
                 )
             )
