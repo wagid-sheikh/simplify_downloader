@@ -10,6 +10,12 @@ from app.common.date_utils import get_timezone
 from app.common.db import session_scope
 
 
+def _string_list_agg(*, dialect_name: str, value_expr, separator: str):
+    if dialect_name == "postgresql":
+        return sa.func.string_agg(value_expr, sa.literal(separator))
+    return sa.func.group_concat(value_expr, separator)
+
+
 @dataclass
 class MTDSameDayFulfillmentRow:
     store_code: str
@@ -34,7 +40,13 @@ async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date
         sa.column("net_amount"),
         sa.column("customer_name"),
         sa.column("mobile_number"),
-        sa.column("line_items"),
+    )
+    order_line_items = sa.table(
+        "order_line_items",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("service_name"),
+        sa.column("garment_name"),
     )
     sales = sa.table(
         "sales",
@@ -51,8 +63,22 @@ async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date
     )
 
     tz = get_timezone()
+    dialect_name = sa.engine.make_url(database_url).get_backend_name()
     start_month = datetime.combine(report_date.replace(day=1), time.min, tzinfo=tz)
     next_day = datetime.combine(report_date, time.min, tzinfo=tz) + timedelta(days=1)
+
+    line_item_name = sa.func.trim(
+        sa.func.coalesce(order_line_items.c.service_name, "") + sa.literal(" ") + sa.func.coalesce(order_line_items.c.garment_name, "")
+    )
+    line_items_agg = (
+        sa.select(
+            order_line_items.c.cost_center.label("cost_center"),
+            order_line_items.c.order_number.label("order_number"),
+            _string_list_agg(dialect_name=dialect_name, value_expr=line_item_name, separator=", ").label("line_items"),
+        )
+        .group_by(order_line_items.c.cost_center, order_line_items.c.order_number)
+        .subquery()
+    )
 
     stmt = (
         sa.select(
@@ -61,7 +87,7 @@ async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date
             orders.c.order_date,
             orders.c.customer_name,
             orders.c.mobile_number,
-            orders.c.line_items,
+            line_items_agg.c.line_items,
             sa.func.max(sales.c.payment_date).label("payment_date"),
             sa.func.max(sales.c.payment_mode).label("payment_mode"),
             ((sa.func.strftime("%s", sa.func.max(sales.c.payment_date)) - sa.func.strftime("%s", orders.c.order_date)) / 3600.0).label("hours"),
@@ -72,7 +98,15 @@ async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date
             orders.join(
                 sales,
                 sa.and_(orders.c.cost_center == sales.c.cost_center, orders.c.order_number == sales.c.order_number),
-            ).outerjoin(store_master, store_master.c.cost_center == orders.c.cost_center)
+            )
+            .outerjoin(
+                line_items_agg,
+                sa.and_(
+                    orders.c.cost_center == line_items_agg.c.cost_center,
+                    orders.c.order_number == line_items_agg.c.order_number,
+                ),
+            )
+            .outerjoin(store_master, store_master.c.cost_center == orders.c.cost_center)
         )
         .where(orders.c.order_date >= start_month)
         .where(orders.c.order_date < next_day)
@@ -84,7 +118,7 @@ async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date
             orders.c.order_date,
             orders.c.customer_name,
             orders.c.mobile_number,
-            orders.c.line_items,
+            line_items_agg.c.line_items,
             orders.c.net_amount,
         )
         .order_by(orders.c.order_date, orders.c.order_number)
