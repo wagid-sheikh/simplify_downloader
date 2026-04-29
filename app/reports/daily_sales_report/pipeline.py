@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime, timezone
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from pathlib import Path
 from typing import Mapping
 
@@ -25,63 +25,28 @@ from app.dashboard_downloader.report_generator import render_pdf_with_configured
 
 from app.reports.mtd_same_day_fulfillment.data import fetch_mtd_same_day_fulfillment
 from app.reports.mtd_same_day_fulfillment.render import render_html as render_mtd_same_day_html
+from app.reports.shared.formatters import format_amount, format_ddmmyyyy
 
 from .data import DailySalesReportData, fetch_daily_sales_report
 
 PIPELINE_NAME = "reports.daily_sales_report"
 TEMPLATE_NAME = "daily_sales_report.html"
 TEMPLATE_DIR = Path("app") / "reports" / "daily_sales_report" / "templates"
+SHARED_TEMPLATE_DIR = Path("app") / "reports" / "shared" / "templates"
 OUTPUT_ROOT = Path("app") / "reports" / "output_files"
 
 
 def _format_amount(value: Decimal | int | float | None) -> str:
-    if value is None:
-        return "0"
-    try:
-        numeric = Decimal(str(value))
-    except Exception:  # pragma: no cover - defensive
-        return "0"
-    rounded = int(numeric.to_integral_value(rounding=ROUND_HALF_UP))
-    sign = "-" if rounded < 0 else ""
-    return f"{sign}{_format_indian_number(abs(rounded))}"
-
-
-def _format_indian_number(value: int) -> str:
-    digits = str(value)
-    if len(digits) <= 3:
-        return digits
-    last_three = digits[-3:]
-    remaining = digits[:-3]
-    chunks: list[str] = []
-    while len(remaining) > 2:
-        chunks.insert(0, remaining[-2:])
-        remaining = remaining[:-2]
-    if remaining:
-        chunks.insert(0, remaining)
-    return ",".join(chunks + [last_three])
+    return format_amount(value)
 
 
 def _format_ddmmyyyy(value: object | None) -> str:
-    if value is None:
-        return "--"
-    if isinstance(value, datetime):
-        return value.date().strftime("%d-%m-%Y")
-    if isinstance(value, date):
-        return value.strftime("%d-%m-%Y")
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return "--"
-        try:
-            return date.fromisoformat(text).strftime("%d-%m-%Y")
-        except ValueError:
-            return text
-    return str(value)
+    return format_ddmmyyyy(value)
 
 
 def _render_html(context: Mapping[str, object], template_name: str = TEMPLATE_NAME) -> str:
     env = Environment(
-        loader=FileSystemLoader(str(TEMPLATE_DIR)),
+        loader=FileSystemLoader([str(TEMPLATE_DIR), str(SHARED_TEMPLATE_DIR)]),
         autoescape=select_autoescape(["html", "xml"]),
     )
     env.filters["format_amount"] = _format_amount
@@ -204,7 +169,21 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
 
         context = _build_context(data, run_env)
         html = _render_html(context)
-        mtd_rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
+        try:
+            mtd_rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
+        except Exception as exc:
+            tracker.mark_phase("render_html", "error")
+            log_event(
+                logger=logger,
+                phase="render_html",
+                status="error",
+                message="failed to fetch mtd same-day fulfillment data",
+                report_date=resolved_date.isoformat(),
+                database_backend=database_url.split("://", 1)[0],
+                function_name="fetch_mtd_same_day_fulfillment",
+                error=str(exc),
+            )
+            raise
         mtd_start = resolved_date.replace(day=1)
         mtd_end = resolved_date
         same_day_html = render_mtd_same_day_html(
