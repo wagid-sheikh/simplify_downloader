@@ -823,3 +823,22 @@ async def test_fetch_daily_sales_report_manual_recovery_sections(tmp_path, monke
     assert compensated.customer_name == "Meera"
     assert compensated.mobile_number == "9000000003"
     assert report.to_be_compensated_total_order_value == 300
+
+
+def test_string_agg_helper_compiles_for_postgres_and_sqlite() -> None:
+    expr_pg = _data_module._string_agg(
+        dialect_name="postgresql",
+        value_expr=sa.literal_column("payment_mode"),
+        separator=", ",
+    )
+    expr_sqlite = _data_module._string_agg(
+        dialect_name="sqlite",
+        value_expr=sa.literal_column("payment_mode"),
+        separator=", ",
+    )
+
+    pg_sql = str(sa.select(expr_pg).compile(dialect=sa.dialects.postgresql.dialect()))
+    sqlite_sql = str(sa.select(expr_sqlite).compile(dialect=sa.dialects.sqlite.dialect()))
+
+    assert "string_agg" in pg_sql.lower()
+    assert "group_concat" in sqlite_sql.lower()
