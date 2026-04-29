@@ -93,6 +93,7 @@ def _create_tables(database_url: str) -> None:
                     cost_center TEXT,
                     payment_date TIMESTAMP,
                     payment_received NUMERIC,
+                    payment_mode TEXT,
                     adjustments NUMERIC,
                     order_number TEXT,
                     is_edited_order BOOLEAN
@@ -109,6 +110,18 @@ def _create_tables(database_url: str) -> None:
                     store_code TEXT,
                     store_name TEXT,
                     sync_group TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            sa.text(
+                """
+                CREATE TABLE order_line_items (
+                    cost_center TEXT,
+                    order_number TEXT,
+                    service_name TEXT,
+                    garment_name TEXT
                 )
                 """
             )
@@ -244,6 +257,51 @@ async def test_fetch_daily_sales_report_missed_leads_td_only(tmp_path, monkeypat
             ],
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_same_day_fulfillment_rows(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_same_day.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 4, 29)
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
+        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
+        await session.execute(
+            sa.text(
+                "INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, gross_amount, source_system) "
+                "VALUES ('CC1','O100', :order_dt, 'Ravi', '9000000000', 500, 500, 'TumbleDry')"
+            ),
+            {"order_dt": "2026-04-29T09:00:00+05:30"},
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode, adjustments, is_edited_order) "
+                "VALUES ('CC1','O100', :payment_dt, 500, 'UPI', 0, 0)"
+            ),
+            {"payment_dt": "2026-04-29T13:30:00+05:30"},
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO order_line_items (cost_center, order_number, service_name, garment_name) VALUES "
+                "('CC1','O100','Dryclean','Shirt'),"
+                "('CC1','O100','Steam','Trouser')"
+            )
+        )
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    assert len(report.same_day_fulfillment_rows) == 1
+    row = report.same_day_fulfillment_rows[0]
+    assert row.store_code == "S1"
+    assert row.order_number == "O100"
+    assert row.payment_mode == "UPI"
+    assert "Dryclean Shirt" in row.line_items
+    assert "Steam Trouser" in row.line_items
+    assert str(row.hours) == "4.50"
 
 
 @pytest.mark.asyncio
