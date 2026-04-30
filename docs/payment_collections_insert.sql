@@ -1,3 +1,38 @@
+CREATE TABLE IF NOT EXISTS payment_collections (
+    payment_id          BIGSERIAL PRIMARY KEY,
+
+    source_sheet_row    INTEGER NOT NULL UNIQUE,
+
+    payment_timestamp   TIMESTAMP WITHOUT TIME ZONE NOT NULL,
+    email_address       TEXT,
+    payment_mode        TEXT NOT NULL,
+    store_code          VARCHAR(30) NOT NULL,
+    payment_date        DATE NOT NULL,
+    order_number        VARCHAR(50) NOT NULL,
+    amount              NUMERIC(12,2) NOT NULL CHECK (amount >= 0),
+    remarks             TEXT,
+    source_rowid        VARCHAR(50),
+
+    handed_over         BOOLEAN NOT NULL DEFAULT FALSE,
+    date_handed         DATE,
+
+    date_modified       DATE,
+    updated_flag        BOOLEAN NOT NULL DEFAULT FALSE,
+
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_payment_collections_store_date
+ON payment_collections (store_code, payment_date);
+
+CREATE INDEX IF NOT EXISTS idx_payment_collections_order_number
+ON payment_collections (order_number);
+
+CREATE INDEX IF NOT EXISTS idx_payment_collections_mode
+ON payment_collections (payment_mode);
+
+
 INSERT INTO public.payment_collections (
 source_sheet_row, payment_timestamp, email_address, payment_mode, store_code, payment_date,
 order_number, amount, remarks, source_rowid, handed_over, date_handed, date_modified, updated_flag
