@@ -30,7 +30,7 @@
 - **Evidence:** `alembic/versions/0097_payment_collections.py` creates `payment_collections` with unique source row tracking, payment/order metadata, handover/update flags, and supporting lookup indexes.
 - **Implications:**
   - Manual payment ingestion can use stable inserts keyed by `source_sheet_row` to avoid duplicate row ingestion.
-  - Operational lookup paths are optimized for `(store_code, payment_date)`, `order_number`, and `payment_mode`.
+  - Operational lookup paths are optimized for `(cost_center, payment_date)`, `order_number`, and `payment_mode`.
   - The table supports later reconciliation workflows through `handed_over`, `date_handed`, `date_modified`, and `updated_flag` fields.
 - **Follow-up:** If ingestion tooling is added, enforce idempotent upsert behavior keyed by `source_sheet_row` and maintain `updated_at` on updates.
 
