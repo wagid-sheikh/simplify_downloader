@@ -10,6 +10,18 @@
 
 ## Initial reconstructed decisions
 
+### DL-011
+- **Date:** 2026-04-30
+- **Status:** Active
+- **Decision:** Formalize manual-ingestion business rules and correction lifecycle for `payment_collections` in a dedicated operator-facing document.
+- **Context:** The table is manually fed from Excel transcriptions of store WhatsApp payment confirmations; without a written contract, idempotency, correction handling, and handover semantics can drift.
+- **Evidence:** `docs/payment_collections.md` now defines row identity (`source_sheet_row`), update workflow expectations, and recommended upsert SQL with explicit `updated_at` maintenance.
+- **Implications:**
+  - Operators and engineers have one canonical reference for inserts/updates into this manual ledger.
+  - Data reconciliation can rely on consistent meanings for `handed_over`, `date_handed`, `updated_flag`, and `date_modified`.
+  - Future tooling can adopt the same contract without reverse-engineering intent from ad-hoc SQL.
+- **Follow-up:** Add and periodically refresh `docs/payment_collections.csv` exports to support trend/data-quality analysis snapshots tied to this contract.
+
 ### DL-010
 - **Date:** 2026-04-30
 - **Status:** Active
