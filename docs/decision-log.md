@@ -158,27 +158,16 @@
 - **Implications:** Technical and operational consequences.
 - **Follow-up:** Required next actions, validation, or cleanup.
 
-- 2026-04-29: Same-day fulfillment reporting (Daily + MTD) now exposes `net_amount` and aggregated `payment_received` (sum per order within report window) to improve financial visibility for split-payment orders.
-
-### DL-006
+### DL-015
 - **Date:** 2026-04-29
 - **Status:** Active
-- **Decision:** Daily same-day SQL now uses dialect-aware string aggregation (`string_agg` for PostgreSQL, `group_concat` for SQLite) to keep one query contract portable across runtime/test databases.
-- **Context:** Same-day fulfillment line-item and payment-mode concatenation was vulnerable to backend-specific SQL behavior.
-- **Evidence:** `app/reports/daily_sales_report/data.py`, `tests/test_daily_sales_report_data.py`.
-- **Implications:** Daily report semantics stay unchanged (same-day filters, row grouping, summed payment_received), while query compilation remains valid for both production and test dialects.
-- **Follow-up:** Keep portability tests whenever adding new SQL aggregate concatenations.
+- **Decision:** Same-day fulfillment row selection and line-item aggregation are centralized in `app/reports/shared/same_day_fulfillment.py` and reused by both Daily and MTD reports, with same-day defined as local date equality between order and payment timestamps.
+- **Context:** Daily and MTD reports previously duplicated near-identical SQL for same-day filtering, payment aggregation, and line-item concatenation.
+- **Evidence:** `app/reports/shared/same_day_fulfillment.py`, `app/reports/daily_sales_report/data.py`, `app/reports/mtd_same_day_fulfillment/data.py`, `tests/test_same_day_fulfillment_shared.py`.
+- **Implications:** Canonical behavior stays consistent across report pipelines while allowing each caller to pass its own window boundaries (daily window vs month-to-date window).
+- **Follow-up:** Route future same-day rule or aggregation changes through the shared helper and keep report-level tests as integration coverage.
 
-### DL-007
-- **Date:** 2026-04-29
-- **Status:** Active
-- **Decision:** Cron report wrapper exits non-zero if any required report step fails after retries.
-- **Context:** Partial success previously masked failed report pipelines in final cron status.
-- **Evidence:** `scripts/cron_run_orders_and_reports.sh`, `tests/test_cron_run_orders_and_reports.py`.
-- **Implications:** Operators and monitors can treat cron exit code as strict health signal for required report generation.
-- **Follow-up:** Preserve retry behavior, but never downgrade required-step failures to success (including optional daily rescue attempts).
-
-### DL-008
+### DL-014
 - **Date:** 2026-04-29
 - **Status:** Active
 - **Decision:** Daily Sales notification second attachment is explicitly treated as an MTD same-day artifact with month-start→report-date window and distinct document metadata.
@@ -187,11 +176,20 @@
 - **Implications:** Attachment naming/doc_type/window text remain unambiguous in persisted documents and PDFs.
 - **Follow-up:** Keep window labels explicit in templates and pipeline logs.
 
-### DL-009
+### DL-013
 - **Date:** 2026-04-29
 - **Status:** Active
-- **Decision:** Same-day fulfillment row selection and line-item aggregation are centralized in `app/reports/shared/same_day_fulfillment.py` and reused by both Daily and MTD reports, with same-day defined as local date equality between order and payment timestamps.
-- **Context:** Daily and MTD reports previously duplicated near-identical SQL for same-day filtering, payment aggregation, and line-item concatenation.
-- **Evidence:** `app/reports/shared/same_day_fulfillment.py`, `app/reports/daily_sales_report/data.py`, `app/reports/mtd_same_day_fulfillment/data.py`, `tests/test_same_day_fulfillment_shared.py`.
-- **Implications:** Canonical behavior stays consistent across report pipelines while allowing each caller to pass its own window boundaries (daily window vs month-to-date window).
-- **Follow-up:** Route future same-day rule or aggregation changes through the shared helper and keep report-level tests as integration coverage.
+- **Decision:** Cron report wrapper exits non-zero if any required report step fails after retries.
+- **Context:** Partial success previously masked failed report pipelines in final cron status.
+- **Evidence:** `scripts/cron_run_orders_and_reports.sh`, `tests/test_cron_run_orders_and_reports.py`.
+- **Implications:** Operators and monitors can treat cron exit code as strict health signal for required report generation.
+- **Follow-up:** Preserve retry behavior, but never downgrade required-step failures to success (including optional daily rescue attempts).
+
+### DL-012
+- **Date:** 2026-04-29
+- **Status:** Active
+- **Decision:** Daily same-day SQL now uses dialect-aware string aggregation (`string_agg` for PostgreSQL, `group_concat` for SQLite) to keep one query contract portable across runtime/test databases.
+- **Context:** Same-day fulfillment line-item and payment-mode concatenation was vulnerable to backend-specific SQL behavior.
+- **Evidence:** `app/reports/daily_sales_report/data.py`, `tests/test_daily_sales_report_data.py`.
+- **Implications:** Daily report semantics stay unchanged (same-day filters, row grouping, summed payment_received), while query compilation remains valid for both production and test dialects.
+- **Follow-up:** Keep portability tests whenever adding new SQL aggregate concatenations.
