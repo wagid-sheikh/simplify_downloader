@@ -10,6 +10,30 @@
 
 ## Initial reconstructed decisions
 
+### DL-011
+- **Date:** 2026-04-30
+- **Status:** Active
+- **Decision:** Formalize manual-ingestion business rules and correction lifecycle for `payment_collections` in a dedicated operator-facing document.
+- **Context:** The table is manually fed from Excel transcriptions of store WhatsApp payment confirmations; without a written contract, idempotency, correction handling, and handover semantics can drift.
+- **Evidence:** `docs/payment_collections.md` now defines row identity (`source_sheet_row`), update workflow expectations, and recommended upsert SQL with explicit `updated_at` maintenance.
+- **Implications:**
+  - Operators and engineers have one canonical reference for inserts/updates into this manual ledger.
+  - Data reconciliation can rely on consistent meanings for `handed_over`, `date_handed`, `updated_flag`, and `date_modified`.
+  - Future tooling can adopt the same contract without reverse-engineering intent from ad-hoc SQL.
+- **Follow-up:** Add and periodically refresh `docs/payment_collections.csv` exports to support trend/data-quality analysis snapshots tied to this contract.
+
+### DL-010
+- **Date:** 2026-04-30
+- **Status:** Active
+- **Decision:** Add a dedicated `payment_collections` table to store manually recorded store payment transactions imported from operator-maintained spreadsheets.
+- **Context:** Store delivery/payment confirmations are shared in WhatsApp groups, then transcribed by operations into Excel before manual SQL inserts. The service lacked a first-class table to persist this manual payment ledger with lifecycle flags.
+- **Evidence:** `alembic/versions/0097_payment_collections.py` creates `payment_collections` with unique source row tracking, payment/order metadata, handover/update flags, and supporting lookup indexes.
+- **Implications:**
+  - Manual payment ingestion can use stable inserts keyed by `source_sheet_row` to avoid duplicate row ingestion.
+  - Operational lookup paths are optimized for `(store_code, payment_date)`, `order_number`, and `payment_mode`.
+  - The table supports later reconciliation workflows through `handed_over`, `date_handed`, `date_modified`, and `updated_flag` fields.
+- **Follow-up:** If ingestion tooling is added, enforce idempotent upsert behavior keyed by `source_sheet_row` and maintain `updated_at` on updates.
+
 ### DL-009
 - **Date:** 2026-04-29
 - **Status:** Active
