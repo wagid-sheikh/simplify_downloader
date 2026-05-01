@@ -558,7 +558,12 @@ for raw_arg in "$@"; do
   fi
 done
 
-run_step "Script 1: td_leads_sync" "./scripts/run_local_td_leads_sync.sh" "${TD_LEADS_ARGS[@]}"
+log "Parsed td_leads args count=${#TD_LEADS_ARGS[@]} values=$(printf '%q ' "${TD_LEADS_ARGS[@]-}")"
+if [[ ${#TD_LEADS_ARGS[@]} -gt 0 ]]; then
+  run_step "Script 1: td_leads_sync" "./scripts/run_local_td_leads_sync.sh" "${TD_LEADS_ARGS[@]}"
+else
+  run_step "Script 1: td_leads_sync" "./scripts/run_local_td_leads_sync.sh"
+fi
 
 section "CRON RUN FINISHED SUCCESSFULLY"
 exit 0
