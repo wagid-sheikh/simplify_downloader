@@ -2637,7 +2637,7 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
                 INSERT INTO orders (store_code, mobile_number, order_number, order_date) VALUES
                 ('A100', '9000000002', 'SO-OLD', '2026-04-28 10:30:00+00:00'),
                 ('A100', '9000000002', 'SO-100', '2026-05-01 10:30:00+00:00'),
-                ('A100', '9000000003', 'SO-200', '2026-05-01 09:00:00+00:00'),
+                ('A100', '+91-90000 00003', 'SO-200', '2026-05-01 09:00:00+00:00'),
                 ('A100', '9000000003', 'SO-150', '2026-05-01 08:30:00+00:00')
             """))
 
