@@ -2308,7 +2308,7 @@ async def test_td_leads_main_parallel_worker_path_reduces_elapsed(monkeypatch: p
     async def _fake_start_summary(*, logger, summary):
         return None
 
-    async def _fake_persist_summary(*, logger, summary, finished_at):
+    async def _fake_persist_summary(*, logger, summary, finished_at, reporting_mode=None):
         persisted_summaries.append(summary)
         return True
 
@@ -2367,7 +2367,7 @@ async def test_td_leads_main_preserves_summary_store_order_when_workers_finish_o
     monkeypatch.setattr(
         td_leads_main,
         "_persist_run_summary",
-        lambda logger, summary, finished_at: persisted_summaries.append(summary) or asyncio.sleep(0, result=False),
+        lambda logger, summary, finished_at, reporting_mode=None: persisted_summaries.append(summary) or asyncio.sleep(0, result=False),
     )
     monkeypatch.setattr(td_leads_main, "_resolve_td_leads_concurrency_settings", lambda: (3, 3, True))
     monkeypatch.setattr(td_leads_main, "_run_store", _fake_run_store)
@@ -2413,7 +2413,7 @@ async def test_td_leads_main_normalizes_store_worker_exceptions_and_persists_sum
     monkeypatch.setattr(
         td_leads_main,
         "_persist_run_summary",
-        lambda logger, summary, finished_at: persisted_summaries.append(summary) or asyncio.sleep(0, result=True),
+        lambda logger, summary, finished_at, reporting_mode=None: persisted_summaries.append(summary) or asyncio.sleep(0, result=True),
     )
     monkeypatch.setattr(td_leads_main, "_resolve_td_leads_concurrency_settings", lambda: (2, 2, True))
     monkeypatch.setattr(td_leads_main, "_run_store", _fake_run_store)
@@ -2428,3 +2428,143 @@ async def test_td_leads_main_normalizes_store_worker_exceptions_and_persists_sum
     assert persisted_summaries[0].store_results["B"].status == "error"
     assert "failed" in persisted_summaries[0].store_results["B"].message.lower()
     assert notifications == [("td_crm_leads_sync", "run-errors")]
+
+
+def test_td_leads_parser_accepts_reporting_mode() -> None:
+    parser = td_leads_main._build_parser()
+
+    args = parser.parse_args(["--reporting-mode", "meeting", "--store-code", "A817"])
+
+    assert args.reporting_mode == "meeting"
+    assert args.store_codes == ["A817"]
+
+
+def test_build_td_daily_reporting_and_action_required_cover_reconciliation_shapes(monkeypatch: pytest.MonkeyPatch) -> None:
+    reference_now = datetime(2026, 4, 24, 9, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(td_leads_main, "aware_now", lambda tz: reference_now)
+    monkeypatch.setattr(td_leads_main, "_resolve_td_open_lead_age_threshold_days", lambda: 2)
+
+    summary = LeadsRunSummary(
+        run_id="run-reporting",
+        run_env="local",
+        report_date=reference_now.date(),
+        store_results={
+            "A817": StoreLeadResult(
+                store_code="A817",
+                rows=[
+                    {
+                        "status_bucket": "pending",
+                        "pickup_no": "A817-OPEN-1",
+                        "customer_name": "Open Lead",
+                        "mobile": "9000000001",
+                        "pickup_created_at": "2026-04-21 09:33:39",
+                        "source": "Meta",
+                        "customer_type": "New",
+                    },
+                    {
+                        "status_bucket": "completed",
+                        "pickup_no": "A817-COMP-1",
+                        "customer_name": "Matched Lead",
+                        "mobile": "9000000002",
+                        "pickup_created_at": "2026-04-24 07:00:00",
+                        "order_number": "SO-123",
+                    },
+                    {
+                        "status_bucket": "completed",
+                        "pickup_no": "A817-COMP-2",
+                        "customer_name": "No Match Lead",
+                        "mobile": "9000000003",
+                        "pickup_created_at": "2026-04-24 07:00:00",
+                        "source": "Walk-in",
+                        "customer_type": "Existing",
+                    },
+                ],
+            )
+        },
+    )
+
+    daily_reporting = td_leads_main._build_td_daily_reporting(summary)
+
+    assert daily_reporting["open_leads_high_age_threshold_days"] == 2
+    assert daily_reporting["open_leads_high_age"][0].keys() == {
+        "store_code",
+        "pickup_no",
+        "customer_name",
+        "mobile",
+        "lead_created_at",
+        "lead_age_days",
+        "source",
+        "customer_type",
+        "last_seen_status",
+    }
+    assert daily_reporting["open_leads_high_age"][0]["lead_age_days"] == 2
+
+    assert len(daily_reporting["completed_leads_without_order_match"]) == 1
+    assert daily_reporting["completed_leads_without_order_match"][0]["pickup_no"] == "A817-COMP-2"
+
+    action_required_html = td_leads_main._build_td_action_required_html(daily_reporting=daily_reporting)
+    assert "Action Required" in action_required_html
+    assert "Open leads with high age (2+ days) (1)" in action_required_html
+    assert "Completed leads without order match (1)" in action_required_html
+
+
+def test_fetch_business_day_cancelled_td_leads_returns_expected_columns(tmp_path) -> None:
+    async def _run() -> list[dict[str, object]]:
+        database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_cancelled_columns.db'}"
+        engine = create_async_engine(database_url)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(sa.text("""
+                    CREATE TABLE crm_leads_current (
+                        lead_uid TEXT PRIMARY KEY,
+                        store_code TEXT,
+                        pickup_no TEXT,
+                        customer_name TEXT,
+                        mobile TEXT,
+                        pickup_created_at TEXT,
+                        reason TEXT,
+                        cancelled_flag TEXT,
+                        source TEXT,
+                        customer_type TEXT
+                    )
+                """))
+                await connection.execute(sa.text("""
+                    CREATE TABLE crm_leads_status_events (
+                        lead_uid TEXT,
+                        status_bucket TEXT,
+                        scraped_at TEXT,
+                        created_at TEXT
+                    )
+                """))
+                await connection.execute(sa.text("""
+                    INSERT INTO crm_leads_current (
+                        lead_uid, store_code, pickup_no, customer_name, mobile, pickup_created_at, reason, cancelled_flag, source, customer_type
+                    ) VALUES ('L1', 'A001', 'A001-1', 'Alice', '9000000001', '2026-04-29 12:00:00+00:00', '', NULL, 'Meta', 'New')
+                """))
+                await connection.execute(sa.text("""
+                    INSERT INTO crm_leads_status_events (lead_uid, status_bucket, scraped_at, created_at) VALUES
+                    ('L1', 'cancelled', '2026-04-30 19:00:00+00:00', '2026-04-30 19:00:00+00:00')
+                """))
+
+            return await td_leads_main.fetch_business_day_cancelled_td_leads(
+                database_url=database_url,
+                reference_ts=datetime(2026, 5, 1, 1, 0, tzinfo=timezone.utc),
+            )
+        finally:
+            await engine.dispose()
+
+    rows = asyncio.run(_run())
+    assert rows
+    assert set(rows[0].keys()) >= {
+        "store_code",
+        "pickup_no",
+        "customer_name",
+        "mobile",
+        "lead_created_at",
+        "cancelled_at",
+        "cancel_reason",
+        "cancelled_flag",
+        "source",
+        "customer_type",
+        "lead_age_days_at_cancel",
+    }
