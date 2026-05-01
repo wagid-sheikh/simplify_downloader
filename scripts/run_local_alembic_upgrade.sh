@@ -34,7 +34,7 @@ if [[ ${upgrade_exit_code} -eq 0 ]]; then
   exit 0
 fi
 
-if rg -q "Duplicate.*already exists" "${upgrade_output_file}"; then
+if grep -Eq "Duplicate.*already exists" "${upgrade_output_file}"; then
   target_revision="$(sed -nE "s/.*Running upgrade [^ ]+ -> ([^, ]+).*/\1/p" "${upgrade_output_file}" | tail -n1)"
 
   if [[ -n "${target_revision}" ]]; then
