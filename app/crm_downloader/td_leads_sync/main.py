@@ -144,6 +144,21 @@ BUSINESS_DAY_CANCELLED_OUTPUT_COLUMNS: tuple[str, ...] = (
     "source",
     "customer_type",
 )
+COMPLETED_LEADS_TODAY_OUTPUT_COLUMNS: tuple[str, ...] = (
+    "store_code",
+    "pickup_no",
+    "customer_name",
+    "mobile",
+    "lead_created_at",
+    "completed_at",
+    "lead_age_days_at_completion",
+    "order_match_found",
+    "matched_order_count",
+    "matched_order_ids",
+    "first_order_date",
+    "last_order_date",
+    "reconciliation_note",
+)
 
 
 
@@ -294,6 +309,163 @@ async def fetch_business_day_cancelled_td_leads(
             )
             rows.append(payload)
     return rows
+
+
+def _normalize_mobile_number(value: Any) -> str | None:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if not digits:
+        return None
+    return digits[-10:] if len(digits) >= 10 else digits
+
+
+async def build_td_leads_reporting_payload(
+    *,
+    database_url: str | None,
+    report_date: date | None = None,
+    reference_ts: datetime | None = None,
+    open_leads_high_age_threshold_days: int | None = None,
+) -> dict[str, Any]:
+    if not database_url:
+        return {
+            "warning": "database_url_missing",
+            "open_leads": [],
+            "cancelled_leads_today": [],
+            "completed_leads_today": [],
+            "action_required": {
+                "open_leads_high_age_threshold_days": open_leads_high_age_threshold_days
+                if open_leads_high_age_threshold_days is not None
+                else TD_OPEN_LEADS_AGE_THRESHOLD_DAYS_DEFAULT,
+                "open_leads_high_age": [],
+                "completed_without_order_match": [],
+            },
+        }
+
+    timezone_local = get_timezone()
+    anchor_ts = reference_ts.astimezone(timezone_local) if reference_ts is not None else aware_now(timezone_local)
+    if report_date is not None:
+        anchor_ts = datetime.combine(report_date, datetime.min.time(), tzinfo=timezone_local).replace(
+            hour=23, minute=59, second=59, microsecond=999999
+        )
+    day_start_local = anchor_ts.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end_local = anchor_ts.replace(hour=23, minute=59, second=59, microsecond=999999)
+    day_start_utc = day_start_local.astimezone(_UTC)
+    day_end_utc = day_end_local.astimezone(_UTC)
+
+    open_leads = await fetch_open_current_td_leads(database_url=database_url, reference_ts=anchor_ts.astimezone(_UTC))
+    cancelled_leads_today = await fetch_business_day_cancelled_td_leads(database_url=database_url, reference_ts=anchor_ts)
+
+    crm_leads_current = sa.table(
+        "crm_leads_current",
+        sa.column("lead_uid"),
+        sa.column("store_code"),
+        sa.column("pickup_no"),
+        sa.column("customer_name"),
+        sa.column("mobile"),
+        sa.column("pickup_created_at"),
+    )
+    crm_leads_status_events = sa.table(
+        "crm_leads_status_events",
+        sa.column("lead_uid"),
+        sa.column("status_bucket"),
+        sa.column("scraped_at"),
+    )
+    orders = sa.table(
+        "orders",
+        sa.column("store_code"),
+        sa.column("mobile_number"),
+        sa.column("order_number"),
+        sa.column("order_date"),
+    )
+
+    completed_events = (
+        sa.select(
+            crm_leads_status_events.c.lead_uid.label("lead_uid"),
+            sa.func.max(crm_leads_status_events.c.scraped_at).label("completed_at"),
+        )
+        .where(sa.func.lower(sa.func.trim(crm_leads_status_events.c.status_bucket)) == "completed")
+        .where(crm_leads_status_events.c.scraped_at >= day_start_utc)
+        .where(crm_leads_status_events.c.scraped_at <= day_end_utc)
+        .group_by(crm_leads_status_events.c.lead_uid)
+        .subquery()
+    )
+    completed_query = (
+        sa.select(
+            crm_leads_current.c.store_code,
+            crm_leads_current.c.pickup_no,
+            crm_leads_current.c.customer_name,
+            crm_leads_current.c.mobile,
+            crm_leads_current.c.pickup_created_at.label("lead_created_at"),
+            completed_events.c.completed_at,
+        )
+        .select_from(completed_events.join(crm_leads_current, crm_leads_current.c.lead_uid == completed_events.c.lead_uid))
+        .order_by(
+            crm_leads_current.c.store_code.asc(),
+            crm_leads_current.c.pickup_no.asc(),
+            completed_events.c.completed_at.asc(),
+        )
+    )
+
+    completed_leads_today: list[dict[str, Any]] = []
+    async with session_scope(database_url) as session:
+        completed_rows = (await session.execute(completed_query)).mappings().all()
+        for row in completed_rows:
+            completed_at = _parse_td_leads_created_datetime(row.get("completed_at")) or row.get("completed_at")
+            lead_mobile = _normalize_mobile_number(row.get("mobile"))
+            order_rows: list[Mapping[str, Any]] = []
+            if lead_mobile:
+                order_query = (
+                    sa.select(orders.c.order_number, orders.c.order_date)
+                    .where(orders.c.store_code == row.get("store_code"))
+                    .where(orders.c.mobile_number == lead_mobile)
+                    .order_by(orders.c.order_date.asc(), orders.c.order_number.asc())
+                )
+                order_rows = (await session.execute(order_query)).mappings().all()
+            matched_order_ids = [str(order.get("order_number") or "").strip() for order in order_rows if order.get("order_number")]
+            first_order_date = order_rows[0].get("order_date") if order_rows else None
+            last_order_date = order_rows[-1].get("order_date") if order_rows else None
+            match_found = bool(matched_order_ids)
+            completed_leads_today.append(
+                {
+                    "store_code": row.get("store_code"),
+                    "pickup_no": row.get("pickup_no"),
+                    "customer_name": row.get("customer_name"),
+                    "mobile": row.get("mobile"),
+                    "lead_created_at": row.get("lead_created_at"),
+                    "completed_at": completed_at,
+                    "lead_age_days_at_completion": _calculate_lead_age_days(
+                        lead_created_at=row.get("lead_created_at"),
+                        reference_ts=_parse_td_leads_created_datetime(completed_at),
+                    ),
+                    "order_match_found": match_found,
+                    "matched_order_count": len(matched_order_ids),
+                    "matched_order_ids": matched_order_ids,
+                    "first_order_date": first_order_date,
+                    "last_order_date": last_order_date,
+                    "reconciliation_note": None if match_found else "No matching orders by store_code+mobile",
+                }
+            )
+
+    threshold_days = max(0, open_leads_high_age_threshold_days or TD_OPEN_LEADS_AGE_THRESHOLD_DAYS_DEFAULT)
+    action_required = {
+        "open_leads_high_age_threshold_days": threshold_days,
+        "open_leads_high_age": [
+            row for row in open_leads if isinstance(row.get("lead_age_days"), int) and int(row["lead_age_days"]) >= threshold_days
+        ],
+        "completed_without_order_match": [row for row in completed_leads_today if not row.get("order_match_found")],
+    }
+
+    return {
+        "warning": None,
+        "report_date": day_start_local.date().isoformat(),
+        "reference_ts": anchor_ts.isoformat(),
+        "open_leads": sorted(open_leads, key=lambda row: (str(row.get("store_code") or ""), str(row.get("pickup_no") or ""))),
+        "cancelled_leads_today": sorted(
+            cancelled_leads_today,
+            key=lambda row: (str(row.get("store_code") or ""), str(row.get("pickup_no") or ""), str(row.get("cancelled_at") or "")),
+        ),
+        "completed_leads_today": completed_leads_today,
+        "action_required": action_required,
+    }
 
 
 def _business_day_bounds_local(*, reference_ts: datetime | None = None) -> tuple[datetime, datetime]:
