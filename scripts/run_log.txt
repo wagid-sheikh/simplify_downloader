@@ -1,0 +1,175 @@
+[2026-05-01 21:43:41 IST] ================================================================
+[2026-05-01 21:43:41 IST] CRON RUN STARTED
+[2026-05-01 21:43:41 IST] ================================================================
+[2026-05-01 21:43:41 IST] ENV_FILE=/Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron.env
+[2026-05-01 21:43:41 IST] REPO_ROOT=/Users/wagidsheikh/crm_backend/simplify_downloader
+[2026-05-01 21:43:41 IST] LOG_FILE=/Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_td_leads_sync_2026-05-01_21-43-41.log
+[2026-05-01 21:43:41 IST] HOME=/Users/wagidsheikh
+[2026-05-01 21:43:41 IST] PATH=/Users/wagidsheikh/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/Library/PostgreSQL/14/bin:/Users/wagidsheikh/.local/bin:/Users/wagidsheikh/.pyenv/shims:/Users/wagidsheikh/bin:/Users/wagidsheikh/.nvm/versions/node/v20.11.0/bin:/Users/wagidsheikh/opt/anaconda3/bin:/usr/local/bin:/usr/local/sbin:/Library/Frameworks/Python.framework/Versions/3.7/bin:/Library/Frameworks/Python.framework/Versions/3.10/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Applications/VMware Fusion.app/Contents/Public:/opt/X11/bin:/Library/Apple/usr/bin
+[2026-05-01 21:43:42 IST] LANG=en_US.UTF-8
+[2026-05-01 21:43:42 IST] LOCK_WAIT_SECONDS=300
+[2026-05-01 21:43:42 IST] LOCK_POLL_SECONDS=5
+[2026-05-01 21:43:42 IST] SAFE_MODE=1
+[2026-05-01 21:43:42 IST] GLOBAL_LOCK_DIR=/Users/wagidsheikh/crm_backend/simplify_downloader/tmp/cron_heavy_pipelines.lock
+[2026-05-01 21:43:42 IST] LOCAL_LOCK_DIR=/Users/wagidsheikh/crm_backend/simplify_downloader/tmp/cron_run_td_leads_sync.lock
+[2026-05-01 21:43:42 IST] poetry=/Users/wagidsheikh/.local/bin/poetry
+[2026-05-01 21:43:42 IST] shell_pid=13762
+[2026-05-01 21:43:42 IST] parent_pid=55014
+[2026-05-01 21:43:42 IST] hostname=Wagids-MacBook-Pro.local
+[2026-05-01 21:43:42 IST] [global lock] Lock acquired successfully. PID=13762 total_wait_seconds=0
+[2026-05-01 21:43:42 IST] [local lock] Lock acquired successfully. PID=13762
+[2026-05-01 21:43:42 IST] Parsed td_leads args count=2 values=--reporting-mode day_end 
+[2026-05-01 21:43:42 IST] ================================================================
+[2026-05-01 21:43:42 IST] Running Script 1: td_leads_sync
+[2026-05-01 21:43:42 IST] ================================================================
+[2026-05-01 21:43:42 IST] Command: ./scripts/run_local_td_leads_sync.sh --reporting-mode day_end 
+{"run_id": "20260501_161344956664", "phase": "logger", "status": "ok", "message": "Initialized JSON logger", "log_file_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/logs/simplify_downloader.jsonl", "log_file_source": "env:JSON_LOG_FILE", "ts": "2026-05-01T16:13:44.957131+00:00"}
+{"run_id": "20260501_161344956664", "phase": "init", "status": "ok", "message": "Resolved TD leads reporting mode", "reporting_mode": "day_end", "ts": "2026-05-01T16:13:45.058948+00:00"}
+{"run_id": "20260501_161344956664", "phase": "init", "status": "ok", "message": "Loaded TD store rows", "store_count": 2, "stores": ["A817", "A668"], "ts": "2026-05-01T16:13:45.062448+00:00"}
+{"run_id": "20260501_161344956664", "phase": "init", "status": "ok", "message": "Resolved TD leads concurrency settings", "configured_concurrency": 2, "effective_concurrency": 2, "parallel_mode_enabled": true, "ts": "2026-05-01T16:13:45.062619+00:00"}
+{"run_id": "20260501_161344956664", "phase": "init", "status": "ok", "message": "Launching Playwright with local Chrome executable", "backend": "local_chrome", "executable_path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "headless": true, "ts": "2026-05-01T16:13:45.708273+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A817", "phase": "store", "status": "ok", "message": "TD leads store worker start", "queued_at": "2026-05-01T16:13:46.291541+00:00", "queue_wait_ms": 0, "concurrency_limited": true, "ts": "2026-05-01T16:13:46.291655+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A668", "phase": "store", "status": "ok", "message": "TD leads store worker start", "queued_at": "2026-05-01T16:13:46.299747+00:00", "queue_wait_ms": 0, "concurrency_limited": true, "ts": "2026-05-01T16:13:46.299821+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A817", "phase": "session", "status": "warning", "message": "Probed session with existing storage state", "response_status": 200, "final_url": "https://subs.quickdrycleaning.com/Login", "contains_store_code": false, "verification_seen": false, "login_detected": true, "nav_visible": false, "home_card_visible": false, "state_valid": false, "invalid_reason": "login_form_visible", "probe_error": null, "probe_target": "https://subs.quickdrycleaning.com/a817/App/home?EventClick=True", "contains_store_path": false, "ts": "2026-05-01T16:13:52.868930+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A668", "phase": "session", "status": "warning", "message": "Probed session with existing storage state", "response_status": 200, "final_url": "https://subs.quickdrycleaning.com/Login", "contains_store_code": false, "verification_seen": false, "login_detected": true, "nav_visible": false, "home_card_visible": false, "state_valid": false, "invalid_reason": "login_form_visible", "probe_error": null, "probe_target": "https://subs.quickdrycleaning.com/a668/App/home?EventClick=True", "contains_store_path": false, "ts": "2026-05-01T16:13:52.938791+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A817", "phase": "login", "status": "ok", "message": "Completed login attempt", "final_url": "https://subs.quickdrycleaning.com/a817/App/home?EventClick=True", "contains_store_code": true, "post_login_wait_completed": "url_contains_store_code", "post_login_wait_error": null, "submit_error": null, "selectors": {"username": "#txtUserId", "password": "#txtPassword", "store_code": "#txtBranchPin", "submit": "#btnLogin"}, "ts": "2026-05-01T16:13:54.000685+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A668", "phase": "login", "status": "ok", "message": "Completed login attempt", "final_url": "https://subs.quickdrycleaning.com/a668/App/home?EventClick=True", "contains_store_code": true, "post_login_wait_completed": "url_contains_store_code", "post_login_wait_error": null, "submit_error": null, "selectors": {"username": "#txtUserId", "password": "#txtPassword", "store_code": "#txtBranchPin", "submit": "#btnLogin"}, "ts": "2026-05-01T16:13:54.088820+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A668", "phase": "login", "status": "ok", "message": "Home page ready after login/verification", "final_url": "https://subs.quickdrycleaning.com/a668/App/home?EventClick=True", "nav_selector": "#achrOrderReport", "nav_visible": true, "home_card_visible": false, "ts": "2026-05-01T16:13:54.931526+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A817", "phase": "login", "status": "ok", "message": "Home page ready after login/verification", "final_url": "https://subs.quickdrycleaning.com/a817/App/home?EventClick=True", "nav_selector": "#achrOrderReport", "nav_visible": true, "home_card_visible": false, "ts": "2026-05-01T16:13:55.360443+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A817", "phase": "navigation", "status": "ok", "message": "Opened Pickup Scheduler page", "url": "https://subs.quickdrycleaning.com/a817/App/New_Admin/frmHomePickUpScheduler", "navigation_branch": "home_alert_click", "ts": "2026-05-01T16:13:58.059321+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A668", "phase": "navigation", "status": "ok", "message": "Opened Pickup Scheduler page", "url": "https://subs.quickdrycleaning.com/a668/App/New_Admin/frmHomePickUpScheduler", "navigation_branch": "home_alert_click", "ts": "2026-05-01T16:13:58.079875+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A817", "phase": "scrape", "status": "ok", "message": "Collected status bucket rows", "status_bucket": "pending", "rows": 4, "warnings": null, "ts": "2026-05-01T16:13:59.274853+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A668", "phase": "scrape", "status": "ok", "message": "Collected status bucket rows", "status_bucket": "pending", "rows": 7, "warnings": null, "ts": "2026-05-01T16:13:59.784295+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A668", "phase": "scrape", "status": "ok", "message": "Collected status bucket rows", "status_bucket": "completed", "rows": 1, "warnings": null, "ts": "2026-05-01T16:14:00.766727+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A817", "phase": "scrape", "status": "ok", "message": "Collected status bucket rows", "status_bucket": "completed", "rows": 3, "warnings": null, "ts": "2026-05-01T16:14:01.062270+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A817", "phase": "scrape", "status": "ok", "message": "Collected status bucket rows", "status_bucket": "cancelled", "rows": 1, "warnings": null, "ts": "2026-05-01T16:14:02.109106+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A817", "phase": "store", "status": "ok", "message": "TD leads ingest DB mode", "db_dialect": "postgresql", "db_url_async": true, "db_code_path": "async_session_scope", "ts": "2026-05-01T16:14:02.124563+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A817", "phase": "store", "status": "ok", "message": "Completed TD leads store run", "rows": 8, "status_counts": {"pending": 4, "completed": 3, "cancelled": 1}, "warnings": null, "artifact_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A817-crm_leads.xlsx", "ingested_rows": 8, "pickup_created_at_null_count": 0, "pickup_created_at_null_counts_by_bucket": {"pending": 0, "completed": 0, "cancelled": 0}, "ts": "2026-05-01T16:14:02.292980+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A817", "phase": "store", "status": "ok", "message": "TD leads store worker complete", "queue_wait_ms": 0, "duration_ms": 16041, "rows": 8, "ingested_rows": 8, "ts": "2026-05-01T16:14:02.332842+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A668", "phase": "scrape", "status": "ok", "message": "Collected status bucket rows", "status_bucket": "cancelled", "rows": 2, "warnings": null, "ts": "2026-05-01T16:14:02.358934+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A668", "phase": "store", "status": "ok", "message": "Completed TD leads store run", "rows": 10, "status_counts": {"pending": 7, "completed": 1, "cancelled": 2}, "warnings": null, "artifact_path": "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/data/A668-crm_leads.xlsx", "ingested_rows": 9, "pickup_created_at_null_count": 0, "pickup_created_at_null_counts_by_bucket": {"pending": 0, "completed": 0, "cancelled": 0}, "ts": "2026-05-01T16:14:02.421663+00:00"}
+{"run_id": "20260501_161344956664", "store_code": "A668", "phase": "store", "status": "ok", "message": "TD leads store worker complete", "queue_wait_ms": 0, "duration_ms": 16222, "rows": 10, "ingested_rows": 9, "ts": "2026-05-01T16:14:02.522073+00:00"}
+Traceback (most recent call last):
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 526, in _prepare_and_execute
+    prepared_stmt, attributes = await adapt_connection._prepare(
+                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 773, in _prepare
+    prepared_stmt = await self._connection.prepare(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/asyncpg/connection.py", line 635, in prepare
+    return await self._prepare(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/asyncpg/connection.py", line 653, in _prepare
+    stmt = await self._get_statement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/asyncpg/connection.py", line 432, in _get_statement
+    statement = await self._protocol.prepare(
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "asyncpg/protocol/protocol.pyx", line 165, in prepare
+asyncpg.exceptions.UndefinedFunctionError: operator does not exist: timestamp with time zone >= character varying
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 585, in execute
+    self._adapt_connection.await_(
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 563, in _prepare_and_execute
+    self._handle_exception(error)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 513, in _handle_exception
+    self._adapt_connection._handle_exception(error)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 797, in _handle_exception
+    raise translated_error from error
+sqlalchemy.dialects.postgresql.asyncpg.AsyncAdapt_asyncpg_dbapi.ProgrammingError: <class 'asyncpg.exceptions.UndefinedFunctionError'>: operator does not exist: timestamp with time zone >= character varying
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/td_leads_sync/main.py", line 2237, in <module>
+    run()
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/td_leads_sync/main.py", line 2233, in run
+    asyncio.run(_async_entrypoint(argv))
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/runners.py", line 194, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/.pyenv/versions/3.12.8/lib/python3.12/asyncio/base_events.py", line 686, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/td_leads_sync/main.py", line 2224, in _async_entrypoint
+    await main(
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/td_leads_sync/main.py", line 2166, in main
+    reporting_payload = await build_td_leads_reporting_payload(
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/crm_backend/simplify_downloader/app/crm_downloader/td_leads_sync/main.py", line 489, in build_td_leads_reporting_payload
+    scoped_order_rows = (await session.execute(order_query)).mappings().all()
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/ext/asyncio/session.py", line 449, in execute
+    result = await greenlet_spawn(
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 201, in greenlet_spawn
+    result = context.throw(*sys.exc_info())
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2351, in execute
+    return self._execute_internal(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/orm/session.py", line 2258, in _execute_internal
+    result = conn.execute(
+             ^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1419, in execute
+    return meth(
+           ^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/sql/elements.py", line 526, in _execute_on_connection
+    return connection._execute_clauseelement(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1641, in _execute_clauseelement
+    ret = self._execute_context(
+          ^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1846, in _execute_context
+    return self._exec_single_context(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1986, in _exec_single_context
+    self._handle_dbapi_exception(
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 2355, in _handle_dbapi_exception
+    raise sqlalchemy_exception.with_traceback(exc_info[2]) from e
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/base.py", line 1967, in _exec_single_context
+    self.dialect.do_execute(
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/engine/default.py", line 951, in do_execute
+    cursor.execute(statement, parameters)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 585, in execute
+    self._adapt_connection.await_(
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 132, in await_only
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return,attr-defined] # noqa: E501
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 196, in greenlet_spawn
+    value = await result
+            ^^^^^^^^^^^^
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 563, in _prepare_and_execute
+    self._handle_exception(error)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 513, in _handle_exception
+    self._adapt_connection._handle_exception(error)
+  File "/Users/wagidsheikh/Library/Caches/pypoetry/virtualenvs/crm-backend-7vKpsgLj-py3.12/lib/python3.12/site-packages/sqlalchemy/dialects/postgresql/asyncpg.py", line 797, in _handle_exception
+    raise translated_error from error
+sqlalchemy.exc.ProgrammingError: (sqlalchemy.dialects.postgresql.asyncpg.ProgrammingError) <class 'asyncpg.exceptions.UndefinedFunctionError'>: operator does not exist: timestamp with time zone >= character varying
+HINT:  No operator matches the given name and argument types. You might need to add explicit type casts.
+[SQL: SELECT orders.order_number, orders.order_date, orders.mobile_number 
+FROM orders 
+WHERE orders.store_code = $1::VARCHAR AND orders.order_date >= $2::VARCHAR AND orders.order_date <= $3::VARCHAR ORDER BY orders.order_date ASC, orders.order_number ASC]
+[parameters: ('A817', '2026-04-29 18:30:00+00:00', '2026-05-02 14:45:16.301986+00:00')]
+(Background on this error at: https://sqlalche.me/e/20/f405)
+[2026-05-01 21:44:03 IST] Run exiting with non-zero status=1 via trap=EXIT
