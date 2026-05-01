@@ -45,6 +45,8 @@ First create a markdown file tsv_bank_payment_sync_requirement.md and include my
    - Skip and notify, or
    - Retry with backoff then fail?
 
+   [Answers: 1: **service account + Google Sheets API v4/gspread** . 2. Generate keys and store them our system_config table as rest of the system uses that table. 3. system_config 4. support multiple sheet (altohough this enahcement require only one sheet but there few more in pipeline which need to be worked upon). 5. retry with backoff then fail]
+
 ---
 
 ### B) Source Tabs & Expected Schema
