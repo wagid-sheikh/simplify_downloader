@@ -1014,6 +1014,8 @@ async def fetch_daily_sales_report(
     )
 
     async with session_scope(database_url) as session:
+        bind = session.bind
+        dialect_name = bind.dialect.name if bind is not None else "postgresql"
         missed_leads_stmt = (
             sa.select(
                 td_store_master_primary.c.store_name.label("store_name"),
@@ -1306,7 +1308,11 @@ async def fetch_daily_sales_report(
                 crm_leads_current.c.pickup_created_at.label("pickup_created_at"),
                 sa.case((sa.func.count(orders.c.order_number) > 0, True), else_=False).label("order_match_found"),
                 sa.func.count(orders.c.order_number).label("matched_order_count"),
-                string_list_agg(orders.c.order_number).label("matched_order_ids"),
+                string_list_agg(
+                    dialect_name=dialect_name,
+                    value_expr=orders.c.order_number,
+                    separator=", ",
+                ).label("matched_order_ids"),
                 sa.func.min(orders.c.order_date).label("first_order_date"),
                 sa.func.max(orders.c.order_date).label("last_order_date"),
                 sa.case(

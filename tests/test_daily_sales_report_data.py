@@ -447,6 +447,7 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
                 """
             )
         )
+        await session.execute(sa.text("ALTER TABLE crm_leads_status_events ADD COLUMN scraped_at TIMESTAMP"))
         await session.execute(
             sa.text(
                 """
@@ -495,6 +496,11 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
     assert un_summary["completed_leads"] == 2
     assert un_summary["cancelled_leads"] == 2
     assert un_summary["pending_leads"] == 1
+
+
+def test_completed_reconciliation_string_agg_requires_keyword_arguments() -> None:
+    with pytest.raises(TypeError):
+        _data_module.string_list_agg(sa.literal_column("order_number"))  # type: ignore[call-arg]
 
 
 @pytest.mark.asyncio
