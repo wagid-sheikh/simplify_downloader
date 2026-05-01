@@ -2264,8 +2264,8 @@ async def test_td_leads_seeded_run_notification_plans_email(
         assert result["emails_sent"] == 1
         assert len(sent_plans) == 1
         assert sent_plans[0].subject == expected_subject
-        if reporting_mode == "day_end":
-            assert "[day_end]" in sent_plans[0].subject
+        if reporting_mode in {"day_end", "meeting"}:
+            assert f"[{reporting_mode}]" in sent_plans[0].subject
         assert "00:01:00" in sent_plans[0].body
         assert "Run run-1 complete in 00:01:00" in sent_plans[0].body
     finally:
