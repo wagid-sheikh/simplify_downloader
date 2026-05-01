@@ -186,6 +186,49 @@ ACTION_REQUIRED_COMPLETED_WITHOUT_ORDER_OUTPUT_COLUMNS: tuple[str, ...] = (
 )
 
 
+def _validate_td_reporting_payload_schema(payload: Mapping[str, Any]) -> list[str]:
+    errors: list[str] = []
+    required_sections: dict[str, tuple[str, ...]] = {
+        "open_leads": OPEN_LEADS_OUTPUT_COLUMNS,
+        "cancelled_leads_today": BUSINESS_DAY_CANCELLED_OUTPUT_COLUMNS,
+        "completed_leads_today": COMPLETED_LEADS_TODAY_OUTPUT_COLUMNS,
+    }
+
+    for section_name, required_columns in required_sections.items():
+        section = payload.get(section_name)
+        if not isinstance(section, list):
+            errors.append(f"missing_or_invalid_section:{section_name}")
+            continue
+        for idx, row in enumerate(section):
+            if not isinstance(row, Mapping):
+                errors.append(f"invalid_row_type:{section_name}[{idx}]")
+                continue
+            missing = [column for column in required_columns if column not in row]
+            if missing:
+                errors.append(f"missing_columns:{section_name}[{idx}]:{','.join(missing)}")
+
+    action_required = payload.get("action_required")
+    if not isinstance(action_required, Mapping):
+        errors.append("missing_or_invalid_section:action_required")
+    else:
+        for key, columns in (
+            ("open_leads_high_age", ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS),
+            ("completed_without_order_match", ACTION_REQUIRED_COMPLETED_WITHOUT_ORDER_OUTPUT_COLUMNS),
+        ):
+            section = action_required.get(key)
+            if not isinstance(section, list):
+                errors.append(f"missing_or_invalid_section:action_required.{key}")
+                continue
+            for idx, row in enumerate(section):
+                if not isinstance(row, Mapping):
+                    errors.append(f"invalid_row_type:action_required.{key}[{idx}]")
+                    continue
+                missing = [column for column in columns if column not in row]
+                if missing:
+                    errors.append(f"missing_columns:action_required.{key}[{idx}]:{','.join(missing)}")
+    return errors
+
+
 def _resolved_open_status_buckets() -> tuple[str, ...]:
     mapped_statuses = {status.strip().lower() for status, _, _ in STATUS_CONFIG if status and status.strip()}
     return tuple(status for status in OPEN_STATUS_CANDIDATES if status in mapped_statuses)
@@ -977,10 +1020,38 @@ def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str
     return "".join(blocks)
 
 
-def _build_td_leads_summary_html(*, summary: "LeadsRunSummary", duration_human: str) -> str:
+def _resolve_daily_reporting_for_mode(
+    *,
+    summary: "LeadsRunSummary",
+    reporting_mode: str | None,
+    reporting_payload: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if reporting_mode in {"meeting", "day_end"} and isinstance(reporting_payload, Mapping):
+        action_required = reporting_payload.get("action_required")
+        if isinstance(action_required, Mapping):
+            return {
+                "open_leads_high_age_threshold_days": action_required.get("open_leads_high_age_threshold_days"),
+                "open_leads_high_age": action_required.get("open_leads_high_age", []),
+                "completed_leads_without_order_match": action_required.get("completed_without_order_match", []),
+            }
+    return _build_td_daily_reporting(summary)
+
+
+def _build_td_leads_summary_html(
+    *,
+    summary: "LeadsRunSummary",
+    duration_human: str,
+    reporting_mode: str | None = None,
+    reporting_payload: Mapping[str, Any] | None = None,
+) -> str:
     ordered_results = sorted(summary.store_results.values(), key=lambda item: item.store_code)
     total_stores = len(ordered_results)
     total_leads = summary.total_rows()
+    daily_reporting = _resolve_daily_reporting_for_mode(
+        summary=summary,
+        reporting_mode=reporting_mode,
+        reporting_payload=reporting_payload,
+    )
     blocks = [
         "<div>",
         "<h3>TD CRM Leads Sync Summary</h3>",
@@ -993,7 +1064,7 @@ def _build_td_leads_summary_html(*, summary: "LeadsRunSummary", duration_human: 
         f"Reference run_id: <code>{html.escape(summary.run_id)}</code>",
         "</p>",
         _build_td_leads_tables_html(summary=summary),
-        _build_td_action_required_html(daily_reporting=_build_td_daily_reporting(summary)),
+        _build_td_action_required_html(daily_reporting=daily_reporting),
         "</div>",
     ]
     return "".join(blocks)
@@ -1040,7 +1111,14 @@ class LeadsRunSummary:
     def has_new_leads(self) -> bool:
         return any(_count_td_leads_created_events(result) > 0 for result in self.store_results.values())
 
-    def build_record(self, *, finished_at: datetime, reporting_mode: str | None = None) -> dict[str, Any]:
+    def build_record(
+        self,
+        *,
+        finished_at: datetime,
+        reporting_mode: str | None = None,
+        reporting_payload: Mapping[str, Any] | None = None,
+        reporting_schema_errors: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
         elapsed_seconds = max(0, int((finished_at - self.started_at).total_seconds()))
         hh, mm, ss = elapsed_seconds // 3600, (elapsed_seconds % 3600) // 60, elapsed_seconds % 60
         duration_human = f"{hh:02d}:{mm:02d}:{ss:02d}"
@@ -1096,8 +1174,17 @@ class LeadsRunSummary:
             if result.warnings:
                 for warning in result.warnings:
                     summary_lines.append(f"  warning={warning}")
-        daily_reporting = _build_td_daily_reporting(self)
-        summary_html = _build_td_leads_summary_html(summary=self, duration_human=duration_human)
+        daily_reporting = _resolve_daily_reporting_for_mode(
+            summary=self,
+            reporting_mode=reporting_mode,
+            reporting_payload=reporting_payload,
+        )
+        summary_html = _build_td_leads_summary_html(
+            summary=self,
+            duration_human=duration_human,
+            reporting_mode=reporting_mode,
+            reporting_payload=reporting_payload,
+        )
         lead_tables_html = _build_td_leads_tables_html(summary=self)
 
         frozen_day_report_datasets: dict[str, Any] | None = None
@@ -1132,6 +1219,7 @@ class LeadsRunSummary:
                     "lead_tables_html": lead_tables_html,
                     "daily_reporting": daily_reporting,
                     "frozen_day_report_datasets": frozen_day_report_datasets,
+                    "reporting_schema_errors": list(reporting_schema_errors or []),
                     "stores": store_rows_payload,
                     "lead_change_details": {
                         result.store_code: dict(result.lead_change_details) for result in self.store_results.values()
@@ -1177,7 +1265,13 @@ def _resolve_td_leads_concurrency_settings() -> tuple[int, int, bool]:
 
 
 async def _persist_run_summary(
-    *, logger: JsonLogger, summary: LeadsRunSummary, finished_at: datetime, reporting_mode: str | None = None
+    *,
+    logger: JsonLogger,
+    summary: LeadsRunSummary,
+    finished_at: datetime,
+    reporting_mode: str | None = None,
+    reporting_payload: Mapping[str, Any] | None = None,
+    reporting_schema_errors: Sequence[str] | None = None,
 ) -> bool:
     if not config.database_url:
         log_event(
@@ -1189,7 +1283,12 @@ async def _persist_run_summary(
         )
         return False
 
-    record = summary.build_record(finished_at=finished_at, reporting_mode=reporting_mode)
+    record = summary.build_record(
+        finished_at=finished_at,
+        reporting_mode=reporting_mode,
+        reporting_payload=reporting_payload,
+        reporting_schema_errors=reporting_schema_errors,
+    )
     try:
         existing = await fetch_summary_for_run(config.database_url, summary.run_id)
         if existing:
@@ -1942,6 +2041,8 @@ async def main(
         report_date=report_date,
         started_at=run_start_ts,
     )
+    reporting_payload: Mapping[str, Any] | None = None
+    reporting_schema_errors: list[str] = []
 
     await _start_run_summary(logger=logger, summary=summary)
     log_event(
@@ -2020,11 +2121,32 @@ async def main(
                     await browser.close()
 
     finished_at = datetime.now(timezone.utc)
+    if reporting_mode in {"meeting", "day_end"}:
+        reporting_payload = await build_td_leads_reporting_payload(
+            database_url=config.database_url,
+            report_date=summary.report_date,
+            reference_ts=finished_at,
+            open_leads_high_age_threshold_days=_resolve_td_open_lead_age_threshold_days(),
+        )
+        reporting_schema_errors = _validate_td_reporting_payload_schema(reporting_payload)
+        if reporting_schema_errors:
+            log_event(
+                logger=logger,
+                phase="reporting",
+                status="error",
+                message="TD reporting payload schema validation failed",
+                run_id=resolved_run_id,
+                reporting_mode=reporting_mode,
+                schema_errors=reporting_schema_errors,
+            )
+
     persisted = await _persist_run_summary(
         logger=logger,
         summary=summary,
         finished_at=finished_at,
         reporting_mode=reporting_mode,
+        reporting_payload=reporting_payload,
+        reporting_schema_errors=reporting_schema_errors,
     )
     if persisted:
         notification_result = await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
