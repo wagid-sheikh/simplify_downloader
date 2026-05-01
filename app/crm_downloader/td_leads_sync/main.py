@@ -120,6 +120,45 @@ TD_LEADS_MAX_WORKERS_DEFAULT = 2
 TD_LEADS_MAX_WORKERS_MIN = 1
 
 
+def _business_day_bounds_local(*, reference_ts: datetime | None = None) -> tuple[datetime, datetime]:
+    timezone_local = get_timezone()
+    anchor = reference_ts.astimezone(timezone_local) if reference_ts is not None else aware_now(timezone_local)
+    start = anchor.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return start, end
+
+
+def _business_day_bounds_utc(*, reference_ts: datetime | None = None) -> tuple[datetime, datetime]:
+    start_local, end_local = _business_day_bounds_local(reference_ts=reference_ts)
+    return start_local.astimezone(_UTC), end_local.astimezone(_UTC)
+
+
+def _resolve_canonical_lead_created_at(row: Mapping[str, Any]) -> datetime | None:
+    canonical_created_at = _parse_td_leads_created_datetime(row.get("pickup_created_at"))
+    if canonical_created_at is not None:
+        return canonical_created_at
+
+    fallback_created_at = _parse_td_leads_created_datetime(row.get("pickup_created_text"))
+    if fallback_created_at is not None:
+        return fallback_created_at
+
+    return _parse_td_leads_created_datetime(row.get("pickup_date"))
+
+
+def _calculate_lead_age_days(*, lead_created_at: Any, reference_ts: datetime | None) -> int | None:
+    created_at = _parse_td_leads_created_datetime(lead_created_at)
+    if created_at is None or reference_ts is None:
+        return None
+
+    if created_at.tzinfo is None or created_at.utcoffset() is None:
+        created_at = created_at.replace(tzinfo=_UTC)
+    if reference_ts.tzinfo is None or reference_ts.utcoffset() is None:
+        reference_ts = reference_ts.replace(tzinfo=_UTC)
+
+    age_days = (reference_ts.astimezone(_UTC) - created_at.astimezone(_UTC)).days
+    return max(age_days, 0)
+
+
 def _td_leads_bucket_rows(result: "StoreLeadResult", status_bucket: str) -> list[dict[str, Any]]:
     bucket_rows = [row for row in result.rows if str(row.get("status_bucket") or "").strip().lower() == status_bucket]
     return _sort_td_leads_bucket_rows(bucket_rows)
