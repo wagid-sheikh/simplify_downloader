@@ -2635,6 +2635,7 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
 
             await connection.execute(sa.text("""
                 INSERT INTO orders (store_code, mobile_number, order_number, order_date) VALUES
+                ('A100', '9000000002', 'SO-OLD', '2026-04-28 10:30:00+00:00'),
                 ('A100', '9000000002', 'SO-100', '2026-05-01 10:30:00+00:00'),
                 ('A100', '9000000003', 'SO-200', '2026-05-01 09:00:00+00:00'),
                 ('A100', '9000000003', 'SO-150', '2026-05-01 08:30:00+00:00')
@@ -2667,6 +2668,7 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
     assert by_pickup["A100-D1"]["order_match_found"] is True
     assert by_pickup["A100-D1"]["matched_order_count"] == 1
     assert by_pickup["A100-D1"]["matched_order_ids"] == ["SO-100"]
+    assert "SO-OLD" not in by_pickup["A100-D1"]["matched_order_ids"]
 
     assert by_pickup["A100-D2"]["order_match_found"] is False
     assert by_pickup["A100-D2"]["reconciliation_note"]
