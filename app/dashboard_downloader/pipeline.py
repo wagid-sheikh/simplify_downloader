@@ -1,6 +1,7 @@
 from __future__ import annotations
 from datetime import date, datetime, timezone
 from pathlib import Path
+from collections.abc import Mapping
 
 from app.dashboard_downloader.json_logger import JsonLogger, log_event
 from app.dashboard_downloader.run_downloads import run_all_stores_single_session
@@ -22,6 +23,38 @@ from app.common.ingest.service import ingest_bucket
 from .settings import PipelineSettings
 
 
+def _normalize_bucket_payload(*, bucket: str, payload: object, logger: JsonLogger) -> dict[str, dict[str, object]]:
+    if not isinstance(payload, Mapping):
+        log_event(
+            logger=logger,
+            phase="orchestrator",
+            status="warning",
+            bucket=bucket,
+            message="skipping bucket with invalid summary payload shape",
+            extras={"payload_type": type(payload).__name__},
+        )
+        return {}
+
+    normalized: dict[str, dict[str, object]] = {}
+    for key, value in payload.items():
+        if isinstance(value, Mapping):
+            normalized[str(key)] = dict(value)
+            continue
+        log_event(
+            logger=logger,
+            phase="orchestrator",
+            status="warning",
+            bucket=bucket,
+            message="ignoring bucket entry with invalid metadata shape",
+            extras={
+                "entry_key": str(key),
+                "payload_type": type(value).__name__,
+            },
+        )
+
+    return normalized
+
+
 async def run_pipeline(
     *, settings: PipelineSettings, logger: JsonLogger, aggregator: RunAggregator
 ) -> None:
@@ -40,13 +73,20 @@ async def run_pipeline(
         )
         run_date = date.today()
 
-    download_summary = await run_all_stores_single_session(
+    raw_download_summary = await run_all_stores_single_session(
         settings=settings,
         logger=logger,
     )
+    download_summary = {
+        bucket: _normalize_bucket_payload(bucket=bucket, payload=payload, logger=logger)
+        for bucket, payload in raw_download_summary.items()
+    }
     aggregator.record_download_summary(download_summary)
 
     for bucket, store_info in download_summary.items():
+        if not store_info:
+            continue
+
         merged_meta = store_info.get("__merged__")
         if not merged_meta:
             continue
