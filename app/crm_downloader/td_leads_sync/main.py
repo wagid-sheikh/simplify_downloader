@@ -1448,6 +1448,7 @@ async def main(
     run_env: str | None = None,
     run_id: str | None = None,
     store_codes: Sequence[str] | None = None,
+    reporting_mode: str | None = None,
 ) -> None:
     resolved_run_id = run_id or new_run_id()
     resolved_run_env = run_env or config.run_env
@@ -1462,6 +1463,13 @@ async def main(
     )
 
     await _start_run_summary(logger=logger, summary=summary)
+    log_event(
+        logger=logger,
+        phase="init",
+        message="Resolved TD leads reporting mode",
+        run_id=resolved_run_id,
+        reporting_mode=reporting_mode,
+    )
 
     stores = await _load_td_order_stores(logger=logger, store_codes=store_codes)
     if not stores:
@@ -1551,6 +1559,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-env", dest="run_env", type=str, default=None, help="Override run environment label")
     parser.add_argument("--run-id", dest="run_id", type=str, default=None, help="Override generated run id")
     parser.add_argument("--store-code", action="append", dest="store_codes")
+    parser.add_argument(
+        "--reporting-mode",
+        dest="reporting_mode",
+        choices=("meeting", "day_end"),
+        default=None,
+        help="Optional reporting mode for TD leads sync",
+    )
     return parser
 
 
@@ -1561,6 +1576,7 @@ async def _async_entrypoint(argv: Sequence[str] | None = None) -> None:
         run_env=args.run_env,
         run_id=args.run_id,
         store_codes=args.store_codes,
+        reporting_mode=args.reporting_mode,
     )
 
 
