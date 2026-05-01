@@ -9,7 +9,7 @@ import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
@@ -144,10 +144,28 @@ BUSINESS_DAY_CANCELLED_OUTPUT_COLUMNS: tuple[str, ...] = (
     "source",
     "customer_type",
 )
+COMPLETED_LEADS_TODAY_OUTPUT_COLUMNS: tuple[str, ...] = (
+    "store_code",
+    "pickup_no",
+    "customer_name",
+    "mobile",
+    "lead_created_at",
+    "completed_at",
+    "lead_age_days_at_completion",
+    "order_match_found",
+    "matched_order_count",
+    "matched_order_ids",
+    "first_order_date",
+    "last_order_date",
+    "reconciliation_note",
+)
 
 
 
 TD_OPEN_LEADS_AGE_THRESHOLD_DAYS_DEFAULT = 2
+TD_LEADS_ORDER_MATCH_LOOKBACK_DAYS_DEFAULT = 1
+TD_LEADS_ORDER_MATCH_GRACE_DAYS_DEFAULT = 1
+
 ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS: tuple[str, ...] = (
     "store_code",
     "pickup_no",
@@ -169,6 +187,49 @@ ACTION_REQUIRED_COMPLETED_WITHOUT_ORDER_OUTPUT_COLUMNS: tuple[str, ...] = (
     "customer_type",
     "last_seen_status",
 )
+
+
+def _validate_td_reporting_payload_schema(payload: Mapping[str, Any]) -> list[str]:
+    errors: list[str] = []
+    required_sections: dict[str, tuple[str, ...]] = {
+        "open_leads": OPEN_LEADS_OUTPUT_COLUMNS,
+        "cancelled_leads_today": BUSINESS_DAY_CANCELLED_OUTPUT_COLUMNS,
+        "completed_leads_today": COMPLETED_LEADS_TODAY_OUTPUT_COLUMNS,
+    }
+
+    for section_name, required_columns in required_sections.items():
+        section = payload.get(section_name)
+        if not isinstance(section, list):
+            errors.append(f"missing_or_invalid_section:{section_name}")
+            continue
+        for idx, row in enumerate(section):
+            if not isinstance(row, Mapping):
+                errors.append(f"invalid_row_type:{section_name}[{idx}]")
+                continue
+            missing = [column for column in required_columns if column not in row]
+            if missing:
+                errors.append(f"missing_columns:{section_name}[{idx}]:{','.join(missing)}")
+
+    action_required = payload.get("action_required")
+    if not isinstance(action_required, Mapping):
+        errors.append("missing_or_invalid_section:action_required")
+    else:
+        for key, columns in (
+            ("open_leads_high_age", ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS),
+            ("completed_without_order_match", ACTION_REQUIRED_COMPLETED_WITHOUT_ORDER_OUTPUT_COLUMNS),
+        ):
+            section = action_required.get(key)
+            if not isinstance(section, list):
+                errors.append(f"missing_or_invalid_section:action_required.{key}")
+                continue
+            for idx, row in enumerate(section):
+                if not isinstance(row, Mapping):
+                    errors.append(f"invalid_row_type:action_required.{key}[{idx}]")
+                    continue
+                missing = [column for column in columns if column not in row]
+                if missing:
+                    errors.append(f"missing_columns:action_required.{key}[{idx}]:{','.join(missing)}")
+    return errors
 
 
 def _resolved_open_status_buckets() -> tuple[str, ...]:
@@ -294,6 +355,191 @@ async def fetch_business_day_cancelled_td_leads(
             )
             rows.append(payload)
     return rows
+
+
+def _normalize_mobile_number(value: Any) -> str | None:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    if not digits:
+        return None
+    return digits[-10:] if len(digits) >= 10 else digits
+
+
+async def build_td_leads_reporting_payload(
+    *,
+    database_url: str | None,
+    report_date: date | None = None,
+    reference_ts: datetime | None = None,
+    open_leads_high_age_threshold_days: int | None = None,
+) -> dict[str, Any]:
+    if not database_url:
+        return {
+            "warning": "database_url_missing",
+            "open_leads": [],
+            "cancelled_leads_today": [],
+            "completed_leads_today": [],
+            "action_required": {
+                "open_leads_high_age_threshold_days": open_leads_high_age_threshold_days
+                if open_leads_high_age_threshold_days is not None
+                else TD_OPEN_LEADS_AGE_THRESHOLD_DAYS_DEFAULT,
+                "open_leads_high_age": [],
+                "completed_without_order_match": [],
+            },
+        }
+
+    timezone_local = get_timezone()
+    anchor_ts = reference_ts.astimezone(timezone_local) if reference_ts is not None else aware_now(timezone_local)
+    if report_date is not None:
+        anchor_ts = datetime.combine(report_date, datetime.min.time(), tzinfo=timezone_local).replace(
+            hour=23, minute=59, second=59, microsecond=999999
+        )
+    day_start_local = anchor_ts.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end_local = anchor_ts.replace(hour=23, minute=59, second=59, microsecond=999999)
+    day_start_utc = day_start_local.astimezone(_UTC)
+    day_end_utc = day_end_local.astimezone(_UTC)
+
+    open_leads = await fetch_open_current_td_leads(database_url=database_url, reference_ts=anchor_ts.astimezone(_UTC))
+    cancelled_leads_today = await fetch_business_day_cancelled_td_leads(database_url=database_url, reference_ts=anchor_ts)
+
+    crm_leads_current = sa.table(
+        "crm_leads_current",
+        sa.column("lead_uid"),
+        sa.column("store_code"),
+        sa.column("pickup_no"),
+        sa.column("customer_name"),
+        sa.column("mobile"),
+        sa.column("pickup_created_at"),
+    )
+    crm_leads_status_events = sa.table(
+        "crm_leads_status_events",
+        sa.column("lead_uid"),
+        sa.column("status_bucket"),
+        sa.column("scraped_at"),
+    )
+    orders = sa.table(
+        "orders",
+        sa.column("store_code"),
+        sa.column("mobile_number"),
+        sa.column("order_number"),
+        sa.column("order_date"),
+    )
+
+    completed_events = (
+        sa.select(
+            crm_leads_status_events.c.lead_uid.label("lead_uid"),
+            sa.func.max(crm_leads_status_events.c.scraped_at).label("completed_at"),
+        )
+        .where(sa.func.lower(sa.func.trim(crm_leads_status_events.c.status_bucket)) == "completed")
+        .where(crm_leads_status_events.c.scraped_at >= day_start_utc)
+        .where(crm_leads_status_events.c.scraped_at <= day_end_utc)
+        .group_by(crm_leads_status_events.c.lead_uid)
+        .subquery()
+    )
+    completed_query = (
+        sa.select(
+            crm_leads_current.c.store_code,
+            crm_leads_current.c.pickup_no,
+            crm_leads_current.c.customer_name,
+            crm_leads_current.c.mobile,
+            crm_leads_current.c.pickup_created_at.label("lead_created_at"),
+            completed_events.c.completed_at,
+        )
+        .select_from(completed_events.join(crm_leads_current, crm_leads_current.c.lead_uid == completed_events.c.lead_uid))
+        .order_by(
+            crm_leads_current.c.store_code.asc(),
+            crm_leads_current.c.pickup_no.asc(),
+            completed_events.c.completed_at.asc(),
+        )
+    )
+
+    completed_leads_today: list[dict[str, Any]] = []
+    async with session_scope(database_url) as session:
+        completed_rows = (await session.execute(completed_query)).mappings().all()
+        lookback_days = _resolve_td_order_match_lookback_days()
+        grace_days = _resolve_td_order_match_grace_days()
+        for row in completed_rows:
+            completed_at = _parse_td_leads_created_datetime(row.get("completed_at"))
+            lead_created_at = _parse_td_leads_created_datetime(row.get("lead_created_at"))
+            lead_mobile = _normalize_mobile_number(row.get("mobile"))
+            order_rows: list[Mapping[str, Any]] = []
+            reconciliation_note: str | None = None
+            if lead_mobile:
+                order_query = sa.select(orders.c.order_number, orders.c.order_date, orders.c.mobile_number).where(
+                    orders.c.store_code == row.get("store_code")
+                )
+
+                date_predicates_applied = False
+                if lead_created_at is not None:
+                    lower_bound = (lead_created_at - timedelta(days=lookback_days)).astimezone(_UTC).isoformat(sep=" ")
+                    order_query = order_query.where(orders.c.order_date >= lower_bound)
+                    date_predicates_applied = True
+                else:
+                    reconciliation_note = "Date-window degraded: invalid lead_created_at; lower bound not applied"
+
+                if completed_at is not None:
+                    upper_bound = (completed_at + timedelta(days=grace_days)).astimezone(_UTC).isoformat(sep=" ")
+                    order_query = order_query.where(orders.c.order_date <= upper_bound)
+                    date_predicates_applied = True
+                elif reconciliation_note is None:
+                    reconciliation_note = "Date-window degraded: invalid completed_at; upper bound not applied"
+
+                if reconciliation_note is None and date_predicates_applied:
+                    reconciliation_note = f"Matched within date window (lookback_days={lookback_days}, grace_days={grace_days})"
+
+                order_query = order_query.order_by(orders.c.order_date.asc(), orders.c.order_number.asc())
+                scoped_order_rows = (await session.execute(order_query)).mappings().all()
+                order_rows = [
+                    order
+                    for order in scoped_order_rows
+                    if _normalize_mobile_number(order.get("mobile_number")) == lead_mobile
+                ]
+            matched_order_ids = [str(order.get("order_number") or "").strip() for order in order_rows if order.get("order_number")]
+            first_order_date = order_rows[0].get("order_date") if order_rows else None
+            last_order_date = order_rows[-1].get("order_date") if order_rows else None
+            match_found = bool(matched_order_ids)
+            if not match_found and reconciliation_note is None:
+                reconciliation_note = "No matching orders by store_code+mobile within date window"
+            completed_leads_today.append(
+                {
+                    "store_code": row.get("store_code"),
+                    "pickup_no": row.get("pickup_no"),
+                    "customer_name": row.get("customer_name"),
+                    "mobile": row.get("mobile"),
+                    "lead_created_at": row.get("lead_created_at"),
+                    "completed_at": completed_at or row.get("completed_at"),
+                    "lead_age_days_at_completion": _calculate_lead_age_days(
+                        lead_created_at=row.get("lead_created_at"),
+                        reference_ts=completed_at,
+                    ),
+                    "order_match_found": match_found,
+                    "matched_order_count": len(matched_order_ids),
+                    "matched_order_ids": matched_order_ids,
+                    "first_order_date": first_order_date,
+                    "last_order_date": last_order_date,
+                    "reconciliation_note": None if match_found and reconciliation_note and reconciliation_note.startswith("Matched within") else reconciliation_note,
+                }
+            )
+
+    threshold_days = max(0, open_leads_high_age_threshold_days or TD_OPEN_LEADS_AGE_THRESHOLD_DAYS_DEFAULT)
+    action_required = {
+        "open_leads_high_age_threshold_days": threshold_days,
+        "open_leads_high_age": [
+            row for row in open_leads if isinstance(row.get("lead_age_days"), int) and int(row["lead_age_days"]) >= threshold_days
+        ],
+        "completed_without_order_match": [row for row in completed_leads_today if not row.get("order_match_found")],
+    }
+
+    return {
+        "warning": None,
+        "report_date": day_start_local.date().isoformat(),
+        "reference_ts": anchor_ts.isoformat(),
+        "open_leads": sorted(open_leads, key=lambda row: (str(row.get("store_code") or ""), str(row.get("pickup_no") or ""))),
+        "cancelled_leads_today": sorted(
+            cancelled_leads_today,
+            key=lambda row: (str(row.get("store_code") or ""), str(row.get("pickup_no") or ""), str(row.get("cancelled_at") or "")),
+        ),
+        "completed_leads_today": completed_leads_today,
+        "action_required": action_required,
+    }
 
 
 def _business_day_bounds_local(*, reference_ts: datetime | None = None) -> tuple[datetime, datetime]:
@@ -733,6 +979,14 @@ def _resolve_td_open_lead_age_threshold_days() -> int:
     return max(0, _env_int("TD_OPEN_LEADS_AGE_THRESHOLD_DAYS", TD_OPEN_LEADS_AGE_THRESHOLD_DAYS_DEFAULT))
 
 
+def _resolve_td_order_match_lookback_days() -> int:
+    return max(0, _env_int("TD_LEADS_ORDER_MATCH_LOOKBACK_DAYS", TD_LEADS_ORDER_MATCH_LOOKBACK_DAYS_DEFAULT))
+
+
+def _resolve_td_order_match_grace_days() -> int:
+    return max(0, _env_int("TD_LEADS_ORDER_MATCH_GRACE_DAYS", TD_LEADS_ORDER_MATCH_GRACE_DAYS_DEFAULT))
+
+
 def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
     open_statuses = set(_resolved_open_status_buckets())
     threshold_days = _resolve_td_open_lead_age_threshold_days()
@@ -805,10 +1059,39 @@ def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str
     return "".join(blocks)
 
 
-def _build_td_leads_summary_html(*, summary: "LeadsRunSummary", duration_human: str) -> str:
+def _resolve_daily_reporting_for_mode(
+    *,
+    summary: "LeadsRunSummary",
+    reporting_mode: str | None,
+    reporting_payload: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if reporting_mode in {"meeting", "day_end"} and isinstance(reporting_payload, Mapping):
+        action_required = reporting_payload.get("action_required")
+        if isinstance(action_required, Mapping):
+            return {
+                "open_leads_high_age_threshold_days": action_required.get("open_leads_high_age_threshold_days"),
+                "open_leads_high_age": action_required.get("open_leads_high_age", []),
+                "cancelled_leads_today": reporting_payload.get("cancelled_leads_today", []),
+                "completed_leads_without_order_match": action_required.get("completed_without_order_match", []),
+            }
+    return _build_td_daily_reporting(summary)
+
+
+def _build_td_leads_summary_html(
+    *,
+    summary: "LeadsRunSummary",
+    duration_human: str,
+    reporting_mode: str | None = None,
+    reporting_payload: Mapping[str, Any] | None = None,
+) -> str:
     ordered_results = sorted(summary.store_results.values(), key=lambda item: item.store_code)
     total_stores = len(ordered_results)
     total_leads = summary.total_rows()
+    daily_reporting = _resolve_daily_reporting_for_mode(
+        summary=summary,
+        reporting_mode=reporting_mode,
+        reporting_payload=reporting_payload,
+    )
     blocks = [
         "<div>",
         "<h3>TD CRM Leads Sync Summary</h3>",
@@ -821,7 +1104,7 @@ def _build_td_leads_summary_html(*, summary: "LeadsRunSummary", duration_human: 
         f"Reference run_id: <code>{html.escape(summary.run_id)}</code>",
         "</p>",
         _build_td_leads_tables_html(summary=summary),
-        _build_td_action_required_html(daily_reporting=_build_td_daily_reporting(summary)),
+        _build_td_action_required_html(daily_reporting=daily_reporting),
         "</div>",
     ]
     return "".join(blocks)
@@ -868,7 +1151,14 @@ class LeadsRunSummary:
     def has_new_leads(self) -> bool:
         return any(_count_td_leads_created_events(result) > 0 for result in self.store_results.values())
 
-    def build_record(self, *, finished_at: datetime, reporting_mode: str | None = None) -> dict[str, Any]:
+    def build_record(
+        self,
+        *,
+        finished_at: datetime,
+        reporting_mode: str | None = None,
+        reporting_payload: Mapping[str, Any] | None = None,
+        reporting_schema_errors: Sequence[str] | None = None,
+    ) -> dict[str, Any]:
         elapsed_seconds = max(0, int((finished_at - self.started_at).total_seconds()))
         hh, mm, ss = elapsed_seconds // 3600, (elapsed_seconds % 3600) // 60, elapsed_seconds % 60
         duration_human = f"{hh:02d}:{mm:02d}:{ss:02d}"
@@ -924,8 +1214,17 @@ class LeadsRunSummary:
             if result.warnings:
                 for warning in result.warnings:
                     summary_lines.append(f"  warning={warning}")
-        daily_reporting = _build_td_daily_reporting(self)
-        summary_html = _build_td_leads_summary_html(summary=self, duration_human=duration_human)
+        daily_reporting = _resolve_daily_reporting_for_mode(
+            summary=self,
+            reporting_mode=reporting_mode,
+            reporting_payload=reporting_payload,
+        )
+        summary_html = _build_td_leads_summary_html(
+            summary=self,
+            duration_human=duration_human,
+            reporting_mode=reporting_mode,
+            reporting_payload=reporting_payload,
+        )
         lead_tables_html = _build_td_leads_tables_html(summary=self)
 
         frozen_day_report_datasets: dict[str, Any] | None = None
@@ -935,6 +1234,7 @@ class LeadsRunSummary:
                 "generated_at": finished_at.isoformat(),
                 "report_date": self.report_date.isoformat(),
                 "daily_reporting": _normalize_json_safe(daily_reporting),
+                "action_required": _build_td_action_required_html(daily_reporting=daily_reporting),
             }
 
         return {
@@ -960,6 +1260,7 @@ class LeadsRunSummary:
                     "lead_tables_html": lead_tables_html,
                     "daily_reporting": daily_reporting,
                     "frozen_day_report_datasets": frozen_day_report_datasets,
+                    "reporting_schema_errors": list(reporting_schema_errors or []),
                     "stores": store_rows_payload,
                     "lead_change_details": {
                         result.store_code: dict(result.lead_change_details) for result in self.store_results.values()
@@ -1005,7 +1306,13 @@ def _resolve_td_leads_concurrency_settings() -> tuple[int, int, bool]:
 
 
 async def _persist_run_summary(
-    *, logger: JsonLogger, summary: LeadsRunSummary, finished_at: datetime, reporting_mode: str | None = None
+    *,
+    logger: JsonLogger,
+    summary: LeadsRunSummary,
+    finished_at: datetime,
+    reporting_mode: str | None = None,
+    reporting_payload: Mapping[str, Any] | None = None,
+    reporting_schema_errors: Sequence[str] | None = None,
 ) -> bool:
     if not config.database_url:
         log_event(
@@ -1017,7 +1324,12 @@ async def _persist_run_summary(
         )
         return False
 
-    record = summary.build_record(finished_at=finished_at, reporting_mode=reporting_mode)
+    record = summary.build_record(
+        finished_at=finished_at,
+        reporting_mode=reporting_mode,
+        reporting_payload=reporting_payload,
+        reporting_schema_errors=reporting_schema_errors,
+    )
     try:
         existing = await fetch_summary_for_run(config.database_url, summary.run_id)
         if existing:
@@ -1770,6 +2082,8 @@ async def main(
         report_date=report_date,
         started_at=run_start_ts,
     )
+    reporting_payload: Mapping[str, Any] | None = None
+    reporting_schema_errors: list[str] = []
 
     await _start_run_summary(logger=logger, summary=summary)
     log_event(
@@ -1848,11 +2162,32 @@ async def main(
                     await browser.close()
 
     finished_at = datetime.now(timezone.utc)
+    if reporting_mode in {"meeting", "day_end"}:
+        reporting_payload = await build_td_leads_reporting_payload(
+            database_url=config.database_url,
+            report_date=summary.report_date,
+            reference_ts=finished_at,
+            open_leads_high_age_threshold_days=_resolve_td_open_lead_age_threshold_days(),
+        )
+        reporting_schema_errors = _validate_td_reporting_payload_schema(reporting_payload)
+        if reporting_schema_errors:
+            log_event(
+                logger=logger,
+                phase="reporting",
+                status="error",
+                message="TD reporting payload schema validation failed",
+                run_id=resolved_run_id,
+                reporting_mode=reporting_mode,
+                schema_errors=reporting_schema_errors,
+            )
+
     persisted = await _persist_run_summary(
         logger=logger,
         summary=summary,
         finished_at=finished_at,
         reporting_mode=reporting_mode,
+        reporting_payload=reporting_payload,
+        reporting_schema_errors=reporting_schema_errors,
     )
     if persisted:
         notification_result = await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
