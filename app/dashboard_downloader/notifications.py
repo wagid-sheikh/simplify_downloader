@@ -2759,6 +2759,15 @@ def _resolve_subject_prefix(*, pipeline_name: str, metrics_payload: Mapping[str,
     return "NEW LEADS " if (has_new_leads or has_cancelled_leads) else ""
 
 
+def _resolve_reporting_mode_suffix(*, pipeline_name: str, metrics_payload: Mapping[str, Any]) -> str:
+    if pipeline_name != "td_crm_leads_sync":
+        return ""
+    reporting_mode = str(metrics_payload.get("reporting_mode") or "").strip().lower()
+    if reporting_mode not in {"meeting", "day_end"}:
+        return ""
+    return f" [{reporting_mode}]"
+
+
 async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[str, Any]:
     result: dict[str, Any] = {"emails_planned": 0, "emails_sent": 0, "errors": []}
     resources, errors = await _load_notification_resources(pipeline_name, run_id)
@@ -2795,6 +2804,10 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[st
         "lead_tables_html": metrics_payload.get("lead_tables_html") or "",
         "metrics_json": metrics_payload,
         "subject_prefix": _resolve_subject_prefix(pipeline_name=pipeline_name, metrics_payload=metrics_payload),
+        "reporting_mode_suffix": _resolve_reporting_mode_suffix(
+            pipeline_name=pipeline_name,
+            metrics_payload=metrics_payload,
+        ),
         "duration_seconds": duration_seconds,
         "duration_human": duration_human,
         "missing_windows_by_store": profiler_missing_windows,
@@ -2890,6 +2903,10 @@ async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str
         "lead_tables_html": metrics_payload.get("lead_tables_html") or "",
         "metrics_json": metrics_payload,
         "subject_prefix": _resolve_subject_prefix(pipeline_name=pipeline_name, metrics_payload=metrics_payload),
+        "reporting_mode_suffix": _resolve_reporting_mode_suffix(
+            pipeline_name=pipeline_name,
+            metrics_payload=metrics_payload,
+        ),
         "duration_seconds": duration_seconds,
         "duration_human": duration_human,
     }
