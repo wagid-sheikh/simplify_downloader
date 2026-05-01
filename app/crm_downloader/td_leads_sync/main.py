@@ -146,6 +146,31 @@ BUSINESS_DAY_CANCELLED_OUTPUT_COLUMNS: tuple[str, ...] = (
 )
 
 
+
+TD_OPEN_LEADS_AGE_THRESHOLD_DAYS_DEFAULT = 2
+ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS: tuple[str, ...] = (
+    "store_code",
+    "pickup_no",
+    "customer_name",
+    "mobile",
+    "lead_created_at",
+    "lead_age_days",
+    "source",
+    "customer_type",
+    "last_seen_status",
+)
+ACTION_REQUIRED_COMPLETED_WITHOUT_ORDER_OUTPUT_COLUMNS: tuple[str, ...] = (
+    "store_code",
+    "pickup_no",
+    "customer_name",
+    "mobile",
+    "lead_created_at",
+    "source",
+    "customer_type",
+    "last_seen_status",
+)
+
+
 def _resolved_open_status_buckets() -> tuple[str, ...]:
     mapped_statuses = {status.strip().lower() for status, _, _ in STATUS_CONFIG if status and status.strip()}
     return tuple(status for status in OPEN_STATUS_CANDIDATES if status in mapped_statuses)
@@ -704,6 +729,82 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
     return "".join(blocks)
 
 
+def _resolve_td_open_lead_age_threshold_days() -> int:
+    return max(0, _env_int("TD_OPEN_LEADS_AGE_THRESHOLD_DAYS", TD_OPEN_LEADS_AGE_THRESHOLD_DAYS_DEFAULT))
+
+
+def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
+    open_statuses = set(_resolved_open_status_buckets())
+    threshold_days = _resolve_td_open_lead_age_threshold_days()
+    high_age_open_leads: list[dict[str, Any]] = []
+    completed_without_order_match: list[dict[str, Any]] = []
+
+    for result in sorted(summary.store_results.values(), key=lambda item: item.store_code):
+        for row in result.rows:
+            status_bucket = str(row.get("status_bucket") or "").strip().lower()
+            if status_bucket in open_statuses:
+                lead_created_at = row.get("pickup_created_at")
+                lead_age_days = _calculate_lead_age_days(lead_created_at=lead_created_at, reference_ts=aware_now(_UTC))
+                if lead_age_days >= threshold_days:
+                    high_age_open_leads.append({
+                        "store_code": result.store_code,
+                        "pickup_no": row.get("pickup_no"),
+                        "customer_name": row.get("customer_name"),
+                        "mobile": row.get("mobile"),
+                        "lead_created_at": _format_pickup_created_display(row),
+                        "lead_age_days": lead_age_days,
+                        "source": row.get("source"),
+                        "customer_type": row.get("customer_type"),
+                        "last_seen_status": status_bucket or None,
+                    })
+            if status_bucket == "completed":
+                order_match_found = bool(row.get("order_no") or row.get("order_number") or row.get("matched_order_no"))
+                if not order_match_found:
+                    completed_without_order_match.append({
+                        "store_code": result.store_code,
+                        "pickup_no": row.get("pickup_no"),
+                        "customer_name": row.get("customer_name"),
+                        "mobile": row.get("mobile"),
+                        "lead_created_at": _format_pickup_created_display(row),
+                        "source": row.get("source"),
+                        "customer_type": row.get("customer_type"),
+                        "last_seen_status": status_bucket,
+                    })
+
+    return {
+        "open_leads_high_age_threshold_days": threshold_days,
+        "open_leads_high_age": high_age_open_leads,
+        "completed_leads_without_order_match": completed_without_order_match,
+    }
+
+
+def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str:
+    threshold_days = int(daily_reporting.get("open_leads_high_age_threshold_days") or 0)
+    high_age_rows_payload = daily_reporting.get("open_leads_high_age") if isinstance(daily_reporting.get("open_leads_high_age"), list) else []
+    completed_rows_payload = daily_reporting.get("completed_leads_without_order_match") if isinstance(daily_reporting.get("completed_leads_without_order_match"), list) else []
+
+    high_age_rows = [[str(row.get(column) or "None") for column in ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS] for row in high_age_rows_payload if isinstance(row, Mapping)]
+    completed_rows = [[str(row.get(column) or "None") for column in ACTION_REQUIRED_COMPLETED_WITHOUT_ORDER_OUTPUT_COLUMNS] for row in completed_rows_payload if isinstance(row, Mapping)]
+
+    blocks = ["<div>", "<h4 style='margin:16px 0 8px 0;'>Action Required</h4>"]
+    blocks.append(
+        _build_td_leads_section_table_html(
+            section_label=f"Open leads with high age ({threshold_days}+ days) ({len(high_age_rows)})",
+            headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Lead Created At", "Lead Age (Days)", "Source", "Customer Type", "Last Seen Status"),
+            rows=high_age_rows,
+        )
+    )
+    blocks.append(
+        _build_td_leads_section_table_html(
+            section_label=f"Completed leads without order match ({len(completed_rows)})",
+            headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Lead Created At", "Source", "Customer Type", "Last Seen Status"),
+            rows=completed_rows,
+        )
+    )
+    blocks.append("</div>")
+    return "".join(blocks)
+
+
 def _build_td_leads_summary_html(*, summary: "LeadsRunSummary", duration_human: str) -> str:
     ordered_results = sorted(summary.store_results.values(), key=lambda item: item.store_code)
     total_stores = len(ordered_results)
@@ -720,6 +821,7 @@ def _build_td_leads_summary_html(*, summary: "LeadsRunSummary", duration_human: 
         f"Reference run_id: <code>{html.escape(summary.run_id)}</code>",
         "</p>",
         _build_td_leads_tables_html(summary=summary),
+        _build_td_action_required_html(daily_reporting=_build_td_daily_reporting(summary)),
         "</div>",
     ]
     return "".join(blocks)
@@ -819,6 +921,7 @@ class LeadsRunSummary:
             if result.warnings:
                 for warning in result.warnings:
                     summary_lines.append(f"  warning={warning}")
+        daily_reporting = _build_td_daily_reporting(self)
         summary_html = _build_td_leads_summary_html(summary=self, duration_human=duration_human)
         lead_tables_html = _build_td_leads_tables_html(summary=self)
 
@@ -843,6 +946,7 @@ class LeadsRunSummary:
                     "pickup_created_at_null_counts_by_bucket": pickup_created_at_null_counts_by_bucket,
                     "summary_html": summary_html,
                     "lead_tables_html": lead_tables_html,
+                    "daily_reporting": daily_reporting,
                     "stores": store_rows_payload,
                     "lead_change_details": {
                         result.store_code: dict(result.lead_change_details) for result in self.store_results.values()
