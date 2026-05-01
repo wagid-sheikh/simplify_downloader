@@ -516,23 +516,38 @@ acquire_lock_with_wait "$@"
 
 run_step() {
   local step_name="$1"
-  local step_cmd="$2"
+  shift
+  local step_cmd=("$@")
   local step_start
   local step_end
   local duration
 
   section "Running ${step_name}"
-  log "Command: ${step_cmd}"
+  log "Command: $(printf '%q ' "${step_cmd[@]}")"
 
   step_start="$(date +%s)"
-  bash -c "${step_cmd}" >> "${LOG_FILE}" 2>&1
+  "${step_cmd[@]}" >> "${LOG_FILE}" 2>&1
   step_end="$(date +%s)"
   duration=$((step_end - step_start))
 
   log "${step_name} completed successfully in ${duration}s"
 }
 
-run_step "Script 1: td_leads_sync" "./scripts/run_local_td_leads_sync.sh"
+TD_LEADS_ARGS=()
+for raw_arg in "$@"; do
+  if [[ "${raw_arg}" == reporting_mode=* ]]; then
+    reporting_mode_value="${raw_arg#reporting_mode=}"
+    if [[ "${reporting_mode_value}" == "meeting" || "${reporting_mode_value}" == "day_end" ]]; then
+      TD_LEADS_ARGS+=("--reporting-mode" "${reporting_mode_value}")
+    else
+      log "WARNING: Invalid reporting_mode '${reporting_mode_value}' ignored (allowed: meeting|day_end)"
+    fi
+  else
+    TD_LEADS_ARGS+=("${raw_arg}")
+  fi
+done
+
+run_step "Script 1: td_leads_sync" "./scripts/run_local_td_leads_sync.sh" "${TD_LEADS_ARGS[@]}"
 
 section "CRON RUN FINISHED SUCCESSFULLY"
 exit 0
