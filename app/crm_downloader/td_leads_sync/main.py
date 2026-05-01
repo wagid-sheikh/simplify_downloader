@@ -18,6 +18,7 @@ import openpyxl
 import sqlalchemy as sa
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
+from app.common.db import session_scope
 from app.common.date_utils import aware_now, get_timezone
 from app.common.lead_rules import is_customer_cancelled
 from app.config import config
@@ -118,6 +119,69 @@ _IST = ZoneInfo("Asia/Kolkata")
 _UTC = ZoneInfo("UTC")
 TD_LEADS_MAX_WORKERS_DEFAULT = 2
 TD_LEADS_MAX_WORKERS_MIN = 1
+OPEN_STATUS_CANDIDATES: tuple[str, ...] = ("pending", "open", "new", "in_progress")
+OPEN_LEADS_OUTPUT_COLUMNS: tuple[str, ...] = (
+    "store_code",
+    "pickup_no",
+    "customer_name",
+    "mobile",
+    "lead_created_at",
+    "lead_age_days",
+    "source",
+    "customer_type",
+    "last_seen_status",
+)
+
+
+def _resolved_open_status_buckets() -> tuple[str, ...]:
+    mapped_statuses = {status.strip().lower() for status, _, _ in STATUS_CONFIG if status and status.strip()}
+    return tuple(status for status in OPEN_STATUS_CANDIDATES if status in mapped_statuses)
+
+
+async def fetch_open_current_td_leads(*, database_url: str, reference_ts: datetime | None = None) -> list[dict[str, Any]]:
+    open_statuses = _resolved_open_status_buckets()
+    if not open_statuses:
+        return []
+
+    crm_leads_current = sa.table(
+        "crm_leads_current",
+        sa.column("store_code"),
+        sa.column("pickup_no"),
+        sa.column("customer_name"),
+        sa.column("mobile"),
+        sa.column("pickup_created_at"),
+        sa.column("source"),
+        sa.column("customer_type"),
+        sa.column("status_bucket"),
+    )
+    normalized_status_expr = sa.func.lower(sa.func.trim(crm_leads_current.c.status_bucket))
+
+    query = (
+        sa.select(
+            crm_leads_current.c.store_code.label("store_code"),
+            crm_leads_current.c.pickup_no.label("pickup_no"),
+            crm_leads_current.c.customer_name.label("customer_name"),
+            crm_leads_current.c.mobile.label("mobile"),
+            crm_leads_current.c.pickup_created_at.label("lead_created_at"),
+            crm_leads_current.c.source.label("source"),
+            crm_leads_current.c.customer_type.label("customer_type"),
+            crm_leads_current.c.status_bucket.label("last_seen_status"),
+        )
+        .where(normalized_status_expr.in_(open_statuses))
+        .order_by(crm_leads_current.c.store_code.asc(), crm_leads_current.c.pickup_no.asc())
+    )
+
+    rows: list[dict[str, Any]] = []
+    async with session_scope(database_url) as session:
+        result = await session.execute(query)
+        for record in result.mappings():
+            payload = {column: record.get(column) for column in OPEN_LEADS_OUTPUT_COLUMNS}
+            payload["lead_age_days"] = _calculate_lead_age_days(
+                lead_created_at=payload.get("lead_created_at"),
+                reference_ts=reference_ts or aware_now(_UTC),
+            )
+            rows.append(payload)
+    return rows
 
 
 def _business_day_bounds_local(*, reference_ts: datetime | None = None) -> tuple[datetime, datetime]:
