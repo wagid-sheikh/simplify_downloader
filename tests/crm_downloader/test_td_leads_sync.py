@@ -2037,9 +2037,9 @@ async def test_ingest_lead_change_details_dedupes_and_caps_rows(tmp_path) -> Non
 @pytest.mark.parametrize(
     ("has_new_leads", "has_cancelled_from_active", "reporting_mode", "expected_subject"),
     [
-        (True, False, "meeting", "NEW LEADS TD Leads run-1 [meeting]"),
-        (False, True, "day_end", "NEW LEADS TD Leads run-1 [day_end]"),
-        (False, False, None, "TD Leads run-1"),
+        (True, False, "meeting", "NEW LEADS TD CRM Leads run-1 [meeting]"),
+        (False, True, "day_end", "NEW LEADS TD CRM Leads run-1 [day_end]"),
+        (False, False, None, "TD CRM Leads run-1"),
     ],
 )
 async def test_td_leads_seeded_run_notification_plans_email(
@@ -2221,7 +2221,7 @@ async def test_td_leads_seeded_run_notification_plans_email(
                     INSERT INTO email_templates (
                         profile_id, name, subject_template, body_template, is_active
                     ) VALUES (
-                        10, 'run_summary', '{{ subject_prefix }}TD Leads {{ run_id }}{{ reporting_mode_suffix }}', 'Run {{ run_id }} complete in {{ duration_human }}', 1
+                        10, 'run_summary', '{{ subject_prefix }}TD CRM Leads {{ run_id }}{{ reporting_mode_suffix }}', 'Run {{ run_id }} complete in {{ duration_human }}', 1
                     )
                     """
                 )
@@ -2264,6 +2264,8 @@ async def test_td_leads_seeded_run_notification_plans_email(
         assert result["emails_sent"] == 1
         assert len(sent_plans) == 1
         assert sent_plans[0].subject == expected_subject
+        if reporting_mode == "day_end":
+            assert "[day_end]" in sent_plans[0].subject
         assert "00:01:00" in sent_plans[0].body
         assert "Run run-1 complete in 00:01:00" in sent_plans[0].body
     finally:
