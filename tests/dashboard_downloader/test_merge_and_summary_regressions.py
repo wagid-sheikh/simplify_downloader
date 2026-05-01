@@ -52,3 +52,42 @@ def test_run_summary_missed_leads_uses_ingested_by_store() -> None:
     )
 
     assert "A012: downloaded 86, ingested 10" in summary_text
+
+import io
+
+import pytest
+
+from app.dashboard_downloader import pipeline as dashboard_pipeline
+from app.dashboard_downloader.json_logger import JsonLogger
+from app.dashboard_downloader.settings import PipelineSettings
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_ignores_int_bucket_payload(monkeypatch) -> None:
+    settings = PipelineSettings(
+        run_id="run-int-payload",
+        stores={"A100": {"store_name": "Store A100"}},
+        raw_store_env="store_master.etl_flag",
+        dry_run=True,
+    )
+    logger = JsonLogger(run_id=settings.run_id, stream=io.StringIO(), log_file_path=None)
+    aggregator = dashboard_pipeline.RunAggregator(
+        run_id=settings.run_id,
+        run_env="test",
+        store_codes=["A100"],
+    )
+
+    async def fake_downloads(*, settings, logger):
+        return {"nonpackage_all": 1}
+
+    async def fake_reporting(*, settings, logger, aggregator, report_date):
+        return report_date
+
+    async def fake_finalize(*, settings, logger, aggregator, report_date):
+        return None
+
+    monkeypatch.setattr(dashboard_pipeline, "run_all_stores_single_session", fake_downloads)
+    monkeypatch.setattr(dashboard_pipeline, "_run_reporting_tail_step", fake_reporting)
+    monkeypatch.setattr(dashboard_pipeline, "_finalize_summary_and_email", fake_finalize)
+
+    await dashboard_pipeline.run_pipeline(settings=settings, logger=logger, aggregator=aggregator)
