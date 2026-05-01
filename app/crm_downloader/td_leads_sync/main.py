@@ -463,10 +463,8 @@ async def build_td_leads_reporting_payload(
             order_rows: list[Mapping[str, Any]] = []
             reconciliation_note: str | None = None
             if lead_mobile:
-                order_query = (
-                    sa.select(orders.c.order_number, orders.c.order_date)
-                    .where(orders.c.store_code == row.get("store_code"))
-                    .where(orders.c.mobile_number == lead_mobile)
+                order_query = sa.select(orders.c.order_number, orders.c.order_date, orders.c.mobile_number).where(
+                    orders.c.store_code == row.get("store_code")
                 )
 
                 date_predicates_applied = False
@@ -488,7 +486,12 @@ async def build_td_leads_reporting_payload(
                     reconciliation_note = f"Matched within date window (lookback_days={lookback_days}, grace_days={grace_days})"
 
                 order_query = order_query.order_by(orders.c.order_date.asc(), orders.c.order_number.asc())
-                order_rows = (await session.execute(order_query)).mappings().all()
+                scoped_order_rows = (await session.execute(order_query)).mappings().all()
+                order_rows = [
+                    order
+                    for order in scoped_order_rows
+                    if _normalize_mobile_number(order.get("mobile_number")) == lead_mobile
+                ]
             matched_order_ids = [str(order.get("order_number") or "").strip() for order in order_rows if order.get("order_number")]
             first_order_date = order_rows[0].get("order_date") if order_rows else None
             last_order_date = order_rows[-1].get("order_date") if order_rows else None
