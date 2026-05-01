@@ -16,6 +16,8 @@ from app.crm_downloader.td_leads_sync import main as td_leads_main
 from app.crm_downloader.td_leads_sync.main import (
     LeadsRunSummary,
     StoreLeadResult,
+    _business_day_bounds_utc,
+    _calculate_lead_age_days,
     _build_td_cancelled_lead_payload,
     _build_td_new_lead_payload,
     _collect_status_rows,
@@ -33,6 +35,22 @@ from app.crm_downloader.td_leads_sync.main import (
 from app.dashboard_downloader.notifications import send_notifications_for_run
 from app.config import config as app_config
 
+
+def test_business_day_bounds_utc_respects_pipeline_timezone() -> None:
+    reference_ts = datetime(2026, 4, 22, 10, 15, tzinfo=timezone.utc)
+
+    day_start_utc, day_end_utc = _business_day_bounds_utc(reference_ts=reference_ts)
+
+    assert day_start_utc == datetime(2026, 4, 21, 18, 30, tzinfo=timezone.utc)
+    assert day_end_utc == datetime(2026, 4, 22, 18, 29, 59, 999999, tzinfo=timezone.utc)
+
+
+def test_calculate_lead_age_days_returns_whole_days_and_is_null_safe() -> None:
+    report_generated_at = datetime(2026, 4, 24, 9, 0, tzinfo=timezone.utc)
+
+    assert _calculate_lead_age_days(lead_created_at="2026-04-21 09:33:39", reference_ts=report_generated_at) == 2
+    assert _calculate_lead_age_days(lead_created_at=None, reference_ts=report_generated_at) is None
+    assert _calculate_lead_age_days(lead_created_at="invalid", reference_ts=report_generated_at) is None
 
 def test_build_lead_uid_is_stable_for_same_business_identity() -> None:
     base = {
