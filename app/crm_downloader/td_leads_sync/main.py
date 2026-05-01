@@ -20,7 +20,7 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from app.common.db import session_scope
 from app.common.date_utils import aware_now, get_timezone
-from app.common.lead_rules import is_customer_cancelled
+from app.common.lead_rules import is_customer_cancelled, resolve_cancelled_flag
 from app.config import config
 from app.crm_downloader.browser import launch_browser
 from app.crm_downloader.config import default_download_dir
@@ -131,6 +131,19 @@ OPEN_LEADS_OUTPUT_COLUMNS: tuple[str, ...] = (
     "customer_type",
     "last_seen_status",
 )
+BUSINESS_DAY_CANCELLED_OUTPUT_COLUMNS: tuple[str, ...] = (
+    "store_code",
+    "pickup_no",
+    "customer_name",
+    "mobile",
+    "lead_created_at",
+    "cancelled_at",
+    "lead_age_days_at_cancel",
+    "cancel_reason",
+    "cancelled_flag",
+    "source",
+    "customer_type",
+)
 
 
 def _resolved_open_status_buckets() -> tuple[str, ...]:
@@ -179,6 +192,80 @@ async def fetch_open_current_td_leads(*, database_url: str, reference_ts: dateti
             payload["lead_age_days"] = _calculate_lead_age_days(
                 lead_created_at=payload.get("lead_created_at"),
                 reference_ts=reference_ts or aware_now(_UTC),
+            )
+            rows.append(payload)
+    return rows
+
+
+async def fetch_business_day_cancelled_td_leads(
+    *,
+    database_url: str,
+    reference_ts: datetime | None = None,
+) -> list[dict[str, Any]]:
+    day_start_utc, day_end_utc = _business_day_bounds_utc(reference_ts=reference_ts)
+
+    crm_leads_current = sa.table(
+        "crm_leads_current",
+        sa.column("lead_uid"),
+        sa.column("store_code"),
+        sa.column("pickup_no"),
+        sa.column("customer_name"),
+        sa.column("mobile"),
+        sa.column("pickup_created_at"),
+        sa.column("reason"),
+        sa.column("cancelled_flag"),
+        sa.column("source"),
+        sa.column("customer_type"),
+    )
+    crm_leads_status_events = sa.table(
+        "crm_leads_status_events",
+        sa.column("lead_uid"),
+        sa.column("status_bucket"),
+        sa.column("scraped_at"),
+        sa.column("created_at"),
+    )
+    normalized_status_expr = sa.func.lower(sa.func.trim(crm_leads_status_events.c.status_bucket))
+
+    cancelled_events = (
+        sa.select(
+            crm_leads_status_events.c.lead_uid.label("lead_uid"),
+            sa.func.max(crm_leads_status_events.c.scraped_at).label("cancelled_at"),
+        )
+        .where(normalized_status_expr == "cancelled")
+        .where(crm_leads_status_events.c.scraped_at >= day_start_utc)
+        .where(crm_leads_status_events.c.scraped_at <= day_end_utc)
+        .group_by(crm_leads_status_events.c.lead_uid)
+        .subquery()
+    )
+
+    query = (
+        sa.select(
+            crm_leads_current.c.store_code.label("store_code"),
+            crm_leads_current.c.pickup_no.label("pickup_no"),
+            crm_leads_current.c.customer_name.label("customer_name"),
+            crm_leads_current.c.mobile.label("mobile"),
+            crm_leads_current.c.pickup_created_at.label("lead_created_at"),
+            cancelled_events.c.cancelled_at.label("cancelled_at"),
+            crm_leads_current.c.reason.label("cancel_reason"),
+            crm_leads_current.c.cancelled_flag.label("cancelled_flag"),
+            crm_leads_current.c.source.label("source"),
+            crm_leads_current.c.customer_type.label("customer_type"),
+        )
+        .select_from(cancelled_events.join(crm_leads_current, crm_leads_current.c.lead_uid == cancelled_events.c.lead_uid))
+        .order_by(crm_leads_current.c.store_code.asc(), crm_leads_current.c.pickup_no.asc())
+    )
+
+    rows: list[dict[str, Any]] = []
+    async with session_scope(database_url) as session:
+        result = await session.execute(query)
+        for record in result.mappings():
+            payload = {column: record.get(column) for column in BUSINESS_DAY_CANCELLED_OUTPUT_COLUMNS}
+            cancelled_at = _parse_td_leads_created_datetime(payload.get("cancelled_at"))
+            payload["cancelled_at"] = cancelled_at or payload.get("cancelled_at")
+            payload["lead_age_days_at_cancel"] = _calculate_lead_age_days(lead_created_at=payload.get("lead_created_at"), reference_ts=cancelled_at)
+            payload["cancelled_flag"] = resolve_cancelled_flag(
+                cancelled_flag=payload.get("cancelled_flag"),
+                reason=payload.get("cancel_reason"),
             )
             rows.append(payload)
     return rows

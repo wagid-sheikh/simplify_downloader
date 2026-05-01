@@ -52,6 +52,79 @@ def test_calculate_lead_age_days_returns_whole_days_and_is_null_safe() -> None:
     assert _calculate_lead_age_days(lead_created_at=None, reference_ts=report_generated_at) is None
     assert _calculate_lead_age_days(lead_created_at="invalid", reference_ts=report_generated_at) is None
 
+
+@pytest.mark.asyncio
+async def test_fetch_business_day_cancelled_td_leads_uses_events_window_and_normalizes_reason_flag(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_cancelled_window.db'}"
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                sa.text(
+                    """
+                    CREATE TABLE crm_leads_current (
+                        lead_uid TEXT PRIMARY KEY,
+                        store_code TEXT,
+                        pickup_no TEXT,
+                        customer_name TEXT,
+                        mobile TEXT,
+                        pickup_created_at TEXT,
+                        reason TEXT,
+                        cancelled_flag TEXT,
+                        source TEXT,
+                        customer_type TEXT
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text(
+                    """
+                    CREATE TABLE crm_leads_status_events (
+                        lead_uid TEXT,
+                        status_bucket TEXT,
+                        scraped_at TEXT,
+                        created_at TEXT
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text(
+                    """
+                    INSERT INTO crm_leads_current (
+                        lead_uid, store_code, pickup_no, customer_name, mobile, pickup_created_at, reason, cancelled_flag, source, customer_type
+                    ) VALUES
+                        ('L1', 'A001', 'A001-1', 'Alice', '9000000001', '2026-04-29 12:00:00+00:00', '', NULL, 'Meta', 'New'),
+                        ('L2', 'A002', 'A002-2', 'Bob', '9000000002', '2026-04-20 12:00:00+00:00', 'No inventory', 'STORE', 'Web', 'Existing')
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text(
+                    """
+                    INSERT INTO crm_leads_status_events (lead_uid, status_bucket, scraped_at, created_at) VALUES
+                        ('L1', 'cancelled', '2026-04-30 19:00:00+00:00', '2026-04-30 19:00:00+00:00'),
+                        ('L2', 'cancelled', '2026-04-30 20:30:00+00:00', '2026-04-30 20:30:00+00:00'),
+                        ('L2', 'cancelled', '2026-04-29 20:30:00+00:00', '2026-04-29 20:30:00+00:00')
+                    """
+                )
+            )
+
+        rows = await td_leads_main.fetch_business_day_cancelled_td_leads(
+            database_url=database_url,
+            reference_ts=datetime(2026, 5, 1, 1, 0, tzinfo=timezone.utc),
+        )
+    finally:
+        await engine.dispose()
+
+    assert [row["pickup_no"] for row in rows] == ["A001-1", "A002-2"]
+    assert rows[0]["cancelled_flag"] == "customer"
+    assert rows[0]["cancel_reason"] == ""
+    assert rows[1]["cancelled_flag"] == "store"
+    assert rows[1]["cancel_reason"] == "No inventory"
+    assert rows[0]["lead_age_days_at_cancel"] == 1
+
 def test_build_lead_uid_is_stable_for_same_business_identity() -> None:
     base = {
         "store_code": "A668",
