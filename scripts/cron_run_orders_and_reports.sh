@@ -569,11 +569,11 @@ run_step() {
       rc=$?
       cat "${attempt_log_file}" >> "${LOG_FILE}"
 
-      if is_deterministic_sql_programming_error "${attempt_log_file}"; then
+      if is_deterministic_code_error "${attempt_log_file}"; then
         step_end="$(date +%s)"
         duration=$((step_end - step_start))
-        log "ERROR: ${step_name}: deterministic SQL programming error detected; failing fast without retries (exit_code=${rc}, duration=${duration}s)."
-        log "ERROR: ${step_name}: root cause class matched one of UndefinedFunctionError, UndefinedColumnError, or SQLAlchemy ProgrammingError."
+        log "ERROR: ${step_name}: deterministic code error detected; failing fast without retries (exit_code=${rc}, duration=${duration}s)."
+        log "ERROR: ${step_name}: retry_skipped_reason=deterministic_code_error"
         rm -f "${attempt_log_file}" 2>/dev/null || true
         return "${rc}"
       fi
@@ -594,7 +594,7 @@ run_step() {
   return "${rc}"
 }
 
-is_deterministic_sql_programming_error() {
+is_deterministic_code_error() {
   local output_file="$1"
 
   if [[ ! -f "${output_file}" ]]; then
@@ -602,7 +602,7 @@ is_deterministic_sql_programming_error() {
   fi
 
   if rg -q \
-    "UndefinedFunctionError|UndefinedColumnError|psycopg2\\.errors\\.UndefinedFunction|psycopg2\\.errors\\.UndefinedColumn|sqlalchemy\\.exc\\.ProgrammingError|ProgrammingError" \
+    "TypeError|SyntaxError|ImportError|ModuleNotFoundError|UndefinedFunctionError|UndefinedColumnError|psycopg2\\.errors\\.UndefinedFunction|psycopg2\\.errors\\.UndefinedColumn|sqlalchemy\\.exc\\.ProgrammingError|\\bProgrammingError\\b" \
     "${output_file}"; then
     return 0
   fi

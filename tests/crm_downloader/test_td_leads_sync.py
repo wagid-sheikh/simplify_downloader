@@ -2034,11 +2034,11 @@ async def test_ingest_lead_change_details_dedupes_and_caps_rows(tmp_path) -> Non
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("has_new_leads", "has_cancelled_from_active", "expected_subject"),
+    ("has_new_leads", "has_cancelled_from_active", "reporting_mode", "expected_subject"),
     [
-        (True, False, "NEW LEADS TD Leads run-1"),
-        (False, True, "NEW LEADS TD Leads run-1"),
-        (False, False, "TD Leads run-1"),
+        (True, False, "meeting", "NEW LEADS TD Leads run-1 [meeting]"),
+        (False, True, "day_end", "NEW LEADS TD Leads run-1 [day_end]"),
+        (False, False, None, "TD Leads run-1"),
     ],
 )
 async def test_td_leads_seeded_run_notification_plans_email(
@@ -2046,6 +2046,7 @@ async def test_td_leads_seeded_run_notification_plans_email(
     monkeypatch: pytest.MonkeyPatch,
     has_new_leads: bool,
     has_cancelled_from_active: bool,
+    reporting_mode: str | None,
     expected_subject: str,
 ) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_leads_notif.db'}"
@@ -2182,6 +2183,7 @@ async def test_td_leads_seeded_run_notification_plans_email(
                         {
                             "summary_html": "<div>ok</div>",
                             "has_new_leads": has_new_leads,
+                            "reporting_mode": reporting_mode,
                             "lead_change_details": {
                                 "A817": {
                                     "transitions": (
@@ -2218,7 +2220,7 @@ async def test_td_leads_seeded_run_notification_plans_email(
                     INSERT INTO email_templates (
                         profile_id, name, subject_template, body_template, is_active
                     ) VALUES (
-                        10, 'run_summary', '{{ subject_prefix }}TD Leads {{ run_id }}', 'Run {{ run_id }} complete in {{ duration_human }}', 1
+                        10, 'run_summary', '{{ subject_prefix }}TD Leads {{ run_id }}{{ reporting_mode_suffix }}', 'Run {{ run_id }} complete in {{ duration_human }}', 1
                     )
                     """
                 )
