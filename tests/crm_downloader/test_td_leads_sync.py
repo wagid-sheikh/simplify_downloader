@@ -477,6 +477,28 @@ def test_td_leads_run_summary_record_exposes_summary_html_in_metrics() -> None:
     assert "rows" not in record["metrics_json"]["stores"][0]
 
 
+
+
+def test_td_leads_run_summary_record_includes_frozen_day_report_datasets_for_reporting_modes() -> None:
+    started_at = datetime(2026, 4, 22, 0, 0, tzinfo=timezone.utc)
+    finished_at = datetime(2026, 4, 22, 0, 1, tzinfo=timezone.utc)
+    summary = LeadsRunSummary(
+        run_id="run-freeze",
+        run_env="local",
+        report_date=started_at.date(),
+        started_at=started_at,
+        store_results={"A668": StoreLeadResult(store_code="A668")},
+    )
+
+    default_record = summary.build_record(finished_at=finished_at)
+    meeting_record = summary.build_record(finished_at=finished_at, reporting_mode="meeting")
+
+    assert default_record["metrics_json"]["frozen_day_report_datasets"] is None
+    frozen = meeting_record["metrics_json"]["frozen_day_report_datasets"]
+    assert frozen["reporting_mode"] == "meeting"
+    assert frozen["report_date"] == "2026-04-22"
+    assert "Reporting Mode: meeting" in meeting_record["summary_text"]
+
 def test_td_leads_run_summary_record_marks_has_new_leads_true_when_created_events_exist() -> None:
     started_at = datetime(2026, 4, 22, 0, 0, tzinfo=timezone.utc)
     finished_at = datetime(2026, 4, 22, 0, 1, tzinfo=timezone.utc)

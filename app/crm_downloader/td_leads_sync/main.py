@@ -745,7 +745,7 @@ def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
             if status_bucket in open_statuses:
                 lead_created_at = row.get("pickup_created_at")
                 lead_age_days = _calculate_lead_age_days(lead_created_at=lead_created_at, reference_ts=aware_now(_UTC))
-                if lead_age_days >= threshold_days:
+                if lead_age_days is not None and lead_age_days >= threshold_days:
                     high_age_open_leads.append({
                         "store_code": result.store_code,
                         "pickup_no": row.get("pickup_no"),
@@ -868,7 +868,7 @@ class LeadsRunSummary:
     def has_new_leads(self) -> bool:
         return any(_count_td_leads_created_events(result) > 0 for result in self.store_results.values())
 
-    def build_record(self, *, finished_at: datetime) -> dict[str, Any]:
+    def build_record(self, *, finished_at: datetime, reporting_mode: str | None = None) -> dict[str, Any]:
         elapsed_seconds = max(0, int((finished_at - self.started_at).total_seconds()))
         hh, mm, ss = elapsed_seconds // 3600, (elapsed_seconds % 3600) // 60, elapsed_seconds % 60
         duration_human = f"{hh:02d}:{mm:02d}:{ss:02d}"
@@ -911,6 +911,9 @@ class LeadsRunSummary:
             f"Duration: {duration_human}",
             "Per-store totals:",
         ]
+        if reporting_mode in {"meeting", "day_end"}:
+            summary_lines.append(f"Reporting Mode: {reporting_mode}")
+            summary_lines.append("Frozen day-report datasets attached in metrics_json.frozen_day_report_datasets")
         for result in ordered_store_results:
             summary_lines.append(
                 f"- {result.store_code}: status={result.status}, rows={len(result.rows)}, "
@@ -924,6 +927,15 @@ class LeadsRunSummary:
         daily_reporting = _build_td_daily_reporting(self)
         summary_html = _build_td_leads_summary_html(summary=self, duration_human=duration_human)
         lead_tables_html = _build_td_leads_tables_html(summary=self)
+
+        frozen_day_report_datasets: dict[str, Any] | None = None
+        if reporting_mode in {"meeting", "day_end"}:
+            frozen_day_report_datasets = {
+                "reporting_mode": reporting_mode,
+                "generated_at": finished_at.isoformat(),
+                "report_date": self.report_date.isoformat(),
+                "daily_reporting": _normalize_json_safe(daily_reporting),
+            }
 
         return {
             "pipeline_name": PIPELINE_NAME,
@@ -947,6 +959,7 @@ class LeadsRunSummary:
                     "summary_html": summary_html,
                     "lead_tables_html": lead_tables_html,
                     "daily_reporting": daily_reporting,
+                    "frozen_day_report_datasets": frozen_day_report_datasets,
                     "stores": store_rows_payload,
                     "lead_change_details": {
                         result.store_code: dict(result.lead_change_details) for result in self.store_results.values()
@@ -991,7 +1004,9 @@ def _resolve_td_leads_concurrency_settings() -> tuple[int, int, bool]:
     return configured_workers, effective_workers, parallel_enabled and effective_workers > 1
 
 
-async def _persist_run_summary(*, logger: JsonLogger, summary: LeadsRunSummary, finished_at: datetime) -> bool:
+async def _persist_run_summary(
+    *, logger: JsonLogger, summary: LeadsRunSummary, finished_at: datetime, reporting_mode: str | None = None
+) -> bool:
     if not config.database_url:
         log_event(
             logger=logger,
@@ -1002,7 +1017,7 @@ async def _persist_run_summary(*, logger: JsonLogger, summary: LeadsRunSummary, 
         )
         return False
 
-    record = summary.build_record(finished_at=finished_at)
+    record = summary.build_record(finished_at=finished_at, reporting_mode=reporting_mode)
     try:
         existing = await fetch_summary_for_run(config.database_url, summary.run_id)
         if existing:
@@ -1833,7 +1848,12 @@ async def main(
                     await browser.close()
 
     finished_at = datetime.now(timezone.utc)
-    persisted = await _persist_run_summary(logger=logger, summary=summary, finished_at=finished_at)
+    persisted = await _persist_run_summary(
+        logger=logger,
+        summary=summary,
+        finished_at=finished_at,
+        reporting_mode=reporting_mode,
+    )
     if persisted:
         notification_result = await send_notifications_for_run(PIPELINE_NAME, resolved_run_id)
         log_event(
