@@ -1253,6 +1253,7 @@ class LeadsRunSummary:
                     "total_rows": self.total_rows(),
                     "duration_seconds": elapsed_seconds,
                     "duration_human": duration_human,
+                    "reporting_mode": reporting_mode if reporting_mode in {"meeting", "day_end"} else None,
                     "has_new_leads": self.has_new_leads(),
                     "pickup_created_at_null_count": pickup_created_at_null_count,
                     "pickup_created_at_null_counts_by_bucket": pickup_created_at_null_counts_by_bucket,
