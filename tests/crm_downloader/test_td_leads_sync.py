@@ -2636,8 +2636,9 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
             await connection.execute(sa.text("""
                 INSERT INTO orders (store_code, mobile_number, order_number, order_date) VALUES
                 ('A100', '9000000002', 'SO-100', '2026-05-01 10:30:00+00:00'),
+                ('A100', '9000000002', 'SO-099', '2026-04-20 10:30:00+00:00'),
                 ('A100', '9000000003', 'SO-200', '2026-05-01 09:00:00+00:00'),
-                ('A100', '9000000003', 'SO-150', '2026-05-01 08:30:00+00:00')
+                ('A100', '+91 90000 00003', 'SO-150', '2026-05-01 08:30:00+00:00')
             """))
 
         payload = await td_leads_main.build_td_leads_reporting_payload(
@@ -2667,9 +2668,11 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
     assert by_pickup["A100-D1"]["order_match_found"] is True
     assert by_pickup["A100-D1"]["matched_order_count"] == 1
     assert by_pickup["A100-D1"]["matched_order_ids"] == ["SO-100"]
+    assert by_pickup["A100-D1"]["first_order_date"] == "2026-05-01 10:30:00+00:00"
+    assert by_pickup["A100-D1"]["last_order_date"] == "2026-05-01 10:30:00+00:00"
 
     assert by_pickup["A100-D2"]["order_match_found"] is False
-    assert by_pickup["A100-D2"]["reconciliation_note"]
+    assert "within date window" in by_pickup["A100-D2"]["reconciliation_note"]
 
     assert by_pickup["A100-D3"]["matched_order_ids"] == ["SO-150", "SO-200"]
     assert by_pickup["A100-D3"]["first_order_date"] == "2026-05-01 08:30:00+00:00"
