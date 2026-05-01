@@ -2615,7 +2615,7 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
                 VALUES
                 ('L_OPEN', 'A100', 'A100-O1', 'Open Lead', '900 000 0001', '2026-04-28 10:00:00+00:00', NULL, NULL, 'Meta', 'New', 'pending'),
                 ('L_DONE_MATCH', 'A100', 'A100-D1', 'Done Match', '9000000002', '2026-05-01 08:00:00+00:00', NULL, NULL, 'Web', 'Existing', 'completed'),
-                ('L_DONE_NOMATCH', 'A100', 'A100-D2', 'Done No Match', '9000000999', '2026-05-01 07:30:00+00:00', NULL, NULL, 'Walk-in', 'New', 'completed'),
+                ('L_DONE_OLDONLY', 'A100', 'A100-D2', 'Done Old Only', '9000000999', '2026-05-01 07:30:00+00:00', NULL, NULL, 'Walk-in', 'New', 'completed'),
                 ('L_DONE_MULTI', 'A100', 'A100-D3', 'Done Multi', '+91 90000 00003', '2026-04-30 08:00:00+00:00', NULL, NULL, 'Meta', 'Existing', 'completed'),
                 ('L_CANCEL_TODAY', 'A100', 'A100-C1', 'Cancel Today', '9000000100', '2026-04-30 01:00:00+00:00', '', NULL, 'Meta', 'New', 'cancelled'),
                 ('L_CANCEL_YDAY', 'A100', 'A100-C0', 'Cancel Yesterday', '9000000200', '2026-04-30 01:00:00+00:00', 'No stock', 'STORE', 'Meta', 'Existing', 'cancelled'),
@@ -2626,7 +2626,7 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
                 INSERT INTO crm_leads_status_events (lead_uid, status_bucket, scraped_at, created_at) VALUES
                 ('L_OPEN', 'pending', '2026-05-01 03:00:00+00:00', '2026-05-01 03:00:00+00:00'),
                 ('L_DONE_MATCH', 'completed', '2026-05-01 10:00:00+00:00', '2026-05-01 10:00:00+00:00'),
-                ('L_DONE_NOMATCH', 'completed', '2026-05-01 11:00:00+00:00', '2026-05-01 11:00:00+00:00'),
+                ('L_DONE_OLDONLY', 'completed', '2026-05-01 11:00:00+00:00', '2026-05-01 11:00:00+00:00'),
                 ('L_DONE_MULTI', 'completed', '2026-05-01 12:00:00+00:00', '2026-05-01 12:00:00+00:00'),
                 ('L_CANCEL_TODAY', 'cancelled', '2026-05-01 09:00:00+00:00', '2026-05-01 09:00:00+00:00'),
                 ('L_CANCEL_YDAY', 'cancelled', '2026-04-30 09:00:00+00:00', '2026-04-30 09:00:00+00:00'),
@@ -2635,9 +2635,10 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
 
             await connection.execute(sa.text("""
                 INSERT INTO orders (store_code, mobile_number, order_number, order_date) VALUES
-                ('A100', '9000000002', 'SO-100', '2026-05-01 10:30:00+00:00'),
+                ('A100', '+91 90000 00002', 'SO-100', '2026-05-01 10:30:00+00:00'),
+                ('A100', '9000000999', 'SO-OLD-999', '2026-04-29 09:00:00+00:00'),
                 ('A100', '9000000003', 'SO-200', '2026-05-01 09:00:00+00:00'),
-                ('A100', '9000000003', 'SO-150', '2026-05-01 08:30:00+00:00')
+                ('A100', '90000 00003', 'SO-150', '2026-05-01 08:30:00+00:00')
             """))
 
         payload = await td_leads_main.build_td_leads_reporting_payload(
@@ -2669,6 +2670,7 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
     assert by_pickup["A100-D1"]["matched_order_ids"] == ["SO-100"]
 
     assert by_pickup["A100-D2"]["order_match_found"] is False
+    assert by_pickup["A100-D2"]["matched_order_ids"] == []
     assert by_pickup["A100-D2"]["reconciliation_note"]
 
     assert by_pickup["A100-D3"]["matched_order_ids"] == ["SO-150", "SO-200"]

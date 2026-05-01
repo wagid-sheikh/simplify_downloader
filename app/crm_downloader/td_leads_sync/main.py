@@ -457,12 +457,19 @@ async def build_td_leads_reporting_payload(
             order_rows: list[Mapping[str, Any]] = []
             if lead_mobile:
                 order_query = (
-                    sa.select(orders.c.order_number, orders.c.order_date)
+                    sa.select(orders.c.mobile_number, orders.c.order_number, orders.c.order_date)
                     .where(orders.c.store_code == row.get("store_code"))
-                    .where(orders.c.mobile_number == lead_mobile)
                     .order_by(orders.c.order_date.asc(), orders.c.order_number.asc())
                 )
-                order_rows = (await session.execute(order_query)).mappings().all()
+                candidate_orders = (await session.execute(order_query)).mappings().all()
+                for candidate in candidate_orders:
+                    candidate_mobile = _normalize_mobile_number(candidate.get("mobile_number"))
+                    if candidate_mobile != lead_mobile:
+                        continue
+                    order_date = _parse_td_leads_created_datetime(candidate.get("order_date"))
+                    if order_date is not None and (order_date < day_start_utc or order_date > day_end_utc):
+                        continue
+                    order_rows.append(candidate)
             matched_order_ids = [str(order.get("order_number") or "").strip() for order in order_rows if order.get("order_number")]
             first_order_date = order_rows[0].get("order_date") if order_rows else None
             last_order_date = order_rows[-1].get("order_date") if order_rows else None
