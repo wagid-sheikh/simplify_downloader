@@ -72,7 +72,7 @@ def test_cron_returns_non_zero_when_daily_fails_even_if_rescue_succeeds(tmp_path
     assert "ERROR: One or more required report pipelines failed" in log_text
 
 
-def test_cron_fail_fast_on_deterministic_sql_programming_error(tmp_path: Path) -> None:
+def test_cron_fail_fast_on_deterministic_code_error(tmp_path: Path) -> None:
     repo_root = tmp_path
     scripts_dir = repo_root / "scripts"
     logs_dir = repo_root / "logs"
@@ -98,7 +98,7 @@ def test_cron_fail_fast_on_deterministic_sql_programming_error(tmp_path: Path) -
         "[[ -f \"${COUNT_FILE}\" ]] && count=$(cat \"${COUNT_FILE}\")\n"
         "count=$((count + 1))\n"
         "printf '%s' \"${count}\" > \"${COUNT_FILE}\"\n"
-        "echo 'sqlalchemy.exc.ProgrammingError: (psycopg2.errors.UndefinedColumn) column foo does not exist' >&2\n"
+        "echo 'TypeError: unsupported operand type(s) for +: int and str' >&2\n"
         "exit 1\n",
     )
 
@@ -130,5 +130,6 @@ def test_cron_fail_fast_on_deterministic_sql_programming_error(tmp_path: Path) -
     log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
     assert log_files
     log_text = log_files[-1].read_text(encoding="utf-8")
-    assert "deterministic SQL programming error detected; failing fast without retries" in log_text
+    assert "deterministic code error detected; failing fast without retries" in log_text
+    assert "retry_skipped_reason=deterministic_code_error" in log_text
     assert "attempt 2/4 starting" not in log_text
