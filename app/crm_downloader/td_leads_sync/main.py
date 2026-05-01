@@ -9,7 +9,7 @@ import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
@@ -163,6 +163,9 @@ COMPLETED_LEADS_TODAY_OUTPUT_COLUMNS: tuple[str, ...] = (
 
 
 TD_OPEN_LEADS_AGE_THRESHOLD_DAYS_DEFAULT = 2
+TD_LEADS_ORDER_MATCH_LOOKBACK_DAYS_DEFAULT = 1
+TD_LEADS_ORDER_MATCH_GRACE_DAYS_DEFAULT = 1
+
 ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS: tuple[str, ...] = (
     "store_code",
     "pickup_no",
@@ -451,22 +454,47 @@ async def build_td_leads_reporting_payload(
     completed_leads_today: list[dict[str, Any]] = []
     async with session_scope(database_url) as session:
         completed_rows = (await session.execute(completed_query)).mappings().all()
+        lookback_days = _resolve_td_order_match_lookback_days()
+        grace_days = _resolve_td_order_match_grace_days()
         for row in completed_rows:
-            completed_at = _parse_td_leads_created_datetime(row.get("completed_at")) or row.get("completed_at")
+            completed_at = _parse_td_leads_created_datetime(row.get("completed_at"))
+            lead_created_at = _parse_td_leads_created_datetime(row.get("lead_created_at"))
             lead_mobile = _normalize_mobile_number(row.get("mobile"))
             order_rows: list[Mapping[str, Any]] = []
+            reconciliation_note: str | None = None
             if lead_mobile:
                 order_query = (
                     sa.select(orders.c.order_number, orders.c.order_date)
                     .where(orders.c.store_code == row.get("store_code"))
                     .where(orders.c.mobile_number == lead_mobile)
-                    .order_by(orders.c.order_date.asc(), orders.c.order_number.asc())
                 )
+
+                date_predicates_applied = False
+                if lead_created_at is not None:
+                    lower_bound = (lead_created_at - timedelta(days=lookback_days)).astimezone(_UTC).isoformat(sep=" ")
+                    order_query = order_query.where(orders.c.order_date >= lower_bound)
+                    date_predicates_applied = True
+                else:
+                    reconciliation_note = "Date-window degraded: invalid lead_created_at; lower bound not applied"
+
+                if completed_at is not None:
+                    upper_bound = (completed_at + timedelta(days=grace_days)).astimezone(_UTC).isoformat(sep=" ")
+                    order_query = order_query.where(orders.c.order_date <= upper_bound)
+                    date_predicates_applied = True
+                elif reconciliation_note is None:
+                    reconciliation_note = "Date-window degraded: invalid completed_at; upper bound not applied"
+
+                if reconciliation_note is None and date_predicates_applied:
+                    reconciliation_note = f"Matched within date window (lookback_days={lookback_days}, grace_days={grace_days})"
+
+                order_query = order_query.order_by(orders.c.order_date.asc(), orders.c.order_number.asc())
                 order_rows = (await session.execute(order_query)).mappings().all()
             matched_order_ids = [str(order.get("order_number") or "").strip() for order in order_rows if order.get("order_number")]
             first_order_date = order_rows[0].get("order_date") if order_rows else None
             last_order_date = order_rows[-1].get("order_date") if order_rows else None
             match_found = bool(matched_order_ids)
+            if not match_found and reconciliation_note is None:
+                reconciliation_note = "No matching orders by store_code+mobile within date window"
             completed_leads_today.append(
                 {
                     "store_code": row.get("store_code"),
@@ -474,17 +502,17 @@ async def build_td_leads_reporting_payload(
                     "customer_name": row.get("customer_name"),
                     "mobile": row.get("mobile"),
                     "lead_created_at": row.get("lead_created_at"),
-                    "completed_at": completed_at,
+                    "completed_at": completed_at or row.get("completed_at"),
                     "lead_age_days_at_completion": _calculate_lead_age_days(
                         lead_created_at=row.get("lead_created_at"),
-                        reference_ts=_parse_td_leads_created_datetime(completed_at),
+                        reference_ts=completed_at,
                     ),
                     "order_match_found": match_found,
                     "matched_order_count": len(matched_order_ids),
                     "matched_order_ids": matched_order_ids,
                     "first_order_date": first_order_date,
                     "last_order_date": last_order_date,
-                    "reconciliation_note": None if match_found else "No matching orders by store_code+mobile",
+                    "reconciliation_note": None if match_found and reconciliation_note and reconciliation_note.startswith("Matched within") else reconciliation_note,
                 }
             )
 
@@ -946,6 +974,14 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
 
 def _resolve_td_open_lead_age_threshold_days() -> int:
     return max(0, _env_int("TD_OPEN_LEADS_AGE_THRESHOLD_DAYS", TD_OPEN_LEADS_AGE_THRESHOLD_DAYS_DEFAULT))
+
+
+def _resolve_td_order_match_lookback_days() -> int:
+    return max(0, _env_int("TD_LEADS_ORDER_MATCH_LOOKBACK_DAYS", TD_LEADS_ORDER_MATCH_LOOKBACK_DAYS_DEFAULT))
+
+
+def _resolve_td_order_match_grace_days() -> int:
+    return max(0, _env_int("TD_LEADS_ORDER_MATCH_GRACE_DAYS", TD_LEADS_ORDER_MATCH_GRACE_DAYS_DEFAULT))
 
 
 def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
