@@ -47,6 +47,10 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 - TD leads sync run summaries include:
   - aggregate bucket write counts and status transitions, and
   - actionable lead-change payloads grouped by action/bucket + transitions, deduped by lead identity, with per-group truncation and `overflow_count` markers for email/report readability.
+- Section semantics used by reports/notifications:
+  - Open leads are **backlog-style**: they carry forward across days until a lead closes.
+  - Cancelled and completed leads are **day-event-style**: they are counted only when the status event occurs on that day.
+  - Completed reconciliation uses `orders.store_code + orders.mobile_number` as the lookup key, and surfaces `orders.order_number` in output for operator traceability.
 
 #### TD leads concurrency controls
 - `TD_LEADS_MAX_WORKERS` controls store-worker concurrency for TD leads sync.

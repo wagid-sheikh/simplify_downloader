@@ -67,6 +67,7 @@ Practical map of where to work for major capabilities.
   - `app/reports/daily_sales_report/{data.py,templates/daily_sales_report.html}`
   - `app/dashboard_downloader/notifications.py`
 - **Operational behavior:** Lead-change rows are grouped (created/updated/transitions), deduped by stable lead identity, capped per group, and report `overflow_count` for truncated rows.
+- **Section semantics:** Open leads are backlog-style (carry forward until closure), while cancelled/completed cohorts are day-event-style (counted on event day). Completed reconciliation matches on `orders.store_code + orders.mobile_number` and includes `orders.order_number` in the reported output.
 
 ## 7) Orders sync run profiler (window orchestrator)
 
@@ -123,6 +124,7 @@ Practical map of where to work for major capabilities.
 ## 12) Operational scripts and deployment
 
 - **Purpose:** Local/prod wrappers around CLI, cron execution, targeted pipeline runs.
+- **Exact TD leads cron invocation:** `bash scripts/cron_run_td_leads_sync.sh` (wrapper), which calls `bash scripts/run_local_td_leads_sync.sh` and ultimately `poetry run python -m app crm td-leads-sync`.
 - **Primary paths:**
   - `scripts/*.sh`
   - `.github/workflows/{ci.yml,deploy-prod.yml}`

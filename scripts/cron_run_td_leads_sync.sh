@@ -5,7 +5,18 @@ set -euo pipefail
 # cron_run_td_leads_sync.sh
 #
 # macOS Big Sur compatible, production-grade cron wrapper for:
-#   1. run_local_td_leads_sync.sh
+#   scripts/run_local_td_leads_sync.sh
+#
+# Exact invocation syntax:
+#   bash scripts/cron_run_td_leads_sync.sh
+#
+# Runtime flow semantics:
+# - Acquires global lock first (`tmp/cron_heavy_pipelines.lock`) to serialize
+#   heavy wrappers, then local lock (`tmp/cron_run_td_leads_sync.lock`).
+# - Runs `scripts/run_local_td_leads_sync.sh`, which executes:
+#     poetry run python -m app crm td-leads-sync
+# - All stdout/stderr is written to:
+#     logs/cron_run_td_leads_sync_<YYYY-mm-dd_HH-MM-SS>.log
 #
 # Features:
 # - macOS-safe lock using mkdir
