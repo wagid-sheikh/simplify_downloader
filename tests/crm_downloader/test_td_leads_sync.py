@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from datetime import datetime, timezone
@@ -2687,6 +2688,93 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
     assert action_required["open_leads_high_age_threshold_days"] == 3
     assert [row["pickup_no"] for row in action_required["open_leads_high_age"]] == ["A100-O1"]
     assert [row["pickup_no"] for row in action_required["completed_without_order_match"]] == ["A100-D2", "A100-X1"]
+
+
+@pytest.mark.asyncio
+async def test_build_td_leads_reporting_payload_uses_datetime_order_bounds(tmp_path, monkeypatch) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_reporting_bound_types.db'}"
+    engine = create_async_engine(database_url)
+    captured_order_bound_types: list[type] = []
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(sa.text("""
+                CREATE TABLE crm_leads_current (
+                    lead_uid TEXT PRIMARY KEY,
+                    store_code TEXT,
+                    pickup_no TEXT,
+                    customer_name TEXT,
+                    mobile TEXT,
+                    pickup_created_at TEXT,
+                    reason TEXT,
+                    cancelled_flag TEXT,
+                    source TEXT,
+                    customer_type TEXT,
+                    status_bucket TEXT
+                )
+            """))
+            await connection.execute(sa.text("""
+                CREATE TABLE crm_leads_status_events (
+                    lead_uid TEXT,
+                    status_bucket TEXT,
+                    scraped_at TEXT,
+                    created_at TEXT
+                )
+            """))
+            await connection.execute(sa.text("""
+                CREATE TABLE orders (
+                    store_code TEXT,
+                    mobile_number TEXT,
+                    order_number TEXT,
+                    order_date TEXT
+                )
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO crm_leads_current
+                (lead_uid, store_code, pickup_no, customer_name, mobile, pickup_created_at, reason, cancelled_flag, source, customer_type, status_bucket)
+                VALUES ('L_DONE_MATCH', 'A100', 'A100-D1', 'Done Match', '9000000002', '2026-05-01 08:00:00+00:00', NULL, NULL, 'Web', 'Existing', 'completed')
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO crm_leads_status_events (lead_uid, status_bucket, scraped_at, created_at) VALUES
+                ('L_DONE_MATCH', 'completed', '2026-05-01 10:00:00+00:00', '2026-05-01 10:00:00+00:00')
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO orders (store_code, mobile_number, order_number, order_date) VALUES
+                ('A100', '9000000002', 'SO-100', '2026-05-01 10:30:00+00:00')
+            """))
+
+        original_session_scope = td_leads_main.session_scope
+
+        @contextlib.asynccontextmanager
+        async def capturing_session_scope(url: str):
+            async with original_session_scope(url) as session:
+                original_execute = session.execute
+
+                async def wrapped_execute(statement, *args, **kwargs):
+                    if isinstance(statement, sa.sql.Select) and any(
+                        getattr(column, "name", None) == "order_number"
+                        for column in statement.selected_columns
+                    ):
+                        for criterion in statement._where_criteria:
+                            right = getattr(criterion, "right", None)
+                            value = getattr(right, "value", object())
+                            if isinstance(value, datetime):
+                                captured_order_bound_types.append(type(value))
+                    return await original_execute(statement, *args, **kwargs)
+
+                session.execute = wrapped_execute
+                yield session
+
+        monkeypatch.setattr(td_leads_main, "session_scope", capturing_session_scope)
+
+        await td_leads_main.build_td_leads_reporting_payload(
+            database_url=database_url,
+            reference_ts=datetime(2026, 5, 1, 15, 0, tzinfo=timezone.utc),
+        )
+    finally:
+        await engine.dispose()
+
+    assert captured_order_bound_types
+    assert captured_order_bound_types.count(datetime) >= 2
 
 
 @pytest.mark.parametrize("mode", ["meeting", "day_end"])

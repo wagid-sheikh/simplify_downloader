@@ -469,14 +469,14 @@ async def build_td_leads_reporting_payload(
 
                 date_predicates_applied = False
                 if lead_created_at is not None:
-                    lower_bound = (lead_created_at - timedelta(days=lookback_days)).astimezone(_UTC).isoformat(sep=" ")
+                    lower_bound = (lead_created_at - timedelta(days=lookback_days)).astimezone(_UTC)
                     order_query = order_query.where(orders.c.order_date >= lower_bound)
                     date_predicates_applied = True
                 else:
                     reconciliation_note = "Date-window degraded: invalid lead_created_at; lower bound not applied"
 
                 if completed_at is not None:
-                    upper_bound = (completed_at + timedelta(days=grace_days)).astimezone(_UTC).isoformat(sep=" ")
+                    upper_bound = (completed_at + timedelta(days=grace_days)).astimezone(_UTC)
                     order_query = order_query.where(orders.c.order_date <= upper_bound)
                     date_predicates_applied = True
                 elif reconciliation_note is None:
