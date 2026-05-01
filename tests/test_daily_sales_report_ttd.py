@@ -99,6 +99,7 @@ def test_daily_sales_report_ttd_calculation_and_rendering() -> None:
         missed_leads=[],
         cancelled_leads=[],
         lead_performance_summary=[],
+        completed_today_leads=[],
         td_leads_sync_metrics={},
         td_leads_sync_lead_changes={},
     )
@@ -209,6 +210,7 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
                 "pending_pct": {"value": 10.0, "color": "RED", "status": "FOLLOW_UP_GAP"},
             }
         ],
+        completed_today_leads=[],
         td_leads_sync_metrics={},
         td_leads_sync_lead_changes={
             "stores": [
@@ -318,6 +320,7 @@ def test_daily_sales_report_cancelled_leads_empty_state_rendering() -> None:
         missed_leads=[],
         cancelled_leads=[],
         lead_performance_summary=[],
+        completed_today_leads=[],
         td_leads_sync_metrics={},
         td_leads_sync_lead_changes={},
     )
@@ -353,6 +356,7 @@ def test_daily_sales_report_same_day_section_uses_shared_table_partial() -> None
         missed_leads=[],
         cancelled_leads=[],
         lead_performance_summary=[],
+        completed_today_leads=[],
         td_leads_sync_metrics={},
         td_leads_sync_lead_changes={},
         to_be_recovered=[],

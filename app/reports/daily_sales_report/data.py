@@ -100,6 +100,7 @@ class DailySalesReportData:
     missed_leads: List[Mapping[str, object]]
     cancelled_leads: List[Mapping[str, object]]
     lead_performance_summary: List[Mapping[str, object]]
+    completed_today_leads: List[Mapping[str, object]]
     td_leads_sync_metrics: Mapping[str, object]
     td_leads_sync_lead_changes: Mapping[str, object]
     to_be_recovered: List[RecoveryOrderRow] = field(default_factory=list)
@@ -602,6 +603,7 @@ async def fetch_daily_sales_report(
         "crm_leads_status_events",
         sa.column("lead_uid"),
         sa.column("status_bucket"),
+        sa.column("scraped_at"),
     )
     previous_day = report_date - timedelta(days=1)
 
@@ -1270,6 +1272,73 @@ async def fetch_daily_sales_report(
                 }
             )
 
+        normalized_event_status_expr = sa.func.lower(sa.func.trim(crm_leads_status_events.c.status_bucket))
+        completed_today_events = (
+            sa.select(
+                crm_leads_status_events.c.lead_uid.label("lead_uid"),
+            )
+            .where(crm_leads_status_events.c.scraped_at >= ranges["start_day"])
+            .where(crm_leads_status_events.c.scraped_at < ranges["next_day"])
+            .where(normalized_event_status_expr == "completed")
+            .distinct()
+            .subquery()
+        )
+        normalized_lead_store_code_expr = sa.func.upper(sa.func.trim(crm_leads_current.c.store_code))
+        normalized_lead_mobile_expr = sa.func.regexp_replace(
+            sa.func.coalesce(crm_leads_current.c.mobile, ""),
+            r"[^0-9]",
+            "",
+            "g",
+        )
+        normalized_order_store_code_expr = sa.func.upper(sa.func.trim(orders.c.cost_center))
+        normalized_order_mobile_expr = sa.func.regexp_replace(
+            sa.func.coalesce(orders.c.mobile_number, ""),
+            r"[^0-9]",
+            "",
+            "g",
+        )
+        completed_reconciliation_stmt = (
+            sa.select(
+                crm_leads_current.c.lead_uid.label("lead_uid"),
+                normalized_lead_store_code_expr.label("store_code"),
+                crm_leads_current.c.customer_name.label("customer_name"),
+                crm_leads_current.c.mobile.label("mobile"),
+                crm_leads_current.c.pickup_created_at.label("pickup_created_at"),
+                sa.case((sa.func.count(orders.c.order_number) > 0, True), else_=False).label("order_match_found"),
+                sa.func.count(orders.c.order_number).label("matched_order_count"),
+                string_list_agg(orders.c.order_number).label("matched_order_ids"),
+                sa.func.min(orders.c.order_date).label("first_order_date"),
+                sa.func.max(orders.c.order_date).label("last_order_date"),
+                sa.case(
+                    (sa.func.count(orders.c.order_number) == 0, "no match"),
+                    (sa.func.count(orders.c.order_number) == 1, "single"),
+                    else_="multiple",
+                ).label("reconciliation_note"),
+            )
+            .select_from(
+                completed_today_events.join(
+                    crm_leads_current,
+                    crm_leads_current.c.lead_uid == completed_today_events.c.lead_uid,
+                ).outerjoin(
+                    orders,
+                    sa.and_(
+                        normalized_order_store_code_expr == normalized_lead_store_code_expr,
+                        normalized_order_mobile_expr == normalized_lead_mobile_expr,
+                    ),
+                )
+            )
+            .group_by(
+                crm_leads_current.c.lead_uid,
+                normalized_lead_store_code_expr,
+                crm_leads_current.c.customer_name,
+                crm_leads_current.c.mobile,
+                crm_leads_current.c.pickup_created_at,
+            )
+            .order_by(normalized_lead_store_code_expr, crm_leads_current.c.lead_uid)
+        )
+        completed_today_leads_result = await session.execute(completed_reconciliation_stmt)
+        completed_today_leads = [dict(row) for row in completed_today_leads_result.mappings()]
+
     return DailySalesReportData(
         report_date=report_date,
         rows=rows,
@@ -1280,6 +1349,7 @@ async def fetch_daily_sales_report(
         missed_leads=missed_leads_grouped,
         cancelled_leads=cancelled_leads_grouped,
         lead_performance_summary=lead_performance_summary,
+        completed_today_leads=completed_today_leads,
         td_leads_sync_metrics=td_leads_sync_metrics,
         td_leads_sync_lead_changes=td_leads_sync_lead_changes,
         to_be_recovered=to_be_recovered,
