@@ -545,21 +545,29 @@ run_step() {
 }
 
 TD_LEADS_ARGS=()
+td_leads_args_count=0
 for raw_arg in "$@"; do
   if [[ "${raw_arg}" == reporting_mode=* ]]; then
     reporting_mode_value="${raw_arg#reporting_mode=}"
     if [[ "${reporting_mode_value}" == "meeting" || "${reporting_mode_value}" == "day_end" ]]; then
       TD_LEADS_ARGS+=("--reporting-mode" "${reporting_mode_value}")
+      td_leads_args_count=$((td_leads_args_count + 2))
     else
       log "WARNING: Invalid reporting_mode '${reporting_mode_value}' ignored (allowed: meeting|day_end)"
     fi
   else
     TD_LEADS_ARGS+=("${raw_arg}")
+    td_leads_args_count=$((td_leads_args_count + 1))
   fi
 done
 
-log "Parsed td_leads args count=${#TD_LEADS_ARGS[@]} values=$(printf '%q ' "${TD_LEADS_ARGS[@]-}")"
-if [[ ${#TD_LEADS_ARGS[@]} -gt 0 ]]; then
+td_leads_args_values=""
+if [[ ${td_leads_args_count} -gt 0 ]]; then
+  td_leads_args_values="$(printf '%q ' "${TD_LEADS_ARGS[@]}")"
+fi
+
+log "Parsed td_leads args count=${td_leads_args_count} values=${td_leads_args_values}"
+if [[ ${td_leads_args_count} -gt 0 ]]; then
   run_step "Script 1: td_leads_sync" "./scripts/run_local_td_leads_sync.sh" "${TD_LEADS_ARGS[@]}"
 else
   run_step "Script 1: td_leads_sync" "./scripts/run_local_td_leads_sync.sh"

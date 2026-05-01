@@ -71,6 +71,7 @@ def test_td_leads_cron_passes_one_non_reporting_arg(tmp_path: Path) -> None:
     result = _run_cron(repo_root, scripts_dir, "--foo")
 
     assert result.returncode == 0
+    assert "unbound variable" not in (result.stderr + result.stdout).lower()
     assert (tmp_path / "td_leads_args").read_text(encoding="utf-8").strip() == "--foo"
 
 
