@@ -72,7 +72,8 @@ async def test_fetch_business_day_cancelled_td_leads_uses_events_window_and_norm
                         reason TEXT,
                         cancelled_flag TEXT,
                         source TEXT,
-                        customer_type TEXT
+                        customer_type TEXT,
+                        status_bucket TEXT
                     )
                     """
                 )
@@ -2568,3 +2569,151 @@ def test_fetch_business_day_cancelled_td_leads_returns_expected_columns(tmp_path
         "customer_type",
         "lead_age_days_at_cancel",
     }
+
+
+@pytest.mark.asyncio
+async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sections_and_modes(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_reporting_seeded.db'}"
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(sa.text("""
+                CREATE TABLE crm_leads_current (
+                    lead_uid TEXT PRIMARY KEY,
+                    store_code TEXT,
+                    pickup_no TEXT,
+                    customer_name TEXT,
+                    mobile TEXT,
+                    pickup_created_at TEXT,
+                    reason TEXT,
+                    cancelled_flag TEXT,
+                    source TEXT,
+                    customer_type TEXT,
+                    status_bucket TEXT
+                )
+            """))
+            await connection.execute(sa.text("""
+                CREATE TABLE crm_leads_status_events (
+                    lead_uid TEXT,
+                    status_bucket TEXT,
+                    scraped_at TEXT,
+                    created_at TEXT
+                )
+            """))
+            await connection.execute(sa.text("""
+                CREATE TABLE orders (
+                    store_code TEXT,
+                    mobile_number TEXT,
+                    order_number TEXT,
+                    order_date TEXT
+                )
+            """))
+
+            await connection.execute(sa.text("""
+                INSERT INTO crm_leads_current
+                (lead_uid, store_code, pickup_no, customer_name, mobile, pickup_created_at, reason, cancelled_flag, source, customer_type, status_bucket)
+                VALUES
+                ('L_OPEN', 'A100', 'A100-O1', 'Open Lead', '900 000 0001', '2026-04-28 10:00:00+00:00', NULL, NULL, 'Meta', 'New', 'pending'),
+                ('L_DONE_MATCH', 'A100', 'A100-D1', 'Done Match', '9000000002', '2026-05-01 08:00:00+00:00', NULL, NULL, 'Web', 'Existing', 'completed'),
+                ('L_DONE_NOMATCH', 'A100', 'A100-D2', 'Done No Match', '9000000999', '2026-05-01 07:30:00+00:00', NULL, NULL, 'Walk-in', 'New', 'completed'),
+                ('L_DONE_MULTI', 'A100', 'A100-D3', 'Done Multi', '+91 90000 00003', '2026-04-30 08:00:00+00:00', NULL, NULL, 'Meta', 'Existing', 'completed'),
+                ('L_CANCEL_TODAY', 'A100', 'A100-C1', 'Cancel Today', '9000000100', '2026-04-30 01:00:00+00:00', '', NULL, 'Meta', 'New', 'cancelled'),
+                ('L_CANCEL_YDAY', 'A100', 'A100-C0', 'Cancel Yesterday', '9000000200', '2026-04-30 01:00:00+00:00', 'No stock', 'STORE', 'Meta', 'Existing', 'cancelled'),
+                ('L_DONE_CAN', 'A100', 'A100-X1', 'Should Not Open', '9000000300', '2026-04-28 08:00:00+00:00', NULL, NULL, 'Meta', 'Existing', 'completed')
+            """))
+
+            await connection.execute(sa.text("""
+                INSERT INTO crm_leads_status_events (lead_uid, status_bucket, scraped_at, created_at) VALUES
+                ('L_OPEN', 'pending', '2026-05-01 03:00:00+00:00', '2026-05-01 03:00:00+00:00'),
+                ('L_DONE_MATCH', 'completed', '2026-05-01 10:00:00+00:00', '2026-05-01 10:00:00+00:00'),
+                ('L_DONE_NOMATCH', 'completed', '2026-05-01 11:00:00+00:00', '2026-05-01 11:00:00+00:00'),
+                ('L_DONE_MULTI', 'completed', '2026-05-01 12:00:00+00:00', '2026-05-01 12:00:00+00:00'),
+                ('L_CANCEL_TODAY', 'cancelled', '2026-05-01 09:00:00+00:00', '2026-05-01 09:00:00+00:00'),
+                ('L_CANCEL_YDAY', 'cancelled', '2026-04-30 09:00:00+00:00', '2026-04-30 09:00:00+00:00'),
+                ('L_DONE_CAN', 'completed', '2026-05-01 08:00:00+00:00', '2026-05-01 08:00:00+00:00')
+            """))
+
+            await connection.execute(sa.text("""
+                INSERT INTO orders (store_code, mobile_number, order_number, order_date) VALUES
+                ('A100', '9000000002', 'SO-100', '2026-05-01 10:30:00+00:00'),
+                ('A100', '9000000003', 'SO-200', '2026-05-01 09:00:00+00:00'),
+                ('A100', '9000000003', 'SO-150', '2026-05-01 08:30:00+00:00')
+            """))
+
+        payload = await td_leads_main.build_td_leads_reporting_payload(
+            database_url=database_url,
+            reference_ts=datetime(2026, 5, 1, 15, 0, tzinfo=timezone.utc),
+            open_leads_high_age_threshold_days=3,
+        )
+    finally:
+        await engine.dispose()
+
+    assert list(payload.keys()) == [
+        "warning", "report_date", "reference_ts", "open_leads", "cancelled_leads_today", "completed_leads_today", "action_required"
+    ]
+    assert payload["warning"] is None
+
+    assert [row["pickup_no"] for row in payload["open_leads"]] == ["A100-O1"]
+    assert payload["open_leads"][0]["lead_age_days"] == 3
+
+    assert [row["pickup_no"] for row in payload["cancelled_leads_today"]] == ["A100-C1"]
+    cancelled_row = payload["cancelled_leads_today"][0]
+    assert cancelled_row["lead_age_days_at_cancel"] == 1
+    assert list(cancelled_row.keys()) == [
+        "store_code", "pickup_no", "customer_name", "mobile", "lead_created_at", "cancelled_at", "lead_age_days_at_cancel", "cancel_reason", "cancelled_flag", "source", "customer_type"
+    ]
+
+    by_pickup = {row["pickup_no"]: row for row in payload["completed_leads_today"]}
+    assert by_pickup["A100-D1"]["order_match_found"] is True
+    assert by_pickup["A100-D1"]["matched_order_count"] == 1
+    assert by_pickup["A100-D1"]["matched_order_ids"] == ["SO-100"]
+
+    assert by_pickup["A100-D2"]["order_match_found"] is False
+    assert by_pickup["A100-D2"]["reconciliation_note"]
+
+    assert by_pickup["A100-D3"]["matched_order_ids"] == ["SO-150", "SO-200"]
+    assert by_pickup["A100-D3"]["first_order_date"] == "2026-05-01 08:30:00+00:00"
+    assert by_pickup["A100-D3"]["last_order_date"] == "2026-05-01 09:00:00+00:00"
+    assert list(by_pickup["A100-D1"].keys()) == [
+        "store_code", "pickup_no", "customer_name", "mobile", "lead_created_at", "completed_at", "lead_age_days_at_completion", "order_match_found", "matched_order_count", "matched_order_ids", "first_order_date", "last_order_date", "reconciliation_note"
+    ]
+
+    action_required = payload["action_required"]
+    assert list(action_required.keys()) == ["open_leads_high_age_threshold_days", "open_leads_high_age", "completed_without_order_match"]
+    assert action_required["open_leads_high_age_threshold_days"] == 3
+    assert [row["pickup_no"] for row in action_required["open_leads_high_age"]] == ["A100-O1"]
+    assert [row["pickup_no"] for row in action_required["completed_without_order_match"]] == ["A100-D2", "A100-X1"]
+
+
+@pytest.mark.parametrize("mode", ["meeting", "day_end"])
+def test_td_leads_run_summary_record_includes_frozen_daily_reporting_for_reporting_modes(mode: str) -> None:
+    summary = LeadsRunSummary(run_id="run-reports", run_env="local", report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date())
+
+    record = summary.build_record(
+        finished_at=datetime(2026, 5, 1, 16, 0, tzinfo=timezone.utc),
+        reporting_mode=mode,
+        reporting_payload={
+            "cancelled_leads_today": [{"pickup_no": "A100-C1"}],
+            "action_required": {
+                "open_leads_high_age_threshold_days": 3,
+                "open_leads_high_age": [],
+                "completed_without_order_match": [],
+            },
+        },
+    )
+    frozen = record["metrics_json"]["frozen_day_report_datasets"]
+
+    assert frozen["reporting_mode"] == mode
+    assert frozen["daily_reporting"] is not None
+    assert list(frozen["daily_reporting"].keys()) == [
+        "open_leads_high_age_threshold_days", "open_leads_high_age", "cancelled_leads_today", "completed_leads_without_order_match"
+    ]
+    assert "action_required" in frozen and isinstance(frozen["action_required"], str)
+
+
+def test_td_leads_run_summary_record_without_reporting_mode_keeps_backward_compatibility() -> None:
+    summary = LeadsRunSummary(run_id="run-default", run_env="local", report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date())
+    record = summary.build_record(finished_at=datetime(2026, 5, 1, 16, 0, tzinfo=timezone.utc), reporting_mode=None)
+
+    assert record["metrics_json"]["frozen_day_report_datasets"] is None
+    assert "summary_html" in record["metrics_json"]

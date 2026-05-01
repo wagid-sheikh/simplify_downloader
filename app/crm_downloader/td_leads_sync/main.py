@@ -1032,6 +1032,7 @@ def _resolve_daily_reporting_for_mode(
             return {
                 "open_leads_high_age_threshold_days": action_required.get("open_leads_high_age_threshold_days"),
                 "open_leads_high_age": action_required.get("open_leads_high_age", []),
+                "cancelled_leads_today": reporting_payload.get("cancelled_leads_today", []),
                 "completed_leads_without_order_match": action_required.get("completed_without_order_match", []),
             }
     return _build_td_daily_reporting(summary)
@@ -1194,6 +1195,7 @@ class LeadsRunSummary:
                 "generated_at": finished_at.isoformat(),
                 "report_date": self.report_date.isoformat(),
                 "daily_reporting": _normalize_json_safe(daily_reporting),
+                "action_required": _build_td_action_required_html(daily_reporting=daily_reporting),
             }
 
         return {
