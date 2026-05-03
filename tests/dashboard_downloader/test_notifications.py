@@ -10,6 +10,7 @@ from app.dashboard_downloader.notifications import (
     _build_uc_orders_context,
     _format_fact_sections_text,
     _prepare_ingest_remarks,
+    _resolve_reporting_mode_suffix,
     _td_summary_text_from_payload,
     _uc_summary_text_from_payload,
 )
@@ -270,6 +271,16 @@ def test_td_leads_run_plan_preserves_actionable_details_html() -> None:
     assert plan is not None
     assert "Lead Changes (Actionable Details)" in (plan.body_html or "")
     assert "Nia" in (plan.body_html or "")
+
+
+def test_resolve_reporting_mode_suffix_for_td_leads_pipeline() -> None:
+    assert (
+        _resolve_reporting_mode_suffix(
+            pipeline_name="td_crm_leads_sync",
+            metrics_payload={"reporting_mode": "day_end"},
+        )
+        == " [day_end]"
+    )
 
 
 def test_derive_duration_fields_prefers_summary_timestamps_when_metrics_missing() -> None:
