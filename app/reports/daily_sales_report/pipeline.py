@@ -23,7 +23,7 @@ from app.dashboard_downloader.pipelines.base import (
 )
 from app.dashboard_downloader.report_generator import render_pdf_with_configured_browser
 
-from app.reports.mtd_same_day_fulfillment.data import fetch_mtd_same_day_fulfillment
+from app.reports.mtd_same_day_fulfillment.data import fetch_missing_payments_mtd, fetch_mtd_same_day_fulfillment
 from app.reports.mtd_same_day_fulfillment.render import render_html as render_mtd_same_day_html
 from app.reports.shared.formatters import format_amount, format_ddmmyyyy, format_hhmm_ampm
 from app.reports.shared.same_day_fulfillment import build_store_summary, format_duration_hours, format_duration_minutes, group_rows_by_store
@@ -112,6 +112,7 @@ def _build_context(data: DailySalesReportData, run_environment: str) -> dict[str
         "to_be_recovered_total_order_value": data.to_be_recovered_total_order_value,
         "to_be_compensated_total_order_value": data.to_be_compensated_total_order_value,
         "same_day_fulfillment_rows": data.same_day_fulfillment_rows,
+        "missing_payment_rows": data.missing_payment_rows,
         "same_day_grouped_rows_by_store": group_rows_by_store(data.same_day_fulfillment_rows),
         "same_day_store_summary_rows": build_store_summary(data.same_day_fulfillment_rows),
         "format_duration_hours": format_duration_hours,
@@ -175,16 +176,21 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             report_date=resolved_date.isoformat(),
             rows=len(data.rows),
             edited_orders=len(data.edited_orders),
+            missing_payment_rows=len(data.missing_payment_rows),
         )
 
         context = _build_context(data, run_env)
         html = _render_html(context)
         mtd_attachment_generated = True
         mtd_rows = []
+        mtd_missing_payment_rows = []
         same_day_html: str | None = None
         mtd_attachment_error: str | None = None
         try:
             mtd_rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
+            mtd_missing_payment_rows = await fetch_missing_payments_mtd(
+                database_url=database_url, report_date=resolved_date
+            )
         except Exception as exc:
             mtd_attachment_generated = False
             mtd_attachment_error = str(exc)
@@ -209,6 +215,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 report_date_display=resolved_date.strftime("%d-%b-%Y"),
                 mtd_start_display=mtd_start.strftime("%d-%b-%Y"),
                 mtd_end_display=mtd_end.strftime("%d-%b-%Y"),
+                missing_payment_rows=mtd_missing_payment_rows,
             )
             tracker.mark_phase("render_html", "ok")
         log_event(

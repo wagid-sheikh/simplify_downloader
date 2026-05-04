@@ -27,6 +27,61 @@ class MTDSameDayFulfillmentRow:
     payment_received: Decimal | None
 
 
+@dataclass
+class MissingPaymentRow:
+    cost_center: str
+    order_number: str
+    order_date: datetime | None
+    customer_name: str | None
+    mobile_number: str | None
+    net_amount: Decimal
+
+
+async def fetch_missing_payments_mtd(*, database_url: str, report_date: date) -> list[MissingPaymentRow]:
+    missing_view = sa.table(
+        "vw_orders_missing_in_payment_collections",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("order_date"),
+        sa.column("customer_name"),
+        sa.column("mobile_number"),
+        sa.column("net_amount"),
+    )
+    tz = get_timezone()
+    start_month = datetime.combine(report_date.replace(day=1), time.min, tzinfo=tz)
+    next_day = datetime.combine(report_date, time.min, tzinfo=tz) + timedelta(days=1)
+
+    stmt = (
+        sa.select(
+            missing_view.c.cost_center,
+            missing_view.c.order_number,
+            missing_view.c.order_date,
+            missing_view.c.customer_name,
+            missing_view.c.mobile_number,
+            missing_view.c.net_amount,
+        )
+        .where(missing_view.c.order_date >= start_month)
+        .where(missing_view.c.order_date < next_day)
+        .order_by(missing_view.c.cost_center, missing_view.c.order_date, missing_view.c.order_number)
+    )
+
+    rows: list[MissingPaymentRow] = []
+    async with session_scope(database_url) as session:
+        result = await session.execute(stmt)
+        for record in result.mappings():
+            rows.append(
+                MissingPaymentRow(
+                    cost_center=str(record["cost_center"] or ""),
+                    order_number=str(record["order_number"] or ""),
+                    order_date=record["order_date"],
+                    customer_name=record["customer_name"],
+                    mobile_number=record["mobile_number"],
+                    net_amount=Decimal(str(record["net_amount"] or 0)),
+                )
+            )
+    return rows
+
+
 async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date) -> list[MTDSameDayFulfillmentRow]:
     orders = sa.table(
         "orders",
