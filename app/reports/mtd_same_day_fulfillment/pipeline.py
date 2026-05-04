@@ -19,7 +19,7 @@ from app.dashboard_downloader.pipelines.base import (
 )
 from app.dashboard_downloader.report_generator import render_pdf_with_configured_browser
 
-from .data import fetch_mtd_same_day_fulfillment
+from .data import fetch_missing_payments_mtd, fetch_mtd_same_day_fulfillment
 from .render import render_html
 
 PIPELINE_NAME = "reports.mtd_same_day_fulfillment"
@@ -104,6 +104,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             return
 
         rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
+        missing_payment_rows = await fetch_missing_payments_mtd(database_url=database_url, report_date=resolved_date)
         tracker.mark_phase("load_data", "ok")
         log_event(
             logger=logger,
@@ -111,6 +112,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             message="MTD same-day fulfillment report data loaded",
             report_date=resolved_date.isoformat(),
             rows=len(rows),
+            missing_payment_rows=len(missing_payment_rows),
         )
 
         mtd_start = resolved_date.replace(day=1)
@@ -119,6 +121,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             report_date_display=resolved_date.strftime("%d-%b-%Y"),
             mtd_start_display=mtd_start.strftime("%d-%b-%Y"),
             mtd_end_display=resolved_date.strftime("%d-%b-%Y"),
+            missing_payment_rows=missing_payment_rows,
         )
         tracker.mark_phase("render_html", "ok")
         log_event(

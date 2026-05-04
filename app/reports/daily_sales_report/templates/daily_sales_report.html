@@ -329,6 +329,54 @@
       </tbody>
     </table>
 
+    <div class="section-title">Actual Payments Not Found</div>
+    {% if missing_payment_rows %}
+    {% for group in missing_payment_rows | groupby("cost_center") %}
+    {% set group_count = group.list | length %}
+    {% set group_total = group.list | sum(attribute="net_amount") %}
+    <table class="compact-table summary-table">
+      <tbody>
+        <tr class="store-heading-row">
+          <td class="label">Cost Center: {{ group.grouper }} | Count: {{ group_count }} | Net Amount: ₹{{ group_total | format_amount }}</td>
+        </tr>
+      </tbody>
+    </table>
+    <table class="compact-table micro-font">
+      <thead>
+        <tr>
+          <th class="label">Cost Center</th>
+          <th class="label">Order Number</th>
+          <th>Order Date</th>
+          <th class="label">Customer Name</th>
+          <th class="label">Mobile Number</th>
+          <th>Net Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in group.list %}
+        <tr>
+          <td class="label">{{ row.cost_center }}</td>
+          <td class="label">{{ row.order_number }}</td>
+          <td>{{ row.order_date | format_ddmmyyyy }}</td>
+          <td class="label">{{ row.customer_name or "--" }}</td>
+          <td class="label">{{ row.mobile_number or "--" }}</td>
+          <td>{{ row.net_amount | format_amount }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endfor %}
+    <table class="compact-table">
+      <tbody>
+        <tr class="totals-row">
+          <td class="label">Grand Total Count: {{ missing_payment_rows | length }} | Grand Total Net Amount: ₹{{ (missing_payment_rows | sum(attribute="net_amount")) | format_amount }}</td>
+        </tr>
+      </tbody>
+    </table>
+    {% else %}
+    <div class="kpi-note">No records found</div>
+    {% endif %}
+
     <hr class="section-divider" />
     <div class="section-title section-separated">Pickup & Delivery KPIs</div>
     <div class="kpi-note">KPI source date shown as D or D-1</div>

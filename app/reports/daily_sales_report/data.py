@@ -75,6 +75,16 @@ class RecoveryOrderRow:
 
 
 @dataclass
+class MissingPaymentRow:
+    cost_center: str
+    order_number: str
+    order_date: datetime | None
+    customer_name: str
+    mobile_number: str
+    net_amount: Decimal
+
+
+@dataclass
 class SameDayFulfillmentRow:
     store_code: str
     order_number: str
@@ -108,6 +118,7 @@ class DailySalesReportData:
     to_be_recovered_total_order_value: Decimal = Decimal("0")
     to_be_compensated_total_order_value: Decimal = Decimal("0")
     same_day_fulfillment_rows: List[SameDayFulfillmentRow] = field(default_factory=list)
+    missing_payment_rows: List[MissingPaymentRow] = field(default_factory=list)
 
 
 LEAD_BENCHMARKS = {
@@ -536,6 +547,15 @@ async def fetch_daily_sales_report(
         sa.column("recovery_closed_at"),
         sa.column("recovery_expected_resolution_date"),
     )
+    missing_orders_view = sa.table(
+        "vw_orders_missing_in_payment_collections",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("order_date"),
+        sa.column("customer_name"),
+        sa.column("mobile_number"),
+        sa.column("net_amount"),
+    )
     orders_sync_log = sa.table(
         "orders_sync_log",
         sa.column("cost_center"),
@@ -753,6 +773,7 @@ async def fetch_daily_sales_report(
 
     rows: list[DailySalesRow] = []
     same_day_rows: list[SameDayFulfillmentRow] = []
+    missing_payment_rows: list[MissingPaymentRow] = []
     async with session_scope(database_url) as session:
         result = await session.execute(stmt)
         target_updates: list[dict[str, object]] = []
@@ -959,6 +980,35 @@ async def fetch_daily_sales_report(
                     net_amount=_decimal(record.net_amount) if record.net_amount is not None else None,
                     payment_received=_decimal(record.payment_received) if record.payment_received is not None else None,
                     hours=hours,
+                )
+            )
+        missing_payment_stmt = (
+            sa.select(
+                missing_orders_view.c.cost_center,
+                missing_orders_view.c.order_number,
+                missing_orders_view.c.order_date,
+                missing_orders_view.c.customer_name,
+                missing_orders_view.c.mobile_number,
+                missing_orders_view.c.net_amount,
+            )
+            .where(missing_orders_view.c.order_date >= ranges["start_day"])
+            .where(missing_orders_view.c.order_date < ranges["next_day"])
+            .order_by(
+                missing_orders_view.c.cost_center,
+                missing_orders_view.c.order_date,
+                missing_orders_view.c.order_number,
+            )
+        )
+        missing_payment_result = await session.execute(missing_payment_stmt)
+        for entry in missing_payment_result.mappings():
+            missing_payment_rows.append(
+                MissingPaymentRow(
+                    cost_center=str(entry["cost_center"] or ""),
+                    order_number=str(entry["order_number"] or ""),
+                    order_date=_parse_orders_sync_timestamp(entry["order_date"], tz=tz),
+                    customer_name=str(entry["customer_name"] or ""),
+                    mobile_number=str(entry["mobile_number"] or ""),
+                    net_amount=_decimal(entry["net_amount"]),
                 )
             )
 
@@ -1363,4 +1413,5 @@ async def fetch_daily_sales_report(
         to_be_recovered_total_order_value=to_be_recovered_total_order_value,
         to_be_compensated_total_order_value=to_be_compensated_total_order_value,
         same_day_fulfillment_rows=same_day_rows,
+        missing_payment_rows=missing_payment_rows,
     )

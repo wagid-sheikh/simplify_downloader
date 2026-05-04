@@ -8,7 +8,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from app.reports.shared.formatters import format_amount, format_ddmmyyyy, format_hhmm_ampm
 from app.reports.shared.same_day_fulfillment import build_store_summary, format_duration_hours, format_duration_minutes, group_rows_by_store
 
-from .data import MTDSameDayFulfillmentRow
+from .data import MTDSameDayFulfillmentRow, MissingPaymentRow
 
 TEMPLATE_DIR = Path("app") / "reports" / "mtd_same_day_fulfillment" / "templates"
 SHARED_TEMPLATE_DIR = Path("app") / "reports" / "shared" / "templates"
@@ -20,6 +20,7 @@ def render_html(
     report_date_display: str,
     mtd_start_display: str,
     mtd_end_display: str,
+    missing_payment_rows: Sequence[MissingPaymentRow],
 ) -> str:
     env = Environment(
         loader=FileSystemLoader([str(TEMPLATE_DIR), str(SHARED_TEMPLATE_DIR)]),
@@ -38,4 +39,5 @@ def render_html(
         report_date_display=report_date_display,
         mtd_start_display=mtd_start_display,
         mtd_end_display=mtd_end_display,
+        missing_payment_rows=missing_payment_rows,
     )
