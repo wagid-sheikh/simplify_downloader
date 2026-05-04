@@ -8,8 +8,8 @@ import pytest
 import sqlalchemy as sa
 
 from app.common.db import session_scope
-from app.reports.mtd_same_day_fulfillment.data import fetch_mtd_same_day_fulfillment
-from app.reports.mtd_same_day_fulfillment.data import MTDSameDayFulfillmentRow
+from app.reports.mtd_same_day_fulfillment.data import fetch_mtd_same_day_fulfillment, fetch_missing_payments_mtd
+from app.reports.mtd_same_day_fulfillment.data import MTDSameDayFulfillmentRow, MissingPaymentRow
 from app.reports.mtd_same_day_fulfillment.render import render_html
 from app.reports.shared.same_day_fulfillment import format_duration_minutes
 import app.reports.mtd_same_day_fulfillment.data as mtd_data
@@ -74,7 +74,7 @@ async def test_fetch_mtd_same_day_fulfillment_does_not_use_create_engine(tmp_pat
 
 
 def test_render_html_includes_financial_columns() -> None:
-    html = render_html(rows=[], report_date_display='29-Apr-2026', mtd_start_display='01-Apr-2026', mtd_end_display='29-Apr-2026')
+    html = render_html(rows=[], report_date_display='29-Apr-2026', mtd_start_display='01-Apr-2026', mtd_end_display='29-Apr-2026', missing_payment_rows=[])
     assert 'The Shaw Ventures' in html
     assert 'MTD Same-Day Orders (Delivered within same calendar day)' in html
     assert 'Payment Date' in html
@@ -90,7 +90,7 @@ def test_render_html_groups_store_and_formats_duration() -> None:
         MTDSameDayFulfillmentRow("S2", "B1", datetime(2026, 4, 10, 8), "Cara", "888", "Dry", datetime(2026, 4, 10, 13, 23), "CASH", 5.39, 30, 30),
         MTDSameDayFulfillmentRow("S2", "B2", datetime(2026, 4, 10, 7), "Dan", "777", "Steam", datetime(2026, 4, 10, 7), "UPI", 0.00, 40, 40),
     ]
-    html = render_html(rows=rows, report_date_display='29-Apr-2026', mtd_start_display='01-Apr-2026', mtd_end_display='29-Apr-2026')
+    html = render_html(rows=rows, report_date_display='29-Apr-2026', mtd_start_display='01-Apr-2026', mtd_end_display='29-Apr-2026', missing_payment_rows=[])
     assert "Store: S1" in html and "Store: S2" in html
     assert "2 min" in html and "14 min" in html and "5 hrs 23 min" in html and "0 min" in html
     assert "10-04-2026<br><span class=\"micro-font\">10:00 AM</span>" in html
@@ -162,6 +162,99 @@ async def test_fetch_mtd_same_day_fulfillment_date_only_and_mtd_window(tmp_path,
     assert 'O3' not in order_numbers
     assert 'O4' not in order_numbers
 
+
+
+@pytest.mark.asyncio
+async def test_fetch_missing_payments_mtd_uses_month_window_and_view(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / 'mtd_missing_payments.db'
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    monkeypatch.setattr(mtd_data, 'get_timezone', lambda: ZoneInfo('Asia/Kolkata'))
+
+    engine = sa.create_engine(database_url.replace('+aiosqlite', ''))
+    with engine.begin() as conn:
+        conn.execute(sa.text("""
+            CREATE VIEW vw_orders_missing_in_payment_collections AS
+            SELECT * FROM (
+                SELECT 'CC1' AS cost_center, 'IN-START' AS order_number, '2026-04-01T00:00:00+05:30' AS order_date, 'Alice' AS customer_name, '999' AS mobile_number, 100 AS net_amount
+                UNION ALL
+                SELECT 'CC1', 'IN-END', '2026-04-29T23:59:59+05:30', 'Bob', '888', 200
+                UNION ALL
+                SELECT 'CC1', 'OUT-BEFORE', '2026-03-31T23:59:59+05:30', 'Cora', '777', 300
+                UNION ALL
+                SELECT 'CC1', 'OUT-AFTER', '2026-04-30T00:00:00+05:30', 'Dan', '666', 400
+            )
+        """))
+    engine.dispose()
+
+    rows = await fetch_missing_payments_mtd(database_url=database_url, report_date=date(2026, 4, 29))
+
+    assert [row.order_number for row in rows] == ['IN-START', 'IN-END']
+
+
+@pytest.mark.asyncio
+async def test_fetch_missing_payments_mtd_postgres_sql_targets_view(monkeypatch) -> None:
+    monkeypatch.setattr(mtd_data, 'get_timezone', lambda: ZoneInfo('Asia/Kolkata'))
+
+    captured = {}
+
+    class _Result:
+        def mappings(self):
+            return []
+
+    class _Session:
+        async def execute(self, stmt):
+            captured['stmt'] = stmt
+            return _Result()
+
+    @asynccontextmanager
+    async def _fake_session_scope(_database_url: str):
+        yield _Session()
+
+    monkeypatch.setattr(mtd_data, 'session_scope', _fake_session_scope)
+
+    await fetch_missing_payments_mtd(
+        database_url='postgresql+asyncpg://user:pass@localhost/db',
+        report_date=date(2026, 4, 29),
+    )
+
+    compiled = str(captured['stmt'].compile(dialect=postgresql.dialect(), compile_kwargs={'literal_binds': True}))
+    assert 'vw_orders_missing_in_payment_collections' in compiled
+    assert ' from orders ' not in f" {compiled.lower()} "
+
+
+def test_render_html_missing_payments_section_empty_state_after_summary() -> None:
+    html = render_html(
+        rows=[],
+        report_date_display='29-Apr-2026',
+        mtd_start_display='01-Apr-2026',
+        mtd_end_display='29-Apr-2026',
+        missing_payment_rows=[],
+    )
+    assert html.index('MTD Same-Day Orders (Delivered within same calendar day)') < html.index('Actual Payments Not Found')
+    assert 'No records found' in html
+
+
+def test_render_html_missing_payments_grouping_columns_and_totals() -> None:
+    missing_rows = [
+        MissingPaymentRow('CC1', 'O-1', datetime(2026, 4, 10, 9), 'Alice', '999', 100),
+        MissingPaymentRow('CC1', 'O-2', datetime(2026, 4, 10, 10), 'Bob', '888', 200),
+        MissingPaymentRow('CC2', 'O-3', datetime(2026, 4, 11, 11), 'Cara', '777', 300),
+    ]
+    html = render_html(
+        rows=[],
+        report_date_display='29-Apr-2026',
+        mtd_start_display='01-Apr-2026',
+        mtd_end_display='29-Apr-2026',
+        missing_payment_rows=missing_rows,
+    )
+
+    assert 'Cost Center: CC1' in html
+    assert 'Cost Center: CC2' in html
+    assert 'Order Number' in html and 'Order Date' in html and 'Net Amount' in html
+    assert 'Cost Center: CC1 | Count: 2 | Net Amount: ₹300' in html
+    assert 'Cost Center: CC2 | Count: 1 | Net Amount: ₹300' in html
+    assert 'Grand Total Count: 3 | Grand Total Net Amount: ₹600' in html
 
 def test_format_duration_minutes_examples() -> None:
     assert format_duration_minutes(0) == "0 min"
