@@ -19,7 +19,7 @@ cd "${REPO_ROOT}"
 force_mode="true"
 report_force="${REPORT_FORCE:-false}"
 FORCE_ARGS=()
-if [[ "${report_force,,}" == "true" ]]; then
+if [[ "${report_force}" =~ ^([Tt][Rr][Uu][Ee])$ ]]; then
   force_mode="true"
   FORCE_ARGS+=("--force")
 fi
