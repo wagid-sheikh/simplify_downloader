@@ -634,9 +634,14 @@ is_deterministic_code_error() {
     return 1
   fi
 
-  if rg -q \
-    "TypeError|SyntaxError|ImportError|ModuleNotFoundError|UndefinedFunctionError|UndefinedColumnError|psycopg2\\.errors\\.UndefinedFunction|psycopg2\\.errors\\.UndefinedColumn|sqlalchemy\\.exc\\.ProgrammingError|\\bProgrammingError\\b" \
-    "${output_file}"; then
+  local deterministic_error_pattern
+  deterministic_error_pattern="TypeError|SyntaxError|ImportError|ModuleNotFoundError|UndefinedFunctionError|UndefinedColumnError|psycopg2\\.errors\\.UndefinedFunction|psycopg2\\.errors\\.UndefinedColumn|sqlalchemy\\.exc\\.ProgrammingError|\\bProgrammingError\\b"
+
+  if command -v rg >/dev/null 2>&1; then
+    if rg -q "${deterministic_error_pattern}" "${output_file}"; then
+      return 0
+    fi
+  elif grep -Eq "${deterministic_error_pattern}" "${output_file}"; then
     return 0
   fi
 
