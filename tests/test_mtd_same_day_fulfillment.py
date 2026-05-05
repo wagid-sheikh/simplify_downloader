@@ -22,6 +22,7 @@ def _create_tables(database_url: str) -> None:
         conn.execute(sa.text("CREATE TABLE order_line_items (cost_center TEXT, order_number TEXT, service_name TEXT, garment_name TEXT)"))
         conn.execute(sa.text("CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_date TIMESTAMP, payment_mode TEXT, payment_received NUMERIC)"))
         conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT, store_code TEXT)"))
+        conn.execute(sa.text("CREATE TABLE payment_collections (cost_center TEXT, order_number TEXT)"))
     engine.dispose()
 
 
@@ -262,3 +263,20 @@ def test_format_duration_minutes_examples() -> None:
     assert format_duration_minutes(60) == "1 hr 0 min"
     assert format_duration_minutes(181) == "3 hrs 1 min"
     assert format_duration_minutes(566) == "9 hrs 26 min"
+
+@pytest.mark.asyncio
+async def test_fetch_mtd_same_day_fulfillment_excludes_orders_with_payment_proof_tokens(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / 'mtd_same_day_payment_proof.db'
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    monkeypatch.setattr(mtd_data, 'get_timezone', lambda: ZoneInfo('Asia/Kolkata'))
+
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("INSERT INTO store_master (cost_center, store_code) VALUES ('CC1', 'S1'), ('CC2', 'S2')"))
+        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount) VALUES ('CC1','Ord2','2026-04-10T09:00:00+05:30','Alice','999',800),('CC1','ORDX','2026-04-10T09:00:00+05:30','Bob','888',700),('CC2','ORD3','2026-04-10T09:00:00+05:30','Cara','777',600)"))
+        await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES ('CC1','Ord2','2026-04-10T10:00:00+05:30','UPI',800),('CC1','ORDX','2026-04-10T10:00:00+05:30','CARD',700),('CC2','ORD3','2026-04-10T10:00:00+05:30','UPI',600)"))
+        await session.execute(sa.text("INSERT INTO payment_collections (cost_center, order_number) VALUES ('CC1',' ORD1, ord2 / ORD3 ,,')"))
+        await session.commit()
+
+    rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=date(2026, 4, 29))
+    assert {row.order_number for row in rows} == {'ORDX', 'ORD3'}

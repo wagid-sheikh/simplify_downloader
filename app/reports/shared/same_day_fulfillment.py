@@ -140,6 +140,50 @@ async def fetch_same_day_fulfillment_rows(
     bind = getattr(session, "bind", None)
     dialect_name = bind.dialect.name if bind is not None else ""
     line_items_agg = build_line_items_agg(order_line_items=order_line_items, dialect_name=dialect_name)
+    payment_collections = sa.table(
+        "payment_collections",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+    )
+
+    normalized_order_number = sa.func.lower(sa.func.replace(sa.func.coalesce(orders.c.order_number, ""), " ", ""))
+
+    if dialect_name == "postgresql":
+        token_source = sa.func.unnest(
+            sa.func.regexp_split_to_array(sa.func.coalesce(payment_collections.c.order_number, ""), r"[,/]")
+        ).table_valued("token")
+        payment_proof_exists = sa.exists(
+            sa.select(sa.literal(1))
+            .select_from(payment_collections.join(token_source, sa.true()))
+            .where(payment_collections.c.cost_center == orders.c.cost_center)
+            .where(sa.func.length(sa.func.trim(token_source.c.token)) > 0)
+            .where(
+                sa.func.lower(sa.func.replace(sa.func.trim(token_source.c.token), " ", ""))
+                == normalized_order_number
+            )
+        )
+    else:
+        normalized_collection_orders = sa.func.lower(
+            sa.func.replace(
+                sa.func.replace(sa.func.coalesce(payment_collections.c.order_number, ""), "/", ","),
+                " ",
+                "",
+            )
+        )
+
+        payment_proof_exists = sa.exists(
+            sa.select(sa.literal(1))
+            .select_from(payment_collections)
+            .where(payment_collections.c.cost_center == orders.c.cost_center)
+            .where(
+                sa.func.instr(
+                    sa.literal(",") + normalized_collection_orders + sa.literal(","),
+                    sa.literal(",") + normalized_order_number + sa.literal(","),
+                )
+                > 0
+            )
+        )
+
 
     stmt = (
         sa.select(
@@ -176,6 +220,7 @@ async def fetch_same_day_fulfillment_rows(
             same_day_date_expr(dialect_name=dialect_name, dt_expr=orders.c.order_date, timezone_name=timezone_name)
             == same_day_date_expr(dialect_name=dialect_name, dt_expr=sales.c.payment_date, timezone_name=timezone_name)
         )
+        .where(~payment_proof_exists)
         .group_by(
             orders.c.cost_center,
             store_master.c.store_code,
