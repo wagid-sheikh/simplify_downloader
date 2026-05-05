@@ -102,10 +102,9 @@ export LANG="${LANG:-en_US.UTF-8}"
 
 GLOBAL_LOCK_ACQUIRED=0
 
-report_force_normalized="${REPORT_FORCE,,}"
 REPORT_FORCE_ARGS=()
 REPORT_FORCE_MODE="true"
-if [[ "${report_force_normalized}" == "true" ]]; then
+if [[ "${REPORT_FORCE}" =~ ^([Tt][Rr][Uu][Ee])$ ]]; then
   REPORT_FORCE_MODE="true"
   REPORT_FORCE_ARGS+=("--force")
 fi
