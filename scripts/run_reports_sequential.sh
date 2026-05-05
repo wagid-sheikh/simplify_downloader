@@ -2,25 +2,28 @@
 set -euo pipefail
 
 # Usage examples:
-#   # Local/manual run in default non-force mode.
+#   # Local/manual run in default force mode.
 #   ./scripts/run_reports_sequential.sh --report-date 2026-03-31
 #
-#   # Cron-style forced rerun.
-#   REPORT_FORCE=true ./scripts/run_reports_sequential.sh --report-date 2026-03-31
+#   # Run with force explicitly disabled.
+#   REPORT_FORCE=false ./scripts/run_reports_sequential.sh --report-date 2026-03-31
 #
 # REPORT_FORCE semantics:
-#   true  -> append --force
-#   false/unset -> do not append --force
+#   unset/true/TRUE/True/1 -> append --force
+#   false/FALSE/False/0 -> do not append --force
 
 CONTINUE_ON_ERROR=false
 EXTRA_ARGS=()
 FORCE_ARGS=()
 REPORT_FORCE_MODE="false"
+report_force="${REPORT_FORCE:-true}"
 
-if [[ "${REPORT_FORCE:-false}" =~ ^([Tt][Rr][Uu][Ee])$ ]]; then
+case "${report_force}" in
+  true|TRUE|True|1)
   FORCE_ARGS+=("--force")
   REPORT_FORCE_MODE="true"
-fi
+  ;;
+esac
 
 for arg in "$@"; do
   if [[ "$arg" == "--continue-on-error" ]]; then

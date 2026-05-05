@@ -20,15 +20,15 @@ set -euo pipefail
 # - Bash 3.2 compatible (no associative arrays, no mapfile)
 # ============================================================================
 # Usage examples:
-#   # Local/manual run with default non-force mode.
+#   # Local/manual run with default force mode.
 #   ./scripts/cron_run_orders_and_reports.sh
 #
-#   # Cron-style forced rerun mode for report pipelines.
-#   REPORT_FORCE=true ./scripts/cron_run_orders_and_reports.sh
+#   # Run with force explicitly disabled for report pipelines.
+#   REPORT_FORCE=false ./scripts/cron_run_orders_and_reports.sh
 #
 # REPORT_FORCE semantics:
-#   true  -> append --force to daily and MTD report invocations (including retries/rescue)
-#   false/unset -> do not append --force
+#   unset/true/TRUE/True/1 -> append --force to daily and MTD report invocations (including retries/rescue)
+#   false/FALSE/False/0 -> do not append --force
 #
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/cron.env}"
@@ -78,7 +78,7 @@ MTD_SAME_DAY_RETRY_DELAY_SECONDS="${MTD_SAME_DAY_RETRY_DELAY_SECONDS:-10}"
 DAILY_RESCUE_AFTER_PENDING_SUCCESS="${DAILY_RESCUE_AFTER_PENDING_SUCCESS:-1}"
 DAILY_RESCUE_MAX_ATTEMPTS="${DAILY_RESCUE_MAX_ATTEMPTS:-1}"
 DAILY_RESCUE_RETRY_DELAY_SECONDS="${DAILY_RESCUE_RETRY_DELAY_SECONDS:-5}"
-REPORT_FORCE="${REPORT_FORCE:-false}"
+REPORT_FORCE="${REPORT_FORCE:-true}"
 
 if ! [[ "${LOCK_WAIT_SECONDS}" =~ ^[0-9]+$ ]]; then
   LOCK_WAIT_SECONDS=300
@@ -103,10 +103,14 @@ export LANG="${LANG:-en_US.UTF-8}"
 GLOBAL_LOCK_ACQUIRED=0
 
 REPORT_FORCE_ARGS=()
-REPORT_FORCE_MODE="true"
-if [[ "${REPORT_FORCE}" =~ ^([Tt][Rr][Uu][Ee])$ ]]; then
-  REPORT_FORCE_MODE="true"
+REPORT_FORCE_MODE="false"
+case "${REPORT_FORCE}" in
+  true|TRUE|True|1)
   REPORT_FORCE_ARGS+=("--force")
+  ;;
+esac
+if ((${#REPORT_FORCE_ARGS[@]} > 0)); then
+  REPORT_FORCE_MODE="true"
 fi
 
 log() {
