@@ -15,6 +15,7 @@ def _create_tables(database_url: str) -> None:
         conn.execute(sa.text("CREATE TABLE order_line_items (cost_center TEXT, order_number TEXT, service_name TEXT, garment_name TEXT)"))
         conn.execute(sa.text("CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_date TIMESTAMP, payment_mode TEXT, payment_received NUMERIC)"))
         conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT, store_code TEXT)"))
+        conn.execute(sa.text("CREATE TABLE payment_collections (cost_center TEXT, order_number TEXT)"))
     engine.dispose()
 
 
@@ -90,3 +91,5 @@ async def test_fetch_same_day_fulfillment_rows_postgres_sql_uses_timezone(monkey
     compiled = str(captured['stmt'].compile(dialect=postgresql.dialect(), compile_kwargs={'literal_binds': True}))
     assert 'timezone' in compiled.lower()
     assert 'string_agg' in compiled.lower()
+    assert 'regexp_split_to_table' in compiled.lower()
+    assert '.token' in compiled.lower()
