@@ -22,6 +22,7 @@ Use this before requesting review.
 - [ ] I added/updated tests for changed behavior under `tests/`.
 - [ ] Existing migration tests still make sense for touched schema behavior.
 - [ ] For CLI changes, I validated command paths and argument compatibility in scripts/docs.
+- [ ] For report reruns, I validated `REPORT_FORCE` behavior (`--force` present only when expected) including cron retry/rescue paths.
 
 ## 4) API / contract / data impact
 

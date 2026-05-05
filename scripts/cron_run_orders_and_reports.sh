@@ -19,7 +19,17 @@ set -euo pipefail
 # - safe cleanup on EXIT/ERR/INT/TERM
 # - Bash 3.2 compatible (no associative arrays, no mapfile)
 # ============================================================================
-
+# Usage examples:
+#   # Local/manual run with default non-force mode.
+#   ./scripts/cron_run_orders_and_reports.sh
+#
+#   # Cron-style forced rerun mode for report pipelines.
+#   REPORT_FORCE=true ./scripts/cron_run_orders_and_reports.sh
+#
+# REPORT_FORCE semantics:
+#   true  -> append --force to daily and MTD report invocations (including retries/rescue)
+#   false/unset -> do not append --force
+#
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/cron.env}"
 
@@ -68,6 +78,7 @@ MTD_SAME_DAY_RETRY_DELAY_SECONDS="${MTD_SAME_DAY_RETRY_DELAY_SECONDS:-10}"
 DAILY_RESCUE_AFTER_PENDING_SUCCESS="${DAILY_RESCUE_AFTER_PENDING_SUCCESS:-1}"
 DAILY_RESCUE_MAX_ATTEMPTS="${DAILY_RESCUE_MAX_ATTEMPTS:-1}"
 DAILY_RESCUE_RETRY_DELAY_SECONDS="${DAILY_RESCUE_RETRY_DELAY_SECONDS:-5}"
+REPORT_FORCE="${REPORT_FORCE:-false}"
 
 if ! [[ "${LOCK_WAIT_SECONDS}" =~ ^[0-9]+$ ]]; then
   LOCK_WAIT_SECONDS=300
@@ -90,6 +101,13 @@ export PATH="${CRON_PATH}:${PATH}"
 export LANG="${LANG:-en_US.UTF-8}"
 
 GLOBAL_LOCK_ACQUIRED=0
+
+REPORT_FORCE_ARGS=()
+REPORT_FORCE_MODE="false"
+if [[ "${REPORT_FORCE}" =~ ^([Tt][Rr][Uu][Ee])$ ]]; then
+  REPORT_FORCE_MODE="true"
+  REPORT_FORCE_ARGS+=("--force")
+fi
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S %Z')] $*" >> "${LOG_FILE}"
@@ -536,6 +554,15 @@ log "hostname=$(hostname)"
 acquire_global_lock_with_wait "$@"
 acquire_lock_with_wait "$@"
 
+extract_report_date_from_cmd() {
+  local step_cmd="$1"
+  local report_date="<default>"
+  if [[ "${step_cmd}" =~ --report-date[[:space:]]+([^[:space:]]+) ]]; then
+    report_date="${BASH_REMATCH[1]}"
+  fi
+  echo "${report_date}"
+}
+
 run_step() {
   local step_name="$1"
   local step_cmd="$2"
@@ -547,13 +574,15 @@ run_step() {
   local attempt=1
   local rc=0
   local attempt_log_file
+  local report_date
+  report_date="$(extract_report_date_from_cmd "${step_cmd}")"
 
   section "Running ${step_name}"
   log "Command: ${step_cmd}"
   log "Attempts configured: ${max_attempts}; retry_delay_seconds=${retry_delay_seconds}"
 
   while [[ "${attempt}" -le "${max_attempts}" ]]; do
-    log "${step_name}: attempt ${attempt}/${max_attempts} starting"
+    log "${step_name}: attempt ${attempt}/${max_attempts} starting (report_date=${report_date}, force=${REPORT_FORCE_MODE})"
     step_start="$(date +%s)"
 
     attempt_log_file="$(mktemp "${LOCK_DIR}/cron_step_attempt.XXXXXX.log")"
@@ -618,8 +647,8 @@ daily_rescue_rc=0
 run_started_epoch="$(date +%s)"
 
 run_step "Script 1: orders_sync_run_profiler" "./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" || orders_rc=$?
-run_step "Script 2: daily_sales_report" "./scripts/run_local_reports_daily_sales.sh" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" || daily_rc=$?
-run_step "Script 3: mtd_same_day_fulfillment_report" "./scripts/run_local_reports_mtd_same_day_fulfillment.sh" "${MTD_SAME_DAY_MAX_ATTEMPTS}" "${MTD_SAME_DAY_RETRY_DELAY_SECONDS}" || mtd_same_day_rc=$?
+run_step "Script 2: daily_sales_report" "./scripts/run_local_reports_daily_sales.sh ${REPORT_FORCE_ARGS[*]}" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" || daily_rc=$?
+run_step "Script 3: mtd_same_day_fulfillment_report" "./scripts/run_local_reports_mtd_same_day_fulfillment.sh ${REPORT_FORCE_ARGS[*]}" "${MTD_SAME_DAY_MAX_ATTEMPTS}" "${MTD_SAME_DAY_RETRY_DELAY_SECONDS}" || mtd_same_day_rc=$?
 run_step "Script 4: pending_deliveries" "./scripts/run_local_reports_pending_deliveries.sh" "${PENDING_MAX_ATTEMPTS}" "${PENDING_RETRY_DELAY_SECONDS}" || pending_rc=$?
 
 if [[ "${pending_rc}" -eq 0 && "${daily_rc}" -ne 0 && "${DAILY_RESCUE_AFTER_PENDING_SUCCESS}" -eq 1 ]]; then
@@ -627,7 +656,7 @@ if [[ "${pending_rc}" -eq 0 && "${daily_rc}" -ne 0 && "${DAILY_RESCUE_AFTER_PEND
   log "Pending deliveries succeeded while daily sales failed; running optional daily rescue pass."
   run_step \
     "Script 2B: daily_sales_report_rescue" \
-    "./scripts/run_local_reports_daily_sales.sh" \
+    "./scripts/run_local_reports_daily_sales.sh ${REPORT_FORCE_ARGS[*]}" \
     "${DAILY_RESCUE_MAX_ATTEMPTS}" \
     "${DAILY_RESCUE_RETRY_DELAY_SECONDS}" || daily_rescue_rc=$?
 
@@ -640,6 +669,8 @@ fi
 
 run_finished_epoch="$(date +%s)"
 run_duration_seconds=$((run_finished_epoch - run_started_epoch))
+
+log "Report force mode: force=${REPORT_FORCE_MODE}"
 
 section "RUN STATUS SUMMARY"
 log "orders_sync_run_profiler_rc=${orders_rc}"

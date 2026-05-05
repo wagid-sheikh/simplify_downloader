@@ -1,8 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Usage examples:
+#   # Local/manual run in default non-force mode.
+#   ./scripts/run_reports_sequential.sh --report-date 2026-03-31
+#
+#   # Cron-style forced rerun.
+#   REPORT_FORCE=true ./scripts/run_reports_sequential.sh --report-date 2026-03-31
+#
+# REPORT_FORCE semantics:
+#   true  -> append --force
+#   false/unset -> do not append --force
+
 CONTINUE_ON_ERROR=false
 EXTRA_ARGS=()
+FORCE_ARGS=()
+REPORT_FORCE_MODE="false"
+
+if [[ "${REPORT_FORCE:-false}" =~ ^([Tt][Rr][Uu][Ee])$ ]]; then
+  FORCE_ARGS+=("--force")
+  REPORT_FORCE_MODE="true"
+fi
 
 for arg in "$@"; do
   if [[ "$arg" == "--continue-on-error" ]]; then
@@ -12,10 +30,19 @@ for arg in "$@"; do
   fi
 done
 
+report_date="<default>"
+for ((i = 1; i <= $#; i++)); do
+  if [[ "${!i}" == "--report-date" ]] && ((i + 1 <= $#)); then
+    next_index=$((i + 1))
+    report_date="${!next_index}"
+    break
+  fi
+done
+
 run_step() {
   local label=$1
   shift
-  echo "--- Running report: ${label} ---"
+  echo "--- Running report: ${label} report_date=${report_date} force=${REPORT_FORCE_MODE} ---"
   if "$@"; then
     echo "--- ${label} completed successfully ---"
   elif $CONTINUE_ON_ERROR; then
@@ -29,13 +56,12 @@ run_step() {
 echo "--- Dependency order: reports.daily_sales_report must run before reports.pending_deliveries ---"
 
 run_step "daily_sales_report" \
-  poetry run python -m app report daily-sales --force "${EXTRA_ARGS[@]}"
+  poetry run python -m app report daily-sales "${FORCE_ARGS[@]}" "${EXTRA_ARGS[@]}"
 
 echo "--- Dependency order: reports.pending_deliveries runs immediately after reports.daily_sales_report ---"
 
 run_step "pending_deliveries" \
-  poetry run python -m app report pending-deliveries --force "${EXTRA_ARGS[@]}"
+  poetry run python -m app report pending-deliveries "${FORCE_ARGS[@]}" "${EXTRA_ARGS[@]}"
 
-echo "--- Running report: mtd_same_day_fulfillment ---"
 run_step "mtd_same_day_fulfillment" \
-  poetry run python -m app report mtd-same-day-fulfillment --force "${EXTRA_ARGS[@]}"
+  poetry run python -m app report mtd-same-day-fulfillment "${FORCE_ARGS[@]}" "${EXTRA_ARGS[@]}"

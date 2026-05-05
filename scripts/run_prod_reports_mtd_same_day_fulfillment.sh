@@ -2,11 +2,11 @@
 set -euo pipefail
 
 # Usage examples:
-#   # Local/manual run with default non-force mode.
-#   ./scripts/run_local_reports_mtd_same_day_fulfillment.sh --report-date 2026-03-31
+#   # Local/manual production-targeted run with default non-force mode.
+#   ./scripts/run_prod_reports_mtd_same_day_fulfillment.sh --report-date 2026-03-31
 #
 #   # Cron-style run that forces regeneration.
-#   REPORT_FORCE=true ./scripts/run_local_reports_mtd_same_day_fulfillment.sh --report-date 2026-03-31
+#   REPORT_FORCE=true ./scripts/run_prod_reports_mtd_same_day_fulfillment.sh --report-date 2026-03-31
 #
 # REPORT_FORCE semantics:
 #   true  -> append --force
@@ -33,6 +33,6 @@ for ((i = 1; i <= $#; i++)); do
   fi
 done
 
-echo "[run_local_reports_mtd_same_day_fulfillment] pipeline=mtd-same-day-fulfillment report_date=${report_date} force=${force_mode}"
+echo "[run_prod_reports_mtd_same_day_fulfillment] pipeline=mtd-same-day-fulfillment report_date=${report_date} force=${force_mode}"
 
 exec poetry run python -m app report mtd-same-day-fulfillment --env prod "${FORCE_ARGS[@]}" "$@"
