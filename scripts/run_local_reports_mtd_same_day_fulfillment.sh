@@ -16,7 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
-force_mode="false"
+force_mode="true"
 report_force="${REPORT_FORCE:-false}"
 FORCE_ARGS=()
 if [[ "${report_force}" =~ ^([Tt][Rr][Uu][Ee])$ ]]; then
