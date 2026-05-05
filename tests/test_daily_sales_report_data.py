@@ -187,6 +187,16 @@ def _create_tables(database_url: str) -> None:
         conn.execute(
             sa.text(
                 """
+                CREATE TABLE payment_collections (
+                    cost_center TEXT,
+                    order_number TEXT
+                )
+                """
+            )
+        )
+        conn.execute(
+            sa.text(
+                """
                 CREATE TABLE pipeline_run_summaries (
                     pipeline_name TEXT,
                     run_id TEXT,
@@ -195,6 +205,16 @@ def _create_tables(database_url: str) -> None:
                     created_at TIMESTAMP,
                     metrics_json JSON
                 )
+                """
+            )
+        )
+        conn.execute(
+            sa.text(
+                """
+                CREATE VIEW vw_orders_missing_in_payment_collections AS
+                SELECT cost_center, order_number, order_date, customer_name, mobile_number, net_amount
+                FROM orders
+                WHERE 1 = 0
                 """
             )
         )
@@ -936,3 +956,23 @@ def test_same_day_postgres_expression_has_no_strftime() -> None:
     expr = same_day_date_expr(dialect_name="postgresql", dt_expr=sa.column("order_date"), timezone_name="Asia/Kolkata")
     compiled = str(expr.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
     assert "strftime" not in compiled.lower()
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_same_day_fulfillment_payment_proof_filtering(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_same_day_payment_proof.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 4, 29)
+
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1),('CC2','Store 2','value',1)"))
+        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD'),(2,'CC2','S2','Store Two','TD')"))
+        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, gross_amount, source_system) VALUES ('CC1','Ord2', :d1, 'Ravi', '9000000000', 500, 500, 'TumbleDry'),('CC1','OX', :d1, 'Mona', '9000000001', 400, 400, 'TumbleDry'),('CC2','ORD3', :d1, 'Neha', '9000000002', 300, 300, 'TumbleDry')"), {"d1": "2026-04-29T09:00:00+05:30"})
+        await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode, adjustments, is_edited_order) VALUES ('CC1','Ord2', :p1, 500, 'UPI', 0, 0),('CC1','OX', :p1, 400, 'Cash', 0, 0),('CC2','ORD3', :p1, 300, 'Card', 0, 0)"), {"p1": "2026-04-29T12:00:00+05:30"})
+        await session.execute(sa.text("INSERT INTO payment_collections (cost_center, order_number) VALUES ('CC1', ' ORD1, ord2/ORD3 ,,')"))
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    assert {row.order_number for row in report.same_day_fulfillment_rows} == {"OX", "ORD3"}
