@@ -35,4 +35,4 @@ done
 
 echo "[run_local_reports_daily_sales] pipeline=daily-sales report_date=${report_date} force=${force_mode}"
 
-exec poetry run python -m app report daily-sales --env prod "${FORCE_ARGS[@]}" "$@"
+exec poetry run python -m app report daily-sales --env prod ${FORCE_ARGS[@]+"${FORCE_ARGS[@]}"} "$@"
