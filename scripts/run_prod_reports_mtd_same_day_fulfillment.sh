@@ -35,4 +35,4 @@ done
 
 echo "[run_prod_reports_mtd_same_day_fulfillment] pipeline=mtd-same-day-fulfillment report_date=${report_date} force=${force_mode}"
 
-exec poetry run python -m app report mtd-same-day-fulfillment --env prod "${FORCE_ARGS[@]}" "$@"
+exec poetry run python -m app report mtd-same-day-fulfillment --env prod ${FORCE_ARGS[@]+"${FORCE_ARGS[@]}"} "$@"
