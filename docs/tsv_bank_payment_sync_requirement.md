@@ -128,23 +128,23 @@ For each tab (`IDFC-Bank`, `SBI-Bank`, `Payments`, `Packages`), provide:
 
 **Header row:** 1
 
-| Column Name   | Datatype  | Mandatory | Notes                                                                                                             |
-| ------------- | --------- | --------- | ----------------------------------------------------------------------------------------------------------------- |
-| Timestamp     | timestamp | Yes       | Form submission timestamp                                                                                         |
-| Email address | text      | Yes       |                                                                                                                   |
-| Mode          | text      | Yes       | Cash / UPI / FranchiseUPI                                                                                         |
-| Store         | text      | Yes       | Actual stored in this column is Cost Center                                                                       |
-| Date          | date      | Yes       | Payment date                                                                                                      |
-| Order Number  | text      | Yes       |                                                                                                                   |
-| Amount        | decimal   | Yes       |                                                                                                                   |
-| Remarks       | text      | Optional  |                                                                                                                   |
-| ROWID         | text      | Optional  | The value in this column is not unique, this ROWID is supposed to be mapped with Bank ROWID during reconciliation |
-| Handed OVer   | boolean   | Optional  | Yes / No/ blank                                                                                                   |
-| Date Handed   | date      | Optional  |                                                                                                                   |
-| date_modified | date      | Optional  | Last update date                                                                                                  |
-| updated_flag  | boolean   | Optional  | TRUE / FALSE                                                                                                      |
-
-**Validation Rules:**
+| Column Name                 | Datatype  | Mandatory | Notes                                                                                                                  |
+| --------------------------- | --------- | --------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Timestamp                   | timestamp | Yes       | Form submission timestamp                                                                                              |
+| Email address               | text      | Yes       |                                                                                                                        |
+| Mode                        | text      | Yes       | Cash / UPI / FranchiseUPI                                                                                              |
+| Store                       | text      | Yes       | Actual stored in this column is Cost Center                                                                            |
+| Date                        | date      | Yes       | Payment date                                                                                                           |
+| Order Number                | text      | Yes       |                                                                                                                        |
+| Amount                      | decimal   | Yes       |                                                                                                                        |
+| Remarks                     | text      | Optional  |                                                                                                                        |
+| BANK_ROWID                  | text      | Optional  | The value in this column is not unique, this BANK_ROWID is supposed to be mapped with Bank ROWID during reconciliation |
+| Handed OVer                 | boolean   | Optional  | Yes / No/ blank                                                                                                        |
+| Date Handed                 | date      | Optional  |                                                                                                                        |
+| date_modified               | date      | Optional  | Last update date                                                                                                       |
+| updated_flag                | boolean   | Optional  | TRUE / FALSE                                                                                                           |
+| source_rowid                | text      | mandatory | Value in this column can be treated as primary key/unique identifier                                                   |
+| **Validation Rules:** |           |           |                                                                                                                        |
 
 - `Amount >= 0`
 - `ROWID` may be "Cash" for cash entries
@@ -235,6 +235,7 @@ Seq	Cost Center	Date	Customer Name	Mobile Number	Address	Package Value	Payment M
     * **IMPORTANT**: Data of IDFC-Bank tab and SBI-Bank will be inserted into a single table
 
 - `bank_records`
+
 ```sql
 CREATE TABLE IF NOT EXISTS bank_records (
     bank_record_id  BIGSERIAL PRIMARY KEY,
@@ -293,7 +294,9 @@ ON bank_records (bank, transaction_date);
 CREATE INDEX IF NOT EXISTS idx_bank_records_bank_rowid
 ON bank_records (bank, rowid);
 ```
-- `payments_records`
+
+- `payment_records`
+
 ```sql
 CREATE TABLE IF NOT EXISTS payment_records (
     payment_record_id BIGSERIAL PRIMARY KEY,
@@ -335,7 +338,9 @@ ON payment_records (order_number);
 CREATE INDEX IF NOT EXISTS idx_payment_records_rowid
 ON payment_records (rowid);
 ```
+
 - `mst_package`
+
 ```sql
 CREATE TABLE IF NOT EXISTS mst_package (
     package_record_id BIGSERIAL PRIMARY KEY,
@@ -373,106 +378,113 @@ ON mst_package (cost_center);
 CREATE INDEX IF NOT EXISTS idx_mst_package_mobile_number
 ON mst_package (mobile_number);
 ```
+
 - `bank_payment_reconciliation` (phase 2 output)
-   - to be defined by Codex
+  - to be defined by Codex
 - `tsv_bank_payment_sync_log` (optional detailed audit)
-   - to be defined by Codex
+  - to be defined by Codex
 
 15. For each source tab column, provide destination DB column name mapping.
 
 15.1 IDFC-Bank → bank_records
 
-| Source Tab | Source Column | Destination Table | Destination Column |
-|---|---|---|---|
-| IDFC-Bank | Bank | bank_records | bank |
-| IDFC-Bank | ROWID | bank_records | rowid |
-| IDFC-Bank | Transaction Date | bank_records | transaction_date |
-| IDFC-Bank | Value Date | bank_records | value_date |
-| IDFC-Bank | Particulars | bank_records | particulars |
-| IDFC-Bank | Cheque No. | bank_records | cheque_no |
-| IDFC-Bank | Debit | bank_records | debit |
-| IDFC-Bank | Credit | bank_records | credit |
-| IDFC-Bank | Balance | bank_records | balance |
-| IDFC-Bank | Remarks | bank_records | remarks |
-| IDFC-Bank | Cost Center | bank_records | cost_center |
-| IDFC-Bank | Order Number | bank_records | order_number |
-| IDFC-Bank | Category | bank_records | category |
-| IDFC-Bank | Sub Category | bank_records | sub_category |
-| IDFC-Bank | Branch Code | bank_records | branch_code |
+| Source Tab | Source Column    | Destination Table | Destination Column |
+| ---------- | ---------------- | ----------------- | ------------------ |
+| IDFC-Bank  | Bank             | bank_records      | bank               |
+| IDFC-Bank  | ROWID            | bank_records      | rowid              |
+| IDFC-Bank  | Transaction Date | bank_records      | transaction_date   |
+| IDFC-Bank  | Value Date       | bank_records      | value_date         |
+| IDFC-Bank  | Particulars      | bank_records      | particulars        |
+| IDFC-Bank  | Cheque No.       | bank_records      | cheque_no          |
+| IDFC-Bank  | Debit            | bank_records      | debit              |
+| IDFC-Bank  | Credit           | bank_records      | credit             |
+| IDFC-Bank  | Balance          | bank_records      | balance            |
+| IDFC-Bank  | Remarks          | bank_records      | remarks            |
+| IDFC-Bank  | Cost Center      | bank_records      | cost_center        |
+| IDFC-Bank  | Order Number     | bank_records      | order_number       |
+| IDFC-Bank  | Category         | bank_records      | category           |
+| IDFC-Bank  | Sub Category     | bank_records      | sub_category       |
+| IDFC-Bank  | Branch Code      | bank_records      | branch_code        |
 
 ---
 
 15.2 SBI-Bank → bank_records
 
-| Source Tab | Source Column | Destination Table | Destination Column |
-|---|---|---|---|
-| SBI-Bank | Bank | bank_records | bank |
-| SBI-Bank | ROWID | bank_records | rowid |
-| SBI-Bank | Transaction Date | bank_records | transaction_date |
-| SBI-Bank | Value Date | bank_records | value_date |
-| SBI-Bank | Particulars | bank_records | particulars |
-| SBI-Bank | Cheque No. | bank_records | cheque_no |
-| SBI-Bank | Branch Code | bank_records | branch_code |
-| SBI-Bank | Debit | bank_records | debit |
-| SBI-Bank | Credit | bank_records | credit |
-| SBI-Bank | Balance | bank_records | balance |
-| SBI-Bank | Remarks | bank_records | remarks |
-| SBI-Bank | Cost Center | bank_records | cost_center |
-| SBI-Bank | Order Number | bank_records | order_number |
-| SBI-Bank | Category | bank_records | category |
-| SBI-Bank | Sub Category | bank_records | sub_category |
+| Source Tab | Source Column    | Destination Table | Destination Column |
+| ---------- | ---------------- | ----------------- | ------------------ |
+| SBI-Bank   | Bank             | bank_records      | bank               |
+| SBI-Bank   | ROWID            | bank_records      | rowid              |
+| SBI-Bank   | Transaction Date | bank_records      | transaction_date   |
+| SBI-Bank   | Value Date       | bank_records      | value_date         |
+| SBI-Bank   | Particulars      | bank_records      | particulars        |
+| SBI-Bank   | Cheque No.       | bank_records      | cheque_no          |
+| SBI-Bank   | Branch Code      | bank_records      | branch_code        |
+| SBI-Bank   | Debit            | bank_records      | debit              |
+| SBI-Bank   | Credit           | bank_records      | credit             |
+| SBI-Bank   | Balance          | bank_records      | balance            |
+| SBI-Bank   | Remarks          | bank_records      | remarks            |
+| SBI-Bank   | Cost Center      | bank_records      | cost_center        |
+| SBI-Bank   | Order Number     | bank_records      | order_number       |
+| SBI-Bank   | Category         | bank_records      | category           |
+| SBI-Bank   | Sub Category     | bank_records      | sub_category       |
 
 ---
 
 15.3 Payments → payment_records
 
 | Source Tab | Source Column | Destination Table | Destination Column |
-|---|---|---|---|
-| Payments | Timestamp | payment_records | source_timestamp |
-| Payments | Email address | payment_records | email_address |
-| Payments | Mode | payment_records | payment_mode |
-| Payments | Store | payment_records | cost_center |
-| Payments | Date | payment_records | payment_date |
-| Payments | Order Number | payment_records | order_number |
-| Payments | Amount | payment_records | amount |
-| Payments | Remarks | payment_records | remarks |
-| Payments | ROWID | payment_records | rowid |
-| Payments | Handed OVer | payment_records | handed_over |
-| Payments | Date Handed | payment_records | date_handed |
-| Payments | date_modified | payment_records | date_modified |
-| Payments | updated_flag | payment_records | updated_flag |
+| ---------- | ------------- | ----------------- | ------------------ |
+| Payments   | Timestamp     | payment_records   | source_timestamp   |
+| Payments   | Email address | payment_records   | email_address      |
+| Payments   | Mode          | payment_records   | payment_mode       |
+| Payments   | Store         | payment_records   | cost_center        |
+| Payments   | Date          | payment_records   | payment_date       |
+| Payments   | Order Number  | payment_records   | order_number       |
+| Payments   | Amount        | payment_records   | amount             |
+| Payments   | Remarks       | payment_records   | remarks            |
+| Payments   | ROWID         | payment_records   | rowid              |
+| Payments   | Handed OVer   | payment_records   | handed_over        |
+| Payments   | Date Handed   | payment_records   | date_handed        |
+| Payments   | date_modified | payment_records   | date_modified      |
+| Payments   | updated_flag  | payment_records   | updated_flag       |
 
 ---
 
 15.4 Packages → mst_package
 
 | Source Tab | Source Column | Destination Table | Destination Column |
-|---|---|---|---|
-| Packages | Seq | mst_package | seq |
-| Packages | Cost Center | mst_package | cost_center |
-| Packages | Date | mst_package | package_date |
-| Packages | Customer Name | mst_package | customer_name |
-| Packages | Mobile Number | mst_package | mobile_number |
-| Packages | Address | mst_package | address |
-| Packages | Package Value | mst_package | package_value |
-| Packages | Payment Mode | mst_package | payment_mode |
+| ---------- | ------------- | ----------------- | ------------------ |
+| Packages   | Seq           | mst_package       | seq                |
+| Packages   | Cost Center   | mst_package       | cost_center        |
+| Packages   | Date          | mst_package       | package_date       |
+| Packages   | Customer Name | mst_package       | customer_name      |
+| Packages   | Mobile Number | mst_package       | mobile_number      |
+| Packages   | Address       | mst_package       | address            |
+| Packages   | Package Value | mst_package       | package_value      |
+| Packages   | Payment Mode  | mst_package       | payment_mode       |
 
 ---
 
 15.5 Derived / System Columns
 
-| Destination Table | Destination Column | Source |
-|---|---|---|
-| mst_package | package_record_id | Auto-generated by PostgreSQL |
-| mst_package | package_code | Must be generated by sync logic or manually added; no current source column exists |
-| mst_package | created_at | Auto-generated by PostgreSQL |
-| mst_package | updated_at | Auto-generated by PostgreSQL |
-| payment_records | payment_record_id | Auto-generated by PostgreSQL |
-| payment_records | created_at | Auto-generated by PostgreSQL |
-| payment_records | updated_at | Auto-generated by PostgreSQL |
-| bank_records | bank_record_id | Auto-generated by PostgreSQL |
-| bank_records | created_at | Auto-generated by PostgreSQL |
-| bank_records | updated_at | Auto-generated by PostgreSQL |
+| Destination Table | Destination Column | Source                                                                             |
+| ----------------- | ------------------ | ---------------------------------------------------------------------------------- |
+| mst_package       | package_record_id  | Auto-generated by PostgreSQL                                                       |
+| mst_package       | package_code       | Must be generated by sync logic or manually added; no current source column exists |
+| mst_package       | created_at         | Auto-generated by PostgreSQL                                                       |
+| mst_package       | updated_at         | Auto-generated by PostgreSQL                                                       |
+| payment_records   | payment_record_id  | Auto-generated by PostgreSQL                                                       |
+| payment_records   | created_at         | Auto-generated by PostgreSQL                                                       |
+| payment_records   | updated_at         | Auto-generated by PostgreSQL                                                       |
+| bank_records      | bank_record_id     | Auto-generated by PostgreSQL                                                       |
+| bank_records      | created_at         | Auto-generated by PostgreSQL                                                       |
+| bank_records      | updated_at         | Auto-generated by PostgreSQL                                                       |
+
+- package_code: generation logic: you will concatenate cost_center with YYYY zero padded "seq" value from source sheet. So cost_center we have as of now is a 6 character wide although in the master table i have defined it as varchar(8), so that resultant package_code becomes {cost_center}-{YYYY}-{seq}, making is total 16 character package_code
+  - KN3817
+  - UN3668
+  - SC3567
+  - SL1610
 
 16. Upsert strategy: [update on key conflict]
 
@@ -485,10 +497,10 @@ ON mst_package (mobile_number);
 18. Volume estimate:
 
 - rows per tab
-   - IDFC-Bank: 4000+ [grows by 400-500 rows per month approx]
-   - SBI-Bank: 1000 (approx, grows by 10-15 rows per month)
-   - Payments: 2000+ [grows by approx 1000 rows per month]]
-   - Packages: 30+ [Grows by 15-20 rows per month]
+  - IDFC-Bank: 4000+ [grows by 400-500 rows per month approx]
+  - SBI-Bank: 1000 (approx, grows by 10-15 rows per month)
+  - Payments: 2000+ [grows by approx 1000 rows per month]]
+  - Packages: 30+ [Grows by 15-20 rows per month]
 - daily growth,
 - full refresh vs incremental approach [since we have de-dupe keys in place, we should perform full refresh]
 
@@ -507,26 +519,30 @@ ON mst_package (mobile_number);
 
 21. Should pipeline be:
 
-- fully transactional per tab, 
+- fully transactional per tab,
 - or best-effort with partial success across tabs?
-[best-effort with partial success across tabs]
+  [best-effort with partial success across tabs]
+
 22. Required observability:
 
 - run summary counts by tab,
 - inserted/updated/skipped/error counts,
 - sample error rows in log table.
-[run summary counts by tab, inserted/updated/skipped/error counts]
+  [run summary counts by tab, inserted/updated/skipped/error counts]
+
 23. Notification behavior:
 
 - on failure only,
 - on success + failure,
 - recipients/profile (from existing `pipelines`/`notification_profiles` setup).
-[on success + failure, setup notification profile and email to be sent to: wagid.sheikh@gmail.com]
+  [on success + failure, setup notification profile and email to be sent to: wagid.sheikh@gmail.com]
+
 ---
 
 ### E) De-duplication Rules (Phase 2 foundation)
 
 24. Define dedupe keys per tab.
+
 - Already Defined above
 
 25. If duplicate records conflict, which source wins?
@@ -534,24 +550,32 @@ ON mst_package (mobile_number);
 - latest row in sheet,
 - first seen,
 - bank record overrides sales record, etc.
-[latest row in sheet]
+  [latest row in sheet]
+
 26. Should dedupe happen:
 
 - during ingest,
 - during reconciliation,
 - both?
-[both]
+  [both]
+
 ---
 
 ### F) Reconciliation Logic (Phase 2 core)
+
 I will explain full reconciliation logic once we begin with phase 2.
 27. What is the canonical sales source table name in PostgreSQL?
-   - There are two tables:
-      - "orders": this table actually represents orders that were received from customers. A zero value is a valid order. We offer one free article zero cost to customer.
-      - "sales": this table actually represents once "orders" are paid for by the customers. 
+
+- There are two tables:
+  - "orders": this table actually represents orders that were received from customers. A zero value is a valid order. We offer one free article zero cost to customer.
+  - "sales": this table actually represents once "orders" are paid for by the customers.
+
 28. What identifies an order uniquely in sales table? (`order_id`? invoice no?).
-   - cost_center + order_number
+
+- cost_center + order_number
+
 29. Online payment reconciliation matching priority (confirm order):
+
 1) exact `utr/reference_id` [we do not have utr/reference_id in 99% of the cases]
 2) exact `order_id`
 3) amount + date window ±N days

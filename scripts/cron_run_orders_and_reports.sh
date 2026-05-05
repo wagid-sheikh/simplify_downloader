@@ -104,7 +104,7 @@ GLOBAL_LOCK_ACQUIRED=0
 
 report_force_normalized="${REPORT_FORCE,,}"
 REPORT_FORCE_ARGS=()
-REPORT_FORCE_MODE="false"
+REPORT_FORCE_MODE="true"
 if [[ "${report_force_normalized}" == "true" ]]; then
   REPORT_FORCE_MODE="true"
   REPORT_FORCE_ARGS+=("--force")
