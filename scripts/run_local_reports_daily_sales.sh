@@ -2,27 +2,29 @@
 set -euo pipefail
 
 # Usage examples:
-#   # Local/manual run with default non-force mode.
+#   # Local/manual run with default force mode.
 #   ./scripts/run_local_reports_daily_sales.sh --report-date 2026-03-31
 #
-#   # Cron-style run that forces regeneration.
-#   REPORT_FORCE=true ./scripts/run_local_reports_daily_sales.sh --report-date 2026-03-31
+#   # Run with force explicitly disabled.
+#   REPORT_FORCE=false ./scripts/run_local_reports_daily_sales.sh --report-date 2026-03-31
 #
 # REPORT_FORCE semantics:
-#   true  -> append --force
-#   false/unset -> do not append --force
+#   unset/true/TRUE/True/1 -> append --force
+#   false/FALSE/False/0 -> do not append --force
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
-force_mode="false"
-report_force="${REPORT_FORCE:-false}"
+report_force="${REPORT_FORCE:-true}"
 FORCE_ARGS=()
-if [[ "${report_force}" =~ ^([Tt][Rr][Uu][Ee])$ ]]; then
+force_mode="false"
+case "${report_force}" in
+  true|TRUE|True|1)
   force_mode="true"
   FORCE_ARGS+=("--force")
-fi
+  ;;
+esac
 
 report_date="<default>"
 for ((i = 1; i <= $#; i++)); do
