@@ -149,17 +149,23 @@ async def fetch_same_day_fulfillment_rows(
     normalized_order_number = sa.func.lower(sa.func.replace(sa.func.coalesce(orders.c.order_number, ""), " ", ""))
 
     if dialect_name == "postgresql":
-        token_source = sa.func.regexp_split_to_table(
-            sa.func.coalesce(payment_collections.c.order_number, ""),
-            r"[,/]",
-        ).table_valued("token")
+        split_tokens = (
+            sa.select(
+                sa.func.regexp_split_to_table(
+                    sa.func.coalesce(payment_collections.c.order_number, ""),
+                    r"[,/]",
+                ).label("token")
+            )
+            .lateral()
+            .alias("split_tokens")
+        )
         payment_proof_exists = sa.exists(
             sa.select(sa.literal(1))
-            .select_from(payment_collections.join(token_source, sa.true()))
+            .select_from(payment_collections.join(split_tokens, sa.true()))
             .where(payment_collections.c.cost_center == orders.c.cost_center)
-            .where(sa.func.length(sa.func.trim(token_source.c.token)) > 0)
+            .where(sa.func.length(sa.func.trim(split_tokens.c.token)) > 0)
             .where(
-                sa.func.lower(sa.func.replace(sa.func.trim(token_source.c.token), " ", ""))
+                sa.func.lower(sa.func.replace(sa.func.trim(split_tokens.c.token), " ", ""))
                 == normalized_order_number
             )
         )
