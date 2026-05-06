@@ -71,6 +71,7 @@ def _create_tables(database_url: str) -> None:
                     source_system TEXT,
                     recovery_status TEXT,
                     recovery_category TEXT,
+                    recovery_notes TEXT,
                     recovery_opened_at TIMESTAMP,
                     recovery_closed_at TIMESTAMP,
                     recovery_expected_resolution_date DATE
@@ -94,6 +95,7 @@ def _create_tables(database_url: str) -> None:
             sa.text(
                 """
                 CREATE TABLE sales (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                     cost_center TEXT,
                     payment_date TIMESTAMP,
                     payment_received NUMERIC,
@@ -191,6 +193,7 @@ def _create_tables(database_url: str) -> None:
             sa.text(
                 """
                 CREATE TABLE payment_collections (
+                    payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     cost_center TEXT,
                     order_number TEXT
                 )
@@ -1148,7 +1151,8 @@ async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleare
                     ('CC1', 'COMMA-2', '2026-04-29T10:00:00+05:30', 500, 'UPI'),
                     ('CC1', 'SLASH-3', '2026-04-29T10:00:00+05:30', 500, 'UPI'),
                     ('CC1', 'MIXED-4', '2026-04-29T10:00:00+05:30', 500, 'UPI'),
-                    ('CC1', 'TD-1', '2026-04-29T10:00:00+05:30', 500, 'UPI')
+                    ('CC1', 'TD-1', '2026-04-29T10:00:00+05:30', 500, 'UPI'),
+                    ('CC1', 'BOTH-1', '2026-04-29T10:05:00+05:30', 500, 'UPI')
                 """
             )
         )
@@ -1162,7 +1166,8 @@ async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleare
                     ('CC1', 'NOPE, COMMA-2'),
                     ('CC1', 'NOPE/SLASH-3'),
                     ('CC1', 'NOPE, ALSO-NOPE/MIXED-4'),
-                    ('CC1', 'TD-10, TD-11')
+                    ('CC1', 'TD-10, TD-11'),
+                    ('CC1', 'BOTH-1')
                 """
             )
         )
@@ -1197,7 +1202,7 @@ async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleare
                 await session.execute(
                     sa.text(
                         """
-                        SELECT order_number, recovery_status, recovery_category
+                        SELECT order_number, recovery_status, recovery_category, recovery_notes
                         FROM orders
                         ORDER BY order_number
                         """
@@ -1209,13 +1214,21 @@ async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleare
         )
 
     statuses = {row["order_number"]: row for row in status_rows}
-    for order_number in ["BOTH-1", "COMMA-2", "SLASH-3", "MIXED-4"]:
+    expected_recovery_notes = {
+        "BOTH-1": "AUTO_CLEARED_PAYMENT_PROOF sales.id=2, payment_collections.payment_id=2",
+        "COMMA-2": "AUTO_CLEARED_PAYMENT_PROOF sales.id=3, payment_collections.payment_id=3",
+        "SLASH-3": "AUTO_CLEARED_PAYMENT_PROOF sales.id=4, payment_collections.payment_id=4",
+        "MIXED-4": "AUTO_CLEARED_PAYMENT_PROOF sales.id=5, payment_collections.payment_id=5",
+    }
+    for order_number, recovery_notes in expected_recovery_notes.items():
         assert statuses[order_number]["recovery_status"] == "NONE"
         assert statuses[order_number]["recovery_category"] is None
+        assert statuses[order_number]["recovery_notes"] == recovery_notes
 
     for order_number in ["NO-EVID", "SALES-ONLY", "PC-ONLY", "TD-1"]:
         assert statuses[order_number]["recovery_status"] == "TO_BE_RECOVERED"
         assert statuses[order_number]["recovery_category"] == "MISSING_PAYMENT"
+        assert statuses[order_number]["recovery_notes"] is None
 
 
 @pytest.mark.asyncio
@@ -1289,6 +1302,24 @@ async def test_single_auto_cleared_to_be_recovered_order_is_reported(
     assert report.auto_cleared_order_numbers_text == "TD123"
     assert [row.order_number for row in report.to_be_recovered] == []
 
+    async with session_scope(database_url) as session:
+        recovery_notes = (
+            await session.execute(
+                sa.text(
+                    """
+                    SELECT recovery_notes
+                    FROM orders
+                    WHERE order_number = 'TD123'
+                    """
+                )
+            )
+        ).scalar_one()
+
+    assert recovery_notes == (
+        "AUTO_CLEARED_PAYMENT_PROOF "
+        "sales.id=1, payment_collections.payment_id=1"
+    )
+
 
 @pytest.mark.asyncio
 async def test_to_be_compensated_daily_sales_recovery_section_is_not_auto_cleared(
@@ -1360,7 +1391,7 @@ async def test_to_be_compensated_daily_sales_recovery_section_is_not_auto_cleare
             await session.execute(
                 sa.text(
                     """
-                    SELECT recovery_status, recovery_category
+                    SELECT recovery_status, recovery_category, recovery_notes
                     FROM orders
                     WHERE order_number = 'COMP-1'
                     """
@@ -1370,3 +1401,4 @@ async def test_to_be_compensated_daily_sales_recovery_section_is_not_auto_cleare
 
     assert status["recovery_status"] == "TO_BE_COMPENSATED"
     assert status["recovery_category"] == "OVER_COLLECTION"
+    assert status["recovery_notes"] is None

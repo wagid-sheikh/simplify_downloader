@@ -160,6 +160,31 @@ def _payment_collection_order_tokens(order_number: object | None) -> tuple[str, 
     )
 
 
+def _evidence_id_sort_key(value: object | None) -> tuple[int, object]:
+    if value is None:
+        return (2, "")
+    if isinstance(value, (int, float, Decimal)):
+        return (0, Decimal(str(value)))
+    value_text = str(value)
+    try:
+        return (0, Decimal(value_text))
+    except Exception:
+        return (1, value_text)
+
+
+def _lowest_evidence_id(values: Iterable[object | None]) -> object | None:
+    value_list = list(values)
+    if not value_list:
+        return None
+    return min(value_list, key=_evidence_id_sort_key)
+
+
+def _format_evidence_id(value: object | None) -> str:
+    if value is None:
+        return "NULL"
+    return str(value)
+
+
 async def _clear_resolved_to_be_recovered_orders(
     *,
     session,
@@ -167,52 +192,79 @@ async def _clear_resolved_to_be_recovered_orders(
     sales,
     payment_collections,
 ) -> list[str]:
-    sales_evidence_exists = sa.exists().where(
-        sa.and_(
-            sales.c.cost_center == orders.c.cost_center,
-            sales.c.order_number == orders.c.order_number,
-        )
-    )
     candidates_stmt = (
-        sa.select(orders.c.cost_center, orders.c.order_number)
+        sa.select(
+            orders.c.cost_center,
+            orders.c.order_number,
+            sa.func.min(sales.c.id).label("sales_id"),
+        )
+        .select_from(
+            orders.join(
+                sales,
+                sa.and_(
+                    sales.c.cost_center == orders.c.cost_center,
+                    sales.c.order_number == orders.c.order_number,
+                ),
+            )
+        )
         .where(orders.c.recovery_status == "TO_BE_RECOVERED")
-        .where(sales_evidence_exists)
-        .distinct()
+        .group_by(orders.c.cost_center, orders.c.order_number)
     )
     candidate_rows = (await session.execute(candidates_stmt)).mappings().all()
-    candidates_by_cost_center: dict[str, set[str]] = {}
+    candidates_by_cost_center: dict[str, dict[str, object | None]] = {}
     for row in candidate_rows:
         cost_center = str(row["cost_center"] or "")
         order_number = str(row["order_number"] or "")
         if cost_center and order_number:
-            candidates_by_cost_center.setdefault(cost_center, set()).add(order_number)
+            candidates_by_cost_center.setdefault(cost_center, {})[order_number] = row[
+                "sales_id"
+            ]
 
-    resolved_keys: set[tuple[str, str]] = set()
-    for cost_center, order_numbers in candidates_by_cost_center.items():
-        payment_stmt = sa.select(payment_collections.c.order_number).where(
-            payment_collections.c.cost_center == cost_center
-        )
-        payment_rows = (await session.execute(payment_stmt)).scalars().all()
-        for payment_order_number in payment_rows:
-            tokens = set(_payment_collection_order_tokens(payment_order_number))
-            for order_number in order_numbers.intersection(tokens):
-                resolved_keys.add((cost_center, order_number))
+    evidence_by_key: dict[tuple[str, str], tuple[object | None, object | None]] = {}
+    for cost_center, order_evidence in candidates_by_cost_center.items():
+        payment_stmt = sa.select(
+            payment_collections.c.order_number,
+            payment_collections.c.payment_id,
+        ).where(payment_collections.c.cost_center == cost_center)
+        payment_rows = (await session.execute(payment_stmt)).mappings().all()
+        payment_ids_by_order_number: dict[str, list[object | None]] = {}
+        for row in payment_rows:
+            tokens = set(_payment_collection_order_tokens(row["order_number"]))
+            for order_number in set(order_evidence).intersection(tokens):
+                payment_ids_by_order_number.setdefault(order_number, []).append(
+                    row["payment_id"]
+                )
+        for order_number, payment_ids in payment_ids_by_order_number.items():
+            evidence_by_key[(cost_center, order_number)] = (
+                order_evidence[order_number],
+                _lowest_evidence_id(payment_ids),
+            )
 
-    if not resolved_keys:
+    if not evidence_by_key:
         return []
 
-    sorted_resolved_keys = sorted(resolved_keys)
+    sorted_resolved_keys = sorted(evidence_by_key)
     auto_cleared_order_numbers = [
         order_number for _, order_number in sorted_resolved_keys
     ]
 
     for cost_center, order_number in sorted_resolved_keys:
+        sales_id, payment_id = evidence_by_key[(cost_center, order_number)]
+        recovery_notes = (
+            "AUTO_CLEARED_PAYMENT_PROOF "
+            f"sales.id={_format_evidence_id(sales_id)}, "
+            f"payment_collections.payment_id={_format_evidence_id(payment_id)}"
+        )
         await session.execute(
             sa.update(orders)
             .where(orders.c.cost_center == cost_center)
             .where(orders.c.order_number == order_number)
             .where(orders.c.recovery_status == "TO_BE_RECOVERED")
-            .values(recovery_status="NONE", recovery_category=None)
+            .values(
+                recovery_status="NONE",
+                recovery_category=None,
+                recovery_notes=recovery_notes,
+            )
         )
     await session.commit()
     return auto_cleared_order_numbers
@@ -630,6 +682,7 @@ async def fetch_daily_sales_report(
         sa.column("source_system"),
         sa.column("recovery_status"),
         sa.column("recovery_category"),
+        sa.column("recovery_notes"),
         sa.column("recovery_opened_at"),
         sa.column("recovery_closed_at"),
         sa.column("recovery_expected_resolution_date"),
@@ -638,6 +691,7 @@ async def fetch_daily_sales_report(
         "payment_collections",
         sa.column("cost_center"),
         sa.column("order_number"),
+        sa.column("payment_id"),
     )
     missing_orders_view = sa.table(
         "vw_orders_missing_in_payment_collections",
@@ -657,6 +711,7 @@ async def fetch_daily_sales_report(
     )
     sales = sa.table(
         "sales",
+        sa.column("id"),
         sa.column("cost_center"),
         sa.column("payment_date"),
         sa.column("payment_received"),
