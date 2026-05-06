@@ -23,12 +23,32 @@ from app.dashboard_downloader.pipelines.base import (
 )
 from app.dashboard_downloader.report_generator import render_pdf_with_configured_browser
 
-from app.reports.mtd_same_day_fulfillment.data import fetch_missing_payments_mtd, fetch_mtd_same_day_fulfillment
-from app.reports.mtd_same_day_fulfillment.render import render_html as render_mtd_same_day_html
-from app.reports.shared.formatters import format_amount, format_ddmmyyyy, format_hhmm_ampm
-from app.reports.shared.same_day_fulfillment import build_store_summary, format_duration_hours, format_duration_minutes, group_rows_by_store
+from app.reports.mtd_same_day_fulfillment.data import (
+    fetch_missing_payments_mtd,
+    fetch_mtd_same_day_fulfillment,
+)
+from app.reports.mtd_same_day_fulfillment.render import (
+    render_html as render_mtd_same_day_html,
+)
+from app.reports.shared.formatters import (
+    format_amount,
+    format_ddmmyyyy,
+    format_hhmm_ampm,
+)
+from app.reports.shared.same_day_fulfillment import (
+    build_store_summary,
+    format_duration_hours,
+    format_duration_minutes,
+    group_rows_by_store,
+)
 
 from .data import DailySalesReportData, fetch_daily_sales_report
+from .to_be_recovered import (
+    DOCUMENT_TYPE as TO_BE_RECOVERED_DOCUMENT_TYPE,
+    PIPELINE_OUTPUT_PREFIX as TO_BE_RECOVERED_OUTPUT_PREFIX,
+    TEMPLATE_NAME as TO_BE_RECOVERED_TEMPLATE_NAME,
+    build_context as build_to_be_recovered_context,
+)
 
 PIPELINE_NAME = "reports.daily_sales_report"
 TEMPLATE_NAME = "daily_sales_report.html"
@@ -49,7 +69,9 @@ def _format_hhmm_ampm(value: object | None) -> str:
     return format_hhmm_ampm(value)
 
 
-def _render_html(context: Mapping[str, object], template_name: str = TEMPLATE_NAME) -> str:
+def _render_html(
+    context: Mapping[str, object], template_name: str = TEMPLATE_NAME
+) -> str:
     env = Environment(
         loader=FileSystemLoader([str(TEMPLATE_DIR), str(SHARED_TEMPLATE_DIR)]),
         autoescape=select_autoescape(["html", "xml"]),
@@ -83,7 +105,9 @@ async def _persist_document(
                 reference_id_3=report_date.isoformat(),
                 file_name=file_path.name,
                 mime_type="application/pdf",
-                file_size_bytes=file_path.stat().st_size if file_path.exists() else None,
+                file_size_bytes=file_path.stat().st_size
+                if file_path.exists()
+                else None,
                 storage_backend="fs",
                 file_path=str(file_path),
                 created_at=datetime.now(timezone.utc),
@@ -93,7 +117,9 @@ async def _persist_document(
         await session.commit()
 
 
-def _build_context(data: DailySalesReportData, run_environment: str) -> dict[str, object]:
+def _build_context(
+    data: DailySalesReportData, run_environment: str
+) -> dict[str, object]:
     report_date_display = data.report_date.strftime("%d-%b-%Y")
     return {
         "company_name": "The Shaw Ventures",
@@ -113,8 +139,12 @@ def _build_context(data: DailySalesReportData, run_environment: str) -> dict[str
         "to_be_compensated_total_order_value": data.to_be_compensated_total_order_value,
         "same_day_fulfillment_rows": data.same_day_fulfillment_rows,
         "missing_payment_rows": data.missing_payment_rows,
-        "same_day_grouped_rows_by_store": group_rows_by_store(data.same_day_fulfillment_rows),
-        "same_day_store_summary_rows": build_store_summary(data.same_day_fulfillment_rows),
+        "same_day_grouped_rows_by_store": group_rows_by_store(
+            data.same_day_fulfillment_rows
+        ),
+        "same_day_store_summary_rows": build_store_summary(
+            data.same_day_fulfillment_rows
+        ),
         "format_duration_hours": format_duration_hours,
         "format_duration_minutes": format_duration_minutes,
     }
@@ -124,13 +154,17 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
     run_env = resolve_run_env(env)
     run_id = new_run_id()
     logger = get_logger(run_id=run_id)
-    tracker = PipelinePhaseTracker(pipeline_name=PIPELINE_NAME, env=run_env, run_id=run_id)
+    tracker = PipelinePhaseTracker(
+        pipeline_name=PIPELINE_NAME, env=run_env, run_id=run_id
+    )
     database_url = config.database_url
 
     try:
         if not database_url:
             tracker.mark_phase("load_data", "error")
-            tracker.add_summary("Database URL is missing; cannot generate daily sales report.")
+            tracker.add_summary(
+                "Database URL is missing; cannot generate daily sales report."
+            )
             tracker.overall = "error"
             log_event(
                 logger=logger,
@@ -153,7 +187,11 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
         )
 
         existing = await check_existing_run(database_url, PIPELINE_NAME, resolved_date)
-        if not force and existing and existing.get("overall_status") in {"ok", "warning"}:
+        if (
+            not force
+            and existing
+            and existing.get("overall_status") in {"ok", "warning"}
+        ):
             log_event(
                 logger=logger,
                 phase="orchestrator",
@@ -181,13 +219,24 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
 
         context = _build_context(data, run_env)
         html = _render_html(context)
+        to_be_recovered_context = build_to_be_recovered_context(
+            rows=data.to_be_recovered,
+            report_date=resolved_date,
+            run_environment=run_env,
+        )
+        to_be_recovered_html = _render_html(
+            to_be_recovered_context,
+            template_name=TO_BE_RECOVERED_TEMPLATE_NAME,
+        )
         mtd_attachment_generated = True
         mtd_rows = []
         mtd_missing_payment_rows = []
         same_day_html: str | None = None
         mtd_attachment_error: str | None = None
         try:
-            mtd_rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
+            mtd_rows = await fetch_mtd_same_day_fulfillment(
+                database_url=database_url, report_date=resolved_date
+            )
             mtd_missing_payment_rows = await fetch_missing_payments_mtd(
                 database_url=database_url, report_date=resolved_date
             )
@@ -195,7 +244,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             mtd_attachment_generated = False
             mtd_attachment_error = str(exc)
             tracker.mark_phase("render_html", "warning")
-            tracker.add_summary(f"MTD attachment generation failed during data load ({exc}).")
+            tracker.add_summary(
+                f"MTD attachment generation failed during data load ({exc})."
+            )
             tracker.overall = "warning"
             log_event(
                 logger=logger,
@@ -236,15 +287,30 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
 
         OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
         output_path = OUTPUT_ROOT / f"{PIPELINE_NAME}_{resolved_date.isoformat()}.pdf"
-        same_day_output_path = OUTPUT_ROOT / f"reports.mtd_same_day_fulfillment_{resolved_date.isoformat()}.pdf"
+        same_day_output_path = (
+            OUTPUT_ROOT
+            / f"reports.mtd_same_day_fulfillment_{resolved_date.isoformat()}.pdf"
+        )
+        to_be_recovered_output_path = (
+            OUTPUT_ROOT
+            / f"{TO_BE_RECOVERED_OUTPUT_PREFIX}_{resolved_date.isoformat()}.pdf"
+        )
         if output_path.exists():
             output_path.unlink()
         if same_day_output_path.exists():
             same_day_output_path.unlink()
+        if to_be_recovered_output_path.exists():
+            to_be_recovered_output_path.unlink()
         try:
             await render_pdf_with_configured_browser(
                 html,
                 output_path,
+                pdf_options={"format": "A4", "landscape": True},
+                logger=logger,
+            )
+            await render_pdf_with_configured_browser(
+                to_be_recovered_html,
+                to_be_recovered_output_path,
                 pdf_options={"format": "A4", "landscape": True},
                 logger=logger,
             )
@@ -269,6 +335,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 report_date=resolved_date.isoformat(),
                 file_path=str(output_path),
                 same_day_file_path=str(same_day_output_path),
+                to_be_recovered_file_path=str(to_be_recovered_output_path),
                 pipeline_name=PIPELINE_NAME,
                 mtd_start=mtd_start.isoformat(),
                 mtd_end=mtd_end.isoformat(),
@@ -279,7 +346,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             record = tracker.build_record(finished_at)
             await persist_summary_record(database_url, record)
             return
-        tracker.mark_phase("render_pdf", "warning" if not mtd_attachment_generated else "ok")
+        tracker.mark_phase(
+            "render_pdf", "warning" if not mtd_attachment_generated else "ok"
+        )
         log_event(
             logger=logger,
             phase="render_pdf",
@@ -292,6 +361,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             report_date=resolved_date.isoformat(),
             file_path=str(output_path),
             same_day_file_path=str(same_day_output_path),
+            to_be_recovered_file_path=str(to_be_recovered_output_path),
             pipeline_name=PIPELINE_NAME,
             mtd_start=mtd_start.isoformat(),
             mtd_end=mtd_end.isoformat(),
@@ -305,6 +375,13 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             file_path=output_path,
             doc_type="daily_sales_report_pdf",
         )
+        await _persist_document(
+            database_url=database_url,
+            run_id=run_id,
+            report_date=resolved_date,
+            file_path=to_be_recovered_output_path,
+            doc_type=TO_BE_RECOVERED_DOCUMENT_TYPE,
+        )
         if mtd_attachment_generated:
             await _persist_document(
                 database_url=database_url,
@@ -313,7 +390,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 file_path=same_day_output_path,
                 doc_type="mtd_same_day_fulfillment_pdf",
             )
-        tracker.mark_phase("persist_documents", "warning" if not mtd_attachment_generated else "ok")
+        tracker.mark_phase(
+            "persist_documents", "warning" if not mtd_attachment_generated else "ok"
+        )
         log_event(
             logger=logger,
             phase="persist_documents",
@@ -326,6 +405,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             report_date=resolved_date.isoformat(),
             file_path=str(output_path),
             same_day_file_path=str(same_day_output_path),
+            to_be_recovered_file_path=str(to_be_recovered_output_path),
             pipeline_name=PIPELINE_NAME,
             mtd_start=mtd_start.isoformat(),
             mtd_end=mtd_end.isoformat(),
@@ -339,6 +419,10 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             "mtd_attachment_generated": mtd_attachment_generated,
             "mtd_attachment_row_count": len(mtd_rows),
             "mtd_attachment_error": mtd_attachment_error,
+            "to_be_recovered_orders": len(data.to_be_recovered),
+            "to_be_recovered_total_order_value": str(
+                data.to_be_recovered_total_order_value
+            ),
         }
         tracker.add_summary(
             f"Daily sales report generated for {resolved_date.isoformat()} with "
@@ -354,7 +438,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
         await persist_summary_record(database_url, pre_record)
 
         try:
-            notification_result = await send_notifications_for_run(PIPELINE_NAME, run_id)
+            notification_result = await send_notifications_for_run(
+                PIPELINE_NAME, run_id
+            )
             emails_planned = int(notification_result.get("emails_planned") or 0)
             emails_sent = int(notification_result.get("emails_sent") or 0)
             notification_errors = notification_result.get("errors") or []
@@ -371,7 +457,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 )
             else:
                 tracker.mark_phase("send_email", "warning")
-                tracker.add_summary("Notification dispatch completed but no emails were sent; see logs.")
+                tracker.add_summary(
+                    "Notification dispatch completed but no emails were sent; see logs."
+                )
                 tracker.overall = "warning"
                 log_event(
                     logger=logger,
@@ -385,7 +473,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 )
         except Exception as exc:  # pragma: no cover - defensive guardrail
             tracker.mark_phase("send_email", "warning")
-            tracker.add_summary(f"Notification dispatch failed; see logs for details ({exc}).")
+            tracker.add_summary(
+                f"Notification dispatch failed; see logs for details ({exc})."
+            )
             tracker.overall = "warning"
             log_event(
                 logger=logger,

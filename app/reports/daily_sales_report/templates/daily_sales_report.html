@@ -567,44 +567,6 @@
     {% set same_day_store_summary_rows = same_day_store_summary_rows %}
     {% include "same_day_fulfillment_table.html" %}
 
-    <div class="section-title">To be Recovered</div>
-    <table class="compact-table micro-font">
-      <thead>
-        <tr>
-          <th class="label">#</th>
-          <th class="label">Cost Center</th>
-          <th class="label">Order Number</th>
-          <th>Order Date</th>
-          <th class="label">Customer Name</th>
-          <th class="label">Mobile Number</th>
-          <th>Order Value</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% if to_be_recovered %}
-        {% for row in to_be_recovered %}
-        <tr>
-          <td>{{ loop.index }}</td>
-          <td class="label">{{ row.cost_center }}</td>
-          <td class="label">{{ row.order_number }}</td>
-          <td>{{ row.order_date | format_ddmmyyyy }}</td>
-          <td class="label">{{ row.customer_name or "--" }}</td>
-          <td class="label">{{ row.mobile_number or "--" }}</td>
-          <td>{{ row.order_value | format_amount }}</td>
-        </tr>
-        {% endfor %}
-        {% else %}
-        <tr>
-          <td class="center" colspan="7">No records</td>
-        </tr>
-        {% endif %}
-        <tr class="totals-row">
-          <td class="label" colspan="6">Total Recoverable</td>
-          <td>{{ to_be_recovered_total_order_value | format_amount }}</td>
-        </tr>
-      </tbody>
-    </table>
-
     <div class="section-title">To be Compensated</div>
     <table class="compact-table micro-font">
       <thead>

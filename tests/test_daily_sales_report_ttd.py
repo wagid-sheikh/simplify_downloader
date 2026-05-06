@@ -19,11 +19,15 @@ def test_daily_sales_report_ttd_calculation_and_rendering() -> None:
 
     uttam_target = Decimal("270000")
     uttam_achieved = Decimal("165790")
-    uttam_ttd = _calculate_ttd(uttam_target, uttam_achieved, day_of_month, days_in_month)
+    uttam_ttd = _calculate_ttd(
+        uttam_target, uttam_achieved, day_of_month, days_in_month
+    )
 
     kirti_target = Decimal("270000")
     kirti_achieved = Decimal("124366")
-    kirti_ttd = _calculate_ttd(kirti_target, kirti_achieved, day_of_month, days_in_month)
+    kirti_ttd = _calculate_ttd(
+        kirti_target, kirti_achieved, day_of_month, days_in_month
+    )
 
     rows = [
         DailySalesRow(
@@ -87,7 +91,9 @@ def test_daily_sales_report_ttd_calculation_and_rendering() -> None:
     ]
 
     totals = _totals_row(rows)
-    totals.ttd = _calculate_ttd(totals.target, totals.achieved, day_of_month, days_in_month)
+    totals.ttd = _calculate_ttd(
+        totals.target, totals.achieved, day_of_month, days_in_month
+    )
 
     report_data = DailySalesReportData(
         report_date=report_date,
@@ -120,7 +126,9 @@ def test_daily_sales_report_ttd_calculation_and_rendering() -> None:
     )
 
     assert "Run Environment: prod" in html
-    assert html.index("Pickup & Delivery KPIs Report for:") < html.index("Run Environment: prod")
+    assert html.index("Pickup & Delivery KPIs Report for:") < html.index(
+        "Run Environment: prod"
+    )
     assert uttam_ttd == Decimal("307")
     assert kirti_ttd == Decimal("-41117")
     assert html.count('class="ttd-negative"') == 2
@@ -205,9 +213,21 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
                 "completed_leads": 8,
                 "cancelled_leads": 1,
                 "pending_leads": 1,
-                "conversion_pct": {"value": 80.0, "color": "YELLOW", "status": "HEALTHY"},
-                "cancelled_pct": {"value": 10.0, "color": "GREEN", "status": "EXCELLENT"},
-                "pending_pct": {"value": 10.0, "color": "RED", "status": "FOLLOW_UP_GAP"},
+                "conversion_pct": {
+                    "value": 80.0,
+                    "color": "YELLOW",
+                    "status": "HEALTHY",
+                },
+                "cancelled_pct": {
+                    "value": 10.0,
+                    "color": "GREEN",
+                    "status": "EXCELLENT",
+                },
+                "pending_pct": {
+                    "value": 10.0,
+                    "color": "RED",
+                    "status": "FOLLOW_UP_GAP",
+                },
             }
         ],
         completed_today_leads=[],
@@ -220,7 +240,12 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
                         {
                             "status_bucket": "pending",
                             "rows": [
-                                {"customer_name": "Alice", "mobile": "9999999999", "current_status_bucket": "pending", "previous_status_bucket": None}
+                                {
+                                    "customer_name": "Alice",
+                                    "mobile": "9999999999",
+                                    "current_status_bucket": "pending",
+                                    "previous_status_bucket": None,
+                                }
                             ],
                             "overflow_count": 0,
                         }
@@ -275,7 +300,9 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
     )
 
     assert "Run Environment: prod" in html
-    assert html.index("Pickup & Delivery KPIs Report for:") < html.index("Run Environment: prod")
+    assert html.index("Pickup & Delivery KPIs Report for:") < html.index(
+        "Run Environment: prod"
+    )
     assert "Missed Leads for this month" in html
     assert "Uttam Nagar New" in html
     assert "(9999999999, Alice), (8888888888, Bob)" in html
@@ -295,10 +322,14 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
     assert "metric-green" in html
     assert "metric-red" in html
     assert "01-01-2026 to 19-01-2026" in html
-    assert "03-01-2026" in html
+    assert "To be Recovered" not in html
+    assert "ORD-REC-1" not in html
+    assert "03-01-2026" not in html
     assert "04-01-2026" in html
     assert "Sync Group" not in html
-    assert html.index("Pickup & Delivery KPIs") < html.index("Missed Leads for this month")
+    assert html.index("Pickup & Delivery KPIs") < html.index(
+        "Missed Leads for this month"
+    )
     assert "TD Leads Sync Upsert Metrics (Latest Run)" not in html
     assert "TD Leads Sync Lead Changes (Actionable Details)" not in html
     assert "Alice" in html
@@ -389,5 +420,5 @@ def test_daily_sales_report_same_day_section_uses_shared_table_partial() -> None
     assert "Customer</th>" in html
     assert "2 hrs 30 min" in html
     assert "Payment Received" in html
-    assert "29-04-2026<br><span class=\"micro-font\">09:05 AM</span>" in html
-    assert "29-04-2026<br><span class=\"micro-font\">10:45 AM</span>" in html
+    assert '29-04-2026<br><span class="micro-font">09:05 AM</span>' in html
+    assert '29-04-2026<br><span class="micro-font">10:45 AM</span>' in html
