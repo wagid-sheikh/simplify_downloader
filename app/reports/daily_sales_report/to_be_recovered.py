@@ -17,6 +17,7 @@ def build_context(
     report_date: date,
     run_environment: str,
     company_name: str = "The Shaw Ventures",
+    auto_cleared_order_numbers_text: str = "",
 ) -> dict[str, object]:
     row_list = list(rows)
     total_recoverable = sum((row.order_value for row in row_list), Decimal("0"))
@@ -26,6 +27,7 @@ def build_context(
         "run_environment": run_environment,
         "rows": row_list,
         "total_recoverable": total_recoverable,
+        "auto_cleared_order_numbers_text": auto_cleared_order_numbers_text,
     }
 
 

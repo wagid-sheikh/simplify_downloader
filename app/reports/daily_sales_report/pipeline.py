@@ -137,6 +137,9 @@ def _build_context(
         "to_be_compensated": data.to_be_compensated,
         "to_be_recovered_total_order_value": data.to_be_recovered_total_order_value,
         "to_be_compensated_total_order_value": data.to_be_compensated_total_order_value,
+        "auto_cleared_order_numbers_text": getattr(
+            data, "auto_cleared_order_numbers_text", ""
+        ),
         "same_day_fulfillment_rows": data.same_day_fulfillment_rows,
         "missing_payment_rows": data.missing_payment_rows,
         "same_day_grouped_rows_by_store": group_rows_by_store(
@@ -223,6 +226,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             rows=data.to_be_recovered,
             report_date=resolved_date,
             run_environment=run_env,
+            auto_cleared_order_numbers_text=getattr(
+                data, "auto_cleared_order_numbers_text", ""
+            ),
         )
         to_be_recovered_html = _render_html(
             to_be_recovered_context,

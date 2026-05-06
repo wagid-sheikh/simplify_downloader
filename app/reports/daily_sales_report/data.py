@@ -118,6 +118,8 @@ class DailySalesReportData:
     to_be_compensated: List[RecoveryOrderRow] = field(default_factory=list)
     to_be_recovered_total_order_value: Decimal = Decimal("0")
     to_be_compensated_total_order_value: Decimal = Decimal("0")
+    auto_cleared_order_numbers: List[str] = field(default_factory=list)
+    auto_cleared_order_numbers_text: str = ""
     same_day_fulfillment_rows: List[SameDayFulfillmentRow] = field(default_factory=list)
     missing_payment_rows: List[MissingPaymentRow] = field(default_factory=list)
 
@@ -164,7 +166,7 @@ async def _clear_resolved_to_be_recovered_orders(
     orders,
     sales,
     payment_collections,
-) -> None:
+) -> list[str]:
     sales_evidence_exists = sa.exists().where(
         sa.and_(
             sales.c.cost_center == orders.c.cost_center,
@@ -197,9 +199,14 @@ async def _clear_resolved_to_be_recovered_orders(
                 resolved_keys.add((cost_center, order_number))
 
     if not resolved_keys:
-        return
+        return []
 
-    for cost_center, order_number in sorted(resolved_keys):
+    sorted_resolved_keys = sorted(resolved_keys)
+    auto_cleared_order_numbers = [
+        order_number for _, order_number in sorted_resolved_keys
+    ]
+
+    for cost_center, order_number in sorted_resolved_keys:
         await session.execute(
             sa.update(orders)
             .where(orders.c.cost_center == cost_center)
@@ -208,6 +215,7 @@ async def _clear_resolved_to_be_recovered_orders(
             .values(recovery_status="NONE", recovery_category=None)
         )
     await session.commit()
+    return auto_cleared_order_numbers
 
 
 def _decimal(value: object | None) -> Decimal:
@@ -1000,7 +1008,7 @@ async def fetch_daily_sales_report(
                 )
             )
 
-        await _clear_resolved_to_be_recovered_orders(
+        auto_cleared_order_numbers = await _clear_resolved_to_be_recovered_orders(
             session=session,
             orders=orders,
             sales=sales,
@@ -1497,6 +1505,8 @@ async def fetch_daily_sales_report(
         to_be_compensated=to_be_compensated,
         to_be_recovered_total_order_value=to_be_recovered_total_order_value,
         to_be_compensated_total_order_value=to_be_compensated_total_order_value,
+        auto_cleared_order_numbers=auto_cleared_order_numbers,
+        auto_cleared_order_numbers_text=", ".join(auto_cleared_order_numbers),
         same_day_fulfillment_rows=same_day_rows,
         missing_payment_rows=missing_payment_rows,
     )

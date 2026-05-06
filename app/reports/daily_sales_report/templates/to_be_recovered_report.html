@@ -80,6 +80,15 @@
     <div class="subtitle">To Be Recovered Report for: {{ report_date_display }}</div>
     <div class="micro-font">Run Environment: {{ run_environment }}</div>
 
+    <div class="micro-font auto-cleared-section">
+      <strong>Auto-cleared orders with payment proof in sales and payment collections:</strong>
+      {% if auto_cleared_order_numbers_text %}
+      {{ auto_cleared_order_numbers_text }}
+      {% else %}
+      None
+      {% endif %}
+    </div>
+
     <table class="micro-font">
       <thead>
         <tr>

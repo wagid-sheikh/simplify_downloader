@@ -11,6 +11,9 @@ import sqlalchemy as sa
 
 from app.common.db import session_scope
 from app.reports.daily_sales_report.data import RecoveryOrderRow
+from app.reports.daily_sales_report.to_be_recovered import (
+    build_context as build_to_be_recovered_context,
+)
 import app.reports.daily_sales_report.pipeline as pipeline
 import app.reports.mtd_same_day_fulfillment.data as mtd_data
 
@@ -104,6 +107,48 @@ def _create_tables(database_url: str) -> None:
             )
         )
     engine.dispose()
+
+
+def test_to_be_recovered_template_renders_auto_cleared_empty_state() -> None:
+    context = build_to_be_recovered_context(
+        rows=[],
+        report_date=date(2026, 4, 29),
+        run_environment="test",
+    )
+
+    html = pipeline._render_html(
+        context, template_name=pipeline.TO_BE_RECOVERED_TEMPLATE_NAME
+    )
+
+    assert (
+        "Auto-cleared orders with payment proof in sales and payment collections"
+        in html
+    )
+    assert "No unresolved TO_BE_RECOVERED orders" in html
+    assert (
+        "<strong>Auto-cleared orders with payment proof in sales and "
+        "payment collections:</strong>" in html
+    )
+    assert "None" in html
+
+
+def test_to_be_recovered_template_renders_auto_cleared_order_numbers() -> None:
+    context = build_to_be_recovered_context(
+        rows=[],
+        report_date=date(2026, 4, 29),
+        run_environment="test",
+        auto_cleared_order_numbers_text="TD123, TD124, UC555",
+    )
+
+    html = pipeline._render_html(
+        context, template_name=pipeline.TO_BE_RECOVERED_TEMPLATE_NAME
+    )
+
+    assert (
+        "Auto-cleared orders with payment proof in sales and payment collections"
+        in html
+    )
+    assert "TD123, TD124, UC555" in html
 
 
 @pytest.mark.asyncio
