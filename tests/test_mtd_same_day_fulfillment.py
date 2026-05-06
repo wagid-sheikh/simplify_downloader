@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 from datetime import date, datetime
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.dialects import postgresql
@@ -18,7 +19,7 @@ import app.reports.mtd_same_day_fulfillment.data as mtd_data
 def _create_tables(database_url: str) -> None:
     engine = sa.create_engine(database_url.replace('+aiosqlite', ''))
     with engine.begin() as conn:
-        conn.execute(sa.text("CREATE TABLE orders (cost_center TEXT, order_number TEXT, order_date TIMESTAMP, customer_name TEXT, mobile_number TEXT, net_amount NUMERIC)"))
+        conn.execute(sa.text("CREATE TABLE orders (cost_center TEXT, order_number TEXT, order_date TIMESTAMP, customer_name TEXT, mobile_number TEXT, net_amount NUMERIC, gross_amount NUMERIC, source_system TEXT)"))
         conn.execute(sa.text("CREATE TABLE order_line_items (cost_center TEXT, order_number TEXT, service_name TEXT, garment_name TEXT)"))
         conn.execute(sa.text("CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_date TIMESTAMP, payment_mode TEXT, payment_received NUMERIC)"))
         conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT, store_code TEXT)"))
@@ -176,21 +177,66 @@ async def test_fetch_missing_payments_mtd_uses_month_window_and_view(tmp_path, m
     with engine.begin() as conn:
         conn.execute(sa.text("""
             CREATE VIEW vw_orders_missing_in_payment_collections AS
-            SELECT * FROM (
-                SELECT 'CC1' AS cost_center, 'IN-START' AS order_number, '2026-04-01T00:00:00+05:30' AS order_date, 'Alice' AS customer_name, '999' AS mobile_number, 100 AS net_amount
-                UNION ALL
-                SELECT 'CC1', 'IN-END', '2026-04-29T23:59:59+05:30', 'Bob', '888', 200
-                UNION ALL
-                SELECT 'CC1', 'OUT-BEFORE', '2026-03-31T23:59:59+05:30', 'Cora', '777', 300
-                UNION ALL
-                SELECT 'CC1', 'OUT-AFTER', '2026-04-30T00:00:00+05:30', 'Dan', '666', 400
+            SELECT
+                o.cost_center,
+                o.order_number,
+                o.order_date,
+                o.customer_name,
+                o.mobile_number,
+                CASE
+                    WHEN o.source_system = 'TumbleDry' THEN o.net_amount
+                    ELSE o.gross_amount
+                END AS net_amount
+            FROM orders o
+            JOIN sales s
+                ON s.cost_center = o.cost_center
+               AND s.order_number = o.order_number
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM payment_collections pc
+                WHERE pc.cost_center = o.cost_center
+                  AND (',' || upper(replace(replace(coalesce(pc.order_number, ''), ' ', ''), '/', ',')) || ',')
+                      LIKE ('%,' || upper(replace(coalesce(o.order_number, ''), ' ', '')) || ',%')
             )
+            GROUP BY
+                o.cost_center,
+                o.order_number,
+                o.order_date,
+                o.customer_name,
+                o.mobile_number,
+                CASE
+                    WHEN o.source_system = 'TumbleDry' THEN o.net_amount
+                    ELSE o.gross_amount
+                END
         """))
     engine.dispose()
 
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO orders (
+                cost_center, order_number, order_date, customer_name, mobile_number,
+                net_amount, gross_amount, source_system
+            ) VALUES
+                ('CC1', 'IN-START', '2026-04-01T00:00:00+05:30', 'Alice', '999', 100, 130, 'TumbleDry'),
+                ('CC1', 'IN-END', '2026-04-29T23:59:59+05:30', 'Bob', '888', 200, 260, 'UC'),
+                ('CC1', 'MATCHED', '2026-04-15T12:00:00+05:30', 'Mina', '555', 700, 900, 'UC'),
+                ('CC1', 'OUT-BEFORE', '2026-03-31T23:59:59+05:30', 'Cora', '777', 300, 390, 'TumbleDry'),
+                ('CC1', 'OUT-AFTER', '2026-04-30T00:00:00+05:30', 'Dan', '666', 400, 520, 'UC')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES
+                ('CC1', 'IN-START', '2026-04-01T01:00:00+05:30', 'UPI', 100),
+                ('CC1', 'IN-END', '2026-04-29T23:59:59+05:30', 'CARD', 260),
+                ('CC1', 'MATCHED', '2026-04-15T12:30:00+05:30', 'UPI', 900),
+                ('CC1', 'OUT-BEFORE', '2026-03-31T23:59:59+05:30', 'UPI', 300),
+                ('CC1', 'OUT-AFTER', '2026-04-30T00:00:00+05:30', 'CASH', 520)
+        """))
+        await session.execute(sa.text("INSERT INTO payment_collections (cost_center, order_number) VALUES ('CC1', ' xx / matched ,,')"))
+        await session.commit()
+
     rows = await fetch_missing_payments_mtd(database_url=database_url, report_date=date(2026, 4, 29))
 
-    assert [row.order_number for row in rows] == ['IN-START', 'IN-END']
+    assert [(row.order_number, row.net_amount) for row in rows] == [('IN-START', Decimal('100')), ('IN-END', Decimal('260'))]
 
 
 @pytest.mark.asyncio
