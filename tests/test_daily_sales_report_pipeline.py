@@ -246,6 +246,7 @@ async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
         pipeline.OUTPUT_ROOT / f"reports.to_be_recovered_{report_date.isoformat()}.pdf"
     )
 
+    assert {daily_path, recovered_path}.issubset(rendered)
     assert "RPT-DATE-1" in rendered[daily_path]
     assert "REC-1" in rendered[recovered_path]
 
