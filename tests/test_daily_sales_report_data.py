@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -214,13 +215,113 @@ def _create_tables(database_url: str) -> None:
             sa.text(
                 """
                 CREATE VIEW vw_orders_missing_in_payment_collections AS
-                SELECT cost_center, order_number, order_date, customer_name, mobile_number, net_amount
-                FROM orders
-                WHERE 1 = 0
+                SELECT
+                    o.cost_center,
+                    o.order_number,
+                    o.order_date,
+                    o.customer_name,
+                    o.mobile_number,
+                    CASE
+                        WHEN o.source_system = 'TumbleDry' THEN o.net_amount
+                        ELSE o.gross_amount
+                    END AS net_amount
+                FROM orders o
+                JOIN sales s
+                    ON s.cost_center = o.cost_center
+                   AND s.order_number = o.order_number
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM payment_collections pc
+                    WHERE pc.cost_center = o.cost_center
+                      AND (',' || upper(replace(replace(coalesce(pc.order_number, ''), ' ', ''), '/', ',')) || ',')
+                          LIKE ('%,' || upper(replace(coalesce(o.order_number, ''), ' ', '')) || ',%')
+                )
+                GROUP BY
+                    o.cost_center,
+                    o.order_number,
+                    o.order_date,
+                    o.customer_name,
+                    o.mobile_number,
+                    CASE
+                        WHEN o.source_system = 'TumbleDry' THEN o.net_amount
+                        ELSE o.gross_amount
+                    END
                 """
             )
         )
     engine.dispose()
+
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amount(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_missing_payments.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 4, 29)
+
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO cost_center (cost_center, description, target_type, is_active)
+                VALUES ('CC1', 'Store 1', 'value', 1)
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group)
+                VALUES (1, 'CC1', 'S1', 'Store One', 'TD')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders (
+                    cost_center, order_number, order_date, customer_name, mobile_number,
+                    net_amount, gross_amount, source_system
+                ) VALUES
+                    ('CC1', 'TD-MISSING', '2026-04-29T09:00:00+05:30', 'Tara', '9000000001', 500, 650, 'TumbleDry'),
+                    ('CC1', 'UC-MISSING', '2026-04-29T10:00:00+05:30', 'Uma', '9000000002', 700, 910, 'UC'),
+                    ('CC1', 'UC-MATCHED', '2026-04-29T11:00:00+05:30', 'Maya', '9000000003', 300, 390, 'UC')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO sales (
+                    cost_center, order_number, payment_date, payment_received, payment_mode,
+                    adjustments, is_edited_order
+                ) VALUES
+                    ('CC1', 'TD-MISSING', '2026-04-29T12:00:00+05:30', 500, 'UPI', 0, 0),
+                    ('CC1', 'UC-MISSING', '2026-04-29T12:30:00+05:30', 910, 'CARD', 0, 0),
+                    ('CC1', 'UC-MATCHED', '2026-04-29T13:00:00+05:30', 390, 'CASH', 0, 0)
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO payment_collections (cost_center, order_number)
+                VALUES ('CC1', ' ignore / uc-matched ,,')
+                """
+            )
+        )
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    assert [(row.order_number, row.net_amount) for row in report.missing_payment_rows] == [
+        ("TD-MISSING", Decimal("500")),
+        ("UC-MISSING", Decimal("910")),
+    ]
 
 
 @pytest.mark.asyncio
