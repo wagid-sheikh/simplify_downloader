@@ -38,6 +38,11 @@ PIPELINE_BY_GROUP = {
 }
 
 DEFAULT_MAX_WORKERS = 4
+FAIL_ON_FAILED_STATUS_ENV = "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS"
+
+
+class OrdersSyncProfilerFailedStatus(RuntimeError):
+    """Raised when operators opt into failing the CLI for failed profiler runs."""
 
 
 @dataclass(frozen=True)
@@ -137,6 +142,13 @@ def _env_flag(name: str) -> bool:
     if raw is None:
         return False
     return str(raw).strip().lower() not in {"", "0", "false", "no"}
+
+
+def _should_fail_cli_for_status(overall_status: str) -> bool:
+    return (
+        _env_flag(FAIL_ON_FAILED_STATUS_ENV)
+        and str(overall_status).strip().lower() == "failed"
+    )
 
 
 def _env_int(name: str, default: int) -> int:
@@ -2001,6 +2013,22 @@ async def main(
         ingestion_grand_totals=grand_ingestion_totals,
         overall_status=overall_status,
     )
+    if _should_fail_cli_for_status(overall_status):
+        message = (
+            f"Orders sync profiler overall_status=failed and "
+            f"{FAIL_ON_FAILED_STATUS_ENV} is enabled; exiting non-zero after persistence and notifications"
+        )
+        log_event(
+            logger=logger,
+            phase="summary",
+            status="error",
+            message=message,
+            run_id=resolved_run_id,
+            run_env=resolved_env,
+            overall_status=overall_status,
+            fail_on_failed_status_env=FAIL_ON_FAILED_STATUS_ENV,
+        )
+        raise OrdersSyncProfilerFailedStatus(message)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -2056,6 +2084,15 @@ def _main() -> None:
             phase="shutdown",
             status="warning",
             message="Orders sync profiler interrupted",
+        )
+    except OrdersSyncProfilerFailedStatus as exc:
+        exit_code = 1
+        log_event(
+            logger=logger,
+            phase="summary",
+            status="error",
+            message=str(exc),
+            fail_on_failed_status_env=FAIL_ON_FAILED_STATUS_ENV,
         )
     except Exception as exc:
         exit_code = 1
