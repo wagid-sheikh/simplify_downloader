@@ -1,10 +1,10 @@
 # Customer Retention & Multi-Source Lead Management Pipeline SRS
 
-Version: v1.1  
-Project: TSV-RSM  
-Module: Customer Retention Pipeline  
-Prepared For: The Shaw Ventures  
-Prepared On: 2026-05-07  
+Version: v1.1
+Project: TSV-RSM
+Module: Customer Retention Pipeline
+Prepared For: The Shaw Ventures
+Prepared On: 2026-05-07
 Status: Revised after owner decisions
 
 ---
@@ -25,7 +25,7 @@ The system must:
 8. Update lead lifecycle, follow-up lifecycle, suppression state, and recovery state.
 9. Detect actual recovery from the `orders` table.
 10. Send structured management summary email after each run.
-11. Reuse existing TSV-RSM infrastructure and coding conventions.
+11. Reuse existing project infrastructure and coding conventions.
 
 This module MUST be implemented as an independent pipeline while reusing existing common helpers and system infrastructure.
 
@@ -226,11 +226,11 @@ source_reference
 
 Examples:
 
-| lead_source_type | source_system | source_table_name | source_record_id |
-|---|---|---|---|
-| RETENTION | CUSTOMER_RETENTION_PIPELINE | null | null |
-| TD | TD_LEADS_SYNC | actual_td_table | actual_td_pk |
-| EXTERNAL | EXTERNAL_IMPORT | trx_external_leads | external_lead_id |
+| lead_source_type | source_system               | source_table_name  | source_record_id |
+| ---------------- | --------------------------- | ------------------ | ---------------- |
+| RETENTION        | CUSTOMER_RETENTION_PIPELINE | null               | null             |
+| TD               | TD_LEADS_SYNC               | actual_td_table    | actual_td_pk     |
+| EXTERNAL         | EXTERNAL_IMPORT             | trx_external_leads | external_lead_id |
 
 Important:
 
@@ -333,14 +333,14 @@ Recommended flow:
 
 Based on actual observed repeat behavior, use the following buckets.
 
-| Bucket | Days Since Last Order |
-|---|---:|
-| ACTIVE | 0–21 |
-| WARM | 22–45 |
-| COOLING | 46–75 |
-| DORMANT | 76–120 |
-| COLD | 121–180 |
-| LOST | 181+ |
+| Bucket  | Days Since Last Order |
+| ------- | --------------------: |
+| ACTIVE  |                 0–21 |
+| WARM    |                22–45 |
+| COOLING |                46–75 |
+| DORMANT |               76–120 |
+| COLD    |              121–180 |
+| LOST    |                  181+ |
 
 Rules:
 
@@ -393,13 +393,13 @@ Fresh retention lead cap:
 
 Initial bucket allocation target:
 
-| Bucket | Fresh Leads / Store / Day |
-|---|---:|
-| WARM | 3 |
-| COOLING | 3 |
-| DORMANT | 2 |
-| COLD | 2 |
-| LOST | 3 |
+| Bucket  | Fresh Leads / Store / Day |
+| ------- | ------------------------: |
+| WARM    |                         3 |
+| COOLING |                         3 |
+| DORMANT |                         2 |
+| COLD    |                         2 |
+| LOST    |                         3 |
 
 Important owner decision:
 
@@ -433,7 +433,7 @@ No Response
 Switched Off
 ```
 
-If a required next follow-up date is missing, pipeline must keep the lead pending and report it in email summary.
+If a required next follow-up date is missing, pipeline must add two days as auto-follow-up date and report it in email summary.
 
 ---
 
@@ -476,23 +476,19 @@ Inputs:
 
 Lifetime sales must be computed by the pipeline from `orders`.
 
-Codex must inspect actual amount columns in `orders` before finalizing calculation.
-
-If multiple amount columns exist, Codex must select the most appropriate one and document it.
-
-Do not guess silently.
+Codex must inspect actual amount columns in `orders` before finalizing calculation. For `orders.source_system='TumbleDry'` use `orders.net_amount` for all other `source_system` use `orders.gross_amount`.
 
 ---
 
 # 16. Suppression Rules
 
-| Outcome | Suppression |
-|---|---|
-| Do Not Contact | Permanent |
-| Wrong Number | Permanent |
-| Invalid Number | Permanent |
-| Shifted Location | 180 days |
-| Not Interested | 90 days |
+| Outcome          | Suppression |
+| ---------------- | ----------- |
+| Do Not Contact   | Permanent   |
+| Wrong Number     | Permanent   |
+| Invalid Number   | Permanent   |
+| Shifted Location | Permanent   |
+| Not Interested   | 90 days     |
 
 Suppressed customers must be excluded from future retention lead generation until suppression expires.
 
@@ -933,17 +929,17 @@ If store edits these columns:
 
 Only these columns should be editable.
 
-| Column | Input Type | Mandatory Rule |
-|---|---|---|
-| Handled By | Manual text/dropdown if staff list exists | Mandatory when worked |
-| Contact Attempted | Dropdown | Mandatory |
-| Contact Mode | Dropdown | Mandatory if contacted |
-| Customer Response | Dropdown | Mandatory |
-| Order Expected | Dropdown | Mandatory if response indicates interest |
-| Next Follow-up Date | Date | Mandatory for follow-upable responses |
-| Complaint | Dropdown | Mandatory |
-| Do Not Contact | Dropdown | Mandatory |
-| Staff Remarks | Free text | Optional, but recommended |
+| Column              | Input Type                                | Mandatory Rule                           |
+| ------------------- | ----------------------------------------- | ---------------------------------------- |
+| Handled By          | Manual text/dropdown if staff list exists | Mandatory when worked                    |
+| Contact Attempted   | Dropdown                                  | Mandatory                                |
+| Contact Mode        | Dropdown                                  | Mandatory if contacted                   |
+| Customer Response   | Dropdown                                  | Mandatory                                |
+| Order Expected      | Dropdown                                  | Mandatory if response indicates interest |
+| Next Follow-up Date | Date                                      | Mandatory for follow-upable responses    |
+| Complaint           | Dropdown                                  | Mandatory                                |
+| Do Not Contact      | Dropdown                                  | Mandatory                                |
+| Staff Remarks       | Free text                                 | Optional, but recommended                |
 
 ---
 
@@ -1105,17 +1101,17 @@ If same workbook is uploaded twice:
 
 Examples:
 
-| Input | Normalize To |
-|---|---|
-| whatsapp | WhatsApp Sent |
-| watsapp | WhatsApp Sent |
-| wa sent | WhatsApp Sent |
-| no resp | No Response |
-| not interested | Not Interested |
-| dnd | Do Not Contact |
-| wrong no | Wrong Number |
-| invalid | Invalid Number |
-| pickup | Pickup Requested |
+| Input          | Normalize To     |
+| -------------- | ---------------- |
+| whatsapp       | WhatsApp Sent    |
+| watsapp        | WhatsApp Sent    |
+| wa sent        | WhatsApp Sent    |
+| no resp        | No Response      |
+| not interested | Not Interested   |
+| dnd            | Do Not Contact   |
+| wrong no       | Wrong Number     |
+| invalid        | Invalid Number   |
+| pickup         | Pickup Requested |
 
 Codex should implement normalization through a mapping service/config object so it can be extended easily.
 
@@ -1270,11 +1266,11 @@ For each store:
 
 ## Source-Wise Summary
 
-| Source | Included | Worked | Pending | Closed | Recovered |
-|---|---:|---:|---:|---:|---:|
-| RETENTION | | | | | |
-| TD | | | | | |
-| EXTERNAL | | | | | |
+| Source    | Included | Worked | Pending | Closed | Recovered |
+| --------- | -------: | -----: | ------: | -----: | --------: |
+| RETENTION |          |        |         |        |           |
+| TD        |          |        |         |        |           |
+| EXTERNAL  |          |        |         |        |           |
 
 ## Warning/Error Summary
 
