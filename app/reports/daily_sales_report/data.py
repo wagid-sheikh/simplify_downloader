@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
+import re
 from typing import Iterable, List, Mapping
 
 import sqlalchemy as sa
@@ -117,6 +118,8 @@ class DailySalesReportData:
     to_be_compensated: List[RecoveryOrderRow] = field(default_factory=list)
     to_be_recovered_total_order_value: Decimal = Decimal("0")
     to_be_compensated_total_order_value: Decimal = Decimal("0")
+    auto_cleared_order_numbers: List[str] = field(default_factory=list)
+    auto_cleared_order_numbers_text: str = ""
     same_day_fulfillment_rows: List[SameDayFulfillmentRow] = field(default_factory=list)
     missing_payment_rows: List[MissingPaymentRow] = field(default_factory=list)
 
@@ -130,6 +133,141 @@ LEAD_BENCHMARKS = {
 }
 
 MANUAL_RECOVERY_STATUSES = ("TO_BE_RECOVERED", "TO_BE_COMPENSATED")
+_PAYMENT_COLLECTION_ORDER_SEPARATOR_RE = re.compile(r"[,/]")
+
+
+def _normalized_digits_expr(value_expr, *, dialect_name: str):
+    value = sa.func.coalesce(value_expr, "")
+    if dialect_name == "sqlite":
+        for char in ("+", "-", " ", "(", ")", "."):
+            value = sa.func.replace(value, char, "")
+        return value
+    return sa.func.regexp_replace(value, r"[^0-9]", "", "g")
+
+
+def _payment_collection_order_tokens(order_number: object | None) -> tuple[str, ...]:
+    if order_number is None:
+        return ()
+    return tuple(
+        token
+        for token in (
+            raw_token.strip()
+            for raw_token in _PAYMENT_COLLECTION_ORDER_SEPARATOR_RE.split(
+                str(order_number)
+            )
+        )
+        if token
+    )
+
+
+def _evidence_id_sort_key(value: object | None) -> tuple[int, object]:
+    if value is None:
+        return (2, "")
+    if isinstance(value, (int, float, Decimal)):
+        return (0, Decimal(str(value)))
+    value_text = str(value)
+    try:
+        return (0, Decimal(value_text))
+    except Exception:
+        return (1, value_text)
+
+
+def _lowest_evidence_id(values: Iterable[object | None]) -> object | None:
+    value_list = list(values)
+    if not value_list:
+        return None
+    return min(value_list, key=_evidence_id_sort_key)
+
+
+def _format_evidence_id(value: object | None) -> str:
+    if value is None:
+        return "NULL"
+    return str(value)
+
+
+async def _clear_resolved_to_be_recovered_orders(
+    *,
+    session,
+    orders,
+    sales,
+    payment_collections,
+) -> list[str]:
+    candidates_stmt = (
+        sa.select(
+            orders.c.cost_center,
+            orders.c.order_number,
+            sa.func.min(sales.c.id).label("sales_id"),
+        )
+        .select_from(
+            orders.join(
+                sales,
+                sa.and_(
+                    sales.c.cost_center == orders.c.cost_center,
+                    sales.c.order_number == orders.c.order_number,
+                ),
+            )
+        )
+        .where(orders.c.recovery_status == "TO_BE_RECOVERED")
+        .group_by(orders.c.cost_center, orders.c.order_number)
+    )
+    candidate_rows = (await session.execute(candidates_stmt)).mappings().all()
+    candidates_by_cost_center: dict[str, dict[str, object | None]] = {}
+    for row in candidate_rows:
+        cost_center = str(row["cost_center"] or "")
+        order_number = str(row["order_number"] or "")
+        if cost_center and order_number:
+            candidates_by_cost_center.setdefault(cost_center, {})[order_number] = row[
+                "sales_id"
+            ]
+
+    evidence_by_key: dict[tuple[str, str], tuple[object | None, object | None]] = {}
+    for cost_center, order_evidence in candidates_by_cost_center.items():
+        payment_stmt = sa.select(
+            payment_collections.c.order_number,
+            payment_collections.c.payment_id,
+        ).where(payment_collections.c.cost_center == cost_center)
+        payment_rows = (await session.execute(payment_stmt)).mappings().all()
+        payment_ids_by_order_number: dict[str, list[object | None]] = {}
+        for row in payment_rows:
+            tokens = set(_payment_collection_order_tokens(row["order_number"]))
+            for order_number in set(order_evidence).intersection(tokens):
+                payment_ids_by_order_number.setdefault(order_number, []).append(
+                    row["payment_id"]
+                )
+        for order_number, payment_ids in payment_ids_by_order_number.items():
+            evidence_by_key[(cost_center, order_number)] = (
+                order_evidence[order_number],
+                _lowest_evidence_id(payment_ids),
+            )
+
+    if not evidence_by_key:
+        return []
+
+    sorted_resolved_keys = sorted(evidence_by_key)
+    auto_cleared_order_numbers = [
+        order_number for _, order_number in sorted_resolved_keys
+    ]
+
+    for cost_center, order_number in sorted_resolved_keys:
+        sales_id, payment_id = evidence_by_key[(cost_center, order_number)]
+        recovery_notes = (
+            "AUTO_CLEARED_PAYMENT_PROOF "
+            f"sales.id={_format_evidence_id(sales_id)}, "
+            f"payment_collections.payment_id={_format_evidence_id(payment_id)}"
+        )
+        await session.execute(
+            sa.update(orders)
+            .where(orders.c.cost_center == cost_center)
+            .where(orders.c.order_number == order_number)
+            .where(orders.c.recovery_status == "TO_BE_RECOVERED")
+            .values(
+                recovery_status="NONE",
+                recovery_category=None,
+                recovery_notes=recovery_notes,
+            )
+        )
+    await session.commit()
+    return auto_cleared_order_numbers
 
 
 def _decimal(value: object | None) -> Decimal:
@@ -543,9 +681,17 @@ async def fetch_daily_sales_report(
         sa.column("default_due_date"),
         sa.column("source_system"),
         sa.column("recovery_status"),
+        sa.column("recovery_category"),
+        sa.column("recovery_notes"),
         sa.column("recovery_opened_at"),
         sa.column("recovery_closed_at"),
         sa.column("recovery_expected_resolution_date"),
+    )
+    payment_collections = sa.table(
+        "payment_collections",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("payment_id"),
     )
     missing_orders_view = sa.table(
         "vw_orders_missing_in_payment_collections",
@@ -565,6 +711,7 @@ async def fetch_daily_sales_report(
     )
     sales = sa.table(
         "sales",
+        sa.column("id"),
         sa.column("cost_center"),
         sa.column("payment_date"),
         sa.column("payment_received"),
@@ -915,6 +1062,13 @@ async def fetch_daily_sales_report(
                     loss=loss,
                 )
             )
+
+        auto_cleared_order_numbers = await _clear_resolved_to_be_recovered_orders(
+            session=session,
+            orders=orders,
+            sales=sales,
+            payment_collections=payment_collections,
+        )
 
         manual_recovery_stmt = (
             sa.select(
@@ -1336,18 +1490,12 @@ async def fetch_daily_sales_report(
             .subquery()
         )
         normalized_lead_store_code_expr = sa.func.upper(sa.func.trim(crm_leads_current.c.store_code))
-        normalized_lead_mobile_expr = sa.func.regexp_replace(
-            sa.func.coalesce(crm_leads_current.c.mobile, ""),
-            r"[^0-9]",
-            "",
-            "g",
+        normalized_lead_mobile_expr = _normalized_digits_expr(
+            crm_leads_current.c.mobile, dialect_name=dialect_name
         )
         normalized_order_store_code_expr = sa.func.upper(sa.func.trim(orders.c.cost_center))
-        normalized_order_mobile_expr = sa.func.regexp_replace(
-            sa.func.coalesce(orders.c.mobile_number, ""),
-            r"[^0-9]",
-            "",
-            "g",
+        normalized_order_mobile_expr = _normalized_digits_expr(
+            orders.c.mobile_number, dialect_name=dialect_name
         )
         completed_reconciliation_stmt = (
             sa.select(
@@ -1412,6 +1560,8 @@ async def fetch_daily_sales_report(
         to_be_compensated=to_be_compensated,
         to_be_recovered_total_order_value=to_be_recovered_total_order_value,
         to_be_compensated_total_order_value=to_be_compensated_total_order_value,
+        auto_cleared_order_numbers=auto_cleared_order_numbers,
+        auto_cleared_order_numbers_text=", ".join(auto_cleared_order_numbers),
         same_day_fulfillment_rows=same_day_rows,
         missing_payment_rows=missing_payment_rows,
     )
