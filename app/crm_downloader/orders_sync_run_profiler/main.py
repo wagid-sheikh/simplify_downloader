@@ -1137,6 +1137,34 @@ def _format_unified_metrics(metrics: Mapping[str, Any]) -> str:
     return ", ".join(parts)
 
 
+def _sanitize_profiler_window_text(value: Any, *, max_length: int = 240) -> str:
+    if value is None:
+        return ""
+    text = " ".join(str(value).split())
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 1].rstrip() + "…"
+
+
+def _profiler_failed_window_entries(window_audit: Iterable[Mapping[str, Any]] | None) -> list[dict[str, str]]:
+    failed_statuses = {"failed", "partial"}
+    entries: list[dict[str, str]] = []
+    for window in window_audit or []:
+        status = _sanitize_profiler_window_text(window.get("status"))
+        if status.lower() not in failed_statuses:
+            continue
+        entries.append(
+            {
+                "from_date": _sanitize_profiler_window_text(window.get("from_date")),
+                "to_date": _sanitize_profiler_window_text(window.get("to_date")),
+                "status": status,
+                "status_note": _sanitize_profiler_window_text(window.get("status_note")),
+                "error_message": _sanitize_profiler_window_text(window.get("error_message")),
+            }
+        )
+    return entries
+
+
 def _build_profiler_summary_text(
     *,
     run_id: str,
@@ -1180,6 +1208,17 @@ def _build_profiler_summary_text(
         lines.append(f"  window_count: {window_count}")
         lines.append(f"  primary_metrics: {_format_unified_metrics(primary_metrics)}")
         lines.append(f"  secondary_metrics: {_format_unified_metrics(secondary_metrics)}")
+        failed_windows = _profiler_failed_window_entries(entry.get("window_audit"))
+        if failed_windows:
+            lines.append("  failed_windows:")
+            for window in failed_windows:
+                window_range = f"{window['from_date']} to {window['to_date']}"
+                details = [f"status={window['status']}"]
+                if window["status_note"]:
+                    details.append(f"status_note={window['status_note']}")
+                if window["error_message"]:
+                    details.append(f"error_message={window['error_message']}")
+                lines.append(f"    - {window_range}: " + "; ".join(details))
         if entry.get("status_conflict_count"):
             lines.append(
                 f"  warning: {entry['status_conflict_count']} window(s) skipped but rows present"
