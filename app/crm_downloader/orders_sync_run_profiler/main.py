@@ -38,6 +38,11 @@ PIPELINE_BY_GROUP = {
 }
 
 DEFAULT_MAX_WORKERS = 4
+FAIL_ON_FAILED_STATUS_ENV = "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS"
+
+
+class OrdersSyncProfilerFailedStatus(RuntimeError):
+    """Raised when operators opt into failing the CLI for failed profiler runs."""
 
 
 @dataclass(frozen=True)
@@ -137,6 +142,13 @@ def _env_flag(name: str) -> bool:
     if raw is None:
         return False
     return str(raw).strip().lower() not in {"", "0", "false", "no"}
+
+
+def _should_fail_cli_for_status(overall_status: str) -> bool:
+    return (
+        _env_flag(FAIL_ON_FAILED_STATUS_ENV)
+        and str(overall_status).strip().lower() == "failed"
+    )
 
 
 def _env_int(name: str, default: int) -> int:
@@ -1137,6 +1149,34 @@ def _format_unified_metrics(metrics: Mapping[str, Any]) -> str:
     return ", ".join(parts)
 
 
+def _sanitize_profiler_window_text(value: Any, *, max_length: int = 240) -> str:
+    if value is None:
+        return ""
+    text = " ".join(str(value).split())
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 1].rstrip() + "…"
+
+
+def _profiler_failed_window_entries(window_audit: Iterable[Mapping[str, Any]] | None) -> list[dict[str, str]]:
+    failed_statuses = {"failed", "partial"}
+    entries: list[dict[str, str]] = []
+    for window in window_audit or []:
+        status = _sanitize_profiler_window_text(window.get("status"))
+        if status.lower() not in failed_statuses:
+            continue
+        entries.append(
+            {
+                "from_date": _sanitize_profiler_window_text(window.get("from_date")),
+                "to_date": _sanitize_profiler_window_text(window.get("to_date")),
+                "status": status,
+                "status_note": _sanitize_profiler_window_text(window.get("status_note")),
+                "error_message": _sanitize_profiler_window_text(window.get("error_message")),
+            }
+        )
+    return entries
+
+
 def _build_profiler_summary_text(
     *,
     run_id: str,
@@ -1180,6 +1220,17 @@ def _build_profiler_summary_text(
         lines.append(f"  window_count: {window_count}")
         lines.append(f"  primary_metrics: {_format_unified_metrics(primary_metrics)}")
         lines.append(f"  secondary_metrics: {_format_unified_metrics(secondary_metrics)}")
+        failed_windows = _profiler_failed_window_entries(entry.get("window_audit"))
+        if failed_windows:
+            lines.append("  failed_windows:")
+            for window in failed_windows:
+                window_range = f"{window['from_date']} to {window['to_date']}"
+                details = [f"status={window['status']}"]
+                if window["status_note"]:
+                    details.append(f"status_note={window['status_note']}")
+                if window["error_message"]:
+                    details.append(f"error_message={window['error_message']}")
+                lines.append(f"    - {window_range}: " + "; ".join(details))
         if entry.get("status_conflict_count"):
             lines.append(
                 f"  warning: {entry['status_conflict_count']} window(s) skipped but rows present"
@@ -1962,6 +2013,22 @@ async def main(
         ingestion_grand_totals=grand_ingestion_totals,
         overall_status=overall_status,
     )
+    if _should_fail_cli_for_status(overall_status):
+        message = (
+            f"Orders sync profiler overall_status=failed and "
+            f"{FAIL_ON_FAILED_STATUS_ENV} is enabled; exiting non-zero after persistence and notifications"
+        )
+        log_event(
+            logger=logger,
+            phase="summary",
+            status="error",
+            message=message,
+            run_id=resolved_run_id,
+            run_env=resolved_env,
+            overall_status=overall_status,
+            fail_on_failed_status_env=FAIL_ON_FAILED_STATUS_ENV,
+        )
+        raise OrdersSyncProfilerFailedStatus(message)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -2017,6 +2084,15 @@ def _main() -> None:
             phase="shutdown",
             status="warning",
             message="Orders sync profiler interrupted",
+        )
+    except OrdersSyncProfilerFailedStatus as exc:
+        exit_code = 1
+        log_event(
+            logger=logger,
+            phase="summary",
+            status="error",
+            message=str(exc),
+            fail_on_failed_status_env=FAIL_ON_FAILED_STATUS_ENV,
         )
     except Exception as exc:
         exit_code = 1

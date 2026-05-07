@@ -3,13 +3,16 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.dashboard_downloader.notifications import (
+    PROFILER_HTML_TEMPLATE,
     _build_fact_rows,
+    _build_profiler_context,
     _build_run_plan,
-    _derive_duration_fields,
     _build_store_plans,
+    _derive_duration_fields,
     _build_uc_orders_context,
     _format_fact_sections_text,
     _prepare_ingest_remarks,
+    _render_template,
     _resolve_reporting_mode_suffix,
     _td_summary_text_from_payload,
     _uc_summary_text_from_payload,
@@ -319,3 +322,53 @@ def test_run_plan_all_docs_for_run_includes_daily_and_mtd_documents(tmp_path) ->
 
     assert plan is not None
     assert plan.attachments == [main_pdf, same_day_pdf]
+
+
+def test_profiler_context_and_html_include_failed_window_reason() -> None:
+    cert_error = "Page.goto: net::ERR_CERT_DATE_INVALID at https://example.test/orders\n    stack details"
+    run_data = {
+        "run_id": "profiler-run-1",
+        "run_env": "test",
+        "report_date": "2024-01-05",
+        "overall_status": "failed",
+        "summary_text": "Orders Sync Profiler Run Summary",
+        "started_at": "2024-01-05T05:00:00+00:00",
+        "finished_at": "2024-01-05T05:01:00+00:00",
+        "metrics_json": {
+            "notification_payload": {
+                "overall_status": "failed",
+                "window_summary": {"completed_windows": 0, "expected_windows": 1, "missing_windows": 0},
+                "stores": [
+                    {
+                        "store_code": "UC01",
+                        "pipeline_name": "uc_orders_sync",
+                        "status": "failed",
+                        "window_count": 1,
+                        "primary_metrics": {},
+                        "secondary_metrics": {},
+                        "window_audit": [
+                            {
+                                "from_date": "2024-01-01",
+                                "to_date": "2024-01-02",
+                                "status": "failed",
+                                "status_note": "window execution failed",
+                                "error_message": cert_error,
+                            }
+                        ],
+                    }
+                ],
+            }
+        },
+    }
+
+    context = _build_profiler_context(run_data)
+    html_context = dict(context)
+    html_context.update({"run_id": "profiler-run-1", "run_env": "test", "report_date": "2024-01-05"})
+    body_html = _render_template(PROFILER_HTML_TEMPLATE, html_context)
+
+    assert context["stores"][0]["failed_windows"][0]["from_date"] == "2024-01-01"
+    assert context["stores"][0]["failed_windows"][0]["to_date"] == "2024-01-02"
+    assert context["stores"][0]["failed_windows"][0]["status"] == "failed"
+    assert "Page.goto: net::ERR_CERT_DATE_INVALID" in context["stores"][0]["failed_windows_note"]
+    assert "Page.goto: net::ERR_CERT_DATE_INVALID" in body_html
+    assert "status_note=window execution failed" in body_html

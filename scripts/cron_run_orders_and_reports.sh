@@ -18,6 +18,14 @@ set -euo pipefail
 # - detailed logging
 # - safe cleanup on EXIT/ERR/INT/TERM
 # - Bash 3.2 compatible (no associative arrays, no mapfile)
+#
+# Orders profiler exit semantics:
+# - orders_sync_run_profiler.sh normally preserves legacy non-breaking CLI behavior
+#   for persisted overall_status="failed" after summaries/notifications are written.
+# - Set ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=1 to make that profiler CLI step
+#   return non-zero when the final profiler overall_status is "failed". This wrapper
+#   logs orders_sync_run_profiler_rc and continues to report pipelines; required
+#   report pipeline failures still control the final cron exit status below.
 # ============================================================================
 # Usage examples:
 #   # Local/manual run with default force mode.
@@ -655,6 +663,9 @@ mtd_same_day_rc=0
 daily_rescue_rc=0
 run_started_epoch="$(date +%s)"
 
+# ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=1 makes this step return non-zero
+# for persisted overall_status="failed"; keep recording orders_rc while allowing
+# the report pipeline steps to run.
 run_step "Script 1: orders_sync_run_profiler" "./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" || orders_rc=$?
 run_step "Script 2: daily_sales_report" "./scripts/run_local_reports_daily_sales.sh ${REPORT_FORCE_ARGS[*]}" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" || daily_rc=$?
 run_step "Script 3: mtd_same_day_fulfillment_report" "./scripts/run_local_reports_mtd_same_day_fulfillment.sh ${REPORT_FORCE_ARGS[*]}" "${MTD_SAME_DAY_MAX_ATTEMPTS}" "${MTD_SAME_DAY_RETRY_DELAY_SECONDS}" || mtd_same_day_rc=$?
