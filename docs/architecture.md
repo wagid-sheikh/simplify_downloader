@@ -20,6 +20,11 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
   - `system_config` table for plaintext/encrypted app settings,
   - decryption via `app/crypto.py`.
 - Config fails fast on missing/invalid values.
+- UC HTTPS certificate handling is controlled by `UC_IGNORE_HTTPS_ERRORS` in
+  `system_config`; it defaults to `false` so UC Playwright browser contexts keep
+  strict TLS validation. Fix/renew the remote certificate first; setting this to
+  `true` is an emergency-only workaround because it suppresses browser-side
+  certificate validation for UC sync.
 
 ### 2) Shared data access and models
 - Async DB session management: `app/common/db.py`.

@@ -42,7 +42,11 @@ def _base_rows(secret_key: str) -> dict[str, str]:
         "PDF_RENDER_BACKEND": "bundled_chromium",
         "PDF_RENDER_HEADLESS": "true",
         "ETL_HEADLESS": "true",
+        "ETL_STEP_TIMEOUT_SECONDS": "30",
+        "PDF_RENDER_TIMEOUT_SECONDS": "30",
         "pipeline_skip_dom_logging": "false",
+        "skip_lead_assignment": "false",
+        "UC_IGNORE_HTTPS_ERRORS": "false",
     }
     rows["TD_GLOBAL_PASSWORD"] = encrypt_secret(secret_key, "change-me-global-password")
     rows["REPORT_EMAIL_SMTP_PASSWORD"] = encrypt_secret(secret_key, "change-me-smtp-password")
@@ -124,6 +128,7 @@ def test_config_loads_expected_values(monkeypatch, tmp_path):
     assert cfg.report_email_smtp_password == "change-me-smtp-password"
     assert cfg.pdf_render_chrome_executable is None
     assert cfg.pipeline_skip_dom_logging is False
+    assert cfg.uc_ignore_https_errors is False
 
 
 def test_missing_env_variable_raises(monkeypatch, tmp_path):

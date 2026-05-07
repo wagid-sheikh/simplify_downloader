@@ -34,6 +34,7 @@ def _default_system_config_rows(secret_key: str) -> dict[str, str]:
         "ETL_HEADLESS": "true",
         "pipeline_skip_dom_logging": "false",
         "skip_lead_assignment": "false",
+        "UC_IGNORE_HTTPS_ERRORS": "false",
         "ETL_STEP_TIMEOUT_SECONDS": "30",
         "PDF_RENDER_TIMEOUT_SECONDS": "30",
     }
