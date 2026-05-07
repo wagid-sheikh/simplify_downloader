@@ -101,6 +101,7 @@ PLAINTEXT_DB_KEYS = [
     "PDF_RENDER_TIMEOUT_SECONDS",
     "pipeline_skip_dom_logging",
     "skip_lead_assignment",
+    "UC_IGNORE_HTTPS_ERRORS",
 ]
 
 ENCRYPTED_DB_KEYS = [
@@ -344,6 +345,7 @@ class Config:
     pdf_render_timeout_seconds: int
     pipeline_skip_dom_logging: bool
     skip_lead_assignment: bool
+    uc_ignore_https_errors: bool
 
     @classmethod
     def load_from_env_and_db(cls) -> Config:
@@ -393,6 +395,9 @@ class Config:
         )
         skip_lead_assignment = _parse_bool(
             db_values["skip_lead_assignment"], key="skip_lead_assignment"
+        )
+        uc_ignore_https_errors = _parse_bool(
+            db_values["UC_IGNORE_HTTPS_ERRORS"], key="UC_IGNORE_HTTPS_ERRORS"
         )
 
         td_store_dashboard_path = _clean_text(
@@ -468,6 +473,7 @@ class Config:
             pdf_render_timeout_seconds=pdf_render_timeout_seconds,
             pipeline_skip_dom_logging=pipeline_skip_dom_logging,
             skip_lead_assignment=skip_lead_assignment,
+            uc_ignore_https_errors=uc_ignore_https_errors,
         )
 
 

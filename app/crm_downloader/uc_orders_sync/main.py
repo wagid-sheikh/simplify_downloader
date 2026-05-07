@@ -3495,7 +3495,10 @@ async def _run_store_discovery(
     storage_state_path = store.storage_state_path
     storage_state_exists = storage_state_path.exists()
     storage_state_value = str(storage_state_path) if storage_state_exists else None
-    context = await browser.new_context(storage_state=storage_state_value)
+    context = await browser.new_context(
+        storage_state=storage_state_value,
+        ignore_https_errors=config.uc_ignore_https_errors,
+    )
     page = await context.new_page()
     outcome = StoreOutcome(status="error", message="uninitialized")
 
