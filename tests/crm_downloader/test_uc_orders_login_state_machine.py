@@ -3,9 +3,10 @@ import io
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
-from unittest.mock import AsyncMock
 
 from app.crm_downloader.uc_orders_sync import main as uc_main
 from app.dashboard_downloader.json_logger import JsonLogger
@@ -39,13 +40,106 @@ class _FakeContext:
 class _FakeBrowser:
     def __init__(self) -> None:
         self._contexts: list[_FakeContext] = []
+        self.context_kwargs: list[dict[str, object]] = []
 
-    async def new_context(self, storage_state: str | None = None) -> _FakeContext:
-        store_code = Path(storage_state or "no-state").name.split("_")[0].upper() if storage_state else "UNKNOWN"
+    async def new_context(
+        self,
+        storage_state: str | None = None,
+        ignore_https_errors: bool = False,
+    ) -> _FakeContext:
+        self.context_kwargs.append(
+            {
+                "storage_state": storage_state,
+                "ignore_https_errors": ignore_https_errors,
+            }
+        )
+        store_code = (
+            Path(storage_state or "no-state").name.split("_")[0].upper()
+            if storage_state
+            else "UNKNOWN"
+        )
         page = _FakePage(store_code=store_code)
         context = _FakeContext(page)
         self._contexts.append(context)
         return context
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("configured_value", "expected_ignore_https_errors"),
+    [
+        (False, False),
+        (True, True),
+    ],
+)
+async def test_run_store_discovery_passes_uc_https_error_config_to_browser_context(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_value: bool,
+    expected_ignore_https_errors: bool,
+) -> None:
+    logger = JsonLogger(stream=io.StringIO(), log_file_path=None)
+    summary = uc_main.UcOrdersDiscoverySummary(
+        run_id="run-tls",
+        run_env="test",
+        report_date=date(2025, 1, 2),
+        report_end_date=date(2025, 1, 1),
+        started_at=datetime.now(timezone.utc),
+        store_codes=["A100"],
+    )
+    store = uc_main.UcStore(
+        store_code="A100",
+        store_name="Store A",
+        cost_center=None,
+        sync_config={
+            "urls": {
+                "home": "https://example.com/home",
+                "orders_link": "https://example.com/orders",
+                "login": "https://example.com/login",
+            },
+            "username": "user",
+            "password": "pass",
+        },
+    )
+
+    monkeypatch.setattr(
+        uc_main,
+        "config",
+        SimpleNamespace(
+            database_url=None,
+            pipeline_skip_dom_logging=True,
+            uc_ignore_https_errors=configured_value,
+        ),
+    )
+    monkeypatch.setattr(uc_main, "_insert_orders_sync_log", AsyncMock(return_value=1))
+    monkeypatch.setattr(uc_main, "_update_orders_sync_log", AsyncMock())
+
+    browser = _FakeBrowser()
+
+    await uc_main._run_store_discovery(
+        browser=browser,
+        store=store,
+        logger=logger,
+        run_env="test",
+        run_id="run-tls",
+        run_date=datetime.now(timezone.utc),
+        summary=summary,
+        from_date=date(2025, 1, 2),
+        to_date=date(2025, 1, 1),
+        download_timeout_ms=1000,
+    )
+
+    assert browser.context_kwargs == [
+        {"storage_state": None, "ignore_https_errors": expected_ignore_https_errors}
+    ]
+
+
+def test_fake_browser_default_context_creation_uses_strict_tls_validation() -> None:
+    browser = _FakeBrowser()
+
+    context = asyncio.run(browser.new_context(storage_state=None))
+
+    assert context in browser._contexts
+    assert browser.context_kwargs == [{"storage_state": None, "ignore_https_errors": False}]
 
 
 @pytest.mark.asyncio
@@ -130,7 +224,6 @@ async def test_invalid_session_always_triggers_fallback_login_for_concurrent_sto
             from_date=date(2025, 1, 1),
             to_date=date(2025, 1, 1),
             download_timeout_ms=1000,
-            archive_extraction_mode=uc_main.UC_ARCHIVE_EXTRACTION_MODE_API,
         ),
         uc_main._run_store_discovery(
             browser=browser,
@@ -143,7 +236,6 @@ async def test_invalid_session_always_triggers_fallback_login_for_concurrent_sto
             from_date=date(2025, 1, 1),
             to_date=date(2025, 1, 1),
             download_timeout_ms=1000,
-            archive_extraction_mode=uc_main.UC_ARCHIVE_EXTRACTION_MODE_API,
         ),
     )
 
@@ -189,7 +281,15 @@ async def test_run_store_discovery_does_not_require_gst_ui_when_api_is_healthy(
 
     (tmp_path / f"{store.store_code}_storage_state.json").write_text("{}")
 
-    monkeypatch.setattr(uc_main, "config", type("_Cfg", (), {"database_url": None, "pipeline_skip_dom_logging": True})())
+    monkeypatch.setattr(
+        uc_main,
+        "config",
+        SimpleNamespace(
+            database_url=None,
+            pipeline_skip_dom_logging=True,
+            uc_ignore_https_errors=False,
+        ),
+    )
     monkeypatch.setattr(uc_main, "default_profiles_dir", lambda: tmp_path)
     monkeypatch.setattr(uc_main, "_resolve_uc_download_dir", lambda *_: tmp_path)
     monkeypatch.setattr(uc_main, "_insert_orders_sync_log", AsyncMock(return_value=1))
@@ -228,7 +328,6 @@ async def test_run_store_discovery_does_not_require_gst_ui_when_api_is_healthy(
         from_date=date(2025, 1, 1),
         to_date=date(2025, 1, 1),
         download_timeout_ms=1000,
-        archive_extraction_mode=uc_main.UC_ARCHIVE_EXTRACTION_MODE_API,
     )
 
     assert navigate_gst_mock.await_count == 0
