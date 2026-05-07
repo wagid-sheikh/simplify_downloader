@@ -159,7 +159,18 @@ PROFILER_HTML_TEMPLATE = """
                       {{ store.secondary_metrics.final_updated or store.secondary_metrics.staging_updated or 0 }}
                     </td>
                     <td style="padding:6px 8px; border:1px solid #e1e1e1;">
-                      {% if store.status_conflict_count %}
+                      {% if store.failed_windows %}
+                        <ul style="margin:0; padding-left:16px;">
+                          {% for window in store.failed_windows %}
+                          <li style="margin:0 0 4px 0;">
+                            {{ window.from_date|e }} to {{ window.to_date|e }}:
+                            status={{ window.status|e }}
+                            {% if window.status_note %}; status_note={{ window.status_note|e }}{% endif %}
+                            {% if window.error_message %}; error_message={{ window.error_message|e }}{% endif %}
+                          </li>
+                          {% endfor %}
+                        </ul>
+                      {% elif store.status_conflict_count %}
                         {{ store.status_conflict_count }} window(s) skipped but rows present
                       {% else %}
                         —
@@ -2243,6 +2254,53 @@ def _build_uc_orders_context(
     }
 
 
+def _sanitize_profiler_window_text(value: Any, *, max_length: int = 240) -> str:
+    if value is None:
+        return ""
+    text = " ".join(str(value).split())
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 1].rstrip() + "…"
+
+
+def _profiler_failed_windows_from_payload(store: Mapping[str, Any]) -> list[dict[str, str]]:
+    existing = store.get("failed_windows")
+    candidates = existing if isinstance(existing, list) else store.get("window_audit")
+    failed_statuses = {"failed", "partial"}
+    failed_windows: list[dict[str, str]] = []
+    for window in candidates or []:
+        if not isinstance(window, Mapping):
+            continue
+        status = _sanitize_profiler_window_text(window.get("status"))
+        if status.lower() not in failed_statuses:
+            continue
+        failed_windows.append(
+            {
+                "from_date": _sanitize_profiler_window_text(window.get("from_date")),
+                "to_date": _sanitize_profiler_window_text(window.get("to_date")),
+                "status": status,
+                "status_note": _sanitize_profiler_window_text(window.get("status_note")),
+                "error_message": _sanitize_profiler_window_text(window.get("error_message")),
+            }
+        )
+    return failed_windows
+
+
+def _format_profiler_failed_windows_note(failed_windows: Sequence[Mapping[str, str]]) -> str:
+    lines: list[str] = []
+    for window in failed_windows:
+        parts = [
+            f"{window.get('from_date', '')} to {window.get('to_date', '')}:",
+            f"status={window.get('status', '')}",
+        ]
+        if window.get("status_note"):
+            parts.append(f"status_note={window['status_note']}")
+        if window.get("error_message"):
+            parts.append(f"error_message={window['error_message']}")
+        lines.append("; ".join(part for part in parts if part))
+    return "\n".join(lines)
+
+
 def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
     metrics = run_data.get("metrics_json") or {}
     payload = metrics.get("notification_payload") or {}
@@ -2257,6 +2315,7 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
         secondary_metrics = _build_unified_metrics(store.get("secondary_metrics") or {})
         _sum_unified_metrics(primary_totals, primary_metrics)
         _sum_unified_metrics(secondary_totals, secondary_metrics)
+        failed_windows = _profiler_failed_windows_from_payload(store)
         stores.append(
             {
                 "store_code": store_code,
@@ -2265,6 +2324,8 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
                 "status": _normalize_uc_status(store.get("status")),
                 "window_count": store.get("window_count"),
                 "status_conflict_count": store.get("status_conflict_count"),
+                "failed_windows": failed_windows,
+                "failed_windows_note": _format_profiler_failed_windows_note(failed_windows),
                 "primary_metrics": primary_metrics,
                 "secondary_metrics": secondary_metrics,
             }

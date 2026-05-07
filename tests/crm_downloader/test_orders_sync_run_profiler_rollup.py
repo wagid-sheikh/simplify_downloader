@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from app.crm_downloader.orders_sync_run_profiler.main import (
     _accumulate_ingestion_totals,
+    _build_profiler_summary_text,
     _extract_ingestion_counts_from_log,
     _extract_ingestion_counts_from_summary,
     _extract_uc_warning_count_from_summary,
@@ -281,3 +284,43 @@ def test_profiler_top_level_status_failed_when_any_window_fails() -> None:
 
     assert _rollup_overall_status(status_counts) == "failed"
     assert _select_summary_overall_status(status_counts) == "failed"
+
+
+def test_profiler_summary_text_includes_failed_uc_window_reason() -> None:
+    cert_error = "Page.goto: net::ERR_CERT_DATE_INVALID at https://example.test/orders\n    stack details"
+
+    summary = _build_profiler_summary_text(
+        run_id="profiler-run-1",
+        run_env="test",
+        started_at=datetime(2024, 1, 5, 5, 0, tzinfo=timezone.utc),
+        finished_at=datetime(2024, 1, 5, 5, 1, tzinfo=timezone.utc),
+        overall_status="failed",
+        store_entries=[
+            {
+                "store_code": "UC01",
+                "pipeline_name": "uc_orders_sync",
+                "status": "failed",
+                "window_count": 1,
+                "primary_metrics": {},
+                "secondary_metrics": {},
+                "window_audit": [
+                    {
+                        "from_date": "2024-01-01",
+                        "to_date": "2024-01-02",
+                        "status": "failed",
+                        "status_note": "window execution failed",
+                        "error_message": cert_error,
+                    }
+                ],
+            }
+        ],
+        window_summary={"completed_windows": 0, "expected_windows": 1, "missing_windows": 0},
+        warnings=[],
+    )
+
+    assert "failed_windows:" in summary
+    assert "2024-01-01 to 2024-01-02" in summary
+    assert "status=failed" in summary
+    assert "status_note=window execution failed" in summary
+    assert "Page.goto: net::ERR_CERT_DATE_INVALID" in summary
+    assert "stack details" in summary
