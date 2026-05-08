@@ -316,23 +316,25 @@ Recommended flow:
 
 1. Load config.
 2. Initialize run logging.
-3. Fetch active stores from `store_master.customer_retention_pipeline = true`.
-4. Ingest returned Excel files from `inputs/customer_followup/`.
-5. Normalize and validate returned data.
+3. Fetch active stores.
+4. Ingest returned Excel workbooks.
+5. Normalize and validate returned workbook data.
 6. Update unified lead table and lead history.
-7. Apply suppression/dead-end rules for all suppression-producing outcomes.
+7. Apply suppression and dead-end rules.
 8. Detect recoveries from `orders`.
 9. Build/update customer retention snapshot.
-10. Pull due follow-ups.
-11. Pull pending carry-forward leads.
-12. Generate fresh retention leads only where allowed.
-13. Pull pending TD leads from existing `td_leads_sync` tables.
-14. Pull pending external leads.
-15. Upsert/convert TD and external leads into unified master lead table.
-16. Build one workbook per store.
-17. Archive processed input files.
-18. Generate owner summary email.
-19. Close pipeline run logging.
+10. Import external lead files from configured external input folder.
+11. Normalize, validate, de-duplicate, and persist external leads.
+12. Pull due follow-ups.
+13. Pull pending carry-forward leads.
+14. Pull pending TD leads from existing `td_leads_sync` tables.
+15. Pull pending external leads subject to configured external cap.
+16. Generate fresh retention leads subject to configured retention cap and pending-work rules.
+17. Upsert/convert TD and capped external leads into unified master lead table.
+18. Build one workbook per store.
+19. Archive processed input files.
+20. Generate owner summary email.
+21. Close pipeline run logging.
 
 ---
 
@@ -1384,10 +1386,12 @@ history_update
 suppression
 recovery
 snapshot
-retention_generation
-td_generation
 external_import
 external_generation
+due_followups
+pending_carry_forward
+td_generation
+retention_generation
 workbook
 archive
 email
