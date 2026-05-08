@@ -410,14 +410,17 @@ Initial/default bucket allocation target for the default 13-lead RETENTION cap:
 
 Important owner decision:
 
-Fresh leads are generated only when previous actionable work is completed.
+Caps must never hide, drop, or suppress previously assigned actionable work.
 
 Therefore:
 
-- pending carry-forward leads come first
-- due follow-ups come first
-- if a store has incomplete actionable work, do not keep adding fresh retention leads blindly
-- TD leads are still included because they are source-driven and uncapped, while EXTERNAL leads are source-driven but capped by their own table-configured cap.
+- due follow-ups are always included over-and-above all caps
+- pending carry-forward leads are always included over-and-above all caps
+- RETENTION cap applies only to newly generated fresh retention leads
+- EXTERNAL cap applies only to newly converted/imported external leads selected for workbook inclusion
+- TD leads remain uncapped
+- caps must not hide or drop previously assigned actionable work
+- if a store has incomplete actionable work, the pipeline must preserve it instead of silently replacing it with new capped work
 
 ---
 
@@ -426,7 +429,8 @@ Therefore:
 If `next_followup_date` is today or overdue:
 
 - lead must appear at the top of the workbook
-- lead is over and above the configured fresh RETENTION cap
+- lead is always included over-and-above every configured cap
+- lead must not consume RETENTION or EXTERNAL cap capacity
 - store team must handle it first
 
 Next Follow-up Date is mandatory for:
@@ -449,6 +453,8 @@ If a required next follow-up date is missing, pipeline must add two days as auto
 If previous lead work was not completed:
 
 - carry forward the same lead
+- include pending carry-forward work over-and-above every configured cap
+- do not let RETENTION or EXTERNAL caps hide or drop this previously assigned actionable work
 - do not auto-expire it
 - do not auto-mark stale
 - do not generate unlimited fresh retention leads on top of unworked leads
@@ -907,8 +913,10 @@ Rationale:
 
 - committed follow-ups first
 - previous incomplete work next
-- inbound/source-driven leads next
-- fresh retention leads last
+- TD leads remain uncapped and appear before externally imported work
+- EXTERNAL cap applies only to newly converted/imported external leads selected for workbook inclusion
+- RETENTION cap applies only to newly generated fresh retention leads, which remain last
+- due follow-ups and pending carry-forward rows are included over-and-above all caps so caps cannot hide or drop previously assigned actionable work
 
 The sheet must include a protected system column:
 
@@ -1548,16 +1556,20 @@ Implementation is accepted only when:
 8. TD leads come from existing `td_leads_sync` storage.
 9. External leads can be imported structurally.
 10. TD leads are uncapped, EXTERNAL leads are separately capped, and neither consumes the RETENTION cap.
-11. Pending and due follow-up leads appear before fresh leads.
-12. Fresh retention leads are generated only when previous actionable work is completed.
-13. Store team input is ingested idempotently.
-14. Idiotic inputs are normalized or safely logged.
-15. DND/wrong/invalid suppression works.
-16. Lead closes when order is created or dead-end is reached.
-17. Recovery is confirmed from `orders`.
-18. Owner summary email is sent.
-19. Existing config/logging/email/DB helpers are reused.
-20. Existing pipelines are not broken.
+11. Workbook rows are sorted in this exact order: Due Follow-ups, Pending Carry-forward, TD Leads, External Leads, Fresh Retention Leads.
+12. Due follow-ups and pending carry-forward leads are always included over-and-above all caps.
+13. RETENTION cap applies only to newly generated fresh retention leads.
+14. EXTERNAL cap applies only to newly converted/imported external leads selected for workbook inclusion.
+15. Caps never hide or drop previously assigned actionable work.
+16. Fresh retention leads are generated only when previous actionable work is completed.
+17. Store team input is ingested idempotently.
+18. Idiotic inputs are normalized or safely logged.
+19. DND/wrong/invalid suppression works.
+20. Lead closes when order is created or dead-end is reached.
+21. Recovery is confirmed from `orders`.
+22. Owner summary email is sent.
+23. Existing config/logging/email/DB helpers are reused.
+24. Existing pipelines are not broken.
 
 ---
 
