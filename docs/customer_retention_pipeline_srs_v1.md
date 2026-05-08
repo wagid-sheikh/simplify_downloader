@@ -263,7 +263,11 @@ Not Interested
 Lead Stale
 ```
 
-`Do Not Contact`, `Wrong Number`, and `Invalid Number` must also create suppression records.
+All dead-end outcomes close the lead.
+
+`Do Not Contact`, `Wrong Number`, `Invalid Number`, `Shifted Location`, `Not Interested`, and `Lead Stale` must also create suppression records.
+
+`Lead Stale` is a store-explicit dead-end outcome. When selected, the pipeline must close the lead, create a 90-day suppression record, and exclude the same customer/store from future retention lead generation until that suppression expires.
 
 Recovery must be confirmed from the `orders` table.
 
@@ -502,8 +506,11 @@ Codex must inspect actual amount columns in `orders` before finalizing calculati
 | Invalid Number   | Permanent   |
 | Shifted Location | Permanent   |
 | Not Interested   | 90 days     |
+| Lead Stale       | 90 days     |
 
 Suppressed customers must be excluded from future retention lead generation until suppression expires.
+
+For `Lead Stale`, suppression lasts 90 days. During that period, the same customer/store must not be selected for future retention lead generation.
 
 Permanent suppressions do not expire.
 
@@ -1211,6 +1218,8 @@ ERROR
 
 Customer response is separate from lead status.
 
+`Lead Stale` is captured as a dead-end customer response that closes the lead and creates a 90-day suppression for the same customer/store. The operational status should become `CLOSED` and, where a separate suppression status is maintained, the generated suppression record should drive exclusion from future retention lead generation until expiry.
+
 Example:
 
 ```text
@@ -1254,6 +1263,8 @@ TD and EXTERNAL leads close when:
    - Shifted Location
    - Not Interested
    - Lead Stale
+
+`Lead Stale` must be treated as a dead-end closure for TD and EXTERNAL leads as well as RETENTION leads. It closes the lead, creates a 90-day suppression record, and prevents future RETENTION lead generation for the same customer/store until the suppression expires.
 
 If store marks:
 
@@ -1565,11 +1576,12 @@ Implementation is accepted only when:
 17. Store team input is ingested idempotently.
 18. Idiotic inputs are normalized or safely logged.
 19. DND/wrong/invalid suppression works.
-20. Lead closes when order is created or dead-end is reached.
-21. Recovery is confirmed from `orders`.
-22. Owner summary email is sent.
-23. Existing config/logging/email/DB helpers are reused.
-24. Existing pipelines are not broken.
+20. Stale-lead suppression works: `Lead Stale` closes the lead, creates a 90-day suppression record, and excludes the same customer/store from future retention lead generation until suppression expires.
+21. Lead closes when order is created or dead-end is reached.
+22. Recovery is confirmed from `orders`.
+23. Owner summary email is sent.
+24. Existing config/logging/email/DB helpers are reused.
+25. Existing pipelines are not broken.
 
 ---
 
@@ -1637,5 +1649,6 @@ The owner has approved:
 - retention fresh leads capped through database cap configuration
 - pending/due work first
 - store team must explicitly mark stale
+- `Lead Stale` is a dead-end outcome that closes the lead, creates a 90-day suppression record, and excludes the same customer/store from future retention lead generation until suppression expires
 - Next Follow-up Date mandatory where applicable
 - owner summary email required from day one
