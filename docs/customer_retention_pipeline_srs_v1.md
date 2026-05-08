@@ -161,7 +161,10 @@ Rules:
 - TD leads must be converted into the unified master lead table.
 - TD source tables must remain the raw source of truth.
 - The unified lead table becomes the operational follow-up source of truth.
-- TD leads are not part of the configured fresh RETENTION cap.
+- TD leads are not counted against the `RETENTION` cap.
+- TD leads are not counted against the `EXTERNAL` cap.
+- TD leads remain uncapped in v1.1 because they are CRM-source-driven inbound/actionable leads.
+- TD lead inclusion is still subject to idempotency, suppression, closure, and workbook workload rules.
 - TD leads must appear in the same store workbook.
 - TD leads must support the same follow-up, closure, suppression, and reporting lifecycle.
 
@@ -697,7 +700,8 @@ Purpose:
 - store the global/default and store-specific daily caps for customer follow-up lead generation
 - make the initial 13 fresh retention leads per store per day limit configurable without code changes
 - support uncapped source/scope combinations where needed
-- support future TD or external lead cap policies without changing pipeline logic
+- support future external lead cap policies without changing pipeline logic
+- omit TD cap rows entirely by default, or allow `lead_source_type = 'TD'` only when `is_uncapped = true`
 
 Suggested fields:
 
@@ -723,6 +727,8 @@ Field rules:
 - `work_section` defines the cap scope, for example `FRESH_RETENTION` or `EXTERNAL_LEAD`.
 - `daily_cap` is required when `is_uncapped = false`; it may be null when `is_uncapped = true`.
 - `is_uncapped` means the matching source/scope has no daily cap.
+- TD rows should be omitted from initial cap configuration; if a TD row exists, it must have `is_uncapped = true`.
+- TD must not be capped unless a future owner decision explicitly changes this SRS.
 - `enabled` controls whether the row participates in cap selection.
 - `effective_from` is required.
 - `effective_until` is nullable for open-ended configuration.
