@@ -186,7 +186,7 @@ Rules:
 
 - External leads must be stored in a structured table.
 - External leads must be converted into the unified master lead table.
-- External leads are not part of the configured fresh RETENTION cap.
+- External leads are not counted against the retention cap, but must respect their own configured external lead cap.
 - External leads must appear in the same store workbook.
 - External leads are assigned to one specific store only.
 - Inter-store transfer is out of scope for now.
@@ -414,7 +414,7 @@ Therefore:
 - pending carry-forward leads come first
 - due follow-ups come first
 - if a store has incomplete actionable work, do not keep adding fresh retention leads blindly
-- TD and EXTERNAL leads are still included because they are source-driven and not capped by retention quota
+- TD leads are still included because they are source-driven and uncapped, while EXTERNAL leads are source-driven but capped by their own table-configured cap.
 
 ---
 
@@ -806,7 +806,7 @@ Rules:
 - duplicate external leads must be de-duplicated
 - imported external leads must be stored in `trx_external_leads`
 - pending external leads must be converted into `trx_customer_followup_leads`
-- external leads are not part of the configured fresh RETENTION cap
+- external leads are not part of the retention cap but are subject to the configured external daily cap
 
 ---
 
@@ -1541,7 +1541,7 @@ Implementation is accepted only when:
 7. Unified lead table stores RETENTION, TD, and EXTERNAL leads.
 8. TD leads come from existing `td_leads_sync` storage.
 9. External leads can be imported structurally.
-10. TD and EXTERNAL leads are not counted in the configured fresh RETENTION cap.
+10. TD leads are uncapped, EXTERNAL leads are separately capped, and neither consumes the RETENTION cap.
 11. Pending and due follow-up leads appear before fresh leads.
 12. Fresh retention leads are generated only when previous actionable work is completed.
 13. Store team input is ingested idempotently.
@@ -1615,7 +1615,7 @@ The owner has approved:
 - no inter-store transfer for now
 - lead closes on actual order or dead-end outcome
 - TD leads not counted in the configured fresh RETENTION cap
-- external leads not counted in the configured fresh RETENTION cap
+- external leads capped separately through table configuration
 - retention fresh leads capped through database cap configuration
 - pending/due work first
 - store team must explicitly mark stale
