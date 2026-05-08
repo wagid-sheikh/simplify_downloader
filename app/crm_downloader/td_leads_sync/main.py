@@ -408,6 +408,9 @@ async def build_td_leads_reporting_payload(
         sa.column("customer_name"),
         sa.column("mobile"),
         sa.column("pickup_created_at"),
+        sa.column("source"),
+        sa.column("customer_type"),
+        sa.column("status_bucket"),
     )
     crm_leads_status_events = sa.table(
         "crm_leads_status_events",
@@ -441,6 +444,9 @@ async def build_td_leads_reporting_payload(
             crm_leads_current.c.customer_name,
             crm_leads_current.c.mobile,
             crm_leads_current.c.pickup_created_at.label("lead_created_at"),
+            crm_leads_current.c.source,
+            crm_leads_current.c.customer_type,
+            crm_leads_current.c.status_bucket.label("last_seen_status"),
             completed_events.c.completed_at,
         )
         .select_from(completed_events.join(crm_leads_current, crm_leads_current.c.lead_uid == completed_events.c.lead_uid))
@@ -505,6 +511,9 @@ async def build_td_leads_reporting_payload(
                     "customer_name": row.get("customer_name"),
                     "mobile": row.get("mobile"),
                     "lead_created_at": row.get("lead_created_at"),
+                    "source": row.get("source"),
+                    "customer_type": row.get("customer_type"),
+                    "last_seen_status": row.get("last_seen_status"),
                     "completed_at": completed_at or row.get("completed_at"),
                     "lead_age_days_at_completion": _calculate_lead_age_days(
                         lead_created_at=row.get("lead_created_at"),
