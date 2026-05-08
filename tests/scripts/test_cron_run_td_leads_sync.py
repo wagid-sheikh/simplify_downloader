@@ -102,3 +102,27 @@ def test_td_leads_cron_ignores_invalid_reporting_mode(tmp_path: Path) -> None:
 
     log_text = _latest_log_text(repo_root)
     assert "Invalid reporting_mode 'invalid' ignored" in log_text
+
+
+def test_td_leads_cron_enforces_max_runtime_seconds(tmp_path: Path) -> None:
+    repo_root, scripts_dir = _prepare_repo(tmp_path)
+    _write_executable(
+        scripts_dir / "run_local_td_leads_sync.sh",
+        "#!/usr/bin/env bash\nexec sleep 30\n",
+    )
+
+    env = os.environ.copy()
+    env.update({"LOCK_WAIT_SECONDS": "0", "SAFE_MODE": "0", "TMPDIR": str(repo_root), "MAX_RUNTIME_SECONDS": "1"})
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_td_leads_sync.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 124
+    log_text = _latest_log_text(repo_root)
+    assert "exceeded MAX_RUNTIME_SECONDS=1s" in log_text

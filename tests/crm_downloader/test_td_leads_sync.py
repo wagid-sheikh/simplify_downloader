@@ -2314,7 +2314,7 @@ async def test_td_leads_main_parallel_worker_path_reduces_elapsed(monkeypatch: p
     async def _fake_start_summary(*, logger, summary):
         return None
 
-    async def _fake_persist_summary(*, logger, summary, finished_at, reporting_mode=None):
+    async def _fake_persist_summary(*, logger, summary, finished_at, reporting_mode=None, reporting_payload=None, reporting_schema_errors=None):
         persisted_summaries.append(summary)
         return True
 
@@ -2373,7 +2373,7 @@ async def test_td_leads_main_preserves_summary_store_order_when_workers_finish_o
     monkeypatch.setattr(
         td_leads_main,
         "_persist_run_summary",
-        lambda logger, summary, finished_at, reporting_mode=None: persisted_summaries.append(summary) or asyncio.sleep(0, result=False),
+        lambda logger, summary, finished_at, reporting_mode=None, reporting_payload=None, reporting_schema_errors=None: persisted_summaries.append(summary) or asyncio.sleep(0, result=False),
     )
     monkeypatch.setattr(td_leads_main, "_resolve_td_leads_concurrency_settings", lambda: (3, 3, True))
     monkeypatch.setattr(td_leads_main, "_run_store", _fake_run_store)
@@ -2419,7 +2419,7 @@ async def test_td_leads_main_normalizes_store_worker_exceptions_and_persists_sum
     monkeypatch.setattr(
         td_leads_main,
         "_persist_run_summary",
-        lambda logger, summary, finished_at, reporting_mode=None: persisted_summaries.append(summary) or asyncio.sleep(0, result=True),
+        lambda logger, summary, finished_at, reporting_mode=None, reporting_payload=None, reporting_schema_errors=None: persisted_summaries.append(summary) or asyncio.sleep(0, result=True),
     )
     monkeypatch.setattr(td_leads_main, "_resolve_td_leads_concurrency_settings", lambda: (2, 2, True))
     monkeypatch.setattr(td_leads_main, "_run_store", _fake_run_store)
@@ -2682,7 +2682,22 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
     assert by_pickup["A100-D3"]["first_order_date"] == "2026-05-01 08:30:00+00:00"
     assert by_pickup["A100-D3"]["last_order_date"] == "2026-05-01 09:00:00+00:00"
     assert list(by_pickup["A100-D1"].keys()) == [
-        "store_code", "pickup_no", "customer_name", "mobile", "lead_created_at", "completed_at", "lead_age_days_at_completion", "order_match_found", "matched_order_count", "matched_order_ids", "first_order_date", "last_order_date", "reconciliation_note"
+        "store_code",
+        "pickup_no",
+        "customer_name",
+        "mobile",
+        "lead_created_at",
+        "source",
+        "customer_type",
+        "last_seen_status",
+        "completed_at",
+        "lead_age_days_at_completion",
+        "order_match_found",
+        "matched_order_count",
+        "matched_order_ids",
+        "first_order_date",
+        "last_order_date",
+        "reconciliation_note",
     ]
 
     action_required = payload["action_required"]
@@ -2690,6 +2705,10 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
     assert action_required["open_leads_high_age_threshold_days"] == 3
     assert [row["pickup_no"] for row in action_required["open_leads_high_age"]] == ["A100-O1"]
     assert [row["pickup_no"] for row in action_required["completed_without_order_match"]] == ["A100-D2", "A100-X1"]
+    assert action_required["completed_without_order_match"][0]["source"] == "Walk-in"
+    assert action_required["completed_without_order_match"][0]["customer_type"] == "New"
+    assert action_required["completed_without_order_match"][0]["last_seen_status"] == "completed"
+    assert td_leads_main._validate_td_reporting_payload_schema(payload) == []
 
 
 @pytest.mark.asyncio

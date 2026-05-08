@@ -372,3 +372,52 @@ def test_profiler_context_and_html_include_failed_window_reason() -> None:
     assert "Page.goto: net::ERR_CERT_DATE_INVALID" in context["stores"][0]["failed_windows_note"]
     assert "Page.goto: net::ERR_CERT_DATE_INVALID" in body_html
     assert "status_note=window execution failed" in body_html
+
+
+def test_send_email_uses_bounded_smtp_timeout(monkeypatch) -> None:
+    from app.dashboard_downloader import notifications
+    from app.dashboard_downloader.notifications import EmailPlan, SmtpConfig, _send_email
+
+    captured: dict[str, object] = {}
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=None):
+            captured["host"] = host
+            captured["port"] = port
+            captured["timeout"] = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def send_message(self, message, to_addrs):
+            captured["to_addrs"] = to_addrs
+
+    monkeypatch.setattr(notifications.smtplib, "SMTP", FakeSMTP)
+
+    sent = _send_email(
+        SmtpConfig(
+            host="smtp.example.test",
+            port=587,
+            sender="sender@example.test",
+            username=None,
+            password=None,
+            use_tls=False,
+        ),
+        EmailPlan(
+            profile_code="default",
+            scope="pipeline",
+            store_code=None,
+            subject="Subject",
+            body="Body",
+            to=["ops@example.test"],
+            cc=[],
+            bcc=[],
+            attachments=[],
+        ),
+    )
+
+    assert sent is True
+    assert captured["timeout"] == notifications.SMTP_CONNECT_TIMEOUT_SECONDS

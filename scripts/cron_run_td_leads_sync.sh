@@ -60,6 +60,7 @@ GLOBAL_LOCK_CMD_FILE="${GLOBAL_LOCK_DIR}/command"
 GLOBAL_LOCK_PGID_FILE="${GLOBAL_LOCK_DIR}/pgid"
 
 KILL_WAIT_SECONDS="${KILL_WAIT_SECONDS:-5}"
+MAX_RUNTIME_SECONDS="${MAX_RUNTIME_SECONDS:-5400}"
 LOCK_WAIT_SECONDS="${LOCK_WAIT_SECONDS:-300}"
 LOCK_POLL_SECONDS="${LOCK_POLL_SECONDS:-5}"
 SAFE_MODE="${SAFE_MODE:-1}"
@@ -68,6 +69,9 @@ CRON_PATH="${CRON_PATH:-/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin
 
 if ! [[ "${LOCK_WAIT_SECONDS}" =~ ^[0-9]+$ ]]; then
   LOCK_WAIT_SECONDS=300
+fi
+if ! [[ "${MAX_RUNTIME_SECONDS}" =~ ^[0-9]+$ ]]; then
+  MAX_RUNTIME_SECONDS=5400
 fi
 if ! [[ "${LOCK_POLL_SECONDS}" =~ ^[0-9]+$ ]] || [[ "${LOCK_POLL_SECONDS}" -eq 0 ]]; then
   LOCK_POLL_SECONDS=5
@@ -514,6 +518,7 @@ log "PATH=${PATH}"
 log "LANG=${LANG}"
 log "LOCK_WAIT_SECONDS=${LOCK_WAIT_SECONDS}"
 log "LOCK_POLL_SECONDS=${LOCK_POLL_SECONDS}"
+log "MAX_RUNTIME_SECONDS=${MAX_RUNTIME_SECONDS}"
 log "SAFE_MODE=${SAFE_MODE}"
 log "GLOBAL_LOCK_DIR=${GLOBAL_LOCK_DIR}"
 log "LOCAL_LOCK_DIR=${RUN_LOCK_DIR}"
@@ -537,9 +542,31 @@ run_step() {
   log "Command: $(printf '%q ' "${step_cmd[@]}")"
 
   step_start="$(date +%s)"
-  "${step_cmd[@]}" >> "${LOG_FILE}" 2>&1
+  "${step_cmd[@]}" >> "${LOG_FILE}" 2>&1 &
+  local child_pid=$!
+  local child_status=0
+  local now
+
+  while pid_is_alive "${child_pid}"; do
+    now="$(date +%s)"
+    duration=$((now - step_start))
+    if [[ "${MAX_RUNTIME_SECONDS}" -gt 0 && "${duration}" -ge "${MAX_RUNTIME_SECONDS}" ]]; then
+      log "ERROR: ${step_name} exceeded MAX_RUNTIME_SECONDS=${MAX_RUNTIME_SECONDS}s; terminating child_pid=${child_pid}"
+      terminate_pid_gracefully "${child_pid}" || true
+      wait "${child_pid}" 2>/dev/null || true
+      return 124
+    fi
+    sleep 1
+  done
+
+  wait "${child_pid}" || child_status=$?
   step_end="$(date +%s)"
   duration=$((step_end - step_start))
+
+  if [[ "${child_status}" -ne 0 ]]; then
+    log "${step_name} failed with status=${child_status} after ${duration}s"
+    return "${child_status}"
+  fi
 
   log "${step_name} completed successfully in ${duration}s"
 }

@@ -28,6 +28,7 @@ from app.common.dashboard_store import store_master
 from app.config import config
 
 logger = logging.getLogger(__name__)
+SMTP_CONNECT_TIMEOUT_SECONDS = 60
 
 STORE_PROFILE_DOC_TYPES: dict[tuple[str, str], str | None] = {
     ("dashboard_daily", "store_daily_reports"): "store_daily_pdf",
@@ -1452,13 +1453,13 @@ def _send_email(config: SmtpConfig, plan: EmailPlan) -> bool:
         return False
     try:
         if config.use_tls:
-            with smtplib.SMTP(config.host, config.port) as client:
+            with smtplib.SMTP(config.host, config.port, timeout=SMTP_CONNECT_TIMEOUT_SECONDS) as client:
                 client.starttls()
                 if config.username and config.password:
                     client.login(config.username, config.password)
                 client.send_message(message, to_addrs=recipients)
         else:
-            with smtplib.SMTP(config.host, config.port) as client:
+            with smtplib.SMTP(config.host, config.port, timeout=SMTP_CONNECT_TIMEOUT_SECONDS) as client:
                 if config.username and config.password:
                     client.login(config.username, config.password)
                 client.send_message(message, to_addrs=recipients)
