@@ -164,7 +164,7 @@ Rules:
 - TD leads are not counted against the `RETENTION` cap.
 - TD leads are not counted against the `EXTERNAL` cap.
 - TD leads remain uncapped in v1.1 because they are CRM-source-driven inbound/actionable leads.
-- TD lead inclusion is still subject to idempotency, suppression, closure, and workbook workload rules.
+- TD lead inclusion is still subject to idempotency, suppression, closure, and workbook workload rules using normalized mobile number for customer matching.
 - TD leads must appear in the same store workbook.
 - TD leads must support the same follow-up, closure, suppression, and reporting lifecycle.
 
@@ -318,19 +318,19 @@ Recommended flow:
 2. Initialize run logging.
 3. Fetch active stores.
 4. Ingest returned Excel workbooks.
-5. Normalize and validate returned workbook data.
+5. Normalize and validate returned workbook data, including mobile numbers before matching rows back to leads.
 6. Update unified lead table and lead history.
-7. Apply suppression and dead-end rules.
-8. Detect recoveries from `orders`.
+7. Apply suppression and dead-end rules using normalized mobile number for customer matching.
+8. Detect recoveries from `orders` using normalized `orders.mobile_number`.
 9. Build/update customer retention snapshot.
 10. Import external lead files from configured external input folder.
-11. Normalize, validate, de-duplicate, and persist external leads.
+11. Normalize, validate, de-duplicate, and persist external leads using normalized mobile number for matching.
 12. Pull due follow-ups.
 13. Pull pending carry-forward leads.
 14. Pull pending TD leads from existing `td_leads_sync` tables.
 15. Pull pending external leads subject to configured external cap.
 16. Generate fresh retention leads subject to configured retention cap and pending-work rules.
-17. Upsert/convert TD and capped external leads into unified master lead table.
+17. Upsert/convert TD and capped external leads into unified master lead table using normalized mobile number for matching and idempotency.
 18. Build one workbook per store.
 19. Archive processed input files.
 20. Generate owner summary email.
@@ -362,10 +362,20 @@ Rules:
 
 # 11. Data Basis for Retention Analysis
 
-Customer identity:
+Raw customer mobile source field:
 
 ```sql
 orders.mobile_number
+```
+
+Important identity rule:
+
+- `orders.mobile_number` is the raw source field from order history.
+- The pipeline must normalize mobile numbers before any matching, grouping, de-duplication, suppression, idempotency, recovery, TD mapping, external import matching, workbook ingestion matching, or lead generation decision.
+- Operational customer identity is the pair:
+
+```text
+(cost_center, normalized_mobile_number)
 ```
 
 Customer name:
@@ -386,9 +396,11 @@ Store:
 orders.cost_center
 ```
 
-Repeat behavior is store-specific.
+Repeat behavior is store-specific and must be evaluated using `orders.cost_center` plus normalized `orders.mobile_number`.
 
 A customer repeating at a different store is not treated as repeat for the original store in this version.
+
+Invalid or unnormalizable mobile numbers are row-level warnings. They must be logged, summarized, and held out of actionable lead creation until corrected; such rows must not create workbook-actionable leads, suppressions, recovery matches, or de-duplication keys that could affect valid customers.
 
 ---
 
@@ -514,7 +526,7 @@ For `Lead Stale`, suppression lasts 90 days unless the owner specifies a differe
 
 Permanent suppressions do not expire.
 
-Suppression must apply across all source types where mobile number and store match.
+Suppression must apply across all source types where normalized mobile number and store match.
 
 ---
 
@@ -821,11 +833,12 @@ remarks
 Rules:
 
 - invalid rows must be logged but must not crash whole pipeline
-- mobile numbers must be normalized
-- duplicate external leads must be de-duplicated
+- mobile numbers must be normalized before external lead matching, de-duplication, conversion, or workbook inclusion
+- duplicate external leads must be de-duplicated by source identity where available and by `(cost_center, normalized_mobile_number)` for customer-level matching
 - imported external leads must be stored in `trx_external_leads`
 - pending external leads must be converted into `trx_customer_followup_leads`
 - external leads are not part of the retention cap but are subject to the configured external daily cap
+- invalid or unnormalizable external lead mobile numbers are row-level warnings and must not be converted into actionable follow-up leads until corrected
 
 ---
 
@@ -837,10 +850,11 @@ Required behavior:
 
 - identify pending/actionable TD leads
 - map TD lead to cost center
-- normalize mobile number
+- normalize mobile number before TD lead matching, suppression checks, closure checks, idempotency checks, or unified lead upsert
 - upsert into unified lead table with `lead_source_type = 'TD'`
-- prevent duplicate unified lead creation for the same TD source record
+- prevent duplicate unified lead creation for the same TD source record and for the same operational customer identity where business rules require a single actionable lead
 - include pending TD leads in workbook
+- TD leads with invalid or unnormalizable mobile numbers are row-level warnings and must not be converted into actionable follow-up leads until corrected
 - update unified operational lifecycle based on store feedback
 - do not break existing `td_leads_sync` pipeline
 
@@ -1162,9 +1176,18 @@ Rules:
 - tolerate accidental system column edits
 - tolerate blank optional fields
 - aggressively normalize values
+- normalize mobile numbers before matching workbook rows to operational customer identity
 - fail row-level where needed, not whole file
 - produce warning summary
 - archive processed files
+
+If returned workbook mobile numbers are invalid, unnormalizable, or conflict with the protected lead identity:
+
+- treat the issue as a row-level warning
+- do not create a new actionable lead from that row
+- do not apply recovery, suppression, closure, or de-duplication updates based on the invalid number
+- keep the existing lead pending unless another valid identifier safely resolves the row to the existing lead
+- include the warning count in the owner summary email
 
 If required fields are blank:
 
@@ -1237,7 +1260,7 @@ Recovery must be confirmed from `orders`.
 A customer is recovered when:
 
 - same cost center
-- same normalized mobile number
+- same normalized mobile number derived from `orders.mobile_number`
 - order date after lead generation date or after latest follow-up assignment date
 
 When recovered:
@@ -1366,7 +1389,9 @@ For each store:
 - duplicate uploads ignored
 - system column edits ignored
 - invalid dropdowns normalized
+- invalid or unnormalizable mobile numbers reported as row-level warnings
 - rows left pending due to missing fields
+- rows skipped because mobile numbers were invalid or unnormalizable
 
 ---
 
@@ -1488,11 +1513,11 @@ Pipeline must be safe to re-run.
 
 Idempotency requirements:
 
-- same TD source record must not create duplicate unified lead
-- same external import row must not create duplicate unified lead
-- same retention customer/bucket/run must not create duplicate active lead
-- same workbook upload must not duplicate history
-- same recovery must not repeatedly update the same lead
+- same TD source record must not create duplicate unified lead, and TD customer matching must use normalized mobile number
+- same external import row must not create duplicate unified lead, and external customer matching/de-duplication must use normalized mobile number
+- same retention customer/bucket/run must not create duplicate active lead; the retention customer key is `(cost_center, normalized_mobile_number)`
+- same workbook upload must not duplicate history, and workbook row matching must use lead identifiers plus normalized mobile number validation
+- same recovery must not repeatedly update the same lead; recovery matching must use `(cost_center, normalized_mobile_number)`
 - archive process must not overwrite files without deterministic handling
 
 ---
@@ -1510,7 +1535,7 @@ Examples of critical failures:
 
 Non-critical row-level issues:
 
-- invalid mobile number
+- invalid or unnormalizable mobile number
 - unknown dropdown value
 - missing optional field
 - edited protected column
@@ -1576,8 +1601,8 @@ Implementation is accepted only when:
 15. Caps never hide or drop previously assigned actionable work.
 16. Fresh retention leads are generated only when previous actionable work is completed.
 17. Store team input is ingested idempotently.
-18. Idiotic inputs are normalized or safely logged.
-19. Suppression works for every suppression-producing outcome: `Do Not Contact`, `Wrong Number`, `Invalid Number`, `Shifted Location`, `Not Interested`, and `Lead Stale`.
+18. Idiotic inputs are normalized or safely logged, and invalid or unnormalizable mobile numbers remain row-level warnings that do not create actionable leads until corrected.
+19. Suppression works by `(cost_center, normalized_mobile_number)` for every suppression-producing outcome: `Do Not Contact`, `Wrong Number`, `Invalid Number`, `Shifted Location`, `Not Interested`, and `Lead Stale`.
 20. Stale-lead suppression works: `Lead Stale` closes the lead, creates a suppression record for 90 days unless the owner specifies a different duration, and excludes the same customer/store from future retention lead generation until suppression expires.
 21. Lead closes when order is created or dead-end is reached.
 22. Recovery is confirmed from `orders`.
