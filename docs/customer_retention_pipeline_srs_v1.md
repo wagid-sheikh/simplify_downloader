@@ -129,13 +129,15 @@ Purpose:
 - reactivate LOST customers
 - generate repeat business
 
-These leads are capped.
+These leads are capped by the active cap configuration selected from the database cap configuration table.
 
-Fresh retention lead cap:
+Initial/default RETENTION cap:
 
 ```text
 13 fresh retention leads per store per day
 ```
+
+This value is the initial/default configured cap for the `RETENTION` + `FRESH_RETENTION` scope; it must not be hardcoded in application logic. Store-specific cap rows can override the global/default cap, and active selection must respect effective dates.
 
 However, fresh retention leads are generated only when previous actionable workload is completed.
 
@@ -159,7 +161,7 @@ Rules:
 - TD leads must be converted into the unified master lead table.
 - TD source tables must remain the raw source of truth.
 - The unified lead table becomes the operational follow-up source of truth.
-- TD leads are not part of the 13-lead retention cap.
+- TD leads are not part of the configured fresh RETENTION cap.
 - TD leads must appear in the same store workbook.
 - TD leads must support the same follow-up, closure, suppression, and reporting lifecycle.
 
@@ -184,7 +186,7 @@ Rules:
 
 - External leads must be stored in a structured table.
 - External leads must be converted into the unified master lead table.
-- External leads are not part of the 13-lead retention cap.
+- External leads are not part of the configured fresh RETENTION cap.
 - External leads must appear in the same store workbook.
 - External leads are assigned to one specific store only.
 - Inter-store transfer is out of scope for now.
@@ -388,10 +390,12 @@ A customer repeating at a different store is not treated as repeat for the origi
 Fresh retention lead cap:
 
 ```text
-13 per store per day
+Initial/default configured RETENTION cap: 13 per store per day
 ```
 
-Initial bucket allocation target:
+The cap source of truth is the database cap configuration table, not a hardcoded constant or environment variable. The pipeline must resolve the active `RETENTION` + `FRESH_RETENTION` cap for each store by selecting enabled rows whose effective date range covers the run date, preferring store-specific rows over global/default rows where `cost_center` is null.
+
+Initial/default bucket allocation target for the default 13-lead RETENTION cap:
 
 | Bucket  | Fresh Leads / Store / Day |
 | ------- | ------------------------: |
@@ -419,7 +423,7 @@ Therefore:
 If `next_followup_date` is today or overdue:
 
 - lead must appear at the top of the workbook
-- lead is over and above standard fresh retention cap
+- lead is over and above the configured fresh RETENTION cap
 - store team must handle it first
 
 Next Follow-up Date is mandatory for:
@@ -675,7 +679,65 @@ created_at
 updated_at
 ```
 
-## 17.6 Optional Snapshot Table or View
+## 17.6 Customer Follow-Up Cap Configuration Table
+
+Recommended table:
+
+```text
+customer_followup_cap_config
+```
+
+Rationale:
+
+- This is master/configuration data rather than a transaction table, so it should not use the `trx_` prefix used by operational lead/history tables.
+- Existing schema uses descriptive domain table names such as `system_config`, `store_master`, and lead-related operational tables; final implementation should still verify current naming conventions before migration.
+
+Purpose:
+
+- store the global/default and store-specific daily caps for customer follow-up lead generation
+- make the initial 13 fresh retention leads per store per day limit configurable without code changes
+- support uncapped source/scope combinations where needed
+- support future TD or external lead cap policies without changing pipeline logic
+
+Suggested fields:
+
+```text
+cap_config_id
+cost_center
+lead_source_type
+work_section
+daily_cap
+is_uncapped
+enabled
+effective_from
+effective_until
+created_at
+updated_at
+```
+
+Field rules:
+
+- `cap_config_id` is the primary key.
+- `cost_center` is nullable; null means global/default cap for the source/scope.
+- `lead_source_type` must be constrained to `RETENTION`, `TD`, or `EXTERNAL`.
+- `work_section` defines the cap scope, for example `FRESH_RETENTION` or `EXTERNAL_LEAD`.
+- `daily_cap` is required when `is_uncapped = false`; it may be null when `is_uncapped = true`.
+- `is_uncapped` means the matching source/scope has no daily cap.
+- `enabled` controls whether the row participates in cap selection.
+- `effective_from` is required.
+- `effective_until` is nullable for open-ended configuration.
+- `created_at` and `updated_at` must follow existing timestamp conventions.
+
+Active cap selection rules:
+
+1. Filter to rows where `enabled = true`.
+2. Filter to rows matching `lead_source_type` and `work_section`.
+3. Filter to rows whose effective range covers the pipeline run date: `effective_from <= run_date` and (`effective_until IS NULL` or `effective_until >= run_date`).
+4. Prefer a row with the store's `cost_center` over a global/default row where `cost_center IS NULL`.
+5. If multiple rows have the same specificity, select the row with the latest `effective_from`; implementation should add constraints or validation to avoid ambiguous overlapping active rows.
+6. For initial deployment, seed or otherwise configure a global/default row for `lead_source_type = 'RETENTION'`, `work_section = 'FRESH_RETENTION'`, `daily_cap = 13`, `is_uncapped = false`, and `enabled = true`.
+
+## 17.7 Optional Snapshot Table or View
 
 Codex may implement as table or view based on existing conventions.
 
@@ -744,7 +806,7 @@ Rules:
 - duplicate external leads must be de-duplicated
 - imported external leads must be stored in `trx_external_leads`
 - pending external leads must be converted into `trx_customer_followup_leads`
-- external leads are not part of retention cap
+- external leads are not part of the configured fresh RETENTION cap
 
 ---
 
@@ -1331,11 +1393,14 @@ CUSTOMER_FOLLOWUP_OUTPUT_DIR
 CUSTOMER_FOLLOWUP_INPUT_DIR
 CUSTOMER_FOLLOWUP_ARCHIVE_DIR
 CUSTOMER_FOLLOWUP_EXTERNAL_INPUT_DIR
-CUSTOMER_FOLLOWUP_FRESH_DAILY_CAP
 CUSTOMER_FOLLOWUP_EMAIL_ENABLED
 ```
 
-If the project uses DB-backed `system_config`, follow existing convention.
+Environment/system configuration must be limited to folders, email behavior, and runtime switches. Lead caps must not be sourced from an environment variable or generic `system_config` key.
+
+Caps must be read from `customer_followup_cap_config` through existing DB/config conventions, including the same database access, typed loading, validation, and logging patterns used elsewhere in the project.
+
+If the project uses DB-backed `system_config`, follow existing convention only for non-cap settings such as directories, email, and runtime feature switches.
 
 Do not add ad-hoc `.env` handling.
 
@@ -1352,8 +1417,9 @@ Migration should include:
 3. Create follow-up history table.
 4. Create suppression table.
 5. Create external lead table.
-6. Add indexes and uniqueness constraints.
-7. Add check constraints where appropriate.
+6. Create customer follow-up cap configuration table.
+7. Add indexes and uniqueness constraints.
+8. Add check constraints where appropriate, including cap source type/scope constraints.
 
 Migration naming must follow existing repo conventions.
 
@@ -1475,7 +1541,7 @@ Implementation is accepted only when:
 7. Unified lead table stores RETENTION, TD, and EXTERNAL leads.
 8. TD leads come from existing `td_leads_sync` storage.
 9. External leads can be imported structurally.
-10. TD and EXTERNAL leads are not counted in 13 fresh retention cap.
+10. TD and EXTERNAL leads are not counted in the configured fresh RETENTION cap.
 11. Pending and due follow-up leads appear before fresh leads.
 12. Fresh retention leads are generated only when previous actionable work is completed.
 13. Store team input is ingested idempotently.
@@ -1548,9 +1614,9 @@ The owner has approved:
 - lead assigned to specific store only
 - no inter-store transfer for now
 - lead closes on actual order or dead-end outcome
-- TD leads not capped
-- external leads not capped
-- retention fresh leads capped
+- TD leads not counted in the configured fresh RETENTION cap
+- external leads not counted in the configured fresh RETENTION cap
+- retention fresh leads capped through database cap configuration
 - pending/due work first
 - store team must explicitly mark stale
 - Next Follow-up Date mandatory where applicable
