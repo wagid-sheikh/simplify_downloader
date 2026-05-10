@@ -3334,6 +3334,99 @@ async def _perform_login(page: Page, *, store: TdStore, logger: JsonLogger, nav_
     return contains_store
 
 
+async def _handle_license_pay_later(
+    page: Page, *, store: TdStore, logger: JsonLogger, timeout_ms: int
+) -> tuple[bool, bool]:
+    """Dismiss the TD licence payment interstitial when it appears after login.
+
+    Returns ``(detected, home_ready)`` so callers can continue their normal home
+    readiness wait when the licence page is absent or dismissal fails.
+    """
+    pay_later_selector = "#btnPayLater"
+    pay_later_fallback_selector = 'a:has-text("I will pay later")'
+    home_card_selector = 'h5.card-title:has-text("Daily Operations Tracker")'
+    nav_selector = "#achrOrderReport"
+
+    final_url = page.url or ""
+    url_indicates_license = "/App/frmLicence" in final_url
+    pay_later_visible = False
+    fallback_visible = False
+
+    try:
+        pay_later_visible = await page.locator(pay_later_selector).is_visible()
+    except Exception:
+        pay_later_visible = False
+
+    if not pay_later_visible:
+        try:
+            fallback_visible = await page.locator(pay_later_fallback_selector).is_visible()
+        except Exception:
+            fallback_visible = False
+
+    detected = url_indicates_license or pay_later_visible
+    if not detected:
+        return False, False
+
+    log_event(
+        logger=logger,
+        phase="login",
+        message="TD licence page detected; clicking pay later",
+        store_code=store.store_code,
+        final_url=final_url,
+    )
+
+    clicked = False
+    error_text: str | None = None
+    home_ready = False
+    try:
+        click_selector = (
+            pay_later_selector if pay_later_visible or not fallback_visible else pay_later_fallback_selector
+        )
+        await page.click(click_selector)
+        clicked = True
+
+        done, pending = await asyncio.wait(
+            [
+                asyncio.create_task(page.wait_for_selector(nav_selector, timeout=timeout_ms)),
+                asyncio.create_task(page.wait_for_selector(home_card_selector, timeout=timeout_ms)),
+            ],
+            return_when=asyncio.FIRST_COMPLETED,
+            timeout=timeout_ms / 1000,
+        )
+        for task in pending:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        if done:
+            home_ready = True
+            for task in done:
+                try:
+                    task.result()
+                except Exception as exc:
+                    home_ready = False
+                    error_text = str(exc)
+                break
+        else:
+            error_text = f"home readiness wait timed out after {timeout_ms}ms"
+    except Exception as exc:
+        error_text = str(exc)
+
+    log_event(
+        logger=logger,
+        phase="login",
+        status="ok" if clicked and home_ready else "error",
+        message=(
+            "TD licence pay later handled" if clicked and home_ready else "TD licence pay later handling failed"
+        ),
+        store_code=store.store_code,
+        pay_later_clicked=clicked,
+        home_ready=home_ready,
+        final_url=page.url,
+        error_text=error_text,
+    )
+    return True, home_ready
+
+
 def _url_matches_home(current_url: str, store: TdStore) -> bool:
     url_lower = (current_url or "").lower()
     if store.home_url:
@@ -3360,6 +3453,12 @@ def _url_matches_home(current_url: str, store: TdStore) -> bool:
 async def _wait_for_home(
     page: Page, *, store: TdStore, logger: JsonLogger, nav_selector: str, timeout_ms: int
 ) -> bool:
+    license_detected, license_home_ready = await _handle_license_pay_later(
+        page, store=store, logger=logger, timeout_ms=timeout_ms
+    )
+    if license_detected and license_home_ready:
+        return True
+
     deadline = asyncio.get_event_loop().time() + (timeout_ms / 1000)
     seen_visible = False
     home_card_seen = False
