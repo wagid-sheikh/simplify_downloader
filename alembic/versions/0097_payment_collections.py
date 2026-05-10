@@ -20,7 +20,7 @@ def upgrade() -> None:
         sa.Column("payment_timestamp", sa.DateTime(timezone=False), nullable=False),
         sa.Column("email_address", sa.Text(), nullable=True),
         sa.Column("payment_mode", sa.Text(), nullable=False),
-        sa.Column("store_code", sa.String(length=30), nullable=False),
+        sa.Column("cost_center", sa.String(length=30), nullable=False),
         sa.Column("payment_date", sa.Date(), nullable=False),
         sa.Column("order_number", sa.String(length=50), nullable=False),
         sa.Column("amount", sa.Numeric(12, 2), nullable=False),
@@ -38,7 +38,7 @@ def upgrade() -> None:
     op.create_index(
         "idx_payment_collections_store_date",
         "payment_collections",
-        ["store_code", "payment_date"],
+        ["cost_center", "payment_date"],
         unique=False,
     )
     op.create_index(
