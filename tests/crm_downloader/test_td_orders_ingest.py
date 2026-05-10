@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 from datetime import datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -61,7 +62,7 @@ def _build_sample_workbook(path: Path) -> Path:
             "1050",
             None,
             500,
-            0,
+            "25.50",
             550,
             None,
             None,
@@ -107,7 +108,7 @@ def _build_sample_workbook(path: Path) -> Path:
             "900",
             0,
             0,
-            0,
+            "-10.25",
             900,
             0,
             0,
@@ -468,7 +469,7 @@ async def test_ingest_td_orders_workbook(tmp_path: Path) -> None:
     assert result.staging_rows == 2
     assert result.final_rows == 2
     assert len(result.warnings) == 1  # invalid phone in second row
-    assert result.warnings == ["Invalid phone number dropped: 12345"]
+    assert result.warnings == ["Invalid phone number fallback applied: 12345"]
 
     async with session_scope(database_url) as session:
         metadata = sa.MetaData()
@@ -479,11 +480,20 @@ async def test_ingest_td_orders_workbook(tmp_path: Path) -> None:
         assert staging_count == 2
         assert final_count == 2
 
+        stg_rows = (
+            await session.execute(
+                sa.select(stg_table.c.order_number, stg_table.c.adjustment).order_by(stg_table.c.order_number)
+            )
+        ).all()
+        assert stg_rows[0].adjustment == Decimal("25.50")
+        assert stg_rows[1].adjustment == Decimal("-10.25")
+
         orders_rows = (
             await session.execute(
                 sa.select(
                     orders_table.c.order_number,
                     orders_table.c.mobile_number,
+                    orders_table.c.adjustment,
                     orders_table.c.ingest_remarks,
                     orders_table.c.due_date,
                     orders_table.c.default_due_date,
@@ -495,10 +505,12 @@ async def test_ingest_td_orders_workbook(tmp_path: Path) -> None:
         ord2 = orders_rows[1]
         assert ord1.order_number == "ORD-001"
         assert ord1.mobile_number == "9999988888"
+        assert ord1.adjustment == Decimal("25.50")
         assert ord1.ingest_remarks is None
         assert ord1.due_date_flag == "Normal Delivery"
-        assert ord2.mobile_number == ""  # invalid phone dropped
-        assert ord2.ingest_remarks == "Phone value '12345' is invalid and was dropped"
+        assert ord2.mobile_number == "8888999762"  # invalid phone fallback applied
+        assert ord2.adjustment == Decimal("-10.25")
+        assert ord2.ingest_remarks == "MOBILE_FALLBACK_APPLIED"
         due_date = ord2.due_date if ord2.due_date.tzinfo else ord2.due_date.replace(tzinfo=tz)
         default_due_date = (
             ord2.default_due_date
@@ -583,7 +595,7 @@ async def test_footer_row_is_skipped(tmp_path: Path) -> None:
     assert result.staging_rows == 2
     assert result.final_rows == 2
     # footer row should not add warnings beyond existing invalid phone warning and should not log warnings
-    assert result.warnings == ["Invalid phone number dropped: 12345"]
+    assert result.warnings == ["Invalid phone number fallback applied: 12345"]
     log_stream.seek(0)
     logs = log_stream.read().splitlines()
     assert logs == []
@@ -626,7 +638,7 @@ async def test_ingest_remarks_populated_for_invalid_data(tmp_path: Path) -> None
         ).all()
         assert stg_rows[0].ingest_remarks == (
             "Field last_activity could not be parsed from value 'not-a-date' (field cleared); "
-            "Phone value 'A668--7051' is invalid and was dropped"
+            "MOBILE_FALLBACK_APPLIED"
         )
         assert stg_rows[1].ingest_remarks is None
         orders_rows = (
@@ -636,7 +648,7 @@ async def test_ingest_remarks_populated_for_invalid_data(tmp_path: Path) -> None
         ).all()
         assert orders_rows[0].ingest_remarks == (
             "Field last_activity could not be parsed from value 'not-a-date' (field cleared); "
-            "Phone value 'A668--7051' is invalid and was dropped"
+            "MOBILE_FALLBACK_APPLIED"
         )
         assert orders_rows[1].ingest_remarks is None
 
@@ -657,7 +669,7 @@ async def test_ingest_remarks_populated_for_invalid_data(tmp_path: Path) -> None
             "order_number": "ORD-001",
             "ingest_remarks": (
                 "Field last_activity could not be parsed from value 'not-a-date' (field cleared); "
-                "Phone value 'A668--7051' is invalid and was dropped"
+                "MOBILE_FALLBACK_APPLIED"
             ),
         }
     ]
@@ -672,7 +684,7 @@ async def test_ingest_remarks_populated_for_invalid_data(tmp_path: Path) -> None
         ).all()
         assert orders_rows[0].ingest_remarks == (
             "Field last_activity could not be parsed from value 'not-a-date' (field cleared); "
-            "Phone value 'A668--7051' is invalid and was dropped"
+            "MOBILE_FALLBACK_APPLIED"
         )
         assert orders_rows[1].ingest_remarks is None
 
@@ -702,6 +714,6 @@ async def test_duplicate_invalid_phone_warns_once(tmp_path: Path) -> None:
 
     assert result.staging_rows == 2
     assert result.final_rows == 2
-    assert result.warnings == ["Invalid phone number dropped: 12345"]
+    assert result.warnings == ["Invalid phone number fallback applied: 12345"]
     log_stream.seek(0)
     assert log_stream.read().splitlines() == []
