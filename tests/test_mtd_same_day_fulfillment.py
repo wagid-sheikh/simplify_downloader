@@ -20,6 +20,7 @@ def _create_tables(database_url: str) -> None:
     engine = sa.create_engine(database_url.replace('+aiosqlite', ''))
     with engine.begin() as conn:
         conn.execute(sa.text("CREATE TABLE orders (cost_center TEXT, order_number TEXT, order_date TIMESTAMP, customer_name TEXT, mobile_number TEXT, net_amount NUMERIC, gross_amount NUMERIC, source_system TEXT)"))
+        conn.execute(sa.text("CREATE VIEW vw_orders AS SELECT *, COALESCE(CASE WHEN source_system = 'TumbleDry' THEN net_amount ELSE gross_amount END, net_amount, gross_amount, 0) AS order_amount FROM orders"))
         conn.execute(sa.text("CREATE TABLE order_line_items (cost_center TEXT, order_number TEXT, service_name TEXT, garment_name TEXT)"))
         conn.execute(sa.text("CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_date TIMESTAMP, payment_mode TEXT, payment_received NUMERIC)"))
         conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT, store_code TEXT)"))
@@ -45,7 +46,7 @@ async def test_fetch_mtd_same_day_fulfillment_filters_and_aggregates(tmp_path, m
     assert len(rows) == 1
     assert rows[0].order_number == 'O1'
     assert rows[0].line_items == "Iron Pant × 1 | Wash Shirt × 1"
-    assert rows[0].net_amount == 800
+    assert rows[0].order_amount == 800
     assert rows[0].payment_received == 800
     assert rows[0].hours == 2.0
 
@@ -81,7 +82,7 @@ def test_render_html_includes_financial_columns() -> None:
     assert 'MTD Same-Day Orders (Delivered within same calendar day)' in html
     assert 'Payment Date' in html
     assert 'Store: ' not in html
-    assert 'Net Amount' in html
+    assert 'Order Amount' in html
     assert 'Payment Received' in html
 
 
@@ -120,7 +121,7 @@ async def test_fetch_mtd_same_day_fulfillment_postgres_sql_has_no_strftime_and_h
                     "line_items": "Wash Shirt",
                     "payment_date": datetime(2026, 4, 10, 11, 30),
                     "payment_mode": "UPI",
-                    "net_amount": 800,
+                    "order_amount": 800,
                     "payment_received": 800,
                 }
             ]
@@ -183,10 +184,7 @@ async def test_fetch_missing_payments_mtd_uses_month_window_and_view(tmp_path, m
                 o.order_date,
                 o.customer_name,
                 o.mobile_number,
-                CASE
-                    WHEN o.source_system = 'TumbleDry' THEN o.net_amount
-                    ELSE o.gross_amount
-                END AS net_amount
+                COALESCE(CASE WHEN o.source_system = 'TumbleDry' THEN o.net_amount ELSE o.gross_amount END, 0) AS net_amount
             FROM orders o
             JOIN sales s
                 ON s.cost_center = o.cost_center
@@ -236,7 +234,7 @@ async def test_fetch_missing_payments_mtd_uses_month_window_and_view(tmp_path, m
 
     rows = await fetch_missing_payments_mtd(database_url=database_url, report_date=date(2026, 4, 29))
 
-    assert [(row.order_number, row.net_amount) for row in rows] == [('IN-START', Decimal('100')), ('IN-END', Decimal('260'))]
+    assert [(row.order_number, row.order_amount) for row in rows] == [('IN-START', Decimal('100')), ('IN-END', Decimal('260'))]
 
 
 @pytest.mark.asyncio
@@ -298,10 +296,10 @@ def test_render_html_missing_payments_grouping_columns_and_totals() -> None:
 
     assert 'Cost Center: CC1' in html
     assert 'Cost Center: CC2' in html
-    assert 'Order Number' in html and 'Order Date' in html and 'Net Amount' in html
-    assert 'Cost Center: CC1 | Count: 2 | Net Amount: ₹300' in html
-    assert 'Cost Center: CC2 | Count: 1 | Net Amount: ₹300' in html
-    assert 'Grand Total Count: 3 | Grand Total Net Amount: ₹600' in html
+    assert 'Order Number' in html and 'Order Date' in html and 'Order Amount' in html
+    assert 'Cost Center: CC1 | Count: 2 | Order Amount: ₹300' in html
+    assert 'Cost Center: CC2 | Count: 1 | Order Amount: ₹300' in html
+    assert 'Grand Total Count: 3 | Grand Total Order Amount: ₹600' in html
 
 def test_format_duration_minutes_examples() -> None:
     assert format_duration_minutes(0) == "0 min"

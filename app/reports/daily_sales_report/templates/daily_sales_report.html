@@ -333,11 +333,11 @@
     {% if missing_payment_rows %}
     {% for group in missing_payment_rows | groupby("cost_center") %}
     {% set group_count = group.list | length %}
-    {% set group_total = group.list | sum(attribute="net_amount") %}
+    {% set group_total = group.list | sum(attribute="order_amount") %}
     <table class="compact-table summary-table">
       <tbody>
         <tr class="store-heading-row">
-          <td class="label">Cost Center: {{ group.grouper }} | Count: {{ group_count }} | Net Amount: ₹{{ group_total | format_amount }}</td>
+          <td class="label">Cost Center: {{ group.grouper }} | Count: {{ group_count }} | Order Amount: ₹{{ group_total | format_amount }}</td>
         </tr>
       </tbody>
     </table>
@@ -349,7 +349,7 @@
           <th>Order Date</th>
           <th class="label">Customer Name</th>
           <th class="label">Mobile Number</th>
-          <th>Net Amount</th>
+          <th>Order Amount</th>
         </tr>
       </thead>
       <tbody>
@@ -360,7 +360,7 @@
           <td>{{ row.order_date | format_ddmmyyyy }}</td>
           <td class="label">{{ row.customer_name or "--" }}</td>
           <td class="label">{{ row.mobile_number or "--" }}</td>
-          <td>{{ row.net_amount | format_amount }}</td>
+          <td>{{ row.order_amount | format_amount }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -369,7 +369,7 @@
     <table class="compact-table">
       <tbody>
         <tr class="totals-row">
-          <td class="label">Grand Total Count: {{ missing_payment_rows | length }} | Grand Total Net Amount: ₹{{ (missing_payment_rows | sum(attribute="net_amount")) | format_amount }}</td>
+          <td class="label">Grand Total Count: {{ missing_payment_rows | length }} | Grand Total Order Amount: ₹{{ (missing_payment_rows | sum(attribute="order_amount")) | format_amount }}</td>
         </tr>
       </tbody>
     </table>
@@ -520,7 +520,7 @@
     {% if edited_orders_summary %}
     <div class="edited-orders-summary">
       Stores: {{ edited_orders_summary.store_count }} | Distinct Orders Edited:
-      {{ edited_orders_summary.distinct_order_count_total }} | Net Amount: ₹{{
+      {{ edited_orders_summary.distinct_order_count_total }} | Order Amount: ₹{{
       edited_orders_summary.sum_orig_distinct | format_amount }} | Payment/New Value: ₹{{
       edited_orders_summary.sum_new_distinct | format_amount }} | Net Loss: ₹{{
       edited_orders_summary.net_loss_distinct | format_amount }}{% if
@@ -534,7 +534,7 @@
           <th class="label">#</th>
           <th class="label">Cost Center</th>
           <th class="label">Order Number</th>
-          <th>Net Amount</th>
+          <th>Order Amount</th>
           <th>Payment/New Value</th>
           <th>Loss</th>
         </tr>

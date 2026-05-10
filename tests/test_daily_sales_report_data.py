@@ -82,6 +82,25 @@ def _create_tables(database_url: str) -> None:
         conn.execute(
             sa.text(
                 """
+                CREATE VIEW vw_orders AS
+                SELECT
+                    *,
+                    COALESCE(
+                        CASE
+                            WHEN source_system = 'TumbleDry' THEN net_amount
+                            ELSE gross_amount
+                        END,
+                        net_amount,
+                        gross_amount,
+                        0
+                    ) AS order_amount
+                FROM orders
+                """
+            )
+        )
+        conn.execute(
+            sa.text(
+                """
                 CREATE TABLE orders_sync_log (
                     cost_center TEXT,
                     orders_pulled_at TIMESTAMP,
@@ -224,11 +243,8 @@ def _create_tables(database_url: str) -> None:
                     o.order_date,
                     o.customer_name,
                     o.mobile_number,
-                    CASE
-                        WHEN o.source_system = 'TumbleDry' THEN o.net_amount
-                        ELSE o.gross_amount
-                    END AS net_amount
-                FROM orders o
+                    o.order_amount AS net_amount
+                FROM vw_orders o
                 JOIN sales s
                     ON s.cost_center = o.cost_center
                    AND s.order_number = o.order_number
@@ -245,10 +261,7 @@ def _create_tables(database_url: str) -> None:
                     o.order_date,
                     o.customer_name,
                     o.mobile_number,
-                    CASE
-                        WHEN o.source_system = 'TumbleDry' THEN o.net_amount
-                        ELSE o.gross_amount
-                    END
+                    o.order_amount
                 """
             )
         )
@@ -321,7 +334,7 @@ async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amoun
 
     report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
 
-    assert [(row.order_number, row.net_amount) for row in report.missing_payment_rows] == [
+    assert [(row.order_number, row.order_amount) for row in report.missing_payment_rows] == [
         ("TD-MISSING", Decimal("500")),
         ("UC-MISSING", Decimal("910")),
     ]
@@ -428,7 +441,7 @@ async def test_fetch_daily_sales_report_same_day_fulfillment_rows(tmp_path, monk
     assert row.order_number == "O100"
     assert row.payment_mode == "UPI"
     assert row.line_items == "Dryclean Shirt × 1 | Steam Trouser × 1"
-    assert row.net_amount == 500
+    assert row.order_amount == 500
     assert row.payment_received == 500
     assert str(row.hours) == "4.50"
 

@@ -4,7 +4,7 @@
     <tr>
       <th class="label">Store Code</th>
       <th>Total Orders</th>
-      <th>Net Amount</th>
+      <th>Order Amount</th>
       <th>Payment Received</th>
       <th>Avg Time</th>
       <th>Fastest</th>
@@ -17,7 +17,7 @@
     <tr>
       <td class="label">{{ row.store_code }}</td>
       <td>{{ row.total_orders }}</td>
-      <td>{{ row.total_net_amount | format_amount }}</td>
+      <td>{{ row.total_order_amount | format_amount }}</td>
       <td>{{ row.total_payment_received | format_amount }}</td>
       <td>{{ format_duration_minutes(row.avg_minutes) }}</td>
       <td>{{ format_duration_minutes(row.fastest_minutes) }}</td>
@@ -39,7 +39,7 @@
       <th class="label">Customer</th>
       <th class="label">Line Items</th>
       <th class="label">Payment Mode</th>
-      <th>Net Amount</th>
+      <th>Order Amount</th>
       <th>Payment Received</th>
       <th>Time</th>
     </tr>
@@ -57,7 +57,7 @@
       <td class="label customer-wrap">{{ row.customer_name or "--" }}{% if row.mobile_number %}<br>{{ row.mobile_number }}{% endif %}</td>
       <td class="label wrapped-text">{{ row.line_items or "--" }}</td>
       <td class="label">{{ row.payment_mode or "--" }}</td>
-      <td>{{ row.net_amount | format_amount if row.net_amount is not none else "--" }}</td>
+      <td>{{ row.order_amount | format_amount if row.order_amount is not none else "--" }}</td>
       <td>{{ row.payment_received | format_amount if row.payment_received is not none else "--" }}</td>
       <td>{{ format_duration_hours(row.hours) }}</td>
     </tr>
