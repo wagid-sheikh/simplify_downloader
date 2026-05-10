@@ -12,6 +12,7 @@ def _create_tables(database_url: str) -> None:
     engine = sa.create_engine(database_url.replace('+aiosqlite', ''))
     with engine.begin() as conn:
         conn.execute(sa.text("CREATE TABLE orders (cost_center TEXT, order_number TEXT, order_date TIMESTAMP, customer_name TEXT, mobile_number TEXT, net_amount NUMERIC)"))
+        conn.execute(sa.text("CREATE VIEW vw_orders AS SELECT *, net_amount AS order_amount FROM orders"))
         conn.execute(sa.text("CREATE TABLE order_line_items (cost_center TEXT, order_number TEXT, service_name TEXT, garment_name TEXT)"))
         conn.execute(sa.text("CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_date TIMESTAMP, payment_mode TEXT, payment_received NUMERIC)"))
         conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT, store_code TEXT)"))
@@ -31,7 +32,7 @@ async def test_fetch_same_day_fulfillment_rows_filters_window_and_aggregates(tmp
         await session.execute(sa.text("INSERT INTO sales VALUES ('CC1','O1','2026-04-10T10:00:00','UPI',300),('CC1','O1','2026-04-10T11:00:00','CARD',500),('CC1','O2','2026-04-10T10:00:00','UPI',500)"))
         await session.commit()
 
-    orders = sa.table('orders', sa.column('cost_center'), sa.column('order_number'), sa.column('order_date'), sa.column('customer_name'), sa.column('mobile_number'), sa.column('net_amount'))
+    orders = sa.table('vw_orders', sa.column('cost_center'), sa.column('order_number'), sa.column('order_date'), sa.column('customer_name'), sa.column('mobile_number'), sa.column('order_amount'))
     order_line_items = sa.table('order_line_items', sa.column('cost_center'), sa.column('order_number'), sa.column('service_name'), sa.column('garment_name'))
     sales = sa.table('sales', sa.column('cost_center'), sa.column('order_number'), sa.column('payment_date'), sa.column('payment_mode'), sa.column('payment_received'))
     store_master = sa.table('store_master', sa.column('cost_center'), sa.column('store_code'))
@@ -72,7 +73,7 @@ async def test_fetch_same_day_fulfillment_rows_postgres_sql_uses_timezone(monkey
             captured['stmt'] = stmt
             return _Result()
 
-    orders = sa.table('orders', sa.column('cost_center'), sa.column('order_number'), sa.column('order_date'), sa.column('customer_name'), sa.column('mobile_number'), sa.column('net_amount'))
+    orders = sa.table('vw_orders', sa.column('cost_center'), sa.column('order_number'), sa.column('order_date'), sa.column('customer_name'), sa.column('mobile_number'), sa.column('order_amount'))
     order_line_items = sa.table('order_line_items', sa.column('cost_center'), sa.column('order_number'), sa.column('service_name'), sa.column('garment_name'))
     sales = sa.table('sales', sa.column('cost_center'), sa.column('order_number'), sa.column('payment_date'), sa.column('payment_mode'), sa.column('payment_received'))
     store_master = sa.table('store_master', sa.column('cost_center'), sa.column('store_code'))

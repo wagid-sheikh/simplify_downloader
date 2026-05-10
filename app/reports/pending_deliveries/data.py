@@ -9,7 +9,6 @@ import sqlalchemy as sa
 
 from app.common.date_utils import get_timezone
 from app.common.db import session_scope
-from app.crm_downloader.td_orders_sync.ingest import _orders_table
 from app.crm_downloader.td_orders_sync.sales_ingest import _sales_table
 
 
@@ -22,13 +21,17 @@ class PendingDeliveryRow:
     order_date: date
     default_due_date: date
     age_days: int
-    gross_amount: Decimal
+    order_amount: Decimal
     paid_amount: Decimal
     pending_amount: Decimal
     adjustments: Decimal
     is_edited_order: bool
     is_duplicate: bool
     source_system: str
+
+    @property
+    def gross_amount(self) -> Decimal:
+        return self.order_amount
 
 
 @dataclass
@@ -73,6 +76,17 @@ def _decimal(value: object | None) -> Decimal:
     if isinstance(value, Decimal):
         return value
     return Decimal(str(value))
+
+
+def _coerce_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
 
 
 def _resolve_order_date(order_date: datetime, tz) -> date:
@@ -165,29 +179,26 @@ async def fetch_pending_deliveries_report(
     include_aged_unresolved_recovery_rows: bool = False,
 ) -> PendingDeliveriesReportData:
     metadata = sa.MetaData()
-    orders = _orders_table(metadata)
+    orders = sa.table(
+        "vw_orders",
+        sa.column("cost_center"),
+        sa.column("store_code"),
+        sa.column("order_number"),
+        sa.column("customer_name"),
+        sa.column("order_date"),
+        sa.column("default_due_date"),
+        sa.column("source_system"),
+        sa.column("order_amount"),
+        sa.column("order_status"),
+        sa.column("recovery_status"),
+    )
     sales = _sales_table(metadata)
 
     paid_amount_expr = sa.func.coalesce(
-        sa.func.sum(
-            sa.case(
-                (
-                    orders.c.source_system == "TumbleDry",
-                    sa.func.coalesce(sales.c.payment_received, 0)
-                    + sa.func.coalesce(sales.c.adjustments, 0),
-                ),
-                else_=sa.func.coalesce(sales.c.payment_received, 0),
-            )
-        ),
+        sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)),
         0,
     )
-    amount_expr = sa.func.coalesce(
-        sa.case(
-            (orders.c.source_system == "TumbleDry", orders.c.net_amount),
-            else_=orders.c.gross_amount,
-        ),
-        0,
-    )
+    amount_expr = sa.func.coalesce(orders.c.order_amount, 0)
     adjustments_expr = sa.func.coalesce(sa.func.sum(sales.c.adjustments), 0)
     has_package_payment_mode_expr = sa.func.max(
         sa.case(
@@ -234,7 +245,7 @@ async def fetch_pending_deliveries_report(
         "COMPENSATED",
         "WRITE_OFF",
     )
-    recovery_status_col = sa.literal_column("orders.recovery_status")
+    recovery_status_col = orders.c.recovery_status
 
     stmt = (
         sa.select(
@@ -245,7 +256,7 @@ async def fetch_pending_deliveries_report(
             orders.c.order_date,
             orders.c.default_due_date,
             orders.c.source_system,
-            amount_expr.label("gross_amount"),
+            amount_expr.label("order_amount"),
             paid_amount_expr.label("paid_amount"),
             report_pending_amount_expr.label("pending_amount"),
             adjustments_expr.label("adjustments"),
@@ -288,16 +299,16 @@ async def fetch_pending_deliveries_report(
     async with session_scope(database_url) as session:
         results = await session.execute(stmt)
         for record in results.mappings():
-            order_date = record.get("order_date")
-            if not isinstance(order_date, datetime):
+            order_date = _coerce_datetime(record.get("order_date"))
+            if order_date is None:
                 continue
-            default_due_date = record.get("default_due_date")
-            if not isinstance(default_due_date, datetime):
+            default_due_date = _coerce_datetime(record.get("default_due_date"))
+            if default_due_date is None:
                 continue
             order_date_local = _resolve_order_date(order_date, tz)
             default_due_date_local = _resolve_business_date(default_due_date, tz)
             age_days = max(0, (report_date - default_due_date_local).days)
-            gross_amount = _decimal(record.get("gross_amount"))
+            order_amount = _decimal(record.get("order_amount"))
             paid_amount = _decimal(record.get("paid_amount"))
             pending_amount = _decimal(record.get("pending_amount"))
             adjustments = _decimal(record.get("adjustments"))
@@ -312,7 +323,7 @@ async def fetch_pending_deliveries_report(
                     order_date=order_date_local,
                     default_due_date=default_due_date_local,
                     age_days=age_days,
-                    gross_amount=gross_amount,
+                    order_amount=order_amount,
                     paid_amount=paid_amount,
                     pending_amount=pending_amount,
                     adjustments=adjustments,
@@ -323,7 +334,7 @@ async def fetch_pending_deliveries_report(
             )
 
         recovery_orders = sa.table(
-            "orders",
+            "vw_orders",
             sa.column("cost_center"),
             sa.column("store_code"),
             sa.column("order_number"),
@@ -331,8 +342,7 @@ async def fetch_pending_deliveries_report(
             sa.column("order_date"),
             sa.column("default_due_date"),
             sa.column("source_system"),
-            sa.column("gross_amount"),
-            sa.column("net_amount"),
+            sa.column("order_amount"),
             sa.column("recovery_status"),
         )
         manual_recovery_filters: list[sa.ColumnElement[bool]] = [
@@ -350,16 +360,7 @@ async def fetch_pending_deliveries_report(
                 )
             )
 
-        manual_recovery_amount_expr = sa.func.coalesce(
-            sa.case(
-                (
-                    recovery_orders.c.source_system == "TumbleDry",
-                    recovery_orders.c.net_amount,
-                ),
-                else_=recovery_orders.c.gross_amount,
-            ),
-            0,
-        )
+        manual_recovery_amount_expr = sa.func.coalesce(recovery_orders.c.order_amount, 0)
         manual_recovery_stmt = (
             sa.select(
                 recovery_orders.c.cost_center,
@@ -386,11 +387,11 @@ async def fetch_pending_deliveries_report(
 
         if manual_recovery_results is not None:
             for record in manual_recovery_results.mappings():
-                order_date = record.get("order_date")
-                if not isinstance(order_date, datetime):
+                order_date = _coerce_datetime(record.get("order_date"))
+                if order_date is None:
                     continue
-                default_due_date = record.get("default_due_date")
-                if not isinstance(default_due_date, datetime):
+                default_due_date = _coerce_datetime(record.get("default_due_date"))
+                if default_due_date is None:
                     default_due_date = order_date
                 order_date_local = _resolve_order_date(order_date, tz)
                 default_due_date_local = _resolve_business_date(default_due_date, tz)
@@ -405,7 +406,7 @@ async def fetch_pending_deliveries_report(
                         order_date=order_date_local,
                         default_due_date=default_due_date_local,
                         age_days=age_days,
-                        gross_amount=amount_at_risk,
+                        order_amount=amount_at_risk,
                         paid_amount=Decimal("0"),
                         pending_amount=amount_at_risk,
                         adjustments=Decimal("0"),

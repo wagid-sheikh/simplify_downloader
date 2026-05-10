@@ -30,7 +30,7 @@ def test_render_html_includes_due_date_column_and_value() -> None:
         order_date=date(2025, 5, 10),
         default_due_date=date(2025, 5, 12),
         age_days=8,
-        gross_amount=Decimal("1000.00"),
+        order_amount=Decimal("1000.00"),
         paid_amount=Decimal("200.00"),
         pending_amount=Decimal("800.00"),
         adjustments=Decimal("0"),

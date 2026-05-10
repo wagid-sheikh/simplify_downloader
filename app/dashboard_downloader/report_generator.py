@@ -338,7 +338,7 @@ async def _fetch_undelivered_order_rows(
             UndeliveredOrder.order_id,
             UndeliveredOrder.order_date,
             UndeliveredOrder.expected_deliver_on,
-            UndeliveredOrder.net_amount,
+            UndeliveredOrder.net_amount.label("order_amount"),
             UndeliveredOrder.actual_deliver_on,
         )
         .where(sa.func.upper(UndeliveredOrder.store_code) == store_code)
@@ -356,16 +356,16 @@ async def _fetch_undelivered_order_rows(
         age_days = None
         if committed:
             age_days = (report_date - committed).days
-        net_amount = _as_float(row.net_amount)
-        if net_amount is not None:
-            total_amount += net_amount
+        order_amount = _as_float(row.order_amount)
+        if order_amount is not None:
+            total_amount += order_amount
         rows.append(
             {
                 "order_id": row.order_id,
                 "order_date": row.order_date,
                 "committed_date": committed,
                 "age_days": age_days,
-                "net_amount": net_amount,
+                "order_amount": order_amount,
             }
         )
     rows.sort(key=lambda r: r["age_days"] if r["age_days"] is not None else -1, reverse=True)
@@ -1125,7 +1125,7 @@ class StoreReportPdfBuilder:
             c.drawString(positions["sno"], y, "S. No.")
             c.drawString(positions["order_info"], y, "Order Info")
             c.drawString(positions["age"], y, "Age")
-            c.drawString(positions["amount"], y, "Net Amount")
+            c.drawString(positions["amount"], y, "Order Amount")
             c.drawString(positions["delivered"], y, "")
             c.drawString(positions["comments"], y, "")
 
@@ -1159,7 +1159,7 @@ class StoreReportPdfBuilder:
                 order_date = self._value_from_row(row, "order_date")
                 committed = self._value_from_row(row, "committed_date")
                 age_days = self._value_from_row(row, "age_days")
-                net_amount = self._value_from_row(row, "net_amount")
+                order_amount = self._value_from_row(row, "order_amount")
                 order_info_parts = []
                 if order_id:
                     order_info_parts.append(str(order_id))
@@ -1173,8 +1173,8 @@ class StoreReportPdfBuilder:
                 self.canvas.drawString(positions["sno"], data_y, str(idx))
                 self.canvas.drawString(positions["order_info"], data_y, order_info_text)
                 self.canvas.drawString(positions["age"], data_y, self._value_or_na(age_days))
-                if net_amount is not None:
-                    self.canvas.drawRightString(positions["delivered"] - 8, data_y, f"{float(net_amount):.2f}")
+                if order_amount is not None:
+                    self.canvas.drawRightString(positions["delivered"] - 8, data_y, f"{float(order_amount):.2f}")
                 self.y -= data_row_height
                 action_y = self.y
                 self.form.checkbox(
@@ -1202,7 +1202,7 @@ class StoreReportPdfBuilder:
         total_amount = self.context.get("undelivered_orders_total_amount") or 0
         self.y -= 4
         summary_text = (
-            f"Total undelivered orders: {row_count}    |    Total net amount: {float(total_amount):.2f}"
+            f"Total undelivered orders: {row_count}    |    Total order amount: {float(total_amount):.2f}"
         )
         self.canvas.setFont("Helvetica-Bold", 10)
         self.canvas.drawString(self.margin, self.y, summary_text)

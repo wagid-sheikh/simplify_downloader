@@ -124,7 +124,7 @@
           <th>Due Date</th>
           <th>Order No.</th>
           <th>Customer</th>
-          <th class="text-right">Gross Amount</th>
+          <th class="text-right">Order Amount</th>
           <th class="text-right">Paid Amount</th>
           <th class="text-right">Pending Amount</th>
         </tr>
@@ -138,7 +138,7 @@
           <td>{{ row.default_due_date.strftime('%d-%b-%Y') }}</td>
           <td>{{ row.order_number }}</td>
           <td>{{ row.customer_name }}</td>
-          <td class="text-right">{{ row.gross_amount | format_amount }}</td>
+          <td class="text-right">{{ row.order_amount | format_amount }}</td>
           <td class="text-right">{{ row.paid_amount | format_amount }}</td>
           <td class="text-right">{{ row.pending_amount | format_amount }}</td>
         </tr>

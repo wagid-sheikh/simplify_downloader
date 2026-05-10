@@ -21,8 +21,12 @@ class SameDayFulfillmentRecord:
     line_item_rows: list[dict[str, str]]
     payment_date: datetime | None
     payment_mode: str | None
-    net_amount: Any
+    order_amount: Any
     payment_received: Any
+
+    @property
+    def net_amount(self) -> Any:
+        return self.order_amount
 
 
 def format_duration_minutes(total_minutes: int | None) -> str:
@@ -69,7 +73,7 @@ def build_store_summary(rows: list[Any]) -> list[dict[str, Any]]:
             {
                 "store_code": store_code,
                 "total_orders": len(store_rows),
-                "total_net_amount": sum((getattr(row, "net_amount", Decimal("0")) or Decimal("0")) for row in store_rows),
+                "total_order_amount": sum((getattr(row, "order_amount", Decimal("0")) or Decimal("0")) for row in store_rows),
                 "total_payment_received": sum((getattr(row, "payment_received", Decimal("0")) or Decimal("0")) for row in store_rows),
                 "avg_minutes": (round(sum(durations) / len(durations)) if durations else None),
                 "fastest_minutes": (min(durations) if durations else None),
@@ -200,7 +204,7 @@ async def fetch_same_day_fulfillment_rows(
             orders.c.order_date,
             orders.c.customer_name,
             orders.c.mobile_number,
-            orders.c.net_amount,
+            orders.c.order_amount,
             line_items_agg.c.line_items,
             sa.func.max(sales.c.payment_date).label("payment_date"),
             sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)).label("payment_received"),
@@ -235,7 +239,7 @@ async def fetch_same_day_fulfillment_rows(
             orders.c.order_date,
             orders.c.customer_name,
             orders.c.mobile_number,
-            orders.c.net_amount,
+            orders.c.order_amount,
             line_items_agg.c.line_items,
         )
         .order_by(orders.c.order_date, orders.c.order_number)
@@ -281,7 +285,7 @@ async def fetch_same_day_fulfillment_rows(
                 line_item_rows=line_items_by_order.get((cost_center, order_number), []),
                 payment_date=coerce_datetime(entry["payment_date"]),
                 payment_mode=str(entry["payment_mode"]) if entry["payment_mode"] is not None else None,
-                net_amount=entry["net_amount"],
+                order_amount=entry["order_amount"],
                 payment_received=entry["payment_received"],
             )
         )

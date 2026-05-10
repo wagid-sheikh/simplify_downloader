@@ -82,7 +82,11 @@ class MissingPaymentRow:
     order_date: datetime | None
     customer_name: str
     mobile_number: str
-    net_amount: Decimal
+    order_amount: Decimal
+
+    @property
+    def net_amount(self) -> Decimal:
+        return self.order_amount
 
 
 @dataclass
@@ -95,8 +99,12 @@ class SameDayFulfillmentRow:
     line_items: str
     delivery_or_payment_date: datetime | None
     payment_mode: str
-    net_amount: Decimal | None
+    order_amount: Decimal | None
     payment_received: Decimal | None
+
+    @property
+    def net_amount(self) -> Decimal | None:
+        return self.order_amount
     hours: Decimal | None
 
 
@@ -304,11 +312,8 @@ def _build_manual_recovery_sections(
             continue
 
         cost_center = str(record.get("cost_center") or "")
-        source_system = str(record.get("source_system") or "")
-        net_amount = _decimal(record.get("net_amount"))
-        gross_amount = _decimal(record.get("gross_amount"))
         order_date = _to_local_date(record.get("order_date"), tz)
-        order_value = net_amount if source_system == "TumbleDry" else gross_amount
+        order_value = _decimal(record.get("order_amount"))
         if order_value < 0:
             order_value = Decimal("0")
         order_row = RecoveryOrderRow(
@@ -426,7 +431,7 @@ def _calculate_ttd(target: Decimal, achieved: Decimal, day_of_month: int, days_i
 
 def _build_orders_agg(orders: sa.Table, ranges: dict[str, datetime]) -> sa.Subquery:
     def _sum_when(condition: sa.ColumnElement[bool]) -> sa.ColumnElement:
-        return sa.func.coalesce(sa.func.sum(sa.case((condition, orders.c.net_amount), else_=0)), 0)
+        return sa.func.coalesce(sa.func.sum(sa.case((condition, orders.c.order_amount), else_=0)), 0)
 
     return (
         sa.select(
@@ -670,14 +675,13 @@ async def fetch_daily_sales_report(
         sa.column("collection_target_met"),
     )
     orders = sa.table(
-        "orders",
+        "vw_orders",
         sa.column("cost_center"),
         sa.column("order_number"),
         sa.column("order_date"),
         sa.column("customer_name"),
         sa.column("mobile_number"),
-        sa.column("net_amount"),
-        sa.column("gross_amount"),
+        sa.column("order_amount"),
         sa.column("default_due_date"),
         sa.column("source_system"),
         sa.column("recovery_status"),
@@ -686,6 +690,14 @@ async def fetch_daily_sales_report(
         sa.column("recovery_opened_at"),
         sa.column("recovery_closed_at"),
         sa.column("recovery_expected_resolution_date"),
+    )
+    orders_status_updates = sa.table(
+        "orders",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("recovery_status"),
+        sa.column("recovery_category"),
+        sa.column("recovery_notes"),
     )
     payment_collections = sa.table(
         "payment_collections",
@@ -1031,7 +1043,7 @@ async def fetch_daily_sales_report(
                 sales.c.cost_center,
                 sales.c.order_number,
                 sales.c.payment_received,
-                orders.c.net_amount,
+                orders.c.order_amount,
             )
             .select_from(
                 sales.outerjoin(
@@ -1051,13 +1063,13 @@ async def fetch_daily_sales_report(
         edited_result = await session.execute(edited_stmt)
         for entry in edited_result.mappings():
             payment_received = _decimal(entry["payment_received"])
-            net_amount = _decimal(entry["net_amount"])
-            loss = net_amount - payment_received
+            order_amount = _decimal(entry["order_amount"])
+            loss = order_amount - payment_received
             edited_rows.append(
                 EditedOrderRow(
                     cost_center=str(entry["cost_center"]),
                     order_number=str(entry["order_number"]),
-                    original_value=net_amount,
+                    original_value=order_amount,
                     new_value=payment_received,
                     loss=loss,
                 )
@@ -1065,7 +1077,7 @@ async def fetch_daily_sales_report(
 
         auto_cleared_order_numbers = await _clear_resolved_to_be_recovered_orders(
             session=session,
-            orders=orders,
+            orders=orders_status_updates,
             sales=sales,
             payment_collections=payment_collections,
         )
@@ -1077,8 +1089,7 @@ async def fetch_daily_sales_report(
                 orders.c.customer_name,
                 orders.c.mobile_number,
                 orders.c.source_system,
-                orders.c.net_amount,
-                orders.c.gross_amount,
+                orders.c.order_amount,
                 orders.c.order_date,
                 orders.c.recovery_status,
             )
@@ -1131,7 +1142,7 @@ async def fetch_daily_sales_report(
                     line_items=summarize_line_items(record.line_item_rows),
                     delivery_or_payment_date=payment_dt,
                     payment_mode=str(record.payment_mode or ""),
-                    net_amount=_decimal(record.net_amount) if record.net_amount is not None else None,
+                    order_amount=_decimal(record.order_amount) if record.order_amount is not None else None,
                     payment_received=_decimal(record.payment_received) if record.payment_received is not None else None,
                     hours=hours,
                 )
@@ -1143,7 +1154,7 @@ async def fetch_daily_sales_report(
                 missing_orders_view.c.order_date,
                 missing_orders_view.c.customer_name,
                 missing_orders_view.c.mobile_number,
-                missing_orders_view.c.net_amount,
+                missing_orders_view.c.net_amount.label("order_amount"),
             )
             .where(missing_orders_view.c.order_date >= ranges["start_day"])
             .where(missing_orders_view.c.order_date < ranges["next_day"])
@@ -1162,7 +1173,7 @@ async def fetch_daily_sales_report(
                     order_date=_parse_orders_sync_timestamp(entry["order_date"], tz=tz),
                     customer_name=str(entry["customer_name"] or ""),
                     mobile_number=str(entry["mobile_number"] or ""),
-                    net_amount=_decimal(entry["net_amount"]),
+                    order_amount=_decimal(entry["order_amount"]),
                 )
             )
 

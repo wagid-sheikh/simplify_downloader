@@ -31,6 +31,25 @@ def _create_tables(database_url: str) -> None:
     metadata.create_all(engine)
     with engine.begin() as connection:
         connection.execute(sa.text("ALTER TABLE orders ADD COLUMN recovery_status TEXT"))
+        connection.execute(
+            sa.text(
+                """
+                CREATE VIEW vw_orders AS
+                SELECT
+                    *,
+                    COALESCE(
+                        CASE
+                            WHEN source_system = 'TumbleDry' THEN net_amount
+                            ELSE gross_amount
+                        END,
+                        net_amount,
+                        gross_amount,
+                        0
+                    ) AS order_amount
+                FROM orders
+                """
+            )
+        )
     engine.dispose()
 
 
@@ -241,10 +260,10 @@ async def test_fetch_pending_deliveries_includes_td_and_uc_orders(
     )
 
     assert data.total_count == 2
-    assert data.total_pending_amount == Decimal("180.00")
+    assert data.total_pending_amount == Decimal("190.00")
     assert len(data.summary_sections) == 1
     assert data.summary_sections[0].total_count == 2
-    assert data.summary_sections[0].total_pending_amount == Decimal("180.00")
+    assert data.summary_sections[0].total_pending_amount == Decimal("190.00")
 
     detail_rows = [row for bucket in data.cost_center_sections[0].buckets for row in bucket.rows]
     assert {row.order_number for row in detail_rows} == {"TD-001", "UC-001"}

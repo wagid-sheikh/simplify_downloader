@@ -23,8 +23,12 @@ class MTDSameDayFulfillmentRow:
     delivery_or_payment_date: datetime | None
     payment_mode: str | None
     hours: float | None
-    net_amount: Decimal | None
+    order_amount: Decimal | None
     payment_received: Decimal | None
+
+    @property
+    def net_amount(self) -> Decimal | None:
+        return self.order_amount
 
 
 @dataclass
@@ -34,7 +38,11 @@ class MissingPaymentRow:
     order_date: datetime | None
     customer_name: str | None
     mobile_number: str | None
-    net_amount: Decimal
+    order_amount: Decimal
+
+    @property
+    def net_amount(self) -> Decimal:
+        return self.order_amount
 
 
 async def fetch_missing_payments_mtd(*, database_url: str, report_date: date) -> list[MissingPaymentRow]:
@@ -58,7 +66,7 @@ async def fetch_missing_payments_mtd(*, database_url: str, report_date: date) ->
             missing_view.c.order_date,
             missing_view.c.customer_name,
             missing_view.c.mobile_number,
-            missing_view.c.net_amount,
+            missing_view.c.net_amount.label("order_amount"),
         )
         .where(missing_view.c.order_date >= start_month)
         .where(missing_view.c.order_date < next_day)
@@ -76,7 +84,7 @@ async def fetch_missing_payments_mtd(*, database_url: str, report_date: date) ->
                     order_date=record["order_date"],
                     customer_name=record["customer_name"],
                     mobile_number=record["mobile_number"],
-                    net_amount=Decimal(str(record["net_amount"] or 0)),
+                    order_amount=Decimal(str(record["order_amount"] or 0)),
                 )
             )
     return rows
@@ -84,11 +92,11 @@ async def fetch_missing_payments_mtd(*, database_url: str, report_date: date) ->
 
 async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date) -> list[MTDSameDayFulfillmentRow]:
     orders = sa.table(
-        "orders",
+        "vw_orders",
         sa.column("cost_center"),
         sa.column("order_number"),
         sa.column("order_date"),
-        sa.column("net_amount"),
+        sa.column("order_amount"),
         sa.column("customer_name"),
         sa.column("mobile_number"),
     )
@@ -144,7 +152,7 @@ async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date
                 delivery_or_payment_date=record.payment_date,
                 payment_mode=record.payment_mode,
                 hours=hours,
-                net_amount=Decimal(str(record.net_amount)) if record.net_amount is not None else None,
+                order_amount=Decimal(str(record.order_amount)) if record.order_amount is not None else None,
                 payment_received=Decimal(str(record.payment_received)) if record.payment_received is not None else None,
             ))
     return rows
