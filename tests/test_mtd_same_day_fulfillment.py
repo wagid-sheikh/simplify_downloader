@@ -49,6 +49,7 @@ async def test_fetch_mtd_same_day_fulfillment_filters_and_aggregates(tmp_path, m
     assert rows[0].order_amount == 800
     assert rows[0].payment_received == 800
     assert rows[0].hours == 2.0
+    assert not hasattr(rows[0], 'net_amount')
 
 
 @pytest.mark.asyncio
@@ -83,6 +84,7 @@ def test_render_html_includes_financial_columns() -> None:
     assert 'Payment Date' in html
     assert 'Store: ' not in html
     assert 'Order Amount' in html
+    assert 'Net Amount' not in html
     assert 'Payment Received' in html
 
 
@@ -266,8 +268,11 @@ async def test_fetch_missing_payments_mtd_postgres_sql_targets_view(monkeypatch)
     )
 
     compiled = str(captured['stmt'].compile(dialect=postgresql.dialect(), compile_kwargs={'literal_binds': True}))
+    compiled_lower = compiled.lower()
     assert 'vw_orders_missing_in_payment_collections' in compiled
-    assert ' from orders ' not in f" {compiled.lower()} "
+    assert 'vw_orders.order_amount' in compiled_lower
+    assert 'net_amount' not in compiled_lower
+    assert ' from orders ' not in f" {compiled_lower} "
 
 
 def test_render_html_missing_payments_section_empty_state_after_summary() -> None:

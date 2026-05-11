@@ -24,10 +24,6 @@ class SameDayFulfillmentRecord:
     order_amount: Any
     payment_received: Any
 
-    @property
-    def net_amount(self) -> Any:
-        return self.order_amount
-
 
 def format_duration_minutes(total_minutes: int | None) -> str:
     if total_minutes is None:

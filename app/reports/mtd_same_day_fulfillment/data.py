@@ -26,10 +26,6 @@ class MTDSameDayFulfillmentRow:
     order_amount: Decimal | None
     payment_received: Decimal | None
 
-    @property
-    def net_amount(self) -> Decimal | None:
-        return self.order_amount
-
 
 @dataclass
 class MissingPaymentRow:
@@ -40,10 +36,6 @@ class MissingPaymentRow:
     mobile_number: str | None
     order_amount: Decimal
 
-    @property
-    def net_amount(self) -> Decimal:
-        return self.order_amount
-
 
 async def fetch_missing_payments_mtd(*, database_url: str, report_date: date) -> list[MissingPaymentRow]:
     missing_view = sa.table(
@@ -53,7 +45,6 @@ async def fetch_missing_payments_mtd(*, database_url: str, report_date: date) ->
         sa.column("order_date"),
         sa.column("customer_name"),
         sa.column("mobile_number"),
-        sa.column("net_amount"),
     )
     orders = sa.table(
         "vw_orders",

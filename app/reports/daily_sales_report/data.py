@@ -88,10 +88,6 @@ class MissingPaymentRow:
     mobile_number: str
     order_amount: Decimal
 
-    @property
-    def net_amount(self) -> Decimal:
-        return self.order_amount
-
 
 @dataclass
 class SameDayFulfillmentRow:
@@ -105,10 +101,6 @@ class SameDayFulfillmentRow:
     payment_mode: str
     order_amount: Decimal | None
     payment_received: Decimal | None
-
-    @property
-    def net_amount(self) -> Decimal | None:
-        return self.order_amount
     hours: Decimal | None
 
 
@@ -716,7 +708,6 @@ async def fetch_daily_sales_report(
         sa.column("order_date"),
         sa.column("customer_name"),
         sa.column("mobile_number"),
-        sa.column("net_amount"),
     )
     orders_sync_log = sa.table(
         "orders_sync_log",
