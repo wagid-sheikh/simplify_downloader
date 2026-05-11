@@ -309,12 +309,12 @@ Order Amount
 
 #### Collection-side columns
 
-These come from actual payment/collection data, such as the `sales` table or payment collection sources.
+These come from actual payment/collection data, such as the `sales` table.
 
 Expected source:
 
 ```text
-sales/payment collections
+sales
 ```
 
 Important: collection values should not be replaced with `order_amount`.
