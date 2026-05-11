@@ -158,10 +158,17 @@ def test_postgres_view_sql_uses_canonical_amount_and_not_source_amount_logic() -
     normalized_sql = " ".join(migration.POSTGRES_VIEW_SQL.split()).lower()
 
     assert "from public.vw_orders as o" in normalized_sql
-    assert "order_amount as net_amount" in normalized_sql
+    assert "order_amount::numeric(12, 2) as net_amount" in normalized_sql
     assert "order_amount > 0" in normalized_sql
     assert "not (paid_amount + 1 >= order_amount)" in normalized_sql
     assert "o.net_amount" not in normalized_sql
     assert "o.gross_amount" not in normalized_sql
     assert "o.adjustment" not in normalized_sql
     assert "case" not in normalized_sql
+
+
+def test_sqlite_view_sql_expresses_matching_net_amount_type_intent() -> None:
+    normalized_sql = " ".join(migration.SQLITE_VIEW_SQL.split()).lower()
+
+    assert "cast(order_amount as numeric(12, 2)) as net_amount" in normalized_sql
+    assert "order_amount as net_amount" not in normalized_sql
