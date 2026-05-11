@@ -70,6 +70,7 @@ async def fetch_missing_payments_mtd(*, database_url: str, report_date: date) ->
         )
         .where(missing_view.c.order_date >= start_month)
         .where(missing_view.c.order_date < next_day)
+        .where(missing_view.c.net_amount > 0)
         .order_by(missing_view.c.cost_center, missing_view.c.order_date, missing_view.c.order_number)
     )
 

@@ -215,6 +215,7 @@ async def fetch_pending_deliveries_report(
     is_duplicate_expr = sa.func.max(
         sa.case((sales.c.is_duplicate.is_(True), 1), else_=0)
     )
+    paid_in_full_expr = paid_amount_expr + 1 >= amount_expr
     pending_amount_expr = sa.func.greatest(amount_expr - paid_amount_expr, 0)
     package_pending_targets = (
         amount_expr * Decimal("0.10"),
@@ -234,6 +235,7 @@ async def fetch_pending_deliveries_report(
         ),
     )
     report_pending_amount_expr = sa.case(
+        (paid_in_full_expr, 0),
         (package_pending_amount_covered_expr, 0),
         else_=pending_amount_expr,
     )
@@ -289,6 +291,7 @@ async def fetch_pending_deliveries_report(
             orders.c.source_system,
             amount_expr,
         )
+        .having(amount_expr > 0)
         .having(report_pending_amount_expr > 0)
     )
 
@@ -373,6 +376,7 @@ async def fetch_pending_deliveries_report(
                 manual_recovery_amount_expr.label("amount_at_risk"),
             )
             .where(sa.or_(*manual_recovery_filters))
+            .where(manual_recovery_amount_expr > 0)
             .order_by(
                 recovery_orders.c.cost_center,
                 recovery_orders.c.default_due_date,

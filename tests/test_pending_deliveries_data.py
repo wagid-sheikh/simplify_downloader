@@ -356,3 +356,101 @@ async def test_fetch_pending_deliveries_excludes_recovery_statuses_from_main_buc
     assert {row.order_number for row in detail_rows} == {"ALLOWED-NULL", "ALLOWED-CUSTOM"}
     assert data.total_count == 2
     assert data.total_pending_amount == Decimal("200.00")
+
+
+@pytest.mark.asyncio
+async def test_fetch_pending_deliveries_uses_one_rupee_paid_in_full_tolerance_and_excludes_zero_orders(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_deliveries_paid_tolerance.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
+    now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
+    order_date = datetime(2025, 5, 1, 10, 0, tzinfo=tz)
+
+    for order_number, amount, paid in [
+        ("WITHIN-TOLERANCE", Decimal("100.00"), Decimal("99.00")),
+        ("UNDER-TOLERANCE", Decimal("100.00"), Decimal("98.00")),
+        ("OVERPAID", Decimal("100.00"), Decimal("125.00")),
+        ("ZERO-VALUE", Decimal("0.00"), Decimal("-10.00")),
+    ]:
+        await _insert_order_and_sale(
+            database_url=database_url,
+            now=now,
+            order_date=order_date,
+            default_due_date=order_date,
+            source_system="TumbleDry",
+            order_number=order_number,
+            gross_amount=amount,
+            net_amount=amount,
+            payment_received=paid,
+            adjustments=Decimal("0.00"),
+        )
+
+    data = await fetch_pending_deliveries_report(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    reported_orders = {
+        row.order_number
+        for section in data.summary_sections
+        for bucket in section.buckets
+        for row in bucket.rows
+    }
+    assert reported_orders == {"UNDER-TOLERANCE"}
+    assert data.total_pending_amount == Decimal("2.00")
+
+
+@pytest.mark.asyncio
+async def test_fetch_pending_deliveries_manual_recovery_excludes_zero_value_orders(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_deliveries_recovery_zero.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
+    now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
+    order_date = datetime(2025, 5, 1, 10, 0, tzinfo=tz)
+
+    await _insert_order_and_sale(
+        database_url=database_url,
+        now=now,
+        order_date=order_date,
+        default_due_date=order_date,
+        source_system="TumbleDry",
+        order_number="RECOVERY-ZERO",
+        gross_amount=Decimal("0.00"),
+        net_amount=Decimal("0.00"),
+        payment_received=Decimal("0.00"),
+        adjustments=Decimal("0.00"),
+        recovery_status="TO_BE_RECOVERED",
+    )
+    await _insert_order_and_sale(
+        database_url=database_url,
+        now=now,
+        order_date=order_date,
+        default_due_date=order_date,
+        source_system="TumbleDry",
+        order_number="RECOVERY-POSITIVE",
+        gross_amount=Decimal("50.00"),
+        net_amount=Decimal("50.00"),
+        payment_received=Decimal("0.00"),
+        adjustments=Decimal("0.00"),
+        recovery_status="TO_BE_RECOVERED",
+    )
+
+    data = await fetch_pending_deliveries_report(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    assert [row.order_number for row in data.manual_recovery_rows] == ["RECOVERY-POSITIVE"]
+

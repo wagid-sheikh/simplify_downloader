@@ -219,7 +219,8 @@ async def test_fetch_missing_payments_mtd_uses_month_window_and_view(tmp_path, m
                 ('CC1', 'IN-END', '2026-04-29T23:59:59+05:30', 'Bob', '888', 200, 260, 'UC'),
                 ('CC1', 'MATCHED', '2026-04-15T12:00:00+05:30', 'Mina', '555', 700, 900, 'UC'),
                 ('CC1', 'OUT-BEFORE', '2026-03-31T23:59:59+05:30', 'Cora', '777', 300, 390, 'TumbleDry'),
-                ('CC1', 'OUT-AFTER', '2026-04-30T00:00:00+05:30', 'Dan', '666', 400, 520, 'UC')
+                ('CC1', 'OUT-AFTER', '2026-04-30T00:00:00+05:30', 'Dan', '666', 400, 520, 'UC'),
+                ('CC1', 'ZERO-VALUE', '2026-04-10T10:00:00+05:30', 'Zero', '111', 0, 0, 'TumbleDry')
         """))
         await session.execute(sa.text("""
             INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES
@@ -227,7 +228,8 @@ async def test_fetch_missing_payments_mtd_uses_month_window_and_view(tmp_path, m
                 ('CC1', 'IN-END', '2026-04-29T23:59:59+05:30', 'CARD', 260),
                 ('CC1', 'MATCHED', '2026-04-15T12:30:00+05:30', 'UPI', 900),
                 ('CC1', 'OUT-BEFORE', '2026-03-31T23:59:59+05:30', 'UPI', 300),
-                ('CC1', 'OUT-AFTER', '2026-04-30T00:00:00+05:30', 'CASH', 520)
+                ('CC1', 'OUT-AFTER', '2026-04-30T00:00:00+05:30', 'CASH', 520),
+                ('CC1', 'ZERO-VALUE', '2026-04-10T10:30:00+05:30', 'CASH', 0)
         """))
         await session.execute(sa.text("INSERT INTO payment_collections (cost_center, order_number) VALUES ('CC1', ' xx / matched ,,')"))
         await session.commit()
