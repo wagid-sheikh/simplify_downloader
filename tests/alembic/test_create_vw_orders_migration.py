@@ -68,6 +68,7 @@ def test_create_vw_orders_exposes_raw_columns_and_canonical_order_amount(
                     ('TD-GROSS-NULL-NET', 'TumbleDry', NULL, 80, NULL),
                     ('TD-NULL-BASE', 'TumbleDry', NULL, NULL, NULL),
                     ('UC-GROSS', 'UClean', 20, 200, 0),
+                    ('UNKNOWN-GROSS', 'FutureSystem', 30, 50, NULL),
                     ('FUTURE-GROSS', 'FutureSystem', 30, 50, 60),
                     ('NEGATIVE-ADJUSTMENT', 'UClean', 20, 100, -20)
                 """
@@ -137,6 +138,14 @@ def test_create_vw_orders_exposes_raw_columns_and_canonical_order_amount(
                 "gross_amount": 200,
                 "adjustment": 0,
                 "order_amount": 200,
+            },
+            {
+                "order_number": "UNKNOWN-GROSS",
+                "source_system": "FutureSystem",
+                "net_amount": 30,
+                "gross_amount": 50,
+                "adjustment": None,
+                "order_amount": 50,
             },
             {
                 "order_number": "FUTURE-GROSS",

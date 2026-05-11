@@ -19,8 +19,8 @@ import app.reports.mtd_same_day_fulfillment.data as mtd_data
 def _create_tables(database_url: str) -> None:
     engine = sa.create_engine(database_url.replace('+aiosqlite', ''))
     with engine.begin() as conn:
-        conn.execute(sa.text("CREATE TABLE orders (cost_center TEXT, order_number TEXT, order_date TIMESTAMP, customer_name TEXT, mobile_number TEXT, net_amount NUMERIC, gross_amount NUMERIC, source_system TEXT)"))
-        conn.execute(sa.text("CREATE VIEW vw_orders AS SELECT *, COALESCE(CASE WHEN source_system = 'TumbleDry' THEN net_amount ELSE gross_amount END, net_amount, gross_amount, 0) AS order_amount FROM orders"))
+        conn.execute(sa.text("CREATE TABLE orders (cost_center TEXT, order_number TEXT, order_date TIMESTAMP, customer_name TEXT, mobile_number TEXT, net_amount NUMERIC, gross_amount NUMERIC, adjustment NUMERIC, source_system TEXT)"))
+        conn.execute(sa.text("CREATE VIEW vw_orders AS SELECT *, CASE WHEN (CASE WHEN COALESCE(adjustment, 0) > 0 THEN COALESCE(CASE WHEN source_system = 'TumbleDry' AND net_amount IS NOT NULL AND net_amount <> 0 THEN net_amount WHEN source_system = 'TumbleDry' THEN gross_amount ELSE gross_amount END, 0) - COALESCE(adjustment, 0) ELSE COALESCE(CASE WHEN source_system = 'TumbleDry' AND net_amount IS NOT NULL AND net_amount <> 0 THEN net_amount WHEN source_system = 'TumbleDry' THEN gross_amount ELSE gross_amount END, 0) END) <= 0 THEN 0 ELSE (CASE WHEN COALESCE(adjustment, 0) > 0 THEN COALESCE(CASE WHEN source_system = 'TumbleDry' AND net_amount IS NOT NULL AND net_amount <> 0 THEN net_amount WHEN source_system = 'TumbleDry' THEN gross_amount ELSE gross_amount END, 0) - COALESCE(adjustment, 0) ELSE COALESCE(CASE WHEN source_system = 'TumbleDry' AND net_amount IS NOT NULL AND net_amount <> 0 THEN net_amount WHEN source_system = 'TumbleDry' THEN gross_amount ELSE gross_amount END, 0) END) END AS order_amount FROM orders"))
         conn.execute(sa.text("CREATE TABLE order_line_items (cost_center TEXT, order_number TEXT, service_name TEXT, garment_name TEXT)"))
         conn.execute(sa.text("CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_date TIMESTAMP, payment_mode TEXT, payment_received NUMERIC)"))
         conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT, store_code TEXT)"))
@@ -37,7 +37,7 @@ async def test_fetch_mtd_same_day_fulfillment_filters_and_aggregates(tmp_path, m
 
     async with session_scope(database_url) as session:
         await session.execute(sa.text("INSERT INTO store_master (cost_center, store_code) VALUES ('CC1', 'S1')"))
-        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount) VALUES ('CC1','O1','2026-04-10T09:00:00+05:30','Alice','9999999999',800),('CC1','O2','2026-03-30T09:00:00+05:30','Bob','8888888888',700)"))
+        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, source_system) VALUES ('CC1','O1','2026-04-10T09:00:00+05:30','Alice','9999999999',800,'TumbleDry'),('CC1','O2','2026-03-30T09:00:00+05:30','Bob','8888888888',700,'TumbleDry')"))
         await session.execute(sa.text("INSERT INTO order_line_items (cost_center, order_number, service_name, garment_name) VALUES ('CC1','O1','Wash','Shirt'),('CC1','O1','Iron','Pant'),('CC1','O2','Dry','Coat')"))
         await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES ('CC1','O1','2026-04-10T10:00:00+05:30','UPI',500),('CC1','O1','2026-04-10T11:00:00+05:30','UPI',300),('CC1','O2','2026-04-10T11:00:00+05:30','CARD',700),('CC1','O1','2026-04-11T00:10:00+05:30','CASH',50)"))
         await session.commit()
@@ -66,7 +66,7 @@ async def test_fetch_mtd_same_day_fulfillment_does_not_use_create_engine(tmp_pat
 
     async with session_scope(database_url) as session:
         await session.execute(sa.text("INSERT INTO store_master (cost_center, store_code) VALUES ('CC1', 'S1')"))
-        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount) VALUES ('CC1','O1','2026-04-10T09:00:00+05:30','Alice','9999999999',800)"))
+        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, source_system) VALUES ('CC1','O1','2026-04-10T09:00:00+05:30','Alice','9999999999',800,'TumbleDry')"))
         await session.execute(sa.text("INSERT INTO order_line_items (cost_center, order_number, service_name, garment_name) VALUES ('CC1','O1','Wash',NULL),('CC1','O1',NULL,'Trouser')"))
         await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES ('CC1','O1','2026-04-10T10:00:00+05:30','UPI',800)"))
         await session.commit()
@@ -158,7 +158,7 @@ async def test_fetch_mtd_same_day_fulfillment_date_only_and_mtd_window(tmp_path,
 
     async with session_scope(database_url) as session:
         await session.execute(sa.text("INSERT INTO store_master (cost_center, store_code) VALUES ('CC1', 'S1')"))
-        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount) VALUES ('CC1','O3','2026-04-29 23:50:00','Late','777',600),('CC1','O4','2026-03-31 23:50:00','Old','666',400)"))
+        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, source_system) VALUES ('CC1','O3','2026-04-29 23:50:00','Late','777',600,'TumbleDry'),('CC1','O4','2026-03-31 23:50:00','Old','666',400,'TumbleDry')"))
         await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES ('CC1','O3','2026-04-30 00:05:00','UPI',600),('CC1','O4','2026-04-01 00:05:00','UPI',400)"))
         await session.commit()
 
@@ -186,8 +186,8 @@ async def test_fetch_missing_payments_mtd_uses_month_window_and_view(tmp_path, m
                 o.order_date,
                 o.customer_name,
                 o.mobile_number,
-                COALESCE(o.net_amount, 0) AS net_amount
-            FROM orders o
+                o.order_amount AS net_amount
+            FROM vw_orders o
             JOIN sales s
                 ON s.cost_center = o.cost_center
                AND s.order_number = o.order_number
@@ -204,10 +204,7 @@ async def test_fetch_missing_payments_mtd_uses_month_window_and_view(tmp_path, m
                 o.order_date,
                 o.customer_name,
                 o.mobile_number,
-                CASE
-                    WHEN o.source_system = 'TumbleDry' THEN o.net_amount
-                    ELSE o.gross_amount
-                END
+                o.order_amount
         """))
     engine.dispose()
 
@@ -324,7 +321,7 @@ async def test_fetch_mtd_same_day_fulfillment_excludes_orders_with_payment_proof
 
     async with session_scope(database_url) as session:
         await session.execute(sa.text("INSERT INTO store_master (cost_center, store_code) VALUES ('CC1', 'S1'), ('CC2', 'S2')"))
-        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount) VALUES ('CC1','Ord2','2026-04-10T09:00:00+05:30','Alice','999',800),('CC1','ORDX','2026-04-10T09:00:00+05:30','Bob','888',700),('CC2','ORD3','2026-04-10T09:00:00+05:30','Cara','777',600)"))
+        await session.execute(sa.text("INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, source_system) VALUES ('CC1','Ord2','2026-04-10T09:00:00+05:30','Alice','999',800,'TumbleDry'),('CC1','ORDX','2026-04-10T09:00:00+05:30','Bob','888',700,'TumbleDry'),('CC2','ORD3','2026-04-10T09:00:00+05:30','Cara','777',600,'TumbleDry')"))
         await session.execute(sa.text("INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES ('CC1','Ord2','2026-04-10T10:00:00+05:30','UPI',800),('CC1','ORDX','2026-04-10T10:00:00+05:30','CARD',700),('CC2','ORD3','2026-04-10T10:00:00+05:30','UPI',600)"))
         await session.execute(sa.text("INSERT INTO payment_collections (cost_center, order_number) VALUES ('CC1',' ORD1, ord2 / ORD3 ,,')"))
         await session.commit()
