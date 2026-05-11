@@ -125,7 +125,7 @@ async def _insert_order_and_sale(
 
 
 @pytest.mark.asyncio
-async def test_fetch_pending_deliveries_package_pending_tolerance(tmp_path, monkeypatch) -> None:
+async def test_fetch_pending_deliveries_package_pending_amount_uses_order_amount_formula(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "pending_deliveries.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -199,12 +199,12 @@ async def test_fetch_pending_deliveries_package_pending_tolerance(tmp_path, monk
         report_date=date(2025, 5, 20),
     )
 
-    assert data.total_count == 1
-    assert data.total_pending_amount == Decimal("218.00")
+    assert data.total_count == 5
+    assert data.total_pending_amount == Decimal("1085.89")
     assert len(data.summary_sections) == 1
-    assert {row.order_number for bucket in data.summary_sections[0].buckets for row in bucket.rows} == {
-        "ORD-NOT-COVERED"
-    }
+    assert {row.order_number for bucket in data.summary_sections[0].buckets for row in bucket.rows} == set(
+        pending_by_order
+    )
     included_row = next(
         row
         for bucket in data.summary_sections[0].buckets
@@ -249,7 +249,7 @@ async def test_fetch_pending_deliveries_includes_td_and_uc_orders(
         source_system="UClean",
         order_number="UC-001",
         gross_amount=Decimal("200.00"),
-        net_amount=Decimal("200.00"),
+        net_amount=Decimal("150.00"),
         payment_received=Decimal("50.00"),
         adjustments=Decimal("25.00"),
     )
@@ -268,6 +268,8 @@ async def test_fetch_pending_deliveries_includes_td_and_uc_orders(
     detail_rows = [row for bucket in data.cost_center_sections[0].buckets for row in bucket.rows]
     assert {row.order_number for row in detail_rows} == {"TD-001", "UC-001"}
     assert {row.source_system for row in detail_rows} == {"TumbleDry", "UClean"}
+    assert {row.order_number: row.order_amount for row in detail_rows}["UC-001"] == Decimal("200.00")
+    assert {row.order_number: row.pending_amount for row in detail_rows}["UC-001"] == Decimal("150.00")
 
 
 @pytest.mark.asyncio
@@ -359,7 +361,7 @@ async def test_fetch_pending_deliveries_excludes_recovery_statuses_from_main_buc
 
 
 @pytest.mark.asyncio
-async def test_fetch_pending_deliveries_uses_one_rupee_paid_in_full_tolerance_and_excludes_zero_orders(
+async def test_fetch_pending_deliveries_uses_pending_amount_formula_and_excludes_zero_orders(
     tmp_path, monkeypatch
 ) -> None:
     db_path = tmp_path / "pending_deliveries_paid_tolerance.db"
@@ -402,8 +404,8 @@ async def test_fetch_pending_deliveries_uses_one_rupee_paid_in_full_tolerance_an
         for bucket in section.buckets
         for row in bucket.rows
     }
-    assert reported_orders == {"UNDER-TOLERANCE"}
-    assert data.total_pending_amount == Decimal("2.00")
+    assert reported_orders == {"WITHIN-TOLERANCE", "UNDER-TOLERANCE"}
+    assert data.total_pending_amount == Decimal("3.00")
 
 
 @pytest.mark.asyncio
@@ -453,4 +455,5 @@ async def test_fetch_pending_deliveries_manual_recovery_excludes_zero_value_orde
     )
 
     assert [row.order_number for row in data.manual_recovery_rows] == ["RECOVERY-POSITIVE"]
+    assert data.manual_recovery_total_amount_at_risk == Decimal("50.00")
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Iterable, List
 
 import sqlalchemy as sa
@@ -68,14 +68,17 @@ class PendingDeliveriesReportData:
     total_pending_amount: Decimal
     total_count: int
     manual_recovery_rows: List[PendingDeliveryRow]
+    manual_recovery_total_amount_at_risk: Decimal
 
 
 def _decimal(value: object | None) -> Decimal:
     if value is None:
         return Decimal("0")
     if isinstance(value, Decimal):
-        return value
-    return Decimal(str(value))
+        numeric = value
+    else:
+        numeric = Decimal(str(value))
+    return numeric.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def _coerce_datetime(value: object) -> datetime | None:
@@ -200,45 +203,13 @@ async def fetch_pending_deliveries_report(
     )
     amount_expr = sa.func.coalesce(orders.c.order_amount, 0)
     adjustments_expr = sa.func.coalesce(sa.func.sum(sales.c.adjustments), 0)
-    has_package_payment_mode_expr = sa.func.max(
-        sa.case(
-            (
-                sa.func.lower(sa.func.coalesce(sales.c.payment_mode, "")) == "package",
-                1,
-            ),
-            else_=0,
-        )
-    )
     is_edited_order_expr = sa.func.max(
         sa.case((sales.c.is_edited_order.is_(True), 1), else_=0)
     )
     is_duplicate_expr = sa.func.max(
         sa.case((sales.c.is_duplicate.is_(True), 1), else_=0)
     )
-    paid_in_full_expr = paid_amount_expr + 1 >= amount_expr
     pending_amount_expr = sa.func.greatest(amount_expr - paid_amount_expr, 0)
-    package_pending_targets = (
-        amount_expr * Decimal("0.10"),
-        amount_expr * Decimal("0.15"),
-        amount_expr * Decimal("0.20"),
-        amount_expr * Decimal("0.35"),
-    )
-    package_pending_amount_covered_expr = sa.and_(
-        orders.c.source_system == "TumbleDry",
-        has_package_payment_mode_expr == 1,
-        amount_expr > 0,
-        sa.or_(
-            *[
-                sa.func.abs(pending_amount_expr - target_pending_amount) <= 1
-                for target_pending_amount in package_pending_targets
-            ]
-        ),
-    )
-    report_pending_amount_expr = sa.case(
-        (paid_in_full_expr, 0),
-        (package_pending_amount_covered_expr, 0),
-        else_=pending_amount_expr,
-    )
 
     excluded_recovery_statuses = (
         "TO_BE_RECOVERED",
@@ -260,7 +231,7 @@ async def fetch_pending_deliveries_report(
             orders.c.source_system,
             amount_expr.label("order_amount"),
             paid_amount_expr.label("paid_amount"),
-            report_pending_amount_expr.label("pending_amount"),
+            pending_amount_expr.label("pending_amount"),
             adjustments_expr.label("adjustments"),
             is_edited_order_expr.label("is_edited_order"),
             is_duplicate_expr.label("is_duplicate"),
@@ -292,7 +263,7 @@ async def fetch_pending_deliveries_report(
             amount_expr,
         )
         .having(amount_expr > 0)
-        .having(report_pending_amount_expr > 0)
+        .having(pending_amount_expr > 0)
     )
 
     tz = get_timezone()
@@ -426,6 +397,9 @@ async def fetch_pending_deliveries_report(
         (section.total_pending_amount for section in summary_sections), Decimal("0")
     )
     total_count = sum(section.total_count for section in summary_sections)
+    manual_recovery_total_amount_at_risk = sum(
+        (row.pending_amount for row in manual_recovery_rows), Decimal("0")
+    )
     return PendingDeliveriesReportData(
         report_date=report_date,
         summary_sections=summary_sections,
@@ -433,4 +407,5 @@ async def fetch_pending_deliveries_report(
         total_pending_amount=total_pending_amount,
         total_count=total_count,
         manual_recovery_rows=manual_recovery_rows,
+        manual_recovery_total_amount_at_risk=manual_recovery_total_amount_at_risk,
     )

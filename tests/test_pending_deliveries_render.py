@@ -69,6 +69,8 @@ def test_render_html_includes_due_date_column_and_value() -> None:
             "cost_center_sections": [cost_center_section],
             "total_count": 1,
             "total_pending_amount": Decimal("800.00"),
+            "manual_recovery_rows": [],
+            "manual_recovery_total_amount_at_risk": Decimal("0"),
         }
     )
 
@@ -77,5 +79,7 @@ def test_render_html_includes_due_date_column_and_value() -> None:
     assert "<strong>Timezone:</strong> Asia/Kolkata" in html
     assert "<strong>Run Environment:</strong> prod" in html
     assert "<th>Due Date</th>" in html
+    assert '<th class="text-right">Order Amount</th>' in html
+    assert "Payment Action Required" in html
     assert "10-May-2025</td>" in html
     assert "12-May-2025</td>" in html

@@ -111,6 +111,45 @@
       </tbody>
     </table>
 
+    <h2>Payment Action Required</h2>
+    <p class="store-meta"><strong>Amount at Risk:</strong> unresolved recovery rows are valued with Order Amount.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Age (Days)</th>
+          <th>Order Date</th>
+          <th>Due Date</th>
+          <th>Order No.</th>
+          <th>Customer</th>
+          <th class="text-right">Order Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if manual_recovery_rows %}
+        {% for row in manual_recovery_rows %}
+        <tr>
+          <td>{{ row.age_days }}</td>
+          <td>{{ row.order_date.strftime('%d-%b-%Y') }}</td>
+          <td>{{ row.default_due_date.strftime('%d-%b-%Y') }}</td>
+          <td>{{ row.order_number }}</td>
+          <td>{{ row.customer_name }}</td>
+          <td class="text-right">{{ row.order_amount | format_amount }}</td>
+        </tr>
+        {% endfor %}
+        {% else %}
+        <tr>
+          <td colspan="6" class="no-data">No payment-action recovery rows.</td>
+        </tr>
+        {% endif %}
+        <tr class="totals-row">
+          <td colspan="3">Total Amount at Risk</td>
+          <td>{{ manual_recovery_rows | length }}</td>
+          <td>&nbsp;</td>
+          <td class="text-right">{{ manual_recovery_total_amount_at_risk | format_amount }}</td>
+        </tr>
+      </tbody>
+    </table>
+
     {% for cost_center in cost_center_sections %}
     {% for bucket in cost_center.buckets %}
     <h3 class="bucket-title">
