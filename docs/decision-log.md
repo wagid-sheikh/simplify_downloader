@@ -8,6 +8,19 @@
 
 ---
 
+### DL-016
+- **Date:** 2026-05-11
+- **Status:** Active
+- **Decision:** Treat `vw_orders.order_amount` as the canonical business amount for reporting and payment/recovery decisions, while preserving raw `orders` amount columns as source/ingest fields.
+- **Context:** Raw CRM fields (`orders.net_amount`, `orders.gross_amount`, and `orders.adjustment`) can reflect source-system mechanics that are useful for synchronization but unsafe as direct business-reporting or payment-decision inputs. Reports need a single value with stable semantics and user-facing labeling.
+- **Evidence:** Canonical documentation now states that reports and decision-making use `vw_orders.order_amount`; direct report reads from `orders` are prohibited unless explicitly approved; ingest/sync code may still use raw columns for source synchronization, reconciliation, or raw-payload audit purposes.
+- **Implications:**
+  - Report queries and business-decision logic must use `vw_orders.order_amount` and label it as `Order Amount`.
+  - Payment comparisons use tolerance `1`; overpayments count as paid in full.
+  - Zero-value orders remain visible where descriptive order reporting needs them, but are excluded from missing-payment, pending-payment, and recovery action checks.
+  - Direct reads of raw `orders` amount columns in reports are policy violations unless explicitly approved and documented as exceptions.
+- **Follow-up:** Add/keep tests around report queries and payment/recovery checks so future changes do not regress to raw-column semantics.
+
 ## Initial reconstructed decisions
 
 ### DL-011

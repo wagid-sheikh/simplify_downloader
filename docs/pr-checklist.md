@@ -30,6 +30,9 @@ Use this before requesting review.
 - [ ] I reviewed impacts to `pipeline_run_summaries`, `orders_sync_log`, or `documents` payload structure if touched.
 - [ ] If extraction/ingest semantics changed, I reviewed dedupe/row-count/audit implications.
 - [ ] For pending deliveries changes, I validated recovery-status exclusions (`TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`) in both summary buckets and detailed rows.
+- [ ] For reports or payment/recovery decision logic, I used `vw_orders.order_amount` and did not read raw `orders.net_amount`, `orders.gross_amount`, or `orders.adjustment` directly unless the exception was explicitly approved and documented.
+- [ ] For payment comparisons, I applied tolerance `1`, treated overpayments as paid in full, excluded zero-value orders from missing-payment/pending-payment/recovery action checks, and used `Order Amount` as the user-facing label.
+- [ ] For ingest/sync changes, any use of raw order amount columns is limited to source synchronization, reconciliation, or raw-payload audit purposes—not business reporting or payment decisions.
 
 ## 5) Deployment and ops impact
 

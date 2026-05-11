@@ -69,6 +69,18 @@ Practical map of where to work for major capabilities.
 - **Operational behavior:** Lead-change rows are grouped (created/updated/transitions), deduped by stable lead identity, capped per group, and report `overflow_count` for truncated rows.
 - **Section semantics:** Open leads are backlog-style (carry forward until closure), while cancelled/completed cohorts are day-event-style (counted on event day). Completed reconciliation matches on `orders.store_code + orders.mobile_number` and includes `orders.order_number` in the reported output.
 
+## 6.2) Order amount and payment decision contract
+
+- **Purpose:** Keep source synchronization fields separate from business reporting/payment-decision values.
+- **Canonical business amount:** Use `vw_orders.order_amount` for reports, payment status decisions, recovery action decisions, and user-facing totals/labels. Labels should say `Order Amount`.
+- **Raw source fields:** `orders.net_amount`, `orders.gross_amount`, and `orders.adjustment` are source/ingest fields. TD/UC ingest and sync code may continue to use them when synchronizing CRM data, reconciling source payloads, or auditing raw imported values.
+- **Prohibited path:** Direct report reads from `orders` are prohibited unless explicitly approved for a documented exception; report queries should go through `vw_orders` for order value semantics.
+- **Payment rules:** Compare payments to `vw_orders.order_amount` with tolerance `1`; overpayments are paid in full. Zero-value orders remain visible in descriptive order reports but are excluded from missing-payment, pending-payment, and recovery action checks.
+- **Primary affected paths:**
+  - `app/reports/**`
+  - `app/crm_downloader/**` ingest/sync modules when deciding whether usage is source synchronization vs business decision logic
+  - SQL/views/migrations that define or consume `vw_orders`
+
 ## 7) Orders sync run profiler (window orchestrator)
 
 - **Purpose:** Run TD/UC sync in date windows, aggregate status, detect missing windows, notify.

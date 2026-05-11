@@ -65,6 +65,14 @@ Container paths:
    - Pending deliveries main buckets/details include both TD and UC sources by default.
    - Orders with recovery statuses `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF` are excluded from pending-deliveries aging buckets/details.
 
+8. **Order amount business contract**
+   - Raw `orders.net_amount`, `orders.gross_amount`, and `orders.adjustment` are source/ingest fields.
+   - Reports and payment/recovery decisions must use `vw_orders.order_amount`; direct report reads from `orders` are prohibited unless explicitly approved.
+   - Ingest/sync code may use raw columns only for source synchronization, reconciliation, or raw-payload audit purposes.
+   - Payment comparisons use tolerance `1`; overpayments count as paid in full.
+   - Zero-value orders stay visible in descriptive order reporting but are excluded from missing-payment, pending-payment, and recovery action checks.
+   - User-facing labels should say `Order Amount`.
+
 
 ## Change discipline (required)
 
