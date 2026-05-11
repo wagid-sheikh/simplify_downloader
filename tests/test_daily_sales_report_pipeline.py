@@ -38,6 +38,15 @@ def _create_tables(database_url: str) -> None:
         conn.execute(
             sa.text(
                 """
+                CREATE VIEW vw_orders AS
+                SELECT *, COALESCE(net_amount, 0) AS order_amount
+                FROM orders
+                """
+            )
+        )
+        conn.execute(
+            sa.text(
+                """
                 CREATE TABLE order_line_items (
                     cost_center TEXT,
                     order_number TEXT,
@@ -125,6 +134,8 @@ def test_to_be_recovered_template_renders_auto_cleared_empty_state() -> None:
         in html
     )
     assert "No unresolved TO_BE_RECOVERED orders" in html
+    assert "Order Amount" in html
+    assert "Order Value" not in html
     assert (
         "<strong>Auto-cleared orders with payment proof in sales and "
         "payment collections:</strong>" in html

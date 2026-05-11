@@ -20,7 +20,7 @@ def build_context(
     auto_cleared_order_numbers_text: str = "",
 ) -> dict[str, object]:
     row_list = list(rows)
-    total_recoverable = sum((row.order_value for row in row_list), Decimal("0"))
+    total_recoverable = sum((row.order_amount for row in row_list), Decimal("0"))
     return {
         "company_name": company_name,
         "report_date_display": report_date.strftime("%d-%b-%Y"),

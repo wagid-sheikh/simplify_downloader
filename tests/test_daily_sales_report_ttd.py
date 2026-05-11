@@ -333,7 +333,7 @@ def test_daily_sales_report_missed_leads_micro_layout_rendering() -> None:
     assert "TD Leads Sync Upsert Metrics (Latest Run)" not in html
     assert "TD Leads Sync Lead Changes (Actionable Details)" not in html
     assert "Alice" in html
-    assert "Net Amount" in html
+    assert "Order Amount" in html
     assert "Payment Received" in html
 
 
@@ -405,7 +405,7 @@ def test_daily_sales_report_same_day_section_uses_shared_table_partial() -> None
                 delivery_or_payment_date=datetime(2026, 4, 29, 10, 45),
                 payment_mode="UPI",
                 hours=Decimal("2.5"),
-                net_amount=Decimal("500"),
+                order_amount=Decimal("500"),
                 payment_received=Decimal("500"),
             )
         ],

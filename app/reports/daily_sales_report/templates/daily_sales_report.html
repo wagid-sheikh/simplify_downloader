@@ -577,7 +577,7 @@
           <th>Order Date</th>
           <th class="label">Customer Name</th>
           <th class="label">Mobile Number</th>
-          <th>Order Value</th>
+          <th>Order Amount</th>
         </tr>
       </thead>
       <tbody>
@@ -590,7 +590,7 @@
           <td>{{ row.order_date | format_ddmmyyyy }}</td>
           <td class="label">{{ row.customer_name or "--" }}</td>
           <td class="label">{{ row.mobile_number or "--" }}</td>
-          <td>{{ row.order_value | format_amount }}</td>
+          <td>{{ row.order_amount | format_amount }}</td>
         </tr>
         {% endfor %}
         {% else %}

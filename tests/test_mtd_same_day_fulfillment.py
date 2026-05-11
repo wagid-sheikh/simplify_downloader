@@ -184,7 +184,7 @@ async def test_fetch_missing_payments_mtd_uses_month_window_and_view(tmp_path, m
                 o.order_date,
                 o.customer_name,
                 o.mobile_number,
-                COALESCE(CASE WHEN o.source_system = 'TumbleDry' THEN o.net_amount ELSE o.gross_amount END, 0) AS net_amount
+                COALESCE(o.net_amount, 0) AS net_amount
             FROM orders o
             JOIN sales s
                 ON s.cost_center = o.cost_center
@@ -216,7 +216,7 @@ async def test_fetch_missing_payments_mtd_uses_month_window_and_view(tmp_path, m
                 net_amount, gross_amount, source_system
             ) VALUES
                 ('CC1', 'IN-START', '2026-04-01T00:00:00+05:30', 'Alice', '999', 100, 130, 'TumbleDry'),
-                ('CC1', 'IN-END', '2026-04-29T23:59:59+05:30', 'Bob', '888', 200, 260, 'UC'),
+                ('CC1', 'IN-END', '2026-04-29T23:59:59+05:30', 'Bob', '888', 0, 260, 'UC'),
                 ('CC1', 'MATCHED', '2026-04-15T12:00:00+05:30', 'Mina', '555', 700, 900, 'UC'),
                 ('CC1', 'OUT-BEFORE', '2026-03-31T23:59:59+05:30', 'Cora', '777', 300, 390, 'TumbleDry'),
                 ('CC1', 'OUT-AFTER', '2026-04-30T00:00:00+05:30', 'Dan', '666', 400, 520, 'UC'),
