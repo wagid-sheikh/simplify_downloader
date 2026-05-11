@@ -31,6 +31,13 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 - Dashboard/store tables and persistence helpers: `app/common/dashboard_store.py`.
 - CSV ingestion schema/model pipeline: `app/common/ingest/{schemas.py,models.py,service.py}`.
 
+### 2.1) Order amount and payment-decision contract
+- Raw `orders.net_amount`, `orders.gross_amount`, and `orders.adjustment` are source/ingest fields. They are preserved for synchronization fidelity and may be read by ingest/sync code when the purpose is source synchronization, reconciliation, or auditing of raw CRM payloads.
+- Business reports, operational decision-making, payment status checks, recovery checks, and user-facing report totals must use `vw_orders.order_amount` as the canonical order value. Direct report reads from `orders` are prohibited unless explicitly approved for a documented exception.
+- User-facing labels for this business value should say `Order Amount` rather than raw/source column names.
+- Payment comparisons use tolerance `1` when comparing collected/paid amounts to `vw_orders.order_amount`. Overpayments are treated as paid in full.
+- Zero-value orders remain visible as orders in descriptive reporting where order presence matters, but they are excluded from missing-payment, pending-payment, and recovery action checks.
+
 ### 3) Dashboard downloader orchestration
 - Orchestrator: `app/dashboard_downloader/pipeline.py`.
 - CLI/router: `app/dashboard_downloader/cli.py`.
