@@ -55,7 +55,9 @@ async def test_fetch_same_day_fulfillment_rows_filters_window_and_aggregates(tmp
         {'service_name': 'Wash', 'garment_name': 'Shirt'},
         {'service_name': 'Iron', 'garment_name': 'Pant'},
     ]
+    assert str(rows[0].order_amount) == '800'
     assert str(rows[0].payment_received) == '800'
+    assert not hasattr(rows[0], 'net_amount')
 
 
 @pytest.mark.asyncio
@@ -92,5 +94,8 @@ async def test_fetch_same_day_fulfillment_rows_postgres_sql_uses_timezone(monkey
     compiled = str(captured['stmt'].compile(dialect=postgresql.dialect(), compile_kwargs={'literal_binds': True}))
     assert 'timezone' in compiled.lower()
     assert 'string_agg' in compiled.lower()
-    assert 'regexp_split_to_table' in compiled.lower()
-    assert '.token' in compiled.lower()
+    compiled_lower = compiled.lower()
+    assert 'regexp_split_to_table' in compiled_lower
+    assert '.token' in compiled_lower
+    assert 'vw_orders.order_amount' in compiled_lower
+    assert 'net_amount' not in compiled_lower
