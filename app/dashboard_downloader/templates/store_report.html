@@ -454,7 +454,7 @@
         <th>Order Date</th>
         <th>Del. Date</th>
         <th>Age</th>
-        <th class="text-right">Net Amount</th>
+        <th class="text-right">Order Amount</th>
         <th>Delivered (Y/N)</th>
         <th>Comments</th>
       </tr>
@@ -468,8 +468,8 @@
         <td>{{ row.committed_date }}</td>
         <td>{{ row.age_days }}</td>
         <td class="text-right">
-          {% if row.net_amount is not none %}
-          {{ '%.2f'|format(row.net_amount) }}
+          {% if row.order_amount is not none %}
+          {{ '%.2f'|format(row.order_amount) }}
           {% else %}
           —
           {% endif %}
