@@ -305,7 +305,8 @@ async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amoun
                 ) VALUES
                     ('CC1', 'TD-MISSING', '2026-04-29T09:00:00+05:30', 'Tara', '9000000001', 500, 650, 'TumbleDry'),
                     ('CC1', 'UC-MISSING', '2026-04-29T10:00:00+05:30', 'Uma', '9000000002', 700, 910, 'UC'),
-                    ('CC1', 'UC-MATCHED', '2026-04-29T11:00:00+05:30', 'Maya', '9000000003', 300, 390, 'UC')
+                    ('CC1', 'UC-MATCHED', '2026-04-29T11:00:00+05:30', 'Maya', '9000000003', 300, 390, 'UC'),
+                    ('CC1', 'ZERO-VALUE', '2026-04-29T11:30:00+05:30', 'Zed', '9000000004', 0, 0, 'TumbleDry')
                 """
             )
         )
@@ -318,7 +319,8 @@ async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amoun
                 ) VALUES
                     ('CC1', 'TD-MISSING', '2026-04-29T12:00:00+05:30', 500, 'UPI', 0, 0),
                     ('CC1', 'UC-MISSING', '2026-04-29T12:30:00+05:30', 910, 'CARD', 0, 0),
-                    ('CC1', 'UC-MATCHED', '2026-04-29T13:00:00+05:30', 390, 'CASH', 0, 0)
+                    ('CC1', 'UC-MATCHED', '2026-04-29T13:00:00+05:30', 390, 'CASH', 0, 0),
+                    ('CC1', 'ZERO-VALUE', '2026-04-29T13:30:00+05:30', 0, 'CASH', 0, 0)
                 """
             )
         )
@@ -1415,3 +1417,43 @@ async def test_to_be_compensated_daily_sales_recovery_section_is_not_auto_cleare
     assert status["recovery_status"] == "TO_BE_COMPENSATED"
     assert status["recovery_category"] == "OVER_COLLECTION"
     assert status["recovery_notes"] is None
+
+
+def test_build_manual_recovery_sections_excludes_zero_value_orders() -> None:
+    rows, compensated_rows, total, compensated_total = _data_module._build_manual_recovery_sections(
+        [
+            {
+                "cost_center": "CC1",
+                "order_number": "RECOVERY-ZERO",
+                "order_date": date(2026, 4, 29),
+                "customer_name": "Zero",
+                "mobile_number": "111",
+                "order_amount": Decimal("0"),
+                "recovery_status": "TO_BE_RECOVERED",
+            },
+            {
+                "cost_center": "CC1",
+                "order_number": "RECOVERY-POSITIVE",
+                "order_date": date(2026, 4, 29),
+                "customer_name": "Paid",
+                "mobile_number": "222",
+                "order_amount": Decimal("75"),
+                "recovery_status": "TO_BE_RECOVERED",
+            },
+            {
+                "cost_center": "CC1",
+                "order_number": "COMPENSATION-ZERO",
+                "order_date": date(2026, 4, 29),
+                "customer_name": "Comp Zero",
+                "mobile_number": "333",
+                "order_amount": Decimal("0"),
+                "recovery_status": "TO_BE_COMPENSATED",
+            },
+        ],
+        tz=ZoneInfo("Asia/Kolkata"),
+    )
+
+    assert [row.order_number for row in rows] == ["RECOVERY-POSITIVE"]
+    assert compensated_rows == []
+    assert total == Decimal("75")
+    assert compensated_total == Decimal("0")

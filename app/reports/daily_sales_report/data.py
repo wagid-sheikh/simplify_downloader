@@ -314,8 +314,8 @@ def _build_manual_recovery_sections(
         cost_center = str(record.get("cost_center") or "")
         order_date = _to_local_date(record.get("order_date"), tz)
         order_value = _decimal(record.get("order_amount"))
-        if order_value < 0:
-            order_value = Decimal("0")
+        if order_value <= 0:
+            continue
         order_row = RecoveryOrderRow(
             cost_center=cost_center,
             order_number=str(record.get("order_number") or ""),
@@ -1158,6 +1158,7 @@ async def fetch_daily_sales_report(
             )
             .where(missing_orders_view.c.order_date >= ranges["start_day"])
             .where(missing_orders_view.c.order_date < ranges["next_day"])
+            .where(missing_orders_view.c.net_amount > 0)
             .order_by(
                 missing_orders_view.c.cost_center,
                 missing_orders_view.c.order_date,
