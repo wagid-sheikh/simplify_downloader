@@ -911,6 +911,108 @@ async def test_fetch_daily_sales_report_updates_cost_center_targets_mtd_fields(t
 
 
 @pytest.mark.asyncio
+async def test_fetch_daily_sales_report_order_amount_from_vw_orders_keeps_collections_from_sales(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "daily_sales_report_order_vs_collection.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 1, 19)
+
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO cost_center (cost_center, description, target_type, is_active)
+                VALUES ('CC-UC', 'UC Cost Center', 'value', 1)
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders (
+                    cost_center, order_number, order_date, net_amount, gross_amount, source_system
+                ) VALUES ('CC-UC', 'UC-1', '2026-01-19 10:00:00', 0, 1000, 'UC')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO sales (
+                    cost_center, payment_date, payment_received, adjustments, order_number, is_edited_order
+                ) VALUES ('CC-UC', '2026-01-19 12:00:00', 400, 0, 'UC-1', 0)
+                """
+            )
+        )
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    uc_row = next(row for row in report.rows if row.cost_center == "CC-UC")
+
+    assert uc_row.sales_ftd == 1000
+    assert uc_row.sales_mtd == 1000
+    assert uc_row.collections_ftd == 400
+    assert uc_row.collections_mtd == 400
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_edited_loss_uses_standardized_order_amount(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "daily_sales_report_edited_order_amount.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 1, 19)
+
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO cost_center (cost_center, description, target_type, is_active)
+                VALUES ('CC-UC', 'UC Cost Center', 'value', 1)
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders (
+                    cost_center, order_number, order_date, net_amount, gross_amount, source_system
+                ) VALUES ('CC-UC', 'UC-EDIT', '2026-01-18 10:00:00', 0, 1000, 'UC')
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO sales (
+                    cost_center, payment_date, payment_received, adjustments, order_number, is_edited_order
+                ) VALUES ('CC-UC', '2026-01-19 12:00:00', 700, 0, 'UC-EDIT', 1)
+                """
+            )
+        )
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    assert [
+        (row.order_number, row.original_value, row.new_value, row.loss)
+        for row in report.edited_orders
+    ] == [("UC-EDIT", Decimal("1000"), Decimal("700"), Decimal("300"))]
+    assert report.edited_orders_summary is not None
+    assert report.edited_orders_summary.sum_orig_distinct == 1000
+    assert report.edited_orders_summary.sum_new_distinct == 700
+
+
+@pytest.mark.asyncio
 async def test_fetch_daily_sales_report_collections_preaggregated_by_normalized_order(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "daily_sales_report_collections_grain.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
