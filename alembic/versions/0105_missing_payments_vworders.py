@@ -54,7 +54,7 @@ SELECT
     order_date,
     customer_name,
     mobile_number,
-    order_amount AS net_amount
+    order_amount::numeric(12, 2) AS net_amount
 FROM candidate_orders
 WHERE order_amount > 0
   AND NOT (paid_amount + 1 >= order_amount);
@@ -107,7 +107,7 @@ SELECT
     order_date,
     customer_name,
     mobile_number,
-    order_amount AS net_amount
+    CAST(order_amount AS NUMERIC(12, 2)) AS net_amount
 FROM candidate_orders
 WHERE order_amount > 0
   AND NOT (paid_amount + 1 >= order_amount);
