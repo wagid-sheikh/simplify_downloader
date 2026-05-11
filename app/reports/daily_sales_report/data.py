@@ -11,6 +11,7 @@ import sqlalchemy as sa
 from app.common.date_utils import get_timezone
 from app.common.db import session_scope
 from app.common.lead_rules import resolve_cancelled_flag
+from app.common.order_recovery import clear_to_be_recovered_order
 from app.reports.shared.line_items_summary import summarize_line_items
 from app.reports.shared.same_day_fulfillment import fetch_same_day_fulfillment_rows, same_day_date_expr, string_list_agg
 
@@ -259,16 +260,11 @@ async def _clear_resolved_to_be_recovered_orders(
             f"sales.id={_format_evidence_id(sales_id)}, "
             f"payment_collections.payment_id={_format_evidence_id(payment_id)}"
         )
-        await session.execute(
-            sa.update(orders)
-            .where(orders.c.cost_center == cost_center)
-            .where(orders.c.order_number == order_number)
-            .where(orders.c.recovery_status == "TO_BE_RECOVERED")
-            .values(
-                recovery_status="NONE",
-                recovery_category=None,
-                recovery_notes=recovery_notes,
-            )
+        await clear_to_be_recovered_order(
+            session=session,
+            cost_center=cost_center,
+            order_number=order_number,
+            recovery_notes=recovery_notes,
         )
     await session.commit()
     return auto_cleared_order_numbers
@@ -698,12 +694,10 @@ async def fetch_daily_sales_report(
         sa.column("recovery_expected_resolution_date"),
     )
     orders_status_updates = sa.table(
-        "orders",
+        "vw_orders",
         sa.column("cost_center"),
         sa.column("order_number"),
         sa.column("recovery_status"),
-        sa.column("recovery_category"),
-        sa.column("recovery_notes"),
     )
     payment_collections = sa.table(
         "payment_collections",
