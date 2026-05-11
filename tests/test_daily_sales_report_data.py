@@ -67,6 +67,7 @@ def _create_tables(database_url: str) -> None:
                     mobile_number TEXT,
                     net_amount NUMERIC,
                     gross_amount NUMERIC,
+                    adjustment NUMERIC,
                     default_due_date TIMESTAMP,
                     source_system TEXT,
                     recovery_status TEXT,
@@ -85,15 +86,68 @@ def _create_tables(database_url: str) -> None:
                 CREATE VIEW vw_orders AS
                 SELECT
                     *,
-                    COALESCE(
-                        CASE
-                            WHEN source_system = 'TumbleDry' THEN net_amount
-                            ELSE gross_amount
-                        END,
-                        net_amount,
-                        gross_amount,
-                        0
-                    ) AS order_amount
+                    CASE
+                        WHEN (
+                            CASE
+                                WHEN COALESCE(adjustment, 0) > 0 THEN
+                                    COALESCE(
+                                        CASE
+                                            WHEN source_system = 'TumbleDry'
+                                                 AND net_amount IS NOT NULL
+                                                 AND net_amount <> 0
+                                                THEN net_amount
+                                            WHEN source_system = 'TumbleDry'
+                                                THEN gross_amount
+                                            ELSE gross_amount
+                                        END,
+                                        0
+                                    ) - COALESCE(adjustment, 0)
+                                ELSE
+                                    COALESCE(
+                                        CASE
+                                            WHEN source_system = 'TumbleDry'
+                                                 AND net_amount IS NOT NULL
+                                                 AND net_amount <> 0
+                                                THEN net_amount
+                                            WHEN source_system = 'TumbleDry'
+                                                THEN gross_amount
+                                            ELSE gross_amount
+                                        END,
+                                        0
+                                    )
+                            END
+                        ) <= 0 THEN 0
+                        ELSE (
+                            CASE
+                                WHEN COALESCE(adjustment, 0) > 0 THEN
+                                    COALESCE(
+                                        CASE
+                                            WHEN source_system = 'TumbleDry'
+                                                 AND net_amount IS NOT NULL
+                                                 AND net_amount <> 0
+                                                THEN net_amount
+                                            WHEN source_system = 'TumbleDry'
+                                                THEN gross_amount
+                                            ELSE gross_amount
+                                        END,
+                                        0
+                                    ) - COALESCE(adjustment, 0)
+                                ELSE
+                                    COALESCE(
+                                        CASE
+                                            WHEN source_system = 'TumbleDry'
+                                                 AND net_amount IS NOT NULL
+                                                 AND net_amount <> 0
+                                                THEN net_amount
+                                            WHEN source_system = 'TumbleDry'
+                                                THEN gross_amount
+                                            ELSE gross_amount
+                                        END,
+                                        0
+                                    )
+                            END
+                        )
+                    END AS order_amount
                 FROM orders
                 """
             )
@@ -287,8 +341,8 @@ async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amoun
                     o.order_date,
                     o.customer_name,
                     o.mobile_number,
-                    o.net_amount
-                FROM orders o
+                    o.order_amount AS net_amount
+                FROM vw_orders o
                 JOIN sales s
                     ON s.cost_center = o.cost_center
                    AND s.order_number = o.order_number
@@ -305,7 +359,7 @@ async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amoun
                     o.order_date,
                     o.customer_name,
                     o.mobile_number,
-                    o.net_amount
+                    o.order_amount
                 """
             )
         )
@@ -873,10 +927,10 @@ async def test_fetch_daily_sales_report_updates_cost_center_targets_mtd_fields(t
         await session.execute(
             sa.text(
                 """
-                INSERT INTO orders (cost_center, order_number, order_date, net_amount)
+                INSERT INTO orders (cost_center, order_number, order_date, net_amount, source_system)
                 VALUES
-                    ('CC-TD', 'ORD-1', '2026-01-05 10:00:00', 100),
-                    ('CC-TD', 'ORD-2', '2026-01-10 11:00:00', 60)
+                    ('CC-TD', 'ORD-1', '2026-01-05 10:00:00', 100, 'TumbleDry'),
+                    ('CC-TD', 'ORD-2', '2026-01-10 11:00:00', 60, 'TumbleDry')
                 """
             )
         )

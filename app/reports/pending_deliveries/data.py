@@ -209,6 +209,7 @@ async def fetch_pending_deliveries_report(
     is_duplicate_expr = sa.func.max(
         sa.case((sales.c.is_duplicate.is_(True), 1), else_=0)
     )
+    paid_in_full_tolerance = Decimal("1")
     pending_amount_expr = sa.func.greatest(amount_expr - paid_amount_expr, 0)
 
     excluded_recovery_statuses = (
@@ -263,7 +264,7 @@ async def fetch_pending_deliveries_report(
             amount_expr,
         )
         .having(amount_expr > 0)
-        .having(pending_amount_expr > 0)
+        .having(pending_amount_expr > paid_in_full_tolerance)
     )
 
     tz = get_timezone()

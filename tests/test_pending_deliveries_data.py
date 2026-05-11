@@ -37,15 +37,68 @@ def _create_tables(database_url: str) -> None:
                 CREATE VIEW vw_orders AS
                 SELECT
                     *,
-                    COALESCE(
-                        CASE
-                            WHEN source_system = 'TumbleDry' THEN net_amount
-                            ELSE gross_amount
-                        END,
-                        net_amount,
-                        gross_amount,
-                        0
-                    ) AS order_amount
+                    CASE
+                        WHEN (
+                            CASE
+                                WHEN COALESCE(adjustment, 0) > 0 THEN
+                                    COALESCE(
+                                        CASE
+                                            WHEN source_system = 'TumbleDry'
+                                                 AND net_amount IS NOT NULL
+                                                 AND net_amount <> 0
+                                                THEN net_amount
+                                            WHEN source_system = 'TumbleDry'
+                                                THEN gross_amount
+                                            ELSE gross_amount
+                                        END,
+                                        0
+                                    ) - COALESCE(adjustment, 0)
+                                ELSE
+                                    COALESCE(
+                                        CASE
+                                            WHEN source_system = 'TumbleDry'
+                                                 AND net_amount IS NOT NULL
+                                                 AND net_amount <> 0
+                                                THEN net_amount
+                                            WHEN source_system = 'TumbleDry'
+                                                THEN gross_amount
+                                            ELSE gross_amount
+                                        END,
+                                        0
+                                    )
+                            END
+                        ) <= 0 THEN 0
+                        ELSE (
+                            CASE
+                                WHEN COALESCE(adjustment, 0) > 0 THEN
+                                    COALESCE(
+                                        CASE
+                                            WHEN source_system = 'TumbleDry'
+                                                 AND net_amount IS NOT NULL
+                                                 AND net_amount <> 0
+                                                THEN net_amount
+                                            WHEN source_system = 'TumbleDry'
+                                                THEN gross_amount
+                                            ELSE gross_amount
+                                        END,
+                                        0
+                                    ) - COALESCE(adjustment, 0)
+                                ELSE
+                                    COALESCE(
+                                        CASE
+                                            WHEN source_system = 'TumbleDry'
+                                                 AND net_amount IS NOT NULL
+                                                 AND net_amount <> 0
+                                                THEN net_amount
+                                            WHEN source_system = 'TumbleDry'
+                                                THEN gross_amount
+                                            ELSE gross_amount
+                                        END,
+                                        0
+                                    )
+                            END
+                        )
+                    END AS order_amount
                 FROM orders
                 """
             )
@@ -404,8 +457,8 @@ async def test_fetch_pending_deliveries_uses_pending_amount_formula_and_excludes
         for bucket in section.buckets
         for row in bucket.rows
     }
-    assert reported_orders == {"WITHIN-TOLERANCE", "UNDER-TOLERANCE"}
-    assert data.total_pending_amount == Decimal("3.00")
+    assert reported_orders == {"UNDER-TOLERANCE"}
+    assert data.total_pending_amount == Decimal("2.00")
 
 
 @pytest.mark.asyncio
