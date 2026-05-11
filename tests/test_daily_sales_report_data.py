@@ -274,6 +274,42 @@ async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amoun
     db_path = tmp_path / "daily_sales_report_missing_payments.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
+    engine = sa.create_engine(database_url.replace("+aiosqlite", ""))
+    with engine.begin() as conn:
+        conn.execute(sa.text("DROP VIEW vw_orders_missing_in_payment_collections"))
+        conn.execute(
+            sa.text(
+                """
+                CREATE VIEW vw_orders_missing_in_payment_collections AS
+                SELECT
+                    o.cost_center,
+                    o.order_number,
+                    o.order_date,
+                    o.customer_name,
+                    o.mobile_number,
+                    o.net_amount
+                FROM orders o
+                JOIN sales s
+                    ON s.cost_center = o.cost_center
+                   AND s.order_number = o.order_number
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM payment_collections pc
+                    WHERE pc.cost_center = o.cost_center
+                      AND (',' || upper(replace(replace(coalesce(pc.order_number, ''), ' ', ''), '/', ',')) || ',')
+                          LIKE ('%,' || upper(replace(coalesce(o.order_number, ''), ' ', '')) || ',%')
+                )
+                GROUP BY
+                    o.cost_center,
+                    o.order_number,
+                    o.order_date,
+                    o.customer_name,
+                    o.mobile_number,
+                    o.net_amount
+                """
+            )
+        )
+    engine.dispose()
 
     tz = ZoneInfo("Asia/Kolkata")
     monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
@@ -304,7 +340,7 @@ async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amoun
                     net_amount, gross_amount, source_system
                 ) VALUES
                     ('CC1', 'TD-MISSING', '2026-04-29T09:00:00+05:30', 'Tara', '9000000001', 500, 650, 'TumbleDry'),
-                    ('CC1', 'UC-MISSING', '2026-04-29T10:00:00+05:30', 'Uma', '9000000002', 700, 910, 'UC'),
+                    ('CC1', 'UC-MISSING', '2026-04-29T10:00:00+05:30', 'Uma', '9000000002', 0, 910, 'UC'),
                     ('CC1', 'UC-MATCHED', '2026-04-29T11:00:00+05:30', 'Maya', '9000000003', 300, 390, 'UC'),
                     ('CC1', 'ZERO-VALUE', '2026-04-29T11:30:00+05:30', 'Zed', '9000000004', 0, 0, 'TumbleDry')
                 """

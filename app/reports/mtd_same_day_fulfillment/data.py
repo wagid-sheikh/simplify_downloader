@@ -55,6 +55,15 @@ async def fetch_missing_payments_mtd(*, database_url: str, report_date: date) ->
         sa.column("mobile_number"),
         sa.column("net_amount"),
     )
+    orders = sa.table(
+        "vw_orders",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("order_date"),
+        sa.column("customer_name"),
+        sa.column("mobile_number"),
+        sa.column("order_amount"),
+    )
     tz = get_timezone()
     start_month = datetime.combine(report_date.replace(day=1), time.min, tzinfo=tz)
     next_day = datetime.combine(report_date, time.min, tzinfo=tz) + timedelta(days=1)
@@ -63,15 +72,24 @@ async def fetch_missing_payments_mtd(*, database_url: str, report_date: date) ->
         sa.select(
             missing_view.c.cost_center,
             missing_view.c.order_number,
-            missing_view.c.order_date,
-            missing_view.c.customer_name,
-            missing_view.c.mobile_number,
-            missing_view.c.net_amount.label("order_amount"),
+            orders.c.order_date,
+            orders.c.customer_name,
+            orders.c.mobile_number,
+            orders.c.order_amount,
         )
-        .where(missing_view.c.order_date >= start_month)
-        .where(missing_view.c.order_date < next_day)
-        .where(missing_view.c.net_amount > 0)
-        .order_by(missing_view.c.cost_center, missing_view.c.order_date, missing_view.c.order_number)
+        .select_from(
+            missing_view.join(
+                orders,
+                sa.and_(
+                    orders.c.cost_center == missing_view.c.cost_center,
+                    orders.c.order_number == missing_view.c.order_number,
+                ),
+            )
+        )
+        .where(orders.c.order_date >= start_month)
+        .where(orders.c.order_date < next_day)
+        .where(orders.c.order_amount > 0)
+        .order_by(missing_view.c.cost_center, orders.c.order_date, missing_view.c.order_number)
     )
 
     rows: list[MissingPaymentRow] = []

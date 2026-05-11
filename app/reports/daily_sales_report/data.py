@@ -74,6 +74,10 @@ class RecoveryOrderRow:
     mobile_number: str
     order_value: Decimal
 
+    @property
+    def order_amount(self) -> Decimal:
+        return self.order_value
+
 
 @dataclass
 class MissingPaymentRow:
@@ -1151,17 +1155,26 @@ async def fetch_daily_sales_report(
             sa.select(
                 missing_orders_view.c.cost_center,
                 missing_orders_view.c.order_number,
-                missing_orders_view.c.order_date,
-                missing_orders_view.c.customer_name,
-                missing_orders_view.c.mobile_number,
-                missing_orders_view.c.net_amount.label("order_amount"),
+                orders.c.order_date,
+                orders.c.customer_name,
+                orders.c.mobile_number,
+                orders.c.order_amount,
             )
-            .where(missing_orders_view.c.order_date >= ranges["start_day"])
-            .where(missing_orders_view.c.order_date < ranges["next_day"])
-            .where(missing_orders_view.c.net_amount > 0)
+            .select_from(
+                missing_orders_view.join(
+                    orders,
+                    sa.and_(
+                        orders.c.cost_center == missing_orders_view.c.cost_center,
+                        orders.c.order_number == missing_orders_view.c.order_number,
+                    ),
+                )
+            )
+            .where(orders.c.order_date >= ranges["start_day"])
+            .where(orders.c.order_date < ranges["next_day"])
+            .where(orders.c.order_amount > 0)
             .order_by(
                 missing_orders_view.c.cost_center,
-                missing_orders_view.c.order_date,
+                orders.c.order_date,
                 missing_orders_view.c.order_number,
             )
         )
