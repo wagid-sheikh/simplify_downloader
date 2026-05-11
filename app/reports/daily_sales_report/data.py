@@ -531,12 +531,12 @@ def _build_sales_agg(sales: sa.Table, ranges: dict[str, datetime]) -> sa.Subquer
         ).where(sa.and_(valid_order_number, lmtd_condition)),
     ).subquery()
 
-    sales_per_order = (
+    collections_per_order = (
         sa.select(
             periodized_sales.c.cost_center,
             periodized_sales.c.order_number,
             periodized_sales.c.period_bucket,
-            sa.func.coalesce(sa.func.sum(periodized_sales.c.payment_received), 0).label("order_amount"),
+            sa.func.coalesce(sa.func.sum(periodized_sales.c.payment_received), 0).label("collection_amount"),
         )
         .group_by(
             periodized_sales.c.cost_center,
@@ -548,19 +548,29 @@ def _build_sales_agg(sales: sa.Table, ranges: dict[str, datetime]) -> sa.Subquer
 
     def _sum_when_period(period_bucket: str) -> sa.ColumnElement:
         return sa.func.coalesce(
-            sa.func.sum(sa.case((sales_per_order.c.period_bucket == period_bucket, sales_per_order.c.order_amount), else_=0)),
+            sa.func.sum(
+                sa.case(
+                    (
+                        collections_per_order.c.period_bucket == period_bucket,
+                        collections_per_order.c.collection_amount,
+                    ),
+                    else_=0,
+                )
+            ),
             0,
         )
 
     def _count_when_period(period_bucket: str) -> sa.ColumnElement:
         return sa.func.coalesce(
-            sa.func.sum(sa.case((sales_per_order.c.period_bucket == period_bucket, 1), else_=0)),
+            sa.func.sum(
+                sa.case((collections_per_order.c.period_bucket == period_bucket, 1), else_=0)
+            ),
             0,
         )
 
     return (
         sa.select(
-            sales_per_order.c.cost_center.label("cost_center"),
+            collections_per_order.c.cost_center.label("cost_center"),
             _sum_when_period("ftd").label("collections_ftd"),
             _sum_when_period("mtd").label("collections_mtd"),
             _sum_when_period("lmtd").label("collections_lmtd"),
@@ -568,7 +578,7 @@ def _build_sales_agg(sales: sa.Table, ranges: dict[str, datetime]) -> sa.Subquer
             _count_when_period("mtd").label("collections_count_mtd"),
             _count_when_period("lmtd").label("collections_count_lmtd"),
         )
-        .group_by(sales_per_order.c.cost_center)
+        .group_by(collections_per_order.c.cost_center)
         .subquery()
     )
 
@@ -847,6 +857,12 @@ async def fetch_daily_sales_report(
         .subquery()
     )
 
+    # The main daily report intentionally keeps the order-side and collection-side
+    # metrics separate:
+    # - order-side sales-done values come from vw_orders.order_amount, which is
+    #   the standardized order amount shared by TD/UC order ingest;
+    # - collection-side money received comes from sales.payment_received, so
+    #   actual collections are not replaced by an order amount.
     orders_agg = _build_orders_agg(orders, ranges)
     orders_count_agg = _build_orders_count_agg(orders, ranges)
     sales_agg = _build_sales_agg(sales, ranges)
@@ -1037,8 +1053,8 @@ async def fetch_daily_sales_report(
             sa.select(
                 sales.c.cost_center,
                 sales.c.order_number,
-                sales.c.payment_received,
-                orders.c.order_amount,
+                sales.c.payment_received.label("edited_amount"),
+                orders.c.order_amount.label("original_order_amount"),
             )
             .select_from(
                 sales.outerjoin(
@@ -1057,15 +1073,15 @@ async def fetch_daily_sales_report(
         edited_rows: list[EditedOrderRow] = []
         edited_result = await session.execute(edited_stmt)
         for entry in edited_result.mappings():
-            payment_received = _decimal(entry["payment_received"])
-            order_amount = _decimal(entry["order_amount"])
-            loss = order_amount - payment_received
+            edited_amount = _decimal(entry["edited_amount"])
+            original_order_amount = _decimal(entry["original_order_amount"])
+            loss = original_order_amount - edited_amount
             edited_rows.append(
                 EditedOrderRow(
                     cost_center=str(entry["cost_center"]),
                     order_number=str(entry["order_number"]),
-                    original_value=order_amount,
-                    new_value=payment_received,
+                    original_value=original_order_amount,
+                    new_value=edited_amount,
                     loss=loss,
                 )
             )
