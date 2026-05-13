@@ -98,7 +98,7 @@ async def _load_eligible_leads(db_session, store_codes: Iterable[str]) -> dict[s
             JOIN store_lead_assignment_map slam
               ON slam.store_code = ml.store_code AND slam.is_enabled = true
             JOIN agents_master am ON am.id = slam.agent_id AND am.is_active = true
-            WHERE ml.customer_type = 'New'
+            WHERE ml.customer_type IN ('New', 'Existing')
               AND ml.lead_assigned = false
               AND (ml.is_order_placed = false OR ml.is_order_placed IS NULL)
               AND ml.store_code IN :store_codes
