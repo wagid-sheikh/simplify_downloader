@@ -390,8 +390,8 @@ async def test_lead_assignment_pipeline_end_to_end(monkeypatch, prepared_db):
         documents_rows = (await session.execute(text("SELECT id, file_path FROM documents"))).all()
 
     assert batch_count == 1
-    assert assignment_count == 1  # second new lead exceeds caps
-    assert assigned_flags == {1: 0, 2: 0, 3: 1}
+    assert assignment_count == 2  # second new lead exceeds new-customer cap
+    assert assigned_flags == {1: 1, 2: 0, 3: 1}
 
     assert len(documents_rows) == 1
     pdf_path = Path(documents_rows[0].file_path)
@@ -401,6 +401,7 @@ async def test_lead_assignment_pipeline_end_to_end(monkeypatch, prepared_db):
         text_content = "\n".join(page.extract_text() or "" for page in pdf.pages)
     assert "RowID" in text_content
     assert "9000000003" in text_content
+    assert "9000000001" in text_content
 
     assert len(sent_emails) == 2
     store_email, summary_email = sent_emails
