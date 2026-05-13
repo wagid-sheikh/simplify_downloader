@@ -1,3 +1,26 @@
+ALTER TABLE public.payment_collections
+ADD COLUMN source_type text;
+
+UPDATE public.payment_collections
+SET source_type = 'google_sheet'
+WHERE source_type IS NULL;
+
+ALTER TABLE public.payment_collections
+ALTER COLUMN source_type SET NOT NULL;
+
+ALTER TABLE public.payment_collections
+ADD CONSTRAINT chk_payment_collections_source_type
+CHECK (source_type IN ('google_sheet', 'legacy_sales'));
+
+ALTER TABLE public.payment_collections
+DROP CONSTRAINT IF EXISTS payment_collections_source_sheet_row_key;
+
+DROP INDEX IF EXISTS uq_payment_collections_source_rowid;
+
+ALTER TABLE public.payment_collections
+ADD CONSTRAINT uq_payment_collections_source_type_row
+UNIQUE (source_type, source_sheet_row);
+
 INSERT INTO public.payment_collections (
     source_sheet_row,
     payment_timestamp,
