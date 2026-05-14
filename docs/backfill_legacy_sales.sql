@@ -98,7 +98,7 @@ WHERE s.transaction_id IS NOT NULL
 ON CONFLICT (source_type, source_sheet_row) DO NOTHING;
 
 UPDATE orders AS s
-SET recovery_status = 'TO_BE_RECOVERED', recovery_category='OTHER', recovery_noted='Backfill Legacy Data'
+SET recovery_status = 'TO_BE_RECOVERED', recovery_category='OTHER', recovery_notes='Backfill Legacy Data'
 WHERE COALESCE(s.recovery_status, '') <> 'TO_BE_RECOVERED'
   AND EXISTS (
       SELECT 1
