@@ -96,3 +96,14 @@ WHERE s.transaction_id IS NOT NULL
         AND pc.order_number = s.order_number
   )
 ON CONFLICT (source_type, source_sheet_row) DO NOTHING;
+
+UPDATE orders AS s
+SET recovery_status = 'TO_BE_RECOVERED'
+WHERE COALESCE(s.recovery_status, '') <> 'TO_BE_RECOVERED'
+  AND EXISTS (
+      SELECT 1
+      FROM payment_collections AS pc
+      WHERE pc.source_type = 'legacy_sales'
+        AND pc.cost_center = s.cost_center
+        AND pc.order_number = s.order_number
+  );
