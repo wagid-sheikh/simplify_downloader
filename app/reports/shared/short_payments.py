@@ -134,7 +134,11 @@ async def fetch_missing_payment_rows_without_proof(
     row_factory: Any,
     sales: Any | None = None,
 ) -> list[Any]:
-    """Return sales-paid orders whose valid payment proof is absent."""
+    """Return sales-paid orders whose valid payment proof is absent.
+
+    Evidence components with unmatched order tokens are reported through the
+    payment-evidence audit bucket instead of Actual Payments Not Found.
+    """
 
     reconciliation = await _fetch_reconciliation(
         session=session,
