@@ -329,6 +329,63 @@
       </tbody>
     </table>
 
+
+    <div class="section-title">Short Payments</div>
+    {% if short_payment_rows %}
+    {% for group in short_payment_rows | groupby("cost_center") %}
+    {% set group_count = group.list | length %}
+    {% set group_order_total = group.list | sum(attribute="order_amount") %}
+    {% set group_paid_total = group.list | sum(attribute="paid_amount") %}
+    {% set group_shortage_total = group.list | sum(attribute="shortage_amount") %}
+    <table class="compact-table summary-table">
+      <tbody>
+        <tr class="store-heading-row">
+          <td class="label">Cost Center: {{ group.grouper }} | Count: {{ group_count }} | Order Amount: ₹{{ group_order_total | format_amount }} | Paid Amount: ₹{{ group_paid_total | format_amount }} | Shortage Amount: ₹{{ group_shortage_total | format_amount }}</td>
+        </tr>
+      </tbody>
+    </table>
+    <table class="compact-table micro-font">
+      <thead>
+        <tr>
+          <th class="label">Cost Center</th>
+          <th class="label">Order Number</th>
+          <th>Order Date</th>
+          <th class="label">Customer Name</th>
+          <th class="label">Mobile Number</th>
+          <th>Order Amount</th>
+          <th>Paid Amount</th>
+          <th>Shortage Amount</th>
+          <th class="label">Group Key</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in group.list %}
+        <tr>
+          <td class="label">{{ row.cost_center }}</td>
+          <td class="label">{{ row.order_number }}</td>
+          <td>{{ row.order_date | format_ddmmyyyy }}</td>
+          <td class="label">{{ row.customer_name or "--" }}</td>
+          <td class="label">{{ row.mobile_number or "--" }}</td>
+          <td>{{ row.order_amount | format_amount }}</td>
+          <td>{{ row.paid_amount | format_amount }}</td>
+          <td>{{ row.shortage_amount | format_amount }}</td>
+          <td class="label">{{ row.group_key or "--" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endfor %}
+    <table class="compact-table">
+      <tbody>
+        <tr class="totals-row">
+          <td class="label">Grand Total Count: {{ short_payment_rows | length }} | Grand Total Order Amount: ₹{{ (short_payment_rows | sum(attribute="order_amount")) | format_amount }} | Grand Total Paid Amount: ₹{{ (short_payment_rows | sum(attribute="paid_amount")) | format_amount }} | Grand Total Shortage Amount: ₹{{ (short_payment_rows | sum(attribute="shortage_amount")) | format_amount }}</td>
+        </tr>
+      </tbody>
+    </table>
+    {% else %}
+    <div class="kpi-note">No records found</div>
+    {% endif %}
+
     <div class="section-title">Actual Payments Not Found</div>
     {% if missing_payment_rows %}
     {% for group in missing_payment_rows | groupby("cost_center") %}

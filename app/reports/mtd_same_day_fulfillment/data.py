@@ -10,6 +10,7 @@ from app.common.date_utils import get_timezone
 from app.common.db import session_scope
 from app.reports.shared.line_items_summary import summarize_line_items
 from app.reports.shared.same_day_fulfillment import fetch_same_day_fulfillment_rows
+from app.reports.shared.short_payments import ShortPaymentRow, fetch_missing_payment_rows_without_proof, fetch_short_payment_rows
 
 
 @dataclass
@@ -38,14 +39,6 @@ class MissingPaymentRow:
 
 
 async def fetch_missing_payments_mtd(*, database_url: str, report_date: date) -> list[MissingPaymentRow]:
-    missing_view = sa.table(
-        "vw_orders_missing_in_payment_collections",
-        sa.column("cost_center"),
-        sa.column("order_number"),
-        sa.column("order_date"),
-        sa.column("customer_name"),
-        sa.column("mobile_number"),
-    )
     orders = sa.table(
         "vw_orders",
         sa.column("cost_center"),
@@ -54,50 +47,63 @@ async def fetch_missing_payments_mtd(*, database_url: str, report_date: date) ->
         sa.column("customer_name"),
         sa.column("mobile_number"),
         sa.column("order_amount"),
+        sa.column("recovery_status"),
+    )
+    payment_collections = sa.table(
+        "payment_collections",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("amount"),
+        sa.column("source_type"),
     )
     tz = get_timezone()
     start_month = datetime.combine(report_date.replace(day=1), time.min, tzinfo=tz)
     next_day = datetime.combine(report_date, time.min, tzinfo=tz) + timedelta(days=1)
 
-    stmt = (
-        sa.select(
-            missing_view.c.cost_center,
-            missing_view.c.order_number,
-            orders.c.order_date,
-            orders.c.customer_name,
-            orders.c.mobile_number,
-            orders.c.order_amount,
-        )
-        .select_from(
-            missing_view.join(
-                orders,
-                sa.and_(
-                    orders.c.cost_center == missing_view.c.cost_center,
-                    orders.c.order_number == missing_view.c.order_number,
-                ),
-            )
-        )
-        .where(orders.c.order_date >= start_month)
-        .where(orders.c.order_date < next_day)
-        .where(orders.c.order_amount > 0)
-        .order_by(missing_view.c.cost_center, orders.c.order_date, missing_view.c.order_number)
-    )
-
     rows: list[MissingPaymentRow] = []
+
     async with session_scope(database_url) as session:
-        result = await session.execute(stmt)
-        for record in result.mappings():
-            rows.append(
-                MissingPaymentRow(
-                    cost_center=str(record["cost_center"] or ""),
-                    order_number=str(record["order_number"] or ""),
-                    order_date=record["order_date"],
-                    customer_name=record["customer_name"],
-                    mobile_number=record["mobile_number"],
-                    order_amount=Decimal(str(record["order_amount"] or 0)),
-                )
-            )
+        rows = await fetch_missing_payment_rows_without_proof(
+            session=session,
+            orders=orders,
+            payment_collections=payment_collections,
+            start_datetime=start_month,
+            end_datetime=next_day,
+            row_factory=MissingPaymentRow,
+        )
     return rows
+
+
+async def fetch_short_payments_mtd(*, database_url: str, report_date: date) -> list[ShortPaymentRow]:
+    orders = sa.table(
+        "vw_orders",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("order_date"),
+        sa.column("customer_name"),
+        sa.column("mobile_number"),
+        sa.column("order_amount"),
+        sa.column("recovery_status"),
+    )
+    payment_collections = sa.table(
+        "payment_collections",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("amount"),
+        sa.column("source_type"),
+    )
+    tz = get_timezone()
+    start_month = datetime.combine(report_date.replace(day=1), time.min, tzinfo=tz)
+    next_day = datetime.combine(report_date, time.min, tzinfo=tz) + timedelta(days=1)
+
+    async with session_scope(database_url) as session:
+        return await fetch_short_payment_rows(
+            session=session,
+            orders=orders,
+            payment_collections=payment_collections,
+            start_datetime=start_month,
+            end_datetime=next_day,
+        )
 
 
 async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date) -> list[MTDSameDayFulfillmentRow]:
@@ -109,6 +115,7 @@ async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date
         sa.column("order_amount"),
         sa.column("customer_name"),
         sa.column("mobile_number"),
+        sa.column("recovery_status"),
     )
     order_line_items = sa.table(
         "order_line_items",
