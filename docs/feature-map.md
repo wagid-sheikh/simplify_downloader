@@ -75,7 +75,10 @@ Practical map of where to work for major capabilities.
 - **Canonical business amount:** Use `vw_orders.order_amount` for reports, payment status decisions, recovery action decisions, and user-facing totals/labels. Labels should say `Order Amount`.
 - **Raw source fields:** `orders.net_amount`, `orders.gross_amount`, and `orders.adjustment` are source/ingest fields. TD/UC ingest and sync code may continue to use them when synchronizing CRM data, reconciling source payloads, or auditing raw imported values.
 - **Prohibited path:** Direct report reads from `orders` are prohibited unless explicitly approved for a documented exception; report queries should go through `vw_orders` for order value semantics.
-- **Payment rules:** Compare payments to `vw_orders.order_amount` with tolerance `1`; overpayments are paid in full. Zero-value orders remain visible in descriptive order reports but are excluded from missing-payment, pending-payment, and recovery action checks.
+- **Payment evidence:** `payment_collections` is the verified payment evidence table. `google_sheet` and `legacy_sales` `source_type` values are equivalent for current reconciliation; `bank_row_id` is future bank-reconciliation plumbing and ignored by current reports. Idempotency is `(source_type, source_sheet_row)`, with `source_sheet_row` non-null.
+- **Payment truth:** Ignore `orders.payment_status` and `orders.payment_amount`; use `vw_orders.order_amount`, `sales.payment_received`, and `payment_collections.amount`.
+- **Payment rules:** Compare payments to `vw_orders.order_amount` with tolerance `1` (₹1); overpayments are paid in full. Zero-value orders remain visible in descriptive order reports but are excluded from missing-payment, pending-payment, and recovery action checks. Multi-order `payment_collections.order_number` values are group-reconciled first; group-paid rows are excluded from main missing/short outputs, and group-short rows allocate sequentially by `order_date ASC, order_number ASC`.
+- **Report behavior:** `TO_BE_RECOVERED` and `TO_BE_COMPENSATED` are excluded from normal missing-payment rows. `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` are excluded from normal pending-delivery buckets. A separate `Short Payment` sub-report is required and distinct from `Actual Payments Not Found`. Show `source_type` in audit/reconciliation reports, not every normal business report.
 - **Primary affected paths:**
   - `app/reports/**`
   - `app/crm_downloader/**` ingest/sync modules when deciding whether usage is source synchronization vs business decision logic
@@ -106,7 +109,7 @@ Practical map of where to work for major capabilities.
   3. `scripts/run_local_reports_pending_deliveries.sh`
 - **Force toggle:** Report wrappers now support `REPORT_FORCE=true|false` (default `false`) and append `--force` only when enabled; cron retries/rescue passes preserve the same force mode and log `pipeline`, `report_date`, and `force`.
 - **Dependencies:** `documents` table, report notification templates/profiles.
-- **Notes/Risks:** Rendering failures and zero-data scenarios are handled differently per pipeline; keep behavior consistent. For same-day table layout, `app/reports/daily_sales_report/templates/daily_sales_report.html` and `app/reports/shared/templates/same_day_fulfillment_table.html` are the authoritative sources (legacy standalone same-day template removed). Pending deliveries now always includes TD+UC rows and excludes recovery-status orders (`TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`) from main aging buckets/details.
+- **Notes/Risks:** Rendering failures and zero-data scenarios are handled differently per pipeline; keep behavior consistent. For same-day table layout, `app/reports/daily_sales_report/templates/daily_sales_report.html` and `app/reports/shared/templates/same_day_fulfillment_table.html` are the authoritative sources (legacy standalone same-day template removed). Pending deliveries now always includes TD+UC rows and excludes closed recovery-status orders (`RECOVERED`, `COMPENSATED`, `WRITE_OFF`) from normal aging buckets/details.
 
 ## 9) Lead assignment workflow
 

@@ -34,8 +34,14 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 ### 2.1) Order amount and payment-decision contract
 - Raw `orders.net_amount`, `orders.gross_amount`, and `orders.adjustment` are source/ingest fields. They are preserved for synchronization fidelity and may be read by ingest/sync code when the purpose is source synchronization, reconciliation, or auditing of raw CRM payloads.
 - Business reports, operational decision-making, payment status checks, recovery checks, and user-facing report totals must use `vw_orders.order_amount` as the canonical order value. Direct report reads from `orders` are prohibited unless explicitly approved for a documented exception.
+- Payment truth ignores CRM/order snapshot fields `orders.payment_status` and `orders.payment_amount`; use `vw_orders.order_amount`, `sales.payment_received`, and verified `payment_collections.amount` evidence instead.
+- `payment_collections` is the verified payment evidence table. For current reconciliation, `source_type = 'google_sheet'` and `source_type = 'legacy_sales'` are equivalent verified evidence; `bank_row_id` is reserved for future bank-reconciliation work and is ignored by current reports.
+- `payment_collections.source_sheet_row` remains non-null, and payment evidence idempotency is `(source_type, source_sheet_row)`.
 - User-facing labels for this business value should say `Order Amount` rather than raw/source column names.
-- Payment comparisons use tolerance `1` when comparing collected/paid amounts to `vw_orders.order_amount`. Overpayments are treated as paid in full.
+- Payment comparisons use tolerance `1` (₹1) when comparing collected/paid amounts to `vw_orders.order_amount`. Overpayments are treated as paid in full.
+- Multi-order `payment_collections.order_number` values are group-reconciled before row-level missing/short classification. Group-paid rows are excluded from main missing/short reports; group-short rows are allocated sequentially by `order_date ASC, order_number ASC`.
+- Normal missing-payment rows exclude `TO_BE_RECOVERED` and `TO_BE_COMPENSATED`. Normal pending-delivery buckets exclude `RECOVERED`, `COMPENSATED`, and `WRITE_OFF`.
+- A separate `Short Payment` sub-report is required and remains distinct from `Actual Payments Not Found`; `source_type` belongs in audit/reconciliation reports, not every normal business report.
 - Zero-value orders remain visible as orders in descriptive reporting where order presence matters, but they are excluded from missing-payment, pending-payment, and recovery action checks.
 
 ### 3) Dashboard downloader orchestration
@@ -78,7 +84,7 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 - Pending deliveries: `app/reports/pending_deliveries/`.
 - Store/week/month reporting helpers: `app/dashboard_downloader/run_store_reports.py` + `app/dashboard_downloader/pipelines/`.
 - PDF rendering centralized through report renderer wrappers.
-- Pending deliveries aging buckets/details exclude orders whose `recovery_status` is one of `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, or `WRITE_OFF`; `NULL`/other statuses remain eligible.
+- Pending deliveries aging buckets/details exclude orders whose `recovery_status` is one of `RECOVERED`, `COMPENSATED`, or `WRITE_OFF`; `NULL`/other statuses remain eligible for normal pending-delivery buckets. `TO_BE_RECOVERED` and `TO_BE_COMPENSATED` are recovery-action statuses and are excluded from normal missing-payment rows.
 
 ### 6) Lead assignment pipeline
 - `app/lead_assignment/pipeline.py` orchestrates:

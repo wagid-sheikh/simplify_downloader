@@ -4,18 +4,21 @@
 
 `payment_collections` stores manually recorded payment transactions shared by stores (for example via WhatsApp delivery/payment confirmations) and transcribed into Excel before SQL insertion.
 
-This table is the source ledger for manually captured payment events and should remain append-first, traceable, and auditable.
+This table is the verified payment evidence table for current payment reconciliation. It should remain append-first, traceable, and auditable.
 
 ## Data handling contract
 
 ### 1) Row identity and idempotency
 
-- Use `source_sheet_row` as the ingestion idempotency key.
-- Re-running inserts for the same spreadsheet should not create duplicates.
-- Prefer `INSERT ... ON CONFLICT (source_sheet_row) DO UPDATE` for correction workflows.
+- `source_sheet_row` remains non-null for every row.
+- Use `(source_type, source_sheet_row)` as the ingestion idempotency key.
+- Re-running inserts for the same source should not create duplicates.
+- Prefer `INSERT ... ON CONFLICT (source_type, source_sheet_row) DO UPDATE` for correction workflows.
 
 ### 2) Required semantics
 
+- `source_type` identifies the verified evidence source. For current reconciliation, `source_type = 'google_sheet'` and `source_type = 'legacy_sales'` are equivalent verified payment evidence.
+- `bank_row_id` is reserved for future bank-reconciliation work and is ignored by current business reports and payment reconciliation.
 - `payment_timestamp` is the event timestamp captured from operator source.
 - `payment_date` should match business-local date derived from `payment_timestamp` unless deliberately corrected.
 - `cost_center` and `order_number` must match operational references used in downstream reconciliation.
@@ -34,11 +37,28 @@ This table is the source ledger for manually captured payment events and should 
 - `updated_at` should be refreshed by update workflows whenever business columns change.
 - If no DB trigger exists, SQL correction scripts must set `updated_at = now()` explicitly.
 
+## Current payment/recovery reconciliation contract
+
+- Payment truth ignores CRM/order snapshot fields `orders.payment_status` and `orders.payment_amount`.
+- Payment truth uses only:
+  - `vw_orders.order_amount` as the canonical order value,
+  - `sales.payment_received` as source sales/payment evidence where the report contract already uses sales collections, and
+  - `payment_collections.amount` as verified manually captured payment evidence.
+- Payment comparisons use tolerance `1` (₹1); overpayments count as paid in full.
+- Multi-order `payment_collections.order_number` values are group-reconciled first. If the group total is paid within tolerance, those rows are excluded from the main missing/short payment outputs.
+- Group-short rows are allocated sequentially by `order_date ASC, order_number ASC` before deciding which orders are short.
+- `TO_BE_RECOVERED` and `TO_BE_COMPENSATED` are excluded from normal missing-payment rows.
+- `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` are excluded from normal pending-delivery buckets.
+- A separate `Short Payment` sub-report is required for underpaid orders; it must not be merged into `Actual Payments Not Found`.
+- Show `source_type` in audit/reconciliation reports so analysts can trace evidence provenance. Do not add it to every normal business report by default.
+
 ## Recommended manual upsert pattern
 
 ```sql
 INSERT INTO payment_collections (
+    source_type,
     source_sheet_row,
+    bank_row_id,
     payment_timestamp,
     email_address,
     payment_mode,
@@ -54,7 +74,9 @@ INSERT INTO payment_collections (
     updated_flag
 )
 VALUES (
+    :source_type,
     :source_sheet_row,
+    :bank_row_id,
     :payment_timestamp,
     :email_address,
     :payment_mode,
@@ -69,8 +91,9 @@ VALUES (
     :date_modified,
     :updated_flag
 )
-ON CONFLICT (source_sheet_row)
+ON CONFLICT (source_type, source_sheet_row)
 DO UPDATE SET
+    bank_row_id = EXCLUDED.bank_row_id,
     payment_timestamp = EXCLUDED.payment_timestamp,
     email_address = EXCLUDED.email_address,
     payment_mode = EXCLUDED.payment_mode,
