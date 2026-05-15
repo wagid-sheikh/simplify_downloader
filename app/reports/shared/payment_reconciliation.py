@@ -423,4 +423,8 @@ def _group_order_date(group: ReconciledPaymentGroup) -> str:
 
 
 def _date_sort_value(value: datetime | date | None) -> str:
-    return value.isoformat() if value is not None else ""
+    if value is None:
+        return ""
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return str(value)
