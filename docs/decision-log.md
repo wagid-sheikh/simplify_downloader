@@ -98,7 +98,9 @@
   force-paid unlock recovery, damage-claim compensation, and final closure so
   downstream reporting interprets records uniformly.
 - **Evidence:** `alembic/versions/0092_orders_recovery_tracking.py` defines
-  allowed recovery statuses/categories; daily sales report tests already use
+  the original recovery statuses/categories, and
+  `alembic/versions/0106_recovery_categories.py` expands business-decision
+  categories; daily sales report tests already use
   `TO_BE_RECOVERED` and `TO_BE_COMPENSATED` buckets.
 - **Implications:**
   - Force-paid unlock actions must use:
@@ -108,6 +110,8 @@
     - `recovery_status='TO_BE_COMPENSATED'`
     - `recovery_category='DAMAGE_CLAIM'`
   - Closures must move to one of `RECOVERED`, `COMPENSATED`, or `WRITE_OFF`.
+  - Write-off/return decisions can use `WRITE_OFF_FULL`,
+    `WRITE_OFF_BALANCE`, or `RETURNED` as `recovery_category` values.
   - `recovery_notes` is append-only and should include reason + ticket/claim
     reference and actor/timestamp metadata.
 - **Follow-up:** Ensure any internal admin UI/input forms enforce these enum

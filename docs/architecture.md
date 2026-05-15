@@ -135,7 +135,7 @@ For order-sync profiler, the run additionally:
 `orders` includes manual recovery-tracking fields introduced by migration
 `0092_orders_recovery_tracking`:
 - `recovery_status`
-- `recovery_category`
+- `recovery_category` (expanded by `0106_recovery_categories`)
 - `recovery_notes`
 - `recovery_marked_at`
 - `recovery_marked_by`
@@ -156,6 +156,10 @@ reporting and aging buckets remain consistent:
      - `RECOVERED`
      - `COMPENSATED`
      - `WRITE_OFF`
+   - For write-off/return decisions, use `recovery_category` to distinguish:
+     - `WRITE_OFF_FULL` for full write-offs.
+     - `WRITE_OFF_BALANCE` for balance-only write-offs.
+     - `RETURNED` for returned-order recovery decisions.
    - Keep note history append-only in `recovery_notes` (do not overwrite prior
      context).
 
