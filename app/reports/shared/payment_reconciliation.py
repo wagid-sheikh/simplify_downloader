@@ -85,7 +85,9 @@ class PaymentReconciliationResult:
     groups: tuple[ReconciledPaymentGroup, ...]
     orders: tuple[ReconciledOrderPayment, ...]
     invalid_evidence_rows: tuple[Any, ...] = field(default_factory=tuple)
-    unmatched_evidence_rows: tuple[ReconciliationPaymentEvidence, ...] = field(default_factory=tuple)
+    unmatched_evidence_rows: tuple[ReconciliationPaymentEvidence, ...] = field(
+        default_factory=tuple
+    )
 
     @property
     def actual_payments_not_found(self) -> tuple[ReconciledOrderPayment, ...]:
@@ -103,7 +105,55 @@ class PaymentReconciliationResult:
 
     @property
     def recovery_auto_clear_orders(self) -> tuple[ReconciledOrderPayment, ...]:
-        return tuple(order for order in self.orders if order.status == "paid" and order.has_payment_proof)
+        return tuple(
+            order
+            for order in self.orders
+            if order.status == "paid" and order.has_payment_proof
+        )
+
+
+@dataclass(frozen=True)
+class PaymentEvidenceAuditRow:
+    payment_id: Any
+    source_type: str
+    source_sheet_row: Any
+    cost_center: str
+    payment_date: Any
+    payment_timestamp: Any
+    order_number: str
+    normalized_order_tokens_csv: str
+    amount: Decimal
+    order_amount: Decimal
+    payment_received: Decimal
+    reconciliation_result: str
+    is_grouped: bool
+    bank_row_id: Any
+    group_key: str
+    grouped_amount: Decimal
+    grouped_order_amount: Decimal
+    grouped_payment_received: Decimal
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "payment_id": self.payment_id,
+            "source_type": self.source_type,
+            "source_sheet_row": self.source_sheet_row,
+            "cost_center": self.cost_center,
+            "payment_date": self.payment_date,
+            "payment_timestamp": self.payment_timestamp,
+            "order_number": self.order_number,
+            "normalized_order_tokens_csv": self.normalized_order_tokens_csv,
+            "amount": self.amount,
+            "order_amount": self.order_amount,
+            "payment_received": self.payment_received,
+            "reconciliation_result": self.reconciliation_result,
+            "is_grouped": self.is_grouped,
+            "bank_row_id": self.bank_row_id,
+            "group_key": self.group_key,
+            "grouped_amount": self.grouped_amount,
+            "grouped_order_amount": self.grouped_order_amount,
+            "grouped_payment_received": self.grouped_payment_received,
+        }
 
 
 def normalize_order_number(order_number: Any) -> str:
@@ -164,7 +214,9 @@ def reconcile_payments(
         cost_center = _text(_field(row, "cost_center"))
         normalized_order_number = normalize_order_number(_field(row, "order_number"))
         if normalized_order_number:
-            sales_totals[(cost_center, normalized_order_number)] += _decimal(_field(row, "payment_received"))
+            sales_totals[(cost_center, normalized_order_number)] += _decimal(
+                _field(row, "payment_received")
+            )
 
     evidence_rows: list[ReconciliationPaymentEvidence] = []
     invalid_rows: list[Any] = []
@@ -186,13 +238,19 @@ def reconcile_payments(
             )
         )
 
-    grouped_evidence, unmatched_evidence = _build_evidence_components(evidence_rows, orders_by_key)
+    grouped_evidence, unmatched_evidence = _build_evidence_components(
+        evidence_rows, orders_by_key
+    )
 
     groups: list[ReconciledPaymentGroup] = []
     reconciled_orders: dict[tuple[str, str], ReconciledOrderPayment] = {}
 
     for cost_center, normalized_numbers, rows in grouped_evidence:
-        group_orders = [orders_by_key[(cost_center, number)] for number in normalized_numbers if (cost_center, number) in orders_by_key]
+        group_orders = [
+            orders_by_key[(cost_center, number)]
+            for number in normalized_numbers
+            if (cost_center, number) in orders_by_key
+        ]
         if not group_orders:
             unmatched_evidence.extend(rows)
             continue
@@ -206,9 +264,13 @@ def reconcile_payments(
         )
         groups.append(group)
         for order in group.orders:
-            reconciled_orders[(order.cost_center, order.normalized_order_number)] = order
+            reconciled_orders[(order.cost_center, order.normalized_order_number)] = (
+                order
+            )
 
-    for key, order in sorted(orders_by_key.items(), key=lambda item: _order_sort_key(item[1])):
+    for key, order in sorted(
+        orders_by_key.items(), key=lambda item: _order_sort_key(item[1])
+    ):
         if key in reconciled_orders:
             continue
         sales_received = sales_totals.get(key, Decimal("0"))
@@ -243,11 +305,24 @@ def reconcile_payments(
         groups.append(group)
         reconciled_orders[key] = reconciled
 
-    sorted_groups = tuple(sorted(groups, key=lambda group: (group.cost_center, _group_order_date(group), group.normalized_order_numbers)))
+    sorted_groups = tuple(
+        sorted(
+            groups,
+            key=lambda group: (
+                group.cost_center,
+                _group_order_date(group),
+                group.normalized_order_numbers,
+            ),
+        )
+    )
     sorted_orders = tuple(
         sorted(
             reconciled_orders.values(),
-            key=lambda order: (order.cost_center, _date_sort_value(order.order_date), order.order_number),
+            key=lambda order: (
+                order.cost_center,
+                _date_sort_value(order.order_date),
+                order.order_number,
+            ),
         )
     )
     return PaymentReconciliationResult(
@@ -269,7 +344,13 @@ def _reconcile_group(
 ) -> ReconciledPaymentGroup:
     sorted_orders = sorted(orders, key=_order_sort_key)
     expected_amount = sum((order.order_amount for order in sorted_orders), Decimal("0"))
-    sales_received = sum((sales_totals.get((cost_center, order.normalized_order_number), Decimal("0")) for order in sorted_orders), Decimal("0"))
+    sales_received = sum(
+        (
+            sales_totals.get((cost_center, order.normalized_order_number), Decimal("0"))
+            for order in sorted_orders
+        ),
+        Decimal("0"),
+    )
     evidence_amount = sum((row.amount for row in evidence_rows), Decimal("0"))
 
     if not evidence_rows:
@@ -301,7 +382,9 @@ def _reconcile_group(
                 normalized_order_number=order.normalized_order_number,
                 order_date=order.order_date,
                 order_amount=order.order_amount,
-                sales_payment_received=sales_totals.get((cost_center, order.normalized_order_number), Decimal("0")),
+                sales_payment_received=sales_totals.get(
+                    (cost_center, order.normalized_order_number), Decimal("0")
+                ),
                 allocated_payment_amount=allocated,
                 short_amount=short_amount,
                 status=order_status,
@@ -310,7 +393,11 @@ def _reconcile_group(
             )
         )
 
-    group_short = Decimal("0") if status == "paid" else max(expected_amount - evidence_amount, Decimal("0"))
+    group_short = (
+        Decimal("0")
+        if status == "paid"
+        else max(expected_amount - evidence_amount, Decimal("0"))
+    )
     return ReconciledPaymentGroup(
         group_key=(cost_center, normalized_numbers),
         cost_center=cost_center,
@@ -330,8 +417,13 @@ def _reconcile_group(
 def _build_evidence_components(
     evidence_rows: Sequence[ReconciliationPaymentEvidence],
     orders_by_key: Mapping[tuple[str, str], ReconciliationOrder],
-) -> tuple[list[tuple[str, tuple[str, ...], list[ReconciliationPaymentEvidence]]], list[ReconciliationPaymentEvidence]]:
-    rows_by_cost_center: dict[str, list[ReconciliationPaymentEvidence]] = defaultdict(list)
+) -> tuple[
+    list[tuple[str, tuple[str, ...], list[ReconciliationPaymentEvidence]]],
+    list[ReconciliationPaymentEvidence],
+]:
+    rows_by_cost_center: dict[str, list[ReconciliationPaymentEvidence]] = defaultdict(
+        list
+    )
     for row in evidence_rows:
         rows_by_cost_center[row.cost_center].append(row)
 
@@ -364,13 +456,134 @@ def _build_evidence_components(
             rows_by_root[root].append(row)
 
         for root, tokens in tokens_by_root.items():
-            normalized_numbers = tuple(sorted(tokens, key=lambda token: _token_sort_key(cost_center, token, orders_by_key)))
+            normalized_numbers = tuple(
+                sorted(
+                    tokens,
+                    key=lambda token: _token_sort_key(
+                        cost_center, token, orders_by_key
+                    ),
+                )
+            )
             component_rows = rows_by_root[root]
-            if any((cost_center, token) in orders_by_key for token in normalized_numbers):
+            if any(
+                (cost_center, token) in orders_by_key for token in normalized_numbers
+            ):
                 grouped.append((cost_center, normalized_numbers, component_rows))
             else:
                 unmatched.extend(component_rows)
     return grouped, unmatched
+
+
+def build_payment_evidence_audit_rows(
+    *,
+    order_rows: Sequence[Any],
+    sales_rows: Sequence[Any] = (),
+    payment_evidence_rows: Sequence[Any] = (),
+    tolerance: Decimal | int | str = DEFAULT_PAYMENT_TOLERANCE,
+    valid_source_types: Iterable[str] | None = None,
+) -> tuple[PaymentEvidenceAuditRow, ...]:
+    """Build audit rows from the same reconciliation graph used by reports.
+
+    Payment evidence review is intentionally derived from ``reconcile_payments``
+    so overlapping group rows (for example ``ORD1,ORD2`` plus an ``ORD2`` top-up)
+    use the same connected-component totals as short-payment reporting and
+    recovery auto-clear.
+    """
+
+    source_types = (
+        {_text(_field(row, "source_type")).lower() for row in payment_evidence_rows}
+        if valid_source_types is None
+        else {str(source).strip().lower() for source in valid_source_types}
+    )
+    result = reconcile_payments(
+        order_rows=order_rows,
+        sales_rows=sales_rows,
+        payment_evidence_rows=payment_evidence_rows,
+        tolerance=tolerance,
+        valid_source_types=source_types,
+    )
+    groups_by_evidence_id = {
+        evidence.evidence_id: group
+        for group in result.groups
+        for evidence in group.evidence_rows
+    }
+    unmatched_by_evidence_id = {
+        evidence.evidence_id: evidence for evidence in result.unmatched_evidence_rows
+    }
+
+    rows: list[PaymentEvidenceAuditRow] = []
+    for index, raw_row in enumerate(payment_evidence_rows):
+        evidence_id = _evidence_id(raw_row, index)
+        source_type = _text(_field(raw_row, "source_type")).lower()
+        tokens = split_payment_order_numbers(_field(raw_row, "order_number"))
+        group = groups_by_evidence_id.get(evidence_id)
+        unmatched = unmatched_by_evidence_id.get(evidence_id)
+
+        if group is not None:
+            payment_received = group.sales_payment_received
+            order_amount = group.expected_order_amount
+            grouped_amount = group.evidence_amount
+            grouped_order_amount = group.expected_order_amount
+            grouped_payment_received = group.sales_payment_received
+            normalized_tokens = group.normalized_order_numbers
+            is_grouped = len(normalized_tokens) > 1
+            group_key = _audit_group_key(group.cost_center, normalized_tokens)
+            if group.sales_payment_received <= 0:
+                reconciliation_result = "missing sales"
+            elif group.status == "paid":
+                reconciliation_result = "grouped paid" if is_grouped else "paid"
+            elif group.status == "short":
+                reconciliation_result = "grouped short" if is_grouped else "short"
+            else:
+                reconciliation_result = group.status
+        else:
+            normalized_tokens = (
+                unmatched.normalized_order_numbers if unmatched is not None else tokens
+            )
+            is_grouped = len(normalized_tokens) > 1
+            group_key = (
+                _audit_group_key(
+                    _text(_field(raw_row, "cost_center")), normalized_tokens
+                )
+                if normalized_tokens
+                else ""
+            )
+            payment_received = Decimal("0")
+            order_amount = Decimal("0")
+            grouped_amount = _decimal(_field(raw_row, "amount"))
+            grouped_order_amount = Decimal("0")
+            grouped_payment_received = Decimal("0")
+            reconciliation_result = "missing order token"
+
+        rows.append(
+            PaymentEvidenceAuditRow(
+                payment_id=_field(raw_row, "payment_id"),
+                source_type=source_type,
+                source_sheet_row=_field(raw_row, "source_sheet_row"),
+                cost_center=_text(_field(raw_row, "cost_center")),
+                payment_date=_field(raw_row, "payment_date"),
+                payment_timestamp=_field(raw_row, "payment_timestamp"),
+                order_number=_text(_field(raw_row, "order_number")),
+                normalized_order_tokens_csv=",".join(normalized_tokens),
+                amount=_decimal(_field(raw_row, "amount")),
+                order_amount=order_amount,
+                payment_received=payment_received,
+                reconciliation_result=reconciliation_result,
+                is_grouped=is_grouped,
+                bank_row_id=_field(raw_row, "bank_row_id"),
+                group_key=group_key,
+                grouped_amount=grouped_amount,
+                grouped_order_amount=grouped_order_amount,
+                grouped_payment_received=grouped_payment_received,
+            )
+        )
+    return tuple(rows)
+
+
+def _audit_group_key(cost_center: str, normalized_numbers: tuple[str, ...]) -> str:
+    if not normalized_numbers:
+        return ""
+    return "|".join(normalized_numbers)
 
 
 def _field(row: Any, name: str) -> Any:

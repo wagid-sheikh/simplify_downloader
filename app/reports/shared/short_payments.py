@@ -3,11 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-import re
 from typing import Any
 
 import sqlalchemy as sa
+from sqlalchemy.exc import OperationalError
 
+from app.reports.shared.payment_reconciliation import (
+    ReconciledOrderPayment,
+    normalize_order_number,
+    reconcile_payments,
+    split_payment_order_numbers,
+)
 
 RECOVERY_PAYMENT_EXCLUSIONS = (
     "TO_BE_RECOVERED",
@@ -17,7 +23,6 @@ RECOVERY_PAYMENT_EXCLUSIONS = (
     "WRITE_OFF",
 )
 QUALIFYING_PAYMENT_SOURCE_TYPES = ("google_sheet", "legacy_sales")
-_PAYMENT_TOKEN_RE = re.compile(r"[,/]")
 
 
 @dataclass
@@ -34,16 +39,7 @@ class ShortPaymentRow:
 
 
 def payment_collection_order_tokens(order_number: object | None) -> tuple[str, ...]:
-    if order_number is None:
-        return ()
-    return tuple(
-        token.upper().replace(" ", "")
-        for token in (
-            raw_token.strip()
-            for raw_token in _PAYMENT_TOKEN_RE.split(str(order_number))
-        )
-        if token
-    )
+    return split_payment_order_numbers(order_number)
 
 
 def _decimal(value: object | None) -> Decimal:
@@ -55,7 +51,7 @@ def _decimal(value: object | None) -> Decimal:
 
 
 def _normalized_order_number(value: object | None) -> str:
-    return str(value or "").upper().replace(" ", "")
+    return normalize_order_number(value)
 
 
 def _as_datetime(value: object | None) -> datetime | None:
@@ -77,14 +73,89 @@ async def fetch_short_payment_rows(
     start_datetime: datetime,
     end_datetime: datetime,
 ) -> list[ShortPaymentRow]:
-    """Return partially paid order rows from payment proof records.
+    """Return partially paid orders using the shared reconciliation engine."""
 
-    Single-payment proofs are compared order-by-order. Multi-order payment proofs
-    are grouped by their normalized token set and allocated to matching orders in
-    order_date/order_number sequence so early orders consume the available proof
-    amount first.
-    """
+    reconciliation = await _fetch_reconciliation(
+        session=session,
+        orders=orders,
+        payment_collections=payment_collections,
+        sales=None,
+        start_datetime=start_datetime,
+        end_datetime=end_datetime,
+    )
 
+    rows = [
+        ShortPaymentRow(
+            cost_center=order.cost_center,
+            order_number=order.order_number,
+            order_date=_as_datetime(order.order_date),
+            customer_name=_raw_text(order, "customer_name"),
+            mobile_number=_raw_text(order, "mobile_number"),
+            order_amount=order.order_amount,
+            paid_amount=order.allocated_payment_amount,
+            shortage_amount=order.short_amount,
+            group_key=_group_key_for_order(order=order, reconciliation=reconciliation),
+        )
+        for order in reconciliation.short_payment_orders
+        if order.order_amount > 0
+    ]
+    rows.sort(
+        key=lambda row: (
+            row.cost_center,
+            row.order_date or datetime.min,
+            row.order_number,
+        )
+    )
+    return rows
+
+
+async def fetch_missing_payment_rows_without_proof(
+    *,
+    session: Any,
+    orders: Any,
+    payment_collections: Any,
+    start_datetime: datetime,
+    end_datetime: datetime,
+    row_factory: Any,
+    sales: Any | None = None,
+) -> list[Any]:
+    """Return sales-paid orders whose valid payment proof is absent."""
+
+    reconciliation = await _fetch_reconciliation(
+        session=session,
+        orders=orders,
+        payment_collections=payment_collections,
+        sales=sales,
+        start_datetime=start_datetime,
+        end_datetime=end_datetime,
+    )
+
+    rows: list[Any] = []
+    for order in reconciliation.actual_payments_not_found:
+        if order.order_amount <= 0:
+            continue
+        rows.append(
+            row_factory(
+                cost_center=order.cost_center,
+                order_number=order.order_number,
+                order_date=_as_datetime(order.order_date),
+                customer_name=_raw_text(order, "customer_name"),
+                mobile_number=_raw_text(order, "mobile_number"),
+                order_amount=order.order_amount,
+            )
+        )
+    return rows
+
+
+async def _fetch_reconciliation(
+    *,
+    session: Any,
+    orders: Any,
+    payment_collections: Any,
+    sales: Any | None,
+    start_datetime: datetime,
+    end_datetime: datetime,
+):
     order_stmt = (
         sa.select(
             orders.c.cost_center,
@@ -108,158 +179,88 @@ async def fetch_short_payment_rows(
         payment_collections.c.cost_center,
         payment_collections.c.order_number,
         payment_collections.c.amount,
+        payment_collections.c.source_type,
     ).where(payment_collections.c.source_type.in_(QUALIFYING_PAYMENT_SOURCE_TYPES))
 
-    order_result = await session.execute(order_stmt)
-    payment_result = await session.execute(payment_stmt)
-
-    orders_by_key: dict[tuple[str, str], dict[str, object]] = {}
-    for record in order_result.mappings():
-        cost_center = str(record["cost_center"] or "")
-        token = _normalized_order_number(record["order_number"])
-        orders_by_key[(cost_center, token)] = dict(record)
-
-    single_paid: dict[tuple[str, str], Decimal] = {}
-    group_paid: dict[tuple[str, str], Decimal] = {}
-    group_tokens: dict[tuple[str, str], tuple[str, ...]] = {}
-
-    for record in payment_result.mappings():
-        cost_center = str(record["cost_center"] or "")
-        tokens = tuple(dict.fromkeys(payment_collection_order_tokens(record["order_number"])))
-        if not tokens:
-            continue
-        amount = _decimal(record["amount"])
-        if len(tokens) == 1:
-            key = (cost_center, tokens[0])
-            single_paid[key] = single_paid.get(key, Decimal("0")) + amount
-            continue
-        group_key = "|".join(sorted(tokens))
-        key = (cost_center, group_key)
-        group_paid[key] = group_paid.get(key, Decimal("0")) + amount
-        group_tokens[key] = tuple(sorted(tokens))
-
-    short_rows: list[ShortPaymentRow] = []
-    grouped_order_keys: set[tuple[str, str]] = set()
-
-    for (cost_center, group_key), paid_amount in group_paid.items():
-        matching_orders = [
-            orders_by_key[(cost_center, token)]
-            for token in group_tokens[(cost_center, group_key)]
-            if (cost_center, token) in orders_by_key
-        ]
-        if not matching_orders:
-            continue
-        matching_orders.sort(
-            key=lambda row: (
-                _as_datetime(row.get("order_date")) or datetime.min,
-                str(row.get("order_number") or ""),
+    try:
+        order_result = await session.execute(order_stmt)
+    except OperationalError as exc:
+        if "recovery_status" not in str(exc):
+            raise
+        order_stmt = (
+            sa.select(
+                orders.c.cost_center,
+                orders.c.order_number,
+                orders.c.order_date,
+                orders.c.customer_name,
+                orders.c.mobile_number,
+                orders.c.order_amount,
             )
+            .where(orders.c.order_date >= start_datetime)
+            .where(orders.c.order_date < end_datetime)
+            .where(orders.c.order_amount > 0)
+            .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
         )
-        expected_amount = sum((_decimal(row.get("order_amount")) for row in matching_orders), Decimal("0"))
-        if expected_amount > 0 and paid_amount + Decimal("1") >= expected_amount:
-            continue
-        remaining_paid = paid_amount
-        for row in matching_orders:
-            order_amount = _decimal(row.get("order_amount"))
-            allocated_paid = min(order_amount, max(remaining_paid, Decimal("0")))
-            remaining_paid -= allocated_paid
-            shortage = order_amount - allocated_paid
-            grouped_order_keys.add((cost_center, _normalized_order_number(row.get("order_number"))))
-            if shortage > Decimal("1"):
-                short_rows.append(
-                    ShortPaymentRow(
-                        cost_center=cost_center,
-                        order_number=str(row.get("order_number") or ""),
-                        order_date=_as_datetime(row.get("order_date")),
-                        customer_name=str(row.get("customer_name") or ""),
-                        mobile_number=str(row.get("mobile_number") or ""),
-                        order_amount=order_amount,
-                        paid_amount=allocated_paid,
-                        shortage_amount=shortage,
-                        group_key=group_key,
-                    )
+        order_result = await session.execute(order_stmt)
+    try:
+        payment_result = await session.execute(payment_stmt)
+        payment_rows = [dict(record) for record in payment_result.mappings()]
+    except OperationalError as exc:
+        if "payment_collections.amount" not in str(
+            exc
+        ) and "payment_collections.source_type" not in str(exc):
+            raise
+        payment_rows = []
+    order_rows = [dict(record) for record in order_result.mappings()]
+
+    sales_rows: list[dict[str, Any]] = []
+    if sales is not None:
+        order_keys = {
+            (row["cost_center"], normalize_order_number(row["order_number"]))
+            for row in order_rows
+        }
+        if order_keys:
+            sales_stmt = sa.select(
+                sales.c.cost_center,
+                sales.c.order_number,
+                sales.c.payment_received,
+            )
+            sales_result = await session.execute(sales_stmt)
+            sales_rows = [
+                dict(record)
+                for record in sales_result.mappings()
+                if (
+                    record["cost_center"],
+                    normalize_order_number(record["order_number"]),
                 )
+                in order_keys
+            ]
 
-    for key, paid_amount in single_paid.items():
-        if key in grouped_order_keys or key not in orders_by_key:
-            continue
-        row = orders_by_key[key]
-        order_amount = _decimal(row.get("order_amount"))
-        shortage = order_amount - paid_amount
-        if shortage > Decimal("1"):
-            short_rows.append(
-                ShortPaymentRow(
-                    cost_center=key[0],
-                    order_number=str(row.get("order_number") or ""),
-                    order_date=_as_datetime(row.get("order_date")),
-                    customer_name=str(row.get("customer_name") or ""),
-                    mobile_number=str(row.get("mobile_number") or ""),
-                    order_amount=order_amount,
-                    paid_amount=paid_amount,
-                    shortage_amount=shortage,
-                    group_key=None,
-                )
-            )
-
-    short_rows.sort(key=lambda row: (row.cost_center, row.order_date or datetime.min, row.order_number))
-    return short_rows
-
-
-async def fetch_missing_payment_rows_without_proof(
-    *,
-    session: Any,
-    orders: Any,
-    payment_collections: Any,
-    start_datetime: datetime,
-    end_datetime: datetime,
-    row_factory: Any,
-) -> list[Any]:
-    order_stmt = (
-        sa.select(
-            orders.c.cost_center,
-            orders.c.order_number,
-            orders.c.order_date,
-            orders.c.customer_name,
-            orders.c.mobile_number,
-            orders.c.order_amount,
-        )
-        .where(orders.c.order_date >= start_datetime)
-        .where(orders.c.order_date < end_datetime)
-        .where(orders.c.order_amount > 0)
-        .where(
-            sa.func.coalesce(orders.c.recovery_status, "NONE").not_in(
-                RECOVERY_PAYMENT_EXCLUSIONS
-            )
-        )
-        .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
+    return reconcile_payments(
+        order_rows=order_rows,
+        sales_rows=sales_rows,
+        payment_evidence_rows=payment_rows,
+        valid_source_types=QUALIFYING_PAYMENT_SOURCE_TYPES,
     )
-    payment_stmt = sa.select(
-        payment_collections.c.cost_center,
-        payment_collections.c.order_number,
-    ).where(payment_collections.c.source_type.in_(QUALIFYING_PAYMENT_SOURCE_TYPES))
 
-    order_result = await session.execute(order_stmt)
-    payment_result = await session.execute(payment_stmt)
 
-    proof_tokens = {
-        (str(record["cost_center"] or ""), token)
-        for record in payment_result.mappings()
-        for token in payment_collection_order_tokens(record["order_number"])
-    }
+def _raw_text(order: ReconciledOrderPayment, field_name: str) -> str:
+    raw = order.raw_order
+    if isinstance(raw, dict):
+        return str(raw.get(field_name) or "")
+    return str(getattr(raw, field_name, "") or "")
 
-    rows: list[Any] = []
-    for record in order_result.mappings():
-        key = (str(record["cost_center"] or ""), _normalized_order_number(record["order_number"]))
-        if key in proof_tokens:
-            continue
-        rows.append(
-            row_factory(
-                cost_center=str(record["cost_center"] or ""),
-                order_number=str(record["order_number"] or ""),
-                order_date=_as_datetime(record["order_date"]),
-                customer_name=str(record["customer_name"] or ""),
-                mobile_number=str(record["mobile_number"] or ""),
-                order_amount=_decimal(record["order_amount"]),
-            )
-        )
-    return rows
+
+def _group_key_for_order(
+    *, order: ReconciledOrderPayment, reconciliation: Any
+) -> str | None:
+    for group in reconciliation.groups:
+        if any(
+            group_order.cost_center == order.cost_center
+            and group_order.normalized_order_number == order.normalized_order_number
+            for group_order in group.orders
+        ):
+            if len(group.normalized_order_numbers) <= 1:
+                return None
+            return "|".join(group.normalized_order_numbers)
+    return None
