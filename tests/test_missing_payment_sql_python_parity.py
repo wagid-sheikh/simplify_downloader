@@ -9,6 +9,7 @@ from typing import Callable
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -130,7 +131,9 @@ def _create_schema_and_fixture(connection: sa.Connection) -> None:
                 (2, 'CC1', 'TOPUP-A,TOPUP-B', 250, 'google_sheet'),
                 (3, 'CC1', 'TOPUP-B', 50, 'google_sheet'),
                 (4, 'CC1', 'UNSUPPORTED-PROOF', 150, 'bank_statement'),
-                (5, 'CC1', 'SHORT-A/SHORT-B', 250, 'google_sheet')
+                (5, 'CC1', 'SHORT-A/SHORT-B', 250, 'google_sheet'),
+                (6, 'CC1', 'UNRELATED-HISTORY', 999999, 'google_sheet'),
+                (7, 'CC2', 'SHORT-A/SHORT-B', 999999, 'google_sheet')
             """))
 
 
@@ -208,6 +211,97 @@ async def test_sql_missing_payment_view_matches_python_report_helper(
     ] == [
         ("SHORT-B", Decimal("150.00"), Decimal("50.00"), "SHORT-A|SHORT-B"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_payment_reconciliation_limits_payment_collection_query_to_candidates() -> None:
+    orders = sa.table(
+        "vw_orders",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("order_date"),
+        sa.column("customer_name"),
+        sa.column("mobile_number"),
+        sa.column("order_amount"),
+        sa.column("recovery_status"),
+    )
+    payment_collections = sa.table(
+        "payment_collections",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("amount"),
+        sa.column("source_type"),
+    )
+
+    class _Result:
+        def __init__(self, rows: list[dict[str, object]]) -> None:
+            self._rows = rows
+
+        def mappings(self) -> list[dict[str, object]]:
+            return self._rows
+
+    class _Session:
+        def __init__(self) -> None:
+            self.statements: list[sa.sql.ClauseElement] = []
+
+        async def execute(self, stmt):
+            self.statements.append(stmt)
+            compiled = str(
+                stmt.compile(
+                    dialect=postgresql.dialect(),
+                    compile_kwargs={"literal_binds": True},
+                )
+            )
+            if "FROM vw_orders" in compiled:
+                return _Result(
+                    [
+                        {
+                            "cost_center": "CC1",
+                            "order_number": "ORD123",
+                            "order_date": datetime(2026, 5, 1, 9),
+                            "customer_name": "Alice",
+                            "mobile_number": "999",
+                            "order_amount": Decimal("100"),
+                        }
+                    ]
+                )
+            if "FROM payment_collections" in compiled:
+                return _Result(
+                    [
+                        {
+                            "cost_center": "CC1",
+                            "order_number": "ORD123",
+                            "amount": Decimal("80"),
+                            "source_type": "google_sheet",
+                        }
+                    ]
+                )
+            return _Result([])
+
+    session = _Session()
+    rows = await fetch_short_payment_rows(
+        session=session,
+        orders=orders,
+        payment_collections=payment_collections,
+        start_datetime=datetime(2026, 5, 1),
+        end_datetime=datetime(2026, 5, 2),
+    )
+
+    payment_sql = "\n".join(
+        str(
+            stmt.compile(
+                dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+            )
+        )
+        for stmt in session.statements
+        if "payment_collections" in str(stmt)
+    )
+    assert [(row.order_number, row.paid_amount, row.shortage_amount) for row in rows] == [
+        ("ORD123", Decimal("80"), Decimal("20")),
+    ]
+    assert "payment_collections.cost_center IN ('CC1')" in payment_sql
+    assert "LIKE" in payment_sql
+    assert "ORD123" in payment_sql
 
 
 def test_postgres_view_sql_documents_python_compatibility_contract() -> None:

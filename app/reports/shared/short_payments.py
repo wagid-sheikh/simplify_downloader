@@ -194,17 +194,6 @@ async def _fetch_reconciliation(
         )
         .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
     )
-    payment_stmt = sa.select(
-        payment_collections.c.cost_center,
-        payment_collections.c.order_number,
-        payment_collections.c.amount,
-        payment_collections.c.source_type,
-    ).where(
-        sa.func.lower(payment_collections.c.source_type).in_(
-            QUALIFYING_PAYMENT_SOURCE_TYPES
-        )
-    )
-
     try:
         order_result = await session.execute(order_stmt)
     except OperationalError as exc:
@@ -225,16 +214,12 @@ async def _fetch_reconciliation(
             .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
         )
         order_result = await session.execute(order_stmt)
-    try:
-        payment_result = await session.execute(payment_stmt)
-        payment_rows = [dict(record) for record in payment_result.mappings()]
-    except OperationalError as exc:
-        if "payment_collections.amount" not in str(
-            exc
-        ) and "payment_collections.source_type" not in str(exc):
-            raise
-        payment_rows = []
     order_rows = [dict(record) for record in order_result.mappings()]
+    payment_rows = await _fetch_payment_rows_for_orders(
+        session=session,
+        payment_collections=payment_collections,
+        order_rows=order_rows,
+    )
 
     sales_rows: list[dict[str, Any]] = []
     if sales is not None:
@@ -276,6 +261,75 @@ def _group_key_for_order(
 
 def _normalised_order_sql(column: Any) -> Any:
     return sa.func.upper(sa.func.replace(sa.func.coalesce(column, ""), " ", ""))
+
+
+async def _fetch_payment_rows_for_orders(
+    *, session: Any, payment_collections: Any, order_rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Fetch only payment evidence that can affect the candidate order set.
+
+    Payment collections are historical and can grow much larger than the daily
+    or MTD order windows.  Reconciliation first selects candidate orders, then
+    constrains evidence by candidate cost center and, when the token set is a
+    safe size for SQL parameters, by normalized order-token containment.
+    """
+
+    candidate_cost_centers = sorted(
+        {
+            str(row.get("cost_center") or "")
+            for row in order_rows
+            if row.get("cost_center")
+        }
+    )
+    if not candidate_cost_centers:
+        return []
+
+    candidate_order_tokens = sorted(
+        {
+            normalize_order_number(row.get("order_number"))
+            for row in order_rows
+            if normalize_order_number(row.get("order_number"))
+        }
+    )
+    payment_stmt = (
+        sa.select(
+            payment_collections.c.cost_center,
+            payment_collections.c.order_number,
+            payment_collections.c.amount,
+            payment_collections.c.source_type,
+        )
+        .where(payment_collections.c.cost_center.in_(candidate_cost_centers))
+        .where(
+            sa.func.lower(payment_collections.c.source_type).in_(
+                QUALIFYING_PAYMENT_SOURCE_TYPES
+            )
+        )
+    )
+
+    # Keep the SQL shape bounded for large MTD windows; cost center filtering is
+    # still mandatory, and token filtering is applied when feasible.
+    if 0 < len(candidate_order_tokens) <= 500:
+        normalized_payment_order = _normalised_order_sql(
+            payment_collections.c.order_number
+        )
+        payment_stmt = payment_stmt.where(
+            sa.or_(
+                *[
+                    normalized_payment_order.contains(token, autoescape=True)
+                    for token in candidate_order_tokens
+                ]
+            )
+        )
+
+    try:
+        payment_result = await session.execute(payment_stmt)
+        return [dict(record) for record in payment_result.mappings()]
+    except OperationalError as exc:
+        if "payment_collections.amount" not in str(
+            exc
+        ) and "payment_collections.source_type" not in str(exc):
+            raise
+        return []
 
 
 async def _fetch_sales_rows_for_orders(
