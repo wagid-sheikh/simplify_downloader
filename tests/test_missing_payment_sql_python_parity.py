@@ -23,10 +23,10 @@ from app.reports.shared.short_payments import (
 def _load_migration_module():
     project_root = Path(__file__).resolve().parents[1]
     module_path = (
-        project_root / "alembic" / "versions" / "0111_missing_view_py_logic.py"
+        project_root / "alembic" / "versions" / "0115_canon_missing_view.py"
     )
     spec = importlib.util.spec_from_file_location(
-        "v0111_missing_view_py_logic", module_path
+        "v0115_canon_missing_view", module_path
     )
     if spec is None or spec.loader is None:
         raise ImportError(f"Unable to load migration module from {module_path}")
@@ -305,8 +305,8 @@ async def test_payment_reconciliation_limits_payment_collection_query_to_candida
 
 
 def test_postgres_view_sql_documents_python_compatibility_contract() -> None:
-    assert migration.revision == "0111_missing_view_py_logic"
-    assert migration.down_revision == "0110_sales_evidence_mismatch"
+    assert migration.revision == "0115_canon_missing_view"
+    assert migration.down_revision == "0114_payment_audit_canon"
 
     normalized_sql = " ".join(migration.POSTGRES_VIEW_SQL.split()).lower()
 
@@ -320,7 +320,12 @@ def test_postgres_view_sql_documents_python_compatibility_contract() -> None:
     assert "regexp_split_to_array" in normalized_sql
     assert "'[/,]+'" in normalized_sql
     assert "sales_payment_received > 0" in normalized_sql
+    assert "payment_component_walk" in normalized_sql
+    assert "component_status" in normalized_sql
+    assert "has_data_quality_exception" in normalized_sql
+    assert "+ 1 >=" in normalized_sql
     assert "not has_payment_proof" in normalized_sql
+    assert "not has_data_quality_exception" in normalized_sql
     assert "order_amount::numeric(12, 2) as net_amount" in normalized_sql
     assert "to_be_recovered" in normalized_sql
     assert "to_be_compensated" in normalized_sql
