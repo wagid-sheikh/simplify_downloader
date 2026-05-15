@@ -9,8 +9,9 @@ import pytest
 import sqlalchemy as sa
 
 from app.common.db import session_scope
-from app.reports.mtd_same_day_fulfillment.data import fetch_mtd_same_day_fulfillment, fetch_missing_payments_mtd
+from app.reports.mtd_same_day_fulfillment.data import fetch_mtd_same_day_fulfillment, fetch_missing_payments_mtd, fetch_short_payments_mtd
 from app.reports.mtd_same_day_fulfillment.data import MTDSameDayFulfillmentRow, MissingPaymentRow
+from app.reports.shared.short_payments import ShortPaymentRow
 from app.reports.mtd_same_day_fulfillment.render import render_html
 from app.reports.shared.same_day_fulfillment import format_duration_minutes
 import app.reports.mtd_same_day_fulfillment.data as mtd_data
@@ -19,12 +20,12 @@ import app.reports.mtd_same_day_fulfillment.data as mtd_data
 def _create_tables(database_url: str) -> None:
     engine = sa.create_engine(database_url.replace('+aiosqlite', ''))
     with engine.begin() as conn:
-        conn.execute(sa.text("CREATE TABLE orders (cost_center TEXT, order_number TEXT, order_date TIMESTAMP, customer_name TEXT, mobile_number TEXT, net_amount NUMERIC, gross_amount NUMERIC, adjustment NUMERIC, source_system TEXT)"))
+        conn.execute(sa.text("CREATE TABLE orders (cost_center TEXT, order_number TEXT, order_date TIMESTAMP, customer_name TEXT, mobile_number TEXT, net_amount NUMERIC, gross_amount NUMERIC, adjustment NUMERIC, source_system TEXT, recovery_status TEXT)"))
         conn.execute(sa.text("CREATE VIEW vw_orders AS SELECT *, CASE WHEN (CASE WHEN COALESCE(adjustment, 0) > 0 THEN COALESCE(CASE WHEN source_system = 'TumbleDry' AND net_amount IS NOT NULL AND net_amount <> 0 THEN net_amount WHEN source_system = 'TumbleDry' THEN gross_amount ELSE gross_amount END, 0) - COALESCE(adjustment, 0) ELSE COALESCE(CASE WHEN source_system = 'TumbleDry' AND net_amount IS NOT NULL AND net_amount <> 0 THEN net_amount WHEN source_system = 'TumbleDry' THEN gross_amount ELSE gross_amount END, 0) END) <= 0 THEN 0 ELSE (CASE WHEN COALESCE(adjustment, 0) > 0 THEN COALESCE(CASE WHEN source_system = 'TumbleDry' AND net_amount IS NOT NULL AND net_amount <> 0 THEN net_amount WHEN source_system = 'TumbleDry' THEN gross_amount ELSE gross_amount END, 0) - COALESCE(adjustment, 0) ELSE COALESCE(CASE WHEN source_system = 'TumbleDry' AND net_amount IS NOT NULL AND net_amount <> 0 THEN net_amount WHEN source_system = 'TumbleDry' THEN gross_amount ELSE gross_amount END, 0) END) END AS order_amount FROM orders"))
         conn.execute(sa.text("CREATE TABLE order_line_items (cost_center TEXT, order_number TEXT, service_name TEXT, garment_name TEXT)"))
         conn.execute(sa.text("CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_date TIMESTAMP, payment_mode TEXT, payment_received NUMERIC)"))
         conn.execute(sa.text("CREATE TABLE store_master (cost_center TEXT, store_code TEXT)"))
-        conn.execute(sa.text("CREATE TABLE payment_collections (cost_center TEXT, order_number TEXT)"))
+        conn.execute(sa.text("CREATE TABLE payment_collections (cost_center TEXT, order_number TEXT, amount NUMERIC DEFAULT 0, source_type TEXT DEFAULT 'google_sheet')"))
     engine.dispose()
 
 
@@ -109,7 +110,7 @@ def test_render_html_groups_store_and_formats_duration() -> None:
 async def test_fetch_mtd_same_day_fulfillment_postgres_sql_has_no_strftime_and_hours_from_python(monkeypatch) -> None:
     monkeypatch.setattr(mtd_data, 'get_timezone', lambda: ZoneInfo('Asia/Kolkata'))
 
-    captured = {}
+    captured = {'stmts': []}
 
     class _Result:
         def mappings(self):
@@ -239,10 +240,44 @@ async def test_fetch_missing_payments_mtd_uses_month_window_and_view(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_fetch_short_payments_mtd_allocates_group_payments_and_excludes_group_paid(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / 'mtd_short_payments.db'
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    monkeypatch.setattr(mtd_data, 'get_timezone', lambda: ZoneInfo('Asia/Kolkata'))
+
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, source_system, recovery_status) VALUES
+                ('CC1','A1','2026-04-10T09:00:00+05:30','Alice','999',100,'TumbleDry',NULL),
+                ('CC1','A2','2026-04-10T10:00:00+05:30','Bob','888',200,'TumbleDry',NULL),
+                ('CC1','B1','2026-04-11T09:00:00+05:30','Cara','777',100,'TumbleDry',NULL),
+                ('CC1','B2','2026-04-11T10:00:00+05:30','Dan','666',200,'TumbleDry',NULL),
+                ('CC1','S1','2026-04-12T09:00:00+05:30','Eve','555',150,'TumbleDry',NULL),
+                ('CC1','REC','2026-04-12T10:00:00+05:30','Ron','444',150,'TumbleDry','WRITE_OFF')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO payment_collections (cost_center, order_number, amount, source_type) VALUES
+                ('CC1','A1/A2',150,'google_sheet'),
+                ('CC1','B1/B2',300,'google_sheet'),
+                ('CC1','S1',140,'google_sheet'),
+                ('CC1','REC',10,'google_sheet')
+        """))
+        await session.commit()
+
+    rows = await fetch_short_payments_mtd(database_url=database_url, report_date=date(2026, 4, 29))
+
+    assert [(row.order_number, row.paid_amount, row.shortage_amount, row.group_key) for row in rows] == [
+        ('A2', Decimal('50'), Decimal('150'), 'A1|A2'),
+        ('S1', Decimal('140'), Decimal('10'), None),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_fetch_missing_payments_mtd_postgres_sql_targets_view(monkeypatch) -> None:
     monkeypatch.setattr(mtd_data, 'get_timezone', lambda: ZoneInfo('Asia/Kolkata'))
 
-    captured = {}
+    captured = {'stmts': []}
 
     class _Result:
         def mappings(self):
@@ -250,7 +285,7 @@ async def test_fetch_missing_payments_mtd_postgres_sql_targets_view(monkeypatch)
 
     class _Session:
         async def execute(self, stmt):
-            captured['stmt'] = stmt
+            captured['stmts'].append(stmt)
             return _Result()
 
     @asynccontextmanager
@@ -264,10 +299,15 @@ async def test_fetch_missing_payments_mtd_postgres_sql_targets_view(monkeypatch)
         report_date=date(2026, 4, 29),
     )
 
-    compiled = str(captured['stmt'].compile(dialect=postgresql.dialect(), compile_kwargs={'literal_binds': True}))
+    compiled_statements = [
+        str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={'literal_binds': True}))
+        for stmt in captured['stmts']
+    ]
+    compiled = '\n'.join(compiled_statements)
     compiled_lower = compiled.lower()
-    assert 'vw_orders_missing_in_payment_collections' in compiled
+    assert 'payment_collections' in compiled
     assert 'vw_orders.order_amount' in compiled_lower
+    assert 'vw_orders_missing_in_payment_collections' not in compiled
     assert 'net_amount' not in compiled_lower
     assert ' from orders ' not in f" {compiled_lower} "
 
@@ -304,6 +344,27 @@ def test_render_html_missing_payments_grouping_columns_and_totals() -> None:
     assert 'Cost Center: CC1 | Count: 2 | Order Amount: ₹300' in html
     assert 'Cost Center: CC2 | Count: 1 | Order Amount: ₹300' in html
     assert 'Grand Total Count: 3 | Grand Total Order Amount: ₹600' in html
+
+
+def test_render_html_short_payments_grouping_columns_and_totals() -> None:
+    short_rows = [
+        ShortPaymentRow('CC1', 'O-1', datetime(2026, 4, 10, 9), 'Alice', '999', Decimal('100'), Decimal('80'), Decimal('20')),
+        ShortPaymentRow('CC1', 'O-2', datetime(2026, 4, 10, 10), 'Bob', '888', Decimal('200'), Decimal('150'), Decimal('50'), 'O-2|O-3'),
+        ShortPaymentRow('CC2', 'O-3', datetime(2026, 4, 11, 11), 'Cara', '777', Decimal('300'), Decimal('0'), Decimal('300'), 'O-2|O-3'),
+    ]
+    html = render_html(
+        rows=[],
+        report_date_display='29-Apr-2026',
+        mtd_start_display='01-Apr-2026',
+        mtd_end_display='29-Apr-2026',
+        missing_payment_rows=[],
+        short_payment_rows=short_rows,
+    )
+
+    assert 'Short Payments' in html
+    assert 'Paid Amount' in html and 'Shortage Amount' in html and 'Group Key' in html
+    assert 'Cost Center: CC1 | Count: 2 | Order Amount: ₹300 | Paid Amount: ₹230 | Shortage Amount: ₹70' in html
+    assert 'Grand Total Count: 3 | Grand Total Order Amount: ₹600 | Grand Total Paid Amount: ₹230 | Grand Total Shortage Amount: ₹370' in html
 
 def test_format_duration_minutes_examples() -> None:
     assert format_duration_minutes(0) == "0 min"

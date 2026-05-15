@@ -14,6 +14,7 @@ from app.common.lead_rules import resolve_cancelled_flag
 from app.common.order_recovery import clear_to_be_recovered_order
 from app.reports.shared.line_items_summary import summarize_line_items
 from app.reports.shared.same_day_fulfillment import fetch_same_day_fulfillment_rows, same_day_date_expr, string_list_agg
+from app.reports.shared.short_payments import ShortPaymentRow, fetch_missing_payment_rows_without_proof, fetch_short_payment_rows
 
 
 @dataclass
@@ -127,6 +128,7 @@ class DailySalesReportData:
     auto_cleared_order_numbers_text: str = ""
     same_day_fulfillment_rows: List[SameDayFulfillmentRow] = field(default_factory=list)
     missing_payment_rows: List[MissingPaymentRow] = field(default_factory=list)
+    short_payment_rows: List[ShortPaymentRow] = field(default_factory=list)
 
 
 LEAD_BENCHMARKS = {
@@ -704,14 +706,8 @@ async def fetch_daily_sales_report(
         sa.column("cost_center"),
         sa.column("order_number"),
         sa.column("payment_id"),
-    )
-    missing_orders_view = sa.table(
-        "vw_orders_missing_in_payment_collections",
-        sa.column("cost_center"),
-        sa.column("order_number"),
-        sa.column("order_date"),
-        sa.column("customer_name"),
-        sa.column("mobile_number"),
+        sa.column("amount"),
+        sa.column("source_type"),
     )
     orders_sync_log = sa.table(
         "orders_sync_log",
@@ -938,6 +934,7 @@ async def fetch_daily_sales_report(
     rows: list[DailySalesRow] = []
     same_day_rows: list[SameDayFulfillmentRow] = []
     missing_payment_rows: list[MissingPaymentRow] = []
+    short_payment_rows: list[ShortPaymentRow] = []
     async with session_scope(database_url) as session:
         result = await session.execute(stmt)
         target_updates: list[dict[str, object]] = []
@@ -1152,45 +1149,21 @@ async def fetch_daily_sales_report(
                     hours=hours,
                 )
             )
-        missing_payment_stmt = (
-            sa.select(
-                missing_orders_view.c.cost_center,
-                missing_orders_view.c.order_number,
-                orders.c.order_date,
-                orders.c.customer_name,
-                orders.c.mobile_number,
-                orders.c.order_amount,
-            )
-            .select_from(
-                missing_orders_view.join(
-                    orders,
-                    sa.and_(
-                        orders.c.cost_center == missing_orders_view.c.cost_center,
-                        orders.c.order_number == missing_orders_view.c.order_number,
-                    ),
-                )
-            )
-            .where(orders.c.order_date >= ranges["start_day"])
-            .where(orders.c.order_date < ranges["next_day"])
-            .where(orders.c.order_amount > 0)
-            .order_by(
-                missing_orders_view.c.cost_center,
-                orders.c.order_date,
-                missing_orders_view.c.order_number,
-            )
+        short_payment_rows = await fetch_short_payment_rows(
+            session=session,
+            orders=orders,
+            payment_collections=payment_collections,
+            start_datetime=ranges["start_day"],
+            end_datetime=ranges["next_day"],
         )
-        missing_payment_result = await session.execute(missing_payment_stmt)
-        for entry in missing_payment_result.mappings():
-            missing_payment_rows.append(
-                MissingPaymentRow(
-                    cost_center=str(entry["cost_center"] or ""),
-                    order_number=str(entry["order_number"] or ""),
-                    order_date=_parse_orders_sync_timestamp(entry["order_date"], tz=tz),
-                    customer_name=str(entry["customer_name"] or ""),
-                    mobile_number=str(entry["mobile_number"] or ""),
-                    order_amount=_decimal(entry["order_amount"]),
-                )
-            )
+        missing_payment_rows = await fetch_missing_payment_rows_without_proof(
+            session=session,
+            orders=orders,
+            payment_collections=payment_collections,
+            start_datetime=ranges["start_day"],
+            end_datetime=ranges["next_day"],
+            row_factory=MissingPaymentRow,
+        )
 
     totals = _totals_row(rows)
     totals.ttd = _calculate_ttd(totals.target, totals.achieved, day_of_month, days_in_month)
@@ -1590,4 +1563,5 @@ async def fetch_daily_sales_report(
         auto_cleared_order_numbers_text=", ".join(auto_cleared_order_numbers),
         same_day_fulfillment_rows=same_day_rows,
         missing_payment_rows=missing_payment_rows,
+        short_payment_rows=short_payment_rows,
     )

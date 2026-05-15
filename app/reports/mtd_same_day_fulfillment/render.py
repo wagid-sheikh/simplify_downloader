@@ -9,6 +9,7 @@ from app.reports.shared.formatters import format_amount, format_ddmmyyyy, format
 from app.reports.shared.same_day_fulfillment import build_store_summary, format_duration_hours, format_duration_minutes, group_rows_by_store
 
 from .data import MTDSameDayFulfillmentRow, MissingPaymentRow
+from app.reports.shared.short_payments import ShortPaymentRow
 
 TEMPLATE_DIR = Path("app") / "reports" / "mtd_same_day_fulfillment" / "templates"
 SHARED_TEMPLATE_DIR = Path("app") / "reports" / "shared" / "templates"
@@ -21,6 +22,7 @@ def render_html(
     mtd_start_display: str,
     mtd_end_display: str,
     missing_payment_rows: Sequence[MissingPaymentRow],
+    short_payment_rows: Sequence[ShortPaymentRow] = (),
 ) -> str:
     env = Environment(
         loader=FileSystemLoader([str(TEMPLATE_DIR), str(SHARED_TEMPLATE_DIR)]),
@@ -40,4 +42,5 @@ def render_html(
         mtd_start_display=mtd_start_display,
         mtd_end_display=mtd_end_display,
         missing_payment_rows=missing_payment_rows,
+        short_payment_rows=short_payment_rows,
     )
