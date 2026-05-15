@@ -8,6 +8,24 @@
 
 ---
 
+### DL-017
+- **Date:** 2026-05-15
+- **Status:** Active
+- **Decision:** Freeze the payment/recovery reconciliation contract before code changes: `payment_collections` is verified payment evidence, payment truth ignores CRM payment snapshot fields, and missing/short/pending report classifications follow explicit recovery-status and group-allocation rules.
+- **Context:** Upcoming report code changes need a stable business contract so implementation does not mix source CRM payment flags with verified evidence, accidentally double-count multi-order payments, or merge short-payment rows into missing-payment outputs.
+- **Evidence:** `docs/payment_collections.md` defines `payment_collections` as verified evidence; `docs/architecture.md` captures the payment-decision contract; `docs/feature-map.md` summarizes affected report behavior. Migration `0107_payment_collections_sources` already constrains `source_type` to `google_sheet`/`legacy_sales`, keeps `source_sheet_row` non-null, adds `(source_type, source_sheet_row)` uniqueness, and reserves `bank_row_id` for later bank reconciliation.
+- **Implications:**
+  - `source_type = 'google_sheet'` and `source_type = 'legacy_sales'` are equivalent verified evidence for current reconciliation.
+  - `bank_row_id` is future bank-reconciliation plumbing and is ignored by current reports.
+  - Payment evidence idempotency is `(source_type, source_sheet_row)`; `source_sheet_row` remains non-null.
+  - Payment truth ignores `orders.payment_status` and `orders.payment_amount`; it uses `vw_orders.order_amount`, `sales.payment_received`, and `payment_collections.amount`.
+  - Payment comparisons use ₹1 tolerance, and overpayment is paid in full.
+  - Multi-order `payment_collections.order_number` values are group-reconciled first; group-paid rows stay out of main missing/short outputs, and group-short rows are allocated by `order_date ASC, order_number ASC`.
+  - `TO_BE_RECOVERED` and `TO_BE_COMPENSATED` are excluded from normal missing-payment rows; `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` are excluded from normal pending-delivery buckets.
+  - A dedicated `Short Payment` sub-report is required and separate from `Actual Payments Not Found`.
+  - `source_type` should appear in audit/reconciliation reports, not every normal business report.
+- **Follow-up:** Implement report/query changes against this contract and add regression tests for source equivalence, group reconciliation, short-payment separation, recovery-status exclusions, and source-type visibility.
+
 ### DL-016
 - **Date:** 2026-05-11
 - **Status:** Active
@@ -28,7 +46,7 @@
 - **Status:** Active
 - **Decision:** Formalize manual-ingestion business rules and correction lifecycle for `payment_collections` in a dedicated operator-facing document.
 - **Context:** The table is manually fed from Excel transcriptions of store WhatsApp payment confirmations; without a written contract, idempotency, correction handling, and handover semantics can drift.
-- **Evidence:** `docs/payment_collections.md` now defines row identity (`source_sheet_row`), update workflow expectations, and recommended upsert SQL with explicit `updated_at` maintenance.
+- **Evidence:** `docs/payment_collections.md` now defines row identity (`(source_type, source_sheet_row)` with non-null `source_sheet_row`), update workflow expectations, and recommended upsert SQL with explicit `updated_at` maintenance.
 - **Implications:**
   - Operators and engineers have one canonical reference for inserts/updates into this manual ledger.
   - Data reconciliation can rely on consistent meanings for `handed_over`, `date_handed`, `updated_flag`, and `date_modified`.
@@ -42,10 +60,10 @@
 - **Context:** Store delivery/payment confirmations are shared in WhatsApp groups, then transcribed by operations into Excel before manual SQL inserts. The service lacked a first-class table to persist this manual payment ledger with lifecycle flags.
 - **Evidence:** `alembic/versions/0097_payment_collections.py` creates `payment_collections` with unique source row tracking, payment/order metadata, handover/update flags, and supporting lookup indexes.
 - **Implications:**
-  - Manual payment ingestion can use stable inserts keyed by `source_sheet_row` to avoid duplicate row ingestion.
+  - Manual payment ingestion can use stable inserts keyed by `(source_type, source_sheet_row)` to avoid duplicate row ingestion.
   - Operational lookup paths are optimized for `(cost_center, payment_date)`, `order_number`, and `payment_mode`.
   - The table supports later reconciliation workflows through `handed_over`, `date_handed`, `date_modified`, and `updated_flag` fields.
-- **Follow-up:** If ingestion tooling is added, enforce idempotent upsert behavior keyed by `source_sheet_row` and maintain `updated_at` on updates.
+- **Follow-up:** If ingestion tooling is added, enforce idempotent upsert behavior keyed by `(source_type, source_sheet_row)` and maintain `updated_at` on updates.
 
 ### DL-009
 - **Date:** 2026-04-29
@@ -79,13 +97,13 @@
 
 ### DL-007
 - **Date:** 2026-04-27
-- **Status:** Active
+- **Status:** Partially superseded by DL-017
 - **Decision:** Remove configurable UC skip toggle for pending deliveries and always include UC rows unless excluded by core pending filters.
 - **Context:** Pending deliveries now relies on recovery-status business rules instead of a source-system toggle, and startup config should not depend on legacy `SKIP_UC_Pending_Delivery`.
 - **Evidence:** `app/config.py`, `app/reports/pending_deliveries/data.py`, and pending-deliveries tests.
 - **Implications:**
   - `SKIP_UC_Pending_Delivery` is no longer a required runtime config key.
-  - Pending deliveries main dataset excludes recovery statuses `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` before bucket/detail aggregation.
+  - Original recovery filtering excluded `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` before bucket/detail aggregation; DL-017 is the current contract for payment/recovery report classification.
   - UC rows continue to appear in pending deliveries when they satisfy standard pending filters.
 - **Follow-up:** Keep migration cleanup in place so legacy `system_config` rows do not imply obsolete behavior.
 
