@@ -1195,6 +1195,7 @@ async def fetch_daily_sales_report(
             session=session,
             orders=orders,
             payment_collections=payment_collections,
+            sales=sales,
             start_datetime=ranges["start_day"],
             end_datetime=ranges["next_day"],
             row_factory=MissingPaymentRow,

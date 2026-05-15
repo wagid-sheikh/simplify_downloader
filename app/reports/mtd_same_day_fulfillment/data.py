@@ -56,6 +56,12 @@ async def fetch_missing_payments_mtd(*, database_url: str, report_date: date) ->
         sa.column("amount"),
         sa.column("source_type"),
     )
+    sales = sa.table(
+        "sales",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("payment_received"),
+    )
     tz = get_timezone()
     start_month = datetime.combine(report_date.replace(day=1), time.min, tzinfo=tz)
     next_day = datetime.combine(report_date, time.min, tzinfo=tz) + timedelta(days=1)
@@ -67,6 +73,7 @@ async def fetch_missing_payments_mtd(*, database_url: str, report_date: date) ->
             session=session,
             orders=orders,
             payment_collections=payment_collections,
+            sales=sales,
             start_datetime=start_month,
             end_datetime=next_day,
             row_factory=MissingPaymentRow,
