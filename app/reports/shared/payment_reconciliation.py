@@ -441,17 +441,24 @@ def _build_evidence_components(
         def union(left: str, right: str) -> None:
             parent[find(right)] = find(left)
 
-        for row in rows:
+        # Model each evidence row and each normalized order token as a bipartite
+        # graph scoped to one cost center.  Connecting a row node to every token
+        # it names means a single-order top-up (``ORD2``) remains in the same
+        # reconciliation component as a grouped proof (``ORD1,ORD2``) instead of
+        # being skipped or reconciled separately.
+        for index, row in enumerate(rows):
+            row_node = f"row:{index}:{row.evidence_id}"
+            find(row_node)
             for token in row.normalized_order_numbers:
-                find(token)
-            first = row.normalized_order_numbers[0]
-            for token in row.normalized_order_numbers[1:]:
-                union(first, token)
+                token_node = f"token:{token}"
+                find(token_node)
+                union(row_node, token_node)
 
         tokens_by_root: dict[str, set[str]] = defaultdict(set)
         rows_by_root: dict[str, list[ReconciliationPaymentEvidence]] = defaultdict(list)
-        for row in rows:
-            root = find(row.normalized_order_numbers[0])
+        for index, row in enumerate(rows):
+            row_node = f"row:{index}:{row.evidence_id}"
+            root = find(row_node)
             tokens_by_root[root].update(row.normalized_order_numbers)
             rows_by_root[root].append(row)
 

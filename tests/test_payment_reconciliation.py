@@ -192,3 +192,71 @@ def test_overlapping_group_and_single_top_up_reconcile_consistently() -> None:
     ]
     assert {row.group_key for row in audit_rows} == {"ORD1|ORD2"}
     assert {row.grouped_amount for row in audit_rows} == {Decimal("200")}
+
+
+def test_grouped_payment_and_single_order_top_up_are_paid_against_total_amount() -> (
+    None
+):
+    result = reconcile_payments(
+        order_rows=[
+            _order("ORD1", "100", "2026-05-01T10:00:00"),
+            _order("ORD2", "200", "2026-05-01T11:00:00"),
+        ],
+        sales_rows=[_sale("ORD1", "100"), _sale("ORD2", "200")],
+        payment_evidence_rows=[
+            _proof("ORD1,ORD2", "250"),
+            _proof("ORD2", "50"),
+        ],
+    )
+
+    assert len(result.groups) == 1
+    group = result.groups[0]
+    assert group.normalized_order_numbers == ("ORD1", "ORD2")
+    assert group.expected_order_amount == Decimal("300")
+    assert group.evidence_amount == Decimal("300")
+    assert [row.amount for row in group.evidence_rows] == [
+        Decimal("250"),
+        Decimal("50"),
+    ]
+    assert group.status == "paid"
+    assert result.short_payment_orders == ()
+
+
+def test_grouped_payment_and_single_order_top_up_report_only_sequential_shortage() -> (
+    None
+):
+    result = reconcile_payments(
+        order_rows=[
+            _order("ORD1", "100", "2026-05-01T10:00:00"),
+            _order("ORD2", "200", "2026-05-01T11:00:00"),
+        ],
+        sales_rows=[_sale("ORD1", "100"), _sale("ORD2", "200")],
+        payment_evidence_rows=[
+            _proof("ORD1,ORD2", "230"),
+            _proof("ORD2", "50"),
+        ],
+    )
+
+    assert len(result.groups) == 1
+    group = result.groups[0]
+    assert group.expected_order_amount == Decimal("300")
+    assert group.evidence_amount == Decimal("280")
+    assert group.short_amount == Decimal("20")
+    assert [
+        (
+            order.order_number,
+            order.allocated_payment_amount,
+            order.short_amount,
+            order.status,
+        )
+        for order in group.orders
+    ] == [
+        ("ORD1", Decimal("100"), Decimal("0"), "paid"),
+        ("ORD2", Decimal("180"), Decimal("20"), "short"),
+    ]
+    assert [
+        (order.order_number, order.short_amount)
+        for order in result.short_payment_orders
+    ] == [
+        ("ORD2", Decimal("20")),
+    ]

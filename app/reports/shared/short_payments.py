@@ -73,7 +73,12 @@ async def fetch_short_payment_rows(
     start_datetime: datetime,
     end_datetime: datetime,
 ) -> list[ShortPaymentRow]:
-    """Return partially paid orders using the shared reconciliation engine."""
+    """Return partially paid orders using the shared reconciliation engine.
+
+    Payment evidence is grouped in ``payment_reconciliation`` by connected
+    cost-center/order-token components so grouped rows and single-order top-ups
+    are reconciled together before this report selects short orders.
+    """
 
     reconciliation = await _fetch_reconciliation(
         session=session,
