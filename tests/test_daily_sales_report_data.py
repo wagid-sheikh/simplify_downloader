@@ -1415,15 +1415,15 @@ async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleare
         await session.execute(
             sa.text(
                 """
-                INSERT INTO payment_collections (cost_center, order_number)
+                INSERT INTO payment_collections (cost_center, order_number, amount, source_type)
                 VALUES
-                    ('CC1', 'PC-ONLY'),
-                    ('CC1', 'BOTH-1'),
-                    ('CC1', 'NOPE, COMMA-2'),
-                    ('CC1', 'NOPE/SLASH-3'),
-                    ('CC1', 'NOPE, ALSO-NOPE/MIXED-4'),
-                    ('CC1', 'TD-10, TD-11'),
-                    ('CC1', 'BOTH-1')
+                    ('CC1', 'PC-ONLY', 0, 'google_sheet'),
+                    ('CC1', 'BOTH-1', 500, 'google_sheet'),
+                    ('CC1', 'NOPE, COMMA-2', 500, 'legacy_sales'),
+                    ('CC1', 'NOPE/SLASH-3', 500, 'google_sheet'),
+                    ('CC1', 'NOPE, ALSO-NOPE/MIXED-4', 500, 'legacy_sales'),
+                    ('CC1', 'TD-10, TD-11', 500, 'google_sheet'),
+                    ('CC1', 'BOTH-1', 0, 'google_sheet')
                 """
             )
         )
@@ -1471,10 +1471,10 @@ async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleare
 
     statuses = {row["order_number"]: row for row in status_rows}
     expected_recovery_notes = {
-        "BOTH-1": "AUTO_CLEARED_PAYMENT_PROOF sales.id=2, payment_collections.payment_id=2",
-        "COMMA-2": "AUTO_CLEARED_PAYMENT_PROOF sales.id=3, payment_collections.payment_id=3",
-        "SLASH-3": "AUTO_CLEARED_PAYMENT_PROOF sales.id=4, payment_collections.payment_id=4",
-        "MIXED-4": "AUTO_CLEARED_PAYMENT_PROOF sales.id=5, payment_collections.payment_id=5",
+        "BOTH-1": "AUTO_CLEARED_PAYMENT_PROOF payment_collections.payment_ids=2,7, source_types=google_sheet, total_paid=500, order_amount=500, group_key=CC1:BOTH-1",
+        "COMMA-2": "AUTO_CLEARED_PAYMENT_PROOF payment_collections.payment_ids=3,4,5, source_types=google_sheet,legacy_sales, total_paid=1500, order_amount=500, group_key=CC1:COMMA-2/MIXED-4/SLASH-3/ALSO-NOPE/NOPE",
+        "SLASH-3": "AUTO_CLEARED_PAYMENT_PROOF payment_collections.payment_ids=3,4,5, source_types=google_sheet,legacy_sales, total_paid=1500, order_amount=500, group_key=CC1:COMMA-2/MIXED-4/SLASH-3/ALSO-NOPE/NOPE",
+        "MIXED-4": "AUTO_CLEARED_PAYMENT_PROOF payment_collections.payment_ids=3,4,5, source_types=google_sheet,legacy_sales, total_paid=1500, order_amount=500, group_key=CC1:COMMA-2/MIXED-4/SLASH-3/ALSO-NOPE/NOPE",
     }
     for order_number, recovery_notes in expected_recovery_notes.items():
         assert statuses[order_number]["recovery_status"] == "NONE"
@@ -1543,8 +1543,8 @@ async def test_single_auto_cleared_to_be_recovered_order_is_reported(
         await session.execute(
             sa.text(
                 """
-                INSERT INTO payment_collections (cost_center, order_number)
-                VALUES ('CC1', 'TD123')
+                INSERT INTO payment_collections (cost_center, order_number, amount, source_type)
+                VALUES ('CC1', 'TD123', 499, 'legacy_sales')
                 """
             )
         )
@@ -1573,7 +1573,8 @@ async def test_single_auto_cleared_to_be_recovered_order_is_reported(
 
     assert recovery_notes == (
         "AUTO_CLEARED_PAYMENT_PROOF "
-        "sales.id=1, payment_collections.payment_id=1"
+        "payment_collections.payment_ids=1, source_types=legacy_sales, "
+        "total_paid=499, order_amount=500, group_key=CC1:TD123"
     )
 
 
@@ -1698,3 +1699,143 @@ def test_build_manual_recovery_sections_excludes_zero_value_orders() -> None:
     assert compensated_rows == []
     assert total == Decimal("75")
     assert compensated_total == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_grouped_auto_clear_requires_sufficient_grouped_payment_proof(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "daily_sales_report_grouped_recovery_resolution.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: ZoneInfo("Asia/Kolkata"))
+    report_date = date(2026, 4, 29)
+
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
+        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
+        await session.execute(sa.text("""
+            INSERT INTO orders (
+                cost_center, order_number, order_date, customer_name, mobile_number,
+                net_amount, gross_amount, source_system, recovery_status, recovery_category
+            ) VALUES
+                ('CC1', 'GROUP-1', '2026-04-29T09:00:00+05:30', 'Customer', '9000000001', 100, 100, 'TumbleDry', 'TO_BE_RECOVERED', 'MISSING_PAYMENT'),
+                ('CC1', 'GROUP-2', '2026-04-29T09:05:00+05:30', 'Customer', '9000000002', 200, 200, 'TumbleDry', 'TO_BE_RECOVERED', 'MISSING_PAYMENT')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO payment_collections (cost_center, order_number, amount, source_type)
+            VALUES ('CC1', 'GROUP-1/GROUP-2', 299, 'google_sheet')
+        """))
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    assert report.auto_cleared_order_numbers == ["GROUP-1", "GROUP-2"]
+    assert report.to_be_recovered == []
+    async with session_scope(database_url) as session:
+        rows = (await session.execute(sa.text("""
+            SELECT order_number, recovery_status, recovery_notes
+            FROM orders
+            ORDER BY order_number
+        """))).mappings().all()
+
+    assert {row["order_number"]: row["recovery_status"] for row in rows} == {
+        "GROUP-1": "NONE",
+        "GROUP-2": "NONE",
+    }
+    for row in rows:
+        assert "payment_collections.payment_ids=1" in row["recovery_notes"]
+        assert "source_types=google_sheet" in row["recovery_notes"]
+        assert "total_paid=299" in row["recovery_notes"]
+        assert "group_key=CC1:GROUP-1/GROUP-2" in row["recovery_notes"]
+
+
+@pytest.mark.asyncio
+async def test_auto_clear_keeps_to_be_recovered_when_payment_proof_is_insufficient(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "daily_sales_report_insufficient_recovery_resolution.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: ZoneInfo("Asia/Kolkata"))
+    report_date = date(2026, 4, 29)
+
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
+        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
+        await session.execute(sa.text("""
+            INSERT INTO orders (
+                cost_center, order_number, order_date, customer_name, mobile_number,
+                net_amount, gross_amount, source_system, recovery_status, recovery_category
+            ) VALUES (
+                'CC1', 'SHORT-PROOF', '2026-04-29T09:00:00+05:30', 'Customer', '9000000001',
+                500, 500, 'TumbleDry', 'TO_BE_RECOVERED', 'MISSING_PAYMENT'
+            )
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO payment_collections (cost_center, order_number, amount, source_type)
+            VALUES ('CC1', 'SHORT-PROOF', 498, 'legacy_sales')
+        """))
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    assert report.auto_cleared_order_numbers == []
+    assert [row.order_number for row in report.to_be_recovered] == ["SHORT-PROOF"]
+    async with session_scope(database_url) as session:
+        status = (await session.execute(sa.text("""
+            SELECT recovery_status, recovery_category, recovery_notes
+            FROM orders
+            WHERE order_number = 'SHORT-PROOF'
+        """))).mappings().one()
+
+    assert status["recovery_status"] == "TO_BE_RECOVERED"
+    assert status["recovery_category"] == "MISSING_PAYMENT"
+    assert status["recovery_notes"] is None
+
+
+@pytest.mark.asyncio
+async def test_auto_clear_keeps_to_be_recovered_when_payment_proof_is_missing(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "daily_sales_report_missing_recovery_resolution.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: ZoneInfo("Asia/Kolkata"))
+    report_date = date(2026, 4, 29)
+
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
+        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
+        await session.execute(sa.text("""
+            INSERT INTO orders (
+                cost_center, order_number, order_date, customer_name, mobile_number,
+                net_amount, gross_amount, source_system, recovery_status, recovery_category
+            ) VALUES (
+                'CC1', 'NO-PROOF', '2026-04-29T09:00:00+05:30', 'Customer', '9000000001',
+                500, 500, 'TumbleDry', 'TO_BE_RECOVERED', 'MISSING_PAYMENT'
+            )
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode)
+            VALUES ('CC1', 'NO-PROOF', '2026-04-29T10:00:00+05:30', 500, 'UPI')
+        """))
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    assert report.auto_cleared_order_numbers == []
+    assert [row.order_number for row in report.to_be_recovered] == ["NO-PROOF"]
+    async with session_scope(database_url) as session:
+        status = (await session.execute(sa.text("""
+            SELECT recovery_status, recovery_category, recovery_notes
+            FROM orders
+            WHERE order_number = 'NO-PROOF'
+        """))).mappings().one()
+
+    assert status["recovery_status"] == "TO_BE_RECOVERED"
+    assert status["recovery_category"] == "MISSING_PAYMENT"
+    assert status["recovery_notes"] is None
