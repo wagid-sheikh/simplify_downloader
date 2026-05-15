@@ -29,6 +29,8 @@ class ReconciliationOrder:
     normalized_order_number: str
     order_date: datetime | date | None
     order_amount: Decimal
+    recovery_status: str = ""
+    recovery_category: str = ""
     raw: Any = None
 
 
@@ -74,6 +76,8 @@ class ReconciledOrderPayment:
     status: str
     has_payment_proof: bool
     data_quality_exception: bool = False
+    recovery_status: str = ""
+    recovery_category: str = ""
     raw_order: Any = None
 
 
@@ -99,6 +103,8 @@ class ReconciledPaymentGroup:
     matched_order_count: int = 0
     unmatched_order_numbers: tuple[str, ...] = ()
     data_quality_exception: bool = False
+    recovery_statuses_csv: str = ""
+    recovery_categories_csv: str = ""
 
 
 @dataclass(frozen=True)
@@ -168,6 +174,10 @@ class PaymentEvidenceAuditRow:
     grouped_payment_received: Decimal
     sales_evidence_difference: Decimal
     sales_evidence_mismatch: bool
+    sales_evidence_classification: str
+    component_id: str
+    recovery_statuses_csv: str
+    recovery_categories_csv: str
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -191,6 +201,10 @@ class PaymentEvidenceAuditRow:
             "grouped_payment_received": self.grouped_payment_received,
             "sales_evidence_difference": self.sales_evidence_difference,
             "sales_evidence_mismatch": self.sales_evidence_mismatch,
+            "sales_evidence_classification": self.sales_evidence_classification,
+            "component_id": self.component_id,
+            "recovery_statuses_csv": self.recovery_statuses_csv,
+            "recovery_categories_csv": self.recovery_categories_csv,
         }
 
 
@@ -241,6 +255,8 @@ def reconcile_payments(
             normalized_order_number=normalize_order_number(_field(row, "order_number")),
             order_date=_field(row, "order_date"),
             order_amount=_decimal(_field(row, "order_amount")),
+            recovery_status=_text(_field(row, "recovery_status")),
+            recovery_category=_text(_field(row, "recovery_category")),
             raw=row,
         )
         if not order.normalized_order_number:
@@ -334,12 +350,15 @@ def reconcile_payments(
             evidence_amount=Decimal("0"),
             sales_evidence_difference=sales_received,
             sales_evidence_mismatch=sales_evidence_mismatch,
-            sales_evidence_consistent=has_sales_payment_data and not sales_evidence_mismatch,
+            sales_evidence_consistent=has_sales_payment_data
+            and not sales_evidence_mismatch,
             has_sales_payment_data=has_sales_payment_data,
             short_amount=order.order_amount,
             status=status,
             has_payment_proof=False,
             data_quality_exception=False,
+            recovery_status=order.recovery_status,
+            recovery_category=order.recovery_category,
             raw_order=order.raw,
         )
         group = ReconciledPaymentGroup(
@@ -353,7 +372,8 @@ def reconcile_payments(
             evidence_amount=Decimal("0"),
             sales_evidence_difference=sales_received,
             sales_evidence_mismatch=sales_evidence_mismatch,
-            sales_evidence_consistent=has_sales_payment_data and not sales_evidence_mismatch,
+            sales_evidence_consistent=has_sales_payment_data
+            and not sales_evidence_mismatch,
             has_sales_payment_data=has_sales_payment_data,
             short_amount=order.order_amount,
             overpayment_amount=Decimal("0"),
@@ -361,6 +381,8 @@ def reconcile_payments(
             orders=(reconciled,),
             token_count=1,
             matched_order_count=1,
+            recovery_statuses_csv=order.recovery_status,
+            recovery_categories_csv=order.recovery_category,
         )
         groups.append(group)
         reconciled_orders[key] = reconciled
@@ -476,6 +498,8 @@ def _reconcile_group(
                 status=order_status,
                 has_payment_proof=bool(evidence_rows) and not data_quality_exception,
                 data_quality_exception=data_quality_exception,
+                recovery_status=order.recovery_status,
+                recovery_category=order.recovery_category,
                 raw_order=order.raw,
             )
         )
@@ -506,6 +530,12 @@ def _reconcile_group(
         matched_order_count=len(sorted_orders),
         unmatched_order_numbers=unmatched_numbers,
         data_quality_exception=data_quality_exception,
+        recovery_statuses_csv=",".join(
+            _unique_nonempty(order.recovery_status for order in sorted_orders)
+        ),
+        recovery_categories_csv=",".join(
+            _unique_nonempty(order.recovery_category for order in sorted_orders)
+        ),
     )
 
 
@@ -633,6 +663,9 @@ def build_payment_evidence_audit_rows(
             normalized_tokens = group.normalized_order_numbers
             is_grouped = len(normalized_tokens) > 1
             group_key = _audit_group_key(group.cost_center, normalized_tokens)
+            recovery_statuses_csv = group.recovery_statuses_csv
+            recovery_categories_csv = group.recovery_categories_csv
+            component_id = _audit_component_id(group.cost_center, normalized_tokens)
             if group.data_quality_exception:
                 reconciliation_result = "unmatched order token"
             elif group.sales_payment_received <= 0:
@@ -665,6 +698,11 @@ def build_payment_evidence_audit_rows(
                 tolerance
             )
             reconciliation_result = "missing order token"
+            recovery_statuses_csv = ""
+            recovery_categories_csv = ""
+            component_id = _audit_component_id(
+                _text(_field(raw_row, "cost_center")), normalized_tokens
+            )
 
         rows.append(
             PaymentEvidenceAuditRow(
@@ -688,6 +726,12 @@ def build_payment_evidence_audit_rows(
                 grouped_payment_received=grouped_payment_received,
                 sales_evidence_difference=sales_evidence_difference,
                 sales_evidence_mismatch=sales_evidence_mismatch,
+                sales_evidence_classification=_sales_evidence_classification(
+                    sales_evidence_difference, _decimal(tolerance)
+                ),
+                component_id=component_id,
+                recovery_statuses_csv=recovery_statuses_csv,
+                recovery_categories_csv=recovery_categories_csv,
             )
         )
     return tuple(rows)
@@ -697,6 +741,30 @@ def _audit_group_key(cost_center: str, normalized_numbers: tuple[str, ...]) -> s
     if not normalized_numbers:
         return ""
     return "|".join(normalized_numbers)
+
+
+def _audit_component_id(cost_center: str, normalized_numbers: tuple[str, ...]) -> str:
+    group_key = _audit_group_key(cost_center, normalized_numbers)
+    return f"{cost_center}|{group_key}" if group_key else ""
+
+
+def _sales_evidence_classification(difference: Decimal, tolerance: Decimal) -> str:
+    if abs(difference) <= tolerance:
+        return "matched"
+    if difference > 0:
+        return "sales higher"
+    return "evidence higher"
+
+
+def _unique_nonempty(values: Iterable[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for value in values:
+        text = _text(value)
+        if text and text not in seen:
+            seen.add(text)
+            unique.append(text)
+    return tuple(sorted(unique))
 
 
 def _field(row: Any, name: str) -> Any:
