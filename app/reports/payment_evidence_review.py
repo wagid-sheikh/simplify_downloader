@@ -22,7 +22,10 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.common.db import session_scope
-from app.reports.shared.payment_reconciliation import build_payment_evidence_audit_rows
+from app.reports.shared.payment_reconciliation import (
+    build_payment_evidence_audit_rows,
+    split_payment_order_numbers,
+)
 
 PAYMENT_EVIDENCE_REVIEW_COLUMNS = (
     "payment_id",
@@ -119,9 +122,9 @@ async def fetch_payment_evidence_review_rows(
     """
 
     payment_rows = await _fetch_payment_collection_rows(session, filters)
-    cost_centers = {str(row.get("cost_center") or "") for row in payment_rows}
-    order_rows = await _fetch_audit_order_rows(session, cost_centers)
-    sales_rows = await _fetch_audit_sales_rows(session, cost_centers)
+    order_tokens_by_cost_center = _payment_order_tokens_by_cost_center(payment_rows)
+    order_rows = await _fetch_audit_order_rows(session, order_tokens_by_cost_center)
+    sales_rows = await _fetch_audit_sales_rows(session, order_tokens_by_cost_center)
     audit_rows = build_payment_evidence_audit_rows(
         order_rows=order_rows,
         sales_rows=sales_rows,
@@ -179,14 +182,62 @@ async def _fetch_payment_collection_rows(
         stmt = stmt.where(payment_collections.c.payment_date >= filters.start_date)
     if filters.end_date:
         stmt = stmt.where(payment_collections.c.payment_date <= filters.end_date)
+    stmt = stmt.order_by(
+        payment_collections.c.payment_date.desc().nulls_last(),
+        payment_collections.c.payment_id.desc(),
+    )
+    if filters.limit is not None and filters.grouped is None:
+        if filters.limit <= 0:
+            raise ValueError("limit must be greater than zero")
+        stmt = stmt.limit(filters.limit)
     result = await session.execute(stmt)
     return [dict(row) for row in result.mappings().all()]
 
 
+def _payment_order_tokens_by_cost_center(
+    payment_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, set[str]]:
+    tokens_by_cost_center: dict[str, set[str]] = {}
+    for row in payment_rows:
+        cost_center = str(row.get("cost_center") or "")
+        tokens = split_payment_order_numbers(row.get("order_number"))
+        if not cost_center or not tokens:
+            continue
+        tokens_by_cost_center.setdefault(cost_center, set()).update(tokens)
+    return tokens_by_cost_center
+
+
+def _normalized_order_number_expression(column: Any) -> Any:
+    normalized = column
+    for whitespace in (" ", "\t", "\n", "\r", "\f", "\v"):
+        normalized = sa.func.replace(normalized, whitespace, "")
+    return sa.func.upper(normalized)
+
+
+def _matching_order_token_clause(
+    *,
+    cost_center_column: Any,
+    order_number_column: Any,
+    tokens_by_cost_center: Mapping[str, set[str]],
+) -> Any:
+    normalized_order_number = _normalized_order_number_expression(order_number_column)
+    clauses = [
+        sa.and_(
+            cost_center_column == cost_center,
+            normalized_order_number.in_(sorted(tokens)),
+        )
+        for cost_center, tokens in sorted(tokens_by_cost_center.items())
+        if tokens
+    ]
+    if not clauses:
+        return sa.false()
+    return sa.or_(*clauses)
+
+
 async def _fetch_audit_order_rows(
-    session: AsyncSession, cost_centers: set[str]
+    session: AsyncSession, tokens_by_cost_center: Mapping[str, set[str]]
 ) -> list[dict[str, Any]]:
-    if not cost_centers:
+    if not tokens_by_cost_center:
         return []
 
     def _vw_orders_columns(sync_session: Any) -> set[str]:
@@ -216,15 +267,21 @@ async def _fetch_audit_order_rows(
     if "recovery_category" in available_columns:
         selected_columns.append(orders.c.recovery_category)
     result = await session.execute(
-        sa.select(*selected_columns).where(orders.c.cost_center.in_(cost_centers))
+        sa.select(*selected_columns).where(
+            _matching_order_token_clause(
+                cost_center_column=orders.c.cost_center,
+                order_number_column=orders.c.order_number,
+                tokens_by_cost_center=tokens_by_cost_center,
+            )
+        )
     )
     return [dict(row) for row in result.mappings().all()]
 
 
 async def _fetch_audit_sales_rows(
-    session: AsyncSession, cost_centers: set[str]
+    session: AsyncSession, tokens_by_cost_center: Mapping[str, set[str]]
 ) -> list[dict[str, Any]]:
-    if not cost_centers:
+    if not tokens_by_cost_center:
         return []
     sales = sa.table(
         "sales",
@@ -237,7 +294,13 @@ async def _fetch_audit_sales_rows(
             sales.c.cost_center,
             sales.c.order_number,
             sales.c.payment_received,
-        ).where(sales.c.cost_center.in_(cost_centers))
+        ).where(
+            _matching_order_token_clause(
+                cost_center_column=sales.c.cost_center,
+                order_number_column=sales.c.order_number,
+                tokens_by_cost_center=tokens_by_cost_center,
+            )
+        )
     )
     return [dict(row) for row in result.mappings().all()]
 
