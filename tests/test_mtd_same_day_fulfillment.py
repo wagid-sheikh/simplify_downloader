@@ -315,12 +315,34 @@ async def test_fetch_missing_payments_mtd_postgres_sql_targets_view(monkeypatch)
     captured = {'stmts': []}
 
     class _Result:
+        def __init__(self, rows=None):
+            self._rows = rows or []
+
         def mappings(self):
-            return []
+            return self._rows
 
     class _Session:
         async def execute(self, stmt):
             captured['stmts'].append(stmt)
+            compiled = str(
+                stmt.compile(
+                    dialect=postgresql.dialect(),
+                    compile_kwargs={'literal_binds': True},
+                )
+            )
+            if 'FROM vw_orders' in compiled:
+                return _Result(
+                    [
+                        {
+                            'cost_center': 'CC1',
+                            'order_number': 'ORD123',
+                            'order_date': datetime(2026, 4, 10, 9),
+                            'customer_name': 'Alice',
+                            'mobile_number': '999',
+                            'order_amount': Decimal('100'),
+                        }
+                    ]
+                )
             return _Result()
 
     @asynccontextmanager
@@ -335,12 +357,20 @@ async def test_fetch_missing_payments_mtd_postgres_sql_targets_view(monkeypatch)
     )
 
     compiled_statements = [
-        str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={'literal_binds': True}))
+        str(
+            stmt.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={'literal_binds': True},
+            )
+        )
         for stmt in captured['stmts']
     ]
     compiled = '\n'.join(compiled_statements)
     compiled_lower = compiled.lower()
     assert 'payment_collections' in compiled
+    assert "payment_collections.cost_center IN ('CC1')" in compiled
+    assert 'LIKE' in compiled
+    assert 'ORD123' in compiled
     assert 'vw_orders.order_amount' in compiled_lower
     assert 'vw_orders_missing_in_payment_collections' not in compiled
     assert 'net_amount' not in compiled_lower
