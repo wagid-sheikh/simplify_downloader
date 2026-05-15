@@ -41,7 +41,11 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 - Payment comparisons use tolerance `1` (₹1) when comparing collected/paid amounts to `vw_orders.order_amount`. Overpayments are treated as paid in full.
 - Multi-order `payment_collections.order_number` values are group-reconciled before row-level missing/short classification. Group-paid rows are excluded from main missing/short reports; group-short rows are allocated sequentially by `order_date ASC, order_number ASC`.
 - Normal missing-payment rows exclude `TO_BE_RECOVERED` and `TO_BE_COMPENSATED`. Normal pending-delivery aging buckets/details/action buckets exclude all recovery workflow statuses: `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, and `WRITE_OFF`.
+- `Actual Payments Not Found` remains date-window based for Daily/MTD report runs unless a separate approved change alters that contract.
 - A separate `Short Payment` sub-report is required and remains distinct from `Actual Payments Not Found`; `source_type` belongs in audit/reconciliation reports, not every normal business report. Python `app.reports.shared.payment_reconciliation` is canonical for report reconciliation; `vw_orders_missing_in_payment_collections` is a compatibility/audit projection and must mirror the Python missing-proof subset.
+- `Short Payment` is a current/open action list across all order dates, behaving like `TO_BE_RECOVERED` visibility by showing current unresolved action rows rather than rows constrained to the Daily or MTD report date window. Daily/MTD report date windows do not restrict Short Payment eligibility.
+- Short Payment rows still exclude orders with `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, or `WRITE_OFF` recovery status, and zero-value orders are not eligible.
+- Short Payment requires clean sales-backed proof: a sales row exists, payment proof exists, sales/evidence are consistent within ₹1, and that evidence is short against `vw_orders.order_amount` by more than ₹1.
 - Zero-value orders remain visible as orders in descriptive reporting where order presence matters, but they are excluded from missing-payment, pending-payment, and recovery action checks.
 
 ### 3) Dashboard downloader orchestration
