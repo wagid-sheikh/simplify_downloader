@@ -330,3 +330,50 @@ def test_both_sales_and_evidence_short_against_order_amount_remains_short_only()
     assert order.short_amount == Decimal("50")
     assert result.actual_payments_not_found == ()
     assert result.short_payment_orders == (order,)
+
+
+def test_transitive_grouped_payment_edges_reconcile_as_one_component() -> None:
+    result = reconcile_payments(
+        order_rows=[
+            _order("ORD1", "100", "2026-05-01T10:00:00"),
+            _order("ORD2", "100", "2026-05-01T11:00:00"),
+            _order("ORD3", "100", "2026-05-01T12:00:00"),
+        ],
+        sales_rows=[_sale("ORD1", "100"), _sale("ORD2", "100"), _sale("ORD3", "100")],
+        payment_evidence_rows=[
+            _proof("ORD1,ORD2", "200"),
+            _proof("ORD2,ORD3", "100"),
+        ],
+    )
+
+    assert len(result.groups) == 1
+    group = result.groups[0]
+    assert group.normalized_order_numbers == ("ORD1", "ORD2", "ORD3")
+    assert group.status == "paid"
+    assert group.expected_order_amount == Decimal("300")
+    assert group.evidence_amount == Decimal("300")
+    assert result.short_payment_orders == ()
+    assert result.actual_payments_not_found == ()
+
+
+def test_exact_token_grouping_does_not_create_conflicting_audit_outcomes() -> None:
+    audit_rows = build_payment_evidence_audit_rows(
+        order_rows=[
+            _order("ORD1", "100", "2026-05-01T10:00:00"),
+            _order("ORD2", "100", "2026-05-01T11:00:00"),
+            _order("ORD3", "100", "2026-05-01T12:00:00"),
+        ],
+        sales_rows=[_sale("ORD1", "100"), _sale("ORD2", "100"), _sale("ORD3", "100")],
+        payment_evidence_rows=[
+            _proof("ORD1,ORD2", "200"),
+            _proof("ORD2,ORD3", "100"),
+        ],
+    )
+
+    assert [row.reconciliation_result for row in audit_rows] == [
+        "grouped paid",
+        "grouped paid",
+    ]
+    assert {row.group_key for row in audit_rows} == {"ORD1|ORD2|ORD3"}
+    assert {row.grouped_amount for row in audit_rows} == {Decimal("300")}
+    assert {row.grouped_order_amount for row in audit_rows} == {Decimal("300")}
