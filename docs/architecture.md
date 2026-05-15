@@ -41,7 +41,7 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 - Payment comparisons use tolerance `1` (₹1) when comparing collected/paid amounts to `vw_orders.order_amount`. Overpayments are treated as paid in full.
 - Multi-order `payment_collections.order_number` values are group-reconciled before row-level missing/short classification. Group-paid rows are excluded from main missing/short reports; group-short rows are allocated sequentially by `order_date ASC, order_number ASC`.
 - Normal missing-payment rows exclude `TO_BE_RECOVERED` and `TO_BE_COMPENSATED`. Normal pending-delivery aging buckets/details/action buckets exclude all recovery workflow statuses: `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, and `WRITE_OFF`.
-- A separate `Short Payment` sub-report is required and remains distinct from `Actual Payments Not Found`; `source_type` belongs in audit/reconciliation reports, not every normal business report.
+- A separate `Short Payment` sub-report is required and remains distinct from `Actual Payments Not Found`; `source_type` belongs in audit/reconciliation reports, not every normal business report. Python `app.reports.shared.payment_reconciliation` is canonical for report reconciliation; `vw_orders_missing_in_payment_collections` is a compatibility/audit projection and must mirror the Python missing-proof subset.
 - Zero-value orders remain visible as orders in descriptive reporting where order presence matters, but they are excluded from missing-payment, pending-payment, and recovery action checks.
 
 ### 3) Dashboard downloader orchestration
