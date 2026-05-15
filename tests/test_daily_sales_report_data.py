@@ -1461,7 +1461,7 @@ async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleare
                     ('CC1', 'SLASH-3', '2026-04-29T10:00:00+05:30', 500, 'UPI'),
                     ('CC1', 'MIXED-4', '2026-04-29T10:00:00+05:30', 500, 'UPI'),
                     ('CC1', 'TD-1', '2026-04-29T10:00:00+05:30', 500, 'UPI'),
-                    ('CC1', 'BOTH-1', '2026-04-29T10:05:00+05:30', 500, 'UPI')
+                    ('CC1', 'BOTH-1', '2026-04-29T10:05:00+05:30', 0, 'UPI')
                 """
             )
         )
@@ -1484,15 +1484,8 @@ async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleare
 
     report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
 
-    assert report.auto_cleared_order_numbers == [
-        "BOTH-1",
-        "COMMA-2",
-        "MIXED-4",
-        "SLASH-3",
-    ]
-    assert report.auto_cleared_order_numbers_text == (
-        "BOTH-1, COMMA-2, MIXED-4, SLASH-3"
-    )
+    assert report.auto_cleared_order_numbers == ["BOTH-1"]
+    assert report.auto_cleared_order_numbers_text == "BOTH-1"
     assert "SALES-ONLY" not in report.auto_cleared_order_numbers_text
     assert "PC-ONLY" not in report.auto_cleared_order_numbers_text
     assert "TD-1" not in report.auto_cleared_order_numbers_text
@@ -1502,6 +1495,9 @@ async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleare
         "NO-EVID",
         "SALES-ONLY",
         "PC-ONLY",
+        "COMMA-2",
+        "SLASH-3",
+        "MIXED-4",
         "TD-1",
     }
 
@@ -1524,17 +1520,22 @@ async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleare
 
     statuses = {row["order_number"]: row for row in status_rows}
     expected_recovery_notes = {
-        "BOTH-1": "AUTO_CLEARED_PAYMENT_PROOF payment_collections.payment_ids=2,7, source_types=google_sheet, total_paid=500, order_amount=500, group_key=CC1:BOTH-1",
-        "COMMA-2": "AUTO_CLEARED_PAYMENT_PROOF payment_collections.payment_ids=3,4,5, source_types=google_sheet,legacy_sales, total_paid=1500, order_amount=500, group_key=CC1:COMMA-2/MIXED-4/SLASH-3/ALSO-NOPE/NOPE",
-        "SLASH-3": "AUTO_CLEARED_PAYMENT_PROOF payment_collections.payment_ids=3,4,5, source_types=google_sheet,legacy_sales, total_paid=1500, order_amount=500, group_key=CC1:COMMA-2/MIXED-4/SLASH-3/ALSO-NOPE/NOPE",
-        "MIXED-4": "AUTO_CLEARED_PAYMENT_PROOF payment_collections.payment_ids=3,4,5, source_types=google_sheet,legacy_sales, total_paid=1500, order_amount=500, group_key=CC1:COMMA-2/MIXED-4/SLASH-3/ALSO-NOPE/NOPE",
+        "BOTH-1": "AUTO_CLEARED_PAYMENT_PROOF payment_collections.payment_ids=2,7, source_types=google_sheet, total_paid=500, order_amount=500, sales_payment_received=500, evidence_amount=500, sales_evidence_difference=0, group_key=CC1:BOTH-1",
     }
     for order_number, recovery_notes in expected_recovery_notes.items():
         assert statuses[order_number]["recovery_status"] == "NONE"
         assert statuses[order_number]["recovery_category"] is None
         assert statuses[order_number]["recovery_notes"] == recovery_notes
 
-    for order_number in ["NO-EVID", "SALES-ONLY", "PC-ONLY", "TD-1"]:
+    for order_number in [
+        "NO-EVID",
+        "SALES-ONLY",
+        "PC-ONLY",
+        "COMMA-2",
+        "SLASH-3",
+        "MIXED-4",
+        "TD-1",
+    ]:
         assert statuses[order_number]["recovery_status"] == "TO_BE_RECOVERED"
         assert statuses[order_number]["recovery_category"] == "MISSING_PAYMENT"
         assert statuses[order_number]["recovery_notes"] is None
@@ -1627,7 +1628,7 @@ async def test_single_auto_cleared_to_be_recovered_order_is_reported(
     assert recovery_notes == (
         "AUTO_CLEARED_PAYMENT_PROOF "
         "payment_collections.payment_ids=1, source_types=legacy_sales, "
-        "total_paid=499, order_amount=500, group_key=CC1:TD123"
+        "total_paid=499, order_amount=500, sales_payment_received=500, evidence_amount=499, sales_evidence_difference=1, group_key=CC1:TD123"
     )
 
 
@@ -1777,6 +1778,12 @@ async def test_grouped_auto_clear_requires_sufficient_grouped_payment_proof(
                 ('CC1', 'GROUP-2', '2026-04-29T09:05:00+05:30', 'Customer', '9000000002', 200, 200, 'TumbleDry', 'TO_BE_RECOVERED', 'MISSING_PAYMENT')
         """))
         await session.execute(sa.text("""
+            INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode)
+            VALUES
+                ('CC1', 'GROUP-1', '2026-04-29T10:00:00+05:30', 100, 'UPI'),
+                ('CC1', 'GROUP-2', '2026-04-29T10:05:00+05:30', 200, 'UPI')
+        """))
+        await session.execute(sa.text("""
             INSERT INTO payment_collections (cost_center, order_number, amount, source_type)
             VALUES ('CC1', 'GROUP-1/GROUP-2', 299, 'google_sheet')
         """))
@@ -1802,6 +1809,100 @@ async def test_grouped_auto_clear_requires_sufficient_grouped_payment_proof(
         assert "source_types=google_sheet" in row["recovery_notes"]
         assert "total_paid=299" in row["recovery_notes"]
         assert "group_key=CC1:GROUP-1/GROUP-2" in row["recovery_notes"]
+
+
+@pytest.mark.asyncio
+async def test_auto_clear_keeps_to_be_recovered_when_sales_row_is_missing(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "daily_sales_report_missing_sales_recovery_resolution.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: ZoneInfo("Asia/Kolkata"))
+    report_date = date(2026, 4, 29)
+
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
+        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
+        await session.execute(sa.text("""
+            INSERT INTO orders (
+                cost_center, order_number, order_date, customer_name, mobile_number,
+                net_amount, gross_amount, source_system, recovery_status, recovery_category
+            ) VALUES (
+                'CC1', 'NO-SALES', '2026-04-29T09:00:00+05:30', 'Customer', '9000000001',
+                500, 500, 'TumbleDry', 'TO_BE_RECOVERED', 'MISSING_PAYMENT'
+            )
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO payment_collections (cost_center, order_number, amount, source_type)
+            VALUES ('CC1', 'NO-SALES', 500, 'legacy_sales')
+        """))
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    assert report.auto_cleared_order_numbers == []
+    assert [row.order_number for row in report.to_be_recovered] == ["NO-SALES"]
+    async with session_scope(database_url) as session:
+        status = (await session.execute(sa.text("""
+            SELECT recovery_status, recovery_category, recovery_notes
+            FROM orders
+            WHERE order_number = 'NO-SALES'
+        """))).mappings().one()
+
+    assert status["recovery_status"] == "TO_BE_RECOVERED"
+    assert status["recovery_category"] == "MISSING_PAYMENT"
+    assert status["recovery_notes"] is None
+
+
+@pytest.mark.asyncio
+async def test_auto_clear_keeps_to_be_recovered_when_sales_and_proof_mismatch(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "daily_sales_report_mismatch_recovery_resolution.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: ZoneInfo("Asia/Kolkata"))
+    report_date = date(2026, 4, 29)
+
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC1','Store 1','value',1)"))
+        await session.execute(sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1,'CC1','S1','Store One','TD')"))
+        await session.execute(sa.text("""
+            INSERT INTO orders (
+                cost_center, order_number, order_date, customer_name, mobile_number,
+                net_amount, gross_amount, source_system, recovery_status, recovery_category
+            ) VALUES (
+                'CC1', 'MISMATCH', '2026-04-29T09:00:00+05:30', 'Customer', '9000000001',
+                500, 500, 'TumbleDry', 'TO_BE_RECOVERED', 'MISSING_PAYMENT'
+            )
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode)
+            VALUES ('CC1', 'MISMATCH', '2026-04-29T10:00:00+05:30', 450, 'UPI')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO payment_collections (cost_center, order_number, amount, source_type)
+            VALUES ('CC1', 'MISMATCH', 500, 'legacy_sales')
+        """))
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    assert report.auto_cleared_order_numbers == []
+    assert [row.order_number for row in report.to_be_recovered] == ["MISMATCH"]
+    async with session_scope(database_url) as session:
+        status = (await session.execute(sa.text("""
+            SELECT recovery_status, recovery_category, recovery_notes
+            FROM orders
+            WHERE order_number = 'MISMATCH'
+        """))).mappings().one()
+
+    assert status["recovery_status"] == "TO_BE_RECOVERED"
+    assert status["recovery_category"] == "MISSING_PAYMENT"
+    assert status["recovery_notes"] is None
 
 
 @pytest.mark.asyncio
