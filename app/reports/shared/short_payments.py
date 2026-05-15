@@ -1,3 +1,11 @@
+"""Short-payment and missing-payment report loaders.
+
+Python reconciliation is canonical for runnable reports.  The
+``vw_orders_missing_in_payment_collections`` SQL view is retained as a
+compatibility/audit projection and must mirror the missing-proof subset exposed
+by ``fetch_missing_payment_rows_without_proof``.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -185,7 +193,11 @@ async def _fetch_reconciliation(
         payment_collections.c.order_number,
         payment_collections.c.amount,
         payment_collections.c.source_type,
-    ).where(payment_collections.c.source_type.in_(QUALIFYING_PAYMENT_SOURCE_TYPES))
+    ).where(
+        sa.func.lower(payment_collections.c.source_type).in_(
+            QUALIFYING_PAYMENT_SOURCE_TYPES
+        )
+    )
 
     try:
         order_result = await session.execute(order_stmt)
@@ -281,13 +293,17 @@ async def _fetch_sales_rows_for_orders(
         )
         for cost_center, order_numbers in order_numbers_by_cost_center.items()
     ]
-    sales_stmt = sa.select(
-        sales.c.cost_center,
-        sales.c.order_number,
-        sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)).label(
-            "payment_received"
-        ),
-    ).where(sa.or_(*predicates)).group_by(sales.c.cost_center, sales.c.order_number)
+    sales_stmt = (
+        sa.select(
+            sales.c.cost_center,
+            sales.c.order_number,
+            sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)).label(
+                "payment_received"
+            ),
+        )
+        .where(sa.or_(*predicates))
+        .group_by(sales.c.cost_center, sales.c.order_number)
+    )
     sales_result = await session.execute(sales_stmt)
     return [
         dict(record)

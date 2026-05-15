@@ -1,3 +1,10 @@
+"""Canonical payment reconciliation logic for report data loading.
+
+The SQL missing-payment view is maintained as a compatibility/audit read model;
+Python reports should use this module so missing proof, short payment, grouped
+payment, top-up, sales, and recovery-status rules stay in one place.
+"""
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -587,8 +594,8 @@ def build_payment_evidence_audit_rows(
             grouped_order_amount = Decimal("0")
             grouped_payment_received = Decimal("0")
             sales_evidence_difference = Decimal("0") - grouped_amount
-            sales_evidence_mismatch = (
-                abs(sales_evidence_difference) > _decimal(tolerance)
+            sales_evidence_mismatch = abs(sales_evidence_difference) > _decimal(
+                tolerance
             )
             reconciliation_result = "missing order token"
 

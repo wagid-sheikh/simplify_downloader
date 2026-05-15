@@ -1,0 +1,238 @@
+from __future__ import annotations
+
+import importlib.util
+from dataclasses import dataclass
+from datetime import datetime
+from decimal import Decimal
+from pathlib import Path
+from typing import Callable
+
+import pytest
+import sqlalchemy as sa
+
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from app.common.db import session_scope
+from app.reports.shared.short_payments import (
+    fetch_missing_payment_rows_without_proof,
+    fetch_short_payment_rows,
+)
+
+
+def _load_migration_module():
+    project_root = Path(__file__).resolve().parents[1]
+    module_path = (
+        project_root / "alembic" / "versions" / "0111_missing_view_py_logic.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "v0111_missing_view_py_logic", module_path
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load migration module from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+migration = _load_migration_module()
+
+
+@dataclass
+class MissingPaymentReportRow:
+    cost_center: str
+    order_number: str
+    order_date: datetime | None
+    customer_name: str | None
+    mobile_number: str | None
+    order_amount: Decimal
+
+
+def _run_migration(
+    connection: sa.Connection, fn: Callable[[], None], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = MigrationContext.configure(connection)
+    operations = Operations(context)
+    original_op = migration.op
+    monkeypatch.setattr(migration, "op", operations)
+    try:
+        fn()
+    finally:
+        monkeypatch.setattr(migration, "op", original_op)
+
+
+def _create_schema_and_fixture(connection: sa.Connection) -> None:
+    connection.execute(sa.text("""
+            CREATE TABLE vw_orders (
+                cost_center TEXT NOT NULL,
+                order_number TEXT NOT NULL,
+                order_date TEXT NOT NULL,
+                customer_name TEXT,
+                mobile_number TEXT,
+                order_amount NUMERIC(12, 2) NOT NULL,
+                recovery_status TEXT
+            )
+            """))
+    connection.execute(sa.text("""
+            CREATE TABLE sales (
+                cost_center TEXT NOT NULL,
+                order_number TEXT NOT NULL,
+                payment_received NUMERIC(12, 2)
+            )
+            """))
+    connection.execute(sa.text("""
+            CREATE TABLE payment_collections (
+                payment_id INTEGER PRIMARY KEY,
+                cost_center TEXT NOT NULL,
+                order_number TEXT,
+                amount NUMERIC(12, 2) NOT NULL,
+                source_type TEXT NOT NULL
+            )
+            """))
+    connection.execute(sa.text("""
+            CREATE VIEW vw_orders_missing_in_payment_collections AS
+            SELECT cost_center, order_number, date(order_date) AS order_date,
+                   customer_name, mobile_number, order_amount AS net_amount
+            FROM vw_orders
+            """))
+    connection.execute(sa.text("""
+            INSERT INTO vw_orders (
+                cost_center, order_number, order_date, customer_name, mobile_number,
+                order_amount, recovery_status
+            ) VALUES
+                ('CC1', 'GROUP-A', '2026-05-01T09:00:00', 'Grouped A', '9001', 100, NULL),
+                ('CC1', 'GROUP-B', '2026-05-01T10:00:00', 'Grouped B', '9002', 100, NULL),
+                ('CC1', 'TOPUP-A', '2026-05-01T11:00:00', 'Topup A', '9003', 100, NULL),
+                ('CC1', 'TOPUP-B', '2026-05-01T12:00:00', 'Topup B', '9004', 200, NULL),
+                ('CC1', 'MISSING-PROOF', '2026-05-01T13:00:00', 'Missing Proof', '9005', 120, NULL),
+                ('CC1', 'MISSING-SALES', '2026-05-01T14:00:00', 'Missing Sales', '9006', 130, NULL),
+                ('CC1', 'RECOVERY-EXCLUDED', '2026-05-01T15:00:00', 'Recovery', '9007', 140, 'WRITE_OFF'),
+                ('CC1', 'UNSUPPORTED-PROOF', '2026-05-01T16:00:00', 'Unsupported', '9008', 150, NULL),
+                ('CC1', 'SHORT-A', '2026-05-01T17:00:00', 'Short A', '9009', 100, NULL),
+                ('CC1', 'SHORT-B', '2026-05-01T18:00:00', 'Short B', '9010', 200, NULL)
+            """))
+    connection.execute(sa.text("""
+            INSERT INTO sales (cost_center, order_number, payment_received) VALUES
+                ('CC1', 'GROUP-A', 100),
+                ('CC1', 'GROUP-B', 100),
+                ('CC1', 'TOPUP-A', 100),
+                ('CC1', 'TOPUP-B', 200),
+                ('CC1', 'MISSING-PROOF', 120),
+                ('CC1', 'RECOVERY-EXCLUDED', 140),
+                ('CC1', 'UNSUPPORTED-PROOF', 150),
+                ('CC1', 'SHORT-A', 100),
+                ('CC1', 'SHORT-B', 200)
+            """))
+    connection.execute(sa.text("""
+            INSERT INTO payment_collections (
+                payment_id, cost_center, order_number, amount, source_type
+            ) VALUES
+                (1, 'CC1', 'GROUP-A / group-b', 200, 'Google_Sheet'),
+                (2, 'CC1', 'TOPUP-A,TOPUP-B', 250, 'google_sheet'),
+                (3, 'CC1', 'TOPUP-B', 50, 'google_sheet'),
+                (4, 'CC1', 'UNSUPPORTED-PROOF', 150, 'bank_statement'),
+                (5, 'CC1', 'SHORT-A/SHORT-B', 250, 'google_sheet')
+            """))
+
+
+@pytest.mark.asyncio
+async def test_sql_missing_payment_view_matches_python_report_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = tmp_path / "missing_payment_parity.db"
+    sync_url = f"sqlite:///{db_path}"
+    async_url = f"sqlite+aiosqlite:///{db_path}"
+    engine = sa.create_engine(sync_url)
+
+    with engine.begin() as connection:
+        _create_schema_and_fixture(connection)
+        _run_migration(connection, migration.upgrade, monkeypatch)
+        sql_rows = connection.execute(sa.text("""
+                SELECT order_number, net_amount
+                FROM vw_orders_missing_in_payment_collections
+                ORDER BY order_number
+                """)).mappings().all()
+
+    orders = sa.table(
+        "vw_orders",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("order_date"),
+        sa.column("customer_name"),
+        sa.column("mobile_number"),
+        sa.column("order_amount"),
+        sa.column("recovery_status"),
+    )
+    payment_collections = sa.table(
+        "payment_collections",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("amount"),
+        sa.column("source_type"),
+    )
+    sales = sa.table(
+        "sales",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("payment_received"),
+    )
+
+    async with session_scope(async_url) as session:
+        python_rows = await fetch_missing_payment_rows_without_proof(
+            session=session,
+            orders=orders,
+            payment_collections=payment_collections,
+            sales=sales,
+            start_datetime=datetime(2026, 5, 1),
+            end_datetime=datetime(2026, 5, 2),
+            row_factory=MissingPaymentReportRow,
+        )
+        short_rows = await fetch_short_payment_rows(
+            session=session,
+            orders=orders,
+            payment_collections=payment_collections,
+            start_datetime=datetime(2026, 5, 1),
+            end_datetime=datetime(2026, 5, 2),
+        )
+
+    assert [dict(row) for row in sql_rows] == [
+        {"order_number": "MISSING-PROOF", "net_amount": 120},
+        {"order_number": "UNSUPPORTED-PROOF", "net_amount": 150},
+    ]
+    assert [(row.order_number, row.order_amount) for row in python_rows] == [
+        ("MISSING-PROOF", Decimal("120.00")),
+        ("UNSUPPORTED-PROOF", Decimal("150.00")),
+    ]
+    assert [
+        (row.order_number, row.paid_amount, row.shortage_amount, row.group_key)
+        for row in short_rows
+    ] == [
+        ("SHORT-B", Decimal("150.00"), Decimal("50.00"), "SHORT-A|SHORT-B"),
+    ]
+
+
+def test_postgres_view_sql_documents_python_compatibility_contract() -> None:
+    assert migration.revision == "0111_missing_view_py_logic"
+    assert migration.down_revision == "0110_sales_evidence_mismatch"
+
+    normalized_sql = " ".join(migration.POSTGRES_VIEW_SQL.split()).lower()
+
+    assert (
+        "create or replace view public.vw_orders_missing_in_payment_collections"
+        in normalized_sql
+    )
+    assert "from public.vw_orders as o" in normalized_sql
+    assert "sum(coalesce(s.payment_received, 0)) as payment_received" in normalized_sql
+    assert "lower(pc.source_type) in ('google_sheet', 'legacy_sales')" in normalized_sql
+    assert "regexp_split_to_array" in normalized_sql
+    assert "'[/,]+'" in normalized_sql
+    assert "sales_payment_received > 0" in normalized_sql
+    assert "not has_payment_proof" in normalized_sql
+    assert "order_amount::numeric(12, 2) as net_amount" in normalized_sql
+    assert "to_be_recovered" in normalized_sql
+    assert "to_be_compensated" in normalized_sql
+    assert "recovered" in normalized_sql
+    assert "compensated" in normalized_sql
+    assert "write_off" in normalized_sql
+    assert "bank_row_id" not in normalized_sql
+    assert "payment_status" not in normalized_sql
+    assert "payment_amount" not in normalized_sql
