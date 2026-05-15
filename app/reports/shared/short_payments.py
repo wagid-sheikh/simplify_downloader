@@ -220,26 +220,11 @@ async def _fetch_reconciliation(
 
     sales_rows: list[dict[str, Any]] = []
     if sales is not None:
-        order_keys = {
-            (row["cost_center"], normalize_order_number(row["order_number"]))
-            for row in order_rows
-        }
-        if order_keys:
-            sales_stmt = sa.select(
-                sales.c.cost_center,
-                sales.c.order_number,
-                sales.c.payment_received,
-            )
-            sales_result = await session.execute(sales_stmt)
-            sales_rows = [
-                dict(record)
-                for record in sales_result.mappings()
-                if (
-                    record["cost_center"],
-                    normalize_order_number(record["order_number"]),
-                )
-                in order_keys
-            ]
+        sales_rows = await _fetch_sales_rows_for_orders(
+            session=session,
+            sales=sales,
+            order_rows=order_rows,
+        )
 
     return reconcile_payments(
         order_rows=order_rows,
@@ -269,3 +254,44 @@ def _group_key_for_order(
                 return None
             return "|".join(group.normalized_order_numbers)
     return None
+
+
+def _normalised_order_sql(column: Any) -> Any:
+    return sa.func.upper(sa.func.replace(sa.func.coalesce(column, ""), " ", ""))
+
+
+async def _fetch_sales_rows_for_orders(
+    *, session: Any, sales: Any, order_rows: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    order_keys = {
+        (row["cost_center"], normalize_order_number(row["order_number"]))
+        for row in order_rows
+    }
+    if not order_keys:
+        return []
+
+    order_numbers_by_cost_center: dict[str, set[str]] = {}
+    for cost_center, order_number in order_keys:
+        order_numbers_by_cost_center.setdefault(cost_center, set()).add(order_number)
+
+    predicates = [
+        sa.and_(
+            sales.c.cost_center == cost_center,
+            _normalised_order_sql(sales.c.order_number).in_(tuple(order_numbers)),
+        )
+        for cost_center, order_numbers in order_numbers_by_cost_center.items()
+    ]
+    sales_stmt = sa.select(
+        sales.c.cost_center,
+        sales.c.order_number,
+        sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)).label(
+            "payment_received"
+        ),
+    ).where(sa.or_(*predicates)).group_by(sales.c.cost_center, sales.c.order_number)
+    sales_result = await session.execute(sales_stmt)
+    return [
+        dict(record)
+        for record in sales_result.mappings()
+        if (record["cost_center"], normalize_order_number(record["order_number"]))
+        in order_keys
+    ]
