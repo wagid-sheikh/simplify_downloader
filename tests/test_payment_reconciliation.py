@@ -260,3 +260,73 @@ def test_grouped_payment_and_single_order_top_up_report_only_sequential_shortage
     ] == [
         ("ORD2", Decimal("20")),
     ]
+
+
+def test_sales_equals_evidence_has_no_sales_evidence_mismatch() -> None:
+    result = reconcile_payments(
+        order_rows=[_order("ORD-MATCH", "100")],
+        sales_rows=[_sale("ORD-MATCH", "100")],
+        payment_evidence_rows=[_proof("ORD-MATCH", "100")],
+    )
+
+    group = result.groups[0]
+    order = result.orders[0]
+    assert group.status == "paid"
+    assert group.sales_payment_received == Decimal("100")
+    assert group.evidence_amount == Decimal("100")
+    assert group.sales_evidence_difference == Decimal("0")
+    assert group.sales_evidence_mismatch is False
+    assert order.sales_evidence_mismatch is False
+
+
+def test_sales_greater_than_evidence_sets_mismatch_without_missing_proof() -> None:
+    result = reconcile_payments(
+        order_rows=[_order("ORD-SALES-HIGH", "100")],
+        sales_rows=[_sale("ORD-SALES-HIGH", "120")],
+        payment_evidence_rows=[_proof("ORD-SALES-HIGH", "100")],
+    )
+
+    group = result.groups[0]
+    assert group.status == "paid"
+    assert group.sales_payment_received == Decimal("120")
+    assert group.evidence_amount == Decimal("100")
+    assert group.sales_evidence_difference == Decimal("20")
+    assert group.sales_evidence_mismatch is True
+    assert result.actual_payments_not_found == ()
+    assert result.short_payment_orders == ()
+
+
+def test_evidence_greater_than_sales_sets_mismatch_without_short_payment() -> None:
+    result = reconcile_payments(
+        order_rows=[_order("ORD-EVID-HIGH", "100")],
+        sales_rows=[_sale("ORD-EVID-HIGH", "80")],
+        payment_evidence_rows=[_proof("ORD-EVID-HIGH", "100")],
+    )
+
+    group = result.groups[0]
+    assert group.status == "paid"
+    assert group.sales_payment_received == Decimal("80")
+    assert group.evidence_amount == Decimal("100")
+    assert group.sales_evidence_difference == Decimal("-20")
+    assert group.sales_evidence_mismatch is True
+    assert result.actual_payments_not_found == ()
+    assert result.short_payment_orders == ()
+
+
+def test_both_sales_and_evidence_short_against_order_amount_remains_short_only() -> None:
+    result = reconcile_payments(
+        order_rows=[_order("ORD-BOTH-SHORT", "100")],
+        sales_rows=[_sale("ORD-BOTH-SHORT", "50")],
+        payment_evidence_rows=[_proof("ORD-BOTH-SHORT", "50")],
+    )
+
+    group = result.groups[0]
+    order = result.orders[0]
+    assert group.status == "short"
+    assert group.sales_payment_received == Decimal("50")
+    assert group.evidence_amount == Decimal("50")
+    assert group.sales_evidence_difference == Decimal("0")
+    assert group.sales_evidence_mismatch is False
+    assert order.short_amount == Decimal("50")
+    assert result.actual_payments_not_found == ()
+    assert result.short_payment_orders == (order,)

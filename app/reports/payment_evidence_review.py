@@ -43,6 +43,8 @@ PAYMENT_EVIDENCE_REVIEW_COLUMNS = (
     "grouped_amount",
     "grouped_order_amount",
     "grouped_payment_received",
+    "sales_evidence_difference",
+    "sales_evidence_mismatch",
 )
 
 

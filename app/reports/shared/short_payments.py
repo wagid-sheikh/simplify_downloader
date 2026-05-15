@@ -97,7 +97,7 @@ async def fetch_short_payment_rows(
             customer_name=_raw_text(order, "customer_name"),
             mobile_number=_raw_text(order, "mobile_number"),
             order_amount=order.order_amount,
-            paid_amount=order.allocated_payment_amount,
+            paid_amount=order.evidence_amount,
             shortage_amount=order.short_amount,
             group_key=_group_key_for_order(order=order, reconciliation=reconciliation),
         )
