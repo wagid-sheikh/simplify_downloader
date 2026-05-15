@@ -45,6 +45,10 @@ PAYMENT_EVIDENCE_REVIEW_COLUMNS = (
     "grouped_payment_received",
     "sales_evidence_difference",
     "sales_evidence_mismatch",
+    "sales_evidence_classification",
+    "component_id",
+    "recovery_statuses_csv",
+    "recovery_categories_csv",
 )
 
 
@@ -95,7 +99,7 @@ def build_payment_evidence_review_query(
     SELECT
         {column_sql}
     FROM vw_payment_evidence_reconciliation
-    WHERE {' AND '.join(where_clauses)}
+    WHERE {" AND ".join(where_clauses)}
     ORDER BY
         payment_date DESC NULLS LAST,
         payment_id DESC{limit_clause}
@@ -184,20 +188,35 @@ async def _fetch_audit_order_rows(
 ) -> list[dict[str, Any]]:
     if not cost_centers:
         return []
+
+    def _vw_orders_columns(sync_session: Any) -> set[str]:
+        connection = sync_session.connection()
+        return {
+            column["name"] for column in sa.inspect(connection).get_columns("vw_orders")
+        }
+
+    available_columns = await session.run_sync(_vw_orders_columns)
     orders = sa.table(
         "vw_orders",
         sa.column("cost_center"),
         sa.column("order_number"),
         sa.column("order_date"),
         sa.column("order_amount"),
+        sa.column("recovery_status"),
+        sa.column("recovery_category"),
     )
+    selected_columns = [
+        orders.c.cost_center,
+        orders.c.order_number,
+        orders.c.order_date,
+        orders.c.order_amount,
+    ]
+    if "recovery_status" in available_columns:
+        selected_columns.append(orders.c.recovery_status)
+    if "recovery_category" in available_columns:
+        selected_columns.append(orders.c.recovery_category)
     result = await session.execute(
-        sa.select(
-            orders.c.cost_center,
-            orders.c.order_number,
-            orders.c.order_date,
-            orders.c.order_amount,
-        ).where(orders.c.cost_center.in_(cost_centers))
+        sa.select(*selected_columns).where(orders.c.cost_center.in_(cost_centers))
     )
     return [dict(row) for row in result.mappings().all()]
 
