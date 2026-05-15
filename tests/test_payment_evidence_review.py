@@ -95,3 +95,5 @@ async def test_payment_evidence_review_fetch_uses_component_reconciliation_for_t
     assert {row["reconciliation_result"] for row in rows} == {"grouped paid"}
     assert {row["group_key"] for row in rows} == {"ORD1|ORD2"}
     assert {row["grouped_amount"] for row in rows} == {200}
+    assert {row["sales_evidence_difference"] for row in rows} == {0}
+    assert {row["sales_evidence_mismatch"] for row in rows} == {False}

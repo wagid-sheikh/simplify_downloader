@@ -58,6 +58,9 @@ class ReconciledOrderPayment:
     order_amount: Decimal
     sales_payment_received: Decimal
     allocated_payment_amount: Decimal
+    evidence_amount: Decimal
+    sales_evidence_difference: Decimal
+    sales_evidence_mismatch: bool
     short_amount: Decimal
     status: str
     has_payment_proof: bool
@@ -74,6 +77,8 @@ class ReconciledPaymentGroup:
     expected_order_amount: Decimal
     sales_payment_received: Decimal
     evidence_amount: Decimal
+    sales_evidence_difference: Decimal
+    sales_evidence_mismatch: bool
     short_amount: Decimal
     overpayment_amount: Decimal
     evidence_rows: tuple[ReconciliationPaymentEvidence, ...]
@@ -132,6 +137,8 @@ class PaymentEvidenceAuditRow:
     grouped_amount: Decimal
     grouped_order_amount: Decimal
     grouped_payment_received: Decimal
+    sales_evidence_difference: Decimal
+    sales_evidence_mismatch: bool
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -153,6 +160,8 @@ class PaymentEvidenceAuditRow:
             "grouped_amount": self.grouped_amount,
             "grouped_order_amount": self.grouped_order_amount,
             "grouped_payment_received": self.grouped_payment_received,
+            "sales_evidence_difference": self.sales_evidence_difference,
+            "sales_evidence_mismatch": self.sales_evidence_mismatch,
         }
 
 
@@ -283,6 +292,9 @@ def reconcile_payments(
             order_amount=order.order_amount,
             sales_payment_received=sales_received,
             allocated_payment_amount=Decimal("0"),
+            evidence_amount=Decimal("0"),
+            sales_evidence_difference=sales_received,
+            sales_evidence_mismatch=abs(sales_received) > tolerance_amount,
             short_amount=order.order_amount,
             status=status,
             has_payment_proof=False,
@@ -297,6 +309,8 @@ def reconcile_payments(
             expected_order_amount=order.order_amount,
             sales_payment_received=sales_received,
             evidence_amount=Decimal("0"),
+            sales_evidence_difference=sales_received,
+            sales_evidence_mismatch=abs(sales_received) > tolerance_amount,
             short_amount=order.order_amount,
             overpayment_amount=Decimal("0"),
             evidence_rows=(),
@@ -352,6 +366,8 @@ def _reconcile_group(
         Decimal("0"),
     )
     evidence_amount = sum((row.amount for row in evidence_rows), Decimal("0"))
+    sales_evidence_difference = sales_received - evidence_amount
+    sales_evidence_mismatch = abs(sales_evidence_difference) > tolerance
 
     if not evidence_rows:
         status = "proof_missing"
@@ -368,6 +384,11 @@ def _reconcile_group(
             allocated = min(remaining, order.order_amount)
             remaining -= allocated
         short_amount = max(order.order_amount - allocated, Decimal("0"))
+        order_sales_received = sales_totals.get(
+            (cost_center, order.normalized_order_number), Decimal("0")
+        )
+        order_sales_evidence_difference = order_sales_received - allocated
+        order_sales_evidence_mismatch = abs(order_sales_evidence_difference) > tolerance
         if not evidence_rows:
             order_status = "proof_missing"
         elif allocated + tolerance >= order.order_amount:
@@ -382,10 +403,11 @@ def _reconcile_group(
                 normalized_order_number=order.normalized_order_number,
                 order_date=order.order_date,
                 order_amount=order.order_amount,
-                sales_payment_received=sales_totals.get(
-                    (cost_center, order.normalized_order_number), Decimal("0")
-                ),
+                sales_payment_received=order_sales_received,
                 allocated_payment_amount=allocated,
+                evidence_amount=allocated,
+                sales_evidence_difference=order_sales_evidence_difference,
+                sales_evidence_mismatch=order_sales_evidence_mismatch,
                 short_amount=short_amount,
                 status=order_status,
                 has_payment_proof=bool(evidence_rows),
@@ -407,6 +429,8 @@ def _reconcile_group(
         expected_order_amount=expected_amount,
         sales_payment_received=sales_received,
         evidence_amount=evidence_amount,
+        sales_evidence_difference=sales_evidence_difference,
+        sales_evidence_mismatch=sales_evidence_mismatch,
         short_amount=group_short,
         overpayment_amount=max(evidence_amount - expected_amount, Decimal("0")),
         evidence_rows=evidence_rows,
@@ -532,6 +556,8 @@ def build_payment_evidence_audit_rows(
             grouped_amount = group.evidence_amount
             grouped_order_amount = group.expected_order_amount
             grouped_payment_received = group.sales_payment_received
+            sales_evidence_difference = group.sales_evidence_difference
+            sales_evidence_mismatch = group.sales_evidence_mismatch
             normalized_tokens = group.normalized_order_numbers
             is_grouped = len(normalized_tokens) > 1
             group_key = _audit_group_key(group.cost_center, normalized_tokens)
@@ -560,6 +586,10 @@ def build_payment_evidence_audit_rows(
             grouped_amount = _decimal(_field(raw_row, "amount"))
             grouped_order_amount = Decimal("0")
             grouped_payment_received = Decimal("0")
+            sales_evidence_difference = Decimal("0") - grouped_amount
+            sales_evidence_mismatch = (
+                abs(sales_evidence_difference) > _decimal(tolerance)
+            )
             reconciliation_result = "missing order token"
 
         rows.append(
@@ -582,6 +612,8 @@ def build_payment_evidence_audit_rows(
                 grouped_amount=grouped_amount,
                 grouped_order_amount=grouped_order_amount,
                 grouped_payment_received=grouped_payment_received,
+                sales_evidence_difference=sales_evidence_difference,
+                sales_evidence_mismatch=sales_evidence_mismatch,
             )
         )
     return tuple(rows)
