@@ -78,10 +78,20 @@ async def fetch_short_payment_rows(
     session: Any,
     orders: Any,
     payment_collections: Any,
+    sales: Any,
     start_datetime: datetime,
     end_datetime: datetime,
 ) -> list[ShortPaymentRow]:
-    """Return partially paid orders using the shared reconciliation engine.
+    """Return clean, sales-backed short payments.
+
+    Short Payment rows are the normal operator-facing bucket for orders where
+    all three payment-truth inputs agree that money was received but is still
+    short of ``vw_orders.order_amount``: ``sales.payment_received`` exists,
+    qualifying ``payment_collections.amount`` proof exists, and sales/proof are
+    consistent within the shared ₹1 tolerance. Proof-only shorts and
+    sales/evidence mismatches are left out of this clean bucket and remain
+    visible through the payment-evidence audit classification instead of being
+    silently presented as normal short payments.
 
     Payment evidence is grouped in ``payment_reconciliation`` by connected
     cost-center/order-token components.  This keeps overlapping grouped rows
@@ -94,7 +104,7 @@ async def fetch_short_payment_rows(
         session=session,
         orders=orders,
         payment_collections=payment_collections,
-        sales=None,
+        sales=sales,
         start_datetime=start_datetime,
         end_datetime=end_datetime,
     )
@@ -112,7 +122,11 @@ async def fetch_short_payment_rows(
             group_key=_group_key_for_order(order=order, reconciliation=reconciliation),
         )
         for order in reconciliation.short_payment_orders
-        if order.order_amount > 0
+        if (
+            order.order_amount > 0
+            and order.has_sales_payment_data
+            and order.sales_evidence_consistent
+        )
     ]
     rows.sort(
         key=lambda row: (

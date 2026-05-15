@@ -289,13 +289,26 @@ async def test_fetch_short_payments_mtd_allocates_group_payments_and_excludes_gr
                 ('CC1','B1','2026-04-11T09:00:00+05:30','Cara','777',100,'TumbleDry',NULL),
                 ('CC1','B2','2026-04-11T10:00:00+05:30','Dan','666',200,'TumbleDry',NULL),
                 ('CC1','S1','2026-04-12T09:00:00+05:30','Eve','555',150,'TumbleDry',NULL),
+                ('CC1','PONLY','2026-04-12T09:30:00+05:30','Pam','554',100,'TumbleDry',NULL),
+                ('CC1','MIS','2026-04-12T09:45:00+05:30','Max','553',100,'TumbleDry',NULL),
                 ('CC1','REC','2026-04-12T10:00:00+05:30','Ron','444',150,'TumbleDry','WRITE_OFF')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES
+                ('CC1','A1','2026-04-10T09:30:00+05:30','UPI',100),
+                ('CC1','A2','2026-04-10T10:30:00+05:30','UPI',50),
+                ('CC1','B1','2026-04-11T09:30:00+05:30','UPI',100),
+                ('CC1','B2','2026-04-11T10:30:00+05:30','UPI',200),
+                ('CC1','S1','2026-04-12T09:30:00+05:30','UPI',140),
+                ('CC1','MIS','2026-04-12T09:55:00+05:30','UPI',90)
         """))
         await session.execute(sa.text("""
             INSERT INTO payment_collections (cost_center, order_number, amount, source_type) VALUES
                 ('CC1','A1/A2',150,'google_sheet'),
                 ('CC1','B1/B2',300,'google_sheet'),
                 ('CC1','S1',140,'google_sheet'),
+                ('CC1','PONLY',80,'google_sheet'),
+                ('CC1','MIS',80,'google_sheet'),
                 ('CC1','REC',10,'google_sheet')
         """))
         await session.commit()

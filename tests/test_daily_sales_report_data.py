@@ -462,16 +462,24 @@ async def test_fetch_daily_sales_report_short_payments_separate_from_missing_pay
                 ('CC1','GROUP1','2026-04-29T10:00:00+05:30','Bob','888',100,100,'TumbleDry',NULL),
                 ('CC1','GROUP2','2026-04-29T11:00:00+05:30','Cara','777',200,200,'TumbleDry',NULL),
                 ('CC1','MISSING','2026-04-29T12:00:00+05:30','Dan','666',120,120,'TumbleDry',NULL),
+                ('CC1','PROOFONLY','2026-04-29T12:15:00+05:30','Polly','665',100,100,'TumbleDry',NULL),
+                ('CC1','MISMATCH','2026-04-29T12:30:00+05:30','Mia','664',100,100,'TumbleDry',NULL),
                 ('CC1','REC','2026-04-29T13:00:00+05:30','Eve','555',150,150,'TumbleDry','WRITE_OFF')
         """))
         await session.execute(sa.text("""
             INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode, adjustments, is_edited_order) VALUES
-                ('CC1','MISSING','2026-04-29T12:30:00+05:30',120,'UPI',0,0)
+                ('CC1','SINGLE','2026-04-29T09:30:00+05:30',80,'UPI',0,0),
+                ('CC1','GROUP1','2026-04-29T10:30:00+05:30',100,'UPI',0,0),
+                ('CC1','GROUP2','2026-04-29T11:30:00+05:30',50,'UPI',0,0),
+                ('CC1','MISSING','2026-04-29T12:30:00+05:30',120,'UPI',0,0),
+                ('CC1','MISMATCH','2026-04-29T12:45:00+05:30',90,'UPI',0,0)
         """))
         await session.execute(sa.text("""
             INSERT INTO payment_collections (cost_center, order_number, amount, source_type) VALUES
                 ('CC1','SINGLE',80,'google_sheet'),
                 ('CC1','GROUP1/GROUP2',150,'google_sheet'),
+                ('CC1','PROOFONLY',80,'google_sheet'),
+                ('CC1','MISMATCH',80,'google_sheet'),
                 ('CC1','REC',10,'google_sheet')
         """))
         await session.commit()
