@@ -21,7 +21,7 @@
   - Payment truth ignores `orders.payment_status` and `orders.payment_amount`; it uses `vw_orders.order_amount`, `sales.payment_received`, and `payment_collections.amount`.
   - Payment comparisons use ₹1 tolerance, and overpayment is paid in full.
   - Multi-order `payment_collections.order_number` values are group-reconciled first; group-paid rows stay out of main missing/short outputs, and group-short rows are allocated by `order_date ASC, order_number ASC`.
-  - `TO_BE_RECOVERED` and `TO_BE_COMPENSATED` are excluded from normal missing-payment rows; `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` are excluded from normal pending-delivery buckets.
+  - `TO_BE_RECOVERED` and `TO_BE_COMPENSATED` are excluded from normal missing-payment rows; normal pending-delivery aging/detail/action buckets exclude `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, and `WRITE_OFF`. Active manual-action rows (`TO_BE_RECOVERED`, `TO_BE_COMPENSATED`) may be surfaced only in separate configured recovery/compensation visibility sections; closed `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` rows stay out of normal action buckets.
   - A dedicated `Short Payment` sub-report is required and separate from `Actual Payments Not Found`.
   - `source_type` should appear in audit/reconciliation reports, not every normal business report.
 - **Follow-up:** Implement report/query changes against this contract and add regression tests for source equivalence, group reconciliation, short-payment separation, recovery-status exclusions, and source-type visibility.
@@ -103,7 +103,7 @@
 - **Evidence:** `app/config.py`, `app/reports/pending_deliveries/data.py`, and pending-deliveries tests.
 - **Implications:**
   - `SKIP_UC_Pending_Delivery` is no longer a required runtime config key.
-  - Original recovery filtering excluded `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` before bucket/detail aggregation; DL-017 is the current contract for payment/recovery report classification.
+  - Recovery filtering excludes `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` before bucket/detail/action aggregation; DL-017 is the current contract for payment/recovery report classification and manual recovery/compensation visibility.
   - UC rows continue to appear in pending deliveries when they satisfy standard pending filters.
 - **Follow-up:** Keep migration cleanup in place so legacy `system_config` rows do not imply obsolete behavior.
 

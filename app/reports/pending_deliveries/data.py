@@ -12,6 +12,16 @@ from app.common.db import session_scope
 from app.crm_downloader.td_orders_sync.sales_ingest import _sales_table
 
 
+PENDING_DELIVERY_EXCLUDED_RECOVERY_STATUSES = (
+    "TO_BE_RECOVERED",
+    "TO_BE_COMPENSATED",
+    "RECOVERED",
+    "COMPENSATED",
+    "WRITE_OFF",
+)
+ACTIVE_MANUAL_RECOVERY_STATUSES = ("TO_BE_RECOVERED", "TO_BE_COMPENSATED")
+
+
 @dataclass
 class PendingDeliveryRow:
     cost_center: str
@@ -28,6 +38,7 @@ class PendingDeliveryRow:
     is_edited_order: bool
     is_duplicate: bool
     source_system: str
+    recovery_status: str | None = None
 
     @property
     def gross_amount(self) -> Decimal:
@@ -212,13 +223,6 @@ async def fetch_pending_deliveries_report(
     paid_in_full_tolerance = Decimal("1")
     pending_amount_expr = sa.func.greatest(amount_expr - paid_amount_expr, 0)
 
-    excluded_recovery_statuses = (
-        "TO_BE_RECOVERED",
-        "TO_BE_COMPENSATED",
-        "RECOVERED",
-        "COMPENSATED",
-        "WRITE_OFF",
-    )
     recovery_status_col = orders.c.recovery_status
 
     stmt = (
@@ -250,7 +254,7 @@ async def fetch_pending_deliveries_report(
         .where(
             sa.or_(
                 recovery_status_col.is_(None),
-                recovery_status_col.not_in(excluded_recovery_statuses),
+                recovery_status_col.not_in(PENDING_DELIVERY_EXCLUDED_RECOVERY_STATUSES),
             )
         )
         .group_by(
@@ -320,20 +324,14 @@ async def fetch_pending_deliveries_report(
             sa.column("order_amount"),
             sa.column("recovery_status"),
         )
-        manual_recovery_filters: list[sa.ColumnElement[bool]] = [
-            recovery_orders.c.recovery_status.in_(
-                ("TO_BE_RECOVERED", "TO_BE_COMPENSATED")
-            )
-        ]
-        if include_aged_unresolved_recovery_rows:
-            manual_recovery_filters.append(
-                sa.and_(
-                    recovery_orders.c.recovery_status.is_not(None),
-                    recovery_orders.c.recovery_status.not_in(
-                        ("RECOVERED", "COMPENSATED")
-                    ),
-                )
-            )
+        manual_recovery_filter = recovery_orders.c.recovery_status.in_(
+            ACTIVE_MANUAL_RECOVERY_STATUSES
+        )
+        # Historical callers may still pass include_aged_unresolved_recovery_rows=True,
+        # but pending-deliveries recovery visibility is deliberately limited to the two
+        # active manual-action statuses. Closed statuses and other custom statuses must
+        # not leak into this report section.
+        _ = include_aged_unresolved_recovery_rows
 
         manual_recovery_amount_expr = sa.func.coalesce(recovery_orders.c.order_amount, 0)
         manual_recovery_stmt = (
@@ -346,8 +344,9 @@ async def fetch_pending_deliveries_report(
                 recovery_orders.c.default_due_date,
                 recovery_orders.c.source_system,
                 manual_recovery_amount_expr.label("amount_at_risk"),
+                recovery_orders.c.recovery_status,
             )
-            .where(sa.or_(*manual_recovery_filters))
+            .where(manual_recovery_filter)
             .where(manual_recovery_amount_expr > 0)
             .order_by(
                 recovery_orders.c.cost_center,
@@ -389,6 +388,7 @@ async def fetch_pending_deliveries_report(
                         is_edited_order=False,
                         is_duplicate=False,
                         source_system=str(record.get("source_system") or ""),
+                        recovery_status=str(record.get("recovery_status") or ""),
                     )
                 )
 

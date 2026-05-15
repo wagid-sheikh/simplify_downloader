@@ -9,7 +9,11 @@ from zoneinfo import ZoneInfo
 from app.common.db import _ensure_async_engine, session_scope
 from app.crm_downloader.td_orders_sync.ingest import _orders_table
 from app.crm_downloader.td_orders_sync.sales_ingest import _sales_table
-from app.reports.pending_deliveries.data import fetch_pending_deliveries_report
+from app.reports.pending_deliveries.data import (
+    ACTIVE_MANUAL_RECOVERY_STATUSES,
+    PENDING_DELIVERY_EXCLUDED_RECOVERY_STATUSES,
+    fetch_pending_deliveries_report,
+)
 
 
 async def _register_sqlite_greatest(database_url: str) -> None:
@@ -411,6 +415,108 @@ async def test_fetch_pending_deliveries_excludes_recovery_statuses_from_main_buc
     assert {row.order_number for row in detail_rows} == {"ALLOWED-NULL", "ALLOWED-CUSTOM"}
     assert data.total_count == 2
     assert data.total_pending_amount == Decimal("200.00")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovery_status", PENDING_DELIVERY_EXCLUDED_RECOVERY_STATUSES)
+async def test_each_recovery_status_is_excluded_from_pending_delivery_action_buckets(
+    tmp_path, monkeypatch, recovery_status: str
+) -> None:
+    db_path = tmp_path / f"pending_deliveries_excludes_{recovery_status.lower()}.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
+    now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
+    order_date = datetime(2025, 5, 1, 10, 0, tzinfo=tz)
+
+    await _insert_order_and_sale(
+        database_url=database_url,
+        now=now,
+        order_date=order_date,
+        default_due_date=order_date,
+        source_system="UClean",
+        order_number=f"EXCLUDED-{recovery_status}",
+        gross_amount=Decimal("100.00"),
+        net_amount=Decimal("100.00"),
+        payment_received=Decimal("0.00"),
+        adjustments=Decimal("0.00"),
+        recovery_status=recovery_status,
+    )
+    await _insert_order_and_sale(
+        database_url=database_url,
+        now=now,
+        order_date=order_date,
+        default_due_date=order_date,
+        source_system="TumbleDry",
+        order_number="VISIBLE-PENDING",
+        gross_amount=Decimal("100.00"),
+        net_amount=Decimal("100.00"),
+        payment_received=Decimal("0.00"),
+        adjustments=Decimal("0.00"),
+        recovery_status=None,
+    )
+
+    data = await fetch_pending_deliveries_report(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+        include_aged_unresolved_recovery_rows=True,
+    )
+
+    action_bucket_orders = {
+        row.order_number
+        for section in data.cost_center_sections
+        for bucket in section.buckets
+        for row in bucket.rows
+    }
+    assert action_bucket_orders == {"VISIBLE-PENDING"}
+    assert f"EXCLUDED-{recovery_status}" not in action_bucket_orders
+
+
+@pytest.mark.asyncio
+async def test_pending_deliveries_manual_visibility_only_includes_active_recovery_statuses(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_deliveries_manual_status_scope.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
+    now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
+    order_date = datetime(2025, 5, 1, 10, 0, tzinfo=tz)
+
+    for status in [*PENDING_DELIVERY_EXCLUDED_RECOVERY_STATUSES, "IN_PROGRESS"]:
+        await _insert_order_and_sale(
+            database_url=database_url,
+            now=now,
+            order_date=order_date,
+            default_due_date=order_date,
+            source_system="UClean",
+            order_number=f"MANUAL-{status}",
+            gross_amount=Decimal("100.00"),
+            net_amount=Decimal("100.00"),
+            payment_received=Decimal("0.00"),
+            adjustments=Decimal("0.00"),
+            recovery_status=status,
+        )
+
+    data = await fetch_pending_deliveries_report(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+        include_aged_unresolved_recovery_rows=True,
+    )
+
+    assert {row.recovery_status for row in data.manual_recovery_rows} == set(
+        ACTIVE_MANUAL_RECOVERY_STATUSES
+    )
+    assert {row.order_number for row in data.manual_recovery_rows} == {
+        f"MANUAL-{status}" for status in ACTIVE_MANUAL_RECOVERY_STATUSES
+    }
+    assert data.manual_recovery_total_amount_at_risk == Decimal("200.00")
 
 
 @pytest.mark.asyncio
