@@ -472,11 +472,12 @@ def _build_evidence_components(
         def union(left: str, right: str) -> None:
             parent[find(right)] = find(left)
 
-        # Model each evidence row and each normalized order token as a bipartite
-        # graph scoped to one cost center.  Connecting a row node to every token
-        # it names means a single-order top-up (``ORD2``) remains in the same
-        # reconciliation component as a grouped proof (``ORD1,ORD2``) instead of
-        # being skipped or reconciled separately.
+        # Model payment evidence as graph edges scoped to one cost center. Each
+        # evidence row connects every normalized order token it names; overlapping
+        # rows such as ``ORD1,ORD2`` and ``ORD2,ORD3`` therefore collapse into a
+        # single component. The component is reconciled once so each payment row
+        # contributes its amount once and each matched vw_orders.order_amount is
+        # compared against the component total with the shared ₹1 tolerance.
         for index, row in enumerate(rows):
             row_node = f"row:{index}:{row.evidence_id}"
             find(row_node)
