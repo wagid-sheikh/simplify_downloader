@@ -100,6 +100,67 @@ async def test_payment_evidence_review_fetch_uses_component_reconciliation_for_t
 
 
 @pytest.mark.asyncio
+async def test_payment_evidence_review_limit_keeps_full_seed_component(
+    tmp_path,
+) -> None:
+    database_url = (
+        f"sqlite+aiosqlite:///{tmp_path / 'payment_evidence_review_limit_component.db'}"
+    )
+    engine = sa.create_engine(database_url.replace("+aiosqlite", ""))
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "CREATE TABLE vw_orders (cost_center TEXT, order_number TEXT, order_date TEXT, order_amount NUMERIC)"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_received NUMERIC)"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "CREATE TABLE payment_collections (payment_id INTEGER PRIMARY KEY, source_type TEXT, source_sheet_row INTEGER, cost_center TEXT, payment_date TEXT, payment_timestamp TEXT, order_number TEXT, amount NUMERIC, bank_row_id TEXT)"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO vw_orders VALUES "
+                "('CC1', 'ORD1', '2026-05-01', 100), "
+                "('CC1', 'ORD2', '2026-05-01', 100)"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO sales VALUES "
+                "('CC1', 'ORD1', 100), "
+                "('CC1', 'ORD2', 100)"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO payment_collections VALUES "
+                "(1, 'google_sheet', 11, 'CC1', '2026-05-01', '2026-05-01 10:00:00', 'ORD1,ORD2', 150, NULL), "
+                "(2, 'google_sheet', 12, 'CC1', '2026-05-02', '2026-05-02 10:00:00', 'ORD2', 50, NULL)"
+            )
+        )
+    engine.dispose()
+
+    async with session_scope(database_url) as session:
+        rows = await fetch_payment_evidence_review_rows(
+            session, PaymentEvidenceReviewFilters(limit=1)
+        )
+
+    assert [row["payment_id"] for row in rows] == [2]
+    assert rows[0]["grouped_amount"] == 200
+    assert rows[0]["grouped_order_amount"] == 200
+    assert rows[0]["grouped_payment_received"] == 200
+    assert rows[0]["reconciliation_result"] == "grouped paid"
+    assert rows[0]["sales_evidence_difference"] == 0
+    assert rows[0]["sales_evidence_mismatch"] is False
+
+
+@pytest.mark.asyncio
 async def test_payment_evidence_review_fetch_limits_related_order_and_sales_rows(
     tmp_path, monkeypatch
 ) -> None:
