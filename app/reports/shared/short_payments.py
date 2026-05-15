@@ -85,7 +85,9 @@ async def fetch_short_payment_rows(
 
     Payment evidence is grouped in ``payment_reconciliation`` by connected
     cost-center/order-token components so grouped rows and single-order top-ups
-    are reconciled together before this report selects short orders.
+    are reconciled together before this report selects short orders. Components
+    that contain any unmatched evidence token are data-quality exceptions and
+    intentionally stay out of short-payment reporting.
     """
 
     reconciliation = await _fetch_reconciliation(
@@ -132,7 +134,11 @@ async def fetch_missing_payment_rows_without_proof(
     row_factory: Any,
     sales: Any | None = None,
 ) -> list[Any]:
-    """Return sales-paid orders whose valid payment proof is absent."""
+    """Return sales-paid orders whose valid payment proof is absent.
+
+    Evidence components with unmatched order tokens are reported through the
+    payment-evidence audit bucket instead of Actual Payments Not Found.
+    """
 
     reconciliation = await _fetch_reconciliation(
         session=session,

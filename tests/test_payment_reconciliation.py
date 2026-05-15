@@ -330,3 +330,72 @@ def test_both_sales_and_evidence_short_against_order_amount_remains_short_only()
     assert order.short_amount == Decimal("50")
     assert result.actual_payments_not_found == ()
     assert result.short_payment_orders == (order,)
+
+
+def test_grouped_payment_with_single_matched_token_and_typo_is_audit_exception() -> None:
+    result = reconcile_payments(
+        order_rows=[_order("ORD1", "100")],
+        sales_rows=[_sale("ORD1", "100")],
+        payment_evidence_rows=[_proof("ORD1,TYPO", "100")],
+    )
+
+    group = result.groups[0]
+    order = result.orders[0]
+    assert group.status == "data_quality_exception"
+    assert group.token_count == 2
+    assert group.matched_order_count == 1
+    assert group.unmatched_order_numbers == ("TYPO",)
+    assert result.data_quality_exception_groups == (group,)
+    assert order.status == "data_quality_exception"
+    assert order.has_payment_proof is False
+    assert result.actual_payments_not_found == ()
+    assert result.short_payment_orders == ()
+    assert result.recovery_auto_clear_orders == ()
+
+    audit_rows = build_payment_evidence_audit_rows(
+        order_rows=[_order("ORD1", "100")],
+        sales_rows=[_sale("ORD1", "100")],
+        payment_evidence_rows=[_proof("ORD1,TYPO", "100")],
+    )
+    assert [row.reconciliation_result for row in audit_rows] == [
+        "unmatched order token"
+    ]
+    assert audit_rows[0].normalized_order_tokens_csv == "ORD1,TYPO"
+
+
+def test_grouped_payment_with_multiple_matched_tokens_and_typo_is_audit_exception() -> None:
+    result = reconcile_payments(
+        order_rows=[
+            _order("ORD1", "100", "2026-05-01T10:00:00"),
+            _order("ORD2", "100", "2026-05-01T11:00:00"),
+        ],
+        sales_rows=[_sale("ORD1", "100"), _sale("ORD2", "100")],
+        payment_evidence_rows=[_proof("ORD1,ORD2,TYPO", "200")],
+    )
+
+    group = result.groups[0]
+    assert group.status == "data_quality_exception"
+    assert group.token_count == 3
+    assert group.matched_order_count == 2
+    assert group.unmatched_order_numbers == ("TYPO",)
+    assert result.data_quality_exception_groups == (group,)
+    assert [order.status for order in group.orders] == [
+        "data_quality_exception",
+        "data_quality_exception",
+    ]
+    assert result.actual_payments_not_found == ()
+    assert result.short_payment_orders == ()
+    assert result.recovery_auto_clear_orders == ()
+
+    audit_rows = build_payment_evidence_audit_rows(
+        order_rows=[
+            _order("ORD1", "100", "2026-05-01T10:00:00"),
+            _order("ORD2", "100", "2026-05-01T11:00:00"),
+        ],
+        sales_rows=[_sale("ORD1", "100"), _sale("ORD2", "100")],
+        payment_evidence_rows=[_proof("ORD1,ORD2,TYPO", "200")],
+    )
+    assert [row.reconciliation_result for row in audit_rows] == [
+        "unmatched order token"
+    ]
+    assert audit_rows[0].group_key == "ORD1|ORD2|TYPO"

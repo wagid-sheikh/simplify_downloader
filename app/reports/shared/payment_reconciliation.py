@@ -71,6 +71,7 @@ class ReconciledOrderPayment:
     short_amount: Decimal
     status: str
     has_payment_proof: bool
+    data_quality_exception: bool = False
     raw_order: Any = None
 
 
@@ -90,6 +91,10 @@ class ReconciledPaymentGroup:
     overpayment_amount: Decimal
     evidence_rows: tuple[ReconciliationPaymentEvidence, ...]
     orders: tuple[ReconciledOrderPayment, ...]
+    token_count: int = 0
+    matched_order_count: int = 0
+    unmatched_order_numbers: tuple[str, ...] = ()
+    data_quality_exception: bool = False
 
 
 @dataclass(frozen=True)
@@ -122,6 +127,12 @@ class PaymentReconciliationResult:
             for order in self.orders
             if order.status == "paid" and order.has_payment_proof
         )
+
+    @property
+    def data_quality_exception_groups(self) -> tuple[ReconciledPaymentGroup, ...]:
+        """Payment components quarantined because at least one token was unmatched."""
+
+        return tuple(group for group in self.groups if group.data_quality_exception)
 
 
 @dataclass(frozen=True)
@@ -270,6 +281,11 @@ def reconcile_payments(
         if not group_orders:
             unmatched_evidence.extend(rows)
             continue
+        unmatched_numbers = tuple(
+            number
+            for number in normalized_numbers
+            if (cost_center, number) not in orders_by_key
+        )
         group = _reconcile_group(
             cost_center=cost_center,
             normalized_numbers=tuple(normalized_numbers),
@@ -277,6 +293,7 @@ def reconcile_payments(
             evidence_rows=tuple(rows),
             sales_totals=sales_totals,
             tolerance=tolerance_amount,
+            unmatched_numbers=unmatched_numbers,
         )
         groups.append(group)
         for order in group.orders:
@@ -305,6 +322,7 @@ def reconcile_payments(
             short_amount=order.order_amount,
             status=status,
             has_payment_proof=False,
+            data_quality_exception=False,
             raw_order=order.raw,
         )
         group = ReconciledPaymentGroup(
@@ -322,6 +340,8 @@ def reconcile_payments(
             overpayment_amount=Decimal("0"),
             evidence_rows=(),
             orders=(reconciled,),
+            token_count=1,
+            matched_order_count=1,
         )
         groups.append(group)
         reconciled_orders[key] = reconciled
@@ -362,6 +382,7 @@ def _reconcile_group(
     evidence_rows: tuple[ReconciliationPaymentEvidence, ...],
     sales_totals: Mapping[tuple[str, str], Decimal],
     tolerance: Decimal,
+    unmatched_numbers: tuple[str, ...] = (),
 ) -> ReconciledPaymentGroup:
     sorted_orders = sorted(orders, key=_order_sort_key)
     expected_amount = sum((order.order_amount for order in sorted_orders), Decimal("0"))
@@ -376,14 +397,17 @@ def _reconcile_group(
     sales_evidence_difference = sales_received - evidence_amount
     sales_evidence_mismatch = abs(sales_evidence_difference) > tolerance
 
-    if not evidence_rows:
+    data_quality_exception = bool(unmatched_numbers)
+    if data_quality_exception:
+        status = "data_quality_exception"
+    elif not evidence_rows:
         status = "proof_missing"
     elif evidence_amount + tolerance >= expected_amount:
         status = "paid"
     else:
         status = "short"
 
-    remaining = evidence_amount
+    remaining = Decimal("0") if data_quality_exception else evidence_amount
     reconciled_orders: list[ReconciledOrderPayment] = []
     for order in sorted_orders:
         allocated = Decimal("0")
@@ -396,7 +420,10 @@ def _reconcile_group(
         )
         order_sales_evidence_difference = order_sales_received - allocated
         order_sales_evidence_mismatch = abs(order_sales_evidence_difference) > tolerance
-        if not evidence_rows:
+        if data_quality_exception:
+            order_status = "data_quality_exception"
+            short_amount = Decimal("0")
+        elif not evidence_rows:
             order_status = "proof_missing"
         elif allocated + tolerance >= order.order_amount:
             order_status = "paid"
@@ -417,14 +444,15 @@ def _reconcile_group(
                 sales_evidence_mismatch=order_sales_evidence_mismatch,
                 short_amount=short_amount,
                 status=order_status,
-                has_payment_proof=bool(evidence_rows),
+                has_payment_proof=bool(evidence_rows) and not data_quality_exception,
+                data_quality_exception=data_quality_exception,
                 raw_order=order.raw,
             )
         )
 
     group_short = (
         Decimal("0")
-        if status == "paid"
+        if status in {"paid", "data_quality_exception"}
         else max(expected_amount - evidence_amount, Decimal("0"))
     )
     return ReconciledPaymentGroup(
@@ -442,6 +470,10 @@ def _reconcile_group(
         overpayment_amount=max(evidence_amount - expected_amount, Decimal("0")),
         evidence_rows=evidence_rows,
         orders=tuple(reconciled_orders),
+        token_count=len(normalized_numbers),
+        matched_order_count=len(sorted_orders),
+        unmatched_order_numbers=unmatched_numbers,
+        data_quality_exception=data_quality_exception,
     )
 
 
@@ -568,7 +600,9 @@ def build_payment_evidence_audit_rows(
             normalized_tokens = group.normalized_order_numbers
             is_grouped = len(normalized_tokens) > 1
             group_key = _audit_group_key(group.cost_center, normalized_tokens)
-            if group.sales_payment_received <= 0:
+            if group.data_quality_exception:
+                reconciliation_result = "unmatched order token"
+            elif group.sales_payment_received <= 0:
                 reconciliation_result = "missing sales"
             elif group.status == "paid":
                 reconciliation_result = "grouped paid" if is_grouped else "paid"
