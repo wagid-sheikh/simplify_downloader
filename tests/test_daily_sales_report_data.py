@@ -465,6 +465,10 @@ async def test_fetch_daily_sales_report_short_payments_separate_from_missing_pay
                 ('CC1','REC','2026-04-29T13:00:00+05:30','Eve','555',150,150,'TumbleDry','WRITE_OFF')
         """))
         await session.execute(sa.text("""
+            INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode, adjustments, is_edited_order) VALUES
+                ('CC1','MISSING','2026-04-29T12:30:00+05:30',120,'UPI',0,0)
+        """))
+        await session.execute(sa.text("""
             INSERT INTO payment_collections (cost_center, order_number, amount, source_type) VALUES
                 ('CC1','SINGLE',80,'google_sheet'),
                 ('CC1','GROUP1/GROUP2',150,'google_sheet'),
@@ -479,6 +483,55 @@ async def test_fetch_daily_sales_report_short_payments_separate_from_missing_pay
         ("GROUP2", Decimal("50"), Decimal("150"), "GROUP1|GROUP2"),
     ]
     assert [row.order_number for row in report.missing_payment_rows] == ["MISSING"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_actual_payments_not_found_requires_sales_payment_record(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_actual_payments_not_found_sales.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 4, 29)
+
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO cost_center (cost_center, description, target_type, is_active)
+            VALUES ('CC1', 'Store 1', 'value', 1)
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group)
+            VALUES (1, 'CC1', 'S1', 'Store One', 'TD')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO orders (
+                cost_center, order_number, order_date, customer_name, mobile_number,
+                net_amount, gross_amount, source_system, recovery_status
+            ) VALUES
+                ('CC1','SALES-NO-PROOF','2026-04-29T09:00:00+05:30','Alice','999',100,100,'TumbleDry',NULL),
+                ('CC1','NO-SALES-NO-PROOF','2026-04-29T10:00:00+05:30','Bob','888',200,200,'TumbleDry',NULL),
+                ('CC1','NO-SALES-WITH-PROOF','2026-04-29T11:00:00+05:30','Cara','777',300,300,'TumbleDry',NULL),
+                ('CC1','ZERO-VALUE','2026-04-29T12:00:00+05:30','Zed','666',0,0,'TumbleDry',NULL),
+                ('CC1','RECOVERY','2026-04-29T13:00:00+05:30','Ron','555',400,400,'TumbleDry','WRITE_OFF')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode, adjustments, is_edited_order) VALUES
+                ('CC1','SALES-NO-PROOF','2026-04-29T09:30:00+05:30',100,'UPI',0,0),
+                ('CC1','ZERO-VALUE','2026-04-29T12:30:00+05:30',50,'CASH',0,0),
+                ('CC1','RECOVERY','2026-04-29T13:30:00+05:30',400,'CARD',0,0)
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO payment_collections (cost_center, order_number, amount, source_type) VALUES
+                ('CC1','NO-SALES-WITH-PROOF',300,'google_sheet')
+        """))
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    assert [(row.order_number, row.order_amount) for row in report.missing_payment_rows] == [
+        ("SALES-NO-PROOF", Decimal("100")),
+    ]
 
 
 @pytest.mark.asyncio

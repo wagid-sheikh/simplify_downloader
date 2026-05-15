@@ -240,6 +240,41 @@ async def test_fetch_missing_payments_mtd_uses_month_window_and_view(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_fetch_missing_payments_mtd_requires_sales_payment_record(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / 'mtd_missing_payments_requires_sales.db'
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    monkeypatch.setattr(mtd_data, 'get_timezone', lambda: ZoneInfo('Asia/Kolkata'))
+
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, source_system, recovery_status) VALUES
+                ('CC1','SALES-NO-PROOF','2026-04-10T09:00:00+05:30','Alice','999',100,'TumbleDry',NULL),
+                ('CC1','NO-SALES-NO-PROOF','2026-04-10T10:00:00+05:30','Bob','888',200,'TumbleDry',NULL),
+                ('CC1','NO-SALES-WITH-PROOF','2026-04-10T11:00:00+05:30','Cara','777',300,'TumbleDry',NULL),
+                ('CC1','ZERO-VALUE','2026-04-10T12:00:00+05:30','Zed','666',0,'TumbleDry',NULL),
+                ('CC1','RECOVERY','2026-04-10T13:00:00+05:30','Ron','555',400,'TumbleDry','WRITE_OFF')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES
+                ('CC1','SALES-NO-PROOF','2026-04-10T09:30:00+05:30','UPI',100),
+                ('CC1','ZERO-VALUE','2026-04-10T12:30:00+05:30','CASH',50),
+                ('CC1','RECOVERY','2026-04-10T13:30:00+05:30','CARD',400)
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO payment_collections (cost_center, order_number, amount, source_type) VALUES
+                ('CC1','NO-SALES-WITH-PROOF',300,'google_sheet')
+        """))
+        await session.commit()
+
+    rows = await fetch_missing_payments_mtd(database_url=database_url, report_date=date(2026, 4, 29))
+
+    assert [(row.order_number, row.order_amount) for row in rows] == [
+        ('SALES-NO-PROOF', Decimal('100')),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_fetch_short_payments_mtd_allocates_group_payments_and_excludes_group_paid(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / 'mtd_short_payments.db'
     database_url = f"sqlite+aiosqlite:///{db_path}"
