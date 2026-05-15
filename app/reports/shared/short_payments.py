@@ -79,10 +79,15 @@ async def fetch_short_payment_rows(
     orders: Any,
     payment_collections: Any,
     sales: Any,
-    start_datetime: datetime,
-    end_datetime: datetime,
+    start_datetime: datetime | None = None,
+    end_datetime: datetime | None = None,
 ) -> list[ShortPaymentRow]:
-    """Return clean, sales-backed short payments.
+    """Return clean, sales-backed short payments across all order dates.
+
+    Short Payments are a global/current operator action list, matching the
+    open-ended behavior of manual recovery buckets such as ``TO_BE_RECOVERED``.
+    ``start_datetime`` and ``end_datetime`` are accepted for call-site
+    compatibility but do not limit candidate orders.
 
     Short Payment rows are the normal operator-facing bucket for orders where
     all three payment-truth inputs agree that money was received but is still
@@ -107,6 +112,7 @@ async def fetch_short_payment_rows(
         sales=sales,
         start_datetime=start_datetime,
         end_datetime=end_datetime,
+        filter_order_date=False,
     )
 
     rows = [
@@ -186,8 +192,9 @@ async def _fetch_reconciliation(
     orders: Any,
     payment_collections: Any,
     sales: Any | None,
-    start_datetime: datetime,
-    end_datetime: datetime,
+    start_datetime: datetime | None,
+    end_datetime: datetime | None,
+    filter_order_date: bool = True,
 ):
     order_stmt = (
         sa.select(
@@ -198,8 +205,6 @@ async def _fetch_reconciliation(
             orders.c.mobile_number,
             orders.c.order_amount,
         )
-        .where(orders.c.order_date >= start_datetime)
-        .where(orders.c.order_date < end_datetime)
         .where(orders.c.order_amount > 0)
         .where(
             sa.func.coalesce(orders.c.recovery_status, "NONE").not_in(
@@ -208,6 +213,14 @@ async def _fetch_reconciliation(
         )
         .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
     )
+    if filter_order_date:
+        if start_datetime is None or end_datetime is None:
+            raise ValueError(
+                "start_datetime and end_datetime are required when filtering by order date"
+            )
+        order_stmt = order_stmt.where(orders.c.order_date >= start_datetime).where(
+            orders.c.order_date < end_datetime
+        )
     try:
         order_result = await session.execute(order_stmt)
     except OperationalError as exc:
@@ -222,11 +235,13 @@ async def _fetch_reconciliation(
                 orders.c.mobile_number,
                 orders.c.order_amount,
             )
-            .where(orders.c.order_date >= start_datetime)
-            .where(orders.c.order_date < end_datetime)
             .where(orders.c.order_amount > 0)
             .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
         )
+        if filter_order_date:
+            order_stmt = order_stmt.where(orders.c.order_date >= start_datetime).where(
+                orders.c.order_date < end_datetime
+            )
         order_result = await session.execute(order_stmt)
     order_rows = [dict(record) for record in order_result.mappings()]
     payment_rows = await _fetch_payment_rows_for_orders(

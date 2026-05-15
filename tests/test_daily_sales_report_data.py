@@ -458,6 +458,10 @@ async def test_fetch_daily_sales_report_short_payments_separate_from_missing_pay
                 cost_center, order_number, order_date, customer_name, mobile_number,
                 net_amount, gross_amount, source_system, recovery_status
             ) VALUES
+                ('CC1','OLD-SHORT','2026-04-01T08:00:00+05:30','Olive','111',100,100,'TumbleDry',NULL),
+                ('CC1','ZERO-VALUE','2026-04-15T08:00:00+05:30','Zed','112',0,0,'TumbleDry',NULL),
+                ('CC1','RECOVERY-SHORT','2026-04-28T08:00:00+05:30','Ria','113',100,100,'TumbleDry','TO_BE_RECOVERED'),
+                ('CC1','COMP-SHORT','2026-04-28T08:30:00+05:30','Cia','114',100,100,'TumbleDry','TO_BE_COMPENSATED'),
                 ('CC1','SINGLE','2026-04-29T09:00:00+05:30','Alice','999',100,100,'TumbleDry',NULL),
                 ('CC1','GROUP1','2026-04-29T10:00:00+05:30','Bob','888',100,100,'TumbleDry',NULL),
                 ('CC1','GROUP2','2026-04-29T11:00:00+05:30','Cara','777',200,200,'TumbleDry',NULL),
@@ -468,6 +472,10 @@ async def test_fetch_daily_sales_report_short_payments_separate_from_missing_pay
         """))
         await session.execute(sa.text("""
             INSERT INTO sales (cost_center, order_number, payment_date, payment_received, payment_mode, adjustments, is_edited_order) VALUES
+                ('CC1','OLD-SHORT','2026-04-01T08:30:00+05:30',80,'UPI',0,0),
+                ('CC1','ZERO-VALUE','2026-04-15T08:30:00+05:30',0,'UPI',0,0),
+                ('CC1','RECOVERY-SHORT','2026-04-28T08:30:00+05:30',80,'UPI',0,0),
+                ('CC1','COMP-SHORT','2026-04-28T09:00:00+05:30',80,'UPI',0,0),
                 ('CC1','SINGLE','2026-04-29T09:30:00+05:30',80,'UPI',0,0),
                 ('CC1','GROUP1','2026-04-29T10:30:00+05:30',100,'UPI',0,0),
                 ('CC1','GROUP2','2026-04-29T11:30:00+05:30',50,'UPI',0,0),
@@ -476,6 +484,10 @@ async def test_fetch_daily_sales_report_short_payments_separate_from_missing_pay
         """))
         await session.execute(sa.text("""
             INSERT INTO payment_collections (cost_center, order_number, amount, source_type) VALUES
+                ('CC1','OLD-SHORT',80,'google_sheet'),
+                ('CC1','ZERO-VALUE',0,'google_sheet'),
+                ('CC1','RECOVERY-SHORT',80,'google_sheet'),
+                ('CC1','COMP-SHORT',80,'google_sheet'),
                 ('CC1','SINGLE',80,'google_sheet'),
                 ('CC1','GROUP1/GROUP2',150,'google_sheet'),
                 ('CC1','PROOFONLY',80,'google_sheet'),
@@ -487,6 +499,7 @@ async def test_fetch_daily_sales_report_short_payments_separate_from_missing_pay
     report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
 
     assert [(row.order_number, row.paid_amount, row.shortage_amount, row.group_key) for row in report.short_payment_rows] == [
+        ("OLD-SHORT", Decimal("80"), Decimal("20"), None),
         ("SINGLE", Decimal("80"), Decimal("20"), None),
         ("GROUP2", Decimal("50"), Decimal("150"), "GROUP1|GROUP2"),
     ]

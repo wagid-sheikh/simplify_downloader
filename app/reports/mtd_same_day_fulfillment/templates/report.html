@@ -37,7 +37,7 @@
     {% set same_day_store_summary_rows = store_summary_rows %}
     {% include "same_day_fulfillment_table.html" %}
 
-    <div class="section-title">Short Payments</div>
+    <div class="section-title">Short Payments (Current All Order Dates)</div>
     {% if short_payment_rows %}
     {% for group in short_payment_rows | groupby("cost_center") %}
     {% set group_count = group.list | length %}

@@ -330,7 +330,7 @@
     </table>
 
 
-    <div class="section-title">Short Payments</div>
+    <div class="section-title">Short Payments (Current All Order Dates)</div>
     {% if short_payment_rows %}
     {% for group in short_payment_rows | groupby("cost_center") %}
     {% set group_count = group.list | length %}
