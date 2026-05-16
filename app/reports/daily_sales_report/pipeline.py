@@ -52,6 +52,8 @@ from .to_be_recovered import (
 PIPELINE_NAME = "reports.daily_sales_report"
 TEMPLATE_NAME = "daily_sales_report.html"
 SHORT_PAYMENTS_TEMPLATE_NAME = "short_payments_report.html"
+SHORT_PAYMENTS_DOCUMENT_TYPE = "daily_sales_short_payments_pdf"
+SHORT_PAYMENTS_OUTPUT_PREFIX = "reports.daily_sales_report_short_payments"
 TEMPLATE_DIR = Path("app") / "reports" / "daily_sales_report" / "templates"
 SHARED_TEMPLATE_DIR = Path("app") / "reports" / "shared" / "templates"
 OUTPUT_ROOT = Path("app") / "reports" / "output_files"
@@ -154,6 +156,38 @@ def _build_context(
     }
 
 
+def _short_payments_output_path(report_date: date) -> Path:
+    return OUTPUT_ROOT / f"{SHORT_PAYMENTS_OUTPUT_PREFIX}_{report_date.isoformat()}.pdf"
+
+
+async def _generate_short_payments_pdf(
+    *,
+    context: Mapping[str, object],
+    report_date: date,
+    logger: object,
+) -> Path:
+    """Render the Short Payments PDF independently from the main report PDF.
+
+    Keep this helper outside any Daily Sales existing-run skip path: Short
+    Payments is a current action list and must refresh on every report run,
+    even when the main Daily Sales snapshot for the date already exists.
+    """
+
+    short_payments_html = _render_html(
+        context, template_name=SHORT_PAYMENTS_TEMPLATE_NAME
+    )
+    short_payments_output_path = _short_payments_output_path(report_date)
+    if short_payments_output_path.exists():
+        short_payments_output_path.unlink()
+    await render_pdf_with_configured_browser(
+        short_payments_html,
+        short_payments_output_path,
+        pdf_options={"format": "A4", "landscape": True},
+        logger=logger,
+    )
+    return short_payments_output_path
+
+
 async def _run(report_date: date | None, env: str | None, force: bool) -> None:
     run_env = resolve_run_env(env)
     run_id = new_run_id()
@@ -208,9 +242,6 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
 
         context = _build_context(data, run_env)
         html = _render_html(context)
-        short_payments_html = _render_html(
-            context, template_name=SHORT_PAYMENTS_TEMPLATE_NAME
-        )
         short_payments_pdf_generated = True
         to_be_recovered_context = build_to_be_recovered_context(
             rows=data.to_be_recovered,
@@ -289,10 +320,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             OUTPUT_ROOT
             / f"reports.mtd_same_day_fulfillment_{resolved_date.isoformat()}.pdf"
         )
-        short_payments_output_path = (
-            OUTPUT_ROOT
-            / f"reports.daily_sales_report_short_payments_{resolved_date.isoformat()}.pdf"
-        )
+        short_payments_output_path = _short_payments_output_path(resolved_date)
         to_be_recovered_output_path = (
             OUTPUT_ROOT
             / f"{TO_BE_RECOVERED_OUTPUT_PREFIX}_{resolved_date.isoformat()}.pdf"
@@ -301,8 +329,6 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             output_path.unlink()
         if same_day_output_path.exists():
             same_day_output_path.unlink()
-        if short_payments_output_path.exists():
-            short_payments_output_path.unlink()
         if to_be_recovered_output_path.exists():
             to_be_recovered_output_path.unlink()
         try:
@@ -318,10 +344,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 pdf_options={"format": "A4", "landscape": True},
                 logger=logger,
             )
-            await render_pdf_with_configured_browser(
-                short_payments_html,
-                short_payments_output_path,
-                pdf_options={"format": "A4", "landscape": True},
+            short_payments_output_path = await _generate_short_payments_pdf(
+                context=context,
+                report_date=resolved_date,
                 logger=logger,
             )
             if mtd_attachment_generated and same_day_html is not None:
@@ -403,7 +428,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             run_id=run_id,
             report_date=resolved_date,
             file_path=short_payments_output_path,
-            doc_type="daily_sales_short_payments_pdf",
+            doc_type=SHORT_PAYMENTS_DOCUMENT_TYPE,
         )
         if mtd_attachment_generated:
             await _persist_document(
