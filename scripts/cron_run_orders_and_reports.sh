@@ -31,10 +31,11 @@ set -euo pipefail
 #   # Local/manual run with default force mode.
 #   ./scripts/cron_run_orders_and_reports.sh
 #
-# Daily Sales and MTD Same-Day Fulfillment regeneration are mandatory on the
-# cron path: this wrapper always passes --force so an existing successful run
-# cannot skip regeneration. For the MTD Same-Day Fulfillment step, cron also
-# pins REPORT_FORCE=true so an inherited REPORT_FORCE=false cannot disable it.
+# Daily Sales, MTD Same-Day Fulfillment, and Pending Deliveries regeneration are
+# mandatory on the cron path: this wrapper always passes --force so an existing
+# successful run summary cannot skip regeneration. For the MTD Same-Day
+# Fulfillment step, cron also pins REPORT_FORCE=true so an inherited
+# REPORT_FORCE=false cannot disable it.
 #
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${ENV_FILE:-${SCRIPT_DIR}/cron.env}"
@@ -109,6 +110,7 @@ GLOBAL_LOCK_ACQUIRED=0
 
 REPORT_REGENERATE_ARGS=("--force")
 MTD_SAME_DAY_REGENERATE_ARGS=("--force")
+PENDING_DELIVERIES_REGENERATE_ARGS=("--force")
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S %Z')] $*" >> "${LOG_FILE}"
@@ -662,7 +664,8 @@ run_started_epoch="$(date +%s)"
 run_step "Script 1: orders_sync_run_profiler" "./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" || orders_rc=$?
 run_step "Script 2: daily_sales_report" "./scripts/run_local_reports_daily_sales.sh ${REPORT_REGENERATE_ARGS[*]}" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" || daily_rc=$?
 run_step "Script 3: mtd_same_day_fulfillment_report" "REPORT_FORCE=true ./scripts/run_local_reports_mtd_same_day_fulfillment.sh ${MTD_SAME_DAY_REGENERATE_ARGS[*]}" "${MTD_SAME_DAY_MAX_ATTEMPTS}" "${MTD_SAME_DAY_RETRY_DELAY_SECONDS}" || mtd_same_day_rc=$?
-run_step "Script 4: pending_deliveries" "./scripts/run_local_reports_pending_deliveries.sh" "${PENDING_MAX_ATTEMPTS}" "${PENDING_RETRY_DELAY_SECONDS}" || pending_rc=$?
+# Pending Deliveries must not skip due to a prior successful summary; pass --force explicitly.
+run_step "Script 4: pending_deliveries" "./scripts/run_local_reports_pending_deliveries.sh ${PENDING_DELIVERIES_REGENERATE_ARGS[*]}" "${PENDING_MAX_ATTEMPTS}" "${PENDING_RETRY_DELAY_SECONDS}" || pending_rc=$?
 
 if [[ "${pending_rc}" -eq 0 && "${daily_rc}" -ne 0 && "${DAILY_RESCUE_AFTER_PENDING_SUCCESS}" -eq 1 ]]; then
   section "OPTIONAL DAILY RESCUE PASS"
@@ -683,7 +686,7 @@ fi
 run_finished_epoch="$(date +%s)"
 run_duration_seconds=$((run_finished_epoch - run_started_epoch))
 
-log "Report regeneration mode: daily_sales_regenerate=true mtd_same_day_regenerate=true (always regenerated with --force; REPORT_FORCE=false ignored for cron MTD Same-Day Fulfillment)"
+log "Report regeneration mode: daily_sales_regenerate=true mtd_same_day_regenerate=true pending_deliveries_regenerate=true (always regenerated with --force; REPORT_FORCE=false ignored for cron MTD Same-Day Fulfillment)"
 
 section "RUN STATUS SUMMARY"
 log "orders_sync_run_profiler_rc=${orders_rc}"

@@ -11,6 +11,21 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
+def test_pending_deliveries_cron_path_is_explicitly_forced() -> None:
+    cron_source = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
+    local_pending_source = Path("scripts/run_local_reports_pending_deliveries.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "successful run summary cannot skip regeneration" in cron_source
+    assert 'PENDING_DELIVERIES_REGENERATE_ARGS=("--force")' in cron_source
+    assert (
+        'run_local_reports_pending_deliveries.sh ${PENDING_DELIVERIES_REGENERATE_ARGS[*]}'
+        in cron_source
+    )
+    assert "pending-deliveries --env prod --force" in local_pending_source
+
+
 def test_cron_returns_non_zero_when_daily_fails_even_if_rescue_succeeds(tmp_path: Path) -> None:
     repo_root = tmp_path
     scripts_dir = repo_root / "scripts"
@@ -165,7 +180,10 @@ def test_cron_always_appends_force_flag_to_daily_sales_when_report_force_false(t
         scripts_dir / "run_local_reports_mtd_same_day_fulfillment.sh",
         "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"${TMPDIR:-/tmp}/mtd-args.log\"\nexit 0\n",
     )
-    _write_executable(scripts_dir / "run_local_reports_pending_deliveries.sh", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(
+        scripts_dir / "run_local_reports_pending_deliveries.sh",
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"${TMPDIR:-/tmp}/pending-args.log\"\nexit 0\n",
+    )
     _write_executable(
         scripts_dir / "run_local_reports_daily_sales.sh",
         "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"${TMPDIR:-/tmp}/daily-args.log\"\nexit 0\n",
@@ -195,7 +213,9 @@ def test_cron_always_appends_force_flag_to_daily_sales_when_report_force_false(t
 
     assert result.returncode == 0
     daily_invocations = (tmp_path / "daily-args.log").read_text(encoding="utf-8").splitlines()
+    pending_invocations = (tmp_path / "pending-args.log").read_text(encoding="utf-8").splitlines()
     assert daily_invocations == ["--force"]
+    assert pending_invocations == ["--force"]
 
 
 def test_cron_retries_preserve_force_mode(tmp_path: Path) -> None:
