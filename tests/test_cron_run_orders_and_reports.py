@@ -118,13 +118,12 @@ def test_cron_mtd_same_day_command_forces_regeneration_static() -> None:
 
     assert len(mtd_lines) == 1
     mtd_command_line = mtd_lines[0]
-    assert "REPORT_FORCE=true" in mtd_command_line
     assert "MTD_SAME_DAY_REGENERATE_ARGS" in mtd_command_line
     assert 'MTD_SAME_DAY_REGENERATE_ARGS=("--force")' in source_cron
-    assert "always regenerated with --force" in source_cron
+    assert "cron always regenerates reports with --force" in source_cron
 
 
-def test_cron_mtd_same_day_ignores_report_force_false(tmp_path: Path) -> None:
+def test_cron_mtd_same_day_always_receives_force(tmp_path: Path) -> None:
     repo_root = tmp_path
     scripts_dir = repo_root / "scripts"
     logs_dir = repo_root / "logs"
@@ -142,14 +141,12 @@ def test_cron_mtd_same_day_ignores_report_force_false(tmp_path: Path) -> None:
         scripts_dir / "run_local_reports_mtd_same_day_fulfillment.sh",
         "#!/usr/bin/env bash\n"
         "printf '%s\n' \"$*\" > \"${TMPDIR}/mtd-args\"\n"
-        "printf '%s\n' \"${REPORT_FORCE:-<unset>}\" > \"${TMPDIR}/mtd-report-force\"\n"
         "exit 0\n",
     )
 
     env = os.environ.copy()
     env.update(
         {
-            "REPORT_FORCE": "false",
             "DAILY_MAX_ATTEMPTS": "1",
             "ORDERS_MAX_ATTEMPTS": "1",
             "MTD_SAME_DAY_MAX_ATTEMPTS": "1",
@@ -170,11 +167,10 @@ def test_cron_mtd_same_day_ignores_report_force_false(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     assert (tmp_path / "mtd-args").read_text(encoding="utf-8").strip() == "--force"
-    assert (tmp_path / "mtd-report-force").read_text(encoding="utf-8").strip() == "true"
 
     log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
     assert log_files
     log_text = log_files[-1].read_text(encoding="utf-8")
     assert "Script 3: mtd_same_day_fulfillment_report: attempt 1/1 starting" in log_text
     assert "regenerate=true" in log_text
-    assert "always regenerated with --force" in log_text
+    assert "cron always regenerates reports with --force" in log_text

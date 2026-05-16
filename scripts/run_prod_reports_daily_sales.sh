@@ -2,32 +2,24 @@
 set -euo pipefail
 
 # Usage examples:
-#   # Local/manual production-targeted run with default force mode.
+#   # Production-targeted run; reports always regenerate.
 #   ./scripts/run_prod_reports_daily_sales.sh --report-date 2026-03-31
 #
-#   # Run with force explicitly disabled.
-#   REPORT_FORCE=false ./scripts/run_prod_reports_daily_sales.sh --report-date 2026-03-31
-#
-# REPORT_FORCE semantics:
-#   unset/true/TRUE/True/1 -> append --force
-#   false/FALSE/False/0 -> do not append --force
+# Regeneration is mandatory for report wrappers; --force is appended unless the
+# caller already supplied it.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
-report_force="${REPORT_FORCE:-true}"
 FORCE_ARGS=()
-force_mode="false"
-case "${report_force}" in
-  true|TRUE|True|1)
-  force_mode="true"
-  FORCE_ARGS+=("--force")
-  ;;
-esac
-
+explicit_force="false"
 report_date="<default>"
+
 for ((i = 1; i <= $#; i++)); do
+  if [[ "${!i}" == "--force" ]]; then
+    explicit_force="true"
+  fi
   if [[ "${!i}" == "--report-date" ]] && ((i + 1 <= $#)); then
     next_index=$((i + 1))
     report_date="${!next_index}"
@@ -35,6 +27,10 @@ for ((i = 1; i <= $#; i++)); do
   fi
 done
 
-echo "[run_prod_reports_daily_sales] pipeline=daily-sales report_date=${report_date} force=${force_mode}"
+if [[ "${explicit_force}" != "true" ]]; then
+  FORCE_ARGS+=("--force")
+fi
+
+echo "[run_prod_reports_daily_sales] pipeline=daily-sales report_date=${report_date} regenerate=true"
 
 exec poetry run python -m app report daily-sales --env prod ${FORCE_ARGS[@]+"${FORCE_ARGS[@]}"} "$@"
