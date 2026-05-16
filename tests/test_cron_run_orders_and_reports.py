@@ -102,5 +102,5 @@ def test_cron_does_not_retry_for_undefined_function_error(tmp_path: Path) -> Non
     log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
     assert log_files
     log_text = log_files[-1].read_text(encoding="utf-8")
-    assert "root cause class matched one of UndefinedFunctionError" in log_text
+    assert "deterministic code error detected; failing fast without retries" in log_text
     assert "attempt 2/5 starting" not in log_text
