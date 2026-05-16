@@ -1931,6 +1931,10 @@ def _build_td_orders_context(
     started_at_formatted = _format_td_timestamp(payload.get("started_at") or run_data.get("started_at"))
     finished_at_formatted = _format_td_timestamp(payload.get("finished_at") or run_data.get("finished_at"))
     window_summary = metrics.get("window_summary") or {}
+    report_range = (metrics.get("stores_summary") or {}).get("report_range") or {}
+    window_start = report_range.get("from")
+    window_end = report_range.get("to")
+    run_date_source = window_end or payload.get("report_end_date") or run_data.get("report_date")
     overall_status = _normalize_output_status(payload.get("overall_status") or run_data.get("overall_status"))
     payload_warnings = _normalize_warning_entries(payload.get("warnings") or metrics.get("warnings") or [])
 
@@ -2007,7 +2011,9 @@ def _build_td_orders_context(
         "overall_status_upper": _to_upper_status(overall_status),
         "pipeline_display_name": "TD Orders Sync",
         "store_code": store_code,
-        "run_date_display": _run_date_display(run_data.get("report_date")),
+        "run_date_display": _run_date_display(run_date_source),
+        "window_start_display": _run_date_display(window_start),
+        "window_end_display": _run_date_display(window_end),
         "started_at_ist": started_at_formatted,
         "finished_at_ist": finished_at_formatted,
         "store_processing_summary_block": store_processing_summary_block,
