@@ -226,23 +226,9 @@ async def _fetch_reconciliation(
     except OperationalError as exc:
         if "recovery_status" not in str(exc):
             raise
-        order_stmt = (
-            sa.select(
-                orders.c.cost_center,
-                orders.c.order_number,
-                orders.c.order_date,
-                orders.c.customer_name,
-                orders.c.mobile_number,
-                orders.c.order_amount,
-            )
-            .where(orders.c.order_amount > 0)
-            .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
-        )
-        if filter_order_date:
-            order_stmt = order_stmt.where(orders.c.order_date >= start_datetime).where(
-                orders.c.order_date < end_datetime
-            )
-        order_result = await session.execute(order_stmt)
+        raise RuntimeError(
+            "vw_orders.recovery_status is required for payment reports"
+        ) from exc
     order_rows = [dict(record) for record in order_result.mappings()]
     payment_rows = await _fetch_payment_rows_for_orders(
         session=session,
