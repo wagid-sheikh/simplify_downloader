@@ -37,7 +37,15 @@ def test_cron_returns_non_zero_when_daily_fails_even_if_rescue_succeeds(tmp_path
     )
     _write_executable(
         scripts_dir / "run_local_reports_daily_sales.sh",
-        "#!/usr/bin/env bash\nCOUNT_FILE=\"${TMPDIR:-/tmp}/daily-call-count\"\ncount=0\n[[ -f \"${COUNT_FILE}\" ]] && count=$(cat \"${COUNT_FILE}\")\ncount=$((count + 1))\nprintf '%s' \"${count}\" > \"${COUNT_FILE}\"\nif [[ \"${count}\" -le 3 ]]; then exit 1; fi\nexit 0\n",
+        "#!/usr/bin/env bash\n"
+        "COUNT_FILE=\"${TMPDIR:-/tmp}/daily-call-count\"\n"
+        "count=0\n"
+        "[[ -f \"${COUNT_FILE}\" ]] && count=$(cat \"${COUNT_FILE}\")\n"
+        "count=$((count + 1))\n"
+        "printf '%s' \"${count}\" > \"${COUNT_FILE}\"\n"
+        "printf '%s\\n' \"$*\" >> \"${TMPDIR:-/tmp}/daily-args.log\"\n"
+        "if [[ \"${count}\" -le 3 ]]; then exit 1; fi\n"
+        "exit 0\n",
     )
 
     env = os.environ.copy()
@@ -49,6 +57,7 @@ def test_cron_returns_non_zero_when_daily_fails_even_if_rescue_succeeds(tmp_path
             "PENDING_MAX_ATTEMPTS": "1",
             "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "1",
             "DAILY_RESCUE_MAX_ATTEMPTS": "1",
+            "REPORT_FORCE": "false",
             "TMPDIR": str(tmp_path),
         }
     )
@@ -70,6 +79,10 @@ def test_cron_returns_non_zero_when_daily_fails_even_if_rescue_succeeds(tmp_path
     assert "daily_sales_report_rc=1" in log_text
     assert "daily_sales_report_rescue_rc=0" in log_text
     assert "ERROR: One or more required report pipelines failed" in log_text
+
+    args_lines = (tmp_path / "daily-args.log").read_text(encoding="utf-8").splitlines()
+    assert len(args_lines) == 4
+    assert all("--force" in line for line in args_lines)
 
 
 def test_cron_fail_fast_on_deterministic_code_error(tmp_path: Path) -> None:
@@ -135,7 +148,7 @@ def test_cron_fail_fast_on_deterministic_code_error(tmp_path: Path) -> None:
     assert "attempt 2/4 starting" not in log_text
 
 
-def test_cron_appends_force_flag_when_report_force_true(tmp_path: Path) -> None:
+def test_cron_always_appends_force_flag_to_daily_sales_when_report_force_false(tmp_path: Path) -> None:
     repo_root = tmp_path
     scripts_dir = repo_root / "scripts"
     logs_dir = repo_root / "logs"
@@ -147,31 +160,42 @@ def test_cron_appends_force_flag_when_report_force_true(tmp_path: Path) -> None:
     source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
     _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
 
-    recorder = """#!/usr/bin/env bash
-printf '%s\n' "$*" >> "${TMPDIR:-/tmp}/invocations.log"
-exit 0
-"""
     _write_executable(scripts_dir / "orders_sync_run_profiler.sh", "#!/usr/bin/env bash\nexit 0\n")
-    _write_executable(scripts_dir / "run_local_reports_mtd_same_day_fulfillment.sh", recorder)
+    _write_executable(
+        scripts_dir / "run_local_reports_mtd_same_day_fulfillment.sh",
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"${TMPDIR:-/tmp}/mtd-args.log\"\nexit 0\n",
+    )
     _write_executable(scripts_dir / "run_local_reports_pending_deliveries.sh", "#!/usr/bin/env bash\nexit 0\n")
-    _write_executable(scripts_dir / "run_local_reports_daily_sales.sh", recorder)
+    _write_executable(
+        scripts_dir / "run_local_reports_daily_sales.sh",
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"${TMPDIR:-/tmp}/daily-args.log\"\nexit 0\n",
+    )
 
     env = os.environ.copy()
-    env.update({
-        "ORDERS_MAX_ATTEMPTS": "1",
-        "DAILY_MAX_ATTEMPTS": "1",
-        "MTD_SAME_DAY_MAX_ATTEMPTS": "1",
-        "PENDING_MAX_ATTEMPTS": "1",
-        "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
-        "REPORT_FORCE": "true",
-        "TMPDIR": str(tmp_path),
-    })
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "1",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "MTD_SAME_DAY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "REPORT_FORCE": "false",
+            "TMPDIR": str(tmp_path),
+        }
+    )
 
-    result = subprocess.run([str(scripts_dir / "cron_run_orders_and_reports.sh")], cwd=repo_root, env=env, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
     assert result.returncode == 0
-    invocations = (tmp_path / "invocations.log").read_text(encoding="utf-8").splitlines()
-    assert any("--force" in line for line in invocations)
+    daily_invocations = (tmp_path / "daily-args.log").read_text(encoding="utf-8").splitlines()
+    assert daily_invocations == ["--force"]
 
 
 def test_cron_retries_preserve_force_mode(tmp_path: Path) -> None:
@@ -204,18 +228,27 @@ exit 0
     )
 
     env = os.environ.copy()
-    env.update({
-        "ORDERS_MAX_ATTEMPTS": "1",
-        "DAILY_MAX_ATTEMPTS": "2",
-        "DAILY_RETRY_DELAY_SECONDS": "0",
-        "MTD_SAME_DAY_MAX_ATTEMPTS": "1",
-        "PENDING_MAX_ATTEMPTS": "1",
-        "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
-        "REPORT_FORCE": "true",
-        "TMPDIR": str(tmp_path),
-    })
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "1",
+            "DAILY_MAX_ATTEMPTS": "2",
+            "DAILY_RETRY_DELAY_SECONDS": "0",
+            "MTD_SAME_DAY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "REPORT_FORCE": "false",
+            "TMPDIR": str(tmp_path),
+        }
+    )
 
-    result = subprocess.run([str(scripts_dir / "cron_run_orders_and_reports.sh")], cwd=repo_root, env=env, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
     assert result.returncode == 0
     args_lines = (tmp_path / "daily-args.log").read_text(encoding="utf-8").splitlines()
