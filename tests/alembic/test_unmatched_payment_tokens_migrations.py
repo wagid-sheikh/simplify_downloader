@@ -133,10 +133,13 @@ def test_audit_view_flags_partially_unmatched_payment_components(
             )
         )
 
-        _run_migration(audit_migration, connection, audit_migration.upgrade, monkeypatch)
-        rows = connection.execute(
-            sa.text(
-                """
+        _run_migration(
+            audit_migration, connection, audit_migration.upgrade, monkeypatch
+        )
+        rows = (
+            connection.execute(
+                sa.text(
+                    """
                 SELECT
                     payment_id,
                     normalized_order_tokens_csv,
@@ -146,8 +149,11 @@ def test_audit_view_flags_partially_unmatched_payment_components(
                 FROM vw_payment_evidence_reconciliation
                 ORDER BY payment_id
                 """
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
 
     assert [dict(row) for row in rows] == [
         {
@@ -164,6 +170,33 @@ def test_audit_view_flags_partially_unmatched_payment_components(
             "matched_order_count": 2,
             "reconciliation_result": "unmatched order token",
         },
+    ]
+
+
+def test_audit_upgrade_drops_postgres_view_before_recreate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executed: list[str] = []
+
+    class _FakeOp:
+        def get_bind(self) -> Any:
+            return type(
+                "Bind", (), {"dialect": type("Dialect", (), {"name": "postgresql"})()}
+            )()
+
+        def execute(self, sql: str) -> None:
+            executed.append(sql)
+
+    original_op = audit_migration.op
+    monkeypatch.setattr(audit_migration, "op", _FakeOp())
+    try:
+        audit_migration.upgrade()
+    finally:
+        monkeypatch.setattr(audit_migration, "op", original_op)
+
+    assert executed[:2] == [
+        "DROP VIEW IF EXISTS public.vw_payment_evidence_reconciliation;",
+        audit_migration.POSTGRES_VIEW_SQL,
     ]
 
 

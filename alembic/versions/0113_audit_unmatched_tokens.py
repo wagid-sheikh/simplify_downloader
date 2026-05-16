@@ -318,6 +318,7 @@ LEFT JOIN sales_totals AS st
 def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
+        op.execute("DROP VIEW IF EXISTS public.vw_payment_evidence_reconciliation;")
         op.execute(POSTGRES_VIEW_SQL)
     else:
         op.execute("DROP VIEW IF EXISTS vw_payment_evidence_reconciliation;")

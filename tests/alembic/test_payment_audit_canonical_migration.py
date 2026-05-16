@@ -293,6 +293,33 @@ def test_audit_view_matches_shared_helper_for_representative_classifications(
     ]
 
 
+def test_upgrade_drops_postgres_view_before_recreate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executed: list[str] = []
+
+    class _FakeOp:
+        def get_bind(self) -> Any:
+            return type(
+                "Bind", (), {"dialect": type("Dialect", (), {"name": "postgresql"})()}
+            )()
+
+        def execute(self, sql: str) -> None:
+            executed.append(sql)
+
+    original_op = migration.op
+    monkeypatch.setattr(migration, "op", _FakeOp())
+    try:
+        migration.upgrade()
+    finally:
+        monkeypatch.setattr(migration, "op", original_op)
+
+    assert executed[:2] == [
+        "DROP VIEW IF EXISTS public.vw_payment_evidence_reconciliation;",
+        migration.POSTGRES_VIEW_SQL,
+    ]
+
+
 def test_postgres_view_sql_documents_canonical_audit_contract() -> None:
     assert migration.revision == "0114_payment_audit_canon"
     assert migration.down_revision == (
