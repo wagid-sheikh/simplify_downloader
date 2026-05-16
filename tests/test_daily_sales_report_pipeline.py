@@ -210,7 +210,7 @@ def test_to_be_recovered_template_renders_cost_center_summary() -> None:
     assert "REC-3" in html
 
 
-def test_to_be_recovered_template_renders_grouped_detail_sections() -> None:
+def test_to_be_recovered_template_renders_summary_and_grouped_details() -> None:
     context = build_to_be_recovered_context(
         rows=[
             RecoveryOrderRow(
@@ -223,25 +223,25 @@ def test_to_be_recovered_template_renders_grouped_detail_sections() -> None:
             ),
             RecoveryOrderRow(
                 cost_center="CC1",
-                order_number="CC1-ONLY",
+                order_number="CC1-LATE",
                 order_date=date(2026, 4, 28),
-                customer_name="First Store",
+                customer_name="Late First Store",
                 mobile_number="9999999990",
                 order_value=Decimal("50"),
             ),
             RecoveryOrderRow(
                 cost_center="CC2",
-                order_number="CC2-B",
+                order_number="CC2-EARLY",
                 order_date=date(2026, 4, 27),
-                customer_name="Same Day B",
+                customer_name="Early Second Store",
                 mobile_number="9999999992",
                 order_value=Decimal("100"),
             ),
             RecoveryOrderRow(
-                cost_center="CC2",
-                order_number="CC2-A",
+                cost_center="CC1",
+                order_number="CC1-EARLY",
                 order_date=date(2026, 4, 27),
-                customer_name="Same Day A",
+                customer_name="Early First Store",
                 mobile_number="9999999991",
                 order_value=Decimal("25"),
             ),
@@ -254,35 +254,61 @@ def test_to_be_recovered_template_renders_grouped_detail_sections() -> None:
         context, template_name=pipeline.TO_BE_RECOVERED_TEMPLATE_NAME
     )
 
-    assert html.index("Cost Center: CC1") < html.index("Cost Center: CC2")
+    assert "Order Amount" in html
+    assert "Order Value" not in html
+    assert "Cost Center" in html
+    assert "Total Order Amount" in html
+    assert "Total Recoverable Amount" in html
 
-    cc2_section = html[html.index("Cost Center: CC2") : html.index("CC2 Total")]
-    assert cc2_section.index("CC2-A") < cc2_section.index("CC2-B")
-    assert cc2_section.index("CC2-B") < cc2_section.index("CC2-NEW")
+    summary_table = html[
+        html.index('<table class="micro-font summary-table"') : html.index(
+            '<table class="micro-font">'
+        )
+    ]
+    assert summary_table.index('<td class="label">CC1</td>') < summary_table.index(
+        '<td class="label">CC2</td>'
+    )
+    assert summary_table.count('<td class="label">CC1</td>') == 1
+    assert summary_table.count('<td class="label">CC2</td>') == 1
+    assert summary_table.count('<td class="label">Grand Total</td>') == 1
+    assert "<td>75</td>" in summary_table
+    assert "<td>300</td>" in summary_table
+    assert "<td>375</td>" in summary_table
+
+    detail_table = html[html.index('<table class="micro-font">') :]
+    assert detail_table.index("Cost Center: CC1") < detail_table.index(
+        "Cost Center: CC2"
+    )
+
+    cc1_section = detail_table[
+        detail_table.index("Cost Center: CC1") : detail_table.index("CC1 Total")
+    ]
+    assert cc1_section.index("CC1-EARLY") < cc1_section.index("CC1-LATE")
+
+    cc2_section = detail_table[
+        detail_table.index("Cost Center: CC2") : detail_table.index("CC2 Total")
+    ]
+    assert cc2_section.index("CC2-EARLY") < cc2_section.index("CC2-NEW")
 
     assert (
         '<tr class="group-total-row">\n'
         '          <td class="label" colspan="5">CC1 Total</td>\n'
-        '          <td>50</td>\n'
-        '          <td>50</td>\n'
+        '          <td>75</td>\n'
+        '          <td>75</td>\n'
         '        </tr>'
-    ) in html
+    ) in detail_table
     assert (
         '<tr class="group-total-row">\n'
         '          <td class="label" colspan="5">CC2 Total</td>\n'
-        '          <td>325</td>\n'
-        '          <td>325</td>\n'
+        '          <td>300</td>\n'
+        '          <td>300</td>\n'
         '        </tr>'
-    ) in html
-    assert (
-        '<td class="label">Grand Total</td>\n'
-        '          <td>375</td>\n'
-        '          <td>375</td>'
-    ) in html
+    ) in detail_table
+    assert detail_table.count('<tr class="group-total-row">') == 2
     assert (
         '<td class="label" colspan="6">Total Recoverable</td>\n'
         '          <td>375</td>'
-    ) in html
+    ) in detail_table
 
 
 @pytest.mark.asyncio
