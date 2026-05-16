@@ -30,6 +30,7 @@ def test_payment_evidence_review_query_includes_requested_filters() -> None:
     assert "cost_center = :cost_center" in sql
     assert "payment_date >= :start_date" in sql
     assert "payment_date <= :end_date" in sql
+    assert "operator_actionable_payment_status" in sql
     assert "is_grouped = :grouped" in sql
     assert "limit :limit" in sql
     assert params == {
@@ -305,5 +306,12 @@ async def test_payment_evidence_review_marks_write_off_short_as_recovery_exclude
     assert len(rows) == 1
     assert rows[0]["reconciliation_result"] == "recovery_excluded"
     assert rows[0]["reconciliation_result"] != "short"
+    assert (
+        rows[0]["operator_actionable_payment_status"]
+        == "non_actionable_recovery_status"
+    )
+    assert (
+        "actionable_short_payment" not in rows[0]["operator_actionable_payment_status"]
+    )
     assert rows[0]["recovery_statuses_csv"] == "WRITE_OFF"
     assert rows[0]["recovery_categories_csv"] == "write off"

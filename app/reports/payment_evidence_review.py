@@ -1,7 +1,9 @@
 """Payment evidence review CSV export.
 
 Purpose: expose payment_collections rows with normalized order tokens and
-reconciliation outcomes for operator audit.
+reconciliation outcomes for audit. ``reconciliation_result`` is an audit
+classification; the Daily Sales Short Payments PDF is the operator action
+report.
 Inputs: optional source_type, cost_center, payment_date range, grouped-row, and
 limit filters.
 Outputs: rows from vw_payment_evidence_reconciliation, usually written as CSV.
@@ -41,6 +43,7 @@ PAYMENT_EVIDENCE_REVIEW_COLUMNS = (
     "order_amount",
     "payment_received",
     "reconciliation_result",
+    "operator_actionable_payment_status",
     "is_grouped",
     "bank_row_id",
     "group_key",
@@ -69,7 +72,13 @@ class PaymentEvidenceReviewFilters:
 def build_payment_evidence_review_query(
     filters: PaymentEvidenceReviewFilters,
 ) -> tuple[sa.TextClause, dict[str, Any]]:
-    """Build the operator query for the payment-evidence reconciliation audit view."""
+    """Build the query for the payment-evidence reconciliation audit view.
+
+    ``reconciliation_result`` remains an audit classification, not the Daily
+    Sales Short Payments operator report. Use
+    ``operator_actionable_payment_status`` to see whether a row is eligible for
+    operator short-payment action.
+    """
 
     where_clauses = ["1 = 1"]
     params: dict[str, Any] = {
@@ -460,7 +469,11 @@ def _parse_grouped_filter(value: str) -> bool | None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="payment_evidence_review",
-        description="Export payment evidence rows with order/sales reconciliation results as CSV.",
+        description=(
+            "Export payment evidence audit rows as CSV. This is not the "
+            "operator Short Payments report; reconciliation_result is an "
+            "audit classification."
+        ),
     )
     parser.add_argument(
         "--source-type", help="Filter by payment_collections.source_type"
