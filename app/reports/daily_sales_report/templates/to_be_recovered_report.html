@@ -51,6 +51,14 @@
         font-weight: 700;
         background: #f8fafc;
       }
+      .group-header-row td {
+        font-weight: 700;
+        background: #dbeafe;
+      }
+      .group-total-row td {
+        font-weight: 700;
+        background: #eff6ff;
+      }
       .wrapped-text {
         white-space: normal;
         word-break: break-word;
@@ -132,8 +140,12 @@
         </tr>
       </thead>
       <tbody>
-        {% if rows %}
-        {% for row in rows %}
+        {% if grouped_rows %}
+        {% for group in grouped_rows %}
+        <tr class="group-header-row">
+          <td class="label" colspan="7">Cost Center: {{ group.cost_center }}</td>
+        </tr>
+        {% for row in group.rows %}
         <tr>
           <td class="label">{{ row.cost_center }}</td>
           <td class="label">{{ row.order_number }}</td>
@@ -142,6 +154,12 @@
           <td class="label">{{ row.mobile_number or "--" }}</td>
           <td>{{ row.order_amount | format_amount }}</td>
           <td>{{ row.order_amount | format_amount }}</td>
+        </tr>
+        {% endfor %}
+        <tr class="group-total-row">
+          <td class="label" colspan="5">{{ group.cost_center }} Total</td>
+          <td>{{ group.group_total_order_amount | format_amount }}</td>
+          <td>{{ group.group_total_recoverable_amount | format_amount }}</td>
         </tr>
         {% endfor %}
         {% else %}
