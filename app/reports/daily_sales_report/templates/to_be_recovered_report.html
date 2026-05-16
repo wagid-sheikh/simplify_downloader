@@ -89,6 +89,36 @@
       {% endif %}
     </div>
 
+    <table class="micro-font summary-table">
+      <thead>
+        <tr>
+          <th class="label">Cost Center</th>
+          <th>Total Order Amount</th>
+          <th>Total Recoverable Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if summary_rows %}
+        {% for row in summary_rows %}
+        <tr>
+          <td class="label">{{ row.cost_center }}</td>
+          <td>{{ row.total_order_amount | format_amount }}</td>
+          <td>{{ row.total_recoverable_amount | format_amount }}</td>
+        </tr>
+        {% endfor %}
+        {% else %}
+        <tr>
+          <td class="center" colspan="3">No unresolved TO_BE_RECOVERED orders</td>
+        </tr>
+        {% endif %}
+        <tr class="totals-row">
+          <td class="label">Grand Total</td>
+          <td>{{ summary_grand_total_order_amount | format_amount }}</td>
+          <td>{{ summary_grand_total_recoverable_amount | format_amount }}</td>
+        </tr>
+      </tbody>
+    </table>
+
     <table class="micro-font">
       <thead>
         <tr>

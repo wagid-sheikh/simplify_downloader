@@ -162,6 +162,54 @@ def test_to_be_recovered_template_renders_auto_cleared_order_numbers() -> None:
     assert "TD123, TD124, UC555" in html
 
 
+def test_to_be_recovered_template_renders_cost_center_summary() -> None:
+    context = build_to_be_recovered_context(
+        rows=[
+            RecoveryOrderRow(
+                cost_center="CC1",
+                order_number="REC-1",
+                order_date=date(2026, 4, 29),
+                customer_name="Rhea",
+                mobile_number="9999999990",
+                order_value=Decimal("1250"),
+            ),
+            RecoveryOrderRow(
+                cost_center="CC2",
+                order_number="REC-2",
+                order_date=date(2026, 4, 29),
+                customer_name="Mina",
+                mobile_number="9999999991",
+                order_value=Decimal("2000"),
+            ),
+            RecoveryOrderRow(
+                cost_center="CC1",
+                order_number="REC-3",
+                order_date=date(2026, 4, 29),
+                customer_name="Nia",
+                mobile_number="9999999992",
+                order_value=Decimal("75"),
+            ),
+        ],
+        report_date=date(2026, 4, 29),
+        run_environment="test",
+    )
+
+    html = pipeline._render_html(
+        context, template_name=pipeline.TO_BE_RECOVERED_TEMPLATE_NAME
+    )
+
+    assert 'class="micro-font summary-table"' in html
+    assert "Total Order Amount" in html
+    assert "Total Recoverable Amount" in html
+    assert "Grand Total" in html
+    assert "<td>1,325</td>" in html
+    assert "<td>2,000</td>" in html
+    assert "<td>3,325</td>" in html
+    assert "REC-1" in html
+    assert "REC-2" in html
+    assert "REC-3" in html
+
+
 @pytest.mark.asyncio
 async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
     tmp_path, monkeypatch
