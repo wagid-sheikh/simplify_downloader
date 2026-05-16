@@ -16,12 +16,16 @@ def _order(
     amount: str,
     order_date: str = "2026-05-01T10:00:00",
     cost_center: str = "CC1",
+    recovery_status: str = "",
+    recovery_category: str = "",
 ) -> dict[str, object]:
     return {
         "cost_center": cost_center,
         "order_number": order_number,
         "order_date": datetime.fromisoformat(order_date),
         "order_amount": Decimal(amount),
+        "recovery_status": recovery_status,
+        "recovery_category": recovery_category,
     }
 
 
@@ -313,7 +317,9 @@ def test_evidence_greater_than_sales_sets_mismatch_without_short_payment() -> No
     assert result.short_payment_orders == ()
 
 
-def test_both_sales_and_evidence_short_against_order_amount_remains_short_only() -> None:
+def test_both_sales_and_evidence_short_against_order_amount_remains_short_only() -> (
+    None
+):
     result = reconcile_payments(
         order_rows=[_order("ORD-BOTH-SHORT", "100")],
         sales_rows=[_sale("ORD-BOTH-SHORT", "50")],
@@ -377,3 +383,67 @@ def test_exact_token_grouping_does_not_create_conflicting_audit_outcomes() -> No
     assert {row.group_key for row in audit_rows} == {"ORD1|ORD2|ORD3"}
     assert {row.grouped_amount for row in audit_rows} == {Decimal("300")}
     assert {row.grouped_order_amount for row in audit_rows} == {Decimal("300")}
+
+
+def test_write_off_short_payment_evidence_is_recovery_excluded_for_audit() -> None:
+    result = reconcile_payments(
+        order_rows=[
+            _order(
+                "UN3668",
+                "1570",
+                recovery_status="WRITE_OFF",
+                recovery_category="write off",
+            )
+        ],
+        sales_rows=[_sale("UN3668", "1178")],
+        payment_evidence_rows=[_proof("UN3668", "1178")],
+    )
+
+    group = result.groups[0]
+    order = result.orders[0]
+    assert group.status == "recovery_excluded"
+    assert group.short_amount == Decimal("0")
+    assert order.status == "recovery_excluded"
+    assert order.short_amount == Decimal("0")
+    assert result.short_payment_orders == ()
+
+    audit_rows = build_payment_evidence_audit_rows(
+        order_rows=[
+            _order(
+                "UN3668",
+                "1570",
+                recovery_status="WRITE_OFF",
+                recovery_category="write off",
+            )
+        ],
+        sales_rows=[_sale("UN3668", "1178")],
+        payment_evidence_rows=[_proof("UN3668", "1178")],
+    )
+
+    assert len(audit_rows) == 1
+    audit_row = audit_rows[0]
+    assert audit_row.reconciliation_result == "recovery_excluded"
+    assert audit_row.reconciliation_result != "short"
+    assert audit_row.recovery_statuses_csv == "WRITE_OFF"
+    assert audit_row.recovery_categories_csv == "write off"
+
+
+def test_grouped_short_with_mixed_recovery_status_is_not_grouped_short() -> None:
+    audit_rows = build_payment_evidence_audit_rows(
+        order_rows=[
+            _order("ORD-ACTION", "100", "2026-05-01T10:00:00"),
+            _order(
+                "ORD-WRITEOFF",
+                "100",
+                "2026-05-01T11:00:00",
+                recovery_status="WRITE_OFF",
+            ),
+        ],
+        sales_rows=[_sale("ORD-ACTION", "100"), _sale("ORD-WRITEOFF", "50")],
+        payment_evidence_rows=[_proof("ORD-ACTION,ORD-WRITEOFF", "100")],
+    )
+
+    assert len(audit_rows) == 1
+    assert audit_rows[0].reconciliation_result == "mixed_recovery_status"
+    assert audit_rows[0].reconciliation_result != "grouped short"
+    assert audit_rows[0].recovery_statuses_csv == "WRITE_OFF"
