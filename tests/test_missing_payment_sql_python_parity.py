@@ -363,14 +363,16 @@ async def test_fetch_short_payment_rows_requires_sales_backed_consistent_evidenc
                 ('CC1', 'PROOF-ONLY-SHORT', '2026-05-01T10:00:00', 'Bob', '9002', 100, NULL),
                 ('CC1', 'MISMATCH-SHORT', '2026-05-01T11:00:00', 'Cara', '9003', 100, NULL),
                 ('CC1', 'EQUAL-EVIDENCE-SHORT', '2026-05-01T12:00:00', 'Dan', '9004', 200, NULL),
-                ('CC1', 'PAID-IN-FULL', '2026-05-01T13:00:00', 'Eve', '9005', 100, NULL)
+                ('CC1', 'PAID-IN-FULL', '2026-05-01T13:00:00', 'Eve', '9005', 100, NULL),
+                ('CC1', 'WRITE-OFF-SHORT', '2026-05-01T14:00:00', 'Fran', '9006', 100, 'WRITE_OFF')
         """))
         connection.execute(sa.text("""
             INSERT INTO sales (cost_center, order_number, payment_received) VALUES
                 ('CC1', 'SALES-PROOF-SHORT', 80),
                 ('CC1', 'MISMATCH-SHORT', 90),
                 ('CC1', 'EQUAL-EVIDENCE-SHORT', 150),
-                ('CC1', 'PAID-IN-FULL', 100)
+                ('CC1', 'PAID-IN-FULL', 100),
+                ('CC1', 'WRITE-OFF-SHORT', 80)
         """))
         connection.execute(sa.text("""
             INSERT INTO payment_collections (cost_center, order_number, amount, source_type) VALUES
@@ -378,7 +380,8 @@ async def test_fetch_short_payment_rows_requires_sales_backed_consistent_evidenc
                 ('CC1', 'PROOF-ONLY-SHORT', 80, 'google_sheet'),
                 ('CC1', 'MISMATCH-SHORT', 80, 'google_sheet'),
                 ('CC1', 'EQUAL-EVIDENCE-SHORT', 150, 'google_sheet'),
-                ('CC1', 'PAID-IN-FULL', 100, 'google_sheet')
+                ('CC1', 'PAID-IN-FULL', 100, 'google_sheet'),
+                ('CC1', 'WRITE-OFF-SHORT', 80, 'google_sheet')
         """))
     engine.dispose()
 
@@ -420,6 +423,94 @@ async def test_fetch_short_payment_rows_requires_sales_backed_consistent_evidenc
         ("SALES-PROOF-SHORT", Decimal("80.00"), Decimal("20.00")),
         ("EQUAL-EVIDENCE-SHORT", Decimal("150.00"), Decimal("50.00")),
     ]
+
+
+@pytest.mark.asyncio
+async def test_fetch_short_payment_rows_requires_recovery_status_column(tmp_path: Path) -> None:
+    db_path = tmp_path / "short_payment_requires_recovery_status.db"
+    sync_url = f"sqlite:///{db_path}"
+    async_url = f"sqlite+aiosqlite:///{db_path}"
+    engine = sa.create_engine(sync_url)
+    with engine.begin() as connection:
+        connection.execute(sa.text("""
+            CREATE TABLE vw_orders (
+                cost_center TEXT NOT NULL,
+                order_number TEXT NOT NULL,
+                order_date TEXT NOT NULL,
+                customer_name TEXT,
+                mobile_number TEXT,
+                order_amount NUMERIC(12, 2) NOT NULL
+            )
+        """))
+        connection.execute(sa.text("""
+            CREATE TABLE sales (
+                cost_center TEXT NOT NULL,
+                order_number TEXT NOT NULL,
+                payment_received NUMERIC(12, 2)
+            )
+        """))
+        connection.execute(sa.text("""
+            CREATE TABLE payment_collections (
+                cost_center TEXT NOT NULL,
+                order_number TEXT,
+                amount NUMERIC(12, 2) NOT NULL,
+                source_type TEXT NOT NULL
+            )
+        """))
+        connection.execute(sa.text("""
+            INSERT INTO vw_orders (
+                cost_center, order_number, order_date, customer_name, mobile_number,
+                order_amount
+            ) VALUES
+                ('CC1', 'WOULD-BE-SHORT', '2026-05-01T09:00:00', 'Alice', '9001', 100)
+        """))
+        connection.execute(sa.text("""
+            INSERT INTO sales (cost_center, order_number, payment_received) VALUES
+                ('CC1', 'WOULD-BE-SHORT', 80)
+        """))
+        connection.execute(sa.text("""
+            INSERT INTO payment_collections (cost_center, order_number, amount, source_type) VALUES
+                ('CC1', 'WOULD-BE-SHORT', 80, 'google_sheet')
+        """))
+    engine.dispose()
+
+    orders = sa.table(
+        "vw_orders",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("order_date"),
+        sa.column("customer_name"),
+        sa.column("mobile_number"),
+        sa.column("order_amount"),
+        sa.column("recovery_status"),
+    )
+    payment_collections = sa.table(
+        "payment_collections",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("amount"),
+        sa.column("source_type"),
+    )
+    sales = sa.table(
+        "sales",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("payment_received"),
+    )
+
+    async with session_scope(async_url) as session:
+        with pytest.raises(
+            RuntimeError,
+            match=r"vw_orders\.recovery_status is required for payment reports",
+        ):
+            await fetch_short_payment_rows(
+                session=session,
+                orders=orders,
+                payment_collections=payment_collections,
+                sales=sales,
+                start_datetime=datetime(2026, 5, 1),
+                end_datetime=datetime(2026, 5, 2),
+            )
 
 
 def test_postgres_view_sql_documents_python_compatibility_contract() -> None:
