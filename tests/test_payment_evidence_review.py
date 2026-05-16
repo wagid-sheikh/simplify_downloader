@@ -256,3 +256,54 @@ async def test_payment_evidence_review_fetch_limits_related_order_and_sales_rows
     assert [
         (row["cost_center"], row["order_number"]) for row in captured["sales_rows"]
     ] == [("CC1", "ORD1")]
+
+
+@pytest.mark.asyncio
+async def test_payment_evidence_review_marks_write_off_short_as_recovery_excluded(
+    tmp_path,
+) -> None:
+    database_url = (
+        f"sqlite+aiosqlite:///{tmp_path / 'payment_evidence_review_writeoff.db'}"
+    )
+    engine = sa.create_engine(database_url.replace("+aiosqlite", ""))
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "CREATE TABLE vw_orders (cost_center TEXT, order_number TEXT, order_date TEXT, order_amount NUMERIC, recovery_status TEXT, recovery_category TEXT)"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "CREATE TABLE sales (cost_center TEXT, order_number TEXT, payment_received NUMERIC)"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "CREATE TABLE payment_collections (payment_id INTEGER PRIMARY KEY, source_type TEXT, source_sheet_row INTEGER, cost_center TEXT, payment_date TEXT, payment_timestamp TEXT, order_number TEXT, amount NUMERIC, bank_row_id TEXT)"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO vw_orders VALUES "
+                "('CC1', 'UN3668', '2026-05-01', 1570, 'WRITE_OFF', 'write off')"
+            )
+        )
+        connection.execute(sa.text("INSERT INTO sales VALUES ('CC1', 'UN3668', 1178)"))
+        connection.execute(
+            sa.text(
+                "INSERT INTO payment_collections VALUES "
+                "(1, 'google_sheet', 11, 'CC1', '2026-05-01', '2026-05-01 10:00:00', 'UN3668', 1178, NULL)"
+            )
+        )
+    engine.dispose()
+
+    async with session_scope(database_url) as session:
+        rows = await fetch_payment_evidence_review_rows(
+            session, PaymentEvidenceReviewFilters(limit=1)
+        )
+
+    assert len(rows) == 1
+    assert rows[0]["reconciliation_result"] == "recovery_excluded"
+    assert rows[0]["reconciliation_result"] != "short"
+    assert rows[0]["recovery_statuses_csv"] == "WRITE_OFF"
+    assert rows[0]["recovery_categories_csv"] == "write off"

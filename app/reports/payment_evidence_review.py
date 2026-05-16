@@ -118,8 +118,9 @@ async def fetch_payment_evidence_review_rows(
     """Fetch audit rows using the canonical payment reconciliation engine.
 
     The legacy SQL view remains queryable for operators, but the application CSV
-    path derives statuses from ``payment_reconciliation.py`` so grouped payments
-    and single-order top-ups sharing a token are reconciled as one component.
+    path derives statuses from ``payment_reconciliation.py`` so grouped payments,
+    single-order top-ups sharing a token, and recovery-excluded order statuses
+    are reconciled as one component.
     """
 
     seed_payment_rows = await _fetch_payment_collection_rows(session, filters)

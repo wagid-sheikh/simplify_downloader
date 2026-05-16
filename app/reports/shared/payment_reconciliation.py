@@ -15,6 +15,15 @@ from typing import Any, Iterable, Mapping, Sequence
 import re
 
 VALID_PAYMENT_SOURCE_TYPES = frozenset({"google_sheet", "legacy_sales"})
+RECOVERY_EXCLUDED_STATUSES = frozenset(
+    {
+        "TO_BE_RECOVERED",
+        "TO_BE_COMPENSATED",
+        "RECOVERED",
+        "COMPENSATED",
+        "WRITE_OFF",
+    }
+)
 DEFAULT_PAYMENT_TOLERANCE = Decimal("1")
 _ORDER_TOKEN_SPLIT_RE = re.compile(r"[,/]")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -338,7 +347,9 @@ def reconcile_payments(
         sales_received = sales_totals.get(key, Decimal("0"))
         has_sales_payment_data = sales_row_counts.get(key, 0) > 0
         sales_evidence_mismatch = abs(sales_received) > tolerance_amount
-        status = "proof_missing"
+        recovery_excluded = _is_recovery_excluded_status(order.recovery_status)
+        status = "recovery_excluded" if recovery_excluded else "proof_missing"
+        short_amount = Decimal("0") if recovery_excluded else order.order_amount
         reconciled = ReconciledOrderPayment(
             cost_center=order.cost_center,
             order_number=order.order_number,
@@ -353,7 +364,7 @@ def reconcile_payments(
             sales_evidence_consistent=has_sales_payment_data
             and not sales_evidence_mismatch,
             has_sales_payment_data=has_sales_payment_data,
-            short_amount=order.order_amount,
+            short_amount=short_amount,
             status=status,
             has_payment_proof=False,
             data_quality_exception=False,
@@ -375,7 +386,7 @@ def reconcile_payments(
             sales_evidence_consistent=has_sales_payment_data
             and not sales_evidence_mismatch,
             has_sales_payment_data=has_sales_payment_data,
-            short_amount=order.order_amount,
+            short_amount=short_amount,
             overpayment_amount=Decimal("0"),
             evidence_rows=(),
             orders=(reconciled,),
@@ -444,23 +455,52 @@ def _reconcile_group(
     )
     sales_evidence_consistent = has_sales_payment_data and not sales_evidence_mismatch
 
+    recovery_excluded_numbers = {
+        order.normalized_order_number
+        for order in sorted_orders
+        if _is_recovery_excluded_status(order.recovery_status)
+    }
+    all_recovery_excluded = len(recovery_excluded_numbers) == len(sorted_orders)
+    has_recovery_excluded = bool(recovery_excluded_numbers)
+
     data_quality_exception = bool(unmatched_numbers)
     if data_quality_exception:
         status = "data_quality_exception"
     elif not evidence_rows:
-        status = "proof_missing"
+        status = "recovery_excluded" if all_recovery_excluded else "proof_missing"
     elif evidence_amount + tolerance >= expected_amount:
         status = "paid"
+    elif all_recovery_excluded:
+        status = "recovery_excluded"
+    elif has_recovery_excluded:
+        status = "mixed_recovery_status"
     else:
         status = "short"
 
     remaining = Decimal("0") if data_quality_exception else evidence_amount
-    reconciled_orders: list[ReconciledOrderPayment] = []
-    for order in sorted_orders:
+    allocation_order = [
+        *[
+            order
+            for order in sorted_orders
+            if order.normalized_order_number not in recovery_excluded_numbers
+        ],
+        *[
+            order
+            for order in sorted_orders
+            if order.normalized_order_number in recovery_excluded_numbers
+        ],
+    ]
+    allocations: dict[str, Decimal] = {}
+    for order in allocation_order:
         allocated = Decimal("0")
         if remaining > 0:
             allocated = min(remaining, order.order_amount)
             remaining -= allocated
+        allocations[order.normalized_order_number] = allocated
+
+    reconciled_orders: list[ReconciledOrderPayment] = []
+    for order in sorted_orders:
+        allocated = allocations.get(order.normalized_order_number, Decimal("0"))
         short_amount = max(order.order_amount - allocated, Decimal("0"))
         order_key = (cost_center, order.normalized_order_number)
         order_sales_received = sales_totals.get(order_key, Decimal("0"))
@@ -472,6 +512,9 @@ def _reconcile_group(
         )
         if data_quality_exception:
             order_status = "data_quality_exception"
+            short_amount = Decimal("0")
+        elif order.normalized_order_number in recovery_excluded_numbers:
+            order_status = "recovery_excluded"
             short_amount = Decimal("0")
         elif not evidence_rows:
             order_status = "proof_missing"
@@ -504,10 +547,18 @@ def _reconcile_group(
             )
         )
 
+    actionable_expected_amount = sum(
+        (
+            order.order_amount
+            for order in sorted_orders
+            if order.normalized_order_number not in recovery_excluded_numbers
+        ),
+        Decimal("0"),
+    )
     group_short = (
         Decimal("0")
-        if status in {"paid", "data_quality_exception"}
-        else max(expected_amount - evidence_amount, Decimal("0"))
+        if status in {"paid", "data_quality_exception", "recovery_excluded"}
+        else max(actionable_expected_amount - evidence_amount, Decimal("0"))
     )
     return ReconciledPaymentGroup(
         group_key=(cost_center, normalized_numbers),
@@ -537,6 +588,10 @@ def _reconcile_group(
             _unique_nonempty(order.recovery_category for order in sorted_orders)
         ),
     )
+
+
+def _is_recovery_excluded_status(status: str) -> bool:
+    return status.strip().upper() in RECOVERY_EXCLUDED_STATUSES
 
 
 def _build_evidence_components(
@@ -668,6 +723,8 @@ def build_payment_evidence_audit_rows(
             component_id = _audit_component_id(group.cost_center, normalized_tokens)
             if group.data_quality_exception:
                 reconciliation_result = "unmatched order token"
+            elif group.status in {"recovery_excluded", "mixed_recovery_status"}:
+                reconciliation_result = group.status
             elif group.sales_payment_received <= 0:
                 reconciliation_result = "missing sales"
             elif group.status == "paid":
