@@ -5,21 +5,16 @@ set -euo pipefail
 #   # Production-targeted run; reports always regenerate.
 #   ./scripts/run_prod_reports_daily_sales.sh --report-date 2026-03-31
 #
-# Regeneration is mandatory for report wrappers; --force is appended unless the
-# caller already supplied it.
+# Regeneration is mandatory for report wrappers. The report CLI always
+# regenerates and appends new summaries/documents; --force is not required.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
-FORCE_ARGS=()
-explicit_force="false"
 report_date="<default>"
 
 for ((i = 1; i <= $#; i++)); do
-  if [[ "${!i}" == "--force" ]]; then
-    explicit_force="true"
-  fi
   if [[ "${!i}" == "--report-date" ]] && ((i + 1 <= $#)); then
     next_index=$((i + 1))
     report_date="${!next_index}"
@@ -27,10 +22,6 @@ for ((i = 1; i <= $#; i++)); do
   fi
 done
 
-if [[ "${explicit_force}" != "true" ]]; then
-  FORCE_ARGS+=("--force")
-fi
-
 echo "[run_prod_reports_daily_sales] pipeline=daily-sales report_date=${report_date} regenerate=true"
 
-exec poetry run python -m app report daily-sales --env prod ${FORCE_ARGS[@]+"${FORCE_ARGS[@]}"} "$@"
+exec poetry run python -m app report daily-sales --env prod "$@"

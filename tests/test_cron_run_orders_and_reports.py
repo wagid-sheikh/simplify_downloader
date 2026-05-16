@@ -106,7 +106,7 @@ def test_cron_does_not_retry_for_undefined_function_error(tmp_path: Path) -> Non
     assert "attempt 2/5 starting" not in log_text
 
 
-def test_cron_mtd_same_day_command_forces_regeneration_static() -> None:
+def test_cron_mtd_same_day_command_regenerates_without_force_static() -> None:
     source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
 
     mtd_lines = [
@@ -118,12 +118,12 @@ def test_cron_mtd_same_day_command_forces_regeneration_static() -> None:
 
     assert len(mtd_lines) == 1
     mtd_command_line = mtd_lines[0]
-    assert "MTD_SAME_DAY_REGENERATE_ARGS" in mtd_command_line
-    assert 'MTD_SAME_DAY_REGENERATE_ARGS=("--force")' in source_cron
-    assert "cron always regenerates reports with --force" in source_cron
+    assert "MTD_SAME_DAY_REGENERATE_ARGS" not in mtd_command_line
+    assert 'MTD_SAME_DAY_REGENERATE_ARGS=("--force")' not in source_cron
+    assert "report CLIs always regenerate; --force is not required" in source_cron
 
 
-def test_cron_mtd_same_day_always_receives_force(tmp_path: Path) -> None:
+def test_cron_mtd_same_day_receives_no_force_flag(tmp_path: Path) -> None:
     repo_root = tmp_path
     scripts_dir = repo_root / "scripts"
     logs_dir = repo_root / "logs"
@@ -166,11 +166,11 @@ def test_cron_mtd_same_day_always_receives_force(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0
-    assert (tmp_path / "mtd-args").read_text(encoding="utf-8").strip() == "--force"
+    assert (tmp_path / "mtd-args").read_text(encoding="utf-8").strip() == ""
 
     log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
     assert log_files
     log_text = log_files[-1].read_text(encoding="utf-8")
     assert "Script 3: mtd_same_day_fulfillment_report: attempt 1/1 starting" in log_text
     assert "regenerate=true" in log_text
-    assert "cron always regenerates reports with --force" in log_text
+    assert "report CLIs always regenerate; --force is not required" in log_text
