@@ -433,25 +433,18 @@ def test_render_html_missing_payments_grouping_columns_and_totals() -> None:
     assert 'Grand Total Count: 3 | Grand Total Order Amount: ₹600' in html
 
 
-def test_render_html_short_payments_grouping_columns_and_totals() -> None:
-    short_rows = [
-        ShortPaymentRow('CC1', 'O-1', datetime(2026, 4, 10, 9), 'Alice', '999', Decimal('100'), Decimal('80'), Decimal('20')),
-        ShortPaymentRow('CC1', 'O-2', datetime(2026, 4, 10, 10), 'Bob', '888', Decimal('200'), Decimal('150'), Decimal('50'), 'O-2|O-3'),
-        ShortPaymentRow('CC2', 'O-3', datetime(2026, 4, 11, 11), 'Cara', '777', Decimal('300'), Decimal('0'), Decimal('300'), 'O-2|O-3'),
-    ]
+def test_render_html_does_not_render_short_payments_section() -> None:
     html = render_html(
         rows=[],
         report_date_display='29-Apr-2026',
         mtd_start_display='01-Apr-2026',
         mtd_end_display='29-Apr-2026',
         missing_payment_rows=[],
-        short_payment_rows=short_rows,
     )
 
-    assert 'Short Payments' in html
-    assert 'Paid Amount' in html and 'Shortage Amount' in html and 'Group Key' in html
-    assert 'Cost Center: CC1 | Count: 2 | Order Amount: ₹300 | Paid Amount: ₹230 | Shortage Amount: ₹70' in html
-    assert 'Grand Total Count: 3 | Grand Total Order Amount: ₹600 | Grand Total Paid Amount: ₹230 | Grand Total Shortage Amount: ₹370' in html
+    assert 'Short Payments' not in html
+    assert 'Shortage Amount' not in html
+    assert 'Group Key' not in html
 
 def test_format_duration_minutes_examples() -> None:
     assert format_duration_minutes(0) == "0 min"

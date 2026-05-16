@@ -9,6 +9,7 @@ from app.reports.daily_sales_report.data import (
     _calculate_ttd,
     _totals_row,
 )
+from app.reports.shared.short_payments import ShortPaymentRow
 from app.reports.daily_sales_report.pipeline import _build_context, _render_html
 
 
@@ -422,3 +423,90 @@ def test_daily_sales_report_same_day_section_uses_shared_table_partial() -> None
     assert "Payment Received" in html
     assert '29-04-2026<br><span class="micro-font">09:05 AM</span>' in html
     assert '29-04-2026<br><span class="micro-font">10:45 AM</span>' in html
+
+
+def _empty_daily_sales_report(*, short_payment_rows=None) -> DailySalesReportData:
+    return DailySalesReportData(
+        report_date=date(2026, 4, 29),
+        rows=[],
+        totals=_totals_row([]),
+        edited_orders=[],
+        edited_orders_summary={},
+        edited_orders_totals={},
+        missed_leads=[],
+        cancelled_leads=[],
+        lead_performance_summary=[],
+        completed_today_leads=[],
+        td_leads_sync_metrics={},
+        td_leads_sync_lead_changes={},
+        to_be_recovered=[],
+        to_be_compensated=[],
+        to_be_recovered_total_order_value=Decimal("0"),
+        to_be_compensated_total_order_value=Decimal("0"),
+        same_day_fulfillment_rows=[],
+        missing_payment_rows=[],
+        short_payment_rows=list(short_payment_rows or []),
+    )
+
+
+def test_daily_sales_report_replaces_embedded_short_payments_with_attachment_note() -> None:
+    report = _empty_daily_sales_report(
+        short_payment_rows=[
+            ShortPaymentRow(
+                cost_center="CC1",
+                order_number="SP-1",
+                order_date=datetime(2026, 4, 10, 9),
+                customer_name="Alice",
+                mobile_number="999",
+                order_amount=Decimal("100"),
+                paid_amount=Decimal("80"),
+                shortage_amount=Decimal("20"),
+                group_key="SP-1",
+            )
+        ]
+    )
+
+    html = _render_html(_build_context(report, "prod"))
+
+    assert "Short Payments are attached as a separate report" in html
+    assert "Short Payments (Current All Order Dates)" not in html
+    assert "SP-1" not in html
+    assert "Shortage Amount" not in html
+    assert "Group Key" not in html
+
+
+def test_short_payments_report_groups_details_subtotals_and_grand_totals() -> None:
+    report = _empty_daily_sales_report(
+        short_payment_rows=[
+            ShortPaymentRow("CC1", "O-1", datetime(2026, 4, 10, 9), "Alice", "999", Decimal("100"), Decimal("80"), Decimal("20")),
+            ShortPaymentRow("CC1", "O-2", datetime(2026, 4, 10, 10), "Bob", "888", Decimal("200"), Decimal("150"), Decimal("50"), "O-2|O-3"),
+            ShortPaymentRow("CC2", "O-3", datetime(2026, 4, 11, 11), "Cara", "777", Decimal("300"), Decimal("0"), Decimal("300"), "O-2|O-3"),
+        ]
+    )
+
+    html = _render_html(
+        _build_context(report, "prod"),
+        template_name="short_payments_report.html",
+    )
+
+    assert "Short Payments (Current All Order Dates) Report for: 29-Apr-2026" in html
+    assert "Run Environment: prod" in html
+    assert "Cost Center: CC1 | Count: 2 | Order Amount: ₹300 | Paid Amount: ₹230 | Shortage Amount: ₹70" in html
+    assert "Cost Center: CC2 | Count: 1 | Order Amount: ₹300 | Paid Amount: ₹0 | Shortage Amount: ₹300" in html
+    assert "O-1" in html and "O-2" in html and "O-3" in html
+    assert "Paid Amount" in html and "Shortage Amount" in html and "Group Key" in html
+    assert "Subtotal for CC1 (2 records)" in html
+    assert "Subtotal for CC2 (1 records)" in html
+    assert "Grand Total Count: 3 | Grand Total Order Amount: ₹600 | Grand Total Paid Amount: ₹230 | Grand Total Shortage Amount: ₹370" in html
+
+
+def test_short_payments_report_empty_state_renders_no_records_found() -> None:
+    report = _empty_daily_sales_report(short_payment_rows=[])
+
+    html = _render_html(
+        _build_context(report, "prod"),
+        template_name="short_payments_report.html",
+    )
+
+    assert "Short Payments (Current All Order Dates) Report for: 29-Apr-2026" in html
+    assert "No records found" in html
