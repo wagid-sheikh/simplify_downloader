@@ -39,6 +39,5 @@ def test_report_cli_invokes_mtd_same_day_fulfillment_runner_with_common_args(mon
             "2026-04-29",
             "--env",
             "prod",
-            "--force",
         ]
     ]

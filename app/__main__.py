@@ -73,7 +73,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "--force",
             dest="force",
             action="store_true",
-            help="Re-generate the report even if a successful run already exists",
+            help="Deprecated no-op; reports always regenerate and append new summaries/documents",
         )
 
     _add_common_report_args(report_subparsers.add_parser("daily-sales", help="Run daily sales report"))
@@ -109,8 +109,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             report_args.extend(["--report-date", parsed.report_date])
         if parsed.env:
             report_args.extend(["--env", parsed.env])
-        if parsed.force:
-            report_args.append("--force")
+        # --force is retained at this wrapper for backward compatibility, but
+        # operational reports now regenerate on every invocation.
 
         if parsed.report_command == "daily-sales":
             from app.reports.daily_sales_report.main import main as daily_sales_report_main

@@ -12,7 +12,6 @@ from app.dashboard_downloader.json_logger import get_logger, log_event, new_run_
 from app.dashboard_downloader.notifications import send_notifications_for_run
 from app.dashboard_downloader.pipelines.base import (
     PipelinePhaseTracker,
-    check_existing_run,
     persist_summary_record,
     resolve_run_env,
     update_summary_record,
@@ -90,18 +89,6 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             run_env=run_env,
             force=force,
         )
-
-        existing = await check_existing_run(database_url, PIPELINE_NAME, resolved_date)
-        if not force and existing and existing.get("overall_status") in {"ok", "warning"}:
-            log_event(
-                logger=logger,
-                phase="orchestrator",
-                status="warning",
-                message="MTD same-day fulfillment report already generated; skipping",
-                report_date=resolved_date.isoformat(),
-                existing_status=existing.get("overall_status"),
-            )
-            return
 
         rows = await fetch_mtd_same_day_fulfillment(database_url=database_url, report_date=resolved_date)
         missing_payment_rows = await fetch_missing_payments_mtd(database_url=database_url, report_date=resolved_date)

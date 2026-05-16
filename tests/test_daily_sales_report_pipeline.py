@@ -371,13 +371,9 @@ async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
     monkeypatch.setattr(pipeline, "resolve_run_env", lambda env: "test")
     monkeypatch.setattr(pipeline, "new_run_id", lambda: "run-mtd-1")
 
-    async def _no_existing(*args, **kwargs):
-        return None
-
     async def _summary_noop(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(pipeline, "check_existing_run", _no_existing)
     monkeypatch.setattr(pipeline, "persist_summary_record", _summary_noop)
     monkeypatch.setattr(pipeline, "update_summary_record", _summary_noop)
 
@@ -558,13 +554,9 @@ async def test_daily_pipeline_reaches_render_when_mtd_fetch_invoked_without_refl
         ),
     )
 
-    async def _no_existing(*args, **kwargs):
-        return None
-
     async def _summary_noop(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(pipeline, "check_existing_run", _no_existing)
     monkeypatch.setattr(pipeline, "persist_summary_record", _summary_noop)
     monkeypatch.setattr(pipeline, "update_summary_record", _summary_noop)
 
@@ -646,9 +638,6 @@ async def test_daily_pipeline_continues_when_mtd_fetch_fails(
     monkeypatch.setattr(pipeline, "resolve_run_env", lambda env: "test")
     monkeypatch.setattr(pipeline, "new_run_id", lambda: "run-mtd-failure")
 
-    async def _no_existing(*args, **kwargs):
-        return None
-
     captured_records: list[dict] = []
 
     async def _capture_persist(_database_url, record):
@@ -657,7 +646,6 @@ async def test_daily_pipeline_continues_when_mtd_fetch_fails(
     async def _capture_update(_database_url, _run_id, record):
         captured_records.append(record)
 
-    monkeypatch.setattr(pipeline, "check_existing_run", _no_existing)
     monkeypatch.setattr(pipeline, "persist_summary_record", _capture_persist)
     monkeypatch.setattr(pipeline, "update_summary_record", _capture_update)
 
