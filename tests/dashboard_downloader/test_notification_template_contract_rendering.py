@@ -105,6 +105,31 @@ def test_final_contract_renders_td_success() -> None:
     assert body.index("PIPELINE RUN SUMMARY") < body.index("WINDOW STATUS") < body.index("STORE PROCESSING SUMMARY")
 
 
+def test_td_success_subject_uses_report_range_end_date() -> None:
+    run_data = {
+        "run_id": "run-td-range-end",
+        "run_env": "prod",
+        "report_date": "2026-05-14",
+        "overall_status": "success",
+        "metrics_json": {
+            "window_summary": {"completed_windows": 1, "expected_windows": 1, "missing_windows": 0},
+            "stores_summary": {"report_range": {"from": "2026-05-14", "to": "2026-05-16"}},
+            "notification_payload": {
+                "overall_status": "success",
+                "orders_status": "ok",
+                "sales_status": "ok",
+                "stores": [{"store_code": "A668", "status": "ok", "orders": {"status": "ok"}, "sales": {"status": "ok"}}],
+            },
+        },
+    }
+    context = _build_td_orders_context(run_data)
+    subject, _ = _render(context)
+
+    assert subject == "ETL - [PROD][SUCCESS][A668] TD Orders Sync – 16-May-2026"
+    assert context["window_start_display"] == "14-May-2026"
+    assert context["window_end_display"] == "16-May-2026"
+
+
 def test_final_contract_renders_warning_case() -> None:
     run_data = {
         "run_id": "run-uc-warning",
