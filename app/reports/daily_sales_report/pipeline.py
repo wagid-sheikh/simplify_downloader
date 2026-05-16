@@ -26,7 +26,6 @@ from app.dashboard_downloader.report_generator import render_pdf_with_configured
 from app.reports.mtd_same_day_fulfillment.data import (
     fetch_missing_payments_mtd,
     fetch_mtd_same_day_fulfillment,
-    fetch_short_payments_mtd,
 )
 from app.reports.mtd_same_day_fulfillment.render import (
     render_html as render_mtd_same_day_html,
@@ -53,6 +52,7 @@ from .to_be_recovered import (
 
 PIPELINE_NAME = "reports.daily_sales_report"
 TEMPLATE_NAME = "daily_sales_report.html"
+SHORT_PAYMENTS_TEMPLATE_NAME = "short_payments_report.html"
 TEMPLATE_DIR = Path("app") / "reports" / "daily_sales_report" / "templates"
 SHARED_TEMPLATE_DIR = Path("app") / "reports" / "shared" / "templates"
 OUTPUT_ROOT = Path("app") / "reports" / "output_files"
@@ -220,10 +220,15 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             rows=len(data.rows),
             edited_orders=len(data.edited_orders),
             missing_payment_rows=len(data.missing_payment_rows),
+            short_payment_rows=len(getattr(data, "short_payment_rows", [])),
         )
 
         context = _build_context(data, run_env)
         html = _render_html(context)
+        short_payments_html = _render_html(
+            context, template_name=SHORT_PAYMENTS_TEMPLATE_NAME
+        )
+        short_payments_pdf_generated = True
         to_be_recovered_context = build_to_be_recovered_context(
             rows=data.to_be_recovered,
             report_date=resolved_date,
@@ -239,7 +244,6 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
         mtd_attachment_generated = True
         mtd_rows = []
         mtd_missing_payment_rows = []
-        mtd_short_payment_rows = []
         same_day_html: str | None = None
         mtd_attachment_error: str | None = None
         try:
@@ -247,9 +251,6 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 database_url=database_url, report_date=resolved_date
             )
             mtd_missing_payment_rows = await fetch_missing_payments_mtd(
-                database_url=database_url, report_date=resolved_date
-            )
-            mtd_short_payment_rows = await fetch_short_payments_mtd(
                 database_url=database_url, report_date=resolved_date
             )
         except Exception as exc:
@@ -279,7 +280,6 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 mtd_start_display=mtd_start.strftime("%d-%b-%Y"),
                 mtd_end_display=mtd_end.strftime("%d-%b-%Y"),
                 missing_payment_rows=mtd_missing_payment_rows,
-                short_payment_rows=mtd_short_payment_rows,
             )
             tracker.mark_phase("render_html", "ok")
         log_event(
@@ -296,6 +296,8 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             mtd_start=mtd_start.isoformat(),
             mtd_end=mtd_end.isoformat(),
             mtd_row_count=len(mtd_rows),
+            short_payment_rows=len(getattr(data, "short_payment_rows", [])),
+            short_payments_pdf_generated=short_payments_pdf_generated,
         )
 
         OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
@@ -303,6 +305,10 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
         same_day_output_path = (
             OUTPUT_ROOT
             / f"reports.mtd_same_day_fulfillment_{resolved_date.isoformat()}.pdf"
+        )
+        short_payments_output_path = (
+            OUTPUT_ROOT
+            / f"reports.daily_sales_report_short_payments_{resolved_date.isoformat()}.pdf"
         )
         to_be_recovered_output_path = (
             OUTPUT_ROOT
@@ -312,6 +318,8 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             output_path.unlink()
         if same_day_output_path.exists():
             same_day_output_path.unlink()
+        if short_payments_output_path.exists():
+            short_payments_output_path.unlink()
         if to_be_recovered_output_path.exists():
             to_be_recovered_output_path.unlink()
         try:
@@ -324,6 +332,12 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             await render_pdf_with_configured_browser(
                 to_be_recovered_html,
                 to_be_recovered_output_path,
+                pdf_options={"format": "A4", "landscape": True},
+                logger=logger,
+            )
+            await render_pdf_with_configured_browser(
+                short_payments_html,
+                short_payments_output_path,
                 pdf_options={"format": "A4", "landscape": True},
                 logger=logger,
             )
@@ -349,10 +363,13 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 file_path=str(output_path),
                 same_day_file_path=str(same_day_output_path),
                 to_be_recovered_file_path=str(to_be_recovered_output_path),
+                short_payments_file_path=str(short_payments_output_path),
                 pipeline_name=PIPELINE_NAME,
                 mtd_start=mtd_start.isoformat(),
                 mtd_end=mtd_end.isoformat(),
                 mtd_row_count=len(mtd_rows),
+                short_payment_rows=len(getattr(data, "short_payment_rows", [])),
+                short_payments_pdf_generated=False,
                 error=str(exc),
             )
             finished_at = datetime.now(timezone.utc)
@@ -375,10 +392,13 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             file_path=str(output_path),
             same_day_file_path=str(same_day_output_path),
             to_be_recovered_file_path=str(to_be_recovered_output_path),
+            short_payments_file_path=str(short_payments_output_path),
             pipeline_name=PIPELINE_NAME,
             mtd_start=mtd_start.isoformat(),
             mtd_end=mtd_end.isoformat(),
             mtd_row_count=len(mtd_rows),
+            short_payment_rows=len(getattr(data, "short_payment_rows", [])),
+            short_payments_pdf_generated=short_payments_pdf_generated,
         )
 
         await _persist_document(
@@ -394,6 +414,13 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             report_date=resolved_date,
             file_path=to_be_recovered_output_path,
             doc_type=TO_BE_RECOVERED_DOCUMENT_TYPE,
+        )
+        await _persist_document(
+            database_url=database_url,
+            run_id=run_id,
+            report_date=resolved_date,
+            file_path=short_payments_output_path,
+            doc_type="daily_sales_short_payments_pdf",
         )
         if mtd_attachment_generated:
             await _persist_document(
@@ -419,10 +446,13 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             file_path=str(output_path),
             same_day_file_path=str(same_day_output_path),
             to_be_recovered_file_path=str(to_be_recovered_output_path),
+            short_payments_file_path=str(short_payments_output_path),
             pipeline_name=PIPELINE_NAME,
             mtd_start=mtd_start.isoformat(),
             mtd_end=mtd_end.isoformat(),
             mtd_row_count=len(mtd_rows),
+            short_payment_rows=len(getattr(data, "short_payment_rows", [])),
+            short_payments_pdf_generated=short_payments_pdf_generated,
         )
 
         tracker.metrics = {
@@ -432,6 +462,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             "mtd_attachment_generated": mtd_attachment_generated,
             "mtd_attachment_row_count": len(mtd_rows),
             "mtd_attachment_error": mtd_attachment_error,
+            "short_payment_rows": len(getattr(data, "short_payment_rows", [])),
+            "short_payments_pdf_file_path": str(short_payments_output_path),
+            "short_payments_pdf_generated": short_payments_pdf_generated,
             "to_be_recovered_orders": len(data.to_be_recovered),
             "to_be_recovered_total_order_value": str(
                 data.to_be_recovered_total_order_value

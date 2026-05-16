@@ -258,6 +258,7 @@ async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
             to_be_compensated_total_order_value=0,
             same_day_fulfillment_rows=[SimpleNamespace(order_number="RPT-DATE-1")],
             missing_payment_rows=[],
+            short_payment_rows=[],
         )
 
     monkeypatch.setattr(pipeline, "fetch_daily_sales_report", _fake_daily_data)
@@ -301,8 +302,12 @@ async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
     recovered_path = str(
         pipeline.OUTPUT_ROOT / f"reports.to_be_recovered_{report_date.isoformat()}.pdf"
     )
+    short_payments_path = str(
+        pipeline.OUTPUT_ROOT
+        / f"reports.daily_sales_report_short_payments_{report_date.isoformat()}.pdf"
+    )
 
-    assert {daily_path, recovered_path}.issubset(rendered)
+    assert {daily_path, recovered_path, short_payments_path}.issubset(rendered)
     assert "RPT-DATE-1" in rendered[daily_path]
     assert "REC-1" in rendered[recovered_path]
 
@@ -332,21 +337,28 @@ async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
             .all()
         )
 
-    assert len(rows) == 3
+    assert len(rows) == 4
     assert rows[0]["doc_type"] == "daily_sales_report_pdf"
-    assert rows[1]["doc_type"] == "mtd_same_day_fulfillment_pdf"
+    assert rows[1]["doc_type"] == "daily_sales_short_payments_pdf"
     assert (
         rows[1]["file_name"]
-        == f"reports.mtd_same_day_fulfillment_{report_date.isoformat()}.pdf"
+        == f"reports.daily_sales_report_short_payments_{report_date.isoformat()}.pdf"
     )
     assert rows[1]["reference_id_1"] == pipeline.PIPELINE_NAME
     assert rows[1]["reference_id_3"] == report_date.isoformat()
-    assert rows[2]["doc_type"] == "to_be_recovered_report_pdf"
+    assert rows[2]["doc_type"] == "mtd_same_day_fulfillment_pdf"
     assert (
-        rows[2]["file_name"] == f"reports.to_be_recovered_{report_date.isoformat()}.pdf"
+        rows[2]["file_name"]
+        == f"reports.mtd_same_day_fulfillment_{report_date.isoformat()}.pdf"
     )
     assert rows[2]["reference_id_1"] == pipeline.PIPELINE_NAME
     assert rows[2]["reference_id_3"] == report_date.isoformat()
+    assert rows[3]["doc_type"] == "to_be_recovered_report_pdf"
+    assert (
+        rows[3]["file_name"] == f"reports.to_be_recovered_{report_date.isoformat()}.pdf"
+    )
+    assert rows[3]["reference_id_1"] == pipeline.PIPELINE_NAME
+    assert rows[3]["reference_id_3"] == report_date.isoformat()
 
 
 @pytest.mark.asyncio
@@ -424,6 +436,7 @@ async def test_daily_pipeline_reaches_render_when_mtd_fetch_invoked_without_refl
             to_be_compensated_total_order_value=0,
             same_day_fulfillment_rows=[SimpleNamespace(order_number="RPT-1")],
             missing_payment_rows=[],
+            short_payment_rows=[],
         )
 
     monkeypatch.setattr(pipeline, "fetch_daily_sales_report", _fake_daily_data)
@@ -516,6 +529,7 @@ async def test_daily_pipeline_continues_when_mtd_fetch_fails(
             to_be_compensated_total_order_value=0,
             same_day_fulfillment_rows=[SimpleNamespace(order_number="RPT-2")],
             missing_payment_rows=[],
+            short_payment_rows=[],
         )
 
     async def _raise_mtd_fetch(*args, **kwargs):
@@ -550,7 +564,13 @@ async def test_daily_pipeline_continues_when_mtd_fetch_fails(
         / f"reports.mtd_same_day_fulfillment_{report_date.isoformat()}.pdf"
     )
 
+    short_payments_path = str(
+        pipeline.OUTPUT_ROOT
+        / f"reports.daily_sales_report_short_payments_{report_date.isoformat()}.pdf"
+    )
+
     assert daily_path in rendered_paths
+    assert short_payments_path in rendered_paths
     assert mtd_path not in rendered_paths
 
     async with session_scope(database_url) as session:
@@ -570,15 +590,18 @@ async def test_daily_pipeline_continues_when_mtd_fetch_fails(
             .all()
         )
 
-    assert len(rows) == 2
+    assert len(rows) == 3
     assert rows[0]["doc_type"] == "daily_sales_report_pdf"
-    assert rows[1]["doc_type"] == "to_be_recovered_report_pdf"
+    assert rows[1]["doc_type"] == "daily_sales_short_payments_pdf"
+    assert rows[2]["doc_type"] == "to_be_recovered_report_pdf"
 
     assert captured_records
     final_record = captured_records[-1]
     assert final_record["overall_status"] == "warning"
     assert final_record["metrics_json"]["mtd_attachment_generated"] is False
     assert final_record["metrics_json"]["mtd_attachment_error"] == "mtd fetch boom"
+    assert final_record["metrics_json"]["short_payment_rows"] == 0
+    assert final_record["metrics_json"]["short_payments_pdf_generated"] is True
     assert (
         "MTD same-day fulfillment attachment was not generated"
         in final_record["summary_text"]
