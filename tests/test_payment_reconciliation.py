@@ -424,6 +424,10 @@ def test_write_off_short_payment_evidence_is_recovery_excluded_for_audit() -> No
     audit_row = audit_rows[0]
     assert audit_row.reconciliation_result == "recovery_excluded"
     assert audit_row.reconciliation_result != "short"
+    assert (
+        audit_row.operator_actionable_payment_status == "non_actionable_recovery_status"
+    )
+    assert audit_row.operator_actionable_payment_status != "actionable_short_payment"
     assert audit_row.recovery_statuses_csv == "WRITE_OFF"
     assert audit_row.recovery_categories_csv == "write off"
 
@@ -446,4 +450,11 @@ def test_grouped_short_with_mixed_recovery_status_is_not_grouped_short() -> None
     assert len(audit_rows) == 1
     assert audit_rows[0].reconciliation_result == "mixed_recovery_status"
     assert audit_rows[0].reconciliation_result != "grouped short"
+    assert (
+        audit_rows[0].operator_actionable_payment_status
+        == "non_actionable_recovery_status"
+    )
+    assert (
+        audit_rows[0].operator_actionable_payment_status != "actionable_short_payment"
+    )
     assert audit_rows[0].recovery_statuses_csv == "WRITE_OFF"

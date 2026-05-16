@@ -8,6 +8,15 @@
 
 ---
 
+### DL-018
+- **Date:** 2026-05-16
+- **Status:** Active
+- **Decision:** Distinguish the operator Daily Sales Short Payments PDF from the Payment Evidence Review audit export.
+- **Context:** The audit view/export can include raw `reconciliation_result` classifications for rows that also carry recovery statuses such as `WRITE_OFF`; operators need those rows for diagnostics without interpreting them as actionable Short Payments.
+- **Evidence:** `app/reports/payment_evidence_review.py`, `app/reports/shared/payment_reconciliation.py`, migration `0116_audit_action_status`, and tests around WRITE_OFF payment evidence.
+- **Implications:** Daily Sales Short Payments continues to exclude `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, and `WRITE_OFF`. Payment Evidence Review remains audit-only and exposes `operator_actionable_payment_status` so recovery-status rows are non-actionable even when their raw audit classification is short.
+- **Follow-up:** Preserve this terminology in operator scripts/docs and do not rename the audit export as a Short Payments report.
+
 ### DL-017
 - **Date:** 2026-05-15
 - **Status:** Active
@@ -23,10 +32,11 @@
   - Multi-order `payment_collections.order_number` values are group-reconciled first; group-paid rows stay out of main missing/short outputs, and group-short rows are allocated by `order_date ASC, order_number ASC`.
   - `TO_BE_RECOVERED` and `TO_BE_COMPENSATED` are excluded from normal missing-payment rows; normal pending-delivery aging/detail/action buckets exclude `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, and `WRITE_OFF`. Active manual-action rows (`TO_BE_RECOVERED`, `TO_BE_COMPENSATED`) may be surfaced only in separate configured recovery/compensation visibility sections; closed `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` rows stay out of normal action buckets.
   - `Actual Payments Not Found` remains date-window based for Daily/MTD reports unless separately changed.
-  - A dedicated `Short Payment` sub-report is required and separate from `Actual Payments Not Found`.
-  - `Short Payment` is a current/open action list across all order dates, behaving like `TO_BE_RECOVERED` visibility by showing current unresolved action rows; Daily/MTD report date windows do not restrict Short Payment eligibility.
-  - Short Payment still excludes `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`, and zero-value orders.
-  - Short Payment requires clean sales-backed proof: sales row exists; payment proof exists; sales/evidence are consistent within ₹1; evidence is short against `vw_orders.order_amount` by more than ₹1.
+  - A dedicated Daily Sales `Short Payment` PDF is required and separate from `Actual Payments Not Found`.
+  - Daily Sales `Short Payment` is a current/open action list across all order dates, behaving like `TO_BE_RECOVERED` visibility by showing current unresolved action rows; Daily/MTD report date windows do not restrict Short Payment eligibility.
+  - Daily Sales `Short Payment` still excludes `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`, and zero-value orders.
+  - Daily Sales `Short Payment` requires clean sales-backed proof: sales row exists; payment proof exists; sales/evidence are consistent within ₹1; evidence is short against `vw_orders.order_amount` by more than ₹1.
+  - Payment Evidence Review is an audit-only reconciliation surface. Its `reconciliation_result` may show raw classifications alongside recovery statuses for diagnostics, but rows with recovery workflow statuses must be marked non-actionable via `operator_actionable_payment_status` and must not be described as Daily Sales Short Payments actions.
   - `source_type` should appear in audit/reconciliation reports, not every normal business report.
 - **Follow-up:** Implement report/query changes against this contract and add regression tests for source equivalence, group reconciliation, short-payment separation, recovery-status exclusions, and source-type visibility.
 

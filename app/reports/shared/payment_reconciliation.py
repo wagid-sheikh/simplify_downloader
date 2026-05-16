@@ -24,6 +24,9 @@ RECOVERY_EXCLUDED_STATUSES = frozenset(
         "WRITE_OFF",
     }
 )
+ACTIONABLE_SHORT_PAYMENT_STATUS = "actionable_short_payment"
+NON_ACTIONABLE_RECOVERY_STATUS = "non_actionable_recovery_status"
+AUDIT_ONLY_PAYMENT_STATUS = "audit_only"
 DEFAULT_PAYMENT_TOLERANCE = Decimal("1")
 _ORDER_TOKEN_SPLIT_RE = re.compile(r"[,/]")
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -175,6 +178,7 @@ class PaymentEvidenceAuditRow:
     order_amount: Decimal
     payment_received: Decimal
     reconciliation_result: str
+    operator_actionable_payment_status: str
     is_grouped: bool
     bank_row_id: Any
     group_key: str
@@ -202,6 +206,9 @@ class PaymentEvidenceAuditRow:
             "order_amount": self.order_amount,
             "payment_received": self.payment_received,
             "reconciliation_result": self.reconciliation_result,
+            "operator_actionable_payment_status": (
+                self.operator_actionable_payment_status
+            ),
             "is_grouped": self.is_grouped,
             "bank_row_id": self.bank_row_id,
             "group_key": self.group_key,
@@ -215,6 +222,28 @@ class PaymentEvidenceAuditRow:
             "recovery_statuses_csv": self.recovery_statuses_csv,
             "recovery_categories_csv": self.recovery_categories_csv,
         }
+
+
+def operator_actionable_payment_status(
+    reconciliation_result: str, recovery_statuses_csv: str
+) -> str:
+    """Classify whether an audit row is an operator Short Payment action.
+
+    ``reconciliation_result`` is an audit classification. The Daily Sales Short
+    Payments PDF is the operator action list and excludes recovery workflow
+    statuses even when the audit classification would otherwise look short.
+    """
+
+    recovery_statuses = {
+        status.strip().upper()
+        for status in str(recovery_statuses_csv or "").split(",")
+        if status.strip()
+    }
+    if recovery_statuses & RECOVERY_EXCLUDED_STATUSES:
+        return NON_ACTIONABLE_RECOVERY_STATUS
+    if str(reconciliation_result or "").strip().lower() in {"short", "grouped short"}:
+        return ACTIONABLE_SHORT_PAYMENT_STATUS
+    return AUDIT_ONLY_PAYMENT_STATUS
 
 
 def normalize_order_number(order_number: Any) -> str:
@@ -775,6 +804,9 @@ def build_payment_evidence_audit_rows(
                 order_amount=order_amount,
                 payment_received=payment_received,
                 reconciliation_result=reconciliation_result,
+                operator_actionable_payment_status=operator_actionable_payment_status(
+                    reconciliation_result, recovery_statuses_csv
+                ),
                 is_grouped=is_grouped,
                 bank_row_id=_field(raw_row, "bank_row_id"),
                 group_key=group_key,
