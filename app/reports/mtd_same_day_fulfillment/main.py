@@ -22,7 +22,7 @@ def main() -> None:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Re-generate the report even if a successful run already exists.",
+        help="Deprecated no-op; reports always regenerate and append new summaries/documents.",
     )
     args = parser.parse_args()
 
