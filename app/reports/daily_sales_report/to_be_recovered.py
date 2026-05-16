@@ -19,20 +19,48 @@ class RecoverySummaryRow:
     total_recoverable_amount: Decimal
 
 
-def _build_summary_rows(rows: Iterable[RecoveryOrderRow]) -> list[RecoverySummaryRow]:
-    totals_by_cost_center: dict[str, Decimal] = {}
-    for row in rows:
-        totals_by_cost_center[row.cost_center] = (
-            totals_by_cost_center.get(row.cost_center, Decimal("0")) + row.order_amount
-        )
+@dataclass(frozen=True)
+class RecoveryDetailGroup:
+    cost_center: str
+    rows: list[RecoveryOrderRow]
+    group_total_order_amount: Decimal
+    group_total_recoverable_amount: Decimal
+
+
+def _row_sort_key(row: RecoveryOrderRow) -> tuple[str, date, str]:
+    return (row.cost_center, row.order_date or date.min, row.order_number)
+
+
+def _build_grouped_rows(rows: Iterable[RecoveryOrderRow]) -> list[RecoveryDetailGroup]:
+    rows_by_cost_center: dict[str, list[RecoveryOrderRow]] = {}
+    for row in sorted(rows, key=_row_sort_key):
+        rows_by_cost_center.setdefault(row.cost_center, []).append(row)
 
     return [
-        RecoverySummaryRow(
+        RecoveryDetailGroup(
             cost_center=cost_center,
-            total_order_amount=total_order_amount,
-            total_recoverable_amount=total_order_amount,
+            rows=cost_center_rows,
+            group_total_order_amount=sum(
+                (row.order_amount for row in cost_center_rows), Decimal("0")
+            ),
+            group_total_recoverable_amount=sum(
+                (row.order_amount for row in cost_center_rows), Decimal("0")
+            ),
         )
-        for cost_center, total_order_amount in totals_by_cost_center.items()
+        for cost_center, cost_center_rows in rows_by_cost_center.items()
+    ]
+
+
+def _build_summary_rows(
+    grouped_rows: Iterable[RecoveryDetailGroup],
+) -> list[RecoverySummaryRow]:
+    return [
+        RecoverySummaryRow(
+            cost_center=group.cost_center,
+            total_order_amount=group.group_total_order_amount,
+            total_recoverable_amount=group.group_total_recoverable_amount,
+        )
+        for group in grouped_rows
     ]
 
 
@@ -45,7 +73,8 @@ def build_context(
     auto_cleared_order_numbers_text: str = "",
 ) -> dict[str, object]:
     row_list = list(rows)
-    summary_rows = _build_summary_rows(row_list)
+    grouped_rows = _build_grouped_rows(row_list)
+    summary_rows = _build_summary_rows(grouped_rows)
     summary_grand_total_order_amount = sum(
         (row.total_order_amount for row in summary_rows), Decimal("0")
     )
@@ -57,6 +86,7 @@ def build_context(
         "report_date_display": report_date.strftime("%d-%b-%Y"),
         "run_environment": run_environment,
         "rows": row_list,
+        "grouped_rows": grouped_rows,
         "total_recoverable": summary_grand_total_recoverable_amount,
         "summary_rows": summary_rows,
         "summary_grand_total_order_amount": summary_grand_total_order_amount,
@@ -68,6 +98,7 @@ def build_context(
 __all__ = [
     "DOCUMENT_TYPE",
     "PIPELINE_OUTPUT_PREFIX",
+    "RecoveryDetailGroup",
     "RecoverySummaryRow",
     "TEMPLATE_NAME",
     "build_context",

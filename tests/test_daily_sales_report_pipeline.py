@@ -210,6 +210,81 @@ def test_to_be_recovered_template_renders_cost_center_summary() -> None:
     assert "REC-3" in html
 
 
+def test_to_be_recovered_template_renders_grouped_detail_sections() -> None:
+    context = build_to_be_recovered_context(
+        rows=[
+            RecoveryOrderRow(
+                cost_center="CC2",
+                order_number="CC2-NEW",
+                order_date=date(2026, 4, 29),
+                customer_name="Newer",
+                mobile_number="9999999993",
+                order_value=Decimal("200"),
+            ),
+            RecoveryOrderRow(
+                cost_center="CC1",
+                order_number="CC1-ONLY",
+                order_date=date(2026, 4, 28),
+                customer_name="First Store",
+                mobile_number="9999999990",
+                order_value=Decimal("50"),
+            ),
+            RecoveryOrderRow(
+                cost_center="CC2",
+                order_number="CC2-B",
+                order_date=date(2026, 4, 27),
+                customer_name="Same Day B",
+                mobile_number="9999999992",
+                order_value=Decimal("100"),
+            ),
+            RecoveryOrderRow(
+                cost_center="CC2",
+                order_number="CC2-A",
+                order_date=date(2026, 4, 27),
+                customer_name="Same Day A",
+                mobile_number="9999999991",
+                order_value=Decimal("25"),
+            ),
+        ],
+        report_date=date(2026, 4, 29),
+        run_environment="test",
+    )
+
+    html = pipeline._render_html(
+        context, template_name=pipeline.TO_BE_RECOVERED_TEMPLATE_NAME
+    )
+
+    assert html.index("Cost Center: CC1") < html.index("Cost Center: CC2")
+
+    cc2_section = html[html.index("Cost Center: CC2") : html.index("CC2 Total")]
+    assert cc2_section.index("CC2-A") < cc2_section.index("CC2-B")
+    assert cc2_section.index("CC2-B") < cc2_section.index("CC2-NEW")
+
+    assert (
+        '<tr class="group-total-row">\n'
+        '          <td class="label" colspan="5">CC1 Total</td>\n'
+        '          <td>50</td>\n'
+        '          <td>50</td>\n'
+        '        </tr>'
+    ) in html
+    assert (
+        '<tr class="group-total-row">\n'
+        '          <td class="label" colspan="5">CC2 Total</td>\n'
+        '          <td>325</td>\n'
+        '          <td>325</td>\n'
+        '        </tr>'
+    ) in html
+    assert (
+        '<td class="label">Grand Total</td>\n'
+        '          <td>375</td>\n'
+        '          <td>375</td>'
+    ) in html
+    assert (
+        '<td class="label" colspan="6">Total Recoverable</td>\n'
+        '          <td>375</td>'
+    ) in html
+
+
 @pytest.mark.asyncio
 async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
     tmp_path, monkeypatch
