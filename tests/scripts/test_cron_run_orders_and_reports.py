@@ -72,7 +72,6 @@ def test_cron_returns_non_zero_when_daily_fails_even_if_rescue_succeeds(tmp_path
             "PENDING_MAX_ATTEMPTS": "1",
             "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "1",
             "DAILY_RESCUE_MAX_ATTEMPTS": "1",
-            "REPORT_FORCE": "false",
             "TMPDIR": str(tmp_path),
         }
     )
@@ -163,7 +162,7 @@ def test_cron_fail_fast_on_deterministic_code_error(tmp_path: Path) -> None:
     assert "attempt 2/4 starting" not in log_text
 
 
-def test_cron_always_appends_force_flag_to_daily_sales_when_report_force_false(tmp_path: Path) -> None:
+def test_cron_always_appends_force_flag_to_daily_sales(tmp_path: Path) -> None:
     repo_root = tmp_path
     scripts_dir = repo_root / "scripts"
     logs_dir = repo_root / "logs"
@@ -197,7 +196,6 @@ def test_cron_always_appends_force_flag_to_daily_sales_when_report_force_false(t
             "MTD_SAME_DAY_MAX_ATTEMPTS": "1",
             "PENDING_MAX_ATTEMPTS": "1",
             "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
-            "REPORT_FORCE": "false",
             "TMPDIR": str(tmp_path),
         }
     )
@@ -218,7 +216,7 @@ def test_cron_always_appends_force_flag_to_daily_sales_when_report_force_false(t
     assert pending_invocations == ["--force"]
 
 
-def test_cron_retries_preserve_force_mode(tmp_path: Path) -> None:
+def test_cron_retries_preserve_mandatory_regeneration(tmp_path: Path) -> None:
     repo_root = tmp_path
     scripts_dir = repo_root / "scripts"
     logs_dir = repo_root / "logs"
@@ -256,7 +254,6 @@ exit 0
             "MTD_SAME_DAY_MAX_ATTEMPTS": "1",
             "PENDING_MAX_ATTEMPTS": "1",
             "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
-            "REPORT_FORCE": "false",
             "TMPDIR": str(tmp_path),
         }
     )

@@ -108,7 +108,7 @@ Practical map of where to work for major capabilities.
   1. `scripts/run_local_reports_daily_sales.sh`
   2. `scripts/run_local_reports_mtd_same_day_fulfillment.sh`
   3. `scripts/run_local_reports_pending_deliveries.sh`
-- **Force toggle:** Report wrappers now support `REPORT_FORCE=true|false` (default `false`) and append `--force` only when enabled; cron retries/rescue passes preserve the same force mode and log `pipeline`, `report_date`, and `force`.
+- **Cron regeneration:** Cron report generation always regenerates Daily Sales, MTD Same-Day Fulfillment, and Pending Deliveries by passing `--force`; retries/rescue passes preserve mandatory regeneration and log `pipeline`, `report_date`, and `regenerate=true`.
 - **Dependencies:** `documents` table, report notification templates/profiles.
 - **Notes/Risks:** Rendering failures and zero-data scenarios are handled differently per pipeline; keep behavior consistent. For same-day table layout, `app/reports/daily_sales_report/templates/daily_sales_report.html` and `app/reports/shared/templates/same_day_fulfillment_table.html` are the authoritative sources (legacy standalone same-day template removed). Pending deliveries now always includes TD+UC rows and excludes closed recovery-status orders (`RECOVERED`, `COMPENSATED`, `WRITE_OFF`) from normal aging buckets/details.
 

@@ -2,36 +2,31 @@
 set -euo pipefail
 
 # Usage examples:
-#   # Local/manual run in default force mode.
+#   # Local/manual sequential run; reports always regenerate.
 #   ./scripts/run_reports_sequential.sh --report-date 2026-03-31
 #
-#   # Run with force explicitly disabled.
-#   REPORT_FORCE=false ./scripts/run_reports_sequential.sh --report-date 2026-03-31
-#
-# REPORT_FORCE semantics:
-#   unset/true/TRUE/True/1 -> append --force
-#   false/FALSE/False/0 -> do not append --force
+# Regeneration is mandatory for sequential report runs; --force is always passed
+# to each report pipeline.
 
 CONTINUE_ON_ERROR=false
 EXTRA_ARGS=()
 FORCE_ARGS=()
-REPORT_FORCE_MODE="false"
-report_force="${REPORT_FORCE:-true}"
-
-case "${report_force}" in
-  true|TRUE|True|1)
-  FORCE_ARGS+=("--force")
-  REPORT_FORCE_MODE="true"
-  ;;
-esac
+explicit_force="false"
 
 for arg in "$@"; do
   if [[ "$arg" == "--continue-on-error" ]]; then
     CONTINUE_ON_ERROR=true
   else
+    if [[ "$arg" == "--force" ]]; then
+      explicit_force="true"
+    fi
     EXTRA_ARGS+=("$arg")
   fi
 done
+
+if [[ "${explicit_force}" != "true" ]]; then
+  FORCE_ARGS+=("--force")
+fi
 
 report_date="<default>"
 for ((i = 1; i <= $#; i++)); do
@@ -45,7 +40,7 @@ done
 run_step() {
   local label=$1
   shift
-  echo "--- Running report: ${label} report_date=${report_date} force=${REPORT_FORCE_MODE} ---"
+  echo "--- Running report: ${label} report_date=${report_date} regenerate=true ---"
   if "$@"; then
     echo "--- ${label} completed successfully ---"
   elif $CONTINUE_ON_ERROR; then
