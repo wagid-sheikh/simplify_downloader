@@ -2580,6 +2580,38 @@ def test_build_td_daily_reporting_and_action_required_cover_reconciliation_shape
                     },
                     {
                         "status_bucket": "completed",
+                        "pickup_no": "A817-COMP-ORDER-NO",
+                        "customer_name": "Matched Legacy Order No Lead",
+                        "mobile": "9000000004",
+                        "pickup_created_at": "2026-04-24 07:00:00",
+                        "order_no": "SO-124",
+                    },
+                    {
+                        "status_bucket": "completed",
+                        "pickup_no": "A817-COMP-MATCHED",
+                        "customer_name": "Matched Legacy Matched Order Lead",
+                        "mobile": "9000000005",
+                        "pickup_created_at": "2026-04-24 07:00:00",
+                        "matched_order_no": "SO-125",
+                    },
+                    {
+                        "status_bucket": "completed",
+                        "pickup_no": "A817-COMP-FLAG",
+                        "customer_name": "Matched Flag Lead",
+                        "mobile": "9000000006",
+                        "pickup_created_at": "2026-04-24 07:00:00",
+                        "order_match_found": True,
+                    },
+                    {
+                        "status_bucket": "completed",
+                        "pickup_no": "A817-COMP-HISTORY",
+                        "customer_name": "Matched History Lead",
+                        "mobile": "9000000007",
+                        "pickup_created_at": "2026-04-24 07:00:00",
+                        "previous_number_of_orders": 1,
+                    },
+                    {
+                        "status_bucket": "completed",
                         "pickup_no": "A817-COMP-2",
                         "customer_name": "No Match Lead",
                         "mobile": "9000000003",
@@ -2618,6 +2650,37 @@ def test_build_td_daily_reporting_and_action_required_cover_reconciliation_shape
     assert "21 Apr 2026 03:03:39 PM IST" in action_required_html
     assert "24 Apr 2026 12:30:00 PM IST" in action_required_html
     assert "UTC" not in action_required_html
+
+
+def test_td_leads_default_summary_html_uses_order_history_for_completed_action_required() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-history-reporting",
+        run_env="local",
+        report_date=datetime(2026, 4, 24, tzinfo=timezone.utc).date(),
+        store_results={
+            "A817": StoreLeadResult(
+                store_code="A817",
+                rows=[
+                    {
+                        "status_bucket": "completed",
+                        "pickup_no": "A817-HIST-MATCH",
+                        "customer_name": "Historical Match Lead",
+                        "mobile": "9000000008",
+                        "pickup_created_at": "2026-04-24 07:00:00",
+                        "previous_number_of_orders": 1,
+                    }
+                ],
+            )
+        },
+    )
+
+    record = summary.build_record(finished_at=datetime(2026, 4, 24, 9, 0, tzinfo=timezone.utc), reporting_mode=None)
+    summary_html = record["metrics_json"]["summary_html"]
+    action_required_html = summary_html.split("<h4 style='margin:16px 0 8px 0;'>Action Required</h4>", 1)[1]
+
+    assert "Completed leads without order match (0)" in action_required_html
+    assert "A817-HIST-MATCH" not in action_required_html
+    assert record["metrics_json"]["daily_reporting"]["completed_leads_without_order_match"] == []
 
 
 def test_fetch_business_day_cancelled_td_leads_returns_expected_columns(tmp_path) -> None:
