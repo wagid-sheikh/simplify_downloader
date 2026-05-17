@@ -30,7 +30,8 @@ def _create_tables(database_url: str) -> None:
                     order_date TIMESTAMP,
                     customer_name TEXT,
                     mobile_number TEXT,
-                    net_amount NUMERIC
+                    net_amount NUMERIC,
+                    recovery_status TEXT
                 )
                 """
             )
@@ -86,7 +87,8 @@ def _create_tables(database_url: str) -> None:
                     order_date TIMESTAMP,
                     customer_name TEXT,
                     mobile_number TEXT,
-                    net_amount NUMERIC
+                    net_amount NUMERIC,
+                    recovery_status TEXT
                 )
                 """
             )
