@@ -10,6 +10,7 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
@@ -280,7 +281,7 @@ async def fetch_open_current_td_leads(*, database_url: str, reference_ts: dateti
                 reference_ts=reference_ts or aware_now(_UTC),
             )
             rows.append(payload)
-    return rows
+    return await _enrich_td_lead_rows_with_order_history(database_url=database_url, rows=rows)
 
 
 async def fetch_business_day_cancelled_td_leads(
@@ -354,7 +355,7 @@ async def fetch_business_day_cancelled_td_leads(
                 reason=payload.get("cancel_reason"),
             )
             rows.append(payload)
-    return rows
+    return await _enrich_td_lead_rows_with_order_history(database_url=database_url, rows=rows)
 
 
 def _normalize_mobile_number(value: Any) -> str | None:
@@ -362,6 +363,123 @@ def _normalize_mobile_number(value: Any) -> str | None:
     if not digits:
         return None
     return digits[-10:] if len(digits) >= 10 else digits
+
+
+def _as_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _format_td_average_order_amount(value: Any) -> str:
+    amount = _as_decimal(value)
+    if amount is None:
+        amount = Decimal("0")
+    return f"₹{amount:,.2f}"
+
+
+def _source_customer_type(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _resolve_td_customer_type_display(*, source_customer_type: Any, previous_number_of_orders: int) -> str:
+    raw_customer_type = _source_customer_type(source_customer_type)
+    normalized_customer_type = raw_customer_type.lower()
+    if not raw_customer_type:
+        return "Existing" if previous_number_of_orders > 0 else "New"
+    if normalized_customer_type == "existing":
+        return "Existing"
+    if normalized_customer_type == "new":
+        return "New"
+    return raw_customer_type
+
+
+def _td_order_metrics_suffix(row: Mapping[str, Any]) -> str:
+    if str(row.get("customer_type") or "").strip().lower() != "existing":
+        return ""
+    previous_number_of_orders = int(row.get("previous_number_of_orders") or 0)
+    average_order_amount = _format_td_average_order_amount(row.get("average_order_amount"))
+    return f"Orders: {previous_number_of_orders} | Avg. Value: {average_order_amount}"
+
+
+def _format_td_customer_type_for_email(row: Mapping[str, Any]) -> str:
+    customer_type = _normalized_td_lead_payload_value(row.get("customer_type"))
+    metrics_suffix = _td_order_metrics_suffix(row)
+    return f"{customer_type} | {metrics_suffix}" if metrics_suffix else customer_type
+
+
+async def _enrich_td_lead_rows_with_order_history(*, database_url: str | None, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not database_url or not rows:
+        return rows
+
+    mobiles_by_store: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        store_code = str(row.get("store_code") or "").strip()
+        normalized_mobile = _normalize_mobile_number(row.get("mobile"))
+        if store_code and normalized_mobile:
+            mobiles_by_store[store_code].add(normalized_mobile)
+
+    metrics_by_store_mobile: dict[tuple[str, str], dict[str, Any]] = {}
+    if mobiles_by_store:
+        vw_orders = sa.table(
+            "vw_orders",
+            sa.column("store_code"),
+            sa.column("mobile_number"),
+            sa.column("order_amount"),
+        )
+        try:
+            async with session_scope(database_url) as session:
+                for store_code, normalized_mobiles in mobiles_by_store.items():
+                    order_rows = (
+                        await session.execute(
+                            sa.select(vw_orders.c.mobile_number, vw_orders.c.order_amount).where(
+                                vw_orders.c.store_code == store_code
+                            )
+                        )
+                    ).mappings().all()
+                    amounts_by_mobile: dict[str, list[Decimal]] = defaultdict(list)
+                    counts_by_mobile: dict[str, int] = defaultdict(int)
+                    for order_row in order_rows:
+                        normalized_order_mobile = _normalize_mobile_number(order_row.get("mobile_number"))
+                        if normalized_order_mobile not in normalized_mobiles:
+                            continue
+                        counts_by_mobile[normalized_order_mobile] += 1
+                        amount = _as_decimal(order_row.get("order_amount"))
+                        if amount is not None:
+                            amounts_by_mobile[normalized_order_mobile].append(amount)
+
+                    for normalized_mobile in normalized_mobiles:
+                        order_count = counts_by_mobile.get(normalized_mobile, 0)
+                        amounts = amounts_by_mobile.get(normalized_mobile, [])
+                        metrics_by_store_mobile[(store_code, normalized_mobile)] = {
+                            "previous_number_of_orders": order_count,
+                            "average_order_amount": (sum(amounts) / Decimal(len(amounts))) if amounts else None,
+                        }
+        except sa.exc.SQLAlchemyError:
+            metrics_by_store_mobile = {}
+
+    for row in rows:
+        store_code = str(row.get("store_code") or "").strip()
+        normalized_mobile = _normalize_mobile_number(row.get("mobile"))
+        metrics = metrics_by_store_mobile.get((store_code, normalized_mobile or ""), {})
+        previous_number_of_orders = int(metrics.get("previous_number_of_orders") or 0)
+        row["previous_number_of_orders"] = previous_number_of_orders
+        row["average_order_amount"] = metrics.get("average_order_amount")
+        row["customer_type"] = _resolve_td_customer_type_display(
+            source_customer_type=row.get("customer_type"),
+            previous_number_of_orders=previous_number_of_orders,
+        )
+    return rows
+
+
+async def _enrich_td_summary_with_order_history(*, database_url: str | None, summary: "LeadsRunSummary") -> None:
+    rows: list[dict[str, Any]] = []
+    for result in summary.store_results.values():
+        rows.extend(result.rows)
+    await _enrich_td_lead_rows_with_order_history(database_url=database_url, rows=rows)
 
 
 async def build_td_leads_reporting_payload(
@@ -527,6 +645,8 @@ async def build_td_leads_reporting_payload(
                     "reconciliation_note": None if match_found and reconciliation_note and reconciliation_note.startswith("Matched within") else reconciliation_note,
                 }
             )
+
+    await _enrich_td_lead_rows_with_order_history(database_url=database_url, rows=completed_leads_today)
 
     threshold_days = max(0, open_leads_high_age_threshold_days or TD_OPEN_LEADS_AGE_THRESHOLD_DAYS_DEFAULT)
     action_required = {
@@ -768,7 +888,7 @@ def _build_td_new_lead_payload(*, store_code: str, row: Mapping[str, Any]) -> st
         _normalized_td_lead_payload_value(row.get("customer_name")),
         _normalized_td_lead_payload_value(row.get("mobile")),
         _normalized_td_lead_payload_value(row.get("source")),
-        _normalized_td_lead_payload_value(row.get("customer_type")),
+        _format_td_customer_type_for_email(row),
         _normalized_td_lead_payload_value(_format_pickup_created_display(row)),
     )
     return ", ".join(ordered_values)
@@ -861,7 +981,11 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                     "customer_name": created_row.get("customer_name") or matching_row.get("customer_name"),
                     "mobile": created_row.get("mobile") or matching_row.get("mobile"),
                     "source": created_row.get("source") or matching_row.get("source"),
-                    "customer_type": created_row.get("customer_type") or matching_row.get("customer_type"),
+                    "customer_type": matching_row.get("customer_type") or created_row.get("customer_type"),
+                    "previous_number_of_orders": matching_row.get("previous_number_of_orders")
+                    or created_row.get("previous_number_of_orders"),
+                    "average_order_amount": matching_row.get("average_order_amount")
+                    or created_row.get("average_order_amount"),
                 }
                 payload = _build_td_new_lead_payload(store_code=result.store_code, row=payload_row)
                 copy_id = f"td-new-copy-{html.escape(result.store_code.lower(), quote=True)}-{len(created_rows)}"
@@ -1046,8 +1170,21 @@ def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str
     high_age_rows_payload = daily_reporting.get("open_leads_high_age") if isinstance(daily_reporting.get("open_leads_high_age"), list) else []
     completed_rows_payload = daily_reporting.get("completed_leads_without_order_match") if isinstance(daily_reporting.get("completed_leads_without_order_match"), list) else []
 
-    high_age_rows = [[str(row.get(column) or "None") for column in ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS] for row in high_age_rows_payload if isinstance(row, Mapping)]
-    completed_rows = [[str(row.get(column) or "None") for column in ACTION_REQUIRED_COMPLETED_WITHOUT_ORDER_OUTPUT_COLUMNS] for row in completed_rows_payload if isinstance(row, Mapping)]
+    def _action_cell(row: Mapping[str, Any], column: str) -> str:
+        if column == "customer_type":
+            return _format_td_customer_type_for_email(row)
+        return str(row.get(column) or "None")
+
+    high_age_rows = [
+        [_action_cell(row, column) for column in ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS]
+        for row in high_age_rows_payload
+        if isinstance(row, Mapping)
+    ]
+    completed_rows = [
+        [_action_cell(row, column) for column in ACTION_REQUIRED_COMPLETED_WITHOUT_ORDER_OUTPUT_COLUMNS]
+        for row in completed_rows_payload
+        if isinstance(row, Mapping)
+    ]
 
     blocks = ["<div>", "<h4 style='margin:16px 0 8px 0;'>Action Required</h4>"]
     blocks.append(
@@ -1334,6 +1471,7 @@ async def _persist_run_summary(
         )
         return False
 
+    await _enrich_td_summary_with_order_history(database_url=config.database_url, summary=summary)
     record = summary.build_record(
         finished_at=finished_at,
         reporting_mode=reporting_mode,
