@@ -42,6 +42,7 @@ from app.reports.shared.same_day_fulfillment import (
 )
 
 from .data import DailySalesReportData, fetch_daily_sales_report
+from .temp_debug_recovery_status import log_temp_debug_recovery_status_check
 from .to_be_recovered import (
     DOCUMENT_TYPE as TO_BE_RECOVERED_DOCUMENT_TYPE,
     PIPELINE_OUTPUT_PREFIX as TO_BE_RECOVERED_OUTPUT_PREFIX,
@@ -317,6 +318,14 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             report_date=resolved_date.isoformat(),
             run_env=run_env,
             force=force,
+        )
+
+        # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
+        await log_temp_debug_recovery_status_check(
+            database_url=database_url,
+            logger=logger,
+            boundary="pre_fetch_daily_sales_report",
+            report_date=resolved_date,
         )
 
         data = await fetch_daily_sales_report(
