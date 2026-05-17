@@ -8,11 +8,9 @@ by ``fetch_missing_payment_rows_without_proof``.
 
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-import logging
 from typing import Any
 
 import sqlalchemy as sa
@@ -34,18 +32,6 @@ RECOVERY_PAYMENT_EXCLUSIONS = (
 )
 QUALIFYING_PAYMENT_SOURCE_TYPES = ("google_sheet", "legacy_sales")
 
-logger = logging.getLogger(__name__)
-
-# TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_MARKER = (
-    "TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK"
-)
-# TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_COST_CENTER = "UN3668"
-# TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_ORDER_NUMBER = "T2724"
-
-
 @dataclass
 class ShortPaymentRow:
     cost_center: str
@@ -57,8 +43,6 @@ class ShortPaymentRow:
     paid_amount: Decimal
     shortage_amount: Decimal
     group_key: str | None = None
-    recovery_status: str | None = None
-    recovery_category: str | None = None
 
 
 def payment_collection_order_tokens(order_number: object | None) -> tuple[str, ...]:
@@ -141,8 +125,6 @@ async def fetch_short_payment_rows(
             paid_amount=order.evidence_amount,
             shortage_amount=order.short_amount,
             group_key=_group_key_for_order(order=order, reconciliation=reconciliation),
-            recovery_status=order.recovery_status or None,
-            recovery_category=order.recovery_category or None,
         )
         for order in reconciliation.short_payment_orders
         if (
@@ -249,8 +231,6 @@ async def _fetch_reconciliation(
             "vw_orders.recovery_status is required for payment reports"
         ) from exc
     order_rows = [dict(record) for record in order_result.mappings()]
-    # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-    _log_temp_debug_candidate_orders(order_rows)
     payment_rows = await _fetch_payment_rows_for_orders(
         session=session,
         payment_collections=payment_collections,
@@ -265,115 +245,19 @@ async def _fetch_reconciliation(
             order_rows=order_rows,
         )
 
-    reconciliation = reconcile_payments(
+    return reconcile_payments(
         order_rows=order_rows,
         sales_rows=sales_rows,
         payment_evidence_rows=payment_rows,
         valid_source_types=QUALIFYING_PAYMENT_SOURCE_TYPES,
     )
-    # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-    _log_temp_debug_reconciliation(reconciliation)
-    return reconciliation
 
 
 def _optional_column(table: Any, column_name: str) -> Any:
-    # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
     column = table.c.get(column_name)
     if column is not None:
         return column
     return sa.literal(None).label(column_name)
-
-
-def _temp_debug_short_payments_order_key(row: Any) -> tuple[str, str]:
-    # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-    if isinstance(row, dict):
-        cost_center = row.get("cost_center")
-        order_number = row.get("order_number")
-    else:
-        cost_center = getattr(row, "cost_center", None)
-        order_number = getattr(row, "order_number", None)
-    return str(cost_center or ""), normalize_order_number(order_number)
-
-
-def _is_temp_debug_watched_short_payment_order(row: Any) -> bool:
-    # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-    cost_center, order_number = _temp_debug_short_payments_order_key(row)
-    return (
-        cost_center == TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_COST_CENTER
-        and order_number
-        == normalize_order_number(TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_ORDER_NUMBER)
-    )
-
-
-def _log_temp_debug_candidate_orders(order_rows: list[dict[str, Any]]) -> None:
-    # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-    watched_rows = [
-        row for row in order_rows if _is_temp_debug_watched_short_payment_order(row)
-    ]
-    logger.warning(
-        "%s candidate vw_orders debug: total_candidate_count=%s "
-        "count_by_cost_center=%s watched_order_present=%s",
-        TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_MARKER,
-        len(order_rows),
-        dict(Counter(str(row.get("cost_center") or "") for row in order_rows)),
-        bool(watched_rows),
-    )
-    for row in watched_rows:
-        logger.warning(
-            "%s watched candidate vw_orders row: cost_center=%s "
-            "order_number=%s order_date=%s order_amount=%s "
-            "recovery_status=%s recovery_category=%s",
-            TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_MARKER,
-            row.get("cost_center"),
-            row.get("order_number"),
-            row.get("order_date"),
-            row.get("order_amount"),
-            row.get("recovery_status"),
-            row.get("recovery_category"),
-        )
-
-
-def _log_temp_debug_reconciliation(reconciliation: Any) -> None:
-    # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-    matching_short_orders = [
-        order
-        for order in reconciliation.short_payment_orders
-        if _is_temp_debug_watched_short_payment_order(order)
-    ]
-    matching_groups = [
-        group
-        for group in reconciliation.groups
-        if any(
-            _is_temp_debug_watched_short_payment_order(order) for order in group.orders
-        )
-    ]
-    logger.warning(
-        "%s reconciliation debug: watched_order_in_short_payment_orders=%s "
-        "watched_order_in_groups=%s",
-        TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_MARKER,
-        bool(matching_short_orders),
-        bool(matching_groups),
-    )
-    matching_orders = [
-        order
-        for order in reconciliation.orders
-        if _is_temp_debug_watched_short_payment_order(order)
-    ]
-    for order in matching_orders:
-        logger.warning(
-            "%s watched reconciled order: status=%s order_amount=%s "
-            "evidence_amount=%s short_amount=%s has_sales_payment_data=%s "
-            "sales_evidence_consistent=%s recovery_status=%s recovery_category=%s",
-            TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_MARKER,
-            order.status,
-            order.order_amount,
-            order.evidence_amount,
-            order.short_amount,
-            order.has_sales_payment_data,
-            order.sales_evidence_consistent,
-            order.recovery_status,
-            order.recovery_category,
-        )
 
 
 def _raw_text(order: ReconciledOrderPayment, field_name: str) -> str:
