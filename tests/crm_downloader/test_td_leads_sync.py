@@ -598,13 +598,22 @@ def test_td_leads_tables_html_renders_three_business_sections_per_store() -> Non
     assert "Pending 1" in tables_html
     assert "Raj" in tables_html
     assert "Pending 52" in tables_html
-    assert "<th align='left'>Lead Details</th><th align='left'>Copy</th>" in tables_html
-    assert "<th align='left'>Lead Details</th><th align='left'>Cancellation Context</th><th align='left'>Copy</th>" in tables_html
+    assert "<th align='left'>Lead Details</th>" in tables_html
+    assert "<th align='left'>Lead Details</th><th align='left'>Copy</th>" not in tables_html
+    assert "<th align='left'>Lead Details</th><th align='left'>Cancellation Context</th>" in tables_html
+    assert "<th align='left'>Lead Details</th><th align='left'>Cancellation Context</th><th align='left'>Copy</th>" not in tables_html
     assert "<th align='left'>Customer Name</th><th align='left'>Mobile Number</th><th align='left'>Created Date/Time</th><th align='left'>Source</th>" in tables_html
-    assert "A817, Pending 1, 9000000000, None, Retail, None" in tables_html
-    assert "A817, Raj, 9111111111, No inventory" in tables_html
+
+    new_lead_payload = "A817, Pending 1, 9000000000, None, Retail, None"
+    cancelled_lead_payload = "A817, Raj, 9111111111, No inventory"
+    assert tables_html.count(new_lead_payload) == 1
+    assert tables_html.count(cancelled_lead_payload) == 1
+    assert f"<tr><td>{new_lead_payload}</td></tr>" in tables_html
+    assert f"<tr><td>{cancelled_lead_payload}</td><td>Store Cancelled | No inventory</td></tr>" in tables_html
     assert "Store Cancelled | No inventory" in tables_html
-    assert "onclick='var v=" in tables_html
+    assert "Copy" not in tables_html
+    assert "📋 Copy" not in tables_html
+    assert "onclick='var v=" not in tables_html
     assert "Completed</h5>" not in tables_html
     assert "Converted" not in tables_html
 
@@ -686,7 +695,7 @@ def test_build_td_cancelled_lead_payload_formats_order_and_normalization() -> No
     assert payload == "A817, Alice, 9000000000, No inventory"
 
 
-def test_td_leads_tables_html_escapes_untrusted_payload_values_and_keeps_copy_control_html() -> None:
+def test_td_leads_tables_html_escapes_untrusted_payload_values_without_copy_control_html() -> None:
     summary = LeadsRunSummary(
         run_id="run-html-safe",
         run_env="local",
@@ -712,9 +721,12 @@ def test_td_leads_tables_html_escapes_untrusted_payload_values_and_keeps_copy_co
 
     tables_html = _build_td_leads_tables_html(summary=summary)
 
-    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in tables_html
+    escaped_payload = "A817, &lt;script&gt;alert(1)&lt;/script&gt;, 9000000000, Web &amp; App, None, None"
+    assert tables_html.count(escaped_payload) == 1
     assert "<script>alert(1)</script>" not in tables_html
-    assert "href='javascript:void(0)'" in tables_html
+    assert "Copy" not in tables_html
+    assert "📋 Copy" not in tables_html
+    assert "href='javascript:void(0)'" not in tables_html
 
 
 def test_td_leads_tables_html_sorts_pending_and_cancelled_rows_by_created_datetime_desc() -> None:

@@ -4,7 +4,6 @@ import argparse
 import asyncio
 import contextlib
 import html
-import json
 import os
 import re
 from collections import defaultdict
@@ -904,28 +903,6 @@ def _build_td_cancelled_lead_payload(*, store_code: str, row: Mapping[str, Any])
     return ", ".join(ordered_values)
 
 
-def _build_td_lead_copy_control_html(*, payload: str, button_id: str) -> str:
-    escaped_payload = html.escape(payload)
-    payload_json = json.dumps(payload)
-    onclick_js = (
-        "var v="
-        f"{payload_json};"
-        "if(navigator.clipboard&&navigator.clipboard.writeText){"
-        "navigator.clipboard.writeText(v).catch(function(){"
-        "var t=document.createElement(\"textarea\");t.value=v;document.body.appendChild(t);"
-        "t.select();document.execCommand(\"copy\");document.body.removeChild(t);"
-        "});"
-        "}else{var t=document.createElement(\"textarea\");t.value=v;document.body.appendChild(t);"
-        "t.select();document.execCommand(\"copy\");document.body.removeChild(t);}"
-        "return false;"
-    )
-    return (
-        f"<a id='{html.escape(button_id, quote=True)}' href='javascript:void(0)' "
-        f"onclick='{html.escape(onclick_js, quote=True)}'>📋 Copy</a>"
-        f"<div style='margin-top:4px;'><code style='white-space:pre-wrap;'>{escaped_payload}</code></div>"
-    )
-
-
 def _build_td_cancelled_context(*, row: Mapping[str, Any]) -> str:
     cancelled_flag = str(row.get("cancelled_flag") or "").strip().lower()
     if cancelled_flag == "customer":
@@ -988,13 +965,7 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                     or created_row.get("average_order_amount"),
                 }
                 payload = _build_td_new_lead_payload(store_code=result.store_code, row=payload_row)
-                copy_id = f"td-new-copy-{html.escape(result.store_code.lower(), quote=True)}-{len(created_rows)}"
-                created_rows.append(
-                    [
-                        payload,
-                        _build_td_lead_copy_control_html(payload=payload, button_id=copy_id),
-                    ]
-                )
+                created_rows.append([payload])
 
         transition_groups = (
             lead_change_details.get("transitions") if isinstance(lead_change_details.get("transitions"), list) else []
@@ -1059,12 +1030,10 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
             if _is_customer_cancelled_td_lead({"reason": resolved_reason}):
                 continue
             payload = _build_td_cancelled_lead_payload(store_code=result.store_code, row=matching_row)
-            copy_id = f"td-cancel-copy-{html.escape(result.store_code.lower(), quote=True)}-{len(cancelled_detail_rows)}"
             cancelled_detail_rows.append(
                 [
                     payload,
                     _build_td_cancelled_context(row=matching_row),
-                    _build_td_lead_copy_control_html(payload=payload, button_id=copy_id),
                 ]
             )
 
@@ -1084,17 +1053,17 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
         blocks.append(
             _build_td_leads_section_table_html_with_rich_cells(
                 section_label=f"New Leads created ({len(created_rows)})",
-                headers=("Lead Details", "Copy"),
+                headers=("Lead Details",),
                 rows=created_rows,
-                rich_html_columns={1},
+                rich_html_columns=None,
             )
         )
         blocks.append(
             _build_td_leads_section_table_html_with_rich_cells(
                 section_label=f"Leads Marked as Cancelled ({cancelled_total} transitions this run)",
-                headers=("Lead Details", "Cancellation Context", "Copy"),
+                headers=("Lead Details", "Cancellation Context"),
                 rows=cancelled_detail_rows,
-                rich_html_columns={2},
+                rich_html_columns=None,
             )
         )
         blocks.append(
