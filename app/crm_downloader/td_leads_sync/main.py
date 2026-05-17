@@ -430,6 +430,8 @@ def _resolve_td_customer_type_display(*, source_customer_type: Any, previous_num
 def _td_order_metrics_suffix(row: Mapping[str, Any]) -> str:
     if str(row.get("customer_type") or "").strip().lower() != "existing":
         return ""
+    if "previous_number_of_orders" not in row or "average_order_amount" not in row:
+        return ""
     previous_number_of_orders = int(row.get("previous_number_of_orders") or 0)
     average_order_amount = _format_td_average_order_amount(row.get("average_order_amount"))
     return f"Orders: {previous_number_of_orders} | Avg. Value: {average_order_amount}"
@@ -444,7 +446,11 @@ def _format_td_customer_type_for_email(row: Mapping[str, Any]) -> str:
         reason = _normalized_td_lead_payload_value(row.get("order_history_unavailable_reason"))
         return f"{customer_type} | Order history unavailable: {reason}"
     metrics_suffix = _td_order_metrics_suffix(row)
-    return f"{customer_type} | {metrics_suffix}" if metrics_suffix else customer_type
+    if metrics_suffix:
+        return f"{customer_type} | {metrics_suffix}"
+    if customer_type.strip().lower() == "existing":
+        return f"{customer_type} | Order history unavailable: lead row not enriched"
+    return customer_type
 
 
 def _mobile_last4(value: Any) -> str | None:
@@ -1017,10 +1023,8 @@ def _td_created_lead_order_metrics_source(
     matching_row: Mapping[str, Any],
     created_row: Mapping[str, Any],
 ) -> str:
-    if matching_row_found and ("previous_number_of_orders" in matching_row or "average_order_amount" in matching_row):
+    if matching_row_found and "previous_number_of_orders" in matching_row and "average_order_amount" in matching_row:
         return "enriched_result_rows"
-    if "previous_number_of_orders" in created_row or "average_order_amount" in created_row:
-        return "lead_change_details"
     return "no_match"
 
 
@@ -1082,16 +1086,8 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                     matching_row=matching_row,
                     created_row=created_row,
                 )
-                previous_number_of_orders = (
-                    _present_mapping_value(matching_row, "previous_number_of_orders")
-                    if "previous_number_of_orders" in matching_row
-                    else _present_mapping_value(created_row, "previous_number_of_orders")
-                )
-                average_order_amount = (
-                    _present_mapping_value(matching_row, "average_order_amount")
-                    if "average_order_amount" in matching_row
-                    else _present_mapping_value(created_row, "average_order_amount")
-                )
+                previous_number_of_orders = _present_mapping_value(matching_row, "previous_number_of_orders")
+                average_order_amount = _present_mapping_value(matching_row, "average_order_amount")
                 payload_row = {
                     "customer_name": created_row.get("customer_name") or matching_row.get("customer_name"),
                     "mobile": created_row.get("mobile") or matching_row.get("mobile"),
@@ -1103,8 +1099,15 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                     "pickup_created_text": matching_row.get("pickup_created_text") or created_row.get("pickup_created_text"),
                     "lead_created_at": matching_row.get("lead_created_at") or created_row.get("lead_created_at"),
                 }
-                if not matching_row_found and created_customer_type.lower() == "existing":
-                    payload_row["order_history_unavailable_reason"] = "lead row not matched"
+                resolved_customer_type = str(payload_row.get("customer_type") or "").strip().lower()
+                if resolved_customer_type == "existing" and (
+                    not matching_row_found
+                    or "previous_number_of_orders" not in matching_row
+                    or "average_order_amount" not in matching_row
+                ):
+                    payload_row["order_history_unavailable_reason"] = (
+                        "lead row not matched" if not matching_row_found else "lead row not enriched"
+                    )
                 payload = _build_td_new_lead_payload(store_code=result.store_code, row=payload_row)
                 created_rows.append([payload])
                 created_order_metric_markers.append(
