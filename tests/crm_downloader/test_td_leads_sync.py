@@ -661,6 +661,7 @@ def test_build_td_leads_tables_html_includes_existing_customer_order_metrics_for
     lead_tables_html = _build_td_leads_tables_html(summary=summary)
 
     assert "A200, Historical Lead, +91-90000 00003, Meta, Existing | Orders: 2 | Avg. Value: ₹1,234.50" in lead_tables_html
+    assert "<!-- order_metrics_source store=A200 pickup_no=A200-HIST source=enriched_result_rows -->" in lead_tables_html
 
 
 def test_build_td_leads_tables_html_marks_unmatched_existing_new_lead_history_unavailable() -> None:
@@ -706,7 +707,43 @@ def test_build_td_leads_tables_html_marks_unmatched_existing_new_lead_history_un
 
     assert "Existing | Order history unavailable: lead row not matched" in lead_tables_html
     assert "A200, Unmatched Historical Lead, +91-90000 00003, Meta, Existing | Order history unavailable: lead row not matched" in lead_tables_html
+    assert "<!-- order_metrics_source store=A200 pickup_no=A200-MISSING source=no_match -->" in lead_tables_html
     assert "Orders: 0" not in lead_tables_html
+
+
+def test_build_td_leads_tables_html_marks_order_metrics_from_lead_change_details() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-lead-change-order-metrics",
+        run_env="test",
+        report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
+        store_results={
+            "A200": StoreLeadResult(
+                store_code="A200",
+                rows=[],
+                lead_change_details={
+                    "created_by_bucket": [
+                        {
+                            "rows": [
+                                {
+                                    "customer_name": "Changed Lead",
+                                    "mobile": "+91-90000 00005",
+                                    "source": "Meta",
+                                    "customer_type": "Existing",
+                                    "previous_number_of_orders": 3,
+                                    "average_order_amount": "2000",
+                                    "lead_identity": {"pickup_no": "A200-CHANGE"},
+                                }
+                            ]
+                        }
+                    ]
+                },
+            )
+        },
+    )
+
+    lead_tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "<!-- order_metrics_source store=A200 pickup_no=A200-CHANGE source=lead_change_details -->" in lead_tables_html
 
 
 def test_build_td_new_lead_payload_formats_order_and_normalization() -> None:
@@ -3068,6 +3105,100 @@ async def test_td_leads_reporting_enriches_customer_type_and_order_metrics_from_
     assert "previous_number_of_orders" not in crm_current_columns
     assert "average_order_amount" not in crm_current_columns
 
+
+
+@pytest.mark.asyncio
+async def test_td_leads_order_history_enrichment_adds_safe_diagnostics_for_existing_zero_and_matches(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_order_history_diagnostics.db'}"
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(sa.text("""
+                CREATE TABLE vw_orders (
+                    store_code TEXT,
+                    mobile_number TEXT,
+                    order_amount NUMERIC
+                )
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO vw_orders (store_code, mobile_number, order_amount) VALUES
+                ('A200', '+91 98765 43210', 1000.00),
+                ('A200', '9876543210', 1500.00),
+                ('A200', '9000000009', 999.00),
+                ('A999', '9876543210', 99999.00)
+            """))
+
+        rows = [
+            {
+                "store_code": "A200",
+                "pickup_no": "A200-MATCH",
+                "mobile": "+91 98765 43210",
+                "customer_type": None,
+            },
+            {
+                "store_code": "A200",
+                "pickup_no": "A200-ZERO",
+                "mobile": "9000000002",
+                "customer_type": "Existing",
+            },
+        ]
+
+        await td_leads_main._enrich_td_lead_rows_with_order_history(database_url=database_url, rows=rows)
+    finally:
+        await engine.dispose()
+
+    matched_row, zero_row = rows
+    assert matched_row["previous_number_of_orders"] == 2
+    assert matched_row["customer_type"] == "Existing"
+    assert matched_row["order_history_lookup_store_code"] == "A200"
+    assert matched_row["order_history_lookup_mobile_last4"] == "3210"
+    assert matched_row["order_history_lookup_normalized_mobile_last4"] == "3210"
+    assert matched_row["order_history_candidate_rows_for_store"] == 3
+    assert matched_row["order_history_matched_rows_for_mobile"] == 2
+
+    assert zero_row["customer_type"] == "Existing"
+    assert zero_row["previous_number_of_orders"] == 0
+    assert zero_row["order_history_warning_marker"] == "existing_customer_zero_order_history"
+    assert zero_row["order_history_candidate_rows_for_store"] == 3
+    assert zero_row["order_history_matched_rows_for_mobile"] == 0
+
+    diagnostic_fields = [
+        "order_history_lookup_store_code",
+        "order_history_lookup_mobile_last4",
+        "order_history_lookup_normalized_mobile_last4",
+        "order_history_candidate_rows_for_store",
+        "order_history_matched_rows_for_mobile",
+        "order_history_warning_marker",
+    ]
+    diagnostics_json = json.dumps(
+        [{field: row.get(field) for field in diagnostic_fields if field in row} for row in rows],
+        sort_keys=True,
+    )
+    assert "9876543210" not in diagnostics_json
+    assert "9000000002" not in diagnostics_json
+    assert "3210" in diagnostics_json
+    assert "0002" in diagnostics_json
+
+    summary = LeadsRunSummary(
+        run_id="run-order-history-diagnostics",
+        run_env="test",
+        report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
+        store_results={"A200": StoreLeadResult(store_code="A200", rows=rows)},
+    )
+    record = summary.build_record(finished_at=datetime(2026, 5, 1, 1, 0, tzinfo=timezone.utc))
+    warning_markers = record["metrics_json"]["order_history_warning_markers"]
+    assert warning_markers == [
+        {
+            "marker": "existing_customer_zero_order_history",
+            "store_code": "A200",
+            "pickup_no": "A200-ZERO",
+            "mobile_last4": "0002",
+            "previous_number_of_orders": 0,
+            "order_history_candidate_rows_for_store": 3,
+            "order_history_matched_rows_for_mobile": 0,
+        }
+    ]
+    assert "9000000002" not in json.dumps(warning_markers, sort_keys=True)
 
 
 @pytest.mark.asyncio
