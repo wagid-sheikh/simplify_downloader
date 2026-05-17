@@ -1087,25 +1087,17 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                 matching_row_found = matching_row is not None
                 if matching_row is None:
                     matching_row = {}
-                created_customer_type = str(created_row.get("customer_type") or "").strip()
                 order_metrics_source = _td_created_lead_order_metrics_source(
                     matching_row_found=matching_row_found,
                     matching_row=matching_row,
                     created_row=created_row,
                 )
-                previous_number_of_orders = _present_mapping_value(matching_row, "previous_number_of_orders")
-                average_order_amount = _present_mapping_value(matching_row, "average_order_amount")
-                payload_row = {
-                    "customer_name": created_row.get("customer_name") or matching_row.get("customer_name"),
-                    "mobile": created_row.get("mobile") or matching_row.get("mobile"),
-                    "source": created_row.get("source") or matching_row.get("source"),
-                    "customer_type": matching_row.get("customer_type") or created_row.get("customer_type"),
-                    "previous_number_of_orders": previous_number_of_orders,
-                    "average_order_amount": average_order_amount,
-                    "pickup_created_at": matching_row.get("pickup_created_at") or created_row.get("pickup_created_at"),
-                    "pickup_created_text": matching_row.get("pickup_created_text") or created_row.get("pickup_created_text"),
-                    "lead_created_at": matching_row.get("lead_created_at") or created_row.get("lead_created_at"),
-                }
+                payload_row = dict(matching_row if matching_row_found else created_row)
+                if matching_row_found:
+                    previous_number_of_orders = _present_mapping_value(matching_row, "previous_number_of_orders")
+                    average_order_amount = _present_mapping_value(matching_row, "average_order_amount")
+                    payload_row["previous_number_of_orders"] = previous_number_of_orders
+                    payload_row["average_order_amount"] = average_order_amount
                 resolved_customer_type = str(payload_row.get("customer_type") or "").strip().lower()
                 if resolved_customer_type == "existing" and (
                     not matching_row_found

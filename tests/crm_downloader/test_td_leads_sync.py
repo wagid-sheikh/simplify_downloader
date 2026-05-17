@@ -698,6 +698,97 @@ def test_build_td_leads_tables_html_includes_existing_customer_order_metrics_for
     assert "<!-- order_metrics_source store=A200 pickup_no=A200-HIST source=enriched_result_rows -->" in lead_tables_html
 
 
+def test_build_td_leads_tables_html_uses_enriched_row_over_created_row_for_new_leads() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-enriched-row-source-of-truth",
+        run_env="test",
+        report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
+        store_results={
+            "A200": StoreLeadResult(
+                store_code="A200",
+                rows=[
+                    {
+                        "status_bucket": "pending",
+                        "pickup_no": "A200-ENRICHED",
+                        "customer_name": "Enriched Customer",
+                        "mobile": "+91-90000 00999",
+                        "source": "Enriched Meta",
+                        "customer_type": "Existing",
+                        "previous_number_of_orders": 4,
+                        "average_order_amount": "1500.25",
+                        "pickup_created_text": "01 May 2026 10:15:00 AM",
+                    }
+                ],
+                lead_change_details={
+                    "created_by_bucket": [
+                        {
+                            "rows": [
+                                {
+                                    "customer_name": "Stale Created Customer",
+                                    "mobile": "+91-90000 00000",
+                                    "source": "Stale Source",
+                                    "customer_type": "Existing",
+                                    "previous_number_of_orders": 0,
+                                    "average_order_amount": "0",
+                                    "pickup_created_text": "30 Apr 2026 09:00:00 AM",
+                                    "lead_identity": {"pickup_no": "A200-ENRICHED"},
+                                }
+                            ]
+                        }
+                    ]
+                },
+            )
+        },
+    )
+
+    lead_tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "A200, Enriched Customer, +91-90000 00999, Enriched Meta, Existing | Orders: 4 | Avg. Value: ₹1,500.25, 01 May 2026 10:15:00 AM" in lead_tables_html
+    assert "Stale Created Customer" not in lead_tables_html
+    assert "+91-90000 00000" not in lead_tables_html
+    assert "Stale Source" not in lead_tables_html
+    assert "Existing | Orders: 0" not in lead_tables_html
+    assert "30 Apr 2026 09:00:00 AM" not in lead_tables_html
+    assert "<!-- order_metrics_source store=A200 pickup_no=A200-ENRICHED source=enriched_result_rows -->" in lead_tables_html
+
+
+def test_build_td_leads_tables_html_unmatched_created_row_with_zero_metrics_shows_unavailable() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-created-row-zero-metrics-no-match",
+        run_env="test",
+        report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
+        store_results={
+            "A200": StoreLeadResult(
+                store_code="A200",
+                rows=[],
+                lead_change_details={
+                    "created_by_bucket": [
+                        {
+                            "rows": [
+                                {
+                                    "customer_name": "Created Only Existing",
+                                    "mobile": "9000000003",
+                                    "source": "Meta",
+                                    "customer_type": "Existing",
+                                    "previous_number_of_orders": 0,
+                                    "average_order_amount": "0",
+                                    "lead_identity": {"pickup_no": "A200-NO-MATCH"},
+                                }
+                            ]
+                        }
+                    ]
+                },
+            )
+        },
+    )
+
+    lead_tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "A200, Created Only Existing, 9000000003, Meta, Existing | Order history unavailable: lead row not matched" in lead_tables_html
+    assert "Orders: 0" not in lead_tables_html
+    assert "Avg. Value: ₹0.00" not in lead_tables_html
+
+
 def test_build_td_leads_tables_html_marks_unmatched_existing_new_lead_history_unavailable() -> None:
     summary = LeadsRunSummary(
         run_id="run-unmatched-existing-new-lead",
