@@ -609,6 +609,40 @@ def test_td_leads_tables_html_renders_three_business_sections_per_store() -> Non
     assert "Converted" not in tables_html
 
 
+def test_build_td_leads_tables_html_includes_existing_customer_order_metrics_for_new_leads() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-enriched-new-lead",
+        run_env="test",
+        report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
+        store_results={
+            "A200": StoreLeadResult(
+                store_code="A200",
+                rows=[
+                    {
+                        "status_bucket": "pending",
+                        "pickup_no": "A200-HIST",
+                        "customer_name": "Historical Lead",
+                        "mobile": "+91-90000 00003",
+                        "source": "Meta",
+                        "customer_type": "Existing",
+                        "previous_number_of_orders": 2,
+                        "average_order_amount": "1234.5",
+                    }
+                ],
+                lead_change_details={
+                    "created_by_bucket": [
+                        {"rows": [{"lead_identity": {"pickup_no": "A200-HIST"}}]}
+                    ]
+                },
+            )
+        },
+    )
+
+    lead_tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "A200, Historical Lead, +91-90000 00003, Meta, Existing | Orders: 2 | Avg. Value: ₹1,234.50" in lead_tables_html
+
+
 def test_build_td_new_lead_payload_formats_order_and_normalization() -> None:
     payload = _build_td_new_lead_payload(
         store_code=" A817 ",
@@ -2666,7 +2700,7 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
     cancelled_row = payload["cancelled_leads_today"][0]
     assert cancelled_row["lead_age_days_at_cancel"] == 1
     assert list(cancelled_row.keys()) == [
-        "store_code", "pickup_no", "customer_name", "mobile", "lead_created_at", "cancelled_at", "lead_age_days_at_cancel", "cancel_reason", "cancelled_flag", "source", "customer_type"
+        "store_code", "pickup_no", "customer_name", "mobile", "lead_created_at", "cancelled_at", "lead_age_days_at_cancel", "cancel_reason", "cancelled_flag", "source", "customer_type", "previous_number_of_orders", "average_order_amount"
     ]
 
     by_pickup = {row["pickup_no"]: row for row in payload["completed_leads_today"]}
@@ -2698,6 +2732,8 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
         "first_order_date",
         "last_order_date",
         "reconciliation_note",
+        "previous_number_of_orders",
+        "average_order_amount",
     ]
 
     action_required = payload["action_required"]
@@ -2709,6 +2745,113 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
     assert action_required["completed_without_order_match"][0]["customer_type"] == "New"
     assert action_required["completed_without_order_match"][0]["last_seen_status"] == "completed"
     assert td_leads_main._validate_td_reporting_payload_schema(payload) == []
+
+
+@pytest.mark.asyncio
+async def test_td_leads_reporting_enriches_customer_type_and_order_metrics_from_vw_orders(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_reporting_enrichment.db'}"
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(sa.text("""
+                CREATE TABLE crm_leads_current (
+                    lead_uid TEXT PRIMARY KEY,
+                    store_code TEXT,
+                    pickup_no TEXT,
+                    customer_name TEXT,
+                    mobile TEXT,
+                    pickup_created_at TEXT,
+                    reason TEXT,
+                    cancelled_flag TEXT,
+                    source TEXT,
+                    customer_type TEXT,
+                    status_bucket TEXT
+                )
+            """))
+            await connection.execute(sa.text("""
+                CREATE TABLE crm_leads_status_events (
+                    lead_uid TEXT,
+                    status_bucket TEXT,
+                    scraped_at TEXT,
+                    created_at TEXT
+                )
+            """))
+            await connection.execute(sa.text("""
+                CREATE TABLE orders (
+                    store_code TEXT,
+                    mobile_number TEXT,
+                    order_number TEXT,
+                    order_date TEXT
+                )
+            """))
+            await connection.execute(sa.text("""
+                CREATE TABLE vw_orders (
+                    store_code TEXT,
+                    mobile_number TEXT,
+                    order_amount NUMERIC
+                )
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO crm_leads_current
+                (lead_uid, store_code, pickup_no, customer_name, mobile, pickup_created_at, reason, cancelled_flag, source, customer_type, status_bucket)
+                VALUES
+                ('L_NULL_NO_ORDERS', 'A200', 'A200-NO', 'Null No Orders', '9000000001', '2026-04-28 10:00:00+00:00', NULL, NULL, 'Meta', NULL, 'pending'),
+                ('L_NULL_MATCH', 'A200', 'A200-HIST', 'Null Historical', '+91-90000 00003', '2026-04-28 10:00:00+00:00', NULL, NULL, 'Meta', '', 'pending'),
+                ('L_EXPLICIT_EXISTING', 'A200', 'A200-EX', 'Explicit Existing', '9000000004', '2026-05-01 08:00:00+00:00', NULL, NULL, 'Web', 'Existing', 'completed')
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO crm_leads_status_events (lead_uid, status_bucket, scraped_at, created_at) VALUES
+                ('L_NULL_NO_ORDERS', 'pending', '2026-05-01 03:00:00+00:00', '2026-05-01 03:00:00+00:00'),
+                ('L_NULL_MATCH', 'pending', '2026-05-01 03:00:00+00:00', '2026-05-01 03:00:00+00:00'),
+                ('L_EXPLICIT_EXISTING', 'completed', '2026-05-01 10:00:00+00:00', '2026-05-01 10:00:00+00:00')
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO orders (store_code, mobile_number, order_number, order_date) VALUES
+                ('A200', '9000000004', 'SO-EX', '2026-05-01 10:30:00+00:00')
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO vw_orders (store_code, mobile_number, order_amount) VALUES
+                ('A200', '9000000003', 1000.00),
+                ('A200', '+91-90000 00003', 1469.00),
+                ('A200', '9000000004', 1000.00),
+                ('A200', '9000000004', 1469.00),
+                ('A999', '9000000003', 99999.00)
+            """))
+
+        payload = await td_leads_main.build_td_leads_reporting_payload(
+            database_url=database_url,
+            reference_ts=datetime(2026, 5, 1, 15, 0, tzinfo=timezone.utc),
+            open_leads_high_age_threshold_days=0,
+        )
+
+        async with engine.begin() as connection:
+            columns = (await connection.execute(sa.text("PRAGMA table_info(crm_leads_current)"))).mappings().all()
+    finally:
+        await engine.dispose()
+
+    open_by_pickup = {row["pickup_no"]: row for row in payload["open_leads"]}
+    assert open_by_pickup["A200-NO"]["customer_type"] == "New"
+    assert open_by_pickup["A200-NO"]["previous_number_of_orders"] == 0
+    assert open_by_pickup["A200-HIST"]["customer_type"] == "Existing"
+    assert open_by_pickup["A200-HIST"]["previous_number_of_orders"] == 2
+    assert str(open_by_pickup["A200-HIST"]["average_order_amount"]) == "1234.5"
+
+    completed_by_pickup = {row["pickup_no"]: row for row in payload["completed_leads_today"]}
+    assert completed_by_pickup["A200-EX"]["customer_type"] == "Existing"
+    assert completed_by_pickup["A200-EX"]["previous_number_of_orders"] == 2
+    assert str(completed_by_pickup["A200-EX"]["average_order_amount"]) == "1234.5"
+
+    action_required_html = td_leads_main._build_td_action_required_html(daily_reporting={
+        "open_leads_high_age_threshold_days": 0,
+        "open_leads_high_age": payload["action_required"]["open_leads_high_age"],
+        "completed_leads_without_order_match": payload["action_required"]["completed_without_order_match"],
+    })
+    assert "Existing | Orders: 2 | Avg. Value: ₹1,234.50" in action_required_html
+    assert "Orders:" not in action_required_html.split("A200-NO", 1)[1].split("A200-HIST", 1)[0]
+
+    crm_current_columns = {column["name"] for column in columns}
+    assert "previous_number_of_orders" not in crm_current_columns
+    assert "average_order_amount" not in crm_current_columns
 
 
 @pytest.mark.asyncio
