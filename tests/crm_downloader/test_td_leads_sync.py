@@ -28,6 +28,8 @@ from app.crm_downloader.td_leads_sync.main import (
     _ensure_scheduler_page,
     _field_from_headers,
     _find_tz_aware_columns,
+    _build_td_mobile_match_debug_diagnostics,
+    _normalize_mobile_number,
     _postback_page_arg,
     _sanitize_rows_for_xlsx_export,
     _scrape_grid_rows,
@@ -36,6 +38,39 @@ from app.crm_downloader.td_leads_sync.main import (
 from app.dashboard_downloader.notifications import send_notifications_for_run
 from app.config import config as app_config
 
+
+@pytest.mark.parametrize(
+    ("raw_mobile", "expected"),
+    [
+        pytest.param("9599242207", "9599242207", id="td-crm-plain-10-digit"),
+        pytest.param(" 9599242207 ", "9599242207", id="td-crm-leading-trailing-whitespace"),
+        pytest.param("95992 42207", "9599242207", id="td-crm-spaces"),
+        pytest.param("+91 95992 42207", "9599242207", id="td-crm-country-code-spaces"),
+        pytest.param("(+91) 95992 42207", "9599242207", id="vw-orders-parentheses-country-code"),
+        pytest.param("+91-95992-42207", "9599242207", id="td-crm-hyphens-country-code"),
+        pytest.param("9599242207.0", "9599242207", id="production-export-decimal-text"),
+        pytest.param("9.599242207E9", "9599242207", id="production-export-scientific-text"),
+        pytest.param("'9599242207", "9599242207", id="excel-text-apostrophe"),
+        pytest.param(None, None, id="missing"),
+        pytest.param("", None, id="blank"),
+    ],
+)
+def test_normalize_mobile_number_matches_td_crm_and_vw_orders_exports(raw_mobile: object, expected: str | None) -> None:
+    assert _normalize_mobile_number(raw_mobile) == expected
+
+
+def test_build_td_mobile_match_debug_diagnostics_masks_originals_and_emits_normalized_last4() -> None:
+    diagnostics = _build_td_mobile_match_debug_diagnostics(
+        lead_mobile=" 9.599242207E9 ",
+        order_mobile="(+91) 95992-42207",
+    )
+
+    assert diagnostics == {
+        "original_lead_mobile_masked": "***2207",
+        "normalized_lead_mobile_last4": "2207",
+        "original_order_mobile_masked": "***2207",
+        "normalized_order_mobile_last4": "2207",
+    }
 
 def test_business_day_bounds_utc_respects_pipeline_timezone() -> None:
     reference_ts = datetime(2026, 4, 22, 10, 15, tzinfo=timezone.utc)
@@ -187,7 +222,6 @@ def test_build_lead_uid_uses_store_code_and_pickup_no_identity_only() -> None:
     }
 
     assert build_lead_uid(row_with_mobile) == build_lead_uid(row_without_mobile)
-
 
 @pytest.mark.parametrize(
     ("field_name", "expected"),
@@ -2468,7 +2502,6 @@ async def test_td_leads_seeded_run_notification_plans_email(
     finally:
         await engine.dispose()
 
-
 @pytest.mark.parametrize(
     ("env", "expected"),
     [
@@ -3343,6 +3376,83 @@ async def test_build_td_leads_reporting_payload_matches_completed_leads_from_vw_
     assert raw_only["matched_order_count"] == 0
     assert raw_only["matched_order_ids"] == []
     assert [row["pickup_no"] for row in payload["action_required"]["completed_without_order_match"]] == ["A100-RAW"]
+
+
+@pytest.mark.asyncio
+async def test_build_td_leads_reporting_payload_matches_real_failing_mobile_formats(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_reporting_real_mobile_formats.db'}"
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(sa.text("""
+                CREATE TABLE crm_leads_current (
+                    lead_uid TEXT PRIMARY KEY,
+                    store_code TEXT,
+                    pickup_no TEXT,
+                    customer_name TEXT,
+                    mobile TEXT,
+                    pickup_created_at TEXT,
+                    reason TEXT,
+                    cancelled_flag TEXT,
+                    source TEXT,
+                    customer_type TEXT,
+                    status_bucket TEXT
+                )
+            """))
+            await connection.execute(sa.text("""
+                CREATE TABLE crm_leads_status_events (
+                    lead_uid TEXT,
+                    status_bucket TEXT,
+                    scraped_at TEXT,
+                    created_at TEXT
+                )
+            """))
+            await connection.execute(sa.text("""
+                CREATE TABLE vw_orders (
+                    store_code TEXT,
+                    mobile_number TEXT,
+                    order_number TEXT,
+                    order_date TEXT,
+                    order_amount NUMERIC
+                )
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO crm_leads_current
+                (lead_uid, store_code, pickup_no, customer_name, mobile, pickup_created_at, reason, cancelled_flag, source, customer_type, status_bucket)
+                VALUES
+                ('L_PROD_FORMAT', 'A668', 'A668-PROD-MOBILE', 'Production Format', ' 9.599242207E9 ', '2026-05-01 08:00:00+00:00', NULL, NULL, 'TD CRM', 'New', 'completed')
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO crm_leads_status_events (lead_uid, status_bucket, scraped_at, created_at) VALUES
+                ('L_PROD_FORMAT', 'completed', '2026-05-01 10:00:00+00:00', '2026-05-01 10:00:00+00:00')
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO vw_orders (store_code, mobile_number, order_number, order_date, order_amount) VALUES
+                ('A668', '9599242207.0', 'VW-PROD-MOBILE-MATCH', '2026-05-01 10:30:00+00:00', 100.00)
+            """))
+
+        payload = await td_leads_main.build_td_leads_reporting_payload(
+            database_url=database_url,
+            reference_ts=datetime(2026, 5, 1, 15, 0, tzinfo=timezone.utc),
+        )
+    finally:
+        await engine.dispose()
+
+    completed_row = payload["completed_leads_today"][0]
+    assert completed_row["pickup_no"] == "A668-PROD-MOBILE"
+    assert completed_row["order_match_found"] is True
+    assert completed_row["matched_order_count"] == 1
+    assert completed_row["matched_order_ids"] == ["VW-PROD-MOBILE-MATCH"]
+    assert payload["action_required"]["completed_without_order_match"] == []
+
+    diagnostics = _build_td_mobile_match_debug_diagnostics(
+        lead_mobile=" 9.599242207E9 ",
+        order_mobile="9599242207.0",
+    )
+    assert diagnostics["original_lead_mobile_masked"] == "***2207"
+    assert diagnostics["normalized_lead_mobile_last4"] == "2207"
+    assert diagnostics["original_order_mobile_masked"] == "***2207"
+    assert diagnostics["normalized_order_mobile_last4"] == "2207"
 
 
 @pytest.mark.parametrize("mode", ["meeting", "day_end"])

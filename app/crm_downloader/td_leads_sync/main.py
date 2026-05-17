@@ -367,10 +367,32 @@ async def fetch_business_day_cancelled_td_leads(
 
 
 def _normalize_mobile_number(value: Any) -> str | None:
-    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    raw_value = str(value or "").strip().strip("'")
+    if not raw_value:
+        return None
+
+    numeric_value = _mobile_number_from_export_numeric(raw_value)
+    if numeric_value is not None:
+        return numeric_value[-10:] if len(numeric_value) >= 10 else numeric_value
+
+    digits = "".join(ch for ch in raw_value if ch.isdigit())
     if not digits:
         return None
     return digits[-10:] if len(digits) >= 10 else digits
+
+
+def _mobile_number_from_export_numeric(raw_value: str) -> str | None:
+    """Normalize Excel/CSV numeric phone exports without treating punctuation as digits."""
+    numeric_text = raw_value.replace(",", "")
+    if not re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", numeric_text):
+        return None
+
+    with contextlib.suppress(InvalidOperation, ValueError):
+        parsed = Decimal(numeric_text)
+        integral = parsed.to_integral_value()
+        if parsed == integral:
+            return str(abs(int(integral)))
+    return None
 
 
 def _as_decimal(value: Any) -> Decimal | None:
@@ -428,6 +450,25 @@ def _format_td_customer_type_for_email(row: Mapping[str, Any]) -> str:
 def _mobile_last4(value: Any) -> str | None:
     digits = "".join(ch for ch in str(value or "") if ch.isdigit())
     return digits[-4:] if digits else None
+
+
+def _mask_mobile_for_debug(value: Any) -> str | None:
+    normalized_mobile = _normalize_mobile_number(value)
+    if not normalized_mobile:
+        return None
+    return f"***{normalized_mobile[-4:]}"
+
+
+def _build_td_mobile_match_debug_diagnostics(*, lead_mobile: Any, order_mobile: Any) -> dict[str, str | None]:
+    """Return masked mobile diagnostics for opt-in TD lead/order matching investigations."""
+    normalized_lead_mobile = _normalize_mobile_number(lead_mobile)
+    normalized_order_mobile = _normalize_mobile_number(order_mobile)
+    return {
+        "original_lead_mobile_masked": _mask_mobile_for_debug(lead_mobile),
+        "normalized_lead_mobile_last4": _mobile_last4(normalized_lead_mobile),
+        "original_order_mobile_masked": _mask_mobile_for_debug(order_mobile),
+        "normalized_order_mobile_last4": _mobile_last4(normalized_order_mobile),
+    }
 
 
 def _set_td_order_history_diagnostics(
