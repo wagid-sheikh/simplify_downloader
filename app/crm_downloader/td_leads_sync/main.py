@@ -820,28 +820,34 @@ def _is_customer_cancelled_td_lead(row: Mapping[str, Any]) -> bool:
 
 
 def _format_pickup_created_display(row: Mapping[str, Any]) -> str:
-    created_text = str(row.get("pickup_created_text") or "").strip()
-    if created_text:
-        return created_text
-
     created_at = row.get("pickup_created_at")
+    if created_at is None:
+        created_at = row.get("lead_created_at")
+
     if isinstance(created_at, datetime):
         normalized = created_at
         if normalized.tzinfo is None or normalized.utcoffset() is None:
             normalized = normalized.replace(tzinfo=timezone.utc)
-        return normalized.astimezone(timezone.utc).strftime("%d %b %Y %I:%M:%S %p UTC")
+        return normalized.astimezone(get_timezone()).strftime("%d %b %Y %I:%M:%S %p %Z")
 
     created_at_text = str(created_at or "").strip()
     if created_at_text:
+        parsed_created_at = _parse_td_leads_created_datetime(created_at_text)
+        if parsed_created_at is not None:
+            if parsed_created_at.tzinfo is None or parsed_created_at.utcoffset() is None:
+                parsed_created_at = parsed_created_at.replace(tzinfo=timezone.utc)
+            return parsed_created_at.astimezone(get_timezone()).strftime("%d %b %Y %I:%M:%S %p %Z")
         return created_at_text
+
+    created_text = str(row.get("pickup_created_text") or "").strip()
+    if created_text:
+        return created_text
 
     pickup_date_text = str(row.get("pickup_date") or "").strip()
     if pickup_date_text:
         return pickup_date_text
 
     return "None"
-
-
 
 
 def _count_td_leads_created_events(result: "StoreLeadResult") -> int:
@@ -899,6 +905,7 @@ def _build_td_cancelled_lead_payload(*, store_code: str, row: Mapping[str, Any])
         _normalized_td_lead_payload_value(row.get("customer_name")),
         _normalized_td_lead_payload_value(row.get("mobile")),
         _normalized_td_lead_payload_value(row.get("reason")),
+        _normalized_td_lead_payload_value(_format_pickup_created_display(row)),
     )
     return ", ".join(ordered_values)
 
@@ -963,6 +970,9 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                     or created_row.get("previous_number_of_orders"),
                     "average_order_amount": matching_row.get("average_order_amount")
                     or created_row.get("average_order_amount"),
+                    "pickup_created_at": matching_row.get("pickup_created_at") or created_row.get("pickup_created_at"),
+                    "pickup_created_text": matching_row.get("pickup_created_text") or created_row.get("pickup_created_text"),
+                    "lead_created_at": matching_row.get("lead_created_at") or created_row.get("lead_created_at"),
                 }
                 payload = _build_td_new_lead_payload(store_code=result.store_code, row=payload_row)
                 created_rows.append([payload])
@@ -1142,6 +1152,8 @@ def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str
     def _action_cell(row: Mapping[str, Any], column: str) -> str:
         if column == "customer_type":
             return _format_td_customer_type_for_email(row)
+        if column == "lead_created_at":
+            return _format_pickup_created_display(row)
         return str(row.get(column) or "None")
 
     high_age_rows = [
