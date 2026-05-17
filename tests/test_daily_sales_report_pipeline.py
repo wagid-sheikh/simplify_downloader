@@ -511,10 +511,10 @@ async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
 
 
 @pytest.mark.asyncio
-async def test_daily_pipeline_short_payment_debug_metrics_are_json_safe(
+async def test_daily_pipeline_metrics_are_json_safe_with_short_payment_rows(
     tmp_path, monkeypatch
 ) -> None:
-    db_path = tmp_path / "daily_sales_pipeline_short_payment_debug.db"
+    db_path = tmp_path / "daily_sales_pipeline_short_payment_metrics.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
 
@@ -528,8 +528,6 @@ async def test_daily_pipeline_short_payment_debug_metrics_are_json_safe(
         order_amount=Decimal("100.50"),
         paid_amount=Decimal("80.25"),
         shortage_amount=Decimal("20.25"),
-        recovery_status="WRITE_OFF",
-        recovery_category=None,
     )
 
     monkeypatch.setattr(
@@ -600,19 +598,8 @@ async def test_daily_pipeline_short_payment_debug_metrics_are_json_safe(
     for record in captured_records:
         json.dumps(record["metrics_json"])
 
-    debug_row = final_record["metrics_json"]["temp_debug_short_payment_row_keys"][0]
-    assert debug_row["order_date"] == "2026-04-29T09:30:00"
-    assert debug_row["order_amount"] == "100.50"
-    assert debug_row["paid_amount"] == "80.25"
-    assert debug_row["shortage_amount"] == "20.25"
+    assert final_record["metrics_json"]["short_payment_rows"] == 1
     assert final_record["phases_json"]["send_email"]["ok"] == 1
-
-    recovery_leak_rows = pipeline._temp_debug_short_payment_recovery_leak_rows(
-        [short_payment_row]
-    )
-    assert recovery_leak_rows[0]["order_date"] == "2026-04-29T09:30:00"
-    assert recovery_leak_rows[0]["order_amount"] == "100.50"
-    json.dumps(recovery_leak_rows)
 
 
 @pytest.mark.asyncio
