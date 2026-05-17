@@ -429,36 +429,33 @@ async def _enrich_td_lead_rows_with_order_history(*, database_url: str | None, r
             sa.column("mobile_number"),
             sa.column("order_amount"),
         )
-        try:
-            async with session_scope(database_url) as session:
-                for store_code, normalized_mobiles in mobiles_by_store.items():
-                    order_rows = (
-                        await session.execute(
-                            sa.select(vw_orders.c.mobile_number, vw_orders.c.order_amount).where(
-                                vw_orders.c.store_code == store_code
-                            )
+        async with session_scope(database_url) as session:
+            for store_code, normalized_mobiles in mobiles_by_store.items():
+                order_rows = (
+                    await session.execute(
+                        sa.select(vw_orders.c.mobile_number, vw_orders.c.order_amount).where(
+                            vw_orders.c.store_code == store_code
                         )
-                    ).mappings().all()
-                    amounts_by_mobile: dict[str, list[Decimal]] = defaultdict(list)
-                    counts_by_mobile: dict[str, int] = defaultdict(int)
-                    for order_row in order_rows:
-                        normalized_order_mobile = _normalize_mobile_number(order_row.get("mobile_number"))
-                        if normalized_order_mobile not in normalized_mobiles:
-                            continue
-                        counts_by_mobile[normalized_order_mobile] += 1
-                        amount = _as_decimal(order_row.get("order_amount"))
-                        if amount is not None:
-                            amounts_by_mobile[normalized_order_mobile].append(amount)
+                    )
+                ).mappings().all()
+                amounts_by_mobile: dict[str, list[Decimal]] = defaultdict(list)
+                counts_by_mobile: dict[str, int] = defaultdict(int)
+                for order_row in order_rows:
+                    normalized_order_mobile = _normalize_mobile_number(order_row.get("mobile_number"))
+                    if normalized_order_mobile not in normalized_mobiles:
+                        continue
+                    counts_by_mobile[normalized_order_mobile] += 1
+                    amount = _as_decimal(order_row.get("order_amount"))
+                    if amount is not None:
+                        amounts_by_mobile[normalized_order_mobile].append(amount)
 
-                    for normalized_mobile in normalized_mobiles:
-                        order_count = counts_by_mobile.get(normalized_mobile, 0)
-                        amounts = amounts_by_mobile.get(normalized_mobile, [])
-                        metrics_by_store_mobile[(store_code, normalized_mobile)] = {
-                            "previous_number_of_orders": order_count,
-                            "average_order_amount": (sum(amounts) / Decimal(len(amounts))) if amounts else None,
-                        }
-        except sa.exc.SQLAlchemyError:
-            metrics_by_store_mobile = {}
+                for normalized_mobile in normalized_mobiles:
+                    order_count = counts_by_mobile.get(normalized_mobile, 0)
+                    amounts = amounts_by_mobile.get(normalized_mobile, [])
+                    metrics_by_store_mobile[(store_code, normalized_mobile)] = {
+                        "previous_number_of_orders": order_count,
+                        "average_order_amount": (sum(amounts) / Decimal(len(amounts))) if amounts else None,
+                    }
 
     for row in rows:
         store_code = str(row.get("store_code") or "").strip()

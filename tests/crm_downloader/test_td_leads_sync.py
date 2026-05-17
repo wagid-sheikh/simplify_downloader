@@ -94,6 +94,17 @@ async def test_fetch_business_day_cancelled_td_leads_uses_events_window_and_norm
             await connection.execute(
                 sa.text(
                     """
+                    CREATE TABLE vw_orders (
+                        store_code TEXT,
+                        mobile_number TEXT,
+                        order_amount NUMERIC
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                sa.text(
+                    """
                     INSERT INTO crm_leads_current (
                         lead_uid, store_code, pickup_no, customer_name, mobile, pickup_created_at, reason, cancelled_flag, source, customer_type
                     ) VALUES
@@ -2712,6 +2723,13 @@ def test_fetch_business_day_cancelled_td_leads_returns_expected_columns(tmp_path
                     )
                 """))
                 await connection.execute(sa.text("""
+                    CREATE TABLE vw_orders (
+                        store_code TEXT,
+                        mobile_number TEXT,
+                        order_amount NUMERIC
+                    )
+                """))
+                await connection.execute(sa.text("""
                     INSERT INTO crm_leads_current (
                         lead_uid, store_code, pickup_no, customer_name, mobile, pickup_created_at, reason, cancelled_flag, source, customer_type
                     ) VALUES ('L1', 'A001', 'A001-1', 'Alice', '9000000001', '2026-04-29 12:00:00+00:00', '', NULL, 'Meta', 'New')
@@ -2787,7 +2805,8 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
                     store_code TEXT,
                     mobile_number TEXT,
                     order_number TEXT,
-                    order_date TEXT
+                    order_date TEXT,
+                    order_amount NUMERIC
                 )
             """))
 
@@ -2821,11 +2840,11 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
                 ('A100', '9000000002', 'RAW-SHOULD-NOT-BE-USED', '2026-05-01 10:30:00+00:00')
             """))
             await connection.execute(sa.text("""
-                INSERT INTO vw_orders (store_code, mobile_number, order_number, order_date) VALUES
-                ('A100', '9000000002', 'SO-OLD', '2026-04-28 10:30:00+00:00'),
-                ('A100', '9000000002', 'SO-100', '2026-05-01 10:30:00+00:00'),
-                ('A100', '+91-90000 00003', 'SO-200', '2026-05-01 09:00:00+00:00'),
-                ('A100', '9000000003', 'SO-150', '2026-05-01 08:30:00+00:00')
+                INSERT INTO vw_orders (store_code, mobile_number, order_number, order_date, order_amount) VALUES
+                ('A100', '9000000002', 'SO-OLD', '2026-04-28 10:30:00+00:00', 100.00),
+                ('A100', '9000000002', 'SO-100', '2026-05-01 10:30:00+00:00', 200.00),
+                ('A100', '+91-90000 00003', 'SO-200', '2026-05-01 09:00:00+00:00', 300.00),
+                ('A100', '9000000003', 'SO-150', '2026-05-01 08:30:00+00:00', 400.00)
             """))
 
         payload = await td_leads_main.build_td_leads_reporting_payload(
@@ -3002,6 +3021,61 @@ async def test_td_leads_reporting_enriches_customer_type_and_order_metrics_from_
     crm_current_columns = {column["name"] for column in columns}
     assert "previous_number_of_orders" not in crm_current_columns
     assert "average_order_amount" not in crm_current_columns
+
+
+
+@pytest.mark.asyncio
+async def test_td_leads_order_history_enrichment_raises_when_vw_orders_missing(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_missing_vw_orders.db'}"
+    row = {
+        "store_code": "A200",
+        "pickup_no": "A200-MISSING-VW",
+        "mobile": "9000000001",
+        "customer_type": None,
+    }
+
+    with pytest.raises(sa.exc.SQLAlchemyError, match="vw_orders"):
+        await td_leads_main._enrich_td_lead_rows_with_order_history(database_url=database_url, rows=[row])
+
+    assert row["customer_type"] is None
+    assert "previous_number_of_orders" not in row
+    assert "average_order_amount" not in row
+
+
+@pytest.mark.asyncio
+async def test_td_leads_order_history_enrichment_raises_when_order_amount_missing(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_missing_order_amount.db'}"
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(sa.text("""
+                CREATE TABLE vw_orders (
+                    store_code TEXT,
+                    mobile_number TEXT,
+                    order_number TEXT,
+                    order_date TEXT
+                )
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO vw_orders (store_code, mobile_number, order_number, order_date) VALUES
+                ('A200', '9000000001', 'SO-1', '2026-05-01 10:30:00+00:00')
+            """))
+
+        row = {
+            "store_code": "A200",
+            "pickup_no": "A200-MISSING-AMOUNT",
+            "mobile": "9000000001",
+            "customer_type": None,
+        }
+
+        with pytest.raises(sa.exc.SQLAlchemyError, match="order_amount"):
+            await td_leads_main._enrich_td_lead_rows_with_order_history(database_url=database_url, rows=[row])
+    finally:
+        await engine.dispose()
+
+    assert row["customer_type"] is None
+    assert "previous_number_of_orders" not in row
+    assert "average_order_amount" not in row
 
 
 @pytest.mark.asyncio
