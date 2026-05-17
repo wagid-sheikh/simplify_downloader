@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date
+import json
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from app.reports.daily_sales_report.data import RecoveryOrderRow
 from app.reports.daily_sales_report.to_be_recovered import (
     build_context as build_to_be_recovered_context,
 )
+from app.reports.shared.short_payments import ShortPaymentRow
 import app.reports.daily_sales_report.pipeline as pipeline
 import app.reports.mtd_same_day_fulfillment.data as mtd_data
 
@@ -506,6 +508,111 @@ async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
     )
     assert rows[3]["reference_id_1"] == pipeline.PIPELINE_NAME
     assert rows[3]["reference_id_3"] == report_date.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_daily_pipeline_short_payment_debug_metrics_are_json_safe(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "daily_sales_pipeline_short_payment_debug.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    report_date = date(2026, 4, 29)
+    short_payment_row = ShortPaymentRow(
+        cost_center="CC1",
+        order_number="SP-JSON-1",
+        order_date=datetime(2026, 4, 29, 9, 30),
+        customer_name="Alice",
+        mobile_number="9999999999",
+        order_amount=Decimal("100.50"),
+        paid_amount=Decimal("80.25"),
+        shortage_amount=Decimal("20.25"),
+        recovery_status="WRITE_OFF",
+        recovery_category=None,
+    )
+
+    monkeypatch.setattr(
+        pipeline,
+        "config",
+        SimpleNamespace(database_url=database_url, pdf_render_timeout_seconds=30),
+    )
+    monkeypatch.setattr(pipeline, "get_timezone", lambda: ZoneInfo("Asia/Kolkata"))
+    monkeypatch.setattr(pipeline, "resolve_run_env", lambda env: "test")
+    monkeypatch.setattr(pipeline, "new_run_id", lambda: "run-short-payment-json")
+
+    captured_records: list[dict] = []
+
+    async def _capture_persist(_database_url, record):
+        captured_records.append(record)
+
+    async def _capture_update(_database_url, _run_id, record):
+        captured_records.append(record)
+
+    monkeypatch.setattr(pipeline, "persist_summary_record", _capture_persist)
+    monkeypatch.setattr(pipeline, "update_summary_record", _capture_update)
+
+    async def _fake_daily_data(*args, **kwargs):
+        return SimpleNamespace(
+            report_date=report_date,
+            rows=[],
+            totals=SimpleNamespace(),
+            edited_orders=[],
+            edited_orders_summary=SimpleNamespace(),
+            edited_orders_totals=SimpleNamespace(),
+            missed_leads=[],
+            cancelled_leads=[],
+            lead_performance_summary=SimpleNamespace(),
+            to_be_recovered=[],
+            to_be_compensated=[],
+            to_be_recovered_total_order_value=Decimal("0"),
+            to_be_compensated_total_order_value=Decimal("0"),
+            same_day_fulfillment_rows=[],
+            missing_payment_rows=[],
+            short_payment_rows=[short_payment_row],
+        )
+
+    async def _fake_mtd_rows(*args, **kwargs):
+        return []
+
+    async def _fake_render_pdf(html, output_path: Path, pdf_options=None, logger=None):
+        output_path.write_bytes(b"pdf")
+
+    async def _fake_notify(*args, **kwargs):
+        return {"emails_planned": 1, "emails_sent": 1, "errors": []}
+
+    monkeypatch.setattr(pipeline, "fetch_daily_sales_report", _fake_daily_data)
+    monkeypatch.setattr(pipeline, "fetch_mtd_same_day_fulfillment", _fake_mtd_rows)
+    monkeypatch.setattr(pipeline, "fetch_missing_payments_mtd", _fake_mtd_rows)
+    monkeypatch.setattr(
+        pipeline, "_render_html", lambda context, *args, **kwargs: "daily-html"
+    )
+    monkeypatch.setattr(
+        pipeline, "render_pdf_with_configured_browser", _fake_render_pdf
+    )
+    monkeypatch.setattr(pipeline, "send_notifications_for_run", _fake_notify)
+
+    await pipeline._run(report_date=report_date, env="test", force=True)
+
+    assert captured_records
+    final_record = captured_records[-1]
+    json.dumps(final_record["metrics_json"])
+    for record in captured_records:
+        json.dumps(record["metrics_json"])
+
+    debug_row = final_record["metrics_json"]["temp_debug_short_payment_row_keys"][0]
+    assert debug_row["order_date"] == "2026-04-29T09:30:00"
+    assert debug_row["order_amount"] == "100.50"
+    assert debug_row["paid_amount"] == "80.25"
+    assert debug_row["shortage_amount"] == "20.25"
+    assert final_record["phases_json"]["send_email"]["ok"] == 1
+
+    recovery_leak_rows = pipeline._temp_debug_short_payment_recovery_leak_rows(
+        [short_payment_row]
+    )
+    assert recovery_leak_rows[0]["order_date"] == "2026-04-29T09:30:00"
+    assert recovery_leak_rows[0]["order_amount"] == "100.50"
+    json.dumps(recovery_leak_rows)
 
 
 @pytest.mark.asyncio
