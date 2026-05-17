@@ -663,6 +663,52 @@ def test_build_td_leads_tables_html_includes_existing_customer_order_metrics_for
     assert "A200, Historical Lead, +91-90000 00003, Meta, Existing | Orders: 2 | Avg. Value: ₹1,234.50" in lead_tables_html
 
 
+def test_build_td_leads_tables_html_marks_unmatched_existing_new_lead_history_unavailable() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-unmatched-existing-new-lead",
+        run_env="test",
+        report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
+        store_results={
+            "A200": StoreLeadResult(
+                store_code="A200",
+                rows=[
+                    {
+                        "status_bucket": "pending",
+                        "pickup_no": "A200-OTHER",
+                        "customer_name": "Other Lead",
+                        "mobile": "+91-90000 00004",
+                        "source": "Meta",
+                        "customer_type": "Existing",
+                        "previous_number_of_orders": 0,
+                        "average_order_amount": "0",
+                    }
+                ],
+                lead_change_details={
+                    "created_by_bucket": [
+                        {
+                            "rows": [
+                                {
+                                    "customer_name": "Unmatched Historical Lead",
+                                    "mobile": "+91-90000 00003",
+                                    "source": "Meta",
+                                    "customer_type": "Existing",
+                                    "lead_identity": {"pickup_no": "A200-MISSING"},
+                                }
+                            ]
+                        }
+                    ]
+                },
+            )
+        },
+    )
+
+    lead_tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "Existing | Order history unavailable: lead row not matched" in lead_tables_html
+    assert "A200, Unmatched Historical Lead, +91-90000 00003, Meta, Existing | Order history unavailable: lead row not matched" in lead_tables_html
+    assert "Orders: 0" not in lead_tables_html
+
+
 def test_build_td_new_lead_payload_formats_order_and_normalization() -> None:
     payload = _build_td_new_lead_payload(
         store_code=" A817 ",

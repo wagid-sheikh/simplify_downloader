@@ -406,6 +406,12 @@ def _td_order_metrics_suffix(row: Mapping[str, Any]) -> str:
 
 def _format_td_customer_type_for_email(row: Mapping[str, Any]) -> str:
     customer_type = _normalized_td_lead_payload_value(row.get("customer_type"))
+    if (
+        customer_type.strip().lower() == "existing"
+        and str(row.get("order_history_unavailable_reason") or "").strip()
+    ):
+        reason = _normalized_td_lead_payload_value(row.get("order_history_unavailable_reason"))
+        return f"{customer_type} | Order history unavailable: {reason}"
     metrics_suffix = _td_order_metrics_suffix(row)
     return f"{customer_type} | {metrics_suffix}" if metrics_suffix else customer_type
 
@@ -939,7 +945,13 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                 lead_identity = created_row.get("lead_identity") if isinstance(created_row.get("lead_identity"), Mapping) else {}
                 pickup_no = str(lead_identity.get("pickup_no") or "").strip().upper()
                 pickup_id = str(lead_identity.get("pickup_id") or "").strip().upper()
-                matching_row = row_by_pickup_no.get(pickup_no) or row_by_pickup_id.get(pickup_id) or {}
+                matching_row = row_by_pickup_no.get(pickup_no)
+                if matching_row is None:
+                    matching_row = row_by_pickup_id.get(pickup_id)
+                matching_row_found = matching_row is not None
+                if matching_row is None:
+                    matching_row = {}
+                created_customer_type = str(created_row.get("customer_type") or "").strip()
                 payload_row = {
                     "customer_name": created_row.get("customer_name") or matching_row.get("customer_name"),
                     "mobile": created_row.get("mobile") or matching_row.get("mobile"),
@@ -953,6 +965,8 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                     "pickup_created_text": matching_row.get("pickup_created_text") or created_row.get("pickup_created_text"),
                     "lead_created_at": matching_row.get("lead_created_at") or created_row.get("lead_created_at"),
                 }
+                if not matching_row_found and created_customer_type.lower() == "existing":
+                    payload_row["order_history_unavailable_reason"] = "lead row not matched"
                 payload = _build_td_new_lead_payload(store_code=result.store_code, row=payload_row)
                 created_rows.append([payload])
 
