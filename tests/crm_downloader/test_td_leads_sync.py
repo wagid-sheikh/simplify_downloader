@@ -5,6 +5,7 @@ import contextlib
 import json
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 
 import pytest
@@ -605,7 +606,7 @@ def test_td_leads_tables_html_renders_three_business_sections_per_store() -> Non
     assert "<th align='left'>Customer Name</th><th align='left'>Mobile Number</th><th align='left'>Created Date/Time</th><th align='left'>Source</th>" in tables_html
 
     new_lead_payload = "A817, Pending 1, 9000000000, None, Retail, None"
-    cancelled_lead_payload = "A817, Raj, 9111111111, No inventory"
+    cancelled_lead_payload = "A817, Raj, 9111111111, No inventory, 2026-04-22 09:00"
     assert tables_html.count(new_lead_payload) == 1
     assert tables_html.count(cancelled_lead_payload) == 1
     assert f"<tr><td>{new_lead_payload}</td></tr>" in tables_html
@@ -667,6 +668,41 @@ def test_build_td_new_lead_payload_formats_order_and_normalization() -> None:
     assert payload == "A817, Alice, 9000000000, Walk-in, Retail, 22 Apr 2026 11:00:00 AM"
 
 
+def test_td_leads_summary_email_includes_local_pickup_created_for_identified_leads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(td_leads_main, "get_timezone", lambda: ZoneInfo("Asia/Kolkata"))
+    summary = LeadsRunSummary(
+        run_id="run-local-created",
+        run_env="test",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={
+            "A817": StoreLeadResult(
+                store_code="A817",
+                rows=[
+                    {
+                        "status_bucket": "pending",
+                        "pickup_no": "A817-LOCAL",
+                        "customer_name": "Local Timestamp",
+                        "mobile": "9000000001",
+                        "source": "Meta",
+                        "customer_type": "New",
+                        "pickup_created_at": datetime(2026, 4, 22, 9, 33, 39, tzinfo=timezone.utc),
+                    }
+                ],
+                lead_change_details={
+                    "created_by_bucket": [{"rows": [{"lead_identity": {"pickup_no": "A817-LOCAL"}}]}]
+                },
+            )
+        },
+    )
+
+    summary_html = _build_td_leads_summary_html(summary=summary, duration_human="00:01:00")
+
+    assert "22 Apr 2026 03:03:39 PM IST" in summary_html
+    assert "UTC" not in summary_html
+
+
 def test_build_td_new_lead_payload_uses_none_for_missing_values() -> None:
     payload = _build_td_new_lead_payload(
         store_code="A817",
@@ -682,6 +718,27 @@ def test_build_td_new_lead_payload_uses_none_for_missing_values() -> None:
     assert payload == "A817, None, None, None, None, None"
 
 
+def test_format_pickup_created_display_converts_aware_utc_to_configured_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(td_leads_main, "get_timezone", lambda: ZoneInfo("Asia/Kolkata"))
+
+    rendered = td_leads_main._format_pickup_created_display(
+        {"pickup_created_at": datetime(2026, 4, 22, 9, 33, 39, tzinfo=timezone.utc)}
+    )
+
+    assert rendered == "22 Apr 2026 03:03:39 PM IST"
+    assert "UTC" not in rendered
+
+
+def test_format_pickup_created_display_treats_naive_datetime_as_utc(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(td_leads_main, "get_timezone", lambda: ZoneInfo("Asia/Kolkata"))
+
+    rendered = td_leads_main._format_pickup_created_display(
+        {"pickup_created_at": datetime(2026, 4, 22, 9, 33, 39)}
+    )
+
+    assert rendered == "22 Apr 2026 03:03:39 PM IST"
+
+
 def test_build_td_cancelled_lead_payload_formats_order_and_normalization() -> None:
     payload = _build_td_cancelled_lead_payload(
         store_code=" A817 ",
@@ -692,7 +749,7 @@ def test_build_td_cancelled_lead_payload_formats_order_and_normalization() -> No
         },
     )
 
-    assert payload == "A817, Alice, 9000000000, No inventory"
+    assert payload == "A817, Alice, 9000000000, No inventory, None"
 
 
 def test_td_leads_tables_html_escapes_untrusted_payload_values_without_copy_control_html() -> None:
@@ -866,8 +923,8 @@ def test_td_leads_tables_html_pending_prefers_pickup_created_text_then_falls_bac
 
     tables_html = _build_td_leads_tables_html(summary=summary)
 
-    assert "21 Apr 2026 3:03:39 PM" in tables_html
-    assert "21 Apr 2026 09:33:39 AM UTC" in tables_html
+    assert tables_html.count("21 Apr 2026 03:03:39 PM IST") == 4
+    assert "UTC" not in tables_html
     assert "22 Apr 2026" in tables_html
 
 
@@ -1701,7 +1758,8 @@ async def test_combined_created_datetime_populates_ingest_payload_and_email_row_
         },
     )
     lead_tables_html = _build_td_leads_tables_html(summary=summary)
-    assert "21 Apr 2026 3:03:39 PM" in lead_tables_html
+    assert "21 Apr 2026 03:03:39 PM IST" in lead_tables_html
+    assert "UTC" not in lead_tables_html
     assert "None" in lead_tables_html
 
 
@@ -2558,6 +2616,9 @@ def test_build_td_daily_reporting_and_action_required_cover_reconciliation_shape
     assert "Action Required" in action_required_html
     assert "Open leads with high age (2+ days) (1)" in action_required_html
     assert "Completed leads without order match (1)" in action_required_html
+    assert "21 Apr 2026 03:03:39 PM IST" in action_required_html
+    assert "24 Apr 2026 12:30:00 PM IST" in action_required_html
+    assert "UTC" not in action_required_html
 
 
 def test_fetch_business_day_cancelled_td_leads_returns_expected_columns(tmp_path) -> None:
