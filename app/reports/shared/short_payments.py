@@ -196,6 +196,10 @@ async def _fetch_reconciliation(
     end_datetime: datetime | None,
     filter_order_date: bool = True,
 ):
+    recovery_excluded_identities = await _fetch_recovery_excluded_identities(
+        session=session,
+        orders=orders,
+    )
     order_stmt = (
         sa.select(
             orders.c.cost_center,
@@ -212,6 +216,11 @@ async def _fetch_reconciliation(
             )
         )
         .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
+    )
+    order_stmt = _exclude_recovery_identities(
+        stmt=order_stmt,
+        orders=orders,
+        excluded_identities=recovery_excluded_identities,
     )
     if filter_order_date:
         if start_datetime is None or end_datetime is None:
@@ -275,7 +284,73 @@ def _group_key_for_order(
 
 
 def _normalised_order_sql(column: Any) -> Any:
-    return sa.func.upper(sa.func.replace(sa.func.coalesce(column, ""), " ", ""))
+    normalized = sa.func.coalesce(column, "")
+    for whitespace in (" ", "\t", "\n", "\r", "\f", "\v"):
+        normalized = sa.func.replace(normalized, whitespace, "")
+    return sa.func.upper(normalized)
+
+
+async def _fetch_recovery_excluded_identities(
+    *, session: Any, orders: Any
+) -> set[tuple[str, str]]:
+    excluded_stmt = (
+        sa.select(
+            orders.c.cost_center,
+            _normalised_order_sql(orders.c.order_number).label(
+                "normalized_order_number"
+            ),
+        )
+        .where(
+            sa.func.coalesce(orders.c.recovery_status, "NONE").in_(
+                RECOVERY_PAYMENT_EXCLUSIONS
+            )
+        )
+        .where(_normalised_order_sql(orders.c.order_number) != "")
+        .distinct()
+    )
+    try:
+        excluded_result = await session.execute(excluded_stmt)
+    except OperationalError as exc:
+        if "recovery_status" not in str(exc):
+            raise
+        raise RuntimeError(
+            "vw_orders.recovery_status is required for payment reports"
+        ) from exc
+
+    return {
+        (
+            str(record["cost_center"] or ""),
+            str(record["normalized_order_number"] or ""),
+        )
+        for record in excluded_result.mappings()
+        if record["cost_center"] and record["normalized_order_number"]
+    }
+
+
+def _exclude_recovery_identities(
+    *,
+    stmt: Any,
+    orders: Any,
+    excluded_identities: set[tuple[str, str]],
+) -> Any:
+    if not excluded_identities:
+        return stmt
+
+    normalized_order = _normalised_order_sql(orders.c.order_number)
+    order_numbers_by_cost_center: dict[str, set[str]] = {}
+    for cost_center, normalized_order_number in excluded_identities:
+        order_numbers_by_cost_center.setdefault(cost_center, set()).add(
+            normalized_order_number
+        )
+
+    predicates = [
+        sa.and_(
+            orders.c.cost_center == cost_center,
+            normalized_order.in_(tuple(sorted(order_numbers))),
+        )
+        for cost_center, order_numbers in order_numbers_by_cost_center.items()
+    ]
+    return stmt.where(sa.not_(sa.or_(*predicates)))
 
 
 async def _fetch_payment_rows_for_orders(
