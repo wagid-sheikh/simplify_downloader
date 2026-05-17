@@ -4,12 +4,12 @@ import argparse
 import asyncio
 import contextlib
 import html
-import json
 import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
@@ -177,6 +177,15 @@ ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS: tuple[str, ...] = (
     "customer_type",
     "last_seen_status",
 )
+TD_ORDER_HISTORY_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
+    "order_history_lookup_store_code",
+    "order_history_lookup_mobile_last4",
+    "order_history_lookup_normalized_mobile_last4",
+    "order_history_candidate_rows_for_store",
+    "order_history_matched_rows_for_mobile",
+    "order_history_warning_marker",
+)
+
 ACTION_REQUIRED_COMPLETED_WITHOUT_ORDER_OUTPUT_COLUMNS: tuple[str, ...] = (
     "store_code",
     "pickup_no",
@@ -280,7 +289,7 @@ async def fetch_open_current_td_leads(*, database_url: str, reference_ts: dateti
                 reference_ts=reference_ts or aware_now(_UTC),
             )
             rows.append(payload)
-    return rows
+    return await _enrich_td_lead_rows_with_order_history(database_url=database_url, rows=rows)
 
 
 async def fetch_business_day_cancelled_td_leads(
@@ -354,14 +363,216 @@ async def fetch_business_day_cancelled_td_leads(
                 reason=payload.get("cancel_reason"),
             )
             rows.append(payload)
-    return rows
+    return await _enrich_td_lead_rows_with_order_history(database_url=database_url, rows=rows)
 
 
 def _normalize_mobile_number(value: Any) -> str | None:
-    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    raw_value = str(value or "").strip().strip("'")
+    if not raw_value:
+        return None
+
+    numeric_value = _mobile_number_from_export_numeric(raw_value)
+    if numeric_value is not None:
+        return numeric_value[-10:] if len(numeric_value) >= 10 else numeric_value
+
+    digits = "".join(ch for ch in raw_value if ch.isdigit())
     if not digits:
         return None
     return digits[-10:] if len(digits) >= 10 else digits
+
+
+def _mobile_number_from_export_numeric(raw_value: str) -> str | None:
+    """Normalize Excel/CSV numeric phone exports without treating punctuation as digits."""
+    numeric_text = raw_value.replace(",", "")
+    if not re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", numeric_text):
+        return None
+
+    with contextlib.suppress(InvalidOperation, ValueError):
+        parsed = Decimal(numeric_text)
+        integral = parsed.to_integral_value()
+        if parsed == integral:
+            return str(abs(int(integral)))
+    return None
+
+
+def _as_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _format_td_average_order_amount(value: Any) -> str:
+    amount = _as_decimal(value)
+    if amount is None:
+        amount = Decimal("0")
+    return f"₹{amount:,.2f}"
+
+
+def _source_customer_type(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _resolve_td_customer_type_display(*, source_customer_type: Any, previous_number_of_orders: int) -> str:
+    raw_customer_type = _source_customer_type(source_customer_type)
+    normalized_customer_type = raw_customer_type.lower()
+    if not raw_customer_type:
+        return "Existing" if previous_number_of_orders > 0 else "New"
+    if normalized_customer_type == "existing":
+        return "Existing"
+    if normalized_customer_type == "new":
+        return "New"
+    return raw_customer_type
+
+
+def _td_order_metrics_suffix(row: Mapping[str, Any]) -> str:
+    if str(row.get("customer_type") or "").strip().lower() != "existing":
+        return ""
+    previous_number_of_orders = int(row.get("previous_number_of_orders") or 0)
+    average_order_amount = _format_td_average_order_amount(row.get("average_order_amount"))
+    return f"Orders: {previous_number_of_orders} | Avg. Value: {average_order_amount}"
+
+
+def _format_td_customer_type_for_email(row: Mapping[str, Any]) -> str:
+    customer_type = _normalized_td_lead_payload_value(row.get("customer_type"))
+    if (
+        customer_type.strip().lower() == "existing"
+        and str(row.get("order_history_unavailable_reason") or "").strip()
+    ):
+        reason = _normalized_td_lead_payload_value(row.get("order_history_unavailable_reason"))
+        return f"{customer_type} | Order history unavailable: {reason}"
+    metrics_suffix = _td_order_metrics_suffix(row)
+    return f"{customer_type} | {metrics_suffix}" if metrics_suffix else customer_type
+
+
+def _mobile_last4(value: Any) -> str | None:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    return digits[-4:] if digits else None
+
+
+def _mask_mobile_for_debug(value: Any) -> str | None:
+    normalized_mobile = _normalize_mobile_number(value)
+    if not normalized_mobile:
+        return None
+    return f"***{normalized_mobile[-4:]}"
+
+
+def _build_td_mobile_match_debug_diagnostics(*, lead_mobile: Any, order_mobile: Any) -> dict[str, str | None]:
+    """Return masked mobile diagnostics for opt-in TD lead/order matching investigations."""
+    normalized_lead_mobile = _normalize_mobile_number(lead_mobile)
+    normalized_order_mobile = _normalize_mobile_number(order_mobile)
+    return {
+        "original_lead_mobile_masked": _mask_mobile_for_debug(lead_mobile),
+        "normalized_lead_mobile_last4": _mobile_last4(normalized_lead_mobile),
+        "original_order_mobile_masked": _mask_mobile_for_debug(order_mobile),
+        "normalized_order_mobile_last4": _mobile_last4(normalized_order_mobile),
+    }
+
+
+def _set_td_order_history_diagnostics(
+    *,
+    row: dict[str, Any],
+    lookup_store_code: str,
+    lookup_mobile: Any,
+    normalized_mobile: str | None,
+    candidate_rows_for_store: int,
+    matched_rows_for_mobile: int,
+) -> None:
+    row["order_history_lookup_store_code"] = lookup_store_code or None
+    row["order_history_lookup_mobile_last4"] = _mobile_last4(lookup_mobile)
+    row["order_history_lookup_normalized_mobile_last4"] = _mobile_last4(normalized_mobile)
+    row["order_history_candidate_rows_for_store"] = candidate_rows_for_store
+    row["order_history_matched_rows_for_mobile"] = matched_rows_for_mobile
+
+
+async def _enrich_td_lead_rows_with_order_history(*, database_url: str | None, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not database_url or not rows:
+        return rows
+
+    mobiles_by_store: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        store_code = str(row.get("store_code") or "").strip()
+        normalized_mobile = _normalize_mobile_number(row.get("mobile"))
+        if store_code and normalized_mobile:
+            mobiles_by_store[store_code].add(normalized_mobile)
+
+    metrics_by_store_mobile: dict[tuple[str, str], dict[str, Any]] = {}
+    candidate_rows_by_store: dict[str, int] = defaultdict(int)
+    matched_rows_by_store_mobile: dict[tuple[str, str], int] = defaultdict(int)
+    if mobiles_by_store:
+        vw_orders = sa.table(
+            "vw_orders",
+            sa.column("store_code"),
+            sa.column("mobile_number"),
+            sa.column("order_amount"),
+        )
+        async with session_scope(database_url) as session:
+            for store_code, normalized_mobiles in mobiles_by_store.items():
+                order_rows = (
+                    await session.execute(
+                        sa.select(vw_orders.c.mobile_number, vw_orders.c.order_amount).where(
+                            vw_orders.c.store_code == store_code
+                        )
+                    )
+                ).mappings().all()
+                candidate_rows_by_store[store_code] = len(order_rows)
+                amounts_by_mobile: dict[str, list[Decimal]] = defaultdict(list)
+                counts_by_mobile: dict[str, int] = defaultdict(int)
+                for order_row in order_rows:
+                    normalized_order_mobile = _normalize_mobile_number(order_row.get("mobile_number"))
+                    if normalized_order_mobile not in normalized_mobiles:
+                        continue
+                    counts_by_mobile[normalized_order_mobile] += 1
+                    amount = _as_decimal(order_row.get("order_amount"))
+                    if amount is not None:
+                        amounts_by_mobile[normalized_order_mobile].append(amount)
+
+                for normalized_mobile in normalized_mobiles:
+                    order_count = counts_by_mobile.get(normalized_mobile, 0)
+                    amounts = amounts_by_mobile.get(normalized_mobile, [])
+                    matched_rows_by_store_mobile[(store_code, normalized_mobile)] = order_count
+                    metrics_by_store_mobile[(store_code, normalized_mobile)] = {
+                        "previous_number_of_orders": order_count,
+                        "average_order_amount": (sum(amounts) / Decimal(len(amounts))) if amounts else None,
+                    }
+
+    for row in rows:
+        store_code = str(row.get("store_code") or "").strip()
+        normalized_mobile = _normalize_mobile_number(row.get("mobile"))
+        metrics = metrics_by_store_mobile.get((store_code, normalized_mobile or ""), {})
+        previous_number_of_orders = int(metrics.get("previous_number_of_orders") or 0)
+        row["previous_number_of_orders"] = previous_number_of_orders
+        row["average_order_amount"] = metrics.get("average_order_amount")
+        row["customer_type"] = _resolve_td_customer_type_display(
+            source_customer_type=row.get("customer_type"),
+            previous_number_of_orders=previous_number_of_orders,
+        )
+        _set_td_order_history_diagnostics(
+            row=row,
+            lookup_store_code=store_code,
+            lookup_mobile=row.get("mobile"),
+            normalized_mobile=normalized_mobile,
+            candidate_rows_for_store=candidate_rows_by_store.get(store_code, 0),
+            matched_rows_for_mobile=matched_rows_by_store_mobile.get((store_code, normalized_mobile or ""), 0),
+        )
+        if str(row.get("customer_type") or "").strip().lower() == "existing" and previous_number_of_orders == 0:
+            row["order_history_warning_marker"] = "existing_customer_zero_order_history"
+        else:
+            row.pop("order_history_warning_marker", None)
+    return rows
+
+
+def _without_td_order_history_diagnostics(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in row.items() if key not in TD_ORDER_HISTORY_DIAGNOSTIC_FIELDS}
+
+
+async def _enrich_td_summary_with_order_history(*, database_url: str | None, summary: "LeadsRunSummary") -> None:
+    rows: list[dict[str, Any]] = []
+    for result in summary.store_results.values():
+        rows.extend(result.rows)
+    await _enrich_td_lead_rows_with_order_history(database_url=database_url, rows=rows)
 
 
 async def build_td_leads_reporting_payload(
@@ -418,8 +629,8 @@ async def build_td_leads_reporting_payload(
         sa.column("status_bucket"),
         sa.column("scraped_at"),
     )
-    orders = sa.table(
-        "orders",
+    vw_orders = sa.table(
+        "vw_orders",
         sa.column("store_code"),
         sa.column("mobile_number"),
         sa.column("order_number"),
@@ -460,50 +671,32 @@ async def build_td_leads_reporting_payload(
     completed_leads_today: list[dict[str, Any]] = []
     async with session_scope(database_url) as session:
         completed_rows = (await session.execute(completed_query)).mappings().all()
-        lookback_days = _resolve_td_order_match_lookback_days()
-        grace_days = _resolve_td_order_match_grace_days()
         for row in completed_rows:
             completed_at = _parse_td_leads_created_datetime(row.get("completed_at"))
-            lead_created_at = _parse_td_leads_created_datetime(row.get("lead_created_at"))
             lead_mobile = _normalize_mobile_number(row.get("mobile"))
             order_rows: list[Mapping[str, Any]] = []
             reconciliation_note: str | None = None
             if lead_mobile:
-                order_query = sa.select(orders.c.order_number, orders.c.order_date, orders.c.mobile_number).where(
-                    orders.c.store_code == row.get("store_code")
+                order_query = (
+                    sa.select(vw_orders.c.order_number, vw_orders.c.order_date, vw_orders.c.mobile_number)
+                    .where(vw_orders.c.store_code == row.get("store_code"))
+                    .order_by(vw_orders.c.order_date.asc(), vw_orders.c.order_number.asc())
                 )
-
-                date_predicates_applied = False
-                if lead_created_at is not None:
-                    lower_bound = (lead_created_at - timedelta(days=lookback_days)).astimezone(_UTC)
-                    order_query = order_query.where(orders.c.order_date >= lower_bound)
-                    date_predicates_applied = True
-                else:
-                    reconciliation_note = "Date-window degraded: invalid lead_created_at; lower bound not applied"
-
-                if completed_at is not None:
-                    upper_bound = (completed_at + timedelta(days=grace_days)).astimezone(_UTC)
-                    order_query = order_query.where(orders.c.order_date <= upper_bound)
-                    date_predicates_applied = True
-                elif reconciliation_note is None:
-                    reconciliation_note = "Date-window degraded: invalid completed_at; upper bound not applied"
-
-                if reconciliation_note is None and date_predicates_applied:
-                    reconciliation_note = f"Matched within date window (lookback_days={lookback_days}, grace_days={grace_days})"
-
-                order_query = order_query.order_by(orders.c.order_date.asc(), orders.c.order_number.asc())
                 scoped_order_rows = (await session.execute(order_query)).mappings().all()
                 order_rows = [
                     order
                     for order in scoped_order_rows
                     if _normalize_mobile_number(order.get("mobile_number")) == lead_mobile
                 ]
+            else:
+                reconciliation_note = "No normalized lead mobile available for order matching"
+
             matched_order_ids = [str(order.get("order_number") or "").strip() for order in order_rows if order.get("order_number")]
             first_order_date = order_rows[0].get("order_date") if order_rows else None
             last_order_date = order_rows[-1].get("order_date") if order_rows else None
-            match_found = bool(matched_order_ids)
+            match_found = bool(order_rows)
             if not match_found and reconciliation_note is None:
-                reconciliation_note = "No matching orders by store_code+mobile within date window"
+                reconciliation_note = "No matching historical vw_orders by store_code+normalized_mobile"
             completed_leads_today.append(
                 {
                     "store_code": row.get("store_code"),
@@ -520,33 +713,42 @@ async def build_td_leads_reporting_payload(
                         reference_ts=completed_at,
                     ),
                     "order_match_found": match_found,
-                    "matched_order_count": len(matched_order_ids),
+                    "matched_order_count": len(order_rows),
                     "matched_order_ids": matched_order_ids,
                     "first_order_date": first_order_date,
                     "last_order_date": last_order_date,
-                    "reconciliation_note": None if match_found and reconciliation_note and reconciliation_note.startswith("Matched within") else reconciliation_note,
+                    "reconciliation_note": reconciliation_note,
                 }
             )
+
+    await _enrich_td_lead_rows_with_order_history(database_url=database_url, rows=completed_leads_today)
 
     threshold_days = max(0, open_leads_high_age_threshold_days or TD_OPEN_LEADS_AGE_THRESHOLD_DAYS_DEFAULT)
     action_required = {
         "open_leads_high_age_threshold_days": threshold_days,
         "open_leads_high_age": [
-            row for row in open_leads if isinstance(row.get("lead_age_days"), int) and int(row["lead_age_days"]) >= threshold_days
+            _without_td_order_history_diagnostics(row)
+            for row in open_leads
+            if isinstance(row.get("lead_age_days"), int) and int(row["lead_age_days"]) >= threshold_days
         ],
-        "completed_without_order_match": [row for row in completed_leads_today if not row.get("order_match_found")],
+        "completed_without_order_match": [
+            _without_td_order_history_diagnostics(row) for row in completed_leads_today if not row.get("order_match_found")
+        ],
     }
 
     return {
         "warning": None,
         "report_date": day_start_local.date().isoformat(),
         "reference_ts": anchor_ts.isoformat(),
-        "open_leads": sorted(open_leads, key=lambda row: (str(row.get("store_code") or ""), str(row.get("pickup_no") or ""))),
+        "open_leads": sorted(
+            (_without_td_order_history_diagnostics(row) for row in open_leads),
+            key=lambda row: (str(row.get("store_code") or ""), str(row.get("pickup_no") or "")),
+        ),
         "cancelled_leads_today": sorted(
-            cancelled_leads_today,
+            (_without_td_order_history_diagnostics(row) for row in cancelled_leads_today),
             key=lambda row: (str(row.get("store_code") or ""), str(row.get("pickup_no") or ""), str(row.get("cancelled_at") or "")),
         ),
-        "completed_leads_today": completed_leads_today,
+        "completed_leads_today": [_without_td_order_history_diagnostics(row) for row in completed_leads_today],
         "action_required": action_required,
     }
 
@@ -701,28 +903,34 @@ def _is_customer_cancelled_td_lead(row: Mapping[str, Any]) -> bool:
 
 
 def _format_pickup_created_display(row: Mapping[str, Any]) -> str:
-    created_text = str(row.get("pickup_created_text") or "").strip()
-    if created_text:
-        return created_text
-
     created_at = row.get("pickup_created_at")
+    if created_at is None:
+        created_at = row.get("lead_created_at")
+
     if isinstance(created_at, datetime):
         normalized = created_at
         if normalized.tzinfo is None or normalized.utcoffset() is None:
             normalized = normalized.replace(tzinfo=timezone.utc)
-        return normalized.astimezone(timezone.utc).strftime("%d %b %Y %I:%M:%S %p UTC")
+        return normalized.astimezone(get_timezone()).strftime("%d %b %Y %I:%M:%S %p %Z")
 
     created_at_text = str(created_at or "").strip()
     if created_at_text:
+        parsed_created_at = _parse_td_leads_created_datetime(created_at_text)
+        if parsed_created_at is not None:
+            if parsed_created_at.tzinfo is None or parsed_created_at.utcoffset() is None:
+                parsed_created_at = parsed_created_at.replace(tzinfo=timezone.utc)
+            return parsed_created_at.astimezone(get_timezone()).strftime("%d %b %Y %I:%M:%S %p %Z")
         return created_at_text
+
+    created_text = str(row.get("pickup_created_text") or "").strip()
+    if created_text:
+        return created_text
 
     pickup_date_text = str(row.get("pickup_date") or "").strip()
     if pickup_date_text:
         return pickup_date_text
 
     return "None"
-
-
 
 
 def _count_td_leads_created_events(result: "StoreLeadResult") -> int:
@@ -768,7 +976,7 @@ def _build_td_new_lead_payload(*, store_code: str, row: Mapping[str, Any]) -> st
         _normalized_td_lead_payload_value(row.get("customer_name")),
         _normalized_td_lead_payload_value(row.get("mobile")),
         _normalized_td_lead_payload_value(row.get("source")),
-        _normalized_td_lead_payload_value(row.get("customer_type")),
+        _format_td_customer_type_for_email(row),
         _normalized_td_lead_payload_value(_format_pickup_created_display(row)),
     )
     return ", ".join(ordered_values)
@@ -780,30 +988,9 @@ def _build_td_cancelled_lead_payload(*, store_code: str, row: Mapping[str, Any])
         _normalized_td_lead_payload_value(row.get("customer_name")),
         _normalized_td_lead_payload_value(row.get("mobile")),
         _normalized_td_lead_payload_value(row.get("reason")),
+        _normalized_td_lead_payload_value(_format_pickup_created_display(row)),
     )
     return ", ".join(ordered_values)
-
-
-def _build_td_lead_copy_control_html(*, payload: str, button_id: str) -> str:
-    escaped_payload = html.escape(payload)
-    payload_json = json.dumps(payload)
-    onclick_js = (
-        "var v="
-        f"{payload_json};"
-        "if(navigator.clipboard&&navigator.clipboard.writeText){"
-        "navigator.clipboard.writeText(v).catch(function(){"
-        "var t=document.createElement(\"textarea\");t.value=v;document.body.appendChild(t);"
-        "t.select();document.execCommand(\"copy\");document.body.removeChild(t);"
-        "});"
-        "}else{var t=document.createElement(\"textarea\");t.value=v;document.body.appendChild(t);"
-        "t.select();document.execCommand(\"copy\");document.body.removeChild(t);}"
-        "return false;"
-    )
-    return (
-        f"<a id='{html.escape(button_id, quote=True)}' href='javascript:void(0)' "
-        f"onclick='{html.escape(onclick_js, quote=True)}'>📋 Copy</a>"
-        f"<div style='margin-top:4px;'><code style='white-space:pre-wrap;'>{escaped_payload}</code></div>"
-    )
 
 
 def _build_td_cancelled_context(*, row: Mapping[str, Any]) -> str:
@@ -816,6 +1003,32 @@ def _build_td_cancelled_context(*, row: Mapping[str, Any]) -> str:
         classification = "Store Cancelled"
     reason = str(row.get("reason") or "").strip() or "None"
     return f"{classification} | {reason}"
+
+
+
+
+def _present_mapping_value(row: Mapping[str, Any], key: str) -> Any:
+    return row.get(key) if key in row else None
+
+
+def _td_created_lead_order_metrics_source(
+    *,
+    matching_row_found: bool,
+    matching_row: Mapping[str, Any],
+    created_row: Mapping[str, Any],
+) -> str:
+    if matching_row_found and ("previous_number_of_orders" in matching_row or "average_order_amount" in matching_row):
+        return "enriched_result_rows"
+    if "previous_number_of_orders" in created_row or "average_order_amount" in created_row:
+        return "lead_change_details"
+    return "no_match"
+
+
+def _td_order_metrics_source_marker(*, store_code: str, pickup_no: str, source: str) -> str:
+    safe_store_code = html.escape(str(store_code or "").strip(), quote=True)
+    safe_pickup_no = html.escape(str(pickup_no or "").strip(), quote=True)
+    safe_source = html.escape(str(source or "no_match").strip(), quote=True)
+    return f"<!-- order_metrics_source store={safe_store_code} pickup_no={safe_pickup_no} source={safe_source} -->"
 
 
 def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
@@ -848,6 +1061,7 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
         lead_change_details = result.lead_change_details if isinstance(result.lead_change_details, Mapping) else {}
         created_groups = lead_change_details.get("created_by_bucket") if isinstance(lead_change_details.get("created_by_bucket"), list) else []
         created_rows: list[list[str]] = []
+        created_order_metric_markers: list[str] = []
         for group in created_groups:
             if not isinstance(group, Mapping):
                 continue
@@ -856,20 +1070,49 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                 lead_identity = created_row.get("lead_identity") if isinstance(created_row.get("lead_identity"), Mapping) else {}
                 pickup_no = str(lead_identity.get("pickup_no") or "").strip().upper()
                 pickup_id = str(lead_identity.get("pickup_id") or "").strip().upper()
-                matching_row = row_by_pickup_no.get(pickup_no) or row_by_pickup_id.get(pickup_id) or {}
+                matching_row = row_by_pickup_no.get(pickup_no)
+                if matching_row is None:
+                    matching_row = row_by_pickup_id.get(pickup_id)
+                matching_row_found = matching_row is not None
+                if matching_row is None:
+                    matching_row = {}
+                created_customer_type = str(created_row.get("customer_type") or "").strip()
+                order_metrics_source = _td_created_lead_order_metrics_source(
+                    matching_row_found=matching_row_found,
+                    matching_row=matching_row,
+                    created_row=created_row,
+                )
+                previous_number_of_orders = (
+                    _present_mapping_value(matching_row, "previous_number_of_orders")
+                    if "previous_number_of_orders" in matching_row
+                    else _present_mapping_value(created_row, "previous_number_of_orders")
+                )
+                average_order_amount = (
+                    _present_mapping_value(matching_row, "average_order_amount")
+                    if "average_order_amount" in matching_row
+                    else _present_mapping_value(created_row, "average_order_amount")
+                )
                 payload_row = {
                     "customer_name": created_row.get("customer_name") or matching_row.get("customer_name"),
                     "mobile": created_row.get("mobile") or matching_row.get("mobile"),
                     "source": created_row.get("source") or matching_row.get("source"),
-                    "customer_type": created_row.get("customer_type") or matching_row.get("customer_type"),
+                    "customer_type": matching_row.get("customer_type") or created_row.get("customer_type"),
+                    "previous_number_of_orders": previous_number_of_orders,
+                    "average_order_amount": average_order_amount,
+                    "pickup_created_at": matching_row.get("pickup_created_at") or created_row.get("pickup_created_at"),
+                    "pickup_created_text": matching_row.get("pickup_created_text") or created_row.get("pickup_created_text"),
+                    "lead_created_at": matching_row.get("lead_created_at") or created_row.get("lead_created_at"),
                 }
+                if not matching_row_found and created_customer_type.lower() == "existing":
+                    payload_row["order_history_unavailable_reason"] = "lead row not matched"
                 payload = _build_td_new_lead_payload(store_code=result.store_code, row=payload_row)
-                copy_id = f"td-new-copy-{html.escape(result.store_code.lower(), quote=True)}-{len(created_rows)}"
-                created_rows.append(
-                    [
-                        payload,
-                        _build_td_lead_copy_control_html(payload=payload, button_id=copy_id),
-                    ]
+                created_rows.append([payload])
+                created_order_metric_markers.append(
+                    _td_order_metrics_source_marker(
+                        store_code=result.store_code,
+                        pickup_no=pickup_no or pickup_id,
+                        source=order_metrics_source,
+                    )
                 )
 
         transition_groups = (
@@ -935,12 +1178,10 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
             if _is_customer_cancelled_td_lead({"reason": resolved_reason}):
                 continue
             payload = _build_td_cancelled_lead_payload(store_code=result.store_code, row=matching_row)
-            copy_id = f"td-cancel-copy-{html.escape(result.store_code.lower(), quote=True)}-{len(cancelled_detail_rows)}"
             cancelled_detail_rows.append(
                 [
                     payload,
                     _build_td_cancelled_context(row=matching_row),
-                    _build_td_lead_copy_control_html(payload=payload, button_id=copy_id),
                 ]
             )
 
@@ -960,17 +1201,18 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
         blocks.append(
             _build_td_leads_section_table_html_with_rich_cells(
                 section_label=f"New Leads created ({len(created_rows)})",
-                headers=("Lead Details", "Copy"),
+                headers=("Lead Details",),
                 rows=created_rows,
-                rich_html_columns={1},
+                rich_html_columns=None,
             )
         )
+        blocks.extend(created_order_metric_markers)
         blocks.append(
             _build_td_leads_section_table_html_with_rich_cells(
                 section_label=f"Leads Marked as Cancelled ({cancelled_total} transitions this run)",
-                headers=("Lead Details", "Cancellation Context", "Copy"),
+                headers=("Lead Details", "Cancellation Context"),
                 rows=cancelled_detail_rows,
-                rich_html_columns={2},
+                rich_html_columns=None,
             )
         )
         blocks.append(
@@ -994,6 +1236,17 @@ def _resolve_td_order_match_lookback_days() -> int:
 
 def _resolve_td_order_match_grace_days() -> int:
     return max(0, _env_int("TD_LEADS_ORDER_MATCH_GRACE_DAYS", TD_LEADS_ORDER_MATCH_GRACE_DAYS_DEFAULT))
+
+
+def _td_completed_lead_has_order_match(row: Mapping[str, Any]) -> bool:
+    if row.get("order_match_found") is True:
+        return True
+    try:
+        if int(row.get("previous_number_of_orders") or 0) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return bool(row.get("order_no") or row.get("order_number") or row.get("matched_order_no"))
 
 
 def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
@@ -1021,8 +1274,7 @@ def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
                         "last_seen_status": status_bucket or None,
                     })
             if status_bucket == "completed":
-                order_match_found = bool(row.get("order_no") or row.get("order_number") or row.get("matched_order_no"))
-                if not order_match_found:
+                if not _td_completed_lead_has_order_match(row):
                     completed_without_order_match.append({
                         "store_code": result.store_code,
                         "pickup_no": row.get("pickup_no"),
@@ -1046,8 +1298,23 @@ def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str
     high_age_rows_payload = daily_reporting.get("open_leads_high_age") if isinstance(daily_reporting.get("open_leads_high_age"), list) else []
     completed_rows_payload = daily_reporting.get("completed_leads_without_order_match") if isinstance(daily_reporting.get("completed_leads_without_order_match"), list) else []
 
-    high_age_rows = [[str(row.get(column) or "None") for column in ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS] for row in high_age_rows_payload if isinstance(row, Mapping)]
-    completed_rows = [[str(row.get(column) or "None") for column in ACTION_REQUIRED_COMPLETED_WITHOUT_ORDER_OUTPUT_COLUMNS] for row in completed_rows_payload if isinstance(row, Mapping)]
+    def _action_cell(row: Mapping[str, Any], column: str) -> str:
+        if column == "customer_type":
+            return _format_td_customer_type_for_email(row)
+        if column == "lead_created_at":
+            return _format_pickup_created_display(row)
+        return str(row.get(column) or "None")
+
+    high_age_rows = [
+        [_action_cell(row, column) for column in ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS]
+        for row in high_age_rows_payload
+        if isinstance(row, Mapping)
+    ]
+    completed_rows = [
+        [_action_cell(row, column) for column in ACTION_REQUIRED_COMPLETED_WITHOUT_ORDER_OUTPUT_COLUMNS]
+        for row in completed_rows_payload
+        if isinstance(row, Mapping)
+    ]
 
     blocks = ["<div>", "<h4 style='margin:16px 0 8px 0;'>Action Required</h4>"]
     blocks.append(
@@ -1236,6 +1503,8 @@ class LeadsRunSummary:
         )
         lead_tables_html = _build_td_leads_tables_html(summary=self)
 
+        order_history_warning_markers = _collect_td_order_history_warning_markers(self)
+
         frozen_day_report_datasets: dict[str, Any] | None = None
         if reporting_mode in {"meeting", "day_end"}:
             frozen_day_report_datasets = {
@@ -1271,6 +1540,7 @@ class LeadsRunSummary:
                     "daily_reporting": daily_reporting,
                     "frozen_day_report_datasets": frozen_day_report_datasets,
                     "reporting_schema_errors": list(reporting_schema_errors or []),
+                    "order_history_warning_markers": order_history_warning_markers,
                     "stores": store_rows_payload,
                     "lead_change_details": {
                         result.store_code: dict(result.lead_change_details) for result in self.store_results.values()
@@ -1280,6 +1550,30 @@ class LeadsRunSummary:
             ),
             "created_at": self.started_at,
         }
+
+
+
+
+def _collect_td_order_history_warning_markers(summary: "LeadsRunSummary") -> list[dict[str, Any]]:
+    markers: list[dict[str, Any]] = []
+    for result in sorted(summary.store_results.values(), key=lambda item: item.store_code):
+        for row in result.rows:
+            marker = str(row.get("order_history_warning_marker") or "").strip()
+            if marker != "existing_customer_zero_order_history":
+                continue
+            markers.append(
+                {
+                    "marker": marker,
+                    "store_code": result.store_code,
+                    "pickup_no": row.get("pickup_no"),
+                    "mobile_last4": row.get("order_history_lookup_normalized_mobile_last4")
+                    or row.get("order_history_lookup_mobile_last4"),
+                    "previous_number_of_orders": row.get("previous_number_of_orders"),
+                    "order_history_candidate_rows_for_store": row.get("order_history_candidate_rows_for_store"),
+                    "order_history_matched_rows_for_mobile": row.get("order_history_matched_rows_for_mobile"),
+                }
+            )
+    return markers
 
 
 @dataclass
@@ -1334,6 +1628,7 @@ async def _persist_run_summary(
         )
         return False
 
+    await _enrich_td_summary_with_order_history(database_url=config.database_url, summary=summary)
     record = summary.build_record(
         finished_at=finished_at,
         reporting_mode=reporting_mode,
