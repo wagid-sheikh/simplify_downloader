@@ -1272,7 +1272,7 @@ def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
                 lead_created_at = row.get("pickup_created_at")
                 lead_age_days = _calculate_lead_age_days(lead_created_at=lead_created_at, reference_ts=aware_now(_UTC))
                 if lead_age_days is not None and lead_age_days >= threshold_days:
-                    high_age_open_leads.append({
+                    payload = {
                         "store_code": result.store_code,
                         "pickup_no": row.get("pickup_no"),
                         "customer_name": row.get("customer_name"),
@@ -1282,10 +1282,18 @@ def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
                         "source": row.get("source"),
                         "customer_type": row.get("customer_type"),
                         "last_seen_status": status_bucket or None,
-                    })
+                    }
+                    for order_history_key in (
+                        "previous_number_of_orders",
+                        "average_order_amount",
+                        "order_history_warning_marker",
+                    ):
+                        if order_history_key in row:
+                            payload[order_history_key] = row.get(order_history_key)
+                    high_age_open_leads.append(payload)
             if status_bucket == "completed":
                 if not _td_completed_lead_has_order_match(row):
-                    completed_without_order_match.append({
+                    payload = {
                         "store_code": result.store_code,
                         "pickup_no": row.get("pickup_no"),
                         "customer_name": row.get("customer_name"),
@@ -1294,7 +1302,15 @@ def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
                         "source": row.get("source"),
                         "customer_type": row.get("customer_type"),
                         "last_seen_status": status_bucket,
-                    })
+                    }
+                    for order_history_key in (
+                        "previous_number_of_orders",
+                        "average_order_amount",
+                        "order_history_warning_marker",
+                    ):
+                        if order_history_key in row:
+                            payload[order_history_key] = row.get(order_history_key)
+                    completed_without_order_match.append(payload)
 
     return {
         "open_leads_high_age_threshold_days": threshold_days,
@@ -2269,6 +2285,8 @@ async def _run_store(
         result.status_transitions = list(ingest_result.status_transitions) if ingest_result else []
         result.lead_change_details = dict(ingest_result.lead_change_details) if ingest_result else {}
         result.task_stub = dict(ingest_result.task_stub) if ingest_result else None
+        if config.database_url:
+            await _enrich_td_lead_rows_with_order_history(database_url=config.database_url, rows=result.rows)
         result.status = "warning" if warnings else "ok"
         result.message = "Completed" if not warnings else "Completed with warnings"
 
