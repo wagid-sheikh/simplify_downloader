@@ -42,6 +42,7 @@ from app.reports.shared.same_day_fulfillment import (
 )
 
 from .data import DailySalesReportData, fetch_daily_sales_report
+from .temp_debug_recovery_status import log_temp_debug_recovery_status_check
 from .to_be_recovered import (
     DOCUMENT_TYPE as TO_BE_RECOVERED_DOCUMENT_TYPE,
     PIPELINE_OUTPUT_PREFIX as TO_BE_RECOVERED_OUTPUT_PREFIX,
@@ -170,6 +171,59 @@ def _build_context(
     }
 
 
+def _temp_debug_short_payment_order_date_value(value: object | None) -> str | None:
+    # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def _temp_debug_short_payment_amount_value(value: object | None) -> str | None:
+    # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
+    if value is None:
+        return None
+    return str(value)
+
+
+def _temp_debug_short_payment_string_value(value: object | None) -> str | None:
+    # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
+    if value is None or isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _temp_debug_short_payment_row_key(row: object) -> dict[str, object]:
+    # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
+    return {
+        "cost_center": _temp_debug_short_payment_string_value(
+            getattr(row, "cost_center", None)
+        ),
+        "order_number": _temp_debug_short_payment_string_value(
+            getattr(row, "order_number", None)
+        ),
+        "order_date": _temp_debug_short_payment_order_date_value(
+            getattr(row, "order_date", None)
+        ),
+        "order_amount": _temp_debug_short_payment_amount_value(
+            getattr(row, "order_amount", None)
+        ),
+        "paid_amount": _temp_debug_short_payment_amount_value(
+            getattr(row, "paid_amount", None)
+        ),
+        "shortage_amount": _temp_debug_short_payment_amount_value(
+            getattr(row, "shortage_amount", None)
+        ),
+        "recovery_status": _temp_debug_short_payment_string_value(
+            getattr(row, "recovery_status", None)
+        ),
+        "recovery_category": _temp_debug_short_payment_string_value(
+            getattr(row, "recovery_category", None)
+        ),
+    }
+
+
 def _temp_debug_short_payment_row_keys(
     rows: object,
 ) -> tuple[list[dict[str, object]], bool]:
@@ -177,19 +231,7 @@ def _temp_debug_short_payment_row_keys(
     safe_rows = list(rows or []) if isinstance(rows, list | tuple) else []
     capped_rows = safe_rows[:TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_ROW_KEY_LIMIT]
     return (
-        [
-            {
-                "cost_center": getattr(row, "cost_center", None),
-                "order_number": getattr(row, "order_number", None),
-                "order_date": getattr(row, "order_date", None),
-                "order_amount": getattr(row, "order_amount", None),
-                "paid_amount": getattr(row, "paid_amount", None),
-                "shortage_amount": getattr(row, "shortage_amount", None),
-                "recovery_status": getattr(row, "recovery_status", None),
-                "recovery_category": getattr(row, "recovery_category", None),
-            }
-            for row in capped_rows
-        ],
+        [_temp_debug_short_payment_row_key(row) for row in capped_rows],
         len(safe_rows) > TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_ROW_KEY_LIMIT,
     )
 
@@ -206,18 +248,7 @@ def _temp_debug_short_payment_recovery_leak_rows(
             recovery_status
             in TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_RECOVERY_STATUSES
         ):
-            leaked_rows.append(
-                {
-                    "cost_center": getattr(row, "cost_center", None),
-                    "order_number": getattr(row, "order_number", None),
-                    "order_date": getattr(row, "order_date", None),
-                    "order_amount": getattr(row, "order_amount", None),
-                    "paid_amount": getattr(row, "paid_amount", None),
-                    "shortage_amount": getattr(row, "shortage_amount", None),
-                    "recovery_status": getattr(row, "recovery_status", None),
-                    "recovery_category": getattr(row, "recovery_category", None),
-                }
-            )
+            leaked_rows.append(_temp_debug_short_payment_row_key(row))
     return leaked_rows
 
 
@@ -287,6 +318,14 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             report_date=resolved_date.isoformat(),
             run_env=run_env,
             force=force,
+        )
+
+        # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
+        await log_temp_debug_recovery_status_check(
+            database_url=database_url,
+            logger=logger,
+            boundary="pre_fetch_daily_sales_report",
+            report_date=resolved_date,
         )
 
         data = await fetch_daily_sales_report(
