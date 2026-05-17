@@ -1081,6 +1081,17 @@ def _resolve_td_order_match_grace_days() -> int:
     return max(0, _env_int("TD_LEADS_ORDER_MATCH_GRACE_DAYS", TD_LEADS_ORDER_MATCH_GRACE_DAYS_DEFAULT))
 
 
+def _td_completed_lead_has_order_match(row: Mapping[str, Any]) -> bool:
+    if row.get("order_match_found") is True:
+        return True
+    try:
+        if int(row.get("previous_number_of_orders") or 0) > 0:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return bool(row.get("order_no") or row.get("order_number") or row.get("matched_order_no"))
+
+
 def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
     open_statuses = set(_resolved_open_status_buckets())
     threshold_days = _resolve_td_open_lead_age_threshold_days()
@@ -1106,8 +1117,7 @@ def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
                         "last_seen_status": status_bucket or None,
                     })
             if status_bucket == "completed":
-                order_match_found = bool(row.get("order_no") or row.get("order_number") or row.get("matched_order_no"))
-                if not order_match_found:
+                if not _td_completed_lead_has_order_match(row):
                     completed_without_order_match.append({
                         "store_code": result.store_code,
                         "pickup_no": row.get("pickup_no"),
