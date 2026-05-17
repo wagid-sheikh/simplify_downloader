@@ -177,6 +177,15 @@ ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS: tuple[str, ...] = (
     "customer_type",
     "last_seen_status",
 )
+TD_ORDER_HISTORY_DIAGNOSTIC_FIELDS: tuple[str, ...] = (
+    "order_history_lookup_store_code",
+    "order_history_lookup_mobile_last4",
+    "order_history_lookup_normalized_mobile_last4",
+    "order_history_candidate_rows_for_store",
+    "order_history_matched_rows_for_mobile",
+    "order_history_warning_marker",
+)
+
 ACTION_REQUIRED_COMPLETED_WITHOUT_ORDER_OUTPUT_COLUMNS: tuple[str, ...] = (
     "store_code",
     "pickup_no",
@@ -416,6 +425,27 @@ def _format_td_customer_type_for_email(row: Mapping[str, Any]) -> str:
     return f"{customer_type} | {metrics_suffix}" if metrics_suffix else customer_type
 
 
+def _mobile_last4(value: Any) -> str | None:
+    digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+    return digits[-4:] if digits else None
+
+
+def _set_td_order_history_diagnostics(
+    *,
+    row: dict[str, Any],
+    lookup_store_code: str,
+    lookup_mobile: Any,
+    normalized_mobile: str | None,
+    candidate_rows_for_store: int,
+    matched_rows_for_mobile: int,
+) -> None:
+    row["order_history_lookup_store_code"] = lookup_store_code or None
+    row["order_history_lookup_mobile_last4"] = _mobile_last4(lookup_mobile)
+    row["order_history_lookup_normalized_mobile_last4"] = _mobile_last4(normalized_mobile)
+    row["order_history_candidate_rows_for_store"] = candidate_rows_for_store
+    row["order_history_matched_rows_for_mobile"] = matched_rows_for_mobile
+
+
 async def _enrich_td_lead_rows_with_order_history(*, database_url: str | None, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not database_url or not rows:
         return rows
@@ -428,6 +458,8 @@ async def _enrich_td_lead_rows_with_order_history(*, database_url: str | None, r
             mobiles_by_store[store_code].add(normalized_mobile)
 
     metrics_by_store_mobile: dict[tuple[str, str], dict[str, Any]] = {}
+    candidate_rows_by_store: dict[str, int] = defaultdict(int)
+    matched_rows_by_store_mobile: dict[tuple[str, str], int] = defaultdict(int)
     if mobiles_by_store:
         vw_orders = sa.table(
             "vw_orders",
@@ -444,6 +476,7 @@ async def _enrich_td_lead_rows_with_order_history(*, database_url: str | None, r
                         )
                     )
                 ).mappings().all()
+                candidate_rows_by_store[store_code] = len(order_rows)
                 amounts_by_mobile: dict[str, list[Decimal]] = defaultdict(list)
                 counts_by_mobile: dict[str, int] = defaultdict(int)
                 for order_row in order_rows:
@@ -458,6 +491,7 @@ async def _enrich_td_lead_rows_with_order_history(*, database_url: str | None, r
                 for normalized_mobile in normalized_mobiles:
                     order_count = counts_by_mobile.get(normalized_mobile, 0)
                     amounts = amounts_by_mobile.get(normalized_mobile, [])
+                    matched_rows_by_store_mobile[(store_code, normalized_mobile)] = order_count
                     metrics_by_store_mobile[(store_code, normalized_mobile)] = {
                         "previous_number_of_orders": order_count,
                         "average_order_amount": (sum(amounts) / Decimal(len(amounts))) if amounts else None,
@@ -474,7 +508,23 @@ async def _enrich_td_lead_rows_with_order_history(*, database_url: str | None, r
             source_customer_type=row.get("customer_type"),
             previous_number_of_orders=previous_number_of_orders,
         )
+        _set_td_order_history_diagnostics(
+            row=row,
+            lookup_store_code=store_code,
+            lookup_mobile=row.get("mobile"),
+            normalized_mobile=normalized_mobile,
+            candidate_rows_for_store=candidate_rows_by_store.get(store_code, 0),
+            matched_rows_for_mobile=matched_rows_by_store_mobile.get((store_code, normalized_mobile or ""), 0),
+        )
+        if str(row.get("customer_type") or "").strip().lower() == "existing" and previous_number_of_orders == 0:
+            row["order_history_warning_marker"] = "existing_customer_zero_order_history"
+        else:
+            row.pop("order_history_warning_marker", None)
     return rows
+
+
+def _without_td_order_history_diagnostics(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in row.items() if key not in TD_ORDER_HISTORY_DIAGNOSTIC_FIELDS}
 
 
 async def _enrich_td_summary_with_order_history(*, database_url: str | None, summary: "LeadsRunSummary") -> None:
@@ -636,21 +686,28 @@ async def build_td_leads_reporting_payload(
     action_required = {
         "open_leads_high_age_threshold_days": threshold_days,
         "open_leads_high_age": [
-            row for row in open_leads if isinstance(row.get("lead_age_days"), int) and int(row["lead_age_days"]) >= threshold_days
+            _without_td_order_history_diagnostics(row)
+            for row in open_leads
+            if isinstance(row.get("lead_age_days"), int) and int(row["lead_age_days"]) >= threshold_days
         ],
-        "completed_without_order_match": [row for row in completed_leads_today if not row.get("order_match_found")],
+        "completed_without_order_match": [
+            _without_td_order_history_diagnostics(row) for row in completed_leads_today if not row.get("order_match_found")
+        ],
     }
 
     return {
         "warning": None,
         "report_date": day_start_local.date().isoformat(),
         "reference_ts": anchor_ts.isoformat(),
-        "open_leads": sorted(open_leads, key=lambda row: (str(row.get("store_code") or ""), str(row.get("pickup_no") or ""))),
+        "open_leads": sorted(
+            (_without_td_order_history_diagnostics(row) for row in open_leads),
+            key=lambda row: (str(row.get("store_code") or ""), str(row.get("pickup_no") or "")),
+        ),
         "cancelled_leads_today": sorted(
-            cancelled_leads_today,
+            (_without_td_order_history_diagnostics(row) for row in cancelled_leads_today),
             key=lambda row: (str(row.get("store_code") or ""), str(row.get("pickup_no") or ""), str(row.get("cancelled_at") or "")),
         ),
-        "completed_leads_today": completed_leads_today,
+        "completed_leads_today": [_without_td_order_history_diagnostics(row) for row in completed_leads_today],
         "action_required": action_required,
     }
 
@@ -907,6 +964,32 @@ def _build_td_cancelled_context(*, row: Mapping[str, Any]) -> str:
     return f"{classification} | {reason}"
 
 
+
+
+def _present_mapping_value(row: Mapping[str, Any], key: str) -> Any:
+    return row.get(key) if key in row else None
+
+
+def _td_created_lead_order_metrics_source(
+    *,
+    matching_row_found: bool,
+    matching_row: Mapping[str, Any],
+    created_row: Mapping[str, Any],
+) -> str:
+    if matching_row_found and ("previous_number_of_orders" in matching_row or "average_order_amount" in matching_row):
+        return "enriched_result_rows"
+    if "previous_number_of_orders" in created_row or "average_order_amount" in created_row:
+        return "lead_change_details"
+    return "no_match"
+
+
+def _td_order_metrics_source_marker(*, store_code: str, pickup_no: str, source: str) -> str:
+    safe_store_code = html.escape(str(store_code or "").strip(), quote=True)
+    safe_pickup_no = html.escape(str(pickup_no or "").strip(), quote=True)
+    safe_source = html.escape(str(source or "no_match").strip(), quote=True)
+    return f"<!-- order_metrics_source store={safe_store_code} pickup_no={safe_pickup_no} source={safe_source} -->"
+
+
 def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
     ordered_results = sorted(summary.store_results.values(), key=lambda item: item.store_code)
     if not ordered_results:
@@ -937,6 +1020,7 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
         lead_change_details = result.lead_change_details if isinstance(result.lead_change_details, Mapping) else {}
         created_groups = lead_change_details.get("created_by_bucket") if isinstance(lead_change_details.get("created_by_bucket"), list) else []
         created_rows: list[list[str]] = []
+        created_order_metric_markers: list[str] = []
         for group in created_groups:
             if not isinstance(group, Mapping):
                 continue
@@ -952,15 +1036,28 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                 if matching_row is None:
                     matching_row = {}
                 created_customer_type = str(created_row.get("customer_type") or "").strip()
+                order_metrics_source = _td_created_lead_order_metrics_source(
+                    matching_row_found=matching_row_found,
+                    matching_row=matching_row,
+                    created_row=created_row,
+                )
+                previous_number_of_orders = (
+                    _present_mapping_value(matching_row, "previous_number_of_orders")
+                    if "previous_number_of_orders" in matching_row
+                    else _present_mapping_value(created_row, "previous_number_of_orders")
+                )
+                average_order_amount = (
+                    _present_mapping_value(matching_row, "average_order_amount")
+                    if "average_order_amount" in matching_row
+                    else _present_mapping_value(created_row, "average_order_amount")
+                )
                 payload_row = {
                     "customer_name": created_row.get("customer_name") or matching_row.get("customer_name"),
                     "mobile": created_row.get("mobile") or matching_row.get("mobile"),
                     "source": created_row.get("source") or matching_row.get("source"),
                     "customer_type": matching_row.get("customer_type") or created_row.get("customer_type"),
-                    "previous_number_of_orders": matching_row.get("previous_number_of_orders")
-                    or created_row.get("previous_number_of_orders"),
-                    "average_order_amount": matching_row.get("average_order_amount")
-                    or created_row.get("average_order_amount"),
+                    "previous_number_of_orders": previous_number_of_orders,
+                    "average_order_amount": average_order_amount,
                     "pickup_created_at": matching_row.get("pickup_created_at") or created_row.get("pickup_created_at"),
                     "pickup_created_text": matching_row.get("pickup_created_text") or created_row.get("pickup_created_text"),
                     "lead_created_at": matching_row.get("lead_created_at") or created_row.get("lead_created_at"),
@@ -969,6 +1066,13 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                     payload_row["order_history_unavailable_reason"] = "lead row not matched"
                 payload = _build_td_new_lead_payload(store_code=result.store_code, row=payload_row)
                 created_rows.append([payload])
+                created_order_metric_markers.append(
+                    _td_order_metrics_source_marker(
+                        store_code=result.store_code,
+                        pickup_no=pickup_no or pickup_id,
+                        source=order_metrics_source,
+                    )
+                )
 
         transition_groups = (
             lead_change_details.get("transitions") if isinstance(lead_change_details.get("transitions"), list) else []
@@ -1061,6 +1165,7 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                 rich_html_columns=None,
             )
         )
+        blocks.extend(created_order_metric_markers)
         blocks.append(
             _build_td_leads_section_table_html_with_rich_cells(
                 section_label=f"Leads Marked as Cancelled ({cancelled_total} transitions this run)",
@@ -1357,6 +1462,8 @@ class LeadsRunSummary:
         )
         lead_tables_html = _build_td_leads_tables_html(summary=self)
 
+        order_history_warning_markers = _collect_td_order_history_warning_markers(self)
+
         frozen_day_report_datasets: dict[str, Any] | None = None
         if reporting_mode in {"meeting", "day_end"}:
             frozen_day_report_datasets = {
@@ -1392,6 +1499,7 @@ class LeadsRunSummary:
                     "daily_reporting": daily_reporting,
                     "frozen_day_report_datasets": frozen_day_report_datasets,
                     "reporting_schema_errors": list(reporting_schema_errors or []),
+                    "order_history_warning_markers": order_history_warning_markers,
                     "stores": store_rows_payload,
                     "lead_change_details": {
                         result.store_code: dict(result.lead_change_details) for result in self.store_results.values()
@@ -1401,6 +1509,30 @@ class LeadsRunSummary:
             ),
             "created_at": self.started_at,
         }
+
+
+
+
+def _collect_td_order_history_warning_markers(summary: "LeadsRunSummary") -> list[dict[str, Any]]:
+    markers: list[dict[str, Any]] = []
+    for result in sorted(summary.store_results.values(), key=lambda item: item.store_code):
+        for row in result.rows:
+            marker = str(row.get("order_history_warning_marker") or "").strip()
+            if marker != "existing_customer_zero_order_history":
+                continue
+            markers.append(
+                {
+                    "marker": marker,
+                    "store_code": result.store_code,
+                    "pickup_no": row.get("pickup_no"),
+                    "mobile_last4": row.get("order_history_lookup_normalized_mobile_last4")
+                    or row.get("order_history_lookup_mobile_last4"),
+                    "previous_number_of_orders": row.get("previous_number_of_orders"),
+                    "order_history_candidate_rows_for_store": row.get("order_history_candidate_rows_for_store"),
+                    "order_history_matched_rows_for_mobile": row.get("order_history_matched_rows_for_mobile"),
+                }
+            )
+    return markers
 
 
 @dataclass
