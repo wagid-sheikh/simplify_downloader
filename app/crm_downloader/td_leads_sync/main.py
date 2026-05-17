@@ -165,6 +165,7 @@ COMPLETED_LEADS_TODAY_OUTPUT_COLUMNS: tuple[str, ...] = (
 TD_OPEN_LEADS_AGE_THRESHOLD_DAYS_DEFAULT = 2
 TD_LEADS_ORDER_MATCH_LOOKBACK_DAYS_DEFAULT = 1
 TD_LEADS_ORDER_MATCH_GRACE_DAYS_DEFAULT = 1
+TD_ORDER_HISTORY_EXISTING_ZERO_WARNING_MARKER = "existing_customer_zero_order_history"
 
 ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS: tuple[str, ...] = (
     "store_code",
@@ -445,6 +446,12 @@ def _format_td_customer_type_for_email(row: Mapping[str, Any]) -> str:
     ):
         reason = _normalized_td_lead_payload_value(row.get("order_history_unavailable_reason"))
         return f"{customer_type} | Order history unavailable: {reason}"
+    if (
+        customer_type.strip().lower() == "existing"
+        and str(row.get("order_history_warning_marker") or "").strip()
+        == TD_ORDER_HISTORY_EXISTING_ZERO_WARNING_MARKER
+    ):
+        return f"{customer_type} | Order history not matched"
     metrics_suffix = _td_order_metrics_suffix(row)
     if metrics_suffix:
         return f"{customer_type} | {metrics_suffix}"
@@ -564,7 +571,7 @@ async def _enrich_td_lead_rows_with_order_history(*, database_url: str | None, r
             matched_rows_for_mobile=matched_rows_by_store_mobile.get((store_code, normalized_mobile or ""), 0),
         )
         if str(row.get("customer_type") or "").strip().lower() == "existing" and previous_number_of_orders == 0:
-            row["order_history_warning_marker"] = "existing_customer_zero_order_history"
+            row["order_history_warning_marker"] = TD_ORDER_HISTORY_EXISTING_ZERO_WARNING_MARKER
         else:
             row.pop("order_history_warning_marker", None)
     return rows
@@ -1562,7 +1569,7 @@ def _collect_td_order_history_warning_markers(summary: "LeadsRunSummary") -> lis
     for result in sorted(summary.store_results.values(), key=lambda item: item.store_code):
         for row in result.rows:
             marker = str(row.get("order_history_warning_marker") or "").strip()
-            if marker != "existing_customer_zero_order_history":
+            if marker != TD_ORDER_HISTORY_EXISTING_ZERO_WARNING_MARKER:
                 continue
             markers.append(
                 {

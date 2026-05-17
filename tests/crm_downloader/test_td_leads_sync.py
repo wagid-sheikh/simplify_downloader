@@ -3356,6 +3356,8 @@ async def test_td_leads_order_history_enrichment_adds_safe_diagnostics_for_exist
     assert zero_row["customer_type"] == "Existing"
     assert zero_row["previous_number_of_orders"] == 0
     assert zero_row["order_history_warning_marker"] == "existing_customer_zero_order_history"
+    assert "Existing | Order history not matched" in _build_td_new_lead_payload(store_code="A200", row=zero_row)
+    assert "Orders: 0" not in _build_td_new_lead_payload(store_code="A200", row=zero_row)
     assert zero_row["order_history_candidate_rows_for_store"] == 3
     assert zero_row["order_history_matched_rows_for_mobile"] == 0
 
@@ -3396,6 +3398,84 @@ async def test_td_leads_order_history_enrichment_adds_safe_diagnostics_for_exist
         }
     ]
     assert "9000000002" not in json.dumps(warning_markers, sort_keys=True)
+
+
+@pytest.mark.asyncio
+async def test_td_leads_order_history_enrichment_keeps_null_customer_zero_matches_new_without_warning(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_order_history_null_customer_zero.db'}"
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(sa.text("""
+                CREATE TABLE vw_orders (
+                    store_code TEXT,
+                    mobile_number TEXT,
+                    order_amount NUMERIC
+                )
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO vw_orders (store_code, mobile_number, order_amount) VALUES
+                ('A200', '9000000009', 999.00)
+            """))
+
+        rows = [
+            {
+                "store_code": "A200",
+                "pickup_no": "A200-NEW-ZERO",
+                "mobile": "9000000002",
+                "customer_type": None,
+            }
+        ]
+
+        await td_leads_main._enrich_td_lead_rows_with_order_history(database_url=database_url, rows=rows)
+    finally:
+        await engine.dispose()
+
+    row = rows[0]
+    assert row["customer_type"] == "New"
+    assert row["previous_number_of_orders"] == 0
+    assert "order_history_warning_marker" not in row
+    assert row["order_history_candidate_rows_for_store"] == 1
+    assert row["order_history_matched_rows_for_mobile"] == 0
+
+
+@pytest.mark.asyncio
+async def test_td_leads_order_history_enrichment_counts_zero_value_match_without_warning(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_order_history_zero_value_match.db'}"
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(sa.text("""
+                CREATE TABLE vw_orders (
+                    store_code TEXT,
+                    mobile_number TEXT,
+                    order_amount NUMERIC
+                )
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO vw_orders (store_code, mobile_number, order_amount) VALUES
+                ('A200', '+91 98765 43210', 0.00)
+            """))
+
+        rows = [
+            {
+                "store_code": "A200",
+                "pickup_no": "A200-ZERO-VALUE",
+                "mobile": "9876543210",
+                "customer_type": "Existing",
+            }
+        ]
+
+        await td_leads_main._enrich_td_lead_rows_with_order_history(database_url=database_url, rows=rows)
+    finally:
+        await engine.dispose()
+
+    row = rows[0]
+    assert row["customer_type"] == "Existing"
+    assert row["previous_number_of_orders"] == 1
+    assert str(row["average_order_amount"]) == "0"
+    assert "order_history_warning_marker" not in row
+    assert "Existing | Orders: 1 | Avg. Value: ₹0.00" in _build_td_new_lead_payload(store_code="A200", row=row)
 
 
 @pytest.mark.asyncio
