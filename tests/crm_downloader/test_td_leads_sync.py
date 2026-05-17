@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import time
 from datetime import datetime, timezone
@@ -2720,6 +2719,14 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
                     order_date TEXT
                 )
             """))
+            await connection.execute(sa.text("""
+                CREATE TABLE vw_orders (
+                    store_code TEXT,
+                    mobile_number TEXT,
+                    order_number TEXT,
+                    order_date TEXT
+                )
+            """))
 
             await connection.execute(sa.text("""
                 INSERT INTO crm_leads_current
@@ -2747,6 +2754,11 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
 
             await connection.execute(sa.text("""
                 INSERT INTO orders (store_code, mobile_number, order_number, order_date) VALUES
+                ('A100', '9000000999', 'RAW-SHOULD-NOT-MATCH', '2026-05-01 11:30:00+00:00'),
+                ('A100', '9000000002', 'RAW-SHOULD-NOT-BE-USED', '2026-05-01 10:30:00+00:00')
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO vw_orders (store_code, mobile_number, order_number, order_date) VALUES
                 ('A100', '9000000002', 'SO-OLD', '2026-04-28 10:30:00+00:00'),
                 ('A100', '9000000002', 'SO-100', '2026-05-01 10:30:00+00:00'),
                 ('A100', '+91-90000 00003', 'SO-200', '2026-05-01 09:00:00+00:00'),
@@ -2778,9 +2790,9 @@ async def test_build_td_leads_reporting_payload_db_seeded_behavior_across_sectio
 
     by_pickup = {row["pickup_no"]: row for row in payload["completed_leads_today"]}
     assert by_pickup["A100-D1"]["order_match_found"] is True
-    assert by_pickup["A100-D1"]["matched_order_count"] == 1
-    assert by_pickup["A100-D1"]["matched_order_ids"] == ["SO-100"]
-    assert "SO-OLD" not in by_pickup["A100-D1"]["matched_order_ids"]
+    assert by_pickup["A100-D1"]["matched_order_count"] == 2
+    assert by_pickup["A100-D1"]["matched_order_ids"] == ["SO-OLD", "SO-100"]
+    assert "RAW-SHOULD-NOT-BE-USED" not in by_pickup["A100-D1"]["matched_order_ids"]
 
     assert by_pickup["A100-D2"]["order_match_found"] is False
     assert by_pickup["A100-D2"]["reconciliation_note"]
@@ -2861,6 +2873,8 @@ async def test_td_leads_reporting_enriches_customer_type_and_order_metrics_from_
                 CREATE TABLE vw_orders (
                     store_code TEXT,
                     mobile_number TEXT,
+                    order_number TEXT,
+                    order_date TEXT,
                     order_amount NUMERIC
                 )
             """))
@@ -2883,12 +2897,12 @@ async def test_td_leads_reporting_enriches_customer_type_and_order_metrics_from_
                 ('A200', '9000000004', 'SO-EX', '2026-05-01 10:30:00+00:00')
             """))
             await connection.execute(sa.text("""
-                INSERT INTO vw_orders (store_code, mobile_number, order_amount) VALUES
-                ('A200', '9000000003', 1000.00),
-                ('A200', '+91-90000 00003', 1469.00),
-                ('A200', '9000000004', 1000.00),
-                ('A200', '9000000004', 1469.00),
-                ('A999', '9000000003', 99999.00)
+                INSERT INTO vw_orders (store_code, mobile_number, order_number, order_date, order_amount) VALUES
+                ('A200', '9000000003', 'SO-HIST-1', '2026-04-01 10:00:00+00:00', 1000.00),
+                ('A200', '+91-90000 00003', 'SO-HIST-2', '2026-04-02 10:00:00+00:00', 1469.00),
+                ('A200', '9000000004', 'SO-EX-1', '2026-04-03 10:00:00+00:00', 1000.00),
+                ('A200', '9000000004', 'SO-EX-2', '2026-05-01 10:30:00+00:00', 1469.00),
+                ('A999', '9000000003', 'SO-OTHER-STORE', '2026-04-04 10:00:00+00:00', 99999.00)
             """))
 
         payload = await td_leads_main.build_td_leads_reporting_payload(
@@ -2928,10 +2942,9 @@ async def test_td_leads_reporting_enriches_customer_type_and_order_metrics_from_
 
 
 @pytest.mark.asyncio
-async def test_build_td_leads_reporting_payload_uses_datetime_order_bounds(tmp_path, monkeypatch) -> None:
-    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_reporting_bound_types.db'}"
+async def test_build_td_leads_reporting_payload_matches_completed_leads_from_vw_orders_not_orders(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_reporting_vw_orders_matching.db'}"
     engine = create_async_engine(database_url)
-    captured_order_bound_types: list[type] = []
     try:
         async with engine.begin() as connection:
             await connection.execute(sa.text("""
@@ -2966,52 +2979,56 @@ async def test_build_td_leads_reporting_payload_uses_datetime_order_bounds(tmp_p
                 )
             """))
             await connection.execute(sa.text("""
+                CREATE TABLE vw_orders (
+                    store_code TEXT,
+                    mobile_number TEXT,
+                    order_number TEXT,
+                    order_date TEXT,
+                    order_amount NUMERIC
+                )
+            """))
+            await connection.execute(sa.text("""
                 INSERT INTO crm_leads_current
                 (lead_uid, store_code, pickup_no, customer_name, mobile, pickup_created_at, reason, cancelled_flag, source, customer_type, status_bucket)
-                VALUES ('L_DONE_MATCH', 'A100', 'A100-D1', 'Done Match', '9000000002', '2026-05-01 08:00:00+00:00', NULL, NULL, 'Web', 'Existing', 'completed')
+                VALUES
+                ('L_FORMATTED_MATCH', 'A100', 'A100-FMT', 'Formatted Match', '+91 98765-43210', '2026-05-01 08:00:00+00:00', NULL, NULL, 'Web', 'New', 'completed'),
+                ('L_RAW_ONLY', 'A100', 'A100-RAW', 'Raw Only', '9000000999', '2026-05-01 08:00:00+00:00', NULL, NULL, 'Web', 'New', 'completed')
             """))
             await connection.execute(sa.text("""
                 INSERT INTO crm_leads_status_events (lead_uid, status_bucket, scraped_at, created_at) VALUES
-                ('L_DONE_MATCH', 'completed', '2026-05-01 10:00:00+00:00', '2026-05-01 10:00:00+00:00')
+                ('L_FORMATTED_MATCH', 'completed', '2026-05-01 10:00:00+00:00', '2026-05-01 10:00:00+00:00'),
+                ('L_RAW_ONLY', 'completed', '2026-05-01 10:05:00+00:00', '2026-05-01 10:05:00+00:00')
             """))
             await connection.execute(sa.text("""
                 INSERT INTO orders (store_code, mobile_number, order_number, order_date) VALUES
-                ('A100', '9000000002', 'SO-100', '2026-05-01 10:30:00+00:00')
+                ('A100', '9000000999', 'RAW-ONLY-SHOULD-NOT-MATCH', '2026-05-01 10:30:00+00:00'),
+                ('A100', '9876543210', 'RAW-FORMATTED-SHOULD-NOT-BE-USED', '2026-05-01 10:30:00+00:00')
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO vw_orders (store_code, mobile_number, order_number, order_date, order_amount) VALUES
+                ('A100', '(+91) 98765 43210', 'VW-FORMATTED-HISTORICAL', '2026-04-20 10:30:00+00:00', 100.00)
             """))
 
-        original_session_scope = td_leads_main.session_scope
-
-        @contextlib.asynccontextmanager
-        async def capturing_session_scope(url: str):
-            async with original_session_scope(url) as session:
-                original_execute = session.execute
-
-                async def wrapped_execute(statement, *args, **kwargs):
-                    if isinstance(statement, sa.sql.Select) and any(
-                        getattr(column, "name", None) == "order_number"
-                        for column in statement.selected_columns
-                    ):
-                        for criterion in statement._where_criteria:
-                            right = getattr(criterion, "right", None)
-                            value = getattr(right, "value", object())
-                            if isinstance(value, datetime):
-                                captured_order_bound_types.append(type(value))
-                    return await original_execute(statement, *args, **kwargs)
-
-                session.execute = wrapped_execute
-                yield session
-
-        monkeypatch.setattr(td_leads_main, "session_scope", capturing_session_scope)
-
-        await td_leads_main.build_td_leads_reporting_payload(
+        payload = await td_leads_main.build_td_leads_reporting_payload(
             database_url=database_url,
             reference_ts=datetime(2026, 5, 1, 15, 0, tzinfo=timezone.utc),
         )
     finally:
         await engine.dispose()
 
-    assert captured_order_bound_types
-    assert captured_order_bound_types.count(datetime) >= 2
+    completed_by_pickup = {row["pickup_no"]: row for row in payload["completed_leads_today"]}
+    formatted_match = completed_by_pickup["A100-FMT"]
+    assert formatted_match["order_match_found"] is True
+    assert formatted_match["matched_order_count"] == 1
+    assert formatted_match["matched_order_ids"] == ["VW-FORMATTED-HISTORICAL"]
+    assert formatted_match["first_order_date"] == "2026-04-20 10:30:00+00:00"
+    assert formatted_match["last_order_date"] == "2026-04-20 10:30:00+00:00"
+
+    raw_only = completed_by_pickup["A100-RAW"]
+    assert raw_only["order_match_found"] is False
+    assert raw_only["matched_order_count"] == 0
+    assert raw_only["matched_order_ids"] == []
+    assert [row["pickup_no"] for row in payload["action_required"]["completed_without_order_match"]] == ["A100-RAW"]
 
 
 @pytest.mark.parametrize("mode", ["meeting", "day_end"])
