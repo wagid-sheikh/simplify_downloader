@@ -621,17 +621,6 @@ run_step() {
   return "${rc}"
 }
 
-run_temp_debug_recovery_status_check() {
-  local boundary="$1"
-
-  section "TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK ${boundary}"
-  if poetry run python -m app.reports.daily_sales_report.temp_debug_recovery_status --boundary "${boundary}" >> "${LOG_FILE}" 2>&1; then
-    log "TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK: recovery-status check succeeded (boundary=${boundary})"
-  else
-    log "WARNING: TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK: recovery-status check failed (boundary=${boundary}); continuing cron flow."
-  fi
-}
-
 is_deterministic_code_error() {
   local output_file="$1"
 
@@ -664,7 +653,6 @@ run_started_epoch="$(date +%s)"
 # for persisted overall_status="failed"; keep recording orders_rc while allowing
 # the report pipeline steps to run.
 run_step "Script 1: orders_sync_run_profiler" "./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" || orders_rc=$?
-run_temp_debug_recovery_status_check "after_orders_sync_before_daily_sales"
 run_step "Script 2: daily_sales_report" "./scripts/run_local_reports_daily_sales.sh" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" || daily_rc=$?
 run_step "Script 3: mtd_same_day_fulfillment_report" "./scripts/run_local_reports_mtd_same_day_fulfillment.sh" "${MTD_SAME_DAY_MAX_ATTEMPTS}" "${MTD_SAME_DAY_RETRY_DELAY_SECONDS}" || mtd_same_day_rc=$?
 # Pending Deliveries must not skip due to a prior successful summary; report CLIs always regenerate.

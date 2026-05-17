@@ -42,7 +42,6 @@ from app.reports.shared.same_day_fulfillment import (
 )
 
 from .data import DailySalesReportData, fetch_daily_sales_report
-from .temp_debug_recovery_status import log_temp_debug_recovery_status_check
 from .to_be_recovered import (
     DOCUMENT_TYPE as TO_BE_RECOVERED_DOCUMENT_TYPE,
     PIPELINE_OUTPUT_PREFIX as TO_BE_RECOVERED_OUTPUT_PREFIX,
@@ -58,21 +57,6 @@ SHORT_PAYMENTS_OUTPUT_PREFIX = "reports.daily_sales_report_short_payments"
 TEMPLATE_DIR = Path("app") / "reports" / "daily_sales_report" / "templates"
 SHARED_TEMPLATE_DIR = Path("app") / "reports" / "shared" / "templates"
 OUTPUT_ROOT = Path("app") / "reports" / "output_files"
-# TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_MARKER = (
-    "TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK"
-)
-# TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_ROW_KEY_LIMIT = 250
-# TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_RECOVERY_STATUSES = {
-    "TO_BE_RECOVERED",
-    "TO_BE_COMPENSATED",
-    "RECOVERED",
-    "COMPENSATED",
-    "WRITE_OFF",
-}
-
 
 def _format_amount(value: Decimal | int | float | None) -> str:
     return format_amount(value)
@@ -171,87 +155,6 @@ def _build_context(
     }
 
 
-def _temp_debug_short_payment_order_date_value(value: object | None) -> str | None:
-    # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-    if value is None:
-        return None
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    return str(value)
-
-
-def _temp_debug_short_payment_amount_value(value: object | None) -> str | None:
-    # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-    if value is None:
-        return None
-    return str(value)
-
-
-def _temp_debug_short_payment_string_value(value: object | None) -> str | None:
-    # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-    if value is None or isinstance(value, str):
-        return value
-    return str(value)
-
-
-def _temp_debug_short_payment_row_key(row: object) -> dict[str, object]:
-    # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-    return {
-        "cost_center": _temp_debug_short_payment_string_value(
-            getattr(row, "cost_center", None)
-        ),
-        "order_number": _temp_debug_short_payment_string_value(
-            getattr(row, "order_number", None)
-        ),
-        "order_date": _temp_debug_short_payment_order_date_value(
-            getattr(row, "order_date", None)
-        ),
-        "order_amount": _temp_debug_short_payment_amount_value(
-            getattr(row, "order_amount", None)
-        ),
-        "paid_amount": _temp_debug_short_payment_amount_value(
-            getattr(row, "paid_amount", None)
-        ),
-        "shortage_amount": _temp_debug_short_payment_amount_value(
-            getattr(row, "shortage_amount", None)
-        ),
-        "recovery_status": _temp_debug_short_payment_string_value(
-            getattr(row, "recovery_status", None)
-        ),
-        "recovery_category": _temp_debug_short_payment_string_value(
-            getattr(row, "recovery_category", None)
-        ),
-    }
-
-
-def _temp_debug_short_payment_row_keys(
-    rows: object,
-) -> tuple[list[dict[str, object]], bool]:
-    # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-    safe_rows = list(rows or []) if isinstance(rows, list | tuple) else []
-    capped_rows = safe_rows[:TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_ROW_KEY_LIMIT]
-    return (
-        [_temp_debug_short_payment_row_key(row) for row in capped_rows],
-        len(safe_rows) > TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_ROW_KEY_LIMIT,
-    )
-
-
-def _temp_debug_short_payment_recovery_leak_rows(
-    rows: object,
-) -> list[dict[str, object]]:
-    # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-    safe_rows = list(rows or []) if isinstance(rows, list | tuple) else []
-    leaked_rows = []
-    for row in safe_rows:
-        recovery_status = str(getattr(row, "recovery_status", "") or "").upper()
-        if (
-            recovery_status
-            in TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_RECOVERY_STATUSES
-        ):
-            leaked_rows.append(_temp_debug_short_payment_row_key(row))
-    return leaked_rows
-
-
 def _short_payments_output_path(report_date: date) -> Path:
     return OUTPUT_ROOT / f"{SHORT_PAYMENTS_OUTPUT_PREFIX}_{report_date.isoformat()}.pdf"
 
@@ -318,14 +221,6 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             report_date=resolved_date.isoformat(),
             run_env=run_env,
             force=force,
-        )
-
-        # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-        await log_temp_debug_recovery_status_check(
-            database_url=database_url,
-            logger=logger,
-            boundary="pre_fetch_daily_sales_report",
-            report_date=resolved_date,
         )
 
         data = await fetch_daily_sales_report(
@@ -448,48 +343,6 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 pdf_options={"format": "A4", "landscape": True},
                 logger=logger,
             )
-            # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-            (
-                temp_debug_short_payment_row_keys,
-                temp_debug_short_payment_row_keys_truncated,
-            ) = _temp_debug_short_payment_row_keys(
-                getattr(data, "short_payment_rows", [])
-            )
-            log_event(
-                logger=logger,
-                phase="render_pdf",
-                status=(
-                    "warning" if temp_debug_short_payment_row_keys_truncated else "info"
-                ),
-                message=(
-                    f"{TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_MARKER} "
-                    "final short payment row keys before PDF render"
-                ),
-                report_date=resolved_date.isoformat(),
-                temp_debug_short_payment_row_keys=temp_debug_short_payment_row_keys,
-                temp_debug_short_payment_row_keys_truncated=(
-                    temp_debug_short_payment_row_keys_truncated
-                ),
-            )
-            temp_debug_short_payment_recovery_leak_rows = (
-                _temp_debug_short_payment_recovery_leak_rows(
-                    getattr(data, "short_payment_rows", [])
-                )
-            )
-            if temp_debug_short_payment_recovery_leak_rows:
-                log_event(
-                    logger=logger,
-                    phase="render_pdf",
-                    status="warning",
-                    message=(
-                        f"{TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK_MARKER} "
-                        "recovery-status rows present in final Short Payments rows"
-                    ),
-                    report_date=resolved_date.isoformat(),
-                    temp_debug_short_payment_recovery_leak_rows=(
-                        temp_debug_short_payment_recovery_leak_rows
-                    ),
-                )
             short_payments_output_path = await _generate_short_payments_pdf(
                 context=context,
                 report_date=resolved_date,
@@ -619,12 +472,6 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             "short_payment_rows": len(getattr(data, "short_payment_rows", [])),
             "short_payments_pdf_file_path": str(short_payments_output_path),
             "short_payments_pdf_generated": short_payments_pdf_generated,
-            # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-            "temp_debug_short_payment_row_keys": temp_debug_short_payment_row_keys,
-            # TEMP_DEBUG_SHORT_PAYMENTS_WRITE_OFF_LEAK
-            "temp_debug_short_payment_row_keys_truncated": (
-                temp_debug_short_payment_row_keys_truncated
-            ),
             "to_be_recovered_orders": len(data.to_be_recovered),
             "to_be_recovered_total_order_value": str(
                 data.to_be_recovered_total_order_value
