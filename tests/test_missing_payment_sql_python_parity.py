@@ -109,6 +109,8 @@ def _create_schema_and_fixture(connection: sa.Connection) -> None:
                 ('CC1', 'MISSING-SALES', '2026-05-01T14:00:00', 'Missing Sales', '9006', 130, 'NONE'),
                 ('CC1', 'RECOVERY-EXCLUDED', '2026-05-01T15:00:00', 'Recovery', '9007', 140, 'WRITE_OFF'),
                 ('CC1', 'UNSUPPORTED-PROOF', '2026-05-01T16:00:00', 'Unsupported', '9008', 150, 'NONE'),
+                ('CC1', 'MALFORMED-PROOF-TOKEN', '2026-05-01T16:30:00', 'Malformed', '9011', 160, 'NONE'),
+                ('CC1', 'AMOUNT-MISMATCH', '2026-05-01T16:45:00', 'Amount', '9012', 100, 'NONE'),
                 ('CC1', 'SHORT-A', '2026-05-01T17:00:00', 'Short A', '9009', 100, 'NONE'),
                 ('CC1', 'SHORT-B', '2026-05-01T18:00:00', 'Short B', '9010', 200, 'NONE')
             """))
@@ -121,6 +123,8 @@ def _create_schema_and_fixture(connection: sa.Connection) -> None:
                 ('CC1', 'MISSING-PROOF', 120),
                 ('CC1', 'RECOVERY-EXCLUDED', 140),
                 ('CC1', 'UNSUPPORTED-PROOF', 150),
+                ('CC1', 'MALFORMED-PROOF-TOKEN', 160),
+                ('CC1', 'AMOUNT-MISMATCH', 80),
                 ('CC1', 'SHORT-A', 100),
                 ('CC1', 'SHORT-B', 150)
             """))
@@ -132,9 +136,11 @@ def _create_schema_and_fixture(connection: sa.Connection) -> None:
                 (2, 'CC1', 'TOPUP-A,TOPUP-B', 250, 'google_sheet'),
                 (3, 'CC1', 'TOPUP-B', 50, 'google_sheet'),
                 (4, 'CC1', 'UNSUPPORTED-PROOF', 150, 'bank_statement'),
-                (5, 'CC1', 'SHORT-A/SHORT-B', 250, 'google_sheet'),
-                (6, 'CC1', 'UNRELATED-HISTORY', 999999, 'google_sheet'),
-                (7, 'CC2', 'SHORT-A/SHORT-B', 999999, 'google_sheet')
+                (5, 'CC1', 'NOT-MALFORMED-PROOF-TOKEN', 160, 'google_sheet'),
+                (6, 'CC1', 'AMOUNT-MISMATCH', 80, 'google_sheet'),
+                (7, 'CC1', 'SHORT-A/SHORT-B', 250, 'google_sheet'),
+                (8, 'CC1', 'UNRELATED-HISTORY', 999999, 'google_sheet'),
+                (9, 'CC2', 'SHORT-A/SHORT-B', 999999, 'google_sheet')
             """))
 
 
@@ -200,17 +206,20 @@ async def test_sql_missing_payment_view_matches_python_report_helper(
         )
 
     assert [dict(row) for row in sql_rows] == [
+        {"order_number": "MALFORMED-PROOF-TOKEN", "net_amount": 160},
         {"order_number": "MISSING-PROOF", "net_amount": 120},
         {"order_number": "UNSUPPORTED-PROOF", "net_amount": 150},
     ]
     assert [(row.order_number, row.order_amount) for row in python_rows] == [
         ("MISSING-PROOF", Decimal("120.00")),
         ("UNSUPPORTED-PROOF", Decimal("150.00")),
+        ("MALFORMED-PROOF-TOKEN", Decimal("160.00")),
     ]
     assert [
         (row.order_number, row.paid_amount, row.shortage_amount, row.group_key)
         for row in short_rows
     ] == [
+        ("AMOUNT-MISMATCH", Decimal("80.00"), Decimal("20.00"), None),
         ("SHORT-B", Decimal("150.00"), Decimal("50.00"), "SHORT-A|SHORT-B"),
     ]
 
