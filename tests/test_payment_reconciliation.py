@@ -140,6 +140,62 @@ def test_grouped_payment_splits_on_slash_and_allocates_short_groups_by_order_dat
     assert group.sales_evidence_mismatch is True
 
 
+def test_exact_order_token_matching_distinguishes_ord1_from_ord10() -> None:
+    result = reconcile_payments(
+        order_rows=[
+            _order("ORD1", "100", "2026-05-01T10:00:00"),
+            _order("ORD10", "100", "2026-05-01T11:00:00"),
+        ],
+        sales_rows=[_sale("ORD1", "80"), _sale("ORD10", "100")],
+        payment_evidence_rows=[_proof("ORD10", "100")],
+    )
+
+    groups_by_token = {group.normalized_order_numbers: group for group in result.groups}
+    assert groups_by_token[("ORD10",)].status == "paid"
+    assert groups_by_token[("ORD1",)].status == "proof_missing"
+    assert [order.order_number for order in result.actual_payments_not_found] == [
+        "ORD1"
+    ]
+    assert result.short_payment_orders == ()
+
+
+def test_slash_and_comma_grouped_tokens_match_exact_orders_without_ord10_false_positive() -> None:
+    result = reconcile_payments(
+        order_rows=[
+            _order("ORD1", "100", "2026-05-01T10:00:00"),
+            _order("ORD2", "100", "2026-05-01T11:00:00"),
+            _order("ORD3", "100", "2026-05-01T12:00:00"),
+            _order("ORD4", "100", "2026-05-01T13:00:00"),
+            _order("ORD10", "100", "2026-05-01T14:00:00"),
+        ],
+        sales_rows=[
+            _sale("ORD1", "100"),
+            _sale("ORD2", "100"),
+            _sale("ORD3", "100"),
+            _sale("ORD4", "100"),
+            _sale("ORD10", "100"),
+        ],
+        payment_evidence_rows=[
+            _proof("ORD1/ORD2", "200"),
+            _proof("ORD3, ORD4", "200"),
+        ],
+    )
+
+    assert [group.normalized_order_numbers for group in result.groups] == [
+        ("ORD1", "ORD2"),
+        ("ORD3", "ORD4"),
+        ("ORD10",),
+    ]
+    assert [group.status for group in result.groups] == [
+        "paid",
+        "paid",
+        "proof_missing",
+    ]
+    assert [order.order_number for order in result.actual_payments_not_found] == [
+        "ORD10"
+    ]
+
+
 def test_proof_missing_report_includes_sales_payments_without_valid_collection_proof() -> (
     None
 ):
