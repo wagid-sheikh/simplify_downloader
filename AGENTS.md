@@ -65,10 +65,13 @@ Container paths:
    - Pending deliveries main buckets/details include both TD and UC sources by default.
    - Orders with recovery statuses `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF` are excluded from pending-deliveries aging buckets/details.
 
-8. **Order amount business contract**
+8. **Order amount and payment/recovery report contract**
    - Raw `orders.net_amount`, `orders.gross_amount`, and `orders.adjustment` are source/ingest fields.
    - Reports and payment/recovery decisions must use `vw_orders.order_amount`; direct report reads from `orders` are prohibited unless explicitly approved.
    - Ingest/sync code may use raw columns only for source synchronization, reconciliation, or raw-payload audit purposes.
+   - `Actual Payments Not Found` is date-window based by `vw_orders.order_date` for Daily/MTD reports.
+   - `Short Payments` is intentionally current/open across all order dates; Daily/MTD report windows do not restrict it unless this contract is intentionally changed in code and docs together.
+   - `To Be Recovered` is current/open by recovery status (`TO_BE_RECOVERED`) rather than by Daily/MTD report date window.
    - Payment comparisons use tolerance `1`; overpayments count as paid in full.
    - Zero-value orders stay visible in descriptive order reporting but are excluded from missing-payment, pending-payment, and recovery action checks.
    - User-facing labels should say `Order Amount`.
