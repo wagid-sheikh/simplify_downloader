@@ -42,8 +42,6 @@ def _build_context(
         "cost_center_sections": data.cost_center_sections,
         "total_count": data.total_count,
         "total_pending_amount": data.total_pending_amount,
-        "manual_recovery_rows": data.manual_recovery_rows,
-        "manual_recovery_total_amount_at_risk": data.manual_recovery_total_amount_at_risk,
     }
 
 

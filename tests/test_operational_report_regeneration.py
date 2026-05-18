@@ -247,8 +247,6 @@ async def test_pending_deliveries_report_regenerates_for_same_date_with_previous
             cost_center_sections=[],
             total_count=0,
             total_pending_amount=0,
-            manual_recovery_rows=[],
-            manual_recovery_total_amount_at_risk=0,
         )
 
     monkeypatch.setattr(pending_pipeline, "fetch_pending_deliveries_report", _fake_data)
