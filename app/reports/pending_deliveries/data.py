@@ -23,6 +23,27 @@ PENDING_DELIVERY_EXCLUDED_RECOVERY_STATUSES = (
 )
 
 
+AGED_PENDING_DELIVERY_RECOVERY_STATUS = "TO_BE_RECOVERED"
+AGED_PENDING_DELIVERY_RECOVERY_CATEGORY = "OTHER"
+AGED_PENDING_DELIVERY_THRESHOLD_DAYS = 30
+
+
+def _system_recovery_note(marked_on: date) -> str:
+    return f"Auto marked as TO_BE_RECOVERED by system on {marked_on.strftime('%d-%b-%Y')}"
+
+
+def _append_recovery_note(
+    existing_notes: object | None,
+    note: str,
+) -> str:
+    existing_text = "" if existing_notes is None else str(existing_notes).strip()
+    if not existing_text:
+        return note
+    if note in existing_text:
+        return existing_text
+    return f"{existing_text}\n{note}"
+
+
 @dataclass
 class PendingDeliveryRow:
     cost_center: str
@@ -183,6 +204,112 @@ def _build_cost_center_sections(
             )
         )
     return cost_center_sections
+
+
+async def transition_aged_pending_deliveries_to_recovery(
+    *,
+    database_url: str,
+    report_date: date,
+) -> int:
+    """Mark aged pending-delivery orders for recovery on the base orders table."""
+
+    metadata = sa.MetaData()
+    orders = sa.table(
+        "vw_orders",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("default_due_date"),
+        sa.column("order_status"),
+        sa.column("order_amount"),
+        sa.column("recovery_status"),
+    )
+    base_orders = sa.table(
+        "orders",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("recovery_status"),
+        sa.column("recovery_category"),
+        sa.column("recovery_notes"),
+    )
+    sales = _sales_table(metadata)
+
+    def _normalized_key(column: sa.ColumnElement[object]) -> sa.ColumnElement[str]:
+        return sa.func.upper(sa.func.trim(sa.func.coalesce(column, "")))
+
+    matching_sale_exists = sa.exists().where(
+        sa.and_(
+            _normalized_key(sales.c.cost_center) == _normalized_key(orders.c.cost_center),
+            _normalized_key(sales.c.order_number) == _normalized_key(orders.c.order_number),
+        )
+    )
+    amount_expr = sa.func.coalesce(orders.c.order_amount, 0)
+    candidate_stmt = (
+        sa.select(
+            orders.c.cost_center,
+            orders.c.order_number,
+            orders.c.default_due_date,
+        )
+        .select_from(orders)
+        .where(orders.c.order_status == "Pending")
+        .where(orders.c.recovery_status == PENDING_DELIVERY_MAIN_RECOVERY_STATUS)
+        .where(sa.not_(matching_sale_exists))
+        .where(amount_expr > 0)
+        .order_by(orders.c.cost_center, orders.c.order_number)
+    )
+
+    tz = get_timezone()
+    note = _system_recovery_note(report_date)
+    transitioned_count = 0
+
+    async with session_scope(database_url) as session:
+        results = await session.execute(candidate_stmt)
+        candidate_keys: list[tuple[str, str]] = []
+        for record in results.mappings():
+            default_due_date = _coerce_datetime(record.get("default_due_date"))
+            if default_due_date is None:
+                continue
+            default_due_date_local = _resolve_business_date(default_due_date, tz)
+            age_days = max(0, (report_date - default_due_date_local).days)
+            if age_days <= AGED_PENDING_DELIVERY_THRESHOLD_DAYS:
+                continue
+            cost_center = str(record.get("cost_center") or "")
+            order_number = str(record.get("order_number") or "")
+            if not cost_center or not order_number:
+                continue
+            candidate_keys.append((cost_center, order_number))
+
+        for cost_center, order_number in candidate_keys:
+            normalized_cost_center = cost_center.strip().upper()
+            normalized_order_number = order_number.strip().upper()
+            matching_base_order = (
+                _normalized_key(base_orders.c.cost_center) == normalized_cost_center
+            ) & (_normalized_key(base_orders.c.order_number) == normalized_order_number)
+            existing_row = (
+                await session.execute(
+                    sa.select(base_orders.c.recovery_notes)
+                    .where(matching_base_order)
+                    .where(base_orders.c.recovery_status == PENDING_DELIVERY_MAIN_RECOVERY_STATUS)
+                    .limit(1)
+                )
+            ).first()
+            if existing_row is None:
+                continue
+
+            update_result = await session.execute(
+                sa.update(base_orders)
+                .where(matching_base_order)
+                .where(base_orders.c.recovery_status == PENDING_DELIVERY_MAIN_RECOVERY_STATUS)
+                .values(
+                    recovery_status=AGED_PENDING_DELIVERY_RECOVERY_STATUS,
+                    recovery_category=AGED_PENDING_DELIVERY_RECOVERY_CATEGORY,
+                    recovery_notes=_append_recovery_note(existing_row[0], note),
+                )
+            )
+            transitioned_count += int(update_result.rowcount or 0)
+
+        await session.commit()
+
+    return transitioned_count
 
 
 async def fetch_pending_deliveries_report(

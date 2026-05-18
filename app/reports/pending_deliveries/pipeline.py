@@ -17,7 +17,11 @@ from app.dashboard_downloader.pipelines.base import (
     update_summary_record,
 )
 
-from .data import PendingDeliveriesReportData, fetch_pending_deliveries_report
+from .data import (
+    PendingDeliveriesReportData,
+    fetch_pending_deliveries_report,
+    transition_aged_pending_deliveries_to_recovery,
+)
 from .render import render_html, render_pdf
 
 PIPELINE_NAME = "reports.pending_deliveries"
@@ -106,6 +110,18 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             report_date=resolved_date.isoformat(),
             run_env=run_env,
             force=force,
+        )
+
+        transitioned_count = await transition_aged_pending_deliveries_to_recovery(
+            database_url=database_url,
+            report_date=resolved_date,
+        )
+        log_event(
+            logger=logger,
+            phase="load_data",
+            message="aged pending deliveries transitioned to recovery",
+            report_date=resolved_date.isoformat(),
+            transitioned_count=transitioned_count,
         )
 
         data = await fetch_pending_deliveries_report(
