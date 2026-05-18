@@ -12,6 +12,8 @@ from app.common.db import session_scope
 from app.crm_downloader.td_orders_sync.sales_ingest import _sales_table
 
 
+PENDING_DELIVERY_MAIN_RECOVERY_STATUS = "NONE"
+
 PENDING_DELIVERY_EXCLUDED_RECOVERY_STATUSES = (
     "TO_BE_RECOVERED",
     "TO_BE_COMPENSATED",
@@ -238,7 +240,7 @@ async def fetch_pending_deliveries_report(
         )
         .select_from(orders)
         .where(orders.c.order_status == "Pending")
-        .where(orders.c.recovery_status == "NONE")
+        .where(orders.c.recovery_status == PENDING_DELIVERY_MAIN_RECOVERY_STATUS)
         .where(sa.not_(matching_sale_exists))
         .where(amount_expr > 0)
     )
