@@ -369,10 +369,11 @@ async def test_fetch_short_payment_rows_requires_sales_backed_consistent_evidenc
                 cost_center, order_number, order_date, customer_name, mobile_number,
                 order_amount, recovery_status
             ) VALUES
-                ('CC1', 'SALES-PROOF-SHORT', '2026-05-01T09:00:00', 'Alice', '9001', 100, 'NONE'),
+                ('CC1', 'SALES-PROOF-MATCH-SHORT', '2026-05-01T09:00:00', 'Alice', '9001', 100, 'NONE'),
                 ('CC1', 'PROOF-ONLY-SHORT', '2026-05-01T10:00:00', 'Bob', '9002', 100, 'NONE'),
-                ('CC1', 'MISMATCH-SHORT', '2026-05-01T11:00:00', 'Cara', '9003', 100, 'NONE'),
-                ('CC1', 'EQUAL-EVIDENCE-SHORT', '2026-05-01T12:00:00', 'Dan', '9004', 200, 'NONE'),
+                ('CC1', 'SALES-PROOF-MISMATCH-SHORT', '2026-05-01T11:00:00', 'Cara', '9003', 100, 'NONE'),
+                ('CC1', 'PROOF-MISSING', '2026-05-01T11:30:00', 'Mina', '9009', 100, 'NONE'),
+                ('CC1', 'PROOF-SHORT-BY-MORE-THAN-TOLERANCE', '2026-05-01T12:00:00', 'Dan', '9004', 200, 'NONE'),
                 ('CC1', 'PAID-IN-FULL', '2026-05-01T13:00:00', 'Eve', '9005', 100, 'NONE'),
                 ('CC1', 'NULL-STATUS-SHORT', '2026-05-01T13:15:00', 'Nia', '9007', 100, NULL),
                 ('CC1', 'CUSTOM-STATUS-SHORT', '2026-05-01T13:30:00', 'Cal', '9008', 100, 'CUSTOM_STATUS'),
@@ -380,9 +381,10 @@ async def test_fetch_short_payment_rows_requires_sales_backed_consistent_evidenc
         """))
         connection.execute(sa.text("""
             INSERT INTO sales (cost_center, order_number, payment_received) VALUES
-                ('CC1', 'SALES-PROOF-SHORT', 80),
-                ('CC1', 'MISMATCH-SHORT', 90),
-                ('CC1', 'EQUAL-EVIDENCE-SHORT', 150),
+                ('CC1', 'SALES-PROOF-MATCH-SHORT', 80),
+                ('CC1', 'SALES-PROOF-MISMATCH-SHORT', 90),
+                ('CC1', 'PROOF-MISSING', 80),
+                ('CC1', 'PROOF-SHORT-BY-MORE-THAN-TOLERANCE', 150),
                 ('CC1', 'PAID-IN-FULL', 100),
                 ('CC1', 'NULL-STATUS-SHORT', 80),
                 ('CC1', 'CUSTOM-STATUS-SHORT', 80),
@@ -390,10 +392,10 @@ async def test_fetch_short_payment_rows_requires_sales_backed_consistent_evidenc
         """))
         connection.execute(sa.text("""
             INSERT INTO payment_collections (cost_center, order_number, amount, source_type) VALUES
-                ('CC1', 'SALES-PROOF-SHORT', 80, 'google_sheet'),
+                ('CC1', 'SALES-PROOF-MATCH-SHORT', 80, 'google_sheet'),
                 ('CC1', 'PROOF-ONLY-SHORT', 80, 'google_sheet'),
-                ('CC1', 'MISMATCH-SHORT', 80, 'google_sheet'),
-                ('CC1', 'EQUAL-EVIDENCE-SHORT', 150, 'google_sheet'),
+                ('CC1', 'SALES-PROOF-MISMATCH-SHORT', 80, 'google_sheet'),
+                ('CC1', 'PROOF-SHORT-BY-MORE-THAN-TOLERANCE', 150, 'google_sheet'),
                 ('CC1', 'PAID-IN-FULL', 100, 'google_sheet'),
                 ('CC1', 'NULL-STATUS-SHORT', 80, 'google_sheet'),
                 ('CC1', 'CUSTOM-STATUS-SHORT', 80, 'google_sheet'),
@@ -434,13 +436,33 @@ async def test_fetch_short_payment_rows_requires_sales_backed_consistent_evidenc
             start_datetime=datetime(2026, 5, 1),
             end_datetime=datetime(2026, 5, 2),
         )
+        missing_rows = await fetch_missing_payment_rows_without_proof(
+            session=session,
+            orders=orders,
+            payment_collections=payment_collections,
+            sales=sales,
+            start_datetime=datetime(2026, 5, 1),
+            end_datetime=datetime(2026, 5, 2),
+            row_factory=MissingPaymentReportRow,
+        )
 
     assert [(row.order_number, row.paid_amount, row.shortage_amount) for row in rows] == [
-        ("SALES-PROOF-SHORT", Decimal("80.00"), Decimal("20.00")),
-        ("EQUAL-EVIDENCE-SHORT", Decimal("150.00"), Decimal("50.00")),
+        ("SALES-PROOF-MATCH-SHORT", Decimal("80.00"), Decimal("20.00")),
+        (
+            "PROOF-SHORT-BY-MORE-THAN-TOLERANCE",
+            Decimal("150.00"),
+            Decimal("50.00"),
+        ),
     ]
+    assert [row.order_number for row in missing_rows] == ["PROOF-MISSING"]
     assert {row.order_number for row in rows}.isdisjoint(
-        {"NULL-STATUS-SHORT", "CUSTOM-STATUS-SHORT"}
+        {
+            "PROOF-ONLY-SHORT",
+            "SALES-PROOF-MISMATCH-SHORT",
+            "PROOF-MISSING",
+            "NULL-STATUS-SHORT",
+            "CUSTOM-STATUS-SHORT",
+        }
     )
 
 
