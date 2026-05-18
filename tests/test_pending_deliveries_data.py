@@ -12,6 +12,7 @@ from app.crm_downloader.td_orders_sync.sales_ingest import _sales_table
 from app.reports.pending_deliveries.data import (
     ACTIVE_MANUAL_RECOVERY_STATUSES,
     PENDING_DELIVERY_EXCLUDED_RECOVERY_STATUSES,
+    PENDING_DELIVERY_MAIN_RECOVERY_STATUS,
     fetch_pending_deliveries_report,
 )
 
@@ -40,7 +41,15 @@ def _create_tables(database_url: str) -> None:
                 """
                 CREATE VIEW vw_orders AS
                 SELECT
-                    *,
+                    cost_center,
+                    store_code,
+                    order_number,
+                    customer_name,
+                    order_date,
+                    default_due_date,
+                    source_system,
+                    order_status,
+                    COALESCE(recovery_status, 'NONE') AS recovery_status,
                     CASE
                         WHEN (
                             CASE
@@ -110,6 +119,9 @@ def _create_tables(database_url: str) -> None:
     engine.dispose()
 
 
+_DEFAULT_RECOVERY_STATUS = PENDING_DELIVERY_MAIN_RECOVERY_STATUS
+
+
 async def _insert_order_and_sale(
     *,
     database_url: str,
@@ -122,7 +134,7 @@ async def _insert_order_and_sale(
     net_amount: Decimal,
     payment_received: Decimal,
     adjustments: Decimal,
-    recovery_status: str | None = None,
+    recovery_status: str | None = _DEFAULT_RECOVERY_STATUS,
     insert_sale: bool = True,
     sale_order_number: str | None = None,
     sale_cost_center: str = "UN3668",
@@ -158,7 +170,7 @@ async def _insert_order_and_sale(
                 "WHERE cost_center = :cost_center AND order_number = :order_number"
             ),
             {
-                "recovery_status": recovery_status or "NONE",
+                "recovery_status": recovery_status,
                 "cost_center": "UN3668",
                 "order_number": order_number,
             },
@@ -307,11 +319,8 @@ async def test_fetch_pending_deliveries_excludes_recovery_statuses_from_main_buc
     default_due_date = datetime(2025, 5, 1, 10, 0, tzinfo=tz)
 
     excluded_statuses = [
-        "TO_BE_RECOVERED",
-        "TO_BE_COMPENSATED",
-        "RECOVERED",
-        "COMPENSATED",
-        "WRITE_OFF",
+        "IN_PROGRESS",
+        *PENDING_DELIVERY_EXCLUDED_RECOVERY_STATUSES,
     ]
     for status in excluded_statuses:
         await _insert_order_and_sale(
@@ -326,6 +335,7 @@ async def test_fetch_pending_deliveries_excludes_recovery_statuses_from_main_buc
             payment_received=Decimal("50.00"),
             adjustments=Decimal("0.00"),
             recovery_status=status,
+            insert_sale=False,
         )
 
     await _insert_order_and_sale(
@@ -348,12 +358,12 @@ async def test_fetch_pending_deliveries_excludes_recovery_statuses_from_main_buc
         order_date=order_date,
         default_due_date=default_due_date,
         source_system="UClean",
-        order_number="ALLOWED-CUSTOM",
+        order_number="ALLOWED-NONE",
         gross_amount=Decimal("130.00"),
         net_amount=Decimal("130.00"),
         payment_received=Decimal("30.00"),
         adjustments=Decimal("0.00"),
-        recovery_status="IN_PROGRESS",
+        recovery_status=PENDING_DELIVERY_MAIN_RECOVERY_STATUS,
         insert_sale=False,
     )
 
@@ -375,10 +385,13 @@ async def test_fetch_pending_deliveries_excludes_recovery_statuses_from_main_buc
         for row in bucket.rows
     ]
 
-    assert {row.order_number for row in summary_rows} == {"ALLOWED-NULL"}
-    assert {row.order_number for row in detail_rows} == {"ALLOWED-NULL"}
-    assert data.total_count == 1
-    assert data.total_pending_amount == Decimal("120.00")
+    assert {row.order_number for row in summary_rows} == {"ALLOWED-NULL", "ALLOWED-NONE"}
+    assert {row.order_number for row in detail_rows} == {"ALLOWED-NULL", "ALLOWED-NONE"}
+    assert not {row.order_number for row in detail_rows} & {
+        f"EX-{status}" for status in excluded_statuses
+    }
+    assert data.total_count == 2
+    assert data.total_pending_amount == Decimal("250.00")
 
 
 @pytest.mark.asyncio
