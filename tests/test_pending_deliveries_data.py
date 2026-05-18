@@ -35,12 +35,14 @@ def _create_tables(database_url: str) -> None:
     engine = sa.create_engine(database_url.replace("+aiosqlite", ""))
     metadata.create_all(engine)
     with engine.begin() as connection:
-        connection.execute(sa.text("ALTER TABLE orders ADD COLUMN recovery_status TEXT"))
-        connection.execute(sa.text("ALTER TABLE orders ADD COLUMN recovery_category TEXT"))
-        connection.execute(sa.text("ALTER TABLE orders ADD COLUMN recovery_notes TEXT"))
         connection.execute(
-            sa.text(
-                """
+            sa.text("ALTER TABLE orders ADD COLUMN recovery_status TEXT")
+        )
+        connection.execute(
+            sa.text("ALTER TABLE orders ADD COLUMN recovery_category TEXT")
+        )
+        connection.execute(sa.text("ALTER TABLE orders ADD COLUMN recovery_notes TEXT"))
+        connection.execute(sa.text("""
                 CREATE VIEW vw_orders AS
                 SELECT
                     cost_center,
@@ -115,9 +117,7 @@ def _create_tables(database_url: str) -> None:
                         )
                     END AS order_amount
                 FROM orders
-                """
-            )
-        )
+                """))
     engine.dispose()
 
 
@@ -298,11 +298,17 @@ async def test_fetch_pending_deliveries_includes_td_and_uc_orders(
     assert data.summary_sections[0].total_count == 2
     assert data.summary_sections[0].total_pending_amount == Decimal("300.00")
 
-    detail_rows = [row for bucket in data.cost_center_sections[0].buckets for row in bucket.rows]
+    detail_rows = [
+        row for bucket in data.cost_center_sections[0].buckets for row in bucket.rows
+    ]
     assert {row.order_number for row in detail_rows} == {"TD-001", "UC-001"}
     assert {row.source_system for row in detail_rows} == {"TumbleDry", "UClean"}
-    assert {row.order_number: row.order_amount for row in detail_rows}["UC-001"] == Decimal("200.00")
-    assert {row.order_number: row.pending_amount for row in detail_rows}["UC-001"] == Decimal("200.00")
+    assert {row.order_number: row.order_amount for row in detail_rows}[
+        "UC-001"
+    ] == Decimal("200.00")
+    assert {row.order_number: row.pending_amount for row in detail_rows}[
+        "UC-001"
+    ] == Decimal("200.00")
 
 
 @pytest.mark.asyncio
@@ -387,7 +393,10 @@ async def test_fetch_pending_deliveries_excludes_recovery_statuses_from_main_buc
         for row in bucket.rows
     ]
 
-    assert {row.order_number for row in summary_rows} == {"ALLOWED-NULL", "ALLOWED-NONE"}
+    assert {row.order_number for row in summary_rows} == {
+        "ALLOWED-NULL",
+        "ALLOWED-NONE",
+    }
     assert {row.order_number for row in detail_rows} == {"ALLOWED-NULL", "ALLOWED-NONE"}
     assert not {row.order_number for row in detail_rows} & {
         f"EX-{status}" for status in excluded_statuses
@@ -525,21 +534,11 @@ async def test_fetch_pending_deliveries_excludes_orders_with_any_matching_sales_
 
 async def _fetch_recovery_rows(database_url: str) -> dict[str, dict[str, object]]:
     async with session_scope(database_url) as session:
-        rows = (
-            (
-                await session.execute(
-                    sa.text(
-                        """
+        rows = (await session.execute(sa.text("""
                         SELECT order_number, recovery_status, recovery_category, recovery_notes
                         FROM orders
                         ORDER BY order_number
-                        """
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
+                        """))).mappings().all()
     return {str(row["order_number"]): dict(row) for row in rows}
 
 
@@ -639,14 +638,12 @@ async def test_transition_age_31_marked(tmp_path, monkeypatch) -> None:
     assert rows["AGE-31"]["recovery_category"] == "OTHER"
     assert (
         rows["AGE-31"]["recovery_notes"]
-        == "Auto marked as TO_BE_RECOVERED by system on 20-May-2025"
+        == "[2025-05-20T00:00:00+05:30] Auto marked as TO_BE_RECOVERED from aged Pending Deliveries"
     )
 
 
 @pytest.mark.asyncio
-async def test_transition_existing_sales_row_not_marked(
-    tmp_path, monkeypatch
-) -> None:
+async def test_transition_existing_sales_row_not_marked(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "pending_transition_sales_row.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -703,6 +700,38 @@ async def test_transition_non_none_status_not_overwritten(
 
 
 @pytest.mark.asyncio
+async def test_transition_existing_note_remains_intact_after_auto_marking(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_transition_preserve_note.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    existing_note = "operator note\nfollow-up promised"
+    await _seed_transition_order(
+        database_url=database_url,
+        monkeypatch=monkeypatch,
+        order_number="PRESERVE-NOTE",
+        age_days=31,
+        recovery_notes=existing_note,
+    )
+
+    transitioned_count = await transition_aged_pending_deliveries_to_recovery(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    rows = await _fetch_recovery_rows(database_url)
+    expected_note = "[2025-05-20T00:00:00+05:30] Auto marked as TO_BE_RECOVERED from aged Pending Deliveries"
+    assert transitioned_count == 1
+    assert rows["PRESERVE-NOTE"]["recovery_status"] == "TO_BE_RECOVERED"
+    assert (
+        rows["PRESERVE-NOTE"]["recovery_notes"] == f"{existing_note}\n{expected_note}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_transition_repeated_run_does_not_duplicate_notes(
     tmp_path, monkeypatch
 ) -> None:
@@ -729,7 +758,7 @@ async def test_transition_repeated_run_does_not_duplicate_notes(
     )
 
     rows = await _fetch_recovery_rows(database_url)
-    expected_note = "Auto marked as TO_BE_RECOVERED by system on 20-May-2025"
+    expected_note = "[2025-05-20T00:00:00+05:30] Auto marked as TO_BE_RECOVERED from aged Pending Deliveries"
     assert first_count == 1
     assert second_count == 0
     assert rows["IDEMPOTENT"]["recovery_status"] == "TO_BE_RECOVERED"

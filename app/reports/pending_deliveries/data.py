@@ -9,8 +9,11 @@ import sqlalchemy as sa
 
 from app.common.date_utils import get_timezone
 from app.common.db import session_scope
+from app.common.order_recovery import (
+    format_timestamped_recovery_note,
+    transition_order_recovery_status,
+)
 from app.crm_downloader.td_orders_sync.sales_ingest import _sales_table
-
 
 PENDING_DELIVERY_MAIN_RECOVERY_STATUS = "NONE"
 
@@ -28,20 +31,11 @@ AGED_PENDING_DELIVERY_RECOVERY_CATEGORY = "OTHER"
 AGED_PENDING_DELIVERY_THRESHOLD_DAYS = 30
 
 
-def _system_recovery_note(marked_on: date) -> str:
-    return f"Auto marked as TO_BE_RECOVERED by system on {marked_on.strftime('%d-%b-%Y')}"
-
-
-def _append_recovery_note(
-    existing_notes: object | None,
-    note: str,
-) -> str:
-    existing_text = "" if existing_notes is None else str(existing_notes).strip()
-    if not existing_text:
-        return note
-    if note in existing_text:
-        return existing_text
-    return f"{existing_text}\n{note}"
+def _system_recovery_note(marked_at: datetime) -> str:
+    return format_timestamped_recovery_note(
+        occurred_at=marked_at,
+        message="Auto marked as TO_BE_RECOVERED from aged Pending Deliveries",
+    )
 
 
 @dataclass
@@ -145,9 +139,30 @@ def _bucket_age(age_days: int) -> str:
 
 def _build_buckets(rows: Iterable[PendingDeliveryRow]) -> List[PendingDeliveriesBucket]:
     buckets_map = {
-        "0-5": PendingDeliveriesBucket(label="0-5 days", min_days=0, max_days=5, rows=[], total_count=0, total_pending_amount=Decimal("0")),
-        "6-15": PendingDeliveriesBucket(label="6-15 days", min_days=6, max_days=15, rows=[], total_count=0, total_pending_amount=Decimal("0")),
-        ">15": PendingDeliveriesBucket(label=">15 days", min_days=16, max_days=None, rows=[], total_count=0, total_pending_amount=Decimal("0")),
+        "0-5": PendingDeliveriesBucket(
+            label="0-5 days",
+            min_days=0,
+            max_days=5,
+            rows=[],
+            total_count=0,
+            total_pending_amount=Decimal("0"),
+        ),
+        "6-15": PendingDeliveriesBucket(
+            label="6-15 days",
+            min_days=6,
+            max_days=15,
+            rows=[],
+            total_count=0,
+            total_pending_amount=Decimal("0"),
+        ),
+        ">15": PendingDeliveriesBucket(
+            label=">15 days",
+            min_days=16,
+            max_days=None,
+            rows=[],
+            total_count=0,
+            total_pending_amount=Decimal("0"),
+        ),
     }
 
     for row in rows:
@@ -155,14 +170,20 @@ def _build_buckets(rows: Iterable[PendingDeliveryRow]) -> List[PendingDeliveries
         buckets_map[bucket_key].rows.append(row)
 
     for bucket in buckets_map.values():
-        bucket.rows.sort(key=lambda item: (-item.age_days, item.order_date, item.order_number))
+        bucket.rows.sort(
+            key=lambda item: (-item.age_days, item.order_date, item.order_number)
+        )
         bucket.total_count = len(bucket.rows)
-        bucket.total_pending_amount = sum((row.pending_amount for row in bucket.rows), Decimal("0"))
+        bucket.total_pending_amount = sum(
+            (row.pending_amount for row in bucket.rows), Decimal("0")
+        )
 
     return [buckets_map["0-5"], buckets_map["6-15"], buckets_map[">15"]]
 
 
-def _build_summary_sections(rows: Iterable[PendingDeliveryRow]) -> List[PendingDeliveriesSummarySection]:
+def _build_summary_sections(
+    rows: Iterable[PendingDeliveryRow],
+) -> List[PendingDeliveriesSummarySection]:
     grouped_rows: dict[str, list[PendingDeliveryRow]] = {}
     for row in rows:
         grouped_rows.setdefault(row.cost_center, []).append(row)
@@ -170,7 +191,9 @@ def _build_summary_sections(rows: Iterable[PendingDeliveryRow]) -> List[PendingD
     summary_sections: list[PendingDeliveriesSummarySection] = []
     for cost_center, cost_center_rows in sorted(grouped_rows.items()):
         buckets = _build_buckets(cost_center_rows)
-        total_pending_amount = sum((bucket.total_pending_amount for bucket in buckets), Decimal("0"))
+        total_pending_amount = sum(
+            (bucket.total_pending_amount for bucket in buckets), Decimal("0")
+        )
         total_count = sum(bucket.total_count for bucket in buckets)
         summary_sections.append(
             PendingDeliveriesSummarySection(
@@ -193,7 +216,9 @@ def _build_cost_center_sections(
     cost_center_sections: list[PendingDeliveriesCostCenterSection] = []
     for cost_center, cost_center_rows in sorted(grouped_rows.items()):
         buckets = _build_buckets(cost_center_rows)
-        total_pending_amount = sum((bucket.total_pending_amount for bucket in buckets), Decimal("0"))
+        total_pending_amount = sum(
+            (bucket.total_pending_amount for bucket in buckets), Decimal("0")
+        )
         total_count = sum(bucket.total_count for bucket in buckets)
         cost_center_sections.append(
             PendingDeliveriesCostCenterSection(
@@ -223,14 +248,6 @@ async def transition_aged_pending_deliveries_to_recovery(
         sa.column("order_amount"),
         sa.column("recovery_status"),
     )
-    base_orders = sa.table(
-        "orders",
-        sa.column("cost_center"),
-        sa.column("order_number"),
-        sa.column("recovery_status"),
-        sa.column("recovery_category"),
-        sa.column("recovery_notes"),
-    )
     sales = _sales_table(metadata)
 
     def _normalized_key(column: sa.ColumnElement[object]) -> sa.ColumnElement[str]:
@@ -238,8 +255,10 @@ async def transition_aged_pending_deliveries_to_recovery(
 
     matching_sale_exists = sa.exists().where(
         sa.and_(
-            _normalized_key(sales.c.cost_center) == _normalized_key(orders.c.cost_center),
-            _normalized_key(sales.c.order_number) == _normalized_key(orders.c.order_number),
+            _normalized_key(sales.c.cost_center)
+            == _normalized_key(orders.c.cost_center),
+            _normalized_key(sales.c.order_number)
+            == _normalized_key(orders.c.order_number),
         )
     )
     amount_expr = sa.func.coalesce(orders.c.order_amount, 0)
@@ -258,7 +277,9 @@ async def transition_aged_pending_deliveries_to_recovery(
     )
 
     tz = get_timezone()
-    note = _system_recovery_note(report_date)
+    note = _system_recovery_note(
+        datetime.combine(report_date, datetime.min.time(), tzinfo=tz)
+    )
     transitioned_count = 0
 
     async with session_scope(database_url) as session:
@@ -279,33 +300,15 @@ async def transition_aged_pending_deliveries_to_recovery(
             candidate_keys.append((cost_center, order_number))
 
         for cost_center, order_number in candidate_keys:
-            normalized_cost_center = cost_center.strip().upper()
-            normalized_order_number = order_number.strip().upper()
-            matching_base_order = (
-                _normalized_key(base_orders.c.cost_center) == normalized_cost_center
-            ) & (_normalized_key(base_orders.c.order_number) == normalized_order_number)
-            existing_row = (
-                await session.execute(
-                    sa.select(base_orders.c.recovery_notes)
-                    .where(matching_base_order)
-                    .where(base_orders.c.recovery_status == PENDING_DELIVERY_MAIN_RECOVERY_STATUS)
-                    .limit(1)
-                )
-            ).first()
-            if existing_row is None:
-                continue
-
-            update_result = await session.execute(
-                sa.update(base_orders)
-                .where(matching_base_order)
-                .where(base_orders.c.recovery_status == PENDING_DELIVERY_MAIN_RECOVERY_STATUS)
-                .values(
-                    recovery_status=AGED_PENDING_DELIVERY_RECOVERY_STATUS,
-                    recovery_category=AGED_PENDING_DELIVERY_RECOVERY_CATEGORY,
-                    recovery_notes=_append_recovery_note(existing_row[0], note),
-                )
+            transitioned_count += await transition_order_recovery_status(
+                session=session,
+                cost_center=cost_center,
+                order_number=order_number,
+                from_status=PENDING_DELIVERY_MAIN_RECOVERY_STATUS,
+                to_status=AGED_PENDING_DELIVERY_RECOVERY_STATUS,
+                recovery_category=AGED_PENDING_DELIVERY_RECOVERY_CATEGORY,
+                recovery_note=note,
             )
-            transitioned_count += int(update_result.rowcount or 0)
 
         await session.commit()
 
@@ -340,8 +343,10 @@ async def fetch_pending_deliveries_report(
 
     matching_sale_exists = sa.exists().where(
         sa.and_(
-            _normalized_key(sales.c.cost_center) == _normalized_key(orders.c.cost_center),
-            _normalized_key(sales.c.order_number) == _normalized_key(orders.c.order_number),
+            _normalized_key(sales.c.cost_center)
+            == _normalized_key(orders.c.cost_center),
+            _normalized_key(sales.c.order_number)
+            == _normalized_key(orders.c.order_number),
         )
     )
 
