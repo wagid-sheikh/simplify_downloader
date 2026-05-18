@@ -23,14 +23,8 @@ from app.reports.shared.payment_reconciliation import (
     split_payment_order_numbers,
 )
 
-RECOVERY_PAYMENT_EXCLUSIONS = (
-    "TO_BE_RECOVERED",
-    "TO_BE_COMPENSATED",
-    "RECOVERED",
-    "COMPENSATED",
-    "WRITE_OFF",
-)
 QUALIFYING_PAYMENT_SOURCE_TYPES = ("google_sheet", "legacy_sales")
+
 
 @dataclass
 class ShortPaymentRow:
@@ -207,11 +201,7 @@ async def _fetch_reconciliation(
             _optional_column(orders, "recovery_category"),
         )
         .where(orders.c.order_amount > 0)
-        .where(
-            sa.func.coalesce(orders.c.recovery_status, "NONE").not_in(
-                RECOVERY_PAYMENT_EXCLUSIONS
-            )
-        )
+        .where(orders.c.recovery_status == "NONE")
         .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
     )
     if filter_order_date:
