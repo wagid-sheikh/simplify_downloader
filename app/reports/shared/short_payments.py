@@ -24,6 +24,7 @@ from app.reports.shared.payment_reconciliation import (
 )
 
 QUALIFYING_PAYMENT_SOURCE_TYPES = ("google_sheet", "legacy_sales")
+PAYMENT_REPORT_RECOVERY_STATUS = "NONE"
 
 
 @dataclass
@@ -198,7 +199,10 @@ async def _fetch_reconciliation(
             _optional_column(orders, "recovery_category"),
         )
         .where(orders.c.order_amount > 0)
-        .where(orders.c.recovery_status == "NONE")
+        # Require upstream-normalized clean recovery state exactly.  Do not
+        # coalesce NULLs or allow custom/recovery-workflow statuses here, so
+        # every payment-report entry point inherits the same candidate set.
+        .where(orders.c.recovery_status == PAYMENT_REPORT_RECOVERY_STATUS)
         .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
     )
     if filter_order_date:

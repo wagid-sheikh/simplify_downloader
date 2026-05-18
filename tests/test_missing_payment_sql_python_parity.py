@@ -418,10 +418,21 @@ async def test_fetch_short_payment_rows_requires_sales_backed_consistent_evidenc
                 ('CC1', 'PROOF-ONLY-SHORT', '2026-05-01T10:00:00', 'Bob', '9002', 100, 'NONE'),
                 ('CC1', 'SALES-PROOF-MISMATCH-SHORT', '2026-05-01T11:00:00', 'Cara', '9003', 100, 'NONE'),
                 ('CC1', 'PROOF-MISSING', '2026-05-01T11:30:00', 'Mina', '9009', 100, 'NONE'),
+                ('CC1', 'NULL-STATUS-MISSING', '2026-05-01T11:35:00', 'Nina', '9011', 100, NULL),
+                ('CC1', 'CUSTOM-STATUS-MISSING', '2026-05-01T11:40:00', 'Cora', '9012', 100, 'CUSTOM_STATUS'),
+                ('CC1', 'TO-BE-RECOVERED-MISSING', '2026-05-01T11:45:00', 'Tara', '9013', 100, 'TO_BE_RECOVERED'),
+                ('CC1', 'TO-BE-COMPENSATED-MISSING', '2026-05-01T11:50:00', 'Tom', '9014', 100, 'TO_BE_COMPENSATED'),
+                ('CC1', 'RECOVERED-MISSING', '2026-05-01T11:55:00', 'Ria', '9015', 100, 'RECOVERED'),
+                ('CC1', 'COMPENSATED-MISSING', '2026-05-01T11:56:00', 'Cam', '9016', 100, 'COMPENSATED'),
+                ('CC1', 'WRITE-OFF-MISSING', '2026-05-01T11:57:00', 'Wes', '9017', 100, 'WRITE_OFF'),
                 ('CC1', 'PROOF-SHORT-BY-MORE-THAN-TOLERANCE', '2026-05-01T12:00:00', 'Dan', '9004', 200, 'NONE'),
                 ('CC1', 'PAID-IN-FULL', '2026-05-01T13:00:00', 'Eve', '9005', 100, 'NONE'),
                 ('CC1', 'NULL-STATUS-SHORT', '2026-05-01T13:15:00', 'Nia', '9007', 100, NULL),
                 ('CC1', 'CUSTOM-STATUS-SHORT', '2026-05-01T13:30:00', 'Cal', '9008', 100, 'CUSTOM_STATUS'),
+                ('CC1', 'TO-BE-RECOVERED-SHORT', '2026-05-01T13:40:00', 'Tia', '9018', 100, 'TO_BE_RECOVERED'),
+                ('CC1', 'TO-BE-COMPENSATED-SHORT', '2026-05-01T13:45:00', 'Tim', '9019', 100, 'TO_BE_COMPENSATED'),
+                ('CC1', 'RECOVERED-SHORT', '2026-05-01T13:50:00', 'Ray', '9020', 100, 'RECOVERED'),
+                ('CC1', 'COMPENSATED-SHORT', '2026-05-01T13:55:00', 'Cat', '9021', 100, 'COMPENSATED'),
                 ('CC1', 'WRITE-OFF-SHORT', '2026-05-01T14:00:00', 'Fran', '9006', 100, 'WRITE_OFF')
         """))
         connection.execute(sa.text("""
@@ -429,10 +440,21 @@ async def test_fetch_short_payment_rows_requires_sales_backed_consistent_evidenc
                 ('CC1', 'SALES-PROOF-MATCH-SHORT', 80),
                 ('CC1', 'SALES-PROOF-MISMATCH-SHORT', 90),
                 ('CC1', 'PROOF-MISSING', 80),
+                ('CC1', 'NULL-STATUS-MISSING', 80),
+                ('CC1', 'CUSTOM-STATUS-MISSING', 80),
+                ('CC1', 'TO-BE-RECOVERED-MISSING', 80),
+                ('CC1', 'TO-BE-COMPENSATED-MISSING', 80),
+                ('CC1', 'RECOVERED-MISSING', 80),
+                ('CC1', 'COMPENSATED-MISSING', 80),
+                ('CC1', 'WRITE-OFF-MISSING', 80),
                 ('CC1', 'PROOF-SHORT-BY-MORE-THAN-TOLERANCE', 150),
                 ('CC1', 'PAID-IN-FULL', 100),
                 ('CC1', 'NULL-STATUS-SHORT', 80),
                 ('CC1', 'CUSTOM-STATUS-SHORT', 80),
+                ('CC1', 'TO-BE-RECOVERED-SHORT', 80),
+                ('CC1', 'TO-BE-COMPENSATED-SHORT', 80),
+                ('CC1', 'RECOVERED-SHORT', 80),
+                ('CC1', 'COMPENSATED-SHORT', 80),
                 ('CC1', 'WRITE-OFF-SHORT', 80)
         """))
         connection.execute(sa.text("""
@@ -444,6 +466,10 @@ async def test_fetch_short_payment_rows_requires_sales_backed_consistent_evidenc
                 ('CC1', 'PAID-IN-FULL', 100, 'google_sheet'),
                 ('CC1', 'NULL-STATUS-SHORT', 80, 'google_sheet'),
                 ('CC1', 'CUSTOM-STATUS-SHORT', 80, 'google_sheet'),
+                ('CC1', 'TO-BE-RECOVERED-SHORT', 80, 'google_sheet'),
+                ('CC1', 'TO-BE-COMPENSATED-SHORT', 80, 'google_sheet'),
+                ('CC1', 'RECOVERED-SHORT', 80, 'google_sheet'),
+                ('CC1', 'COMPENSATED-SHORT', 80, 'google_sheet'),
                 ('CC1', 'WRITE-OFF-SHORT', 80, 'google_sheet')
         """))
     engine.dispose()
@@ -500,14 +526,30 @@ async def test_fetch_short_payment_rows_requires_sales_backed_consistent_evidenc
         ),
     ]
     assert [row.order_number for row in missing_rows] == ["PROOF-MISSING"]
-    assert {row.order_number for row in rows}.isdisjoint(
-        {
-            "PROOF-ONLY-SHORT",
-            "SALES-PROOF-MISMATCH-SHORT",
-            "PROOF-MISSING",
-            "NULL-STATUS-SHORT",
-            "CUSTOM-STATUS-SHORT",
-        }
+    excluded_short_orders = {
+        "PROOF-ONLY-SHORT",
+        "SALES-PROOF-MISMATCH-SHORT",
+        "PROOF-MISSING",
+        "NULL-STATUS-SHORT",
+        "CUSTOM-STATUS-SHORT",
+        "TO-BE-RECOVERED-SHORT",
+        "TO-BE-COMPENSATED-SHORT",
+        "RECOVERED-SHORT",
+        "COMPENSATED-SHORT",
+        "WRITE-OFF-SHORT",
+    }
+    excluded_missing_orders = {
+        "NULL-STATUS-MISSING",
+        "CUSTOM-STATUS-MISSING",
+        "TO-BE-RECOVERED-MISSING",
+        "TO-BE-COMPENSATED-MISSING",
+        "RECOVERED-MISSING",
+        "COMPENSATED-MISSING",
+        "WRITE-OFF-MISSING",
+    }
+    assert {row.order_number for row in rows}.isdisjoint(excluded_short_orders)
+    assert {row.order_number for row in missing_rows}.isdisjoint(
+        excluded_missing_orders
     )
 
 
