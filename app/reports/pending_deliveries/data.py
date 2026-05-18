@@ -208,22 +208,17 @@ async def fetch_pending_deliveries_report(
     )
     sales = _sales_table(metadata)
 
-    paid_amount_expr = sa.func.coalesce(
-        sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)),
-        0,
-    )
     amount_expr = sa.func.coalesce(orders.c.order_amount, 0)
-    adjustments_expr = sa.func.coalesce(sa.func.sum(sales.c.adjustments), 0)
-    is_edited_order_expr = sa.func.max(
-        sa.case((sales.c.is_edited_order.is_(True), 1), else_=0)
-    )
-    is_duplicate_expr = sa.func.max(
-        sa.case((sales.c.is_duplicate.is_(True), 1), else_=0)
-    )
-    paid_in_full_tolerance = Decimal("1")
-    pending_amount_expr = sa.func.greatest(amount_expr - paid_amount_expr, 0)
 
-    recovery_status_col = orders.c.recovery_status
+    def _normalized_key(column: sa.ColumnElement[object]) -> sa.ColumnElement[str]:
+        return sa.func.upper(sa.func.trim(sa.func.coalesce(column, "")))
+
+    matching_sale_exists = sa.exists().where(
+        sa.and_(
+            _normalized_key(sales.c.cost_center) == _normalized_key(orders.c.cost_center),
+            _normalized_key(sales.c.order_number) == _normalized_key(orders.c.order_number),
+        )
+    )
 
     stmt = (
         sa.select(
@@ -235,40 +230,17 @@ async def fetch_pending_deliveries_report(
             orders.c.default_due_date,
             orders.c.source_system,
             amount_expr.label("order_amount"),
-            paid_amount_expr.label("paid_amount"),
-            pending_amount_expr.label("pending_amount"),
-            adjustments_expr.label("adjustments"),
-            is_edited_order_expr.label("is_edited_order"),
-            is_duplicate_expr.label("is_duplicate"),
+            sa.literal(0).label("paid_amount"),
+            amount_expr.label("pending_amount"),
+            sa.literal(0).label("adjustments"),
+            sa.literal(0).label("is_edited_order"),
+            sa.literal(0).label("is_duplicate"),
         )
-        .select_from(
-            orders.outerjoin(
-                sales,
-                sa.and_(
-                    orders.c.cost_center == sales.c.cost_center,
-                    orders.c.order_number == sales.c.order_number,
-                ),
-            )
-        )
+        .select_from(orders)
         .where(orders.c.order_status == "Pending")
-        .where(
-            sa.or_(
-                recovery_status_col.is_(None),
-                recovery_status_col.not_in(PENDING_DELIVERY_EXCLUDED_RECOVERY_STATUSES),
-            )
-        )
-        .group_by(
-            orders.c.cost_center,
-            orders.c.store_code,
-            orders.c.order_number,
-            orders.c.customer_name,
-            orders.c.order_date,
-            orders.c.default_due_date,
-            orders.c.source_system,
-            amount_expr,
-        )
-        .having(amount_expr > 0)
-        .having(pending_amount_expr > paid_in_full_tolerance)
+        .where(orders.c.recovery_status == "NONE")
+        .where(sa.not_(matching_sale_exists))
+        .where(amount_expr > 0)
     )
 
     tz = get_timezone()
