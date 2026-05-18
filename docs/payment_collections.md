@@ -53,7 +53,7 @@ This table is the verified payment evidence table for current payment reconcilia
 - A separate `Short Payment` sub-report is required for underpaid orders; it must not be merged into `Actual Payments Not Found`.
 - `Short Payment` is a current/open action list across all order dates. It behaves like `TO_BE_RECOVERED` by showing current unresolved action rows, and Daily/MTD report date windows do not restrict Short Payment eligibility.
 - Short Payment still excludes `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`, and zero-value orders.
-- Short Payment requires clean sales-backed proof: the sales row exists, payment proof exists, sales/evidence are consistent within ₹1, and the evidence is short against `vw_orders.order_amount` by more than ₹1.
+- Short Payment requires clean reconciliation: (1) a `sales` row exists; (2) qualifying `payment_collections` proof exists; (3) `sales.payment_received` and proof/evidence amount match within ₹1; and (4) the proof/evidence amount is short against `vw_orders.order_amount` by more than ₹1.
 - Show `source_type` in audit/reconciliation reports so analysts can trace evidence provenance. Do not add it to every normal business report by default.
 
 ## Recommended manual upsert pattern

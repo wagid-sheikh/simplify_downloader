@@ -140,7 +140,28 @@ class PaymentReconciliationResult:
 
     @property
     def short_payment_orders(self) -> tuple[ReconciledOrderPayment, ...]:
-        return tuple(order for order in self.orders if order.status == "short")
+        """Clean operator Short Payments.
+
+        Short Payments require all canonical payment inputs to reconcile cleanly:
+        a sales row exists, qualifying payment evidence exists, sales and evidence
+        match within the shared ₹1 tolerance, and the evidence is still short
+        against ``vw_orders.order_amount`` by more than that tolerance. Raw short
+        evidence with missing sales or sales/evidence mismatches remains available
+        in audit classifications, but is not part of the operator Short Payments
+        action list.
+        """
+
+        return tuple(
+            order
+            for order in self.orders
+            if (
+                order.status == "short"
+                and order.has_sales_payment_data
+                and order.has_payment_proof
+                and order.sales_evidence_consistent
+                and order.short_amount > DEFAULT_PAYMENT_TOLERANCE
+            )
+        )
 
     @property
     def recovery_auto_clear_orders(self) -> tuple[ReconciledOrderPayment, ...]:
@@ -758,6 +779,12 @@ def build_payment_evidence_audit_rows(
                 reconciliation_result = "missing sales"
             elif group.status == "paid":
                 reconciliation_result = "grouped paid" if is_grouped else "paid"
+            elif group.status == "short" and group.sales_evidence_mismatch:
+                reconciliation_result = (
+                    "grouped sales/evidence mismatch short"
+                    if is_grouped
+                    else "sales/evidence mismatch short"
+                )
             elif group.status == "short":
                 reconciliation_result = "grouped short" if is_grouped else "short"
             else:

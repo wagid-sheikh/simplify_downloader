@@ -136,7 +136,8 @@ def test_grouped_payment_splits_on_slash_and_allocates_short_groups_by_order_dat
         ("B-2", Decimal("100"), "paid", Decimal("0")),
         ("C-3", Decimal("50"), "short", Decimal("50")),
     ]
-    assert [order.order_number for order in result.short_payment_orders] == ["C-3"]
+    assert [order.order_number for order in result.short_payment_orders] == []
+    assert group.sales_evidence_mismatch is True
 
 
 def test_proof_missing_report_includes_sales_payments_without_valid_collection_proof() -> (
@@ -261,9 +262,8 @@ def test_grouped_payment_and_single_order_top_up_report_only_sequential_shortage
     assert [
         (order.order_number, order.short_amount)
         for order in result.short_payment_orders
-    ] == [
-        ("ORD2", Decimal("20")),
-    ]
+    ] == []
+    assert group.sales_evidence_mismatch is True
 
 
 def test_sales_equals_evidence_has_no_sales_evidence_mismatch() -> None:

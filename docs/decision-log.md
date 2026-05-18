@@ -35,7 +35,7 @@
   - A dedicated Daily Sales `Short Payment` PDF is required and separate from `Actual Payments Not Found`.
   - Daily Sales `Short Payment` is a current/open action list across all order dates, behaving like `TO_BE_RECOVERED` visibility by showing current unresolved action rows; Daily/MTD report date windows do not restrict Short Payment eligibility.
   - Daily Sales `Short Payment` still excludes `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`, and zero-value orders.
-  - Daily Sales `Short Payment` requires clean sales-backed proof: sales row exists; payment proof exists; sales/evidence are consistent within ₹1; evidence is short against `vw_orders.order_amount` by more than ₹1.
+  - Daily Sales `Short Payment` requires clean reconciliation: (1) a `sales` row exists; (2) qualifying `payment_collections` proof exists; (3) `sales.payment_received` and proof/evidence amount match within ₹1; and (4) the proof/evidence amount is short against `vw_orders.order_amount` by more than ₹1.
   - Payment Evidence Review is an audit-only reconciliation surface. Its `reconciliation_result` may show raw classifications alongside recovery statuses for diagnostics, but rows with recovery workflow statuses must be marked non-actionable via `operator_actionable_payment_status` and must not be described as Daily Sales Short Payments actions.
   - `source_type` should appear in audit/reconciliation reports, not every normal business report.
 - **Follow-up:** Implement report/query changes against this contract and add regression tests for source equivalence, group reconciliation, short-payment separation, recovery-status exclusions, and source-type visibility.
