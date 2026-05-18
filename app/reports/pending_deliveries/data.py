@@ -21,7 +21,6 @@ PENDING_DELIVERY_EXCLUDED_RECOVERY_STATUSES = (
     "COMPENSATED",
     "WRITE_OFF",
 )
-ACTIVE_MANUAL_RECOVERY_STATUSES = ("TO_BE_RECOVERED", "TO_BE_COMPENSATED")
 
 
 @dataclass
@@ -80,8 +79,6 @@ class PendingDeliveriesReportData:
     cost_center_sections: List[PendingDeliveriesCostCenterSection]
     total_pending_amount: Decimal
     total_count: int
-    manual_recovery_rows: List[PendingDeliveryRow]
-    manual_recovery_total_amount_at_risk: Decimal
 
 
 def _decimal(value: object | None) -> Decimal:
@@ -192,7 +189,6 @@ async def fetch_pending_deliveries_report(
     *,
     database_url: str,
     report_date: date,
-    include_aged_unresolved_recovery_rows: bool = False,
 ) -> PendingDeliveriesReportData:
     metadata = sa.MetaData()
     orders = sa.table(
@@ -247,7 +243,6 @@ async def fetch_pending_deliveries_report(
 
     tz = get_timezone()
     rows: list[PendingDeliveryRow] = []
-    manual_recovery_rows: list[PendingDeliveryRow] = []
 
     async with session_scope(database_url) as session:
         results = await session.execute(stmt)
@@ -286,101 +281,16 @@ async def fetch_pending_deliveries_report(
                 )
             )
 
-        recovery_orders = sa.table(
-            "vw_orders",
-            sa.column("cost_center"),
-            sa.column("store_code"),
-            sa.column("order_number"),
-            sa.column("customer_name"),
-            sa.column("order_date"),
-            sa.column("default_due_date"),
-            sa.column("source_system"),
-            sa.column("order_amount"),
-            sa.column("recovery_status"),
-        )
-        manual_recovery_filter = recovery_orders.c.recovery_status.in_(
-            ACTIVE_MANUAL_RECOVERY_STATUSES
-        )
-        # Historical callers may still pass include_aged_unresolved_recovery_rows=True,
-        # but pending-deliveries recovery visibility is deliberately limited to the two
-        # active manual-action statuses. Closed statuses and other custom statuses must
-        # not leak into this report section.
-        _ = include_aged_unresolved_recovery_rows
-
-        manual_recovery_amount_expr = sa.func.coalesce(recovery_orders.c.order_amount, 0)
-        manual_recovery_stmt = (
-            sa.select(
-                recovery_orders.c.cost_center,
-                recovery_orders.c.store_code,
-                recovery_orders.c.order_number,
-                recovery_orders.c.customer_name,
-                recovery_orders.c.order_date,
-                recovery_orders.c.default_due_date,
-                recovery_orders.c.source_system,
-                manual_recovery_amount_expr.label("amount_at_risk"),
-                recovery_orders.c.recovery_status,
-            )
-            .where(manual_recovery_filter)
-            .where(manual_recovery_amount_expr > 0)
-            .order_by(
-                recovery_orders.c.cost_center,
-                recovery_orders.c.default_due_date,
-                recovery_orders.c.order_date,
-                recovery_orders.c.order_number,
-            )
-        )
-        try:
-            manual_recovery_results = await session.execute(manual_recovery_stmt)
-        except sa.exc.DBAPIError:
-            manual_recovery_results = None
-
-        if manual_recovery_results is not None:
-            for record in manual_recovery_results.mappings():
-                order_date = _coerce_datetime(record.get("order_date"))
-                if order_date is None:
-                    continue
-                default_due_date = _coerce_datetime(record.get("default_due_date"))
-                if default_due_date is None:
-                    default_due_date = order_date
-                order_date_local = _resolve_order_date(order_date, tz)
-                default_due_date_local = _resolve_business_date(default_due_date, tz)
-                age_days = max(0, (report_date - default_due_date_local).days)
-                amount_at_risk = _decimal(record.get("amount_at_risk"))
-                manual_recovery_rows.append(
-                    PendingDeliveryRow(
-                        cost_center=str(record.get("cost_center") or ""),
-                        store_code=str(record.get("store_code") or ""),
-                        order_number=str(record.get("order_number") or ""),
-                        customer_name=str(record.get("customer_name") or ""),
-                        order_date=order_date_local,
-                        default_due_date=default_due_date_local,
-                        age_days=age_days,
-                        order_amount=amount_at_risk,
-                        paid_amount=Decimal("0"),
-                        pending_amount=amount_at_risk,
-                        adjustments=Decimal("0"),
-                        is_edited_order=False,
-                        is_duplicate=False,
-                        source_system=str(record.get("source_system") or ""),
-                        recovery_status=str(record.get("recovery_status") or ""),
-                    )
-                )
-
     summary_sections = _build_summary_sections(rows)
     cost_center_sections = _build_cost_center_sections(rows)
     total_pending_amount = sum(
         (section.total_pending_amount for section in summary_sections), Decimal("0")
     )
     total_count = sum(section.total_count for section in summary_sections)
-    manual_recovery_total_amount_at_risk = sum(
-        (row.pending_amount for row in manual_recovery_rows), Decimal("0")
-    )
     return PendingDeliveriesReportData(
         report_date=report_date,
         summary_sections=summary_sections,
         cost_center_sections=cost_center_sections,
         total_pending_amount=total_pending_amount,
         total_count=total_count,
-        manual_recovery_rows=manual_recovery_rows,
-        manual_recovery_total_amount_at_risk=manual_recovery_total_amount_at_risk,
     )
