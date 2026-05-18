@@ -273,6 +273,21 @@ def _normalised_order_sql(column: Any) -> Any:
     return sa.func.upper(sa.func.replace(sa.func.coalesce(column, ""), " ", ""))
 
 
+def _delimited_payment_order_tokens_sql(column: Any) -> Any:
+    """Return comma-delimited normalized payment order tokens for exact SQL matching.
+
+    ``payment_collections.order_number`` may contain a single order token or a
+    grouped token list separated by ``/`` or ``,``.  Wrapping the normalized,
+    slash-to-comma-converted value with commas lets the candidate query match
+    ``,ORD1,`` exactly, so a non-grouped candidate such as ``ORD1`` does not
+    prefetch unrelated evidence for ``ORD10`` while still allowing grouped
+    evidence such as ``ORD1/ORD2`` or ``ORD1,ORD2`` to be reconciled in Python.
+    """
+
+    normalized = _normalised_order_sql(column)
+    return sa.literal(",") + sa.func.replace(normalized, "/", ",") + sa.literal(",")
+
+
 async def _fetch_payment_rows_for_orders(
     *, session: Any, payment_collections: Any, order_rows: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -319,13 +334,13 @@ async def _fetch_payment_rows_for_orders(
     # Keep the SQL shape bounded for large MTD windows; cost center filtering is
     # still mandatory, and token filtering is applied when feasible.
     if 0 < len(candidate_order_tokens) <= 500:
-        normalized_payment_order = _normalised_order_sql(
+        delimited_payment_tokens = _delimited_payment_order_tokens_sql(
             payment_collections.c.order_number
         )
         payment_stmt = payment_stmt.where(
             sa.or_(
                 *[
-                    normalized_payment_order.contains(token, autoescape=True)
+                    delimited_payment_tokens.contains(f",{token},", autoescape=True)
                     for token in candidate_order_tokens
                 ]
             )

@@ -15,6 +15,7 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from app.common.db import session_scope
 from app.reports.shared.short_payments import (
+    _fetch_payment_rows_for_orders,
     fetch_missing_payment_rows_without_proof,
     fetch_short_payment_rows,
 )
@@ -330,6 +331,50 @@ async def test_payment_reconciliation_limits_payment_collection_query_to_candida
     assert "payment_collections.cost_center IN ('CC1')" in payment_sql
     assert "LIKE" in payment_sql
     assert "ORD123" in payment_sql
+
+
+@pytest.mark.asyncio
+async def test_payment_collection_candidate_query_uses_exact_group_tokens(tmp_path: Path) -> None:
+    db_path = tmp_path / "payment_collection_exact_tokens.db"
+    sync_url = f"sqlite:///{db_path}"
+    async_url = f"sqlite+aiosqlite:///{db_path}"
+    engine = sa.create_engine(sync_url)
+    with engine.begin() as connection:
+        connection.execute(sa.text("""
+            CREATE TABLE payment_collections (
+                cost_center TEXT NOT NULL,
+                order_number TEXT,
+                amount NUMERIC(12, 2) NOT NULL,
+                source_type TEXT NOT NULL
+            )
+        """))
+        connection.execute(sa.text("""
+            INSERT INTO payment_collections (cost_center, order_number, amount, source_type) VALUES
+                ('CC1', 'ORD10', 100, 'google_sheet'),
+                ('CC1', 'ORD1/ORD2', 200, 'google_sheet'),
+                ('CC1', 'ORD1, ORD3', 300, 'google_sheet'),
+                ('CC1', 'XORD1', 400, 'google_sheet'),
+                ('CC2', 'ORD1', 500, 'google_sheet')
+        """))
+    engine.dispose()
+
+    payment_collections = sa.table(
+        "payment_collections",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+        sa.column("amount"),
+        sa.column("source_type"),
+    )
+
+    async with session_scope(async_url) as session:
+        rows = await _fetch_payment_rows_for_orders(
+            session=session,
+            payment_collections=payment_collections,
+            order_rows=[{"cost_center": "CC1", "order_number": "ORD1"}],
+        )
+
+    assert [row["order_number"] for row in rows] == ["ORD1/ORD2", "ORD1, ORD3"]
+
 
 @pytest.mark.asyncio
 async def test_fetch_short_payment_rows_requires_sales_backed_consistent_evidence(tmp_path: Path) -> None:
