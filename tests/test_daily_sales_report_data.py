@@ -393,12 +393,12 @@ async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amoun
                 """
                 INSERT INTO orders (
                     cost_center, order_number, order_date, customer_name, mobile_number,
-                    net_amount, gross_amount, source_system
+                    net_amount, gross_amount, source_system, recovery_status
                 ) VALUES
-                    ('CC1', 'TD-MISSING', '2026-04-29T09:00:00+05:30', 'Tara', '9000000001', 500, 650, 'TumbleDry'),
-                    ('CC1', 'UC-MISSING', '2026-04-29T10:00:00+05:30', 'Uma', '9000000002', 0, 910, 'UC'),
-                    ('CC1', 'UC-MATCHED', '2026-04-29T11:00:00+05:30', 'Maya', '9000000003', 300, 390, 'UC'),
-                    ('CC1', 'ZERO-VALUE', '2026-04-29T11:30:00+05:30', 'Zed', '9000000004', 0, 0, 'TumbleDry')
+                    ('CC1', 'TD-MISSING', '2026-04-29T09:00:00+05:30', 'Tara', '9000000001', 500, 650, 'TumbleDry', 'NONE'),
+                    ('CC1', 'UC-MISSING', '2026-04-29T10:00:00+05:30', 'Uma', '9000000002', 0, 910, 'UC', 'NONE'),
+                    ('CC1', 'UC-MATCHED', '2026-04-29T11:00:00+05:30', 'Maya', '9000000003', 300, 390, 'UC', 'NONE'),
+                    ('CC1', 'ZERO-VALUE', '2026-04-29T11:30:00+05:30', 'Zed', '9000000004', 0, 0, 'TumbleDry', 'NONE')
                 """
             )
         )
@@ -458,16 +458,18 @@ async def test_fetch_daily_sales_report_short_payments_separate_from_missing_pay
                 cost_center, order_number, order_date, customer_name, mobile_number,
                 net_amount, gross_amount, source_system, recovery_status
             ) VALUES
-                ('CC1','OLD-SHORT','2026-04-01T08:00:00+05:30','Olive','111',100,100,'TumbleDry',NULL),
-                ('CC1','ZERO-VALUE','2026-04-15T08:00:00+05:30','Zed','112',0,0,'TumbleDry',NULL),
+                ('CC1','OLD-SHORT','2026-04-01T08:00:00+05:30','Olive','111',100,100,'TumbleDry','NONE'),
+                ('CC1','ZERO-VALUE','2026-04-15T08:00:00+05:30','Zed','112',0,0,'TumbleDry','NONE'),
                 ('CC1','RECOVERY-SHORT','2026-04-28T08:00:00+05:30','Ria','113',100,100,'TumbleDry','TO_BE_RECOVERED'),
                 ('CC1','COMP-SHORT','2026-04-28T08:30:00+05:30','Cia','114',100,100,'TumbleDry','TO_BE_COMPENSATED'),
-                ('CC1','SINGLE','2026-04-29T09:00:00+05:30','Alice','999',100,100,'TumbleDry',NULL),
-                ('CC1','GROUP1','2026-04-29T10:00:00+05:30','Bob','888',100,100,'TumbleDry',NULL),
-                ('CC1','GROUP2','2026-04-29T11:00:00+05:30','Cara','777',200,200,'TumbleDry',NULL),
-                ('CC1','MISSING','2026-04-29T12:00:00+05:30','Dan','666',120,120,'TumbleDry',NULL),
-                ('CC1','PROOFONLY','2026-04-29T12:15:00+05:30','Polly','665',100,100,'TumbleDry',NULL),
-                ('CC1','MISMATCH','2026-04-29T12:30:00+05:30','Mia','664',100,100,'TumbleDry',NULL),
+                ('CC1','SINGLE','2026-04-29T09:00:00+05:30','Alice','999',100,100,'TumbleDry','NONE'),
+                ('CC1','GROUP1','2026-04-29T10:00:00+05:30','Bob','888',100,100,'TumbleDry','NONE'),
+                ('CC1','GROUP2','2026-04-29T11:00:00+05:30','Cara','777',200,200,'TumbleDry','NONE'),
+                ('CC1','MISSING','2026-04-29T12:00:00+05:30','Dan','666',120,120,'TumbleDry','NONE'),
+                ('CC1','PROOFONLY','2026-04-29T12:15:00+05:30','Polly','665',100,100,'TumbleDry','NONE'),
+                ('CC1','MISMATCH','2026-04-29T12:30:00+05:30','Mia','664',100,100,'TumbleDry','NONE'),
+                ('CC1','NULL-STATUS-SHORT','2026-04-29T12:40:00+05:30','Nia','663',100,100,'TumbleDry',NULL),
+                ('CC1','CUSTOM-STATUS-SHORT','2026-04-29T12:50:00+05:30','Cal','662',100,100,'TumbleDry','CUSTOM_STATUS'),
                 ('CC1','REC','2026-04-29T13:00:00+05:30','Eve','555',150,150,'TumbleDry','WRITE_OFF')
         """))
         await session.execute(sa.text("""
@@ -480,7 +482,9 @@ async def test_fetch_daily_sales_report_short_payments_separate_from_missing_pay
                 ('CC1','GROUP1','2026-04-29T10:30:00+05:30',100,'UPI',0,0),
                 ('CC1','GROUP2','2026-04-29T11:30:00+05:30',50,'UPI',0,0),
                 ('CC1','MISSING','2026-04-29T12:30:00+05:30',120,'UPI',0,0),
-                ('CC1','MISMATCH','2026-04-29T12:45:00+05:30',90,'UPI',0,0)
+                ('CC1','MISMATCH','2026-04-29T12:45:00+05:30',90,'UPI',0,0),
+                ('CC1','NULL-STATUS-SHORT','2026-04-29T12:50:00+05:30',80,'UPI',0,0),
+                ('CC1','CUSTOM-STATUS-SHORT','2026-04-29T12:55:00+05:30',80,'UPI',0,0)
         """))
         await session.execute(sa.text("""
             INSERT INTO payment_collections (cost_center, order_number, amount, source_type) VALUES
@@ -492,6 +496,8 @@ async def test_fetch_daily_sales_report_short_payments_separate_from_missing_pay
                 ('CC1','GROUP1/GROUP2',150,'google_sheet'),
                 ('CC1','PROOFONLY',80,'google_sheet'),
                 ('CC1','MISMATCH',80,'google_sheet'),
+                ('CC1','NULL-STATUS-SHORT',80,'google_sheet'),
+                ('CC1','CUSTOM-STATUS-SHORT',80,'google_sheet'),
                 ('CC1','REC',10,'google_sheet')
         """))
         await session.commit()
@@ -503,6 +509,9 @@ async def test_fetch_daily_sales_report_short_payments_separate_from_missing_pay
         ("SINGLE", Decimal("80"), Decimal("20"), None),
         ("GROUP2", Decimal("50"), Decimal("150"), "GROUP1|GROUP2"),
     ]
+    assert {row.order_number for row in report.short_payment_rows}.isdisjoint(
+        {"NULL-STATUS-SHORT", "CUSTOM-STATUS-SHORT"}
+    )
     assert [row.order_number for row in report.missing_payment_rows] == ["MISSING"]
 
 
@@ -530,10 +539,10 @@ async def test_fetch_daily_sales_report_actual_payments_not_found_requires_sales
                 cost_center, order_number, order_date, customer_name, mobile_number,
                 net_amount, gross_amount, source_system, recovery_status
             ) VALUES
-                ('CC1','SALES-NO-PROOF','2026-04-29T09:00:00+05:30','Alice','999',100,100,'TumbleDry',NULL),
-                ('CC1','NO-SALES-NO-PROOF','2026-04-29T10:00:00+05:30','Bob','888',200,200,'TumbleDry',NULL),
-                ('CC1','NO-SALES-WITH-PROOF','2026-04-29T11:00:00+05:30','Cara','777',300,300,'TumbleDry',NULL),
-                ('CC1','ZERO-VALUE','2026-04-29T12:00:00+05:30','Zed','666',0,0,'TumbleDry',NULL),
+                ('CC1','SALES-NO-PROOF','2026-04-29T09:00:00+05:30','Alice','999',100,100,'TumbleDry','NONE'),
+                ('CC1','NO-SALES-NO-PROOF','2026-04-29T10:00:00+05:30','Bob','888',200,200,'TumbleDry','NONE'),
+                ('CC1','NO-SALES-WITH-PROOF','2026-04-29T11:00:00+05:30','Cara','777',300,300,'TumbleDry','NONE'),
+                ('CC1','ZERO-VALUE','2026-04-29T12:00:00+05:30','Zed','666',0,0,'TumbleDry','NONE'),
                 ('CC1','RECOVERY','2026-04-29T13:00:00+05:30','Ron','555',400,400,'TumbleDry','WRITE_OFF')
         """))
         await session.execute(sa.text("""

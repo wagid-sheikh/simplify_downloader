@@ -698,6 +698,97 @@ def test_build_td_leads_tables_html_includes_existing_customer_order_metrics_for
     assert "<!-- order_metrics_source store=A200 pickup_no=A200-HIST source=enriched_result_rows -->" in lead_tables_html
 
 
+def test_build_td_leads_tables_html_uses_enriched_row_over_created_row_for_new_leads() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-enriched-row-source-of-truth",
+        run_env="test",
+        report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
+        store_results={
+            "A200": StoreLeadResult(
+                store_code="A200",
+                rows=[
+                    {
+                        "status_bucket": "pending",
+                        "pickup_no": "A200-ENRICHED",
+                        "customer_name": "Enriched Customer",
+                        "mobile": "+91-90000 00999",
+                        "source": "Enriched Meta",
+                        "customer_type": "Existing",
+                        "previous_number_of_orders": 4,
+                        "average_order_amount": "1500.25",
+                        "pickup_created_text": "01 May 2026 10:15:00 AM",
+                    }
+                ],
+                lead_change_details={
+                    "created_by_bucket": [
+                        {
+                            "rows": [
+                                {
+                                    "customer_name": "Stale Created Customer",
+                                    "mobile": "+91-90000 00000",
+                                    "source": "Stale Source",
+                                    "customer_type": "Existing",
+                                    "previous_number_of_orders": 0,
+                                    "average_order_amount": "0",
+                                    "pickup_created_text": "30 Apr 2026 09:00:00 AM",
+                                    "lead_identity": {"pickup_no": "A200-ENRICHED"},
+                                }
+                            ]
+                        }
+                    ]
+                },
+            )
+        },
+    )
+
+    lead_tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "A200, Enriched Customer, +91-90000 00999, Enriched Meta, Existing | Orders: 4 | Avg. Value: ₹1,500.25, 01 May 2026 10:15:00 AM" in lead_tables_html
+    assert "Stale Created Customer" not in lead_tables_html
+    assert "+91-90000 00000" not in lead_tables_html
+    assert "Stale Source" not in lead_tables_html
+    assert "Existing | Orders: 0" not in lead_tables_html
+    assert "30 Apr 2026 09:00:00 AM" not in lead_tables_html
+    assert "<!-- order_metrics_source store=A200 pickup_no=A200-ENRICHED source=enriched_result_rows -->" in lead_tables_html
+
+
+def test_build_td_leads_tables_html_unmatched_created_row_with_zero_metrics_shows_unavailable() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-created-row-zero-metrics-no-match",
+        run_env="test",
+        report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
+        store_results={
+            "A200": StoreLeadResult(
+                store_code="A200",
+                rows=[],
+                lead_change_details={
+                    "created_by_bucket": [
+                        {
+                            "rows": [
+                                {
+                                    "customer_name": "Created Only Existing",
+                                    "mobile": "9000000003",
+                                    "source": "Meta",
+                                    "customer_type": "Existing",
+                                    "previous_number_of_orders": 0,
+                                    "average_order_amount": "0",
+                                    "lead_identity": {"pickup_no": "A200-NO-MATCH"},
+                                }
+                            ]
+                        }
+                    ]
+                },
+            )
+        },
+    )
+
+    lead_tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "A200, Created Only Existing, 9000000003, Meta, Existing | Order history unavailable: lead row not matched" in lead_tables_html
+    assert "Orders: 0" not in lead_tables_html
+    assert "Avg. Value: ₹0.00" not in lead_tables_html
+
+
 def test_build_td_leads_tables_html_marks_unmatched_existing_new_lead_history_unavailable() -> None:
     summary = LeadsRunSummary(
         run_id="run-unmatched-existing-new-lead",
@@ -745,7 +836,7 @@ def test_build_td_leads_tables_html_marks_unmatched_existing_new_lead_history_un
     assert "Orders: 0" not in lead_tables_html
 
 
-def test_build_td_leads_tables_html_marks_order_metrics_from_lead_change_details() -> None:
+def test_build_td_leads_tables_html_ignores_order_metrics_from_lead_change_details() -> None:
     summary = LeadsRunSummary(
         run_id="run-lead-change-order-metrics",
         run_env="test",
@@ -777,7 +868,342 @@ def test_build_td_leads_tables_html_marks_order_metrics_from_lead_change_details
 
     lead_tables_html = _build_td_leads_tables_html(summary=summary)
 
-    assert "<!-- order_metrics_source store=A200 pickup_no=A200-CHANGE source=lead_change_details -->" in lead_tables_html
+    assert "<!-- order_metrics_source store=A200 pickup_no=A200-CHANGE source=no_match -->" in lead_tables_html
+    assert "Orders: 3" not in lead_tables_html
+    assert "Avg. Value: ₹2,000.00" not in lead_tables_html
+    assert "Existing | Order history unavailable: lead row not matched" in lead_tables_html
+
+
+async def _build_enriched_td_lead_summary_html(
+    *,
+    tmp_path,
+    db_name: str,
+    orders: list[tuple[str, str, object]],
+    reporting_mode: str | None = None,
+) -> str:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / db_name}"
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(sa.text("""
+                CREATE TABLE vw_orders (
+                    store_code TEXT,
+                    mobile_number TEXT,
+                    order_amount NUMERIC
+                )
+            """))
+            await connection.execute(
+                sa.text("""
+                    INSERT INTO vw_orders (store_code, mobile_number, order_amount)
+                    VALUES (:store_code, :mobile_number, :order_amount)
+                """),
+                [
+                    {"store_code": store_code, "mobile_number": mobile_number, "order_amount": order_amount}
+                    for store_code, mobile_number, order_amount in orders
+                ],
+            )
+
+        summary = LeadsRunSummary(
+            run_id="run-enriched-normal-email",
+            run_env="test",
+            report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
+            store_results={
+                "A200": StoreLeadResult(
+                    store_code="A200",
+                    rows=[
+                        {
+                            "store_code": "A200",
+                            "status_bucket": "pending",
+                            "pickup_no": "A200-HIST",
+                            "customer_name": "Historical Lead",
+                            "mobile": "+91 90000 00003",
+                            "source": "Meta",
+                            "customer_type": "Existing",
+                            "pickup_created_at": "2026-05-01 09:00:00+00:00",
+                        }
+                    ],
+                    lead_change_details={
+                        "created_by_bucket": [
+                            {
+                                "rows": [
+                                    {
+                                        "customer_name": "Historical Lead",
+                                        "mobile": "9000000003",
+                                        "source": "Meta",
+                                        "customer_type": "Existing",
+                                        "lead_identity": {"pickup_no": "A200-HIST"},
+                                    }
+                                ]
+                            }
+                        ],
+                        "transitions": [],
+                    },
+                )
+            },
+        )
+        await td_leads_main._enrich_td_summary_with_order_history(database_url=database_url, summary=summary)
+        record = summary.build_record(
+            finished_at=datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc),
+            reporting_mode=reporting_mode,
+        )
+        return record["metrics_json"]["lead_tables_html"]
+    finally:
+        await engine.dispose()
+
+
+
+@pytest.mark.asyncio
+async def test_normal_run_summary_html_has_order_history_metrics_before_render(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_normal_run_summary_history.db'}"
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(sa.text("""
+                CREATE TABLE vw_orders (
+                    store_code TEXT,
+                    mobile_number TEXT,
+                    order_amount NUMERIC
+                )
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO vw_orders (store_code, mobile_number, order_amount)
+                VALUES ('A200', '9000000003', 1234.5)
+            """))
+
+        store_result = StoreLeadResult(
+            store_code="A200",
+            rows=[
+                {
+                    "store_code": "A200",
+                    "status_bucket": "pending",
+                    "pickup_no": "A200-HIST",
+                    "customer_name": "Historical Lead",
+                    "mobile": "+91 90000 00003",
+                    "source": "Meta",
+                    "customer_type": "Existing",
+                    "pickup_created_at": "2026-05-01 09:00:00+00:00",
+                }
+            ],
+            lead_change_details={
+                "created_by_bucket": [
+                    {
+                        "rows": [
+                            {
+                                "customer_name": "Historical Lead",
+                                "mobile": "9000000003",
+                                "source": "Meta",
+                                "customer_type": "Existing",
+                                "lead_identity": {"pickup_no": "A200-HIST"},
+                            }
+                        ]
+                    }
+                ],
+                "transitions": [],
+            },
+        )
+        summary = LeadsRunSummary(
+            run_id="run-normal-email-history",
+            run_env="test",
+            report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
+            store_results={"A200": store_result},
+        )
+
+        await td_leads_main._enrich_td_lead_rows_with_order_history(database_url=database_url, rows=store_result.rows)
+        record = summary.build_record(finished_at=datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc), reporting_mode=None)
+        summary_html = record["metrics_json"]["summary_html"]
+    finally:
+        await engine.dispose()
+
+    assert "Existing | Orders: 1" in summary_html
+    assert "Avg. Value: ₹1,234.50" in summary_html
+    assert "Order history unavailable: lead row not enriched" not in summary_html
+
+
+@pytest.mark.asyncio
+async def test_run_store_enriches_rows_with_order_history_before_returning(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_run_store_enriches.db'}"
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(sa.text("""
+                CREATE TABLE vw_orders (
+                    store_code TEXT,
+                    mobile_number TEXT,
+                    order_amount NUMERIC
+                )
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO vw_orders (store_code, mobile_number, order_amount)
+                VALUES ('A200', '9000000003', 1234.5)
+            """))
+
+        class _FakeContext:
+            async def new_page(self):
+                return object()
+
+            async def storage_state(self, *, path: str) -> None:
+                return None
+
+            async def close(self) -> None:
+                return None
+
+        class _FakeBrowser:
+            async def new_context(self, **kwargs):
+                return _FakeContext()
+
+        row = {
+            "store_code": "A200",
+            "status_bucket": "pending",
+            "pickup_no": "A200-HIST",
+            "customer_name": "Historical Lead",
+            "mobile": "+91 90000 00003",
+            "source": "Meta",
+            "customer_type": "Existing",
+            "pickup_created_at": "2026-05-01 09:00:00+00:00",
+        }
+
+        async def _fake_collect_status_rows(page, *, store_code, status_bucket, status_value, grid_selector, logger):
+            return ([dict(row)] if status_bucket == "pending" else []), []
+
+        async def _fake_ingest_td_crm_leads_rows(**kwargs):
+            return td_leads_main.TdLeadsIngestResult(
+                rows_received=1,
+                rows_upserted=1,
+                bucket_write_counts={"pending": {"inserted": 1, "updated": 0}},
+                pickup_created_at_null_count=0,
+                pickup_created_at_null_counts_by_bucket={},
+                status_transitions=[],
+                lead_change_details={
+                    "created_by_bucket": [
+                        {
+                            "rows": [
+                                {
+                                    "customer_name": "Historical Lead",
+                                    "mobile": "9000000003",
+                                    "source": "Meta",
+                                    "customer_type": "Existing",
+                                    "lead_identity": {"pickup_no": "A200-HIST"},
+                                }
+                            ]
+                        }
+                    ],
+                    "transitions": [],
+                },
+                task_stub={},
+            )
+
+        monkeypatch.setattr(td_leads_main, "config", SimpleNamespace(database_url=database_url))
+        monkeypatch.setattr(td_leads_main, "_perform_login", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+        monkeypatch.setattr(td_leads_main, "_wait_for_otp_verification", lambda *args, **kwargs: asyncio.sleep(0, result=(True, False)))
+        monkeypatch.setattr(td_leads_main, "_wait_for_home", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+        monkeypatch.setattr(td_leads_main, "_ensure_scheduler_page", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+        monkeypatch.setattr(td_leads_main, "_collect_status_rows", _fake_collect_status_rows)
+        monkeypatch.setattr(td_leads_main, "_write_store_artifact", lambda **kwargs: tmp_path / "td_leads.xlsx")
+        monkeypatch.setattr(td_leads_main, "ingest_td_crm_leads_rows", _fake_ingest_td_crm_leads_rows)
+
+        result = await td_leads_main._run_store(
+            browser=_FakeBrowser(),
+            store=SimpleNamespace(
+                store_code="A200",
+                storage_state_path=tmp_path / "storage" / "A200.json",
+                reports_nav_selector="#nav",
+            ),
+            run_id="run-store-enriches",
+            run_env="test",
+            logger=SimpleNamespace(info=lambda **kwargs: None),
+        )
+    finally:
+        await engine.dispose()
+
+    assert result.status == "ok"
+    assert result.rows[0]["previous_number_of_orders"] == 1
+    assert str(result.rows[0]["average_order_amount"]) == "1234.5"
+    assert result.rows[0]["customer_type"] == "Existing"
+    assert "order_history_warning_marker" not in result.rows[0]
+
+
+@pytest.mark.asyncio
+async def test_normal_mode_summary_html_renders_existing_lead_with_one_historical_paid_order(tmp_path) -> None:
+    lead_tables_html = await _build_enriched_td_lead_summary_html(
+        tmp_path=tmp_path,
+        db_name="td_paid_order_history.db",
+        orders=[("A200", "9000000003", 1234.50)],
+    )
+
+    assert "Existing | Orders: 1 | Avg. Value: ₹1,234.50" in lead_tables_html
+
+
+@pytest.mark.asyncio
+async def test_normal_mode_summary_html_renders_existing_lead_with_one_historical_zero_value_order(tmp_path) -> None:
+    lead_tables_html = await _build_enriched_td_lead_summary_html(
+        tmp_path=tmp_path,
+        db_name="td_zero_order_history.db",
+        orders=[("A200", "9000000003", 0)],
+    )
+
+    assert "Existing | Orders: 1 | Avg. Value: ₹0.00" in lead_tables_html
+
+
+@pytest.mark.asyncio
+async def test_normal_mode_summary_html_average_includes_paid_and_zero_value_orders(tmp_path) -> None:
+    lead_tables_html = await _build_enriched_td_lead_summary_html(
+        tmp_path=tmp_path,
+        db_name="td_paid_and_zero_order_history.db",
+        orders=[("A200", "+91-90000 00003", 1000), ("A200", "9000000003", 0)],
+    )
+
+    assert "Existing | Orders: 2 | Avg. Value: ₹500.00" in lead_tables_html
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reporting_mode", [None, "meeting", "day_end"])
+async def test_seeded_lead_order_metrics_are_identical_across_reporting_modes(tmp_path, reporting_mode: str | None) -> None:
+    lead_tables_html = await _build_enriched_td_lead_summary_html(
+        tmp_path=tmp_path,
+        db_name=f"td_{reporting_mode or 'normal'}_mode_order_history.db",
+        orders=[("A200", "9000000003", 1000), ("A200", "9000000003", 0)],
+        reporting_mode=reporting_mode,
+    )
+
+    assert "Existing | Orders: 2 | Avg. Value: ₹500.00" in lead_tables_html
+
+
+def test_lead_change_details_alone_cannot_render_misleading_existing_orders_zero() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-lead-change-no-zero-fallback",
+        run_env="test",
+        report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
+        store_results={
+            "A200": StoreLeadResult(
+                store_code="A200",
+                rows=[],
+                lead_change_details={
+                    "created_by_bucket": [
+                        {
+                            "rows": [
+                                {
+                                    "customer_name": "Unmatched Existing",
+                                    "mobile": "9000000003",
+                                    "source": "Meta",
+                                    "customer_type": "Existing",
+                                    "previous_number_of_orders": 0,
+                                    "average_order_amount": "0",
+                                    "lead_identity": {"pickup_no": "A200-CHANGE-ONLY"},
+                                }
+                            ]
+                        }
+                    ],
+                    "transitions": [],
+                },
+            )
+        },
+    )
+
+    lead_tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "Existing | Order history unavailable: lead row not matched" in lead_tables_html
+    assert "Orders: 0" not in lead_tables_html
+    assert "Avg. Value: ₹0.00" not in lead_tables_html
 
 
 def test_build_td_new_lead_payload_formats_order_and_normalization() -> None:
@@ -3192,6 +3618,8 @@ async def test_td_leads_order_history_enrichment_adds_safe_diagnostics_for_exist
     assert zero_row["customer_type"] == "Existing"
     assert zero_row["previous_number_of_orders"] == 0
     assert zero_row["order_history_warning_marker"] == "existing_customer_zero_order_history"
+    assert "Existing | Order history not matched" in _build_td_new_lead_payload(store_code="A200", row=zero_row)
+    assert "Orders: 0" not in _build_td_new_lead_payload(store_code="A200", row=zero_row)
     assert zero_row["order_history_candidate_rows_for_store"] == 3
     assert zero_row["order_history_matched_rows_for_mobile"] == 0
 
@@ -3232,6 +3660,84 @@ async def test_td_leads_order_history_enrichment_adds_safe_diagnostics_for_exist
         }
     ]
     assert "9000000002" not in json.dumps(warning_markers, sort_keys=True)
+
+
+@pytest.mark.asyncio
+async def test_td_leads_order_history_enrichment_keeps_null_customer_zero_matches_new_without_warning(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_order_history_null_customer_zero.db'}"
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(sa.text("""
+                CREATE TABLE vw_orders (
+                    store_code TEXT,
+                    mobile_number TEXT,
+                    order_amount NUMERIC
+                )
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO vw_orders (store_code, mobile_number, order_amount) VALUES
+                ('A200', '9000000009', 999.00)
+            """))
+
+        rows = [
+            {
+                "store_code": "A200",
+                "pickup_no": "A200-NEW-ZERO",
+                "mobile": "9000000002",
+                "customer_type": None,
+            }
+        ]
+
+        await td_leads_main._enrich_td_lead_rows_with_order_history(database_url=database_url, rows=rows)
+    finally:
+        await engine.dispose()
+
+    row = rows[0]
+    assert row["customer_type"] == "New"
+    assert row["previous_number_of_orders"] == 0
+    assert "order_history_warning_marker" not in row
+    assert row["order_history_candidate_rows_for_store"] == 1
+    assert row["order_history_matched_rows_for_mobile"] == 0
+
+
+@pytest.mark.asyncio
+async def test_td_leads_order_history_enrichment_counts_zero_value_match_without_warning(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_order_history_zero_value_match.db'}"
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(sa.text("""
+                CREATE TABLE vw_orders (
+                    store_code TEXT,
+                    mobile_number TEXT,
+                    order_amount NUMERIC
+                )
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO vw_orders (store_code, mobile_number, order_amount) VALUES
+                ('A200', '+91 98765 43210', 0.00)
+            """))
+
+        rows = [
+            {
+                "store_code": "A200",
+                "pickup_no": "A200-ZERO-VALUE",
+                "mobile": "9876543210",
+                "customer_type": "Existing",
+            }
+        ]
+
+        await td_leads_main._enrich_td_lead_rows_with_order_history(database_url=database_url, rows=rows)
+    finally:
+        await engine.dispose()
+
+    row = rows[0]
+    assert row["customer_type"] == "Existing"
+    assert row["previous_number_of_orders"] == 1
+    assert str(row["average_order_amount"]) == "0"
+    assert "order_history_warning_marker" not in row
+    assert "Existing | Orders: 1 | Avg. Value: ₹0.00" in _build_td_new_lead_payload(store_code="A200", row=row)
 
 
 @pytest.mark.asyncio

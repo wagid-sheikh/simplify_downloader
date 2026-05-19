@@ -165,6 +165,7 @@ COMPLETED_LEADS_TODAY_OUTPUT_COLUMNS: tuple[str, ...] = (
 TD_OPEN_LEADS_AGE_THRESHOLD_DAYS_DEFAULT = 2
 TD_LEADS_ORDER_MATCH_LOOKBACK_DAYS_DEFAULT = 1
 TD_LEADS_ORDER_MATCH_GRACE_DAYS_DEFAULT = 1
+TD_ORDER_HISTORY_EXISTING_ZERO_WARNING_MARKER = "existing_customer_zero_order_history"
 
 ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS: tuple[str, ...] = (
     "store_code",
@@ -430,6 +431,8 @@ def _resolve_td_customer_type_display(*, source_customer_type: Any, previous_num
 def _td_order_metrics_suffix(row: Mapping[str, Any]) -> str:
     if str(row.get("customer_type") or "").strip().lower() != "existing":
         return ""
+    if "previous_number_of_orders" not in row or "average_order_amount" not in row:
+        return ""
     previous_number_of_orders = int(row.get("previous_number_of_orders") or 0)
     average_order_amount = _format_td_average_order_amount(row.get("average_order_amount"))
     return f"Orders: {previous_number_of_orders} | Avg. Value: {average_order_amount}"
@@ -443,8 +446,18 @@ def _format_td_customer_type_for_email(row: Mapping[str, Any]) -> str:
     ):
         reason = _normalized_td_lead_payload_value(row.get("order_history_unavailable_reason"))
         return f"{customer_type} | Order history unavailable: {reason}"
+    if (
+        customer_type.strip().lower() == "existing"
+        and str(row.get("order_history_warning_marker") or "").strip()
+        == TD_ORDER_HISTORY_EXISTING_ZERO_WARNING_MARKER
+    ):
+        return f"{customer_type} | Order history not matched"
     metrics_suffix = _td_order_metrics_suffix(row)
-    return f"{customer_type} | {metrics_suffix}" if metrics_suffix else customer_type
+    if metrics_suffix:
+        return f"{customer_type} | {metrics_suffix}"
+    if customer_type.strip().lower() == "existing":
+        return f"{customer_type} | Order history unavailable: lead row not enriched"
+    return customer_type
 
 
 def _mobile_last4(value: Any) -> str | None:
@@ -558,7 +571,7 @@ async def _enrich_td_lead_rows_with_order_history(*, database_url: str | None, r
             matched_rows_for_mobile=matched_rows_by_store_mobile.get((store_code, normalized_mobile or ""), 0),
         )
         if str(row.get("customer_type") or "").strip().lower() == "existing" and previous_number_of_orders == 0:
-            row["order_history_warning_marker"] = "existing_customer_zero_order_history"
+            row["order_history_warning_marker"] = TD_ORDER_HISTORY_EXISTING_ZERO_WARNING_MARKER
         else:
             row.pop("order_history_warning_marker", None)
     return rows
@@ -1017,10 +1030,8 @@ def _td_created_lead_order_metrics_source(
     matching_row: Mapping[str, Any],
     created_row: Mapping[str, Any],
 ) -> str:
-    if matching_row_found and ("previous_number_of_orders" in matching_row or "average_order_amount" in matching_row):
+    if matching_row_found and "previous_number_of_orders" in matching_row and "average_order_amount" in matching_row:
         return "enriched_result_rows"
-    if "previous_number_of_orders" in created_row or "average_order_amount" in created_row:
-        return "lead_change_details"
     return "no_match"
 
 
@@ -1076,35 +1087,26 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                 matching_row_found = matching_row is not None
                 if matching_row is None:
                     matching_row = {}
-                created_customer_type = str(created_row.get("customer_type") or "").strip()
                 order_metrics_source = _td_created_lead_order_metrics_source(
                     matching_row_found=matching_row_found,
                     matching_row=matching_row,
                     created_row=created_row,
                 )
-                previous_number_of_orders = (
-                    _present_mapping_value(matching_row, "previous_number_of_orders")
-                    if "previous_number_of_orders" in matching_row
-                    else _present_mapping_value(created_row, "previous_number_of_orders")
-                )
-                average_order_amount = (
-                    _present_mapping_value(matching_row, "average_order_amount")
-                    if "average_order_amount" in matching_row
-                    else _present_mapping_value(created_row, "average_order_amount")
-                )
-                payload_row = {
-                    "customer_name": created_row.get("customer_name") or matching_row.get("customer_name"),
-                    "mobile": created_row.get("mobile") or matching_row.get("mobile"),
-                    "source": created_row.get("source") or matching_row.get("source"),
-                    "customer_type": matching_row.get("customer_type") or created_row.get("customer_type"),
-                    "previous_number_of_orders": previous_number_of_orders,
-                    "average_order_amount": average_order_amount,
-                    "pickup_created_at": matching_row.get("pickup_created_at") or created_row.get("pickup_created_at"),
-                    "pickup_created_text": matching_row.get("pickup_created_text") or created_row.get("pickup_created_text"),
-                    "lead_created_at": matching_row.get("lead_created_at") or created_row.get("lead_created_at"),
-                }
-                if not matching_row_found and created_customer_type.lower() == "existing":
-                    payload_row["order_history_unavailable_reason"] = "lead row not matched"
+                payload_row = dict(matching_row if matching_row_found else created_row)
+                if matching_row_found:
+                    previous_number_of_orders = _present_mapping_value(matching_row, "previous_number_of_orders")
+                    average_order_amount = _present_mapping_value(matching_row, "average_order_amount")
+                    payload_row["previous_number_of_orders"] = previous_number_of_orders
+                    payload_row["average_order_amount"] = average_order_amount
+                resolved_customer_type = str(payload_row.get("customer_type") or "").strip().lower()
+                if resolved_customer_type == "existing" and (
+                    not matching_row_found
+                    or "previous_number_of_orders" not in matching_row
+                    or "average_order_amount" not in matching_row
+                ):
+                    payload_row["order_history_unavailable_reason"] = (
+                        "lead row not matched" if not matching_row_found else "lead row not enriched"
+                    )
                 payload = _build_td_new_lead_payload(store_code=result.store_code, row=payload_row)
                 created_rows.append([payload])
                 created_order_metric_markers.append(
@@ -1262,7 +1264,7 @@ def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
                 lead_created_at = row.get("pickup_created_at")
                 lead_age_days = _calculate_lead_age_days(lead_created_at=lead_created_at, reference_ts=aware_now(_UTC))
                 if lead_age_days is not None and lead_age_days >= threshold_days:
-                    high_age_open_leads.append({
+                    payload = {
                         "store_code": result.store_code,
                         "pickup_no": row.get("pickup_no"),
                         "customer_name": row.get("customer_name"),
@@ -1272,10 +1274,18 @@ def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
                         "source": row.get("source"),
                         "customer_type": row.get("customer_type"),
                         "last_seen_status": status_bucket or None,
-                    })
+                    }
+                    for order_history_key in (
+                        "previous_number_of_orders",
+                        "average_order_amount",
+                        "order_history_warning_marker",
+                    ):
+                        if order_history_key in row:
+                            payload[order_history_key] = row.get(order_history_key)
+                    high_age_open_leads.append(payload)
             if status_bucket == "completed":
                 if not _td_completed_lead_has_order_match(row):
-                    completed_without_order_match.append({
+                    payload = {
                         "store_code": result.store_code,
                         "pickup_no": row.get("pickup_no"),
                         "customer_name": row.get("customer_name"),
@@ -1284,7 +1294,15 @@ def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
                         "source": row.get("source"),
                         "customer_type": row.get("customer_type"),
                         "last_seen_status": status_bucket,
-                    })
+                    }
+                    for order_history_key in (
+                        "previous_number_of_orders",
+                        "average_order_amount",
+                        "order_history_warning_marker",
+                    ):
+                        if order_history_key in row:
+                            payload[order_history_key] = row.get(order_history_key)
+                    completed_without_order_match.append(payload)
 
     return {
         "open_leads_high_age_threshold_days": threshold_days,
@@ -1559,7 +1577,7 @@ def _collect_td_order_history_warning_markers(summary: "LeadsRunSummary") -> lis
     for result in sorted(summary.store_results.values(), key=lambda item: item.store_code):
         for row in result.rows:
             marker = str(row.get("order_history_warning_marker") or "").strip()
-            if marker != "existing_customer_zero_order_history":
+            if marker != TD_ORDER_HISTORY_EXISTING_ZERO_WARNING_MARKER:
                 continue
             markers.append(
                 {
@@ -2259,6 +2277,8 @@ async def _run_store(
         result.status_transitions = list(ingest_result.status_transitions) if ingest_result else []
         result.lead_change_details = dict(ingest_result.lead_change_details) if ingest_result else {}
         result.task_stub = dict(ingest_result.task_stub) if ingest_result else None
+        if config.database_url:
+            await _enrich_td_lead_rows_with_order_history(database_url=config.database_url, rows=result.rows)
         result.status = "warning" if warnings else "ok"
         result.message = "Completed" if not warnings else "Completed with warnings"
 

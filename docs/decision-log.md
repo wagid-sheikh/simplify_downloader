@@ -8,6 +8,15 @@
 
 ---
 
+### DL-019
+- **Date:** 2026-05-18
+- **Status:** Active
+- **Decision:** `Actual Payments Not Found` uses valid-proof semantics: it means no qualifying payment proof exists for normalized `(cost_center, order_number)`, not that no physical `payment_collections` row exists.
+- **Context:** Operators need missing-payment output to distinguish true missing qualifying proof from rows that exist but are unsupported, malformed, unmatched, or amount-short.
+- **Evidence:** `app/reports/shared/short_payments.py`, `app/reports/shared/payment_reconciliation.py`, `tests/test_missing_payment_sql_python_parity.py`, `docs/architecture.md`, and `docs/feature-map.md`.
+- **Implications:** Qualifying proof requires `source_type` `google_sheet` or `legacy_sales`, same `cost_center`, and a whole normalized order token split from `payment_collections.order_number` on comma or slash with whitespace removed and case ignored. Unsupported source types, blank/malformed/unmatched tokens, and different-cost-center rows do not satisfy proof and stay visible through audit diagnostics. A valid qualifying proof with an amount mismatch is Short Payment/audit reconciliation, not `Actual Payments Not Found`.
+- **Follow-up:** Keep SQL compatibility views and Python reconciliation tests aligned whenever payment source types or token rules change.
+
 ### DL-018
 - **Date:** 2026-05-16
 - **Status:** Active
@@ -31,11 +40,12 @@
   - Payment comparisons use ₹1 tolerance, and overpayment is paid in full.
   - Multi-order `payment_collections.order_number` values are group-reconciled first; group-paid rows stay out of main missing/short outputs, and group-short rows are allocated by `order_date ASC, order_number ASC`.
   - `TO_BE_RECOVERED` and `TO_BE_COMPENSATED` are excluded from normal missing-payment rows; normal pending-delivery aging/detail/action buckets exclude `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, and `WRITE_OFF`. Active manual-action rows (`TO_BE_RECOVERED`, `TO_BE_COMPENSATED`) may be surfaced only in separate configured recovery/compensation visibility sections; closed `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` rows stay out of normal action buckets.
-  - `Actual Payments Not Found` remains date-window based for Daily/MTD reports unless separately changed.
-  - A dedicated Daily Sales `Short Payment` PDF is required and separate from `Actual Payments Not Found`.
+  - `Actual Payments Not Found` remains date-window based by `vw_orders.order_date` for Daily/MTD reports unless separately changed.
+  - A dedicated Daily Sales `Short Payment` PDF is required and separate from `Actual Payments Not Found`; it is intentionally current/open across all order dates and is not restricted by Daily/MTD report windows.
+  - `To Be Recovered` is current/open by `TO_BE_RECOVERED` recovery status across all order dates rather than constrained by Daily/MTD report windows.
   - Daily Sales `Short Payment` is a current/open action list across all order dates, behaving like `TO_BE_RECOVERED` visibility by showing current unresolved action rows; Daily/MTD report date windows do not restrict Short Payment eligibility.
   - Daily Sales `Short Payment` still excludes `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`, and zero-value orders.
-  - Daily Sales `Short Payment` requires clean sales-backed proof: sales row exists; payment proof exists; sales/evidence are consistent within ₹1; evidence is short against `vw_orders.order_amount` by more than ₹1.
+  - Daily Sales `Short Payment` requires clean reconciliation: (1) a `sales` row exists; (2) qualifying `payment_collections` proof exists; (3) `sales.payment_received` and proof/evidence amount match within ₹1; and (4) the proof/evidence amount is short against `vw_orders.order_amount` by more than ₹1.
   - Payment Evidence Review is an audit-only reconciliation surface. Its `reconciliation_result` may show raw classifications alongside recovery statuses for diagnostics, but rows with recovery workflow statuses must be marked non-actionable via `operator_actionable_payment_status` and must not be described as Daily Sales Short Payments actions.
   - `source_type` should appear in audit/reconciliation reports, not every normal business report.
 - **Follow-up:** Implement report/query changes against this contract and add regression tests for source equivalence, group reconciliation, short-payment separation, recovery-status exclusions, and source-type visibility.

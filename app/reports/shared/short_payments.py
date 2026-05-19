@@ -23,14 +23,9 @@ from app.reports.shared.payment_reconciliation import (
     split_payment_order_numbers,
 )
 
-RECOVERY_PAYMENT_EXCLUSIONS = (
-    "TO_BE_RECOVERED",
-    "TO_BE_COMPENSATED",
-    "RECOVERED",
-    "COMPENSATED",
-    "WRITE_OFF",
-)
 QUALIFYING_PAYMENT_SOURCE_TYPES = ("google_sheet", "legacy_sales")
+PAYMENT_REPORT_RECOVERY_STATUS = "NONE"
+
 
 @dataclass
 class ShortPaymentRow:
@@ -89,13 +84,14 @@ async def fetch_short_payment_rows(
     compatibility but do not limit candidate orders.
 
     Short Payment rows are the normal operator-facing bucket for orders where
-    all three payment-truth inputs agree that money was received but is still
-    short of ``vw_orders.order_amount``: ``sales.payment_received`` exists,
-    qualifying ``payment_collections.amount`` proof exists, and sales/proof are
-    consistent within the shared ₹1 tolerance. Proof-only shorts and
-    sales/evidence mismatches are left out of this clean bucket and remain
-    visible through the payment-evidence audit classification instead of being
-    silently presented as normal short payments.
+    all four clean-reconciliation conditions hold: a sales row exists,
+    qualifying ``payment_collections.amount`` proof exists, sales/proof match
+    within the shared ₹1 tolerance, and that proof/evidence amount is short
+    against ``vw_orders.order_amount`` by more than ₹1. Proof-only shorts,
+    missing-proof rows, and sales/evidence mismatches are left out of this clean
+    bucket and remain visible through missing-payment or payment-evidence audit
+    classifications instead of being silently presented as normal short
+    payments.
 
     Payment evidence is grouped in ``payment_reconciliation`` by connected
     cost-center/order-token components.  This keeps overlapping grouped rows
@@ -127,11 +123,7 @@ async def fetch_short_payment_rows(
             group_key=_group_key_for_order(order=order, reconciliation=reconciliation),
         )
         for order in reconciliation.short_payment_orders
-        if (
-            order.order_amount > 0
-            and order.has_sales_payment_data
-            and order.sales_evidence_consistent
-        )
+        if order.order_amount > 0 and order.short_amount > Decimal("1")
     ]
     rows.sort(
         key=lambda row: (
@@ -207,11 +199,10 @@ async def _fetch_reconciliation(
             _optional_column(orders, "recovery_category"),
         )
         .where(orders.c.order_amount > 0)
-        .where(
-            sa.func.coalesce(orders.c.recovery_status, "NONE").not_in(
-                RECOVERY_PAYMENT_EXCLUSIONS
-            )
-        )
+        # Require upstream-normalized clean recovery state exactly.  Do not
+        # coalesce NULLs or allow custom/recovery-workflow statuses here, so
+        # every payment-report entry point inherits the same candidate set.
+        .where(orders.c.recovery_status == PAYMENT_REPORT_RECOVERY_STATUS)
         .order_by(orders.c.cost_center, orders.c.order_date, orders.c.order_number)
     )
     if filter_order_date:
@@ -286,6 +277,21 @@ def _normalised_order_sql(column: Any) -> Any:
     return sa.func.upper(sa.func.replace(sa.func.coalesce(column, ""), " ", ""))
 
 
+def _delimited_payment_order_tokens_sql(column: Any) -> Any:
+    """Return comma-delimited normalized payment order tokens for exact SQL matching.
+
+    ``payment_collections.order_number`` may contain a single order token or a
+    grouped token list separated by ``/`` or ``,``.  Wrapping the normalized,
+    slash-to-comma-converted value with commas lets the candidate query match
+    ``,ORD1,`` exactly, so a non-grouped candidate such as ``ORD1`` does not
+    prefetch unrelated evidence for ``ORD10`` while still allowing grouped
+    evidence such as ``ORD1/ORD2`` or ``ORD1,ORD2`` to be reconciled in Python.
+    """
+
+    normalized = _normalised_order_sql(column)
+    return sa.literal(",") + sa.func.replace(normalized, "/", ",") + sa.literal(",")
+
+
 async def _fetch_payment_rows_for_orders(
     *, session: Any, payment_collections: Any, order_rows: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -332,13 +338,13 @@ async def _fetch_payment_rows_for_orders(
     # Keep the SQL shape bounded for large MTD windows; cost center filtering is
     # still mandatory, and token filtering is applied when feasible.
     if 0 < len(candidate_order_tokens) <= 500:
-        normalized_payment_order = _normalised_order_sql(
+        delimited_payment_tokens = _delimited_payment_order_tokens_sql(
             payment_collections.c.order_number
         )
         payment_stmt = payment_stmt.where(
             sa.or_(
                 *[
-                    normalized_payment_order.contains(token, autoescape=True)
+                    delimited_payment_tokens.contains(f",{token},", autoescape=True)
                     for token in candidate_order_tokens
                 ]
             )

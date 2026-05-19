@@ -22,6 +22,7 @@ This table is the verified payment evidence table for current payment reconcilia
 - `payment_timestamp` is the event timestamp captured from operator source.
 - `payment_date` should match business-local date derived from `payment_timestamp` unless deliberately corrected.
 - `cost_center` and `order_number` must match operational references used in downstream reconciliation.
+- `order_number` may contain either one order number or a grouped payment list when one payment evidence row covers multiple orders. Grouped lists are canonical and may use `/` or `,` delimiters, for example `ORD1/ORD2` or `ORD1,ORD2`. Reconciliation splits these delimiters, normalizes each token, and then requires exact token equality; `ORD1` does not match `ORD10` unless `ORD1` appears as its own token.
 - `amount` must be non-negative (`CHECK amount >= 0`).
 
 ### 3) Workflow fields
@@ -45,7 +46,7 @@ This table is the verified payment evidence table for current payment reconcilia
   - `sales.payment_received` as source sales/payment evidence where the report contract already uses sales collections, and
   - `payment_collections.amount` as verified manually captured payment evidence.
 - Payment comparisons use tolerance `1` (₹1); overpayments count as paid in full.
-- Multi-order `payment_collections.order_number` values are group-reconciled first. If the group total is paid within tolerance, those rows are excluded from the main missing/short payment outputs.
+- Multi-order `payment_collections.order_number` values are canonical grouped payment evidence. They are split on `/` and `,`, normalized, matched by exact order-token equality, and group-reconciled first. If the group total is paid within tolerance, those rows are excluded from the main missing/short payment outputs.
 - Group-short rows are allocated sequentially by `order_date ASC, order_number ASC` before deciding which orders are short.
 - `TO_BE_RECOVERED` and `TO_BE_COMPENSATED` are excluded from normal missing-payment rows.
 - `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` are excluded from normal pending-delivery buckets.
@@ -53,7 +54,7 @@ This table is the verified payment evidence table for current payment reconcilia
 - A separate `Short Payment` sub-report is required for underpaid orders; it must not be merged into `Actual Payments Not Found`.
 - `Short Payment` is a current/open action list across all order dates. It behaves like `TO_BE_RECOVERED` by showing current unresolved action rows, and Daily/MTD report date windows do not restrict Short Payment eligibility.
 - Short Payment still excludes `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`, and zero-value orders.
-- Short Payment requires clean sales-backed proof: the sales row exists, payment proof exists, sales/evidence are consistent within ₹1, and the evidence is short against `vw_orders.order_amount` by more than ₹1.
+- Short Payment requires clean reconciliation: (1) a `sales` row exists; (2) qualifying `payment_collections` proof exists; (3) `sales.payment_received` and proof/evidence amount match within ₹1; and (4) the proof/evidence amount is short against `vw_orders.order_amount` by more than ₹1.
 - Show `source_type` in audit/reconciliation reports so analysts can trace evidence provenance. Do not add it to every normal business report by default.
 
 ## Recommended manual upsert pattern

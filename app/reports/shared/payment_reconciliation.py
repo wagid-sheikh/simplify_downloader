@@ -3,6 +3,12 @@
 The SQL missing-payment view is maintained as a compatibility/audit read model;
 Python reports should use this module so missing proof, short payment, grouped
 payment, top-up, sales, and recovery-status rules stay in one place.
+
+``payment_collections.order_number`` can be either one order number or a grouped
+list separated by ``/`` or ``,``. Matching is canonicalized by splitting those
+delimiters, normalizing each token, and comparing whole tokens exactly; ``ORD1``
+therefore never matches ``ORD10`` unless a grouped evidence row explicitly names
+``ORD1`` as its own token.
 """
 
 from __future__ import annotations
@@ -140,7 +146,28 @@ class PaymentReconciliationResult:
 
     @property
     def short_payment_orders(self) -> tuple[ReconciledOrderPayment, ...]:
-        return tuple(order for order in self.orders if order.status == "short")
+        """Clean operator Short Payments.
+
+        Short Payments require all canonical payment inputs to reconcile cleanly:
+        a sales row exists, qualifying payment evidence exists, sales and evidence
+        match within the shared ₹1 tolerance, and the evidence is still short
+        against ``vw_orders.order_amount`` by more than that tolerance. Raw short
+        evidence with missing sales or sales/evidence mismatches remains available
+        in audit classifications, but is not part of the operator Short Payments
+        action list.
+        """
+
+        return tuple(
+            order
+            for order in self.orders
+            if (
+                order.status == "short"
+                and order.has_sales_payment_data
+                and order.has_payment_proof
+                and order.sales_evidence_consistent
+                and order.short_amount > DEFAULT_PAYMENT_TOLERANCE
+            )
+        )
 
     @property
     def recovery_auto_clear_orders(self) -> tuple[ReconciledOrderPayment, ...]:
@@ -253,7 +280,13 @@ def normalize_order_number(order_number: Any) -> str:
 
 
 def split_payment_order_numbers(order_number: Any) -> tuple[str, ...]:
-    """Split payment_collections.order_number on comma and slash and normalize tokens."""
+    """Return canonical exact-match tokens from payment collection order text.
+
+    Grouped payment evidence is supported by splitting on comma and slash.
+    Downstream reconciliation compares the resulting normalized tokens exactly,
+    not by substring, to avoid false positives such as ``ORD1`` matching
+    ``ORD10``.
+    """
 
     tokens: list[str] = []
     seen: set[str] = set()
@@ -279,7 +312,7 @@ def reconcile_payments(
     sales rows to expose ``payment_received``, and payment evidence rows to expose
     ``amount`` from ``payment_collections``. Payment collection ``bank_row_id`` is
     intentionally ignored because proof matching is based on source type, cost
-    center, order-number tokens, and amount.
+    center, exact normalized order-number tokens, and amount.
     """
 
     tolerance_amount = _decimal(tolerance)
@@ -758,6 +791,12 @@ def build_payment_evidence_audit_rows(
                 reconciliation_result = "missing sales"
             elif group.status == "paid":
                 reconciliation_result = "grouped paid" if is_grouped else "paid"
+            elif group.status == "short" and group.sales_evidence_mismatch:
+                reconciliation_result = (
+                    "grouped sales/evidence mismatch short"
+                    if is_grouped
+                    else "sales/evidence mismatch short"
+                )
             elif group.status == "short":
                 reconciliation_result = "grouped short" if is_grouped else "short"
             else:
