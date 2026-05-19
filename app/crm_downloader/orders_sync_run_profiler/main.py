@@ -5,6 +5,7 @@ import asyncio
 import fcntl
 import json
 import os
+import random
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -14,8 +15,13 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
+try:
+    from asyncpg import TooManyConnectionsError
+except Exception:  # pragma: no cover - fallback when asyncpg symbol path changes
+    TooManyConnectionsError = RuntimeError
+
 from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
-from app.common.db import session_scope
+from app.common.db import PoolSettings, session_scope
 from app.config import config
 from app.crm_downloader.config import default_download_dir
 from app.crm_downloader.orders_sync_window import (
@@ -39,6 +45,73 @@ PIPELINE_BY_GROUP = {
 
 DEFAULT_MAX_WORKERS = 4
 FAIL_ON_FAILED_STATUS_ENV = "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS"
+
+CRON_POOL_SIZE_ENV = "ORDERS_SYNC_PROFILER_DB_POOL_SIZE"
+CRON_MAX_OVERFLOW_ENV = "ORDERS_SYNC_PROFILER_DB_MAX_OVERFLOW"
+PREFLIGHT_ENV = "ORDERS_SYNC_PROFILER_DB_PREFLIGHT"
+MAX_CONNECTION_RETRIES_ENV = "ORDERS_SYNC_PROFILER_DB_RETRIES"
+
+
+def _resolve_pool_settings() -> PoolSettings:
+    pool_size = max(1, _env_int(CRON_POOL_SIZE_ENV, 8))
+    max_overflow = max(0, _env_int(CRON_MAX_OVERFLOW_ENV, 4))
+    return PoolSettings(pool_size=pool_size, max_overflow=max_overflow)
+
+
+async def _run_with_connection_retry(*, logger: JsonLogger, run_id: str, operation_name: str, op: Any) -> Any:
+    retries = max(0, _env_int(MAX_CONNECTION_RETRIES_ENV, 3))
+    for attempt in range(retries + 1):
+        try:
+            return await op()
+        except TooManyConnectionsError as exc:
+            if attempt >= retries:
+                log_event(
+                    logger=logger,
+                    phase="db",
+                    status="error",
+                    message="DB connection retry exhausted",
+                    run_id=run_id,
+                    operation=operation_name,
+                    attempt=attempt + 1,
+                    retries=retries,
+                    error=str(exc),
+                )
+                raise
+            delay = min(5.0, (0.5 * (2 ** attempt)) + random.uniform(0.05, 0.4))
+            log_event(
+                logger=logger,
+                phase="db",
+                status="warning",
+                message="TooManyConnectionsError encountered; retrying",
+                run_id=run_id,
+                operation=operation_name,
+                attempt=attempt + 1,
+                retries=retries,
+                retry_delay_seconds=round(delay, 3),
+            )
+            await asyncio.sleep(delay)
+
+
+async def _log_db_preflight(*, logger: JsonLogger, run_id: str, database_url: str, pool_settings: PoolSettings) -> None:
+    async def _fetch_clients() -> int:
+        async with session_scope(database_url, pool_settings=pool_settings) as session:
+            query = sa.text("SELECT COUNT(*) FROM pg_stat_activity WHERE datname = current_database()")
+            return int((await session.execute(query)).scalar_one())
+
+    active_clients = await _run_with_connection_retry(
+        logger=logger, run_id=run_id, operation_name="db_preflight_clients", op=_fetch_clients
+    )
+    log_event(
+        logger=logger,
+        phase="preflight",
+        status="info",
+        message="DB preflight snapshot",
+        run_id=run_id,
+        db_active_clients=active_clients,
+        db_pool_size=pool_settings.pool_size,
+        db_pool_max_overflow=pool_settings.max_overflow,
+    )
+
 
 
 class OrdersSyncProfilerFailedStatus(RuntimeError):
@@ -1708,6 +1781,7 @@ async def main(
     run_env: str | None = None,
     run_id: str | None = None,
     uc_only: bool = False,
+    db_preflight: bool = False,
 ) -> None:
     resolved_env = run_env or config.run_env
     resolved_run_id = run_id or new_run_id()
@@ -1725,6 +1799,22 @@ async def main(
             message="database_url missing; exiting",
         )
         return
+    pool_settings = _resolve_pool_settings()
+    log_event(
+        logger=logger,
+        phase="init",
+        status="info",
+        message="Resolved profiler DB/pool settings",
+        run_id=resolved_run_id,
+        requested_max_workers=max_workers,
+        db_pool_size=pool_settings.pool_size,
+        db_pool_max_overflow=pool_settings.max_overflow,
+    )
+    if db_preflight:
+        await _log_db_preflight(
+            logger=logger, run_id=resolved_run_id, database_url=config.database_url, pool_settings=pool_settings
+        )
+
     group_items = (
         PIPELINE_BY_GROUP.items()
         if resolved_sync_group == "ALL"
@@ -1758,23 +1848,48 @@ async def main(
             group_max_workers = max_workers
         semaphore = asyncio.Semaphore(max(1, group_max_workers))
 
+        active_workers = 0
+
         async def _guarded(store: StoreProfile) -> StoreRunResult:
+            nonlocal active_workers
             async with semaphore:
-                return await _process_store(
+                active_workers += 1
+                log_event(
                     logger=logger,
-                    store=store,
-                    pipeline_group=group,
-                    pipeline_name=pipeline_name,
-                    pipeline_id=pipeline_id,
-                    pipeline_fn=pipeline_fn,
-                    run_env=resolved_env,
+                    phase="store",
+                    status="info",
+                    message="Starting store worker",
                     run_id=resolved_run_id,
-                    backfill_days=backfill_days,
-                    window_days=window_days,
-                    overlap_days=overlap_days,
-                    from_date=from_date,
-                    to_date=to_date,
+                    store_code=store.store_code,
+                    pipeline_group=group,
+                    active_workers=active_workers,
+                    group_max_workers=group_max_workers,
+                    db_pool_size=pool_settings.pool_size,
+                    db_pool_max_overflow=pool_settings.max_overflow,
                 )
+                try:
+                    return await _run_with_connection_retry(
+                        logger=logger,
+                        run_id=resolved_run_id,
+                        operation_name=f"process_store_{store.store_code}",
+                        op=lambda: _process_store(
+                            logger=logger,
+                            store=store,
+                            pipeline_group=group,
+                            pipeline_name=pipeline_name,
+                            pipeline_id=pipeline_id,
+                            pipeline_fn=pipeline_fn,
+                            run_env=resolved_env,
+                            run_id=resolved_run_id,
+                            backfill_days=backfill_days,
+                            window_days=window_days,
+                            overlap_days=overlap_days,
+                            from_date=from_date,
+                            to_date=to_date,
+                        ),
+                    )
+                finally:
+                    active_workers = max(0, active_workers - 1)
 
         return await asyncio.gather(*[_guarded(store) for store in stores])
 
@@ -2043,6 +2158,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--overlap-days", type=int)
     parser.add_argument("--run-env")
     parser.add_argument("--run-id")
+    parser.add_argument("--db-preflight", action="store_true", default=_env_flag(PREFLIGHT_ENV))
     parser.add_argument(
         "--uc-only",
         action="store_true",
@@ -2070,6 +2186,7 @@ def _main() -> None:
             run_env=args.run_env,
             run_id=resolved_run_id,
             uc_only=args.uc_only,
+            db_preflight=args.db_preflight,
         )
 
     loop = asyncio.new_event_loop()
