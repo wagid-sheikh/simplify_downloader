@@ -5,7 +5,7 @@ PIDS="$(
   | awk '{print $1}'
 )"
 
-echo "Target PIDs:"
+echo "Target to Kill PIDs:"
 echo "$PIDS"
 
 if [ -n "$PIDS" ]; then
