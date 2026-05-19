@@ -70,6 +70,8 @@ KILL_WAIT_SECONDS="${KILL_WAIT_SECONDS:-5}"
 LOCK_WAIT_SECONDS="${LOCK_WAIT_SECONDS:-300}"
 LOCK_POLL_SECONDS="${LOCK_POLL_SECONDS:-5}"
 SAFE_MODE="${SAFE_MODE:-1}"
+STALE_LOCK_MAX_AGE_SECONDS="${STALE_LOCK_MAX_AGE_SECONDS:-7200}"
+ALLOW_STALE_OWNER_TERMINATION="${ALLOW_STALE_OWNER_TERMINATION:-0}"
 CRON_HOME="${CRON_HOME:-${HOME:-/tmp}}"
 CRON_PATH="${CRON_PATH:-/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
 ORDERS_MAX_ATTEMPTS="${ORDERS_MAX_ATTEMPTS:-1}"
@@ -92,6 +94,12 @@ if ! [[ "${LOCK_POLL_SECONDS}" =~ ^[0-9]+$ ]] || [[ "${LOCK_POLL_SECONDS}" -eq 0
 fi
 if ! [[ "${SAFE_MODE}" =~ ^[01]$ ]]; then
   SAFE_MODE=1
+fi
+if ! [[ "${STALE_LOCK_MAX_AGE_SECONDS}" =~ ^[0-9]+$ ]]; then
+  STALE_LOCK_MAX_AGE_SECONDS=7200
+fi
+if ! [[ "${ALLOW_STALE_OWNER_TERMINATION}" =~ ^[01]$ ]]; then
+  ALLOW_STALE_OWNER_TERMINATION=0
 fi
 if ! [[ "${DAILY_RESCUE_AFTER_PENDING_SUCCESS}" =~ ^[01]$ ]]; then
   DAILY_RESCUE_AFTER_PENDING_SUCCESS=1
@@ -270,6 +278,44 @@ terminate_pid_gracefully() {
   return 0
 }
 
+terminate_by_pgid_or_pid() {
+  local pgid_file="$1"
+  local pid="$2"
+  local pgid
+  local i
+
+  pgid="$(safe_cat "${pgid_file}")"
+  if [[ -n "${pgid}" ]] && [[ "${pgid}" =~ ^[0-9]+$ ]]; then
+    log "Attempting graceful termination for process group PGID=${pgid} (owner PID=${pid})"
+    kill -TERM "-${pgid}" 2>/dev/null || true
+
+    for ((i=1; i<=KILL_WAIT_SECONDS; i++)); do
+      if ! pid_is_alive "${pid}"; then
+        log "Owner PID=${pid} terminated after process-group TERM"
+        return 0
+      fi
+      sleep 1
+    done
+
+    if pid_is_alive "${pid}"; then
+      log "Owner PID=${pid} still alive after ${KILL_WAIT_SECONDS}s, sending SIGKILL to PGID=${pgid}"
+      kill -KILL "-${pgid}" 2>/dev/null || true
+      sleep 1
+    fi
+
+    if pid_is_alive "${pid}"; then
+      log "WARNING: Owner PID=${pid} still alive after process-group SIGKILL"
+      return 1
+    fi
+
+    log "Owner PID=${pid} terminated via process-group kill."
+    return 0
+  fi
+
+  log "Process-group metadata unavailable/invalid. Falling back to single PID termination for PID=${pid}"
+  terminate_pid_gracefully "${pid}"
+}
+
 remove_lock_artifacts() {
   rm -f "${LOCK_PID_FILE}" 2>/dev/null || true
   rm -f "${LOCK_STARTED_AT_FILE}" 2>/dev/null || true
@@ -435,6 +481,8 @@ maybe_cleanup_stale_lock() {
   local existing_cmd
   local expected_script
   local elapsed_secs
+  local lock_age_seconds
+  local now_epoch
 
   existing_pid="$(safe_cat "${LOCK_PID_FILE}")"
   existing_started_at="$(safe_cat "${LOCK_STARTED_AT_FILE}")"
@@ -455,23 +503,43 @@ maybe_cleanup_stale_lock() {
   log "  command=${existing_cmd:-<missing>}"
 
   if [[ -n "${existing_pid}" ]] && pid_is_alive "${existing_pid}"; then
+    now_epoch="$(date +%s)"
+    lock_age_seconds=-1
+    if [[ -n "${existing_started_epoch}" ]] && [[ "${existing_started_epoch}" =~ ^[0-9]+$ ]]; then
+      lock_age_seconds=$((now_epoch - existing_started_epoch))
+    fi
     elapsed_secs="$(get_pid_elapsed_seconds "${existing_pid}" 2>/dev/null || true)"
-    log "Existing lock PID ${existing_pid} is alive. elapsed_seconds=${elapsed_secs:-unknown}"
+    log "Existing lock PID ${existing_pid} is alive. elapsed_seconds=${elapsed_secs:-unknown} lock_age_seconds=${lock_age_seconds}"
     if ! is_pid_safe_termination_candidate "${existing_pid}" "${existing_started_epoch}" "${expected_script}"; then
       log "WARNING: Lock ownership is ambiguous. Failing safe and exiting without termination."
       exit 1
     fi
 
-    if [[ "${SAFE_MODE}" -eq 1 ]]; then
-      log "SAFE_MODE=1: validated stale owner pid=${existing_pid} but non-owner termination is disabled. Exiting safely."
+    if [[ "${lock_age_seconds}" -lt "${STALE_LOCK_MAX_AGE_SECONDS}" ]]; then
+      log "Lock owner PID validated but lock age (${lock_age_seconds}s) does not exceed STALE_LOCK_MAX_AGE_SECONDS=${STALE_LOCK_MAX_AGE_SECONDS}. Exiting safely."
       exit 1
     fi
 
-    log "SAFE_MODE=0 and lock owner validated. Terminating stale owner PID=${existing_pid}"
-    terminate_pid_gracefully "${existing_pid}" || {
+    if [[ "${ALLOW_STALE_OWNER_TERMINATION}" -ne 1 ]]; then
+      log "ALLOW_STALE_OWNER_TERMINATION=0: stale owner termination disabled. Exiting safely."
+      exit 1
+    fi
+
+    if [[ "${SAFE_MODE}" -eq 1 ]]; then
+      log "SAFE_MODE=1: stale owner termination blocked even though age threshold met. Exiting safely."
+      exit 1
+    fi
+
+    log "Stale owner conditions met; attempting termination for PID=${existing_pid}"
+    terminate_by_pgid_or_pid "${LOCK_PGID_FILE}" "${existing_pid}" || {
       log "WARNING: Failed to terminate stale owner pid=${existing_pid}. Exiting safely."
       exit 1
     }
+
+    if pid_is_alive "${existing_pid}"; then
+      log "WARNING: Owner PID ${existing_pid} still alive after termination attempts. Exiting safely."
+      exit 1
+    fi
   else
     log "Lock owner PID is not alive or missing. Treating lock as stale."
   fi
