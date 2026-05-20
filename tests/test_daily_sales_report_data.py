@@ -1651,8 +1651,11 @@ async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleare
         "BOTH-1": "AUTO_CLEARED_PAYMENT_PROOF payment_collections.payment_ids=2,7, source_types=google_sheet, total_paid=500, order_amount=500, sales_payment_received=500, evidence_amount=500, sales_evidence_difference=0, group_key=CC1:BOTH-1",
     }
     for order_number, recovery_notes in expected_recovery_notes.items():
-        assert statuses[order_number]["recovery_status"] == "NONE"
-        assert statuses[order_number]["recovery_category"] is None
+        assert statuses[order_number]["recovery_status"] == "RECOVERED"
+        assert (
+            statuses[order_number]["recovery_category"]
+            == "PAYMENT_PROOF_AUTO_RECOVERED"
+        )
         assert statuses[order_number]["recovery_notes"] == recovery_notes
 
     for order_number in [
