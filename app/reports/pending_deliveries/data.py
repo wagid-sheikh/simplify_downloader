@@ -319,7 +319,8 @@ async def transition_aged_pending_deliveries_to_recovery_metrics(
             default_due_date = _coerce_datetime(record.get("default_due_date"))
             if default_due_date is None:
                 metrics.skipped_due_to_missing_due_date += 1
-                default_due_date = _coerce_datetime(record.get("order_date"))
+                order_date = _coerce_datetime(record.get("order_date"))
+                default_due_date = order_date + timedelta(days=2) if order_date is not None else None
             if default_due_date is None:
                 metrics.skipped_due_to_age += 1
                 continue
@@ -434,7 +435,7 @@ async def fetch_pending_deliveries_report(
             default_due_date = _coerce_datetime(record.get("default_due_date"))
             if default_due_date is None:
                 missing_default_due_date_count += 1
-                default_due_date = order_date
+                default_due_date = order_date + timedelta(days=2)
             order_date_local = _resolve_order_date(order_date, tz)
             default_due_date_local = _resolve_business_date(default_due_date, tz)
             age_days = max(0, (report_date - default_due_date_local).days)

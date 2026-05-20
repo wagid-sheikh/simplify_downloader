@@ -338,7 +338,7 @@ async def test_fetch_pending_deliveries_includes_pending_order_with_no_sales_row
 
 
 @pytest.mark.asyncio
-async def test_fetch_pending_deliveries_falls_back_to_order_date_when_default_due_date_missing(
+async def test_fetch_pending_deliveries_falls_back_to_order_date_plus_two_days_when_default_due_date_missing(
     tmp_path, monkeypatch
 ) -> None:
     db_path = tmp_path / "pending_deliveries_missing_due_date.db"
@@ -382,8 +382,8 @@ async def test_fetch_pending_deliveries_falls_back_to_order_date_when_default_du
         for row in bucket.rows
         if row.order_number == "NO-DUE-DATE"
     )
-    assert included_row.default_due_date == date(2025, 5, 10)
-    assert included_row.age_days == 10
+    assert included_row.default_due_date == date(2025, 5, 12)
+    assert included_row.age_days == 8
 
 
 @pytest.mark.asyncio
@@ -863,7 +863,7 @@ async def test_transition_existing_sales_row_not_marked(tmp_path, monkeypatch) -
 
 
 @pytest.mark.asyncio
-async def test_transition_missing_default_due_date_uses_order_date_fallback(
+async def test_transition_missing_default_due_date_uses_order_date_plus_two_days_fallback(
     tmp_path, monkeypatch
 ) -> None:
     db_path = tmp_path / "pending_transition_missing_due_date.db"
