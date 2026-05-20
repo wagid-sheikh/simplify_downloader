@@ -84,6 +84,16 @@ def _build_parser() -> argparse.ArgumentParser:
         report_subparsers.add_parser("mtd-same-day-fulfillment", help="Run MTD same-day fulfillment report")
     )
 
+
+    recovery_parser = subparsers.add_parser("recovery", help="Run recovery maintenance commands")
+    recovery_subparsers = recovery_parser.add_subparsers(dest="recovery_command", required=True)
+    recovery_mark_pending = recovery_subparsers.add_parser(
+        "mark-aged-pending-deliveries",
+        help="Mark >30 day pending deliveries as TO_BE_RECOVERED",
+    )
+    recovery_mark_pending.add_argument("--report-date", dest="report_date", type=str, default=None, help="Report date (YYYY-MM-DD)")
+    recovery_mark_pending.add_argument("--env", dest="env", type=str, default=None, help="Override run environment")
+
     return parser
 
 
@@ -91,7 +101,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = list(argv) if argv is not None else sys.argv[1:]
 
     # Preserve existing CLI behaviour for legacy commands (e.g. run-weekly, db upgrade).
-    if args and args[0] not in {"server", "pipeline", "report"}:
+    if args and args[0] not in {"server", "pipeline", "report", "recovery"}:
         return pipeline_cli.main(args)
 
     parser = _build_parser()
@@ -102,6 +112,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if parsed.command == "pipeline":
         return _run_pipeline(parsed)
+
+    if parsed.command == "recovery":
+        recovery_args: list[str] = []
+        if parsed.report_date:
+            recovery_args.extend(["--report-date", parsed.report_date])
+        if parsed.env:
+            recovery_args.extend(["--env", parsed.env])
+        if parsed.recovery_command == "mark-aged-pending-deliveries":
+            from app.recovery.main import main as recovery_main
+
+            sys.argv = ["recovery_mark_aged_pending_deliveries", *recovery_args]
+            recovery_main()
+            return 0
 
     if parsed.command == "report":
         report_args: list[str] = []

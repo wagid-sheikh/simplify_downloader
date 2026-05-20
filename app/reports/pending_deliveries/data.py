@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Iterable, List
@@ -235,12 +235,26 @@ def _build_cost_center_sections(
     return cost_center_sections
 
 
-async def transition_aged_pending_deliveries_to_recovery(
+@dataclass
+class PendingDeliveryTransitionMetrics:
+    scanned_count: int = 0
+    eligible_count: int = 0
+    transitioned_count: int = 0
+    skipped_due_to_sales_row: int = 0
+    skipped_due_to_non_none_status: int = 0
+    skipped_due_to_missing_due_date: int = 0
+    skipped_due_to_age: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        return {k: int(v) for k, v in asdict(self).items()}
+
+
+async def transition_aged_pending_deliveries_to_recovery_metrics(
     *,
     database_url: str,
     report_date: date,
-) -> int:
-    """Mark aged pending-delivery orders for recovery on the base orders table."""
+) -> PendingDeliveryTransitionMetrics:
+    """Mark aged pending-delivery orders for recovery on the base orders table and return metrics."""
 
     metadata = sa.MetaData()
     orders = sa.table(
@@ -266,16 +280,16 @@ async def transition_aged_pending_deliveries_to_recovery(
         )
     )
     amount_expr = sa.func.coalesce(orders.c.order_amount, 0)
-    candidate_stmt = (
+    base_stmt = (
         sa.select(
             orders.c.cost_center,
             orders.c.order_number,
             orders.c.default_due_date,
+            orders.c.recovery_status,
+            matching_sale_exists.label("has_sale"),
         )
         .select_from(orders)
         .where(orders.c.order_status == "Pending")
-        .where(orders.c.recovery_status == PENDING_DELIVERY_MAIN_RECOVERY_STATUS)
-        .where(sa.not_(matching_sale_exists))
         .where(amount_expr > 0)
         .order_by(orders.c.cost_center, orders.c.order_number)
     )
@@ -284,27 +298,38 @@ async def transition_aged_pending_deliveries_to_recovery(
     note = _system_recovery_note(
         datetime.combine(report_date, datetime.min.time(), tzinfo=tz)
     )
-    transitioned_count = 0
+    metrics = PendingDeliveryTransitionMetrics()
 
     async with session_scope(database_url) as session:
-        results = await session.execute(candidate_stmt)
+        results = await session.execute(base_stmt)
         candidate_keys: list[tuple[str, str]] = []
         for record in results.mappings():
+            metrics.scanned_count += 1
+            has_sale = bool(record.get("has_sale"))
+            if has_sale:
+                metrics.skipped_due_to_sales_row += 1
+                continue
+            if str(record.get("recovery_status") or "") != PENDING_DELIVERY_MAIN_RECOVERY_STATUS:
+                metrics.skipped_due_to_non_none_status += 1
+                continue
             default_due_date = _coerce_datetime(record.get("default_due_date"))
             if default_due_date is None:
+                metrics.skipped_due_to_missing_due_date += 1
                 continue
             default_due_date_local = _resolve_business_date(default_due_date, tz)
             age_days = max(0, (report_date - default_due_date_local).days)
             if age_days <= AGED_PENDING_DELIVERY_THRESHOLD_DAYS:
+                metrics.skipped_due_to_age += 1
                 continue
             cost_center = str(record.get("cost_center") or "")
             order_number = str(record.get("order_number") or "")
             if not cost_center or not order_number:
                 continue
+            metrics.eligible_count += 1
             candidate_keys.append((cost_center, order_number))
 
         for cost_center, order_number in candidate_keys:
-            transitioned_count += await transition_order_recovery_status(
+            metrics.transitioned_count += await transition_order_recovery_status(
                 session=session,
                 cost_center=cost_center,
                 order_number=order_number,
@@ -316,7 +341,19 @@ async def transition_aged_pending_deliveries_to_recovery(
 
         await session.commit()
 
-    return transitioned_count
+    return metrics
+
+
+async def transition_aged_pending_deliveries_to_recovery(
+    *,
+    database_url: str,
+    report_date: date,
+) -> int:
+    metrics = await transition_aged_pending_deliveries_to_recovery_metrics(
+        database_url=database_url,
+        report_date=report_date,
+    )
+    return metrics.transitioned_count
 
 
 async def fetch_pending_deliveries_report(
