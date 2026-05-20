@@ -15,6 +15,7 @@ from app.reports.shared.short_payments import ShortPaymentRow
 from app.reports.mtd_same_day_fulfillment.render import render_html
 from app.reports.shared.same_day_fulfillment import format_duration_minutes
 import app.reports.mtd_same_day_fulfillment.data as mtd_data
+import app.reports.mtd_same_day_fulfillment.pipeline as mtd_pipeline
 
 
 def _create_tables(database_url: str) -> None:
@@ -167,6 +168,42 @@ async def test_fetch_mtd_same_day_fulfillment_date_only_and_mtd_window(tmp_path,
     order_numbers = {row.order_number for row in rows}
     assert 'O3' not in order_numbers
     assert 'O4' not in order_numbers
+
+
+@pytest.mark.asyncio
+async def test_mtd_pipeline_has_no_missing_payment_fetch_dependency(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "mtd_pipeline_no_missing_dependency.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+
+    monkeypatch.setattr(
+        mtd_pipeline,
+        "config",
+        type("Cfg", (), {"database_url": database_url, "pdf_render_timeout_seconds": 30})(),
+    )
+    monkeypatch.setattr(mtd_pipeline, "resolve_run_env", lambda env: "test")
+    monkeypatch.setattr(mtd_pipeline, "new_run_id", lambda: "mtd-no-missing-dep")
+    monkeypatch.setattr(mtd_pipeline, "get_timezone", lambda: ZoneInfo("Asia/Kolkata"))
+
+    async def _fake_fetch_rows(*args, **kwargs):
+        return []
+
+    async def _fake_render_pdf(_html, output_path, pdf_options=None, logger=None):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"pdf")
+
+    async def _fake_summary(*args, **kwargs):
+        return None
+
+    async def _fake_notify(*args, **kwargs):
+        return {"emails_planned": 0, "emails_sent": 0, "errors": []}
+
+    monkeypatch.setattr(mtd_pipeline, "fetch_mtd_same_day_fulfillment", _fake_fetch_rows)
+    monkeypatch.setattr(mtd_pipeline, "render_pdf_with_configured_browser", _fake_render_pdf)
+    monkeypatch.setattr(mtd_pipeline, "persist_summary_record", _fake_summary)
+    monkeypatch.setattr(mtd_pipeline, "update_summary_record", _fake_summary)
+    monkeypatch.setattr(mtd_pipeline, "send_notifications_for_run", _fake_notify)
+
+    await mtd_pipeline._run(report_date=date(2026, 4, 29), env="test", force=True)
 
 
 

@@ -20,6 +20,33 @@ import app.reports.daily_sales_report.pipeline as pipeline
 import app.reports.mtd_same_day_fulfillment.data as mtd_data
 
 
+def test_daily_sales_template_excludes_apnf_section_markers() -> None:
+    template = (
+        Path("app")
+        / "reports"
+        / "daily_sales_report"
+        / "templates"
+        / "daily_sales_report.html"
+    ).read_text(encoding="utf-8")
+
+    assert "Actual Payments Not Found" not in template
+    assert "{{ actual_payments_not_found_rows }}" not in template
+    assert "actual_payments_not_found_rows" not in template
+
+
+def test_mtd_template_excludes_apnf_section_markers() -> None:
+    template = (
+        Path("app")
+        / "reports"
+        / "mtd_same_day_fulfillment"
+        / "templates"
+        / "report.html"
+    ).read_text(encoding="utf-8")
+
+    assert "Actual Payments Not Found" not in template
+    assert "missing_payment_rows" not in template
+
+
 def test_build_context_includes_report_day_orders_by_cost_center() -> None:
     payload = SimpleNamespace(
         report_date=date(2026, 4, 29),
