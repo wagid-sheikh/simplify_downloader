@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
+import logging
 from typing import Iterable, List, Mapping
 
 import sqlalchemy as sa
@@ -16,6 +17,8 @@ from app.reports.shared.line_items_summary import summarize_line_items
 from app.reports.shared.payment_reconciliation import reconcile_payments
 from app.reports.shared.same_day_fulfillment import fetch_same_day_fulfillment_rows, same_day_date_expr, string_list_agg
 from app.reports.shared.short_payments import ShortPaymentRow, fetch_missing_payment_rows_without_proof, fetch_short_payment_rows
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -711,7 +714,7 @@ async def fetch_daily_sales_report(
     *, database_url: str, report_date: date
 ) -> DailySalesReportData:
     tz = get_timezone()
-    dialect_name = sa.engine.make_url(database_url).get_backend_name()
+    dialect_name = ""
     ranges = _date_range(report_date, tz)
     edited_ranges = _date_range(report_date - timedelta(days=1), tz)
     remaining_days = _remaining_days(report_date)
@@ -1001,36 +1004,42 @@ async def fetch_daily_sales_report(
         .subquery()
     )
 
-    report_day_orders_stmt = (
-        sa.select(
-            cost_center.c.cost_center.label("cost_center"),
-            sa.func.coalesce(
-                string_list_agg(
-                    dialect_name=dialect_name,
-                    value_expr=(
-                        aggregate_order_by(report_day_orders_base.c.order_number, report_day_orders_base.c.order_number.asc())
-                        if dialect_name == "postgresql"
-                        else report_day_orders_base.c.order_number
-                    ),
-                    separator=", ",
-                ),
-                sa.literal("-"),
-            ).label("order_numbers_text"),
-        )
-        .select_from(
-            cost_center.outerjoin(
-                report_day_orders_base,
-                sa.and_(
-                    report_day_orders_base.c.cost_center == cost_center.c.cost_center,
-                ),
-            )
-        )
-        .where(cost_center.c.is_active.is_(True))
-        .group_by(cost_center.c.cost_center)
-        .order_by(cost_center.c.cost_center.asc())
-    )
     report_day_orders_by_cost_center_rows: list[ReportDayOrdersByCostCenterRow] = []
     async with session_scope(database_url) as session:
+        bind = session.get_bind()
+        dialect_name = bind.dialect.name if bind is not None else sa.engine.make_url(database_url).get_backend_name()
+        report_day_orders_stmt = (
+            sa.select(
+                cost_center.c.cost_center.label("cost_center"),
+                sa.func.coalesce(
+                    string_list_agg(
+                        dialect_name=dialect_name,
+                        value_expr=(
+                            aggregate_order_by(report_day_orders_base.c.order_number, report_day_orders_base.c.order_number.asc())
+                            if dialect_name == "postgresql"
+                            else report_day_orders_base.c.order_number
+                        ),
+                        separator=", ",
+                    ),
+                    sa.literal("-"),
+                ).label("order_numbers_text"),
+            )
+            .select_from(
+                cost_center.outerjoin(
+                    report_day_orders_base,
+                    sa.and_(
+                        report_day_orders_base.c.cost_center == cost_center.c.cost_center,
+                    ),
+                )
+            )
+            .where(cost_center.c.is_active.is_(True))
+            .group_by(cost_center.c.cost_center)
+            .order_by(cost_center.c.cost_center.asc())
+        )
+        logger.debug(
+            "daily_sales_report_day_orders_stmt_v2 dialect_name=%s",
+            dialect_name,
+        )
         result = await session.execute(stmt)
         report_day_orders_result = await session.execute(report_day_orders_stmt)
         report_day_orders_by_cost_center_rows = [
