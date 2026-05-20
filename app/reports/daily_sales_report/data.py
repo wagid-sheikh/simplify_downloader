@@ -92,6 +92,12 @@ class MissingPaymentRow:
 
 
 @dataclass
+class ReportDayOrdersByCostCenterRow:
+    cost_center: str
+    order_numbers_text: str
+
+
+@dataclass
 class SameDayFulfillmentRow:
     store_code: str
     order_number: str
@@ -129,6 +135,7 @@ class DailySalesReportData:
     same_day_fulfillment_rows: List[SameDayFulfillmentRow] = field(default_factory=list)
     missing_payment_rows: List[MissingPaymentRow] = field(default_factory=list)
     short_payment_rows: List[ShortPaymentRow] = field(default_factory=list)
+    report_day_orders_by_cost_center: List[ReportDayOrdersByCostCenterRow] = field(default_factory=list)
 
 
 LEAD_BENCHMARKS = {
@@ -979,8 +986,54 @@ async def fetch_daily_sales_report(
     same_day_rows: list[SameDayFulfillmentRow] = []
     missing_payment_rows: list[MissingPaymentRow] = []
     short_payment_rows: list[ShortPaymentRow] = []
+
+
+    report_day_orders_base = (
+        sa.select(
+            orders.c.cost_center.label("cost_center"),
+            orders.c.order_number.label("order_number"),
+        )
+        .where(orders.c.order_date >= ranges["start_day"])
+        .where(orders.c.order_date < ranges["next_day"])
+        .order_by(orders.c.cost_center.asc(), orders.c.order_number.asc())
+        .subquery()
+    )
+
+    report_day_orders_stmt = (
+        sa.select(
+            cost_center.c.cost_center.label("cost_center"),
+            sa.func.coalesce(
+                string_list_agg(
+                    dialect_name="sqlite",
+                    value_expr=report_day_orders_base.c.order_number,
+                    separator=", ",
+                ),
+                sa.literal("-"),
+            ).label("order_numbers_text"),
+        )
+        .select_from(
+            cost_center.outerjoin(
+                report_day_orders_base,
+                sa.and_(
+                    report_day_orders_base.c.cost_center == cost_center.c.cost_center,
+                ),
+            )
+        )
+        .where(cost_center.c.is_active.is_(True))
+        .group_by(cost_center.c.cost_center)
+        .order_by(cost_center.c.cost_center.asc())
+    )
+    report_day_orders_by_cost_center_rows: list[ReportDayOrdersByCostCenterRow] = []
     async with session_scope(database_url) as session:
         result = await session.execute(stmt)
+        report_day_orders_result = await session.execute(report_day_orders_stmt)
+        report_day_orders_by_cost_center_rows = [
+            ReportDayOrdersByCostCenterRow(
+                cost_center=str(entry["cost_center"]),
+                order_numbers_text=str(entry["order_numbers_text"] or "-"),
+            )
+            for entry in report_day_orders_result.mappings()
+        ]
         target_updates: list[dict[str, object]] = []
         for entry in result.mappings():
             target_type = (entry["target_type"] or "value").lower()
@@ -1610,4 +1663,5 @@ async def fetch_daily_sales_report(
         same_day_fulfillment_rows=same_day_rows,
         missing_payment_rows=missing_payment_rows,
         short_payment_rows=short_payment_rows,
+        report_day_orders_by_cost_center=report_day_orders_by_cost_center_rows,
     )
