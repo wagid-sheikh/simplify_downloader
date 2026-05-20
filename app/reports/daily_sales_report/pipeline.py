@@ -22,10 +22,7 @@ from app.dashboard_downloader.pipelines.base import (
 )
 from app.dashboard_downloader.report_generator import render_pdf_with_configured_browser
 
-from app.reports.mtd_same_day_fulfillment.data import (
-    fetch_missing_payments_mtd,
-    fetch_mtd_same_day_fulfillment,
-)
+from app.reports.mtd_same_day_fulfillment.data import fetch_mtd_same_day_fulfillment
 from app.reports.mtd_same_day_fulfillment.render import (
     render_html as render_mtd_same_day_html,
 )
@@ -267,14 +264,10 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
         )
         mtd_attachment_generated = True
         mtd_rows = []
-        mtd_missing_payment_rows = []
         same_day_html: str | None = None
         mtd_attachment_error: str | None = None
         try:
             mtd_rows = await fetch_mtd_same_day_fulfillment(
-                database_url=database_url, report_date=resolved_date
-            )
-            mtd_missing_payment_rows = await fetch_missing_payments_mtd(
                 database_url=database_url, report_date=resolved_date
             )
         except Exception as exc:
@@ -303,7 +296,6 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 report_date_display=resolved_date.strftime("%d-%b-%Y"),
                 mtd_start_display=mtd_start.strftime("%d-%b-%Y"),
                 mtd_end_display=mtd_end.strftime("%d-%b-%Y"),
-                missing_payment_rows=mtd_missing_payment_rows,
             )
             tracker.mark_phase("render_html", "ok")
         log_event(
