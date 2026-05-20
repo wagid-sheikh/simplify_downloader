@@ -638,7 +638,7 @@ async def test_transition_age_31_marked(tmp_path, monkeypatch) -> None:
     assert rows["AGE-31"]["recovery_category"] == "OTHER"
     assert (
         rows["AGE-31"]["recovery_notes"]
-        == "[2025-05-20T00:00:00+05:30] Auto marked as TO_BE_RECOVERED from aged Pending Deliveries"
+        == "Auto marked as TO_BE_RECOVERED by system on 20-May-2025 [2025-05-20T00:00:00+05:30]"
     )
 
 
@@ -775,7 +775,7 @@ async def test_transition_existing_note_remains_intact_after_auto_marking(
     )
 
     rows = await _fetch_recovery_rows(database_url)
-    expected_note = "[2025-05-20T00:00:00+05:30] Auto marked as TO_BE_RECOVERED from aged Pending Deliveries"
+    expected_note = "Auto marked as TO_BE_RECOVERED by system on 20-May-2025 [2025-05-20T00:00:00+05:30]"
     assert transitioned_count == 1
     assert rows["PRESERVE-NOTE"]["recovery_status"] == "TO_BE_RECOVERED"
     assert (
@@ -810,7 +810,7 @@ async def test_transition_repeated_run_does_not_duplicate_notes(
     )
 
     rows = await _fetch_recovery_rows(database_url)
-    expected_note = "[2025-05-20T00:00:00+05:30] Auto marked as TO_BE_RECOVERED from aged Pending Deliveries"
+    expected_note = "Auto marked as TO_BE_RECOVERED by system on 20-May-2025 [2025-05-20T00:00:00+05:30]"
     assert first_count == 1
     assert second_count == 0
     assert rows["IDEMPOTENT"]["recovery_status"] == "TO_BE_RECOVERED"

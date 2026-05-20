@@ -10,7 +10,6 @@ import sqlalchemy as sa
 from app.common.date_utils import get_timezone
 from app.common.db import session_scope
 from app.common.order_recovery import (
-    format_timestamped_recovery_note,
     transition_order_recovery_status,
 )
 from app.crm_downloader.td_orders_sync.sales_ingest import _sales_table
@@ -32,9 +31,11 @@ AGED_PENDING_DELIVERY_THRESHOLD_DAYS = 30
 
 
 def _system_recovery_note(marked_at: datetime) -> str:
-    return format_timestamped_recovery_note(
-        occurred_at=marked_at,
-        message="Auto marked as TO_BE_RECOVERED from aged Pending Deliveries",
+    readable_date = marked_at.strftime("%d-%b-%Y")
+    technical_timestamp = marked_at.isoformat()
+    return (
+        "Auto marked as TO_BE_RECOVERED by system "
+        f"on {readable_date} [{technical_timestamp}]"
     )
 
 
