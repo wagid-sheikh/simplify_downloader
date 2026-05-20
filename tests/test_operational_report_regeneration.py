@@ -261,3 +261,72 @@ async def test_pending_deliveries_report_regenerates_for_same_date_with_previous
     assert render_paths == [output_pdf, output_pdf]
     assert len(documents) == 2
     assert summaries[-1]["overall_status"] == expected_previous_status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("module", "fetch_attr", "fetch_result", "render_attr", "render_stub"),
+    [
+        (
+            daily_pipeline,
+            "fetch_daily_sales_report",
+            _daily_data(),
+            "_render_html",
+            (lambda *_args, **_kwargs: "html"),
+        ),
+        (
+            mtd_pipeline,
+            "fetch_mtd_same_day_fulfillment",
+            [],
+            "render_html",
+            (lambda **_kwargs: "html"),
+        ),
+        (
+            pending_pipeline,
+            "fetch_pending_deliveries_report",
+            SimpleNamespace(
+                report_date=REPORT_DATE,
+                summary_sections=[],
+                cost_center_sections=[],
+                total_count=0,
+                total_pending_amount=0,
+            ),
+            "render_html",
+            (lambda _context: "html"),
+        ),
+    ],
+)
+async def test_zero_sent_notifications_log_warning_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    module,
+    fetch_attr: str,
+    fetch_result,
+    render_attr: str,
+    render_stub,
+) -> None:
+    _install_common_mocks(monkeypatch, module, tmp_path, emails_sent=0)
+
+    async def _fake_fetch(*_args, **_kwargs):
+        return fetch_result
+
+    captured_send_email_events: list[dict] = []
+
+    def _capture_log_event(*, logger, phase, message, **kwargs) -> None:
+        if phase == "send_email" and "zero emails sent" in message:
+            captured_send_email_events.append({"phase": phase, "message": message, **kwargs})
+
+    monkeypatch.setattr(module, fetch_attr, _fake_fetch)
+    monkeypatch.setattr(module, render_attr, render_stub)
+    monkeypatch.setattr(module, "log_event", _capture_log_event)
+    if module is daily_pipeline:
+        async def _fake_mtd_rows(*_args, **_kwargs):
+            return []
+
+        monkeypatch.setattr(module, "fetch_mtd_same_day_fulfillment", _fake_mtd_rows)
+        monkeypatch.setattr(module, "render_mtd_same_day_html", lambda **_kwargs: "mtd-html")
+
+    await module._run(report_date=REPORT_DATE, env="test", force=False)
+
+    assert captured_send_email_events
+    assert captured_send_email_events[-1]["status"] == "warning"
