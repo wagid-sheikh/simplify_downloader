@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      @page { size: A4 landscape; margin: 12mm; }
+      body { font-family: "Inter", "Helvetica", Arial, sans-serif; color: #111; margin: 24px; }
+      .title { text-align: center; font-weight: 700; font-size: 20px; margin-bottom: 4px; }
+      .subtitle { text-align: center; font-weight: 700; font-size: 16px; margin-bottom: 12px; }
+      .micro-font { font-size: 10px; line-height: 1.2; }
+      table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      th, td { border: 1px solid #222; padding: 6px 8px; text-align: right; }
+      th { background: #f6f6f6; font-weight: 700; }
+      td.label, th.label { text-align: left; }
+      td.center { text-align: center; }
+    </style>
+  </head>
+  <body>
+    <div class="title">The Shaw Ventures</div>
+    <div class="subtitle">Actual Payments Not Found Report for: {{ report_date_display }}</div>
+    <div class="micro-font">Run Environment: {{ run_environment }}</div>
+
+    <table>
+      <thead>
+        <tr>
+          <th class="label">#</th>
+          <th class="label">Cost Center</th>
+          <th class="label">Order Number</th>
+          <th class="label">Order Date</th>
+          <th class="label">Customer Name</th>
+          <th class="label">Mobile Number</th>
+          <th>Order Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in missing_payment_rows %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td class="label">{{ row.cost_center }}</td>
+          <td class="label">{{ row.order_number }}</td>
+          <td class="label">{{ row.order_date | format_ddmmyyyy }}</td>
+          <td class="label">{{ row.customer_name }}</td>
+          <td class="label">{{ row.mobile_number }}</td>
+          <td>{{ row.order_amount | format_amount }}</td>
+        </tr>
+        {% endfor %}
+        {% if not missing_payment_rows %}
+        <tr>
+          <td colspan="7" class="center">No actual payments-not-found rows for this run.</td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </body>
+</html>
