@@ -1012,14 +1012,17 @@ async def fetch_daily_sales_report(
             sa.select(
                 cost_center.c.cost_center.label("cost_center"),
                 sa.func.coalesce(
-                    string_list_agg(
-                        dialect_name=dialect_name,
-                        value_expr=(
-                            aggregate_order_by(report_day_orders_base.c.order_number, report_day_orders_base.c.order_number.asc())
-                            if dialect_name == "postgresql"
-                            else report_day_orders_base.c.order_number
-                        ),
-                        separator=", ",
+                    (
+                        sa.func.string_agg(
+                            report_day_orders_base.c.order_number,
+                            aggregate_order_by(sa.literal(", "), report_day_orders_base.c.order_number.asc()),
+                        )
+                        if dialect_name == "postgresql"
+                        else string_list_agg(
+                            dialect_name=dialect_name,
+                            value_expr=report_day_orders_base.c.order_number,
+                            separator=", ",
+                        )
                     ),
                     sa.literal("-"),
                 ).label("order_numbers_text"),

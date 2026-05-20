@@ -1395,13 +1395,12 @@ def test_report_day_orders_aggregation_compiles_postgres_with_ordered_string_agg
         sa.select(
             cost_center.c.cost_center.label("cost_center"),
             sa.func.coalesce(
-                _data_module.string_list_agg(
-                    dialect_name="postgresql",
-                    value_expr=sa.dialects.postgresql.aggregate_order_by(
-                        report_day_orders_base.c.order_number,
+                sa.func.string_agg(
+                    report_day_orders_base.c.order_number,
+                    sa.dialects.postgresql.aggregate_order_by(
+                        sa.literal(", "),
                         report_day_orders_base.c.order_number.asc(),
                     ),
-                    separator=", ",
                 ),
                 sa.literal("-"),
             ).label("order_numbers_text"),
@@ -1417,10 +1416,18 @@ def test_report_day_orders_aggregation_compiles_postgres_with_ordered_string_agg
         .order_by(cost_center.c.cost_center.asc())
     )
 
-    compiled_sql = str(report_day_orders_stmt.compile(dialect=postgresql.dialect())).lower()
+    compiled_sql = str(
+        report_day_orders_stmt.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    ).lower()
     assert "string_agg" in compiled_sql
     assert "group_concat" not in compiled_sql
-    assert "order by report_day_orders_base.order_number asc" in compiled_sql
+    assert (
+        "string_agg(report_day_orders_base.order_number, ', ' order by report_day_orders_base.order_number asc)"
+        in compiled_sql
+    )
 
 
 @pytest.mark.asyncio
