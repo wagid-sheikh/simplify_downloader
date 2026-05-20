@@ -1379,6 +1379,50 @@ def test_same_day_aggregation_statements_compile_with_postgres_safe_functions() 
     assert "group_concat" not in same_day_sql
 
 
+def test_report_day_orders_aggregation_compiles_postgres_with_ordered_string_agg() -> None:
+    cost_center = sa.table(
+        "cost_center",
+        sa.column("cost_center"),
+        sa.column("is_active"),
+    )
+    report_day_orders_base = sa.table(
+        "report_day_orders_base",
+        sa.column("cost_center"),
+        sa.column("order_number"),
+    )
+
+    report_day_orders_stmt = (
+        sa.select(
+            cost_center.c.cost_center.label("cost_center"),
+            sa.func.coalesce(
+                _data_module.string_list_agg(
+                    dialect_name="postgresql",
+                    value_expr=sa.dialects.postgresql.aggregate_order_by(
+                        report_day_orders_base.c.order_number,
+                        report_day_orders_base.c.order_number.asc(),
+                    ),
+                    separator=", ",
+                ),
+                sa.literal("-"),
+            ).label("order_numbers_text"),
+        )
+        .select_from(
+            cost_center.outerjoin(
+                report_day_orders_base,
+                report_day_orders_base.c.cost_center == cost_center.c.cost_center,
+            )
+        )
+        .where(cost_center.c.is_active.is_(True))
+        .group_by(cost_center.c.cost_center)
+        .order_by(cost_center.c.cost_center.asc())
+    )
+
+    compiled_sql = str(report_day_orders_stmt.compile(dialect=postgresql.dialect())).lower()
+    assert "string_agg" in compiled_sql
+    assert "group_concat" not in compiled_sql
+    assert "order by report_day_orders_base.order_number asc" in compiled_sql
+
+
 @pytest.mark.asyncio
 async def test_fetch_daily_sales_report_same_day_fulfillment_ignores_time_component(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "daily_sales_report_same_day_date_only.db"
