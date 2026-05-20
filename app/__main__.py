@@ -122,8 +122,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if parsed.recovery_command == "mark-aged-pending-deliveries":
             from app.recovery.main import main as recovery_main
 
-            sys.argv = ["recovery_mark_aged_pending_deliveries", *recovery_args]
-            recovery_main()
+            recovery_main(recovery_args)
             return 0
 
     if parsed.command == "report":
@@ -138,20 +137,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         if parsed.report_command == "daily-sales":
             from app.reports.daily_sales_report.main import main as daily_sales_report_main
 
-            sys.argv = ["daily_sales_report", *report_args]
-            daily_sales_report_main()
+            daily_sales_report_main(report_args)
             return 0
         if parsed.report_command == "pending-deliveries":
             from app.reports.pending_deliveries.main import main as pending_deliveries_main
 
-            sys.argv = ["pending_deliveries_report", *report_args]
-            pending_deliveries_main()
+            pending_deliveries_main(report_args)
             return 0
         if parsed.report_command == "mtd-same-day-fulfillment":
             from app.reports.mtd_same_day_fulfillment.main import main as mtd_same_day_fulfillment_main
 
-            sys.argv = ["mtd_same_day_fulfillment_report", *report_args]
-            mtd_same_day_fulfillment_main()
+            mtd_same_day_fulfillment_main(report_args)
             return 0
 
     parser.error("Unknown command")

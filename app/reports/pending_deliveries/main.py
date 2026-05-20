@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from argparse import ArgumentParser
 from datetime import date
+from typing import Sequence
 
 from app.common.date_utils import aware_now, get_timezone
 
@@ -15,7 +16,7 @@ def _parse_date(value: str) -> date:
         raise ValueError(f"Invalid date format: {value}. Use YYYY-MM-DD.") from exc
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     parser = ArgumentParser(description="Run the pending deliveries report pipeline.")
     parser.add_argument("--report-date", type=_parse_date, help="Report date (YYYY-MM-DD).")
     parser.add_argument("--env", type=str, default=None, help="Override run environment.")
@@ -24,7 +25,7 @@ def main() -> None:
         action="store_true",
         help="Deprecated no-op; reports always regenerate and append new summaries/documents.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(list(argv) if argv is not None else None)
 
     report_date = args.report_date
     if report_date is None:
