@@ -13,6 +13,7 @@ from app.reports.pending_deliveries.data import (
     PENDING_DELIVERY_EXCLUDED_RECOVERY_STATUSES,
     PENDING_DELIVERY_MAIN_RECOVERY_STATUS,
     fetch_pending_deliveries_report,
+    transition_aged_pending_deliveries_to_recovery_metrics,
     transition_aged_pending_deliveries_to_recovery,
 )
 
@@ -198,6 +199,97 @@ async def _insert_order_and_sale(
         await session.commit()
 
 
+async def _set_view_default_due_date_null_for_order(
+    *, database_url: str, order_number: str
+) -> None:
+    escaped_order_number = order_number.replace("'", "''")
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text("DROP VIEW IF EXISTS vw_orders")
+        )
+        await session.execute(
+            sa.text(
+                f"""
+                CREATE VIEW vw_orders AS
+                SELECT
+                    cost_center,
+                    store_code,
+                    order_number,
+                    customer_name,
+                    order_date,
+                    CASE WHEN order_number = '{escaped_order_number}' THEN NULL ELSE default_due_date END AS default_due_date,
+                    source_system,
+                    order_status,
+                    COALESCE(recovery_status, 'NONE') AS recovery_status,
+                    CASE
+                        WHEN (
+                            CASE
+                                WHEN COALESCE(adjustment, 0) > 0 THEN
+                                    COALESCE(
+                                        CASE
+                                            WHEN source_system = 'TumbleDry'
+                                                 AND net_amount IS NOT NULL
+                                                 AND net_amount <> 0
+                                                THEN net_amount
+                                            WHEN source_system = 'TumbleDry'
+                                                THEN gross_amount
+                                            ELSE gross_amount
+                                        END,
+                                        0
+                                    ) - COALESCE(adjustment, 0)
+                                ELSE
+                                    COALESCE(
+                                        CASE
+                                            WHEN source_system = 'TumbleDry'
+                                                 AND net_amount IS NOT NULL
+                                                 AND net_amount <> 0
+                                                THEN net_amount
+                                            WHEN source_system = 'TumbleDry'
+                                                THEN gross_amount
+                                            ELSE gross_amount
+                                        END,
+                                        0
+                                    )
+                            END
+                        ) <= 0 THEN 0
+                        ELSE (
+                            CASE
+                                WHEN COALESCE(adjustment, 0) > 0 THEN
+                                    COALESCE(
+                                        CASE
+                                            WHEN source_system = 'TumbleDry'
+                                                 AND net_amount IS NOT NULL
+                                                 AND net_amount <> 0
+                                                THEN net_amount
+                                            WHEN source_system = 'TumbleDry'
+                                                THEN gross_amount
+                                            ELSE gross_amount
+                                        END,
+                                        0
+                                    ) - COALESCE(adjustment, 0)
+                                ELSE
+                                    COALESCE(
+                                        CASE
+                                            WHEN source_system = 'TumbleDry'
+                                                 AND net_amount IS NOT NULL
+                                                 AND net_amount <> 0
+                                                THEN net_amount
+                                            WHEN source_system = 'TumbleDry'
+                                                THEN gross_amount
+                                            ELSE gross_amount
+                                        END,
+                                        0
+                                    )
+                            END
+                        )
+                    END AS order_amount
+                FROM orders
+                """
+            )
+        )
+        await session.commit()
+
+
 @pytest.mark.asyncio
 async def test_fetch_pending_deliveries_includes_pending_order_with_no_sales_row(
     tmp_path, monkeypatch
@@ -243,6 +335,55 @@ async def test_fetch_pending_deliveries_includes_pending_order_with_no_sales_row
     assert included_row.paid_amount == Decimal("0.00")
     assert included_row.pending_amount == Decimal("2165.00")
     assert included_row.default_due_date == date(2025, 5, 10)
+
+
+@pytest.mark.asyncio
+async def test_fetch_pending_deliveries_falls_back_to_order_date_when_default_due_date_missing(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_deliveries_missing_due_date.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
+    order_date = datetime(2025, 5, 10, 10, 0, tzinfo=tz)
+    now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
+
+    await _insert_order_and_sale(
+        database_url=database_url,
+        now=now,
+        order_date=order_date,
+        default_due_date=order_date,
+        source_system="TumbleDry",
+        order_number="NO-DUE-DATE",
+        gross_amount=Decimal("2165.00"),
+        net_amount=Decimal("2165.00"),
+        payment_received=Decimal("0.00"),
+        adjustments=Decimal("0.00"),
+        insert_sale=False,
+    )
+    await _set_view_default_due_date_null_for_order(
+        database_url=database_url,
+        order_number="NO-DUE-DATE",
+    )
+
+    data = await fetch_pending_deliveries_report(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    assert data.total_count == 1
+    assert data.missing_default_due_date_count == 1
+    included_row = next(
+        row
+        for bucket in data.summary_sections[0].buckets
+        for row in bucket.rows
+        if row.order_number == "NO-DUE-DATE"
+    )
+    assert included_row.default_due_date == date(2025, 5, 10)
+    assert included_row.age_days == 10
 
 
 @pytest.mark.asyncio
@@ -719,6 +860,49 @@ async def test_transition_existing_sales_row_not_marked(tmp_path, monkeypatch) -
     assert rows["HAS-SALE"]["recovery_status"] == "NONE"
     assert rows["HAS-SALE"]["recovery_category"] is None
     assert rows["HAS-SALE"]["recovery_notes"] is None
+
+
+@pytest.mark.asyncio
+async def test_transition_missing_default_due_date_uses_order_date_fallback(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_transition_missing_due_date.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr("app.reports.pending_deliveries.data.get_timezone", lambda: tz)
+    report_date = date(2025, 5, 20)
+    now = datetime(2025, 5, 20, 10, 0, tzinfo=tz)
+    order_date = datetime(2025, 4, 10, 10, 0, tzinfo=tz)
+    await _insert_order_and_sale(
+        database_url=database_url,
+        now=now,
+        order_date=order_date,
+        default_due_date=order_date,
+        source_system="TumbleDry",
+        order_number="AGE-BY-ORDER-DATE",
+        gross_amount=Decimal("100.00"),
+        net_amount=Decimal("100.00"),
+        payment_received=Decimal("0.00"),
+        adjustments=Decimal("0.00"),
+        insert_sale=False,
+    )
+    await _set_view_default_due_date_null_for_order(
+        database_url=database_url,
+        order_number="AGE-BY-ORDER-DATE",
+    )
+
+    metrics = await transition_aged_pending_deliveries_to_recovery_metrics(
+        database_url=database_url,
+        report_date=report_date,
+    )
+
+    rows = await _fetch_recovery_rows(database_url)
+    assert metrics.skipped_due_to_missing_due_date == 1
+    assert metrics.transitioned_count == 1
+    assert rows["AGE-BY-ORDER-DATE"]["recovery_status"] == "TO_BE_RECOVERED"
 
 
 @pytest.mark.asyncio

@@ -95,6 +95,7 @@ class PendingDeliveriesReportData:
     cost_center_sections: List[PendingDeliveriesCostCenterSection]
     total_pending_amount: Decimal
     total_count: int
+    missing_default_due_date_count: int = 0
 
 
 def _decimal(value: object | None) -> Decimal:
@@ -262,6 +263,7 @@ async def transition_aged_pending_deliveries_to_recovery_metrics(
         "vw_orders",
         sa.column("cost_center"),
         sa.column("order_number"),
+        sa.column("order_date"),
         sa.column("default_due_date"),
         sa.column("order_status"),
         sa.column("order_amount"),
@@ -285,6 +287,7 @@ async def transition_aged_pending_deliveries_to_recovery_metrics(
         sa.select(
             orders.c.cost_center,
             orders.c.order_number,
+            orders.c.order_date,
             orders.c.default_due_date,
             orders.c.recovery_status,
             matching_sale_exists.label("has_sale"),
@@ -316,6 +319,9 @@ async def transition_aged_pending_deliveries_to_recovery_metrics(
             default_due_date = _coerce_datetime(record.get("default_due_date"))
             if default_due_date is None:
                 metrics.skipped_due_to_missing_due_date += 1
+                default_due_date = _coerce_datetime(record.get("order_date"))
+            if default_due_date is None:
+                metrics.skipped_due_to_age += 1
                 continue
             default_due_date_local = _resolve_business_date(default_due_date, tz)
             age_days = max(0, (report_date - default_due_date_local).days)
@@ -417,6 +423,7 @@ async def fetch_pending_deliveries_report(
 
     tz = get_timezone()
     rows: list[PendingDeliveryRow] = []
+    missing_default_due_date_count = 0
 
     async with session_scope(database_url) as session:
         results = await session.execute(stmt)
@@ -426,7 +433,8 @@ async def fetch_pending_deliveries_report(
                 continue
             default_due_date = _coerce_datetime(record.get("default_due_date"))
             if default_due_date is None:
-                continue
+                missing_default_due_date_count += 1
+                default_due_date = order_date
             order_date_local = _resolve_order_date(order_date, tz)
             default_due_date_local = _resolve_business_date(default_due_date, tz)
             age_days = max(0, (report_date - default_due_date_local).days)
@@ -467,4 +475,5 @@ async def fetch_pending_deliveries_report(
         cost_center_sections=cost_center_sections,
         total_pending_amount=total_pending_amount,
         total_count=total_count,
+        missing_default_due_date_count=missing_default_due_date_count,
     )
