@@ -43,11 +43,11 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 - Multi-order `payment_collections.order_number` values are group-reconciled before row-level missing/short classification. Group-paid rows are excluded from main missing/short reports; group-short rows are allocated sequentially by `order_date ASC, order_number ASC`.
 - Normal missing-payment rows exclude `TO_BE_RECOVERED` and `TO_BE_COMPENSATED`. Normal pending-delivery aging buckets/details/action buckets exclude all recovery workflow statuses: `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, and `WRITE_OFF`.
 - `Actual Payments Not Found` means no valid qualifying payment proof exists for the normalized `(cost_center, order_number)` after applying the source-type and whole-token rules above; it is not a raw physical-row absence check. A `payment_collections` row with an unsupported `source_type`, blank/malformed/unmatched token, or different cost center does not satisfy proof. A valid qualifying proof with a payment/order amount mismatch is handled by short-payment or audit reconciliation, not by `Actual Payments Not Found`.
-- `Actual Payments Not Found` is current/open across all order dates and is not restricted by Daily/MTD report windows.
+- `Actual Payments Not Found` is intentionally current/open across all order dates (not restricted by Daily/MTD report windows). Eligibility requires a `sales` row and no valid qualifying payment proof.
 - A separate `Short Payment` sub-report is required and remains distinct from `Actual Payments Not Found`; `source_type` belongs in audit/reconciliation reports, not every normal business report. Python `app.reports.shared.payment_reconciliation` is canonical for report reconciliation; `vw_orders_missing_in_payment_collections` is a compatibility/audit projection and must mirror the Python missing-proof subset.
 - `Short Payment` is intentionally a current/open action list across all order dates, behaving like `TO_BE_RECOVERED` visibility by showing current unresolved action rows rather than rows constrained to the Daily or MTD report date window. Daily/MTD report date windows do not restrict Short Payment eligibility.
 - Daily Sales Short Payments PDF rows still exclude orders with `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, or `WRITE_OFF` recovery status, and zero-value orders are not eligible.
-- `To Be Recovered` is intentionally current/open by recovery status: unresolved rows are selected by `vw_orders.recovery_status = 'TO_BE_RECOVERED'` across all order dates, not by the Daily/MTD report date window.
+- `To Be Recovered` is intentionally current/open by recovery workflow status (for example `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`) across all order dates, not by the Daily/MTD report date window.
 - Daily Sales Short Payments PDF requires clean reconciliation. A row is eligible only when all of these conditions hold: (1) a `sales` row exists; (2) qualifying `payment_collections` proof exists; (3) `sales.payment_received` and proof/evidence amount match within ₹1; and (4) the proof/evidence amount is short against `vw_orders.order_amount` by more than ₹1.
 - Payment Evidence Review (`vw_payment_evidence_reconciliation` and `scripts/payment_evidence_review.py`) is audit-only. Its `reconciliation_result` column is a raw reconciliation classification and may surface rows with recovery workflow statuses for diagnostics; use `operator_actionable_payment_status` to distinguish rows that are excluded from the operator Daily Sales Short Payments PDF.
 - Zero-value orders remain visible as orders in descriptive reporting where order presence matters, but they are excluded from missing-payment, pending-payment, and recovery action checks.
@@ -92,7 +92,7 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 - Pending deliveries: `app/reports/pending_deliveries/`.
 - Store/week/month reporting helpers: `app/dashboard_downloader/run_store_reports.py` + `app/dashboard_downloader/pipelines/`.
 - PDF rendering centralized through report renderer wrappers.
-- Pending deliveries aging buckets/details/action buckets exclude orders whose `recovery_status` is one of `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, or `WRITE_OFF`; `NULL`/other statuses remain eligible for normal pending-delivery buckets when they satisfy the standard pending filters. Active `TO_BE_RECOVERED` and `TO_BE_COMPENSATED` orders may be shown only in separate manual recovery/compensation visibility sections; closed `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` orders must not appear in normal pending-delivery action buckets.
+- Pending deliveries canonical contract: normal pending-delivery buckets/details include only rows with `vw_orders.recovery_status = 'NONE'` and no matching `sales` row. Recovery workflow statuses are intentionally excluded from normal pending-delivery queues.
 
 ### 6) Lead assignment pipeline
 - `app/lead_assignment/pipeline.py` orchestrates:
@@ -166,10 +166,8 @@ reporting and aging buckets remain consistent:
    - Set `recovery_category='DAMAGE_CLAIM'`.
    - Set `recovery_notes` with claim details.
 3. **Closure**
-   - Set `recovery_status` to one of:
-     - `RECOVERED`
-     - `COMPENSATED`
-     - `WRITE_OFF`
+   - Set `recovery_status` to terminal workflow status (for example `RECOVERED`, `COMPENSATED`, or `WRITE_OFF`).
+   - Do **not** revert resolved recovery rows back to `NONE`; `NONE` means no active/terminal recovery workflow has been applied.
    - For write-off/return decisions, use `recovery_category` to distinguish:
      - `WRITE_OFF_FULL` for full write-offs.
      - `WRITE_OFF_BALANCE` for balance-only write-offs.
