@@ -129,12 +129,14 @@ def _resolve_business_date(value: datetime, tz) -> date:
     return value.astimezone(tz).date()
 
 
-def _bucket_age(age_days: int) -> str:
+def _bucket_age(age_days: int) -> str | None:
     if age_days <= 5:
         return "0-5"
     if age_days <= 15:
         return "6-15"
-    return ">15"
+    if age_days <= AGED_PENDING_DELIVERY_THRESHOLD_DAYS:
+        return "16-30"
+    return None
 
 
 def _build_buckets(rows: Iterable[PendingDeliveryRow]) -> List[PendingDeliveriesBucket]:
@@ -155,10 +157,10 @@ def _build_buckets(rows: Iterable[PendingDeliveryRow]) -> List[PendingDeliveries
             total_count=0,
             total_pending_amount=Decimal("0"),
         ),
-        ">15": PendingDeliveriesBucket(
-            label=">15 days",
+        "16-30": PendingDeliveriesBucket(
+            label="16-30 days",
             min_days=16,
-            max_days=None,
+            max_days=AGED_PENDING_DELIVERY_THRESHOLD_DAYS,
             rows=[],
             total_count=0,
             total_pending_amount=Decimal("0"),
@@ -167,6 +169,8 @@ def _build_buckets(rows: Iterable[PendingDeliveryRow]) -> List[PendingDeliveries
 
     for row in rows:
         bucket_key = _bucket_age(row.age_days)
+        if bucket_key is None:
+            continue
         buckets_map[bucket_key].rows.append(row)
 
     for bucket in buckets_map.values():
@@ -178,7 +182,7 @@ def _build_buckets(rows: Iterable[PendingDeliveryRow]) -> List[PendingDeliveries
             (row.pending_amount for row in bucket.rows), Decimal("0")
         )
 
-    return [buckets_map["0-5"], buckets_map["6-15"], buckets_map[">15"]]
+    return [buckets_map["0-5"], buckets_map["6-15"], buckets_map["16-30"]]
 
 
 def _build_summary_sections(
