@@ -54,6 +54,9 @@ TEMPLATE_NAME = "daily_sales_report.html"
 SHORT_PAYMENTS_TEMPLATE_NAME = "short_payments_report.html"
 SHORT_PAYMENTS_DOCUMENT_TYPE = "daily_sales_short_payments_pdf"
 SHORT_PAYMENTS_OUTPUT_PREFIX = "reports.daily_sales_report_short_payments"
+ACTUAL_PAYMENTS_NOT_FOUND_TEMPLATE_NAME = "actual_payments_not_found_report.html"
+ACTUAL_PAYMENTS_NOT_FOUND_DOCUMENT_TYPE = "daily_sales_actual_payments_not_found_pdf"
+ACTUAL_PAYMENTS_NOT_FOUND_OUTPUT_PREFIX = "reports.daily_sales_report_actual_payments_not_found"
 TEMPLATE_DIR = Path("app") / "reports" / "daily_sales_report" / "templates"
 SHARED_TEMPLATE_DIR = Path("app") / "reports" / "shared" / "templates"
 OUTPUT_ROOT = Path("app") / "reports" / "output_files"
@@ -144,7 +147,9 @@ def _build_context(
         "same_day_fulfillment_rows": data.same_day_fulfillment_rows,
         "missing_payment_rows": data.missing_payment_rows,
         "short_payment_rows": getattr(data, "short_payment_rows", []),
-        "report_day_orders_by_cost_center": data.report_day_orders_by_cost_center,
+        "report_day_orders_by_cost_center": getattr(
+            data, "report_day_orders_by_cost_center", []
+        ),
         "same_day_grouped_rows_by_store": group_rows_by_store(
             data.same_day_fulfillment_rows
         ),
@@ -158,6 +163,10 @@ def _build_context(
 
 def _short_payments_output_path(report_date: date) -> Path:
     return OUTPUT_ROOT / f"{SHORT_PAYMENTS_OUTPUT_PREFIX}_{report_date.isoformat()}.pdf"
+
+
+def _actual_payments_not_found_output_path(report_date: date) -> Path:
+    return OUTPUT_ROOT / f"{ACTUAL_PAYMENTS_NOT_FOUND_OUTPUT_PREFIX}_{report_date.isoformat()}.pdf"
 
 
 async def _generate_short_payments_pdf(
@@ -243,6 +252,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
         context = _build_context(data, run_env)
         html = _render_html(context)
         short_payments_pdf_generated = True
+        actual_payments_not_found_pdf_generated = True
         to_be_recovered_context = build_to_be_recovered_context(
             rows=data.to_be_recovered,
             report_date=resolved_date,
@@ -312,6 +322,8 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             mtd_row_count=len(mtd_rows),
             short_payment_rows=len(getattr(data, "short_payment_rows", [])),
             short_payments_pdf_generated=short_payments_pdf_generated,
+            actual_payments_not_found_rows=len(data.missing_payment_rows),
+            actual_payments_not_found_pdf_generated=actual_payments_not_found_pdf_generated,
         )
 
         OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
@@ -321,6 +333,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             / f"reports.mtd_same_day_fulfillment_{resolved_date.isoformat()}.pdf"
         )
         short_payments_output_path = _short_payments_output_path(resolved_date)
+        actual_payments_not_found_output_path = _actual_payments_not_found_output_path(resolved_date)
         to_be_recovered_output_path = (
             OUTPUT_ROOT
             / f"{TO_BE_RECOVERED_OUTPUT_PREFIX}_{resolved_date.isoformat()}.pdf"
@@ -331,6 +344,8 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             same_day_output_path.unlink()
         if to_be_recovered_output_path.exists():
             to_be_recovered_output_path.unlink()
+        if actual_payments_not_found_output_path.exists():
+            actual_payments_not_found_output_path.unlink()
         try:
             await render_pdf_with_configured_browser(
                 html,
@@ -347,6 +362,16 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             short_payments_output_path = await _generate_short_payments_pdf(
                 context=context,
                 report_date=resolved_date,
+                logger=logger,
+            )
+            actual_payments_not_found_html = _render_html(
+                context,
+                template_name=ACTUAL_PAYMENTS_NOT_FOUND_TEMPLATE_NAME,
+            )
+            await render_pdf_with_configured_browser(
+                actual_payments_not_found_html,
+                actual_payments_not_found_output_path,
+                pdf_options={"format": "A4", "landscape": True},
                 logger=logger,
             )
             if mtd_attachment_generated and same_day_html is not None:
@@ -372,12 +397,15 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 same_day_file_path=str(same_day_output_path),
                 to_be_recovered_file_path=str(to_be_recovered_output_path),
                 short_payments_file_path=str(short_payments_output_path),
+                actual_payments_not_found_file_path=str(actual_payments_not_found_output_path),
                 pipeline_name=PIPELINE_NAME,
                 mtd_start=mtd_start.isoformat(),
                 mtd_end=mtd_end.isoformat(),
                 mtd_row_count=len(mtd_rows),
                 short_payment_rows=len(getattr(data, "short_payment_rows", [])),
                 short_payments_pdf_generated=False,
+                actual_payments_not_found_rows=len(data.missing_payment_rows),
+                actual_payments_not_found_pdf_generated=False,
                 error=str(exc),
             )
             finished_at = datetime.now(timezone.utc)
@@ -401,12 +429,17 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             same_day_file_path=str(same_day_output_path),
             to_be_recovered_file_path=str(to_be_recovered_output_path),
             short_payments_file_path=str(short_payments_output_path),
+            actual_payments_not_found_file_path=str(
+                actual_payments_not_found_output_path
+            ),
             pipeline_name=PIPELINE_NAME,
             mtd_start=mtd_start.isoformat(),
             mtd_end=mtd_end.isoformat(),
             mtd_row_count=len(mtd_rows),
             short_payment_rows=len(getattr(data, "short_payment_rows", [])),
             short_payments_pdf_generated=short_payments_pdf_generated,
+            actual_payments_not_found_rows=len(data.missing_payment_rows),
+            actual_payments_not_found_pdf_generated=actual_payments_not_found_pdf_generated,
         )
 
         await _persist_document(
@@ -429,6 +462,13 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             report_date=resolved_date,
             file_path=short_payments_output_path,
             doc_type=SHORT_PAYMENTS_DOCUMENT_TYPE,
+        )
+        await _persist_document(
+            database_url=database_url,
+            run_id=run_id,
+            report_date=resolved_date,
+            file_path=actual_payments_not_found_output_path,
+            doc_type=ACTUAL_PAYMENTS_NOT_FOUND_DOCUMENT_TYPE,
         )
         if mtd_attachment_generated:
             await _persist_document(
@@ -455,12 +495,17 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             same_day_file_path=str(same_day_output_path),
             to_be_recovered_file_path=str(to_be_recovered_output_path),
             short_payments_file_path=str(short_payments_output_path),
+            actual_payments_not_found_file_path=str(
+                actual_payments_not_found_output_path
+            ),
             pipeline_name=PIPELINE_NAME,
             mtd_start=mtd_start.isoformat(),
             mtd_end=mtd_end.isoformat(),
             mtd_row_count=len(mtd_rows),
             short_payment_rows=len(getattr(data, "short_payment_rows", [])),
             short_payments_pdf_generated=short_payments_pdf_generated,
+            actual_payments_not_found_rows=len(data.missing_payment_rows),
+            actual_payments_not_found_pdf_generated=actual_payments_not_found_pdf_generated,
         )
 
         tracker.metrics = {
@@ -473,6 +518,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             "short_payment_rows": len(getattr(data, "short_payment_rows", [])),
             "short_payments_pdf_file_path": str(short_payments_output_path),
             "short_payments_pdf_generated": short_payments_pdf_generated,
+            "actual_payments_not_found_rows": len(data.missing_payment_rows),
+            "actual_payments_not_found_pdf_file_path": str(actual_payments_not_found_output_path),
+            "actual_payments_not_found_pdf_generated": actual_payments_not_found_pdf_generated,
             "to_be_recovered_orders": len(data.to_be_recovered),
             "to_be_recovered_total_order_value": str(
                 data.to_be_recovered_total_order_value

@@ -480,8 +480,12 @@ async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
         pipeline.OUTPUT_ROOT
         / f"reports.daily_sales_report_short_payments_{report_date.isoformat()}.pdf"
     )
+    apnf_path = str(
+        pipeline.OUTPUT_ROOT
+        / f"reports.daily_sales_report_actual_payments_not_found_{report_date.isoformat()}.pdf"
+    )
 
-    assert {daily_path, recovered_path, short_payments_path}.issubset(rendered)
+    assert {daily_path, recovered_path, short_payments_path, apnf_path}.issubset(rendered)
     assert "RPT-DATE-1" in rendered[daily_path]
     assert "REC-1" in rendered[recovered_path]
 
@@ -511,28 +515,31 @@ async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
             .all()
         )
 
-    assert len(rows) == 4
-    assert rows[0]["doc_type"] == "daily_sales_report_pdf"
-    assert rows[1]["doc_type"] == "daily_sales_short_payments_pdf"
+    assert len(rows) == 5
+    by_type = {row["doc_type"]: row for row in rows}
+    assert "daily_sales_actual_payments_not_found_pdf" in by_type
+    assert "daily_sales_report_pdf" in by_type
+    assert "daily_sales_short_payments_pdf" in by_type
+    assert "mtd_same_day_fulfillment_pdf" in by_type
+    assert "to_be_recovered_report_pdf" in by_type
     assert (
-        rows[1]["file_name"]
+        by_type["daily_sales_short_payments_pdf"]["file_name"]
         == f"reports.daily_sales_report_short_payments_{report_date.isoformat()}.pdf"
     )
-    assert rows[1]["reference_id_1"] == pipeline.PIPELINE_NAME
-    assert rows[1]["reference_id_3"] == report_date.isoformat()
-    assert rows[2]["doc_type"] == "mtd_same_day_fulfillment_pdf"
+    assert by_type["daily_sales_short_payments_pdf"]["reference_id_1"] == pipeline.PIPELINE_NAME
+    assert by_type["daily_sales_short_payments_pdf"]["reference_id_3"] == report_date.isoformat()
     assert (
-        rows[2]["file_name"]
+        by_type["mtd_same_day_fulfillment_pdf"]["file_name"]
         == f"reports.mtd_same_day_fulfillment_{report_date.isoformat()}.pdf"
     )
-    assert rows[2]["reference_id_1"] == pipeline.PIPELINE_NAME
-    assert rows[2]["reference_id_3"] == report_date.isoformat()
-    assert rows[3]["doc_type"] == "to_be_recovered_report_pdf"
+    assert by_type["mtd_same_day_fulfillment_pdf"]["reference_id_1"] == pipeline.PIPELINE_NAME
+    assert by_type["mtd_same_day_fulfillment_pdf"]["reference_id_3"] == report_date.isoformat()
     assert (
-        rows[3]["file_name"] == f"reports.to_be_recovered_{report_date.isoformat()}.pdf"
+        by_type["to_be_recovered_report_pdf"]["file_name"]
+        == f"reports.to_be_recovered_{report_date.isoformat()}.pdf"
     )
-    assert rows[3]["reference_id_1"] == pipeline.PIPELINE_NAME
-    assert rows[3]["reference_id_3"] == report_date.isoformat()
+    assert by_type["to_be_recovered_report_pdf"]["reference_id_1"] == pipeline.PIPELINE_NAME
+    assert by_type["to_be_recovered_report_pdf"]["reference_id_3"] == report_date.isoformat()
 
 
 @pytest.mark.asyncio
@@ -848,10 +855,13 @@ async def test_daily_pipeline_continues_when_mtd_fetch_fails(
             .all()
         )
 
-    assert len(rows) == 3
-    assert rows[0]["doc_type"] == "daily_sales_report_pdf"
-    assert rows[1]["doc_type"] == "daily_sales_short_payments_pdf"
-    assert rows[2]["doc_type"] == "to_be_recovered_report_pdf"
+    assert len(rows) == 4
+    assert {row["doc_type"] for row in rows} == {
+        "daily_sales_actual_payments_not_found_pdf",
+        "daily_sales_report_pdf",
+        "daily_sales_short_payments_pdf",
+        "to_be_recovered_report_pdf",
+    }
 
     assert captured_records
     final_record = captured_records[-1]
@@ -860,6 +870,8 @@ async def test_daily_pipeline_continues_when_mtd_fetch_fails(
     assert final_record["metrics_json"]["mtd_attachment_error"] == "mtd fetch boom"
     assert final_record["metrics_json"]["short_payment_rows"] == 0
     assert final_record["metrics_json"]["short_payments_pdf_generated"] is True
+    assert final_record["metrics_json"]["actual_payments_not_found_rows"] == 0
+    assert final_record["metrics_json"]["actual_payments_not_found_pdf_generated"] is True
     assert (
         "MTD same-day fulfillment attachment was not generated"
         in final_record["summary_text"]
