@@ -147,8 +147,11 @@ async def fetch_missing_payment_rows_without_proof(
 ) -> list[Any]:
     """Return sales-paid orders whose valid payment proof is absent.
 
-    Evidence components with unmatched order tokens are reported through the
-    payment-evidence audit bucket instead of Actual Payments Not Found.
+    Actual Payments Not Found is a current/open list across all order dates.
+    ``start_datetime`` and ``end_datetime`` remain accepted for call-site
+    compatibility but do not limit candidate orders. Evidence components with
+    unmatched order tokens are reported through the payment-evidence audit
+    bucket instead of Actual Payments Not Found.
     """
 
     reconciliation = await _fetch_reconciliation(
@@ -158,6 +161,7 @@ async def fetch_missing_payment_rows_without_proof(
         sales=sales,
         start_datetime=start_datetime,
         end_datetime=end_datetime,
+        filter_order_date=False,
     )
 
     rows: list[Any] = []
