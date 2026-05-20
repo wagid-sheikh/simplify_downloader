@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app.reports.pending_deliveries.data import (
@@ -81,3 +81,64 @@ def test_render_html_includes_due_date_column_and_value() -> None:
     assert "Payment Action Required" not in html
     assert "10-May-2025</td>" in html
     assert "12-May-2025</td>" in html
+
+
+def test_render_html_uses_16_30_bucket_without_15_plus_bucket() -> None:
+    def row_for_age(age_days: int) -> PendingDeliveryRow:
+        return PendingDeliveryRow(
+            cost_center="UN3668",
+            store_code="A668",
+            order_number=f"ORD-{age_days}",
+            customer_name=f"Customer {age_days}",
+            order_date=date(2025, 5, 20) - timedelta(days=age_days),
+            default_due_date=date(2025, 5, 20) - timedelta(days=age_days),
+            age_days=age_days,
+            order_amount=Decimal("100.00"),
+            paid_amount=Decimal("0.00"),
+            pending_amount=Decimal("100.00"),
+            adjustments=Decimal("0"),
+            is_edited_order=False,
+            is_duplicate=False,
+            source_system="TumbleDry",
+        )
+
+    rows = [row_for_age(16), row_for_age(30)]
+    bucket = PendingDeliveriesBucket(
+        label="16-30 days",
+        min_days=16,
+        max_days=30,
+        rows=rows,
+        total_count=2,
+        total_pending_amount=Decimal("200.00"),
+    )
+    summary_section = PendingDeliveriesSummarySection(
+        cost_center="UN3668",
+        buckets=[bucket],
+        total_pending_amount=Decimal("200.00"),
+        total_count=2,
+    )
+    cost_center_section = PendingDeliveriesCostCenterSection(
+        cost_center="UN3668",
+        buckets=[bucket],
+        total_pending_amount=Decimal("200.00"),
+        total_count=2,
+    )
+
+    html = render_html(
+        {
+            "report_date_display": "20-May-2025",
+            "run_id": "run-1",
+            "timezone": "Asia/Kolkata",
+            "run_environment": "prod",
+            "summary_sections": [summary_section],
+            "cost_center_sections": [cost_center_section],
+            "total_count": 2,
+            "total_pending_amount": Decimal("200.00"),
+        }
+    )
+
+    assert "16-30 days" in html
+    assert ">15 days" not in html
+    assert "ORD-16" in html
+    assert "ORD-30" in html
+    assert "ORD-31" not in html

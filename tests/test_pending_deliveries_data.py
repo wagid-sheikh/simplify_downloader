@@ -643,6 +643,58 @@ async def test_transition_age_31_marked(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_fetch_after_transition_keeps_ages_16_and_30_in_16_30_bucket_and_excludes_31(
+    tmp_path, monkeypatch
+) -> None:
+    db_path = tmp_path / "pending_transition_bucket_boundaries.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    await _register_sqlite_greatest(database_url)
+
+    for age_days in (16, 30, 31):
+        await _seed_transition_order(
+            database_url=database_url,
+            monkeypatch=monkeypatch,
+            order_number=f"AGE-{age_days}",
+            age_days=age_days,
+        )
+
+    transitioned_count = await transition_aged_pending_deliveries_to_recovery(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+    data = await fetch_pending_deliveries_report(
+        database_url=database_url,
+        report_date=date(2025, 5, 20),
+    )
+
+    assert transitioned_count == 1
+    assert [bucket.label for bucket in data.summary_sections[0].buckets] == [
+        "0-5 days",
+        "6-15 days",
+        "16-30 days",
+    ]
+    assert all(
+        bucket.label != ">15 days"
+        for section in data.summary_sections
+        for bucket in section.buckets
+    )
+    age_16_30_bucket = next(
+        bucket
+        for bucket in data.summary_sections[0].buckets
+        if bucket.label == "16-30 days"
+    )
+    assert {row.order_number for row in age_16_30_bucket.rows} == {"AGE-16", "AGE-30"}
+    assert {row.age_days for row in age_16_30_bucket.rows} == {16, 30}
+    assert {
+        row.order_number
+        for section in data.cost_center_sections
+        for bucket in section.buckets
+        for row in bucket.rows
+    } == {"AGE-16", "AGE-30"}
+
+
+@pytest.mark.asyncio
 async def test_transition_existing_sales_row_not_marked(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "pending_transition_sales_row.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
