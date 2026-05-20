@@ -9,9 +9,8 @@ import pytest
 import sqlalchemy as sa
 
 from app.common.db import session_scope
-from app.reports.mtd_same_day_fulfillment.data import fetch_mtd_same_day_fulfillment, fetch_missing_payments_mtd, fetch_short_payments_mtd
-from app.reports.mtd_same_day_fulfillment.data import MTDSameDayFulfillmentRow, MissingPaymentRow
-from app.reports.shared.short_payments import ShortPaymentRow
+from app.reports.mtd_same_day_fulfillment.data import fetch_mtd_same_day_fulfillment, fetch_short_payments_mtd
+from app.reports.mtd_same_day_fulfillment.data import MTDSameDayFulfillmentRow
 from app.reports.mtd_same_day_fulfillment.render import render_html
 from app.reports.shared.same_day_fulfillment import format_duration_minutes
 import app.reports.mtd_same_day_fulfillment.data as mtd_data
@@ -80,7 +79,7 @@ async def test_fetch_mtd_same_day_fulfillment_does_not_use_create_engine(tmp_pat
 
 
 def test_render_html_includes_financial_columns() -> None:
-    html = render_html(rows=[], report_date_display='29-Apr-2026', mtd_start_display='01-Apr-2026', mtd_end_display='29-Apr-2026', missing_payment_rows=[])
+    html = render_html(rows=[], report_date_display='29-Apr-2026', mtd_start_display='01-Apr-2026', mtd_end_display='29-Apr-2026')
     assert 'The Shaw Ventures' in html
     assert 'MTD Same-Day Orders (Delivered within same calendar day)' in html
     assert 'Payment Date' in html
@@ -97,7 +96,7 @@ def test_render_html_groups_store_and_formats_duration() -> None:
         MTDSameDayFulfillmentRow("S2", "B1", datetime(2026, 4, 10, 8), "Cara", "888", "Dry", datetime(2026, 4, 10, 13, 23), "CASH", 5.39, 30, 30),
         MTDSameDayFulfillmentRow("S2", "B2", datetime(2026, 4, 10, 7), "Dan", "777", "Steam", datetime(2026, 4, 10, 7), "UPI", 0.00, 40, 40),
     ]
-    html = render_html(rows=rows, report_date_display='29-Apr-2026', mtd_start_display='01-Apr-2026', mtd_end_display='29-Apr-2026', missing_payment_rows=[])
+    html = render_html(rows=rows, report_date_display='29-Apr-2026', mtd_start_display='01-Apr-2026', mtd_end_display='29-Apr-2026')
     assert "Store: S1" in html and "Store: S2" in html
     assert "2 min" in html and "14 min" in html and "5 hrs 23 min" in html and "0 min" in html
     assert "10-04-2026<br><span class=\"micro-font\">10:00 AM</span>" in html
@@ -208,115 +207,6 @@ async def test_mtd_pipeline_has_no_missing_payment_fetch_dependency(monkeypatch,
 
 
 @pytest.mark.asyncio
-async def test_fetch_missing_payments_mtd_ignores_month_window_for_open_missing_list(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / 'mtd_missing_payments.db'
-    database_url = f"sqlite+aiosqlite:///{db_path}"
-    _create_tables(database_url)
-    monkeypatch.setattr(mtd_data, 'get_timezone', lambda: ZoneInfo('Asia/Kolkata'))
-
-    engine = sa.create_engine(database_url.replace('+aiosqlite', ''))
-    with engine.begin() as conn:
-        conn.execute(sa.text("""
-            CREATE VIEW vw_orders_missing_in_payment_collections AS
-            SELECT
-                o.cost_center,
-                o.order_number,
-                o.order_date,
-                o.customer_name,
-                o.mobile_number,
-                o.order_amount AS net_amount
-            FROM vw_orders o
-            JOIN sales s
-                ON s.cost_center = o.cost_center
-               AND s.order_number = o.order_number
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM payment_collections pc
-                WHERE pc.cost_center = o.cost_center
-                  AND (',' || upper(replace(replace(coalesce(pc.order_number, ''), ' ', ''), '/', ',')) || ',')
-                      LIKE ('%,' || upper(replace(coalesce(o.order_number, ''), ' ', '')) || ',%')
-            )
-            GROUP BY
-                o.cost_center,
-                o.order_number,
-                o.order_date,
-                o.customer_name,
-                o.mobile_number,
-                o.order_amount
-        """))
-    engine.dispose()
-
-    async with session_scope(database_url) as session:
-        await session.execute(sa.text("""
-                INSERT INTO orders (
-                    cost_center, order_number, order_date, customer_name, mobile_number,
-                    net_amount, gross_amount, source_system, recovery_status
-                ) VALUES
-                    ('CC1', 'IN-START', '2026-04-01T00:00:00+05:30', 'Alice', '999', 100, 130, 'TumbleDry', 'NONE'),
-                    ('CC1', 'IN-END', '2026-04-29T23:59:59+05:30', 'Bob', '888', 0, 260, 'UC', 'NONE'),
-                    ('CC1', 'MATCHED', '2026-04-15T12:00:00+05:30', 'Mina', '555', 700, 900, 'UC', 'NONE'),
-                    ('CC1', 'OUT-BEFORE', '2026-03-31T23:59:59+05:30', 'Cora', '777', 300, 390, 'TumbleDry', 'NONE'),
-                    ('CC1', 'OUT-AFTER', '2026-04-30T00:00:00+05:30', 'Dan', '666', 400, 520, 'UC', 'NONE'),
-                    ('CC1', 'ZERO-VALUE', '2026-04-10T10:00:00+05:30', 'Zero', '111', 0, 0, 'TumbleDry', 'NONE')
-        """))
-        await session.execute(sa.text("""
-            INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES
-                ('CC1', 'IN-START', '2026-04-01T01:00:00+05:30', 'UPI', 100),
-                ('CC1', 'IN-END', '2026-04-29T23:59:59+05:30', 'CARD', 260),
-                ('CC1', 'MATCHED', '2026-04-15T12:30:00+05:30', 'UPI', 900),
-                ('CC1', 'OUT-BEFORE', '2026-03-31T23:59:59+05:30', 'UPI', 300),
-                ('CC1', 'OUT-AFTER', '2026-04-30T00:00:00+05:30', 'CASH', 520),
-                ('CC1', 'ZERO-VALUE', '2026-04-10T10:30:00+05:30', 'CASH', 0)
-        """))
-        await session.execute(sa.text("INSERT INTO payment_collections (cost_center, order_number) VALUES ('CC1', ' xx / matched ,,')"))
-        await session.commit()
-
-    rows = await fetch_missing_payments_mtd(database_url=database_url, report_date=date(2026, 4, 29))
-
-    assert [(row.order_number, row.order_amount) for row in rows] == [
-        ('OUT-BEFORE', Decimal('300')),
-        ('IN-START', Decimal('100')),
-        ('IN-END', Decimal('260')),
-        ('OUT-AFTER', Decimal('520')),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_fetch_missing_payments_mtd_requires_sales_payment_record(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / 'mtd_missing_payments_requires_sales.db'
-    database_url = f"sqlite+aiosqlite:///{db_path}"
-    _create_tables(database_url)
-    monkeypatch.setattr(mtd_data, 'get_timezone', lambda: ZoneInfo('Asia/Kolkata'))
-
-    async with session_scope(database_url) as session:
-        await session.execute(sa.text("""
-            INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, source_system, recovery_status) VALUES
-                ('CC1','SALES-NO-PROOF','2026-04-10T09:00:00+05:30','Alice','999',100,'TumbleDry','NONE'),
-                ('CC1','NO-SALES-NO-PROOF','2026-04-10T10:00:00+05:30','Bob','888',200,'TumbleDry','NONE'),
-                ('CC1','NO-SALES-WITH-PROOF','2026-04-10T11:00:00+05:30','Cara','777',300,'TumbleDry','NONE'),
-                ('CC1','ZERO-VALUE','2026-04-10T12:00:00+05:30','Zed','666',0,'TumbleDry','NONE'),
-                ('CC1','RECOVERY','2026-04-10T13:00:00+05:30','Ron','555',400,'TumbleDry','WRITE_OFF')
-        """))
-        await session.execute(sa.text("""
-            INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES
-                ('CC1','SALES-NO-PROOF','2026-04-10T09:30:00+05:30','UPI',100),
-                ('CC1','ZERO-VALUE','2026-04-10T12:30:00+05:30','CASH',50),
-                ('CC1','RECOVERY','2026-04-10T13:30:00+05:30','CARD',400)
-        """))
-        await session.execute(sa.text("""
-            INSERT INTO payment_collections (cost_center, order_number, amount, source_type) VALUES
-                ('CC1','NO-SALES-WITH-PROOF',300,'google_sheet')
-        """))
-        await session.commit()
-
-    rows = await fetch_missing_payments_mtd(database_url=database_url, report_date=date(2026, 4, 29))
-
-    assert [(row.order_number, row.order_amount) for row in rows] == [
-        ('SALES-NO-PROOF', Decimal('100')),
-    ]
-
-
-@pytest.mark.asyncio
 async def test_fetch_short_payments_mtd_uses_global_orders_for_grouped_reconciliation(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / 'mtd_short_payments.db'
     database_url = f"sqlite+aiosqlite:///{db_path}"
@@ -372,107 +262,15 @@ async def test_fetch_short_payments_mtd_uses_global_orders_for_grouped_reconcili
     ]
 
 
-@pytest.mark.asyncio
-async def test_fetch_missing_payments_mtd_postgres_sql_targets_view(monkeypatch) -> None:
-    monkeypatch.setattr(mtd_data, 'get_timezone', lambda: ZoneInfo('Asia/Kolkata'))
-
-    captured = {'stmts': []}
-
-    class _Result:
-        def __init__(self, rows=None):
-            self._rows = rows or []
-
-        def mappings(self):
-            return self._rows
-
-    class _Session:
-        async def execute(self, stmt):
-            captured['stmts'].append(stmt)
-            compiled = str(
-                stmt.compile(
-                    dialect=postgresql.dialect(),
-                    compile_kwargs={'literal_binds': True},
-                )
-            )
-            if 'FROM vw_orders' in compiled:
-                return _Result(
-                    [
-                        {
-                            'cost_center': 'CC1',
-                            'order_number': 'ORD123',
-                            'order_date': datetime(2026, 4, 10, 9),
-                            'customer_name': 'Alice',
-                            'mobile_number': '999',
-                            'order_amount': Decimal('100'),
-                        }
-                    ]
-                )
-            return _Result()
-
-    @asynccontextmanager
-    async def _fake_session_scope(_database_url: str):
-        yield _Session()
-
-    monkeypatch.setattr(mtd_data, 'session_scope', _fake_session_scope)
-
-    await fetch_missing_payments_mtd(
-        database_url='postgresql+asyncpg://user:pass@localhost/db',
-        report_date=date(2026, 4, 29),
-    )
-
-    compiled_statements = [
-        str(
-            stmt.compile(
-                dialect=postgresql.dialect(),
-                compile_kwargs={'literal_binds': True},
-            )
-        )
-        for stmt in captured['stmts']
-    ]
-    compiled = '\n'.join(compiled_statements)
-    compiled_lower = compiled.lower()
-    assert 'payment_collections' in compiled
-    assert "payment_collections.cost_center IN ('CC1')" in compiled
-    assert 'LIKE' in compiled
-    assert 'ORD123' in compiled
-    assert 'vw_orders.order_amount' in compiled_lower
-    assert 'vw_orders_missing_in_payment_collections' not in compiled
-    assert 'net_amount' not in compiled_lower
-    assert ' from orders ' not in f" {compiled_lower} "
-
-
-def test_render_html_missing_payments_section_empty_state_after_summary() -> None:
+def test_render_html_has_no_apnf_section() -> None:
     html = render_html(
         rows=[],
         report_date_display='29-Apr-2026',
         mtd_start_display='01-Apr-2026',
         mtd_end_display='29-Apr-2026',
-        missing_payment_rows=[],
-    )
-    assert html.index('MTD Same-Day Orders (Delivered within same calendar day)') < html.index('Actual Payments Not Found')
-    assert 'No records found' in html
-
-
-def test_render_html_missing_payments_grouping_columns_and_totals() -> None:
-    missing_rows = [
-        MissingPaymentRow('CC1', 'O-1', datetime(2026, 4, 10, 9), 'Alice', '999', 100),
-        MissingPaymentRow('CC1', 'O-2', datetime(2026, 4, 10, 10), 'Bob', '888', 200),
-        MissingPaymentRow('CC2', 'O-3', datetime(2026, 4, 11, 11), 'Cara', '777', 300),
-    ]
-    html = render_html(
-        rows=[],
-        report_date_display='29-Apr-2026',
-        mtd_start_display='01-Apr-2026',
-        mtd_end_display='29-Apr-2026',
-        missing_payment_rows=missing_rows,
     )
 
-    assert 'Cost Center: CC1' in html
-    assert 'Cost Center: CC2' in html
-    assert 'Order Number' in html and 'Order Date' in html and 'Order Amount' in html
-    assert 'Cost Center: CC1 | Count: 2 | Order Amount: ₹300' in html
-    assert 'Cost Center: CC2 | Count: 1 | Order Amount: ₹300' in html
-    assert 'Grand Total Count: 3 | Grand Total Order Amount: ₹600' in html
+    assert 'Actual Payments Not Found' not in html
 
 
 def test_render_html_does_not_render_short_payments_section() -> None:
@@ -481,7 +279,6 @@ def test_render_html_does_not_render_short_payments_section() -> None:
         report_date_display='29-Apr-2026',
         mtd_start_display='01-Apr-2026',
         mtd_end_display='29-Apr-2026',
-        missing_payment_rows=[],
     )
 
     assert 'Short Payments' not in html
