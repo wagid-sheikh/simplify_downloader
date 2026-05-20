@@ -8,6 +8,20 @@
 
 ---
 
+### DL-020
+- **Date:** 2026-05-20
+- **Status:** Active
+- **Decision:** Freeze all-date current/open payment-recovery operator buckets and the `NONE` recovery-status lifecycle meaning.
+- **Context:** Operators need stable queue semantics that distinguish unreconciled payment/recovery work from terminal recovery outcomes, without reintroducing resolved rows into normal pending queues.
+- **Evidence:** `docs/architecture.md`, `docs/feature-map.md`, and payment/recovery report contract tests around short-payment and pending-delivery eligibility.
+- **Implications:**
+  - Pending Deliveries (normal buckets/details) means `vw_orders.recovery_status = 'NONE'` and no matching `sales` row.
+  - Short Payments is all-date current/open and requires clean reconciliation: sales exists, qualifying payment proof exists, sales/proof match within ₹1, and proof is short vs `vw_orders.order_amount` by more than ₹1.
+  - Actual Payments Not Found is all-date current/open and requires sales exists + no valid qualifying payment proof.
+  - To Be Recovered is all-date current/open for rows currently in recovery workflow statuses (for example `TO_BE_RECOVERED` and `TO_BE_COMPENSATED`).
+  - `NONE` means no active or terminal recovery workflow. Resolved recovery rows must move to terminal statuses such as `RECOVERED` or `COMPENSATED` (or other explicit terminal outcomes), not back to `NONE`.
+- **Follow-up:** Keep canonical docs, SQL views, and report eligibility logic aligned whenever recovery-status enums or operator buckets change.
+
 ### DL-019
 - **Date:** 2026-05-18
 - **Status:** Active
