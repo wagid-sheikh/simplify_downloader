@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from app.config import Config, ConfigError
+from app.config import Config, ConfigError, _build_database_url
 from app.crypto import encrypt_secret
 
 
@@ -293,3 +293,20 @@ def test_os_getenv_usage_restricted():
         if "os.getenv" in text or "os.environ" in text:
             offenders.append(path)
     assert offenders == []
+
+
+def test_build_database_url_encodes_credentials():
+    env_values = {
+        "POSTGRES_HOST": "db.example.com",
+        "POSTGRES_PORT": "5432",
+        "POSTGRES_DB": "orders",
+        "POSTGRES_USER": "user+name@example.com",
+        "POSTGRES_PASSWORD": "p@ss word:/?#[]",
+    }
+
+    database_url = _build_database_url(env_values)
+
+    assert database_url == (
+        "postgresql+asyncpg://user%2Bname%40example.com:p%40ss+word%3A%2F%3F%23%5B%5D"
+        "@db.example.com:5432/orders"
+    )
