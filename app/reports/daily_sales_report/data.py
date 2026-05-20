@@ -6,6 +6,7 @@ from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from typing import Iterable, List, Mapping
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 
 from app.common.date_utils import get_timezone
 from app.common.db import session_scope
@@ -710,6 +711,7 @@ async def fetch_daily_sales_report(
     *, database_url: str, report_date: date
 ) -> DailySalesReportData:
     tz = get_timezone()
+    dialect_name = sa.engine.make_url(database_url).get_backend_name()
     ranges = _date_range(report_date, tz)
     edited_ranges = _date_range(report_date - timedelta(days=1), tz)
     remaining_days = _remaining_days(report_date)
@@ -1004,8 +1006,12 @@ async def fetch_daily_sales_report(
             cost_center.c.cost_center.label("cost_center"),
             sa.func.coalesce(
                 string_list_agg(
-                    dialect_name="sqlite",
-                    value_expr=report_day_orders_base.c.order_number,
+                    dialect_name=dialect_name,
+                    value_expr=(
+                        aggregate_order_by(report_day_orders_base.c.order_number, report_day_orders_base.c.order_number.asc())
+                        if dialect_name == "postgresql"
+                        else report_day_orders_base.c.order_number
+                    ),
                     separator=", ",
                 ),
                 sa.literal("-"),
