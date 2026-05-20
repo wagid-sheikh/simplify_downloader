@@ -62,11 +62,11 @@ async def _run(report_date: date | None, env: str | None) -> None:
     await persist_summary_record(database_url, tracker.build_record(finished_at))
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     parser = ArgumentParser(description="Mark aged pending deliveries to TO_BE_RECOVERED.")
     parser.add_argument("--report-date", type=_parse_date, help="Report date (YYYY-MM-DD).")
     parser.add_argument("--env", type=str, default=None, help="Override run environment.")
-    args = parser.parse_args()
+    args = parser.parse_args(list(argv) if argv is not None else None)
     asyncio.run(_run(report_date=args.report_date, env=args.env))
 
 
