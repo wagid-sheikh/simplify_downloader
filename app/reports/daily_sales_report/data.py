@@ -1277,6 +1277,8 @@ async def fetch_daily_sales_report(
             orders=orders,
             payment_collections=payment_collections,
             sales=sales,
+            # Kept for call compatibility; shared loader keeps this bucket
+            # current/open across all order dates.
             start_datetime=ranges["start_day"],
             end_datetime=ranges["next_day"],
             row_factory=MissingPaymentRow,

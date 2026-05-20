@@ -171,7 +171,7 @@ async def test_fetch_mtd_same_day_fulfillment_date_only_and_mtd_window(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_fetch_missing_payments_mtd_uses_month_window_and_view(tmp_path, monkeypatch) -> None:
+async def test_fetch_missing_payments_mtd_ignores_month_window_for_open_missing_list(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / 'mtd_missing_payments.db'
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
@@ -211,16 +211,16 @@ async def test_fetch_missing_payments_mtd_uses_month_window_and_view(tmp_path, m
 
     async with session_scope(database_url) as session:
         await session.execute(sa.text("""
-            INSERT INTO orders (
-                cost_center, order_number, order_date, customer_name, mobile_number,
-                net_amount, gross_amount, source_system
-            ) VALUES
-                ('CC1', 'IN-START', '2026-04-01T00:00:00+05:30', 'Alice', '999', 100, 130, 'TumbleDry'),
-                ('CC1', 'IN-END', '2026-04-29T23:59:59+05:30', 'Bob', '888', 0, 260, 'UC'),
-                ('CC1', 'MATCHED', '2026-04-15T12:00:00+05:30', 'Mina', '555', 700, 900, 'UC'),
-                ('CC1', 'OUT-BEFORE', '2026-03-31T23:59:59+05:30', 'Cora', '777', 300, 390, 'TumbleDry'),
-                ('CC1', 'OUT-AFTER', '2026-04-30T00:00:00+05:30', 'Dan', '666', 400, 520, 'UC'),
-                ('CC1', 'ZERO-VALUE', '2026-04-10T10:00:00+05:30', 'Zero', '111', 0, 0, 'TumbleDry')
+                INSERT INTO orders (
+                    cost_center, order_number, order_date, customer_name, mobile_number,
+                    net_amount, gross_amount, source_system, recovery_status
+                ) VALUES
+                    ('CC1', 'IN-START', '2026-04-01T00:00:00+05:30', 'Alice', '999', 100, 130, 'TumbleDry', 'NONE'),
+                    ('CC1', 'IN-END', '2026-04-29T23:59:59+05:30', 'Bob', '888', 0, 260, 'UC', 'NONE'),
+                    ('CC1', 'MATCHED', '2026-04-15T12:00:00+05:30', 'Mina', '555', 700, 900, 'UC', 'NONE'),
+                    ('CC1', 'OUT-BEFORE', '2026-03-31T23:59:59+05:30', 'Cora', '777', 300, 390, 'TumbleDry', 'NONE'),
+                    ('CC1', 'OUT-AFTER', '2026-04-30T00:00:00+05:30', 'Dan', '666', 400, 520, 'UC', 'NONE'),
+                    ('CC1', 'ZERO-VALUE', '2026-04-10T10:00:00+05:30', 'Zero', '111', 0, 0, 'TumbleDry', 'NONE')
         """))
         await session.execute(sa.text("""
             INSERT INTO sales (cost_center, order_number, payment_date, payment_mode, payment_received) VALUES
@@ -236,7 +236,12 @@ async def test_fetch_missing_payments_mtd_uses_month_window_and_view(tmp_path, m
 
     rows = await fetch_missing_payments_mtd(database_url=database_url, report_date=date(2026, 4, 29))
 
-    assert [(row.order_number, row.order_amount) for row in rows] == [('IN-START', Decimal('100')), ('IN-END', Decimal('260'))]
+    assert [(row.order_number, row.order_amount) for row in rows] == [
+        ('OUT-BEFORE', Decimal('300')),
+        ('IN-START', Decimal('100')),
+        ('IN-END', Decimal('260')),
+        ('OUT-AFTER', Decimal('520')),
+    ]
 
 
 @pytest.mark.asyncio
@@ -249,10 +254,10 @@ async def test_fetch_missing_payments_mtd_requires_sales_payment_record(tmp_path
     async with session_scope(database_url) as session:
         await session.execute(sa.text("""
             INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, source_system, recovery_status) VALUES
-                ('CC1','SALES-NO-PROOF','2026-04-10T09:00:00+05:30','Alice','999',100,'TumbleDry',NULL),
-                ('CC1','NO-SALES-NO-PROOF','2026-04-10T10:00:00+05:30','Bob','888',200,'TumbleDry',NULL),
-                ('CC1','NO-SALES-WITH-PROOF','2026-04-10T11:00:00+05:30','Cara','777',300,'TumbleDry',NULL),
-                ('CC1','ZERO-VALUE','2026-04-10T12:00:00+05:30','Zed','666',0,'TumbleDry',NULL),
+                ('CC1','SALES-NO-PROOF','2026-04-10T09:00:00+05:30','Alice','999',100,'TumbleDry','NONE'),
+                ('CC1','NO-SALES-NO-PROOF','2026-04-10T10:00:00+05:30','Bob','888',200,'TumbleDry','NONE'),
+                ('CC1','NO-SALES-WITH-PROOF','2026-04-10T11:00:00+05:30','Cara','777',300,'TumbleDry','NONE'),
+                ('CC1','ZERO-VALUE','2026-04-10T12:00:00+05:30','Zed','666',0,'TumbleDry','NONE'),
                 ('CC1','RECOVERY','2026-04-10T13:00:00+05:30','Ron','555',400,'TumbleDry','WRITE_OFF')
         """))
         await session.execute(sa.text("""
@@ -284,14 +289,14 @@ async def test_fetch_short_payments_mtd_uses_global_orders_for_grouped_reconcili
     async with session_scope(database_url) as session:
         await session.execute(sa.text("""
             INSERT INTO orders (cost_center, order_number, order_date, customer_name, mobile_number, net_amount, source_system, recovery_status) VALUES
-                ('CC1','A1','2026-04-10T09:00:00+05:30','Alice','999',200,'TumbleDry',NULL),
-                ('CC1','A2','2026-03-31T10:00:00+05:30','Bob','888',100,'TumbleDry',NULL),
-                ('CC1','B1','2026-04-11T09:00:00+05:30','Cara','777',100,'TumbleDry',NULL),
-                ('CC1','B2','2026-03-31T10:00:00+05:30','Dan','666',200,'TumbleDry',NULL),
-                ('CC1','S1','2026-04-12T09:00:00+05:30','Eve','555',150,'TumbleDry',NULL),
-                ('CC1','PONLY','2026-04-12T09:30:00+05:30','Pam','554',100,'TumbleDry',NULL),
-                ('CC1','MIS','2026-04-12T09:45:00+05:30','Max','553',100,'TumbleDry',NULL),
-                ('CC1','ZERO','2026-04-12T09:50:00+05:30','Zoe','552',0,'TumbleDry',NULL),
+                ('CC1','A1','2026-04-10T09:00:00+05:30','Alice','999',200,'TumbleDry','NONE'),
+                ('CC1','A2','2026-03-31T10:00:00+05:30','Bob','888',100,'TumbleDry','NONE'),
+                ('CC1','B1','2026-04-11T09:00:00+05:30','Cara','777',100,'TumbleDry','NONE'),
+                ('CC1','B2','2026-03-31T10:00:00+05:30','Dan','666',200,'TumbleDry','NONE'),
+                ('CC1','S1','2026-04-12T09:00:00+05:30','Eve','555',150,'TumbleDry','NONE'),
+                ('CC1','PONLY','2026-04-12T09:30:00+05:30','Pam','554',100,'TumbleDry','NONE'),
+                ('CC1','MIS','2026-04-12T09:45:00+05:30','Max','553',100,'TumbleDry','NONE'),
+                ('CC1','ZERO','2026-04-12T09:50:00+05:30','Zoe','552',0,'TumbleDry','NONE'),
                 ('CC1','RECOVERY','2026-04-12T09:55:00+05:30','Ria','551',150,'TumbleDry','TO_BE_RECOVERED'),
                 ('CC1','COMP','2026-04-12T09:57:00+05:30','Cia','550',150,'TumbleDry','TO_BE_COMPENSATED'),
                 ('CC1','REC','2026-04-12T10:00:00+05:30','Ron','444',150,'TumbleDry','WRITE_OFF')

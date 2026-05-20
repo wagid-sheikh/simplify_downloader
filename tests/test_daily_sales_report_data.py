@@ -397,8 +397,9 @@ async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amoun
                 ) VALUES
                     ('CC1', 'TD-MISSING', '2026-04-29T09:00:00+05:30', 'Tara', '9000000001', 500, 650, 'TumbleDry', 'NONE'),
                     ('CC1', 'UC-MISSING', '2026-04-29T10:00:00+05:30', 'Uma', '9000000002', 0, 910, 'UC', 'NONE'),
-                    ('CC1', 'UC-MATCHED', '2026-04-29T11:00:00+05:30', 'Maya', '9000000003', 300, 390, 'UC', 'NONE'),
-                    ('CC1', 'ZERO-VALUE', '2026-04-29T11:30:00+05:30', 'Zed', '9000000004', 0, 0, 'TumbleDry', 'NONE')
+                ('CC1', 'UC-MATCHED', '2026-04-29T11:00:00+05:30', 'Maya', '9000000003', 300, 390, 'UC', 'NONE'),
+                ('CC1', 'OLD-MISSING', '2026-03-20T11:15:00+05:30', 'Omar', '9000000099', 250, 325, 'TumbleDry', 'NONE'),
+                ('CC1', 'ZERO-VALUE', '2026-04-29T11:30:00+05:30', 'Zed', '9000000004', 0, 0, 'TumbleDry', 'NONE')
                 """
             )
         )
@@ -412,6 +413,7 @@ async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amoun
                     ('CC1', 'TD-MISSING', '2026-04-29T12:00:00+05:30', 500, 'UPI', 0, 0),
                     ('CC1', 'UC-MISSING', '2026-04-29T12:30:00+05:30', 910, 'CARD', 0, 0),
                     ('CC1', 'UC-MATCHED', '2026-04-29T13:00:00+05:30', 390, 'CASH', 0, 0),
+                    ('CC1', 'OLD-MISSING', '2026-03-20T12:00:00+05:30', 250, 'UPI', 0, 0),
                     ('CC1', 'ZERO-VALUE', '2026-04-29T13:30:00+05:30', 0, 'CASH', 0, 0)
                 """
             )
@@ -429,6 +431,7 @@ async def test_fetch_daily_sales_report_missing_payments_uses_source_aware_amoun
     report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
 
     assert [(row.order_number, row.order_amount) for row in report.missing_payment_rows] == [
+        ("OLD-MISSING", Decimal("250")),
         ("TD-MISSING", Decimal("500")),
         ("UC-MISSING", Decimal("910")),
     ]

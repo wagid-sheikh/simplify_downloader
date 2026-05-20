@@ -74,6 +74,8 @@ async def fetch_missing_payments_mtd(*, database_url: str, report_date: date) ->
             orders=orders,
             payment_collections=payment_collections,
             sales=sales,
+            # Kept for call compatibility; shared loader keeps this bucket
+            # current/open across all order dates.
             start_datetime=start_month,
             end_datetime=next_day,
             row_factory=MissingPaymentRow,
