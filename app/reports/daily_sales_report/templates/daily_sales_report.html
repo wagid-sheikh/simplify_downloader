@@ -329,6 +329,24 @@
       </tbody>
     </table>
 
+    <div class="section-title">Orders Created on: {{ report_date_display }}</div>
+    <table class="compact-table">
+      <thead>
+        <tr>
+          <th class="label">Cost Center</th>
+          <th class="label">Order Numbers</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in report_day_orders_by_cost_center %}
+        <tr>
+          <td class="label">{{ row.cost_center }}</td>
+          <td class="label">{{ row.order_numbers_text }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
 
     <div class="section-title">Short Payments</div>
     <div class="kpi-note">Short Payments are attached as a separate report</div>

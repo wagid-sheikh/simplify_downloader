@@ -20,6 +20,31 @@ import app.reports.daily_sales_report.pipeline as pipeline
 import app.reports.mtd_same_day_fulfillment.data as mtd_data
 
 
+def test_build_context_includes_report_day_orders_by_cost_center() -> None:
+    payload = SimpleNamespace(
+        report_date=date(2026, 4, 29),
+        rows=[],
+        totals=SimpleNamespace(),
+        edited_orders=[],
+        edited_orders_summary=None,
+        edited_orders_totals=None,
+        missed_leads=[],
+        cancelled_leads=[],
+        lead_performance_summary=[],
+        to_be_recovered=[],
+        to_be_compensated=[],
+        to_be_recovered_total_order_value=Decimal("0"),
+        to_be_compensated_total_order_value=Decimal("0"),
+        auto_cleared_order_numbers_text="",
+        same_day_fulfillment_rows=[],
+        missing_payment_rows=[],
+        short_payment_rows=[],
+        report_day_orders_by_cost_center=[SimpleNamespace(cost_center="CC1", order_numbers_text="ORD-1")],
+    )
+    context = pipeline._build_context(payload, "test")
+    assert context["report_day_orders_by_cost_center"][0].order_numbers_text == "ORD-1"
+
+
 def _create_tables(database_url: str) -> None:
     engine = sa.create_engine(database_url.replace("+aiosqlite", ""))
     with engine.begin() as conn:

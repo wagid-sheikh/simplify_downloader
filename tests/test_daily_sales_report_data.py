@@ -1425,6 +1425,50 @@ async def test_fetch_daily_sales_report_same_day_fulfillment_payment_proof_filte
 
 
 @pytest.mark.asyncio
+async def test_fetch_daily_sales_report_report_day_orders_by_cost_center(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_day_orders.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: ZoneInfo("Asia/Kolkata"))
+
+    report_date = date(2026, 4, 29)
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO cost_center(cost_center, description, target_type, is_active)
+                VALUES
+                    ('AA', 'Alpha', 'value', 1),
+                    ('BB', 'Bravo', 'value', 1),
+                    ('CC', 'Charlie', 'value', 1),
+                    ('ZZ', 'Zulu', 'value', 0)
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders(cost_center, order_number, order_date, source_system, gross_amount)
+                VALUES
+                    ('AA', 'A-002', '2026-04-29T10:00:00+05:30', 'TumbleDry', 100),
+                    ('AA', 'A-001', '2026-04-29T09:00:00+05:30', 'TumbleDry', 100),
+                    ('AA', 'A-003', '2026-04-30T09:00:00+05:30', 'TumbleDry', 100),
+                    ('BB', 'B-001', '2026-04-29T11:00:00+05:30', 'TumbleDry', 100),
+                    ('ZZ', 'Z-001', '2026-04-29T08:00:00+05:30', 'TumbleDry', 100)
+                """
+            )
+        )
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    assert [(row.cost_center, row.order_numbers_text) for row in report.report_day_orders_by_cost_center] == [
+        ("AA", "A-001, A-002"),
+        ("BB", "B-001"),
+        ("CC", "-"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_to_be_recovered_orders_with_sales_and_payment_evidence_are_cleared(
     tmp_path, monkeypatch
 ) -> None:

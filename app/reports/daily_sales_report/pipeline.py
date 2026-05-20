@@ -144,6 +144,7 @@ def _build_context(
         "same_day_fulfillment_rows": data.same_day_fulfillment_rows,
         "missing_payment_rows": data.missing_payment_rows,
         "short_payment_rows": getattr(data, "short_payment_rows", []),
+        "report_day_orders_by_cost_center": data.report_day_orders_by_cost_center,
         "same_day_grouped_rows_by_store": group_rows_by_store(
             data.same_day_fulfillment_rows
         ),
