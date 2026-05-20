@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Iterable, List
@@ -10,7 +10,6 @@ import sqlalchemy as sa
 from app.common.date_utils import get_timezone
 from app.common.db import session_scope
 from app.common.order_recovery import (
-    format_timestamped_recovery_note,
     transition_order_recovery_status,
 )
 from app.crm_downloader.td_orders_sync.sales_ingest import _sales_table
@@ -32,9 +31,11 @@ AGED_PENDING_DELIVERY_THRESHOLD_DAYS = 30
 
 
 def _system_recovery_note(marked_at: datetime) -> str:
-    return format_timestamped_recovery_note(
-        occurred_at=marked_at,
-        message="Auto marked as TO_BE_RECOVERED from aged Pending Deliveries",
+    readable_date = marked_at.strftime("%d-%b-%Y")
+    technical_timestamp = marked_at.isoformat()
+    return (
+        "Auto marked as TO_BE_RECOVERED by system "
+        f"on {readable_date} [{technical_timestamp}]"
     )
 
 
@@ -94,6 +95,7 @@ class PendingDeliveriesReportData:
     cost_center_sections: List[PendingDeliveriesCostCenterSection]
     total_pending_amount: Decimal
     total_count: int
+    missing_default_due_date_count: int = 0
 
 
 def _decimal(value: object | None) -> Decimal:
@@ -129,12 +131,14 @@ def _resolve_business_date(value: datetime, tz) -> date:
     return value.astimezone(tz).date()
 
 
-def _bucket_age(age_days: int) -> str:
+def _bucket_age(age_days: int) -> str | None:
     if age_days <= 5:
         return "0-5"
     if age_days <= 15:
         return "6-15"
-    return ">15"
+    if age_days <= AGED_PENDING_DELIVERY_THRESHOLD_DAYS:
+        return "16-30"
+    return None
 
 
 def _build_buckets(rows: Iterable[PendingDeliveryRow]) -> List[PendingDeliveriesBucket]:
@@ -155,10 +159,10 @@ def _build_buckets(rows: Iterable[PendingDeliveryRow]) -> List[PendingDeliveries
             total_count=0,
             total_pending_amount=Decimal("0"),
         ),
-        ">15": PendingDeliveriesBucket(
-            label=">15 days",
+        "16-30": PendingDeliveriesBucket(
+            label="16-30 days",
             min_days=16,
-            max_days=None,
+            max_days=AGED_PENDING_DELIVERY_THRESHOLD_DAYS,
             rows=[],
             total_count=0,
             total_pending_amount=Decimal("0"),
@@ -167,6 +171,8 @@ def _build_buckets(rows: Iterable[PendingDeliveryRow]) -> List[PendingDeliveries
 
     for row in rows:
         bucket_key = _bucket_age(row.age_days)
+        if bucket_key is None:
+            continue
         buckets_map[bucket_key].rows.append(row)
 
     for bucket in buckets_map.values():
@@ -178,7 +184,7 @@ def _build_buckets(rows: Iterable[PendingDeliveryRow]) -> List[PendingDeliveries
             (row.pending_amount for row in bucket.rows), Decimal("0")
         )
 
-    return [buckets_map["0-5"], buckets_map["6-15"], buckets_map[">15"]]
+    return [buckets_map["0-5"], buckets_map["6-15"], buckets_map["16-30"]]
 
 
 def _build_summary_sections(
@@ -231,18 +237,33 @@ def _build_cost_center_sections(
     return cost_center_sections
 
 
-async def transition_aged_pending_deliveries_to_recovery(
+@dataclass
+class PendingDeliveryTransitionMetrics:
+    scanned_count: int = 0
+    eligible_count: int = 0
+    transitioned_count: int = 0
+    skipped_due_to_sales_row: int = 0
+    skipped_due_to_non_none_status: int = 0
+    skipped_due_to_missing_due_date: int = 0
+    skipped_due_to_age: int = 0
+
+    def to_dict(self) -> dict[str, int]:
+        return {k: int(v) for k, v in asdict(self).items()}
+
+
+async def transition_aged_pending_deliveries_to_recovery_metrics(
     *,
     database_url: str,
     report_date: date,
-) -> int:
-    """Mark aged pending-delivery orders for recovery on the base orders table."""
+) -> PendingDeliveryTransitionMetrics:
+    """Mark aged pending-delivery orders for recovery on the base orders table and return metrics."""
 
     metadata = sa.MetaData()
     orders = sa.table(
         "vw_orders",
         sa.column("cost_center"),
         sa.column("order_number"),
+        sa.column("order_date"),
         sa.column("default_due_date"),
         sa.column("order_status"),
         sa.column("order_amount"),
@@ -262,16 +283,17 @@ async def transition_aged_pending_deliveries_to_recovery(
         )
     )
     amount_expr = sa.func.coalesce(orders.c.order_amount, 0)
-    candidate_stmt = (
+    base_stmt = (
         sa.select(
             orders.c.cost_center,
             orders.c.order_number,
+            orders.c.order_date,
             orders.c.default_due_date,
+            orders.c.recovery_status,
+            matching_sale_exists.label("has_sale"),
         )
         .select_from(orders)
         .where(orders.c.order_status == "Pending")
-        .where(orders.c.recovery_status == PENDING_DELIVERY_MAIN_RECOVERY_STATUS)
-        .where(sa.not_(matching_sale_exists))
         .where(amount_expr > 0)
         .order_by(orders.c.cost_center, orders.c.order_number)
     )
@@ -280,27 +302,42 @@ async def transition_aged_pending_deliveries_to_recovery(
     note = _system_recovery_note(
         datetime.combine(report_date, datetime.min.time(), tzinfo=tz)
     )
-    transitioned_count = 0
+    metrics = PendingDeliveryTransitionMetrics()
 
     async with session_scope(database_url) as session:
-        results = await session.execute(candidate_stmt)
+        results = await session.execute(base_stmt)
         candidate_keys: list[tuple[str, str]] = []
         for record in results.mappings():
+            metrics.scanned_count += 1
+            has_sale = bool(record.get("has_sale"))
+            if has_sale:
+                metrics.skipped_due_to_sales_row += 1
+                continue
+            if str(record.get("recovery_status") or "") != PENDING_DELIVERY_MAIN_RECOVERY_STATUS:
+                metrics.skipped_due_to_non_none_status += 1
+                continue
             default_due_date = _coerce_datetime(record.get("default_due_date"))
             if default_due_date is None:
+                metrics.skipped_due_to_missing_due_date += 1
+                order_date = _coerce_datetime(record.get("order_date"))
+                default_due_date = order_date + timedelta(days=2) if order_date is not None else None
+            if default_due_date is None:
+                metrics.skipped_due_to_age += 1
                 continue
             default_due_date_local = _resolve_business_date(default_due_date, tz)
             age_days = max(0, (report_date - default_due_date_local).days)
             if age_days <= AGED_PENDING_DELIVERY_THRESHOLD_DAYS:
+                metrics.skipped_due_to_age += 1
                 continue
             cost_center = str(record.get("cost_center") or "")
             order_number = str(record.get("order_number") or "")
             if not cost_center or not order_number:
                 continue
+            metrics.eligible_count += 1
             candidate_keys.append((cost_center, order_number))
 
         for cost_center, order_number in candidate_keys:
-            transitioned_count += await transition_order_recovery_status(
+            metrics.transitioned_count += await transition_order_recovery_status(
                 session=session,
                 cost_center=cost_center,
                 order_number=order_number,
@@ -312,7 +349,19 @@ async def transition_aged_pending_deliveries_to_recovery(
 
         await session.commit()
 
-    return transitioned_count
+    return metrics
+
+
+async def transition_aged_pending_deliveries_to_recovery(
+    *,
+    database_url: str,
+    report_date: date,
+) -> int:
+    metrics = await transition_aged_pending_deliveries_to_recovery_metrics(
+        database_url=database_url,
+        report_date=report_date,
+    )
+    return metrics.transitioned_count
 
 
 async def fetch_pending_deliveries_report(
@@ -375,6 +424,7 @@ async def fetch_pending_deliveries_report(
 
     tz = get_timezone()
     rows: list[PendingDeliveryRow] = []
+    missing_default_due_date_count = 0
 
     async with session_scope(database_url) as session:
         results = await session.execute(stmt)
@@ -384,7 +434,8 @@ async def fetch_pending_deliveries_report(
                 continue
             default_due_date = _coerce_datetime(record.get("default_due_date"))
             if default_due_date is None:
-                continue
+                missing_default_due_date_count += 1
+                default_due_date = order_date + timedelta(days=2)
             order_date_local = _resolve_order_date(order_date, tz)
             default_due_date_local = _resolve_business_date(default_due_date, tz)
             age_days = max(0, (report_date - default_due_date_local).days)
@@ -425,4 +476,5 @@ async def fetch_pending_deliveries_report(
         cost_center_sections=cost_center_sections,
         total_pending_amount=total_pending_amount,
         total_count=total_count,
+        missing_default_due_date_count=missing_default_due_date_count,
     )

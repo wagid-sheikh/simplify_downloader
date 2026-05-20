@@ -12,7 +12,7 @@ from sqlalchemy.dialects.postgresql import aggregate_order_by
 from app.common.date_utils import get_timezone
 from app.common.db import session_scope
 from app.common.lead_rules import resolve_cancelled_flag
-from app.common.order_recovery import clear_to_be_recovered_order
+from app.common.order_recovery import transition_order_recovery_status
 from app.reports.shared.line_items_summary import summarize_line_items
 from app.reports.shared.payment_reconciliation import reconcile_payments
 from app.reports.shared.same_day_fulfillment import fetch_same_day_fulfillment_rows, same_day_date_expr, string_list_agg
@@ -295,11 +295,14 @@ async def _clear_resolved_to_be_recovered_orders(
     for order in sorted_auto_clear_candidates:
         group = groups_by_order_key[(order.cost_center, order.order_number)]
         recovery_notes = _format_auto_clear_recovery_notes(order=order, group=group)
-        await clear_to_be_recovered_order(
+        await transition_order_recovery_status(
             session=session,
             cost_center=order.cost_center,
             order_number=order.order_number,
-            recovery_notes=recovery_notes,
+            from_status="TO_BE_RECOVERED",
+            to_status="RECOVERED",
+            recovery_category="PAYMENT_PROOF_AUTO_RECOVERED",
+            recovery_note=recovery_notes,
         )
     await session.commit()
     return auto_cleared_order_numbers
@@ -1277,6 +1280,8 @@ async def fetch_daily_sales_report(
             orders=orders,
             payment_collections=payment_collections,
             sales=sales,
+            # Kept for call compatibility; shared loader keeps this bucket
+            # current/open across all order dates.
             start_datetime=ranges["start_day"],
             end_datetime=ranges["next_day"],
             row_factory=MissingPaymentRow,

@@ -107,16 +107,23 @@ async def clear_to_be_recovered_order(
     order_number: str,
     recovery_notes: str,
 ) -> None:
-    """Clear a TO_BE_RECOVERED order after payment evidence is found."""
+    """Resolve active recovery statuses into terminal business statuses."""
 
-    await session.execute(
-        sa.update(_ORDERS_RECOVERY_TABLE)
-        .where(_ORDERS_RECOVERY_TABLE.c.cost_center == cost_center)
-        .where(_ORDERS_RECOVERY_TABLE.c.order_number == order_number)
-        .where(_ORDERS_RECOVERY_TABLE.c.recovery_status == "TO_BE_RECOVERED")
-        .values(
-            recovery_status="NONE",
-            recovery_category=None,
-            recovery_notes=recovery_notes,
-        )
+    await transition_order_recovery_status(
+        session=session,
+        cost_center=cost_center,
+        order_number=order_number,
+        from_status="TO_BE_RECOVERED",
+        to_status="RECOVERED",
+        recovery_category="PAYMENT_PROOF_AUTO_RECOVERED",
+        recovery_note=recovery_notes,
+    )
+    await transition_order_recovery_status(
+        session=session,
+        cost_center=cost_center,
+        order_number=order_number,
+        from_status="TO_BE_COMPENSATED",
+        to_status="COMPENSATED",
+        recovery_category="PAYMENT_PROOF_AUTO_RECOVERED",
+        recovery_note=recovery_notes,
     )

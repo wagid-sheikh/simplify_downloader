@@ -29,9 +29,9 @@ Use this before requesting review.
 - [ ] I reviewed impacts to pipeline codes, notification profiles, and template expectations.
 - [ ] I reviewed impacts to `pipeline_run_summaries`, `orders_sync_log`, or `documents` payload structure if touched.
 - [ ] If extraction/ingest semantics changed, I reviewed dedupe/row-count/audit implications.
-- [ ] For pending deliveries changes, I validated recovery-status exclusions (`TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`) in both summary buckets and detailed rows.
+- [ ] For pending deliveries changes, I validated canonical eligibility: `vw_orders.recovery_status = 'NONE'` and no matching `sales` row for normal summary/detail buckets.
 - [ ] For reports or payment/recovery decision logic, I used `vw_orders.order_amount` and did not read raw `orders.net_amount`, `orders.gross_amount`, or `orders.adjustment` directly unless the exception was explicitly approved and documented.
-- [ ] For Daily/MTD payment/recovery report changes, I preserved or explicitly changed the window contract: `Actual Payments Not Found` is date-window based by `vw_orders.order_date`, `Short Payments` is current/open across all order dates, and `To Be Recovered` is current/open by `TO_BE_RECOVERED` recovery status.
+- [ ] For payment/recovery report changes, I preserved or explicitly changed the current/open contract: `Actual Payments Not Found` and `Short Payments` are all-date current/open; `To Be Recovered` is all-date current/open by recovery-workflow status; none of these are constrained by Daily/MTD report date windows.
 - [ ] For payment comparisons, I applied tolerance `1`, treated overpayments as paid in full, excluded zero-value orders from missing-payment/pending-payment/recovery action checks, and used `Order Amount` as the user-facing label.
 - [ ] For ingest/sync changes, any use of raw order amount columns is limited to source synchronization, reconciliation, or raw-payload audit purposes—not business reporting or payment decisions.
 

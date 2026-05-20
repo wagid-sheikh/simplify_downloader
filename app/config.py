@@ -31,6 +31,7 @@ import logging
 import os
 import threading
 import sys
+from urllib.parse import quote_plus
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Mapping, TypeVar
@@ -154,8 +155,10 @@ def _build_database_url(env_values: Mapping[str, str]) -> str:
     port = _parse_int(env_values["POSTGRES_PORT"], key="POSTGRES_PORT")
     user = _clean_text(env_values["POSTGRES_USER"], key="POSTGRES_USER")
     password = _clean_text(env_values["POSTGRES_PASSWORD"], key="POSTGRES_PASSWORD")
+    user_encoded = quote_plus(user)
+    password_encoded = quote_plus(password)
 
-    return f"postgresql+asyncpg://{user}:{password}@{host}:{port}/{database}"
+    return f"postgresql+asyncpg://{user_encoded}:{password_encoded}@{host}:{port}/{database}"
 
 
 def _parse_bool(value: str, *, key: str) -> bool:

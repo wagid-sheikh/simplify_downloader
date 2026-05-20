@@ -8,6 +8,20 @@
 
 ---
 
+### DL-020
+- **Date:** 2026-05-20
+- **Status:** Active
+- **Decision:** Freeze all-date current/open payment-recovery operator buckets and the `NONE` recovery-status lifecycle meaning.
+- **Context:** Operators need stable queue semantics that distinguish unreconciled payment/recovery work from terminal recovery outcomes, without reintroducing resolved rows into normal pending queues.
+- **Evidence:** `docs/architecture.md`, `docs/feature-map.md`, and payment/recovery report contract tests around short-payment and pending-delivery eligibility.
+- **Implications:**
+  - Pending Deliveries (normal buckets/details) means `vw_orders.recovery_status = 'NONE'` and no matching `sales` row.
+  - Short Payments is all-date current/open and requires clean reconciliation: sales exists, qualifying payment proof exists, sales/proof match within ₹1, and proof is short vs `vw_orders.order_amount` by more than ₹1.
+  - Actual Payments Not Found is all-date current/open and requires sales exists + no valid qualifying payment proof.
+  - To Be Recovered is all-date current/open for rows currently in recovery workflow statuses (for example `TO_BE_RECOVERED` and `TO_BE_COMPENSATED`).
+  - `NONE` means no active or terminal recovery workflow. Resolved recovery rows must move to terminal statuses such as `RECOVERED` or `COMPENSATED` (or other explicit terminal outcomes), not back to `NONE`.
+- **Follow-up:** Keep canonical docs, SQL views, and report eligibility logic aligned whenever recovery-status enums or operator buckets change.
+
 ### DL-019
 - **Date:** 2026-05-18
 - **Status:** Active
@@ -40,7 +54,7 @@
   - Payment comparisons use ₹1 tolerance, and overpayment is paid in full.
   - Multi-order `payment_collections.order_number` values are group-reconciled first; group-paid rows stay out of main missing/short outputs, and group-short rows are allocated by `order_date ASC, order_number ASC`.
   - `TO_BE_RECOVERED` and `TO_BE_COMPENSATED` are excluded from normal missing-payment rows; normal pending-delivery aging/detail/action buckets exclude `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, and `WRITE_OFF`. Active manual-action rows (`TO_BE_RECOVERED`, `TO_BE_COMPENSATED`) may be surfaced only in separate configured recovery/compensation visibility sections; closed `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` rows stay out of normal action buckets.
-  - `Actual Payments Not Found` remains date-window based by `vw_orders.order_date` for Daily/MTD reports unless separately changed.
+  - `Actual Payments Not Found` is current/open across all order dates and is not restricted by Daily/MTD report windows.
   - A dedicated Daily Sales `Short Payment` PDF is required and separate from `Actual Payments Not Found`; it is intentionally current/open across all order dates and is not restricted by Daily/MTD report windows.
   - `To Be Recovered` is current/open by `TO_BE_RECOVERED` recovery status across all order dates rather than constrained by Daily/MTD report windows.
   - Daily Sales `Short Payment` is a current/open action list across all order dates, behaving like `TO_BE_RECOVERED` visibility by showing current unresolved action rows; Daily/MTD report date windows do not restrict Short Payment eligibility.

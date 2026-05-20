@@ -192,8 +192,8 @@ async def test_sql_missing_payment_view_matches_python_report_helper(
             orders=orders,
             payment_collections=payment_collections,
             sales=sales,
-            start_datetime=datetime(2026, 5, 1),
-            end_datetime=datetime(2026, 5, 2),
+            start_datetime=datetime(2026, 5, 2),
+            end_datetime=datetime(2026, 5, 3),
             row_factory=MissingPaymentReportRow,
         )
         short_rows = await fetch_short_payment_rows(

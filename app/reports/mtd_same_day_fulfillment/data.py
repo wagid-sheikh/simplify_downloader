@@ -10,7 +10,7 @@ from app.common.date_utils import get_timezone
 from app.common.db import session_scope
 from app.reports.shared.line_items_summary import summarize_line_items
 from app.reports.shared.same_day_fulfillment import fetch_same_day_fulfillment_rows
-from app.reports.shared.short_payments import ShortPaymentRow, fetch_missing_payment_rows_without_proof, fetch_short_payment_rows
+from app.reports.shared.short_payments import ShortPaymentRow, fetch_short_payment_rows
 
 
 @dataclass
@@ -27,58 +27,6 @@ class MTDSameDayFulfillmentRow:
     order_amount: Decimal | None
     payment_received: Decimal | None
 
-
-@dataclass
-class MissingPaymentRow:
-    cost_center: str
-    order_number: str
-    order_date: datetime | None
-    customer_name: str | None
-    mobile_number: str | None
-    order_amount: Decimal
-
-
-async def fetch_missing_payments_mtd(*, database_url: str, report_date: date) -> list[MissingPaymentRow]:
-    orders = sa.table(
-        "vw_orders",
-        sa.column("cost_center"),
-        sa.column("order_number"),
-        sa.column("order_date"),
-        sa.column("customer_name"),
-        sa.column("mobile_number"),
-        sa.column("order_amount"),
-        sa.column("recovery_status"),
-    )
-    payment_collections = sa.table(
-        "payment_collections",
-        sa.column("cost_center"),
-        sa.column("order_number"),
-        sa.column("amount"),
-        sa.column("source_type"),
-    )
-    sales = sa.table(
-        "sales",
-        sa.column("cost_center"),
-        sa.column("order_number"),
-        sa.column("payment_received"),
-    )
-    tz = get_timezone()
-    start_month = datetime.combine(report_date.replace(day=1), time.min, tzinfo=tz)
-    next_day = datetime.combine(report_date, time.min, tzinfo=tz) + timedelta(days=1)
-
-    rows: list[MissingPaymentRow] = []
-
-    async with session_scope(database_url) as session:
-        rows = await fetch_missing_payment_rows_without_proof(
-            session=session,
-            orders=orders,
-            payment_collections=payment_collections,
-            sales=sales,
-            start_datetime=start_month,
-            end_datetime=next_day,
-            row_factory=MissingPaymentRow,
-        )
-    return rows
 
 
 async def fetch_short_payments_mtd(*, database_url: str, report_date: date) -> list[ShortPaymentRow]:
