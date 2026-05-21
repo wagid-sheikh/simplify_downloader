@@ -5,6 +5,12 @@
 This is the canonical operating guide for contributors (human + Codex) working in `simplify_downloader`.
 Use this file plus `/docs/architecture.md` as the starting point. Many legacy markdown files exist and are not always current.
 
+## Agent working style (mandatory)
+
+- **Make no assumptions. Ask for clarification before you begin** when requirements, data contracts, or operator expectations are ambiguous.
+- **Act like a brutally honest mentor**: be direct about risks, anti-patterns, hidden complexity, and trade-offs; avoid vague reassurance.
+- **Write code using standard industry best practices** and include concise comments/notes where non-obvious logic, business rules, or edge-case handling needs explanation.
+
 ## Project overview
 
 This repository is a Python 3.12 production pipeline service that:
@@ -53,6 +59,8 @@ Container paths:
    - `tests/test_config.py` enforces no ad-hoc `os.getenv` usage outside allowed files.
 2. **Async DB access pattern**
    - Use `session_scope(database_url)` from `app/common/db.py`.
+   - Reuse existing SQLAlchemy patterns already used in the repo (query construction, transaction handling, and session lifecycle) instead of introducing one-off DB styles.
+   - Prefer PostgreSQL-compatible SQL/SQLAlchemy behavior for application code and migrations; do not use SQLite-only syntax or assumptions in production paths even if tests use SQLite.
 3. **Pipeline observability is first-class**
    - Use `JsonLogger` + `log_event`; include `run_id`, phase, status, store/window context.
 4. **Store scope is DB-driven**
