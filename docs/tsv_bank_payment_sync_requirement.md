@@ -74,12 +74,12 @@ For each tab (`IDFC-Bank`, `SBI-Bank`, `Payments`, `Packages`), provide:
 | Bank             | text     | Yes       | Always "IDFC"                 |
 | ROWID            | text     | Yes       | Unique transaction identifier |
 | Transaction Date | date     | Yes       | Format: DD-MMM-YYYY           |
-| Value Date       | date     | Optional  |                               |
+| Value Date       | date     | Optional  | Format: DD-MMM-YYYY           |
 | Particulars      | text     | Yes       | Bank narration                |
 | Cheque No.       | text     | Optional  |                               |
 | Debit            | decimal  | Optional  |                               |
 | Credit           | decimal  | Optional  |                               |
-| Balance          | decimal  | Optional  | Running balance               |
+| Balance          | decimal  | Yes       | Running balance               |
 | Remarks          | text     | Optional  |                               |
 | Cost Center      | text     | Optional  | Cost Center                   |
 | Order Number     | text     | Optional  |                               |
@@ -99,23 +99,23 @@ For each tab (`IDFC-Bank`, `SBI-Bank`, `Payments`, `Packages`), provide:
 
 **Header row:** 1
 
-| Column Name      | Datatype | Mandatory | Notes                             |
-| ---------------- | -------- | --------- | --------------------------------- |
-| Bank             | text     | Yes       | Always "SBI"                      |
-| ROWID            | text     | Yes       | Unique transaction identifier     |
-| Transaction Date | date     | Yes       | Format: DD-MMM-YY                 |
-| Value Date       | date     | Optional  |                                   |
-| Particulars      | text     | Yes       | Bank narration                    |
-| Cheque No.       | text     | Optional  | Often contains transfer reference |
-| Branch Code      | text     | Optional  |                                   |
-| Debit            | decimal  | Optional  |                                   |
-| Credit           | decimal  | Optional  |                                   |
-| Balance          | decimal  | Optional  | Often blank                       |
-| Remarks          | text     | Optional  |                                   |
-| Cost Center      | text     | Optional  |                                   |
-| Order Number     | text     | Optional  |                                   |
-| Category         | text     | Optional  |                                   |
-| Sub Category     | text     | Optional  |                                   |
+| Column Name      | Datatype | Mandatory | Notes                         |
+| ---------------- | -------- | --------- | ----------------------------- |
+| Bank             | text     | Yes       | Always "SBI"                  |
+| ROWID            | text     | Yes       | Unique transaction identifier |
+| Transaction Date | date     | Yes       | Format: DD-MMM-YY             |
+| Value Date       | date     | Optional  | Format: DD-MMM-YY             |
+| Particulars      | text     | Yes       | Bank narration                |
+| Cheque No.       | text     | Optional  |                               |
+| Branch Code      | text     | Optional  |                               |
+| Debit            | decimal  | Optional  |                               |
+| Credit           | decimal  | Optional  |                               |
+| Balance          | decimal  | Yes       | Running balance               |
+| Remarks          | text     | Optional  |                               |
+| Cost Center      | text     | Optional  |                               |
+| Order Number     | text     | Optional  |                               |
+| Category         | text     | Optional  |                               |
+| Sub Category     | text     | Optional  |                               |
 
 **Validation Rules:**
 
@@ -133,8 +133,8 @@ For each tab (`IDFC-Bank`, `SBI-Bank`, `Payments`, `Packages`), provide:
 | Timestamp                   | timestamp | Yes       | Form submission timestamp                                                                                              |
 | Email address               | text      | Yes       |                                                                                                                        |
 | Mode                        | text      | Yes       | Cash / UPI / FranchiseUPI                                                                                              |
-| Store                       | text      | Yes       | Actual stored in this column is Cost Center                                                                            |
-| Date                        | date      | Yes       | Payment date                                                                                                           |
+| Store                       | text      | Yes       | Actual value stored in this column is Cost Center                                                                     |
+| Date                        | date      | Yes       | Payment date. Format dd/mm/yyyy                                                                                        |
 | Order Number                | text      | Yes       |                                                                                                                        |
 | Amount                      | decimal   | Yes       |                                                                                                                        |
 | Remarks                     | text      | Optional  |                                                                                                                        |
@@ -143,11 +143,11 @@ For each tab (`IDFC-Bank`, `SBI-Bank`, `Payments`, `Packages`), provide:
 | Date Handed                 | date      | Optional  |                                                                                                                        |
 | date_modified               | date      | Optional  | Last update date                                                                                                       |
 | updated_flag                | boolean   | Optional  | TRUE / FALSE                                                                                                           |
-| source_rowid                | text      | mandatory | Value in this column can be treated as primary key/unique identifier                                                   |
+| ROW_ID                      | text      | mandatory | Value in this column can be treated as primary key/unique identifier                                                   |
 | **Validation Rules:** |           |           |                                                                                                                        |
 
 - `Amount >= 0`
-- `ROWID` may be "Cash" for cash entries
+- `BANK_ROWID` may be "Cash" for cash entries
 - Partial payments allowed (same Order Number multiple rows)
 
 ---
@@ -156,20 +156,20 @@ For each tab (`IDFC-Bank`, `SBI-Bank`, `Payments`, `Packages`), provide:
 
 **Header row:** 1
 
-| Column Name   | Datatype | Mandatory | Notes                             |
-| ------------- | -------- | --------- | --------------------------------- |
-| Seq           | integer  | Yes       | Serial number                     |
-| Cost Center   | text     | Yes       | Cost Center                       |
-| Date          | date     | Yes       |                                   |
-| Customer Name | text     | Yes       |                                   |
-| Mobile Number | text     | Yes       | Keep as text (no numeric casting) |
-| Address       | text     | Optional  | May be blank                      |
-| Package Value | decimal  | Yes       |                                   |
-| Payment Mode  | text     | Yes       | Cash / UPI / FranchiseUPI         |
+| Column Name   | Datatype | Mandatory | Notes                                                       |
+| ------------- | -------- | --------- | ----------------------------------------------------------- |
+| Seq           | integer  | Yes       | Serial number                                               |
+| Cost Center   | text     | Yes       | Cost Center                                                 |
+| Date          | date     | Yes       | Format DD-Mon-YYYY                                          |
+| Customer Name | text     | Yes       |                                                             |
+| Mobile Number | text     | Yes       | Keep as text (no numeric casting), 10 digit validation must |
+| Address       | text     | Optional  | May be blank                                                |
+| Package Value | decimal  | Yes       |                                                             |
+| Payment Mode  | text     | Yes       | Cash / UPI / FranchiseUPI                                   |
 
 **Validation Rules:**
 
-- `Mobile Number` must remain text (no trimming leading zeros)
+- `Mobile Number` must remain text (no trimming leading zeros) and must be 10 characters long
 - `Package Value > 0`
 - `Seq` should be unique within sheet
 
@@ -185,7 +185,7 @@ For each tab (`IDFC-Bank`, `SBI-Bank`, `Payments`, `Packages`), provide:
 6. No strict foreign key enforcement at ingestion stage
 7. Deduplication key:
    - Bank tabs → `(Bank + ROWID)`
-   - Payments → `(Mode+Store+Order Number+Amount)` (best effort)
+   - Payments → `(ROW_ID)` (best effort)
    - Packages → `(Seq)`
 
 ---
@@ -211,9 +211,25 @@ IDFC	TSV-06-0002	27-Jun-2025	27-Jun-2025	UPI/MOB/517878209356/Test UPI			100	2,0
 
 ##### 3. Payments
 
-Timestamp	Email address	Mode	Store	Date	Order Number	Amount	Remarks	ROWID	Handed OVer	Date Handed	date_modified	updated_flag
-08/12/2025 12:39:41	wagid.sheikh@gmail.com	UPI	KN3817	08/12/2025	T1096	240	Delivery by Rider Ankit	TSV-11-0526			30/04/2026	TRUE
-08/12/2025 14:27:34	wagid.sheikh@gmail.com	UPI	SC3567	08/12/2025	UC567-1080	190	Delivery by Rider Shanne	TSV-11-0528			30/04/2026	TRUE
+Timestamp	Email address	Mode	Store	Date	Order Number	Amount	Remarks	BANK_ROWID	Handed OVer	Date Handed	date_modified	updated_flag	ROW_ID
+08/12/2025 12:39:41	wagid.sheikh@gmail.com	UPI	KN3817	08/12/2025	T1096	240	Delivery by Rider Ankit	TSV-11-0526			03/05/2026	TRUE	20251208123941000002
+08/12/2025 14:27:34	wagid.sheikh@gmail.com	UPI	SC3567	08/12/2025	UC567-1080	190	Delivery by Rider Shanne	TSV-11-0528			30/04/2026	TRUE	20251208142734000003
+08/12/2025 15:57:37	wagid.sheikh@gmail.com	Cash	SC3567	08/12/2025	UC567-1027	1036	Dropped by Rider Shanee	Cash	Yes	12/12/2026	30/04/2026	TRUE	20251208155737000004
+10/05/2026 19:11:31	wagid.sheikh@gmail.com	UPI	SL1610	10/05/2026	UC610-1321	411	Received at Cx by Rider				10/05/2026	TRUE
+08/12/2025 15:58:36	wagid.sheikh@gmail.com	UPI	UN3668	08/12/2025	T1444	1250	Delivery by Rider Deepak	TSV-11-0531			19/05/2026	TRUE	20251208155836000005
+08/12/2025 16:09:18	wagid.sheikh@gmail.com	UPI	UN3668	08/12/2025	T1708	825	Partial payment. In store	TSV-11-0527			30/04/2026	TRUE	20251208160918000006
+08/12/2025 17:24:32	wagid.sheikh@gmail.com	UPI	UN3668	08/12/2025	T1708	600	Partial payment. Now makes T1708 full payment	TSV-11-0532			30/04/2026	TRUE	20251208172432000007
+08/12/2025 18:34:46	wagid.sheikh@gmail.com	UPI	UN3668	08/12/2025	T1677	400	Received at store by SM	TSV-11-0533			30/04/2026	TRUE	20251208183446000008
+08/12/2025 19:34:01	wagid.sheikh@gmail.com	Cash	SC3567	08/12/2025	UC567-1044	700	Received by SM in Store	Cash	Yes	12/12/2025	30/04/2026	TRUE	20251208193401000009
+08/12/2025 21:24:15	wagid.sheikh@gmail.com	UPI	SC3567	08/12/2025	UC567-1008	1261	Delivery by rider Shanee	TSV-11-0536			30/04/2026	TRUE	20251208212415000010
+08/12/2025 21:25:18	wagid.sheikh@gmail.com	UPI	SC3567	08/12/2025	UC566-1066	1060	Received at store by SM	TSV-11-0535			30/04/2026	TRUE	20251208212518000011
+08/12/2025 21:28:20	wagid.sheikh@gmail.com	UPI	KN3817	08/12/2025	T1050	518	Delivery by Rider Ankit	TSV-11-0534			30/04/2026	TRUE	20251208212820000012
+09/12/2025 16:32:26	wagid.sheikh@gmail.com	UPI	UN3668	09/12/2025	T1672	518	Delivery by Rider Deepak	TSV-11-0541			30/04/2026	TRUE	20251209163226000013
+09/12/2025 16:40:11	wagid.sheikh@gmail.com	UPI	UN3668	09/12/2025	T1695	210	Delivery by rider Deepak	TSV-11-0542			30/04/2026	TRUE	20251209164011000014
+09/12/2025 16:47:11	wagid.sheikh@gmail.com	UPI	KN3817	09/12/2025	T1147	300	Delivery by Rider Ankit Partial payment	TSV-11-0543			30/04/2026	TRUE	20251209164711000015
+09/12/2025 16:47:38	wagid.sheikh@gmail.com	Cash	KN3817	09/12/2025	T1147	200	Delivery by Rider Ankit Partial payment	Cash	Yes	21/12/2025	30/04/2026	TRUE	20251209164738000016
+09/12/2025 16:52:49	wagid.sheikh@gmail.com	UPI	UN3668	09/12/2025	T1697	315	Delivery by Rider Deepak	TSV-11-0540			30/04/2026	TRUE	20251209165249000017
+09/12/2025 18:30:34	wagid.sheikh@gmail.com	UPI	SC3567	09/12/2025	UC567-1041	519	Delivery by Rider Shanee	TSV-11-0544			30/04/2026	TRUE	20251209183034000018
 
 ---
 
@@ -234,7 +250,9 @@ Seq	Cost Center	Date	Customer Name	Mobile Number	Address	Package Value	Payment M
 14. If creating new tables, confirm preferred names (proposal):
     * **IMPORTANT**: Data of IDFC-Bank tab and SBI-Bank will be inserted into a single table
 
-- `bank_records`
+Proposed New/Existing Table(s))
+
+- `bank_records - New Table`
 
 ```sql
 CREATE TABLE IF NOT EXISTS bank_records (
