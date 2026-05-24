@@ -202,7 +202,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 log_event(
                     logger=logger,
                     phase="send_email",
-                    status="warn",
+                    status="warning",
                     message="notification dispatch completed with zero emails sent",
                     report_date=resolved_date.isoformat(),
                     emails_planned=emails_planned,
