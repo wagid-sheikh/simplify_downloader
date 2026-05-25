@@ -85,6 +85,7 @@ MTD_SAME_DAY_RETRY_DELAY_SECONDS="${MTD_SAME_DAY_RETRY_DELAY_SECONDS:-10}"
 DAILY_RESCUE_AFTER_PENDING_SUCCESS="${DAILY_RESCUE_AFTER_PENDING_SUCCESS:-1}"
 DAILY_RESCUE_MAX_ATTEMPTS="${DAILY_RESCUE_MAX_ATTEMPTS:-1}"
 DAILY_RESCUE_RETRY_DELAY_SECONDS="${DAILY_RESCUE_RETRY_DELAY_SECONDS:-5}"
+ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS="${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS:-1}"
 
 if ! [[ "${LOCK_WAIT_SECONDS}" =~ ^[0-9]+$ ]]; then
   LOCK_WAIT_SECONDS=300
@@ -610,6 +611,7 @@ log "DAILY_MAX_ATTEMPTS=${DAILY_MAX_ATTEMPTS} DAILY_RETRY_DELAY_SECONDS=${DAILY_
 log "MTD_SAME_DAY_MAX_ATTEMPTS=${MTD_SAME_DAY_MAX_ATTEMPTS} MTD_SAME_DAY_RETRY_DELAY_SECONDS=${MTD_SAME_DAY_RETRY_DELAY_SECONDS}"
 log "PENDING_MAX_ATTEMPTS=${PENDING_MAX_ATTEMPTS} PENDING_RETRY_DELAY_SECONDS=${PENDING_RETRY_DELAY_SECONDS}"
 log "DAILY_RESCUE_AFTER_PENDING_SUCCESS=${DAILY_RESCUE_AFTER_PENDING_SUCCESS} DAILY_RESCUE_MAX_ATTEMPTS=${DAILY_RESCUE_MAX_ATTEMPTS} DAILY_RESCUE_RETRY_DELAY_SECONDS=${DAILY_RESCUE_RETRY_DELAY_SECONDS}"
+log "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS}"
 log "GLOBAL_LOCK_DIR=${GLOBAL_LOCK_DIR}"
 log "LOCAL_LOCK_DIR=${RUN_LOCK_DIR}"
 log "poetry=$(command -v poetry || echo NOT_FOUND)"
@@ -821,7 +823,7 @@ run_started_epoch="$(date +%s)"
 # ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=1 makes this step return non-zero
 # for persisted overall_status="failed"; keep recording orders_rc while allowing
 # the report pipeline steps to run.
-run_step "Script 1: orders_sync_run_profiler" "./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" || orders_rc=$?
+run_step "Script 1: orders_sync_run_profiler" "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS} ./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" || orders_rc=$?
 extract_orders_sync_observability
 run_step "Script 2: daily_sales_report" "./scripts/run_local_reports_daily_sales.sh" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" || daily_rc=$?
 run_step "Script 3: mtd_same_day_fulfillment_report" "./scripts/run_local_reports_mtd_same_day_fulfillment.sh" "${MTD_SAME_DAY_MAX_ATTEMPTS}" "${MTD_SAME_DAY_RETRY_DELAY_SECONDS}" || mtd_same_day_rc=$?
@@ -851,14 +853,15 @@ log "Report regeneration mode: daily_sales_regenerate=true mtd_same_day_regenera
 
 section "RUN STATUS SUMMARY"
 log "orders_sync_run_profiler_rc=${orders_rc}"
+log "orders_sync_profiler_fail_on_failed_status=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS}"
 log "daily_sales_report_rc=${daily_rc}"
 log "mtd_same_day_fulfillment_report_rc=${mtd_same_day_rc}"
 log "pending_deliveries_rc=${pending_rc}"
 log "daily_sales_report_rescue_rc=${daily_rescue_rc}"
 log "total_duration_seconds=${run_duration_seconds}"
 
-if [[ "${daily_rc}" -ne 0 || "${mtd_same_day_rc}" -ne 0 || "${pending_rc}" -ne 0 ]]; then
-  log "ERROR: One or more required report pipelines failed (daily_sales_report_rc=${daily_rc}, mtd_same_day_fulfillment_report_rc=${mtd_same_day_rc}, pending_deliveries_rc=${pending_rc})."
+if [[ "${orders_rc}" -ne 0 || "${daily_rc}" -ne 0 || "${mtd_same_day_rc}" -ne 0 || "${pending_rc}" -ne 0 ]]; then
+  log "ERROR: One or more required cron steps failed (orders_sync_run_profiler_rc=${orders_rc}, daily_sales_report_rc=${daily_rc}, mtd_same_day_fulfillment_report_rc=${mtd_same_day_rc}, pending_deliveries_rc=${pending_rc})."
   exit 1
 fi
 
