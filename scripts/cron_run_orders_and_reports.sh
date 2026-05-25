@@ -710,6 +710,107 @@ is_deterministic_code_error() {
   return 1
 }
 
+extract_orders_sync_observability() {
+  local jsonl_file="${JSON_LOG_FILE:-${REPO_ROOT}/logs/simplify_downloader.jsonl}"
+  local parse_output
+  local run_id=""
+  local overall_status="unknown"
+  local failed_stores=""
+
+  if [[ ! -f "${jsonl_file}" ]]; then
+    log "WARNING: orders_sync observability skipped: jsonl file not found at ${jsonl_file}"
+    log "orders_sync_failed_stores=[]"
+    log "orders_sync_overall_status=unknown"
+    return 0
+  fi
+
+  parse_output="$(
+    LOG_FILE_PATH="${LOG_FILE}" python3 - "${jsonl_file}" <<'PY'
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+jsonl_path = Path(sys.argv[1])
+log_path = Path(os.environ.get("LOG_FILE_PATH", ""))
+run_id_pattern = re.compile(r'"run_id"\s*:\s*"([^"]+)"')
+run_id = ""
+
+if log_path.exists():
+    with log_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            if '"run_id"' not in line:
+                continue
+            match = run_id_pattern.search(line)
+            if match:
+                run_id = match.group(1)
+
+if not run_id:
+    print("run_id=")
+    print("overall_status=unknown")
+    print("failed_stores=")
+    raise SystemExit(0)
+
+overall_status = "unknown"
+failed_stores: list[str] = []
+
+with jsonl_path.open("r", encoding="utf-8") as fh:
+    for raw in fh:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+
+        if str(event.get("run_id") or "") != run_id:
+            continue
+
+        phase = str(event.get("phase") or "")
+        if phase == "run_summary":
+            status = str(event.get("overall_status") or "").strip().lower()
+            if status:
+                overall_status = status
+
+        store_outcome = str(event.get("store_outcome") or "").strip().lower()
+        store_code = str(event.get("store_code") or "").strip()
+        if store_outcome == "failed" and store_code and store_code not in failed_stores:
+            failed_stores.append(store_code)
+
+print(f"run_id={run_id}")
+print(f"overall_status={overall_status}")
+print("failed_stores=" + ",".join(failed_stores))
+PY
+  )"
+
+  while IFS='=' read -r key value; do
+    case "${key}" in
+      run_id) run_id="${value}" ;;
+      overall_status) overall_status="${value}" ;;
+      failed_stores) failed_stores="${value}" ;;
+    esac
+  done <<< "${parse_output}"
+
+  if [[ -z "${run_id}" ]]; then
+    log "WARNING: orders_sync observability could not resolve profiler run_id from Script 1 output"
+  fi
+
+  local failed_store_array="[]"
+  if [[ -n "${failed_stores}" ]]; then
+    failed_store_array="[${failed_stores}]"
+  fi
+
+  log "orders_sync_profiler_run_id=${run_id:-unknown}"
+  log "orders_sync_failed_stores=${failed_store_array}"
+  log "orders_sync_overall_status=${overall_status}"
+
+  if [[ "${overall_status}" = "failed" || -n "${failed_stores}" ]]; then
+    log "ERROR: ORDERS SYNC WARNING: profiler run_id=${run_id:-unknown} overall_status=${overall_status} failed_stores=${failed_store_array} (script_rc=${orders_rc})"
+  fi
+}
+
 orders_rc=0
 daily_rc=0
 pending_rc=0
@@ -721,6 +822,7 @@ run_started_epoch="$(date +%s)"
 # for persisted overall_status="failed"; keep recording orders_rc while allowing
 # the report pipeline steps to run.
 run_step "Script 1: orders_sync_run_profiler" "./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" || orders_rc=$?
+extract_orders_sync_observability
 run_step "Script 2: daily_sales_report" "./scripts/run_local_reports_daily_sales.sh" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" || daily_rc=$?
 run_step "Script 3: mtd_same_day_fulfillment_report" "./scripts/run_local_reports_mtd_same_day_fulfillment.sh" "${MTD_SAME_DAY_MAX_ATTEMPTS}" "${MTD_SAME_DAY_RETRY_DELAY_SECONDS}" || mtd_same_day_rc=$?
 # Pending Deliveries must not skip due to a prior successful summary; report CLIs always regenerate.
