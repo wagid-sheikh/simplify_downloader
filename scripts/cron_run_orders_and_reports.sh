@@ -126,6 +126,8 @@ section() {
   log "================================================================"
 }
 
+log "python3_version=$(python3 --version 2>&1)"
+
 safe_cat() {
   local file_path="$1"
   if [[ -f "${file_path}" ]]; then
@@ -755,7 +757,7 @@ if not run_id:
     raise SystemExit(0)
 
 overall_status = "unknown"
-failed_stores: list[str] = []
+failed_stores = []
 
 with jsonl_path.open("r", encoding="utf-8") as fh:
     for raw in fh:
