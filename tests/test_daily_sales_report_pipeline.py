@@ -1012,7 +1012,7 @@ def test_actual_payments_not_found_workbook_groups_and_sorts_rows(tmp_path) -> N
         ),
     ]
 
-    pipeline._build_actual_payments_not_found_workbook(rows=rows, output_path=output_path)
+    pipeline._build_actual_payments_not_found_workbook(rows=rows, output_path=output_path, business_timezone=ZoneInfo("Asia/Kolkata"))
 
     workbook = openpyxl.load_workbook(output_path, data_only=True)
     try:
@@ -1026,7 +1026,7 @@ def test_actual_payments_not_found_workbook_groups_and_sorts_rows(tmp_path) -> N
 def test_actual_payments_not_found_workbook_handles_zero_rows(tmp_path) -> None:
     output_path = tmp_path / "apnf-empty.xlsx"
 
-    pipeline._build_actual_payments_not_found_workbook(rows=[], output_path=output_path)
+    pipeline._build_actual_payments_not_found_workbook(rows=[], output_path=output_path, business_timezone=ZoneInfo("Asia/Kolkata"))
 
     workbook = openpyxl.load_workbook(output_path, data_only=True)
     try:
@@ -1042,5 +1042,39 @@ def test_actual_payments_not_found_workbook_handles_zero_rows(tmp_path) -> None:
                 "Order Amount",
             )
         ]
+    finally:
+        workbook.close()
+
+
+def test_actual_payments_not_found_workbook_normalizes_tz_aware_datetimes(tmp_path) -> None:
+    output_path = tmp_path / "apnf-tz-aware.xlsx"
+    rows = [
+        SimpleNamespace(
+            cost_center="CC1",
+            order_number="ORD-100",
+            order_date=datetime(2026, 4, 29, 4, 30, tzinfo=ZoneInfo("UTC")),
+            customer_name="Alice",
+            mobile_number="123",
+            order_amount=Decimal("100"),
+        )
+    ]
+
+    pipeline._build_actual_payments_not_found_workbook(
+        rows=rows,
+        output_path=output_path,
+        business_timezone=ZoneInfo("Asia/Kolkata"),
+    )
+
+    workbook = openpyxl.load_workbook(output_path, data_only=True)
+    try:
+        worksheet = workbook["CC1"]
+        written_value = worksheet.cell(row=2, column=3).value
+        assert isinstance(written_value, datetime)
+        assert written_value == datetime(2026, 4, 29, 10, 0)
+        assert written_value.tzinfo is None
+        assert (
+            worksheet.cell(row=2, column=3).number_format
+            == pipeline.EXCEL_DATETIME_NUMBER_FORMAT
+        )
     finally:
         workbook.close()
