@@ -19,6 +19,30 @@
     <div class="title">The Shaw Ventures</div>
     <div class="subtitle">Actual Payments Not Found Report for: {{ report_date_display }}</div>
     <div class="micro-font">Run Environment: {{ run_environment }}</div>
+    <table>
+      <thead>
+        <tr>
+          <th class="label">Cost Center</th>
+          <th>Count</th>
+          <th>Order Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if missing_payment_summary_by_cost_center %}
+        {% for row in missing_payment_summary_by_cost_center %}
+        <tr>
+          <td class="label">{{ row.cost_center }}</td>
+          <td>{{ row.count }}</td>
+          <td>{{ row.total_order_amount | format_amount }}</td>
+        </tr>
+        {% endfor %}
+        {% else %}
+        <tr>
+          <td colspan="3" class="center">No actual payments-not-found rows for this run.</td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
 
     <table>
       <thead>
@@ -33,7 +57,11 @@
         </tr>
       </thead>
       <tbody>
-        {% for row in missing_payment_rows %}
+        {% for group in missing_payment_grouped_by_cost_center %}
+        <tr>
+          <td class="label" colspan="7"><strong>Cost Center: {{ group.cost_center }}</strong> (Count: {{ group.group_count }}, Total: {{ group.group_total_order_amount | format_amount }})</td>
+        </tr>
+        {% for row in group.rows %}
         <tr>
           <td>{{ loop.index }}</td>
           <td class="label">{{ row.cost_center }}</td>
@@ -44,7 +72,8 @@
           <td>{{ row.order_amount | format_amount }}</td>
         </tr>
         {% endfor %}
-        {% if not missing_payment_rows %}
+        {% endfor %}
+        {% if not missing_payment_grouped_by_cost_center %}
         <tr>
           <td colspan="7" class="center">No actual payments-not-found rows for this run.</td>
         </tr>
