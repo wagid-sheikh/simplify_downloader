@@ -90,7 +90,7 @@ def test_cron_returns_non_zero_when_daily_fails_even_if_rescue_succeeds(tmp_path
     log_text = log_files[-1].read_text(encoding="utf-8")
     assert "daily_sales_report_rc=1" in log_text
     assert "daily_sales_report_rescue_rc=0" in log_text
-    assert "ERROR: One or more required report pipelines failed" in log_text
+    assert "ERROR: One or more required cron steps failed" in log_text
 
     args_lines = (tmp_path / "daily-args.log").read_text(encoding="utf-8").splitlines()
     assert len(args_lines) == 4
