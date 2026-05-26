@@ -224,7 +224,7 @@ async def test_mtd_same_day_report_regenerates_for_same_date_with_previous_summa
 
     output_pdf = tmp_path / f"{mtd_pipeline.PIPELINE_NAME}_{REPORT_DATE.isoformat()}.pdf"
     assert render_paths == [output_pdf, output_pdf]
-    assert len(documents) == 2
+    assert len(documents) == 4
     assert summaries[-1]["overall_status"] == expected_previous_status
 
 
@@ -259,7 +259,7 @@ async def test_pending_deliveries_report_regenerates_for_same_date_with_previous
 
     output_pdf = tmp_path / f"{pending_pipeline.PIPELINE_NAME}_{REPORT_DATE.isoformat()}.pdf"
     assert render_paths == [output_pdf, output_pdf]
-    assert len(documents) == 2
+    assert len(documents) == 4
     assert summaries[-1]["overall_status"] == expected_previous_status
 
 

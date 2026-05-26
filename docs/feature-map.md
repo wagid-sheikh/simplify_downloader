@@ -112,7 +112,7 @@ Practical map of where to work for major capabilities.
   3. `scripts/run_local_reports_pending_deliveries.sh`
 - **Cron regeneration:** Cron report generation always regenerates Daily Sales, MTD Same-Day Fulfillment, and Pending Deliveries by passing `--force`; retries/rescue passes preserve mandatory regeneration and log `pipeline`, `report_date`, and `regenerate=true`.
 - **Dependencies:** `documents` table, report notification templates/profiles.
-- **Notes/Risks:** Rendering failures and zero-data scenarios are handled differently per pipeline; keep behavior consistent. For same-day table layout, `app/reports/daily_sales_report/templates/daily_sales_report.html` and `app/reports/shared/templates/same_day_fulfillment_table.html` are the authoritative sources (legacy standalone same-day template removed). Pending deliveries now always includes TD+UC rows where `vw_orders.recovery_status = 'NONE'` and no matching `sales` row; recovery-workflow rows are excluded from normal aging buckets/details.
+- **Notes/Risks:** Rendering failures and zero-data scenarios are handled differently per pipeline; keep behavior consistent. For same-day table layout, `app/reports/daily_sales_report/templates/daily_sales_report.html` and `app/reports/shared/templates/same_day_fulfillment_table.html` are the authoritative sources (legacy standalone same-day template removed). Pending deliveries now always includes TD+UC rows where `vw_orders.recovery_status = 'NONE'` and no matching `sales` row; recovery-workflow rows are excluded from normal aging buckets/details. Pending Deliveries notification attachments now include both the existing PDF and an additive XLSX workbook artifact grouped by `cost_center`.
 
 ## 9) Lead assignment workflow
 
