@@ -30,6 +30,7 @@ Use this before requesting review.
 - [ ] I reviewed impacts to `pipeline_run_summaries`, `orders_sync_log`, or `documents` payload structure if touched.
 - [ ] If extraction/ingest semantics changed, I reviewed dedupe/row-count/audit implications.
 - [ ] For pending deliveries changes, I validated canonical eligibility: `vw_orders.recovery_status = 'NONE'` and no matching `sales` row for normal summary/detail buckets.
+- [ ] For pending deliveries artifact changes, I verified both PDF and XLSX are attached in the same existing notification send path without changing recipients/profiles/templates.
 - [ ] For reports or payment/recovery decision logic, I used `vw_orders.order_amount` and did not read raw `orders.net_amount`, `orders.gross_amount`, or `orders.adjustment` directly unless the exception was explicitly approved and documented.
 - [ ] For payment/recovery report changes, I preserved or explicitly changed the current/open contract: `Actual Payments Not Found` and `Short Payments` are all-date current/open; `To Be Recovered` is all-date current/open by recovery-workflow status; none of these are constrained by Daily/MTD report date windows.
 - [ ] For Daily Sales artifact changes, I verified the notification attachment set still includes the main PDF and all additive run artifacts (for example APNF PDF/XLSX, Short Payments PDF, and optional MTD Same-Day PDF) without changing recipient/profile/template routing.

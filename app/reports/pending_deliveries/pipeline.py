@@ -22,6 +22,7 @@ from .data import (
     fetch_pending_deliveries_report,
 )
 from .render import render_html, render_pdf
+from .workbook import build_pending_deliveries_workbook, workbook_output_path
 
 PIPELINE_NAME = "reports.pending_deliveries"
 OUTPUT_ROOT = Path("app") / "reports" / "output_files"
@@ -54,11 +55,13 @@ async def _persist_document(
     run_id: str,
     report_date: date,
     file_path: Path,
+    doc_type: str,
+    mime_type: str,
 ) -> None:
     async with session_scope(database_url) as session:
         await session.execute(
             documents.insert().values(
-                doc_type="pending_deliveries_pdf",
+                doc_type=doc_type,
                 doc_subtype="pipeline_report",
                 doc_date=report_date,
                 reference_name_1="pipeline",
@@ -68,7 +71,7 @@ async def _persist_document(
                 reference_name_3="report_date",
                 reference_id_3=report_date.isoformat(),
                 file_name=file_path.name,
-                mime_type="application/pdf",
+                mime_type=mime_type,
                 file_size_bytes=file_path.stat().st_size if file_path.exists() else None,
                 storage_backend="fs",
                 file_path=str(file_path),
@@ -141,6 +144,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
 
         OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
         output_path = OUTPUT_ROOT / f"{PIPELINE_NAME}_{resolved_date.isoformat()}.pdf"
+        workbook_path = workbook_output_path(output_root=OUTPUT_ROOT, pipeline_name=PIPELINE_NAME, report_date=resolved_date)
         if output_path.exists():
             output_path.unlink()
         try:
@@ -173,11 +177,48 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             file_path=str(output_path),
         )
 
+        if workbook_path.exists():
+            workbook_path.unlink()
+        log_event(
+            logger=logger,
+            phase="render_xlsx",
+            message="generating pending deliveries workbook",
+            report_date=resolved_date.isoformat(),
+            timezone=tz.key,
+        )
+        workbook_row_count, workbook_sheet_count = build_pending_deliveries_workbook(
+            data=data,
+            output_path=workbook_path,
+            business_timezone=tz,
+        )
+        tracker.mark_phase("render_xlsx", "ok")
+        log_event(
+            logger=logger,
+            phase="render_xlsx",
+            message="generated pending deliveries workbook",
+            report_date=resolved_date.isoformat(),
+            rows=workbook_row_count,
+            sheet_count=workbook_sheet_count,
+            timezone=tz.key,
+            file_path=str(workbook_path),
+        )
+
         await _persist_document(
             database_url=database_url,
             run_id=run_id,
             report_date=resolved_date,
             file_path=output_path,
+            doc_type="pending_deliveries_pdf",
+            mime_type="application/pdf",
+        )
+
+        await _persist_document(
+            database_url=database_url,
+            run_id=run_id,
+            report_date=resolved_date,
+            file_path=workbook_path,
+            doc_type="pending_deliveries_xlsx",
+            mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         tracker.mark_phase("persist_documents", "ok")
         log_event(
@@ -186,11 +227,16 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             message="saved pending deliveries report document",
             report_date=resolved_date.isoformat(),
             file_path=str(output_path),
+            workbook_file_path=str(workbook_path),
+            workbook_rows=workbook_row_count,
+            workbook_sheet_count=workbook_sheet_count,
         )
 
         tracker.metrics = {
             "report_date": resolved_date.isoformat(),
             "rows": data.total_count,
+            "workbook_rows": workbook_row_count,
+            "workbook_sheet_count": workbook_sheet_count,
         }
         tracker.add_summary(
             f"Pending deliveries report generated for {resolved_date.isoformat()} with "

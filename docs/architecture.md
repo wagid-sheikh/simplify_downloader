@@ -90,7 +90,7 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 
 ### 5) Reporting pipelines
 - Daily sales: `app/reports/daily_sales_report/`.
-- Pending deliveries: `app/reports/pending_deliveries/`.
+- Pending deliveries: `app/reports/pending_deliveries/` (existing PDF output plus additive XLSX artifact attached in the same notification send path).
 - Store/week/month reporting helpers: `app/dashboard_downloader/run_store_reports.py` + `app/dashboard_downloader/pipelines/`.
 - PDF rendering centralized through report renderer wrappers.
 - Pending deliveries canonical contract: normal pending-delivery buckets/details include only rows with `vw_orders.recovery_status = 'NONE'` and no matching `sales` row. Recovery workflow statuses are intentionally excluded from normal pending-delivery queues.
