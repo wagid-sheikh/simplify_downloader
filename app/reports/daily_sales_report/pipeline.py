@@ -122,6 +122,52 @@ def _build_context(
     data: DailySalesReportData, run_environment: str
 ) -> dict[str, object]:
     report_date_display = data.report_date.strftime("%d-%b-%Y")
+    missing_payment_rows = list(data.missing_payment_rows)
+    missing_payment_summary_by_cost_center: list[dict[str, object]] = []
+    missing_payment_grouped_by_cost_center: list[dict[str, object]] = []
+    missing_payment_by_cost_center: dict[str, list[object]] = {}
+    for row in sorted(
+        missing_payment_rows,
+        key=lambda item: (
+            str(getattr(item, "cost_center", "") or ""),
+            getattr(item, "order_date", None) or datetime.min,
+            str(getattr(item, "order_number", "") or ""),
+        ),
+        reverse=True,
+    ):
+        cost_center = str(getattr(row, "cost_center", "") or "")
+        missing_payment_by_cost_center.setdefault(cost_center, []).append(row)
+    for cost_center in sorted(missing_payment_by_cost_center):
+        rows = sorted(
+            missing_payment_by_cost_center[cost_center],
+            key=lambda item: (
+                getattr(item, "order_date", None) or datetime.min,
+                str(getattr(item, "order_number", "") or ""),
+            ),
+            reverse=True,
+        )
+        total_order_amount = sum(
+            (
+                getattr(item, "order_amount", Decimal("0")) or Decimal("0")
+                for item in rows
+            ),
+            Decimal("0"),
+        )
+        missing_payment_summary_by_cost_center.append(
+            {
+                "cost_center": cost_center,
+                "count": len(rows),
+                "total_order_amount": total_order_amount,
+            }
+        )
+        missing_payment_grouped_by_cost_center.append(
+            {
+                "cost_center": cost_center,
+                "rows": rows,
+                "group_count": len(rows),
+                "group_total_order_amount": total_order_amount,
+            }
+        )
     return {
         "company_name": "The Shaw Ventures",
         "report_date_display": report_date_display,
@@ -142,7 +188,9 @@ def _build_context(
             data, "auto_cleared_order_numbers_text", ""
         ),
         "same_day_fulfillment_rows": data.same_day_fulfillment_rows,
-        "missing_payment_rows": data.missing_payment_rows,
+        "missing_payment_rows": missing_payment_rows,
+        "missing_payment_summary_by_cost_center": missing_payment_summary_by_cost_center,
+        "missing_payment_grouped_by_cost_center": missing_payment_grouped_by_cost_center,
         "short_payment_rows": getattr(data, "short_payment_rows", []),
         "report_day_orders_by_cost_center": getattr(
             data, "report_day_orders_by_cost_center", []
