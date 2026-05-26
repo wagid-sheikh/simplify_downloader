@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import openpyxl
 import pytest
 import sqlalchemy as sa
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -568,8 +569,13 @@ async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
         pipeline.OUTPUT_ROOT
         / f"reports.daily_sales_report_actual_payments_not_found_{report_date.isoformat()}.pdf"
     )
+    apnf_workbook_path = str(
+        pipeline.OUTPUT_ROOT
+        / f"reports.daily_sales_report_actual_payments_not_found_{report_date.isoformat()}.xlsx"
+    )
 
     assert {daily_path, recovered_path, short_payments_path, apnf_path}.issubset(rendered)
+    assert Path(apnf_workbook_path).exists()
     assert "RPT-DATE-1" in rendered[daily_path]
     assert "REC-1" in rendered[recovered_path]
 
@@ -599,9 +605,10 @@ async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
             .all()
         )
 
-    assert len(rows) == 5
+    assert len(rows) == 6
     by_type = {row["doc_type"]: row for row in rows}
     assert "daily_sales_actual_payments_not_found_pdf" in by_type
+    assert "daily_sales_actual_payments_not_found_xlsx" in by_type
     assert "daily_sales_report_pdf" in by_type
     assert "daily_sales_short_payments_pdf" in by_type
     assert "mtd_same_day_fulfillment_pdf" in by_type
@@ -624,6 +631,20 @@ async def test_daily_pipeline_writes_mtd_attachment_window_and_metadata(
     )
     assert by_type["to_be_recovered_report_pdf"]["reference_id_1"] == pipeline.PIPELINE_NAME
     assert by_type["to_be_recovered_report_pdf"]["reference_id_3"] == report_date.isoformat()
+    workbook = openpyxl.load_workbook(Path(apnf_workbook_path), data_only=True)
+    try:
+        assert workbook.sheetnames == ["No Data"]
+        rows = list(workbook["No Data"].iter_rows(values_only=True))
+        assert rows[0] == (
+            "Cost Center",
+            "Order Number",
+            "Order Date",
+            "Customer Name",
+            "Mobile Number",
+            "Order Amount",
+        )
+    finally:
+        workbook.close()
 
 
 @pytest.mark.asyncio
@@ -697,7 +718,6 @@ async def test_daily_pipeline_metrics_are_json_safe_with_short_payment_rows(
 
     monkeypatch.setattr(pipeline, "fetch_daily_sales_report", _fake_daily_data)
     monkeypatch.setattr(pipeline, "fetch_mtd_same_day_fulfillment", _fake_mtd_rows)
-    monkeypatch.setattr(pipeline, "fetch_missing_payments_mtd", _fake_mtd_rows)
     monkeypatch.setattr(
         pipeline, "_render_html", lambda context, *args, **kwargs: "daily-html"
     )
@@ -939,9 +959,10 @@ async def test_daily_pipeline_continues_when_mtd_fetch_fails(
             .all()
         )
 
-    assert len(rows) == 4
+    assert len(rows) == 5
     assert {row["doc_type"] for row in rows} == {
         "daily_sales_actual_payments_not_found_pdf",
+        "daily_sales_actual_payments_not_found_xlsx",
         "daily_sales_report_pdf",
         "daily_sales_short_payments_pdf",
         "to_be_recovered_report_pdf",
@@ -960,3 +981,66 @@ async def test_daily_pipeline_continues_when_mtd_fetch_fails(
         "MTD same-day fulfillment attachment was not generated"
         in final_record["summary_text"]
     )
+
+
+def test_actual_payments_not_found_workbook_groups_and_sorts_rows(tmp_path) -> None:
+    output_path = tmp_path / "apnf.xlsx"
+    rows = [
+        SimpleNamespace(
+            cost_center="CC/A",
+            order_number="ORD-2",
+            order_date=datetime(2026, 4, 28, 10, 0),
+            customer_name="B",
+            mobile_number="2",
+            order_amount=Decimal("20"),
+        ),
+        SimpleNamespace(
+            cost_center="CC/A",
+            order_number="ORD-1",
+            order_date=datetime(2026, 4, 29, 10, 0),
+            customer_name="A",
+            mobile_number="1",
+            order_amount=Decimal("10"),
+        ),
+        SimpleNamespace(
+            cost_center="CC:B",
+            order_number="ORD-3",
+            order_date=datetime(2026, 4, 27, 10, 0),
+            customer_name="C",
+            mobile_number="3",
+            order_amount=Decimal("30"),
+        ),
+    ]
+
+    pipeline._build_actual_payments_not_found_workbook(rows=rows, output_path=output_path)
+
+    workbook = openpyxl.load_workbook(output_path, data_only=True)
+    try:
+        assert set(workbook.sheetnames) == {"CC_A", "CC_B"}
+        cc_a_rows = list(workbook["CC_A"].iter_rows(values_only=True))
+        assert [row[1] for row in cc_a_rows[1:]] == ["ORD-1", "ORD-2"]
+    finally:
+        workbook.close()
+
+
+def test_actual_payments_not_found_workbook_handles_zero_rows(tmp_path) -> None:
+    output_path = tmp_path / "apnf-empty.xlsx"
+
+    pipeline._build_actual_payments_not_found_workbook(rows=[], output_path=output_path)
+
+    workbook = openpyxl.load_workbook(output_path, data_only=True)
+    try:
+        assert workbook.sheetnames == ["No Data"]
+        rows = list(workbook["No Data"].iter_rows(values_only=True))
+        assert rows == [
+            (
+                "Cost Center",
+                "Order Number",
+                "Order Date",
+                "Customer Name",
+                "Mobile Number",
+                "Order Amount",
+            )
+        ]
+    finally:
+        workbook.close()
