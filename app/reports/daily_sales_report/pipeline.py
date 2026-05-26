@@ -65,6 +65,7 @@ ACTUAL_PAYMENTS_NOT_FOUND_WORKBOOK_OUTPUT_PREFIX = (
 TEMPLATE_DIR = Path("app") / "reports" / "daily_sales_report" / "templates"
 SHARED_TEMPLATE_DIR = Path("app") / "reports" / "shared" / "templates"
 OUTPUT_ROOT = Path("app") / "reports" / "output_files"
+EXCEL_DATETIME_NUMBER_FORMAT = "yyyy-mm-dd hh:mm:ss"
 
 def _format_amount(value: Decimal | int | float | None) -> str:
     return format_amount(value)
@@ -246,8 +247,27 @@ def _sanitize_worksheet_name(value: str, used_names: set[str]) -> str:
 
 
 def _build_actual_payments_not_found_workbook(
-    *, rows: list[object], output_path: Path
-) -> Path:
+    *, rows: list[object], output_path: Path, business_timezone: object
+) -> tuple[Path, int, int]:
+    def _coerce_datetime_like(value: object) -> datetime | None:
+        if isinstance(value, datetime):
+            return value
+        to_pydatetime = getattr(value, "to_pydatetime", None)
+        if callable(to_pydatetime):
+            coerced = to_pydatetime()
+            if isinstance(coerced, datetime):
+                return coerced
+        return None
+
+    def _normalize_datetime_for_excel(value: object) -> tuple[object, bool]:
+        dt_value = _coerce_datetime_like(value)
+        if dt_value is None:
+            return value, False
+        if dt_value.tzinfo is None:
+            return dt_value, True
+        localized = dt_value.astimezone(business_timezone)
+        return localized.replace(tzinfo=None), True
+
     workbook: Workbook = openpyxl.Workbook()
     workbook.remove(workbook.active)
     headers = [
@@ -264,6 +284,8 @@ def _build_actual_payments_not_found_workbook(
         rows_by_cost_center.setdefault(cost_center, []).append(row)
 
     used_sheet_names: set[str] = set()
+    rows_processed = 0
+    datetime_fields_normalized = 0
     for cost_center in sorted(rows_by_cost_center):
         sheet_name = _sanitize_worksheet_name(cost_center, used_sheet_names)
         worksheet = workbook.create_sheet(title=sheet_name)
@@ -277,21 +299,44 @@ def _build_actual_payments_not_found_workbook(
             reverse=True,
         )
         for row in sorted_rows:
-            worksheet.append(
-                [
-                    getattr(row, "cost_center", ""),
-                    getattr(row, "order_number", ""),
-                    getattr(row, "order_date", None),
-                    getattr(row, "customer_name", ""),
-                    getattr(row, "mobile_number", ""),
-                    getattr(row, "order_amount", None),
-                ]
-            )
+            rows_processed += 1
+            raw_row_values = [
+                getattr(row, "cost_center", ""),
+                getattr(row, "order_number", ""),
+                getattr(row, "order_date", None),
+                getattr(row, "customer_name", ""),
+                getattr(row, "mobile_number", ""),
+                getattr(row, "order_amount", None),
+            ]
+            normalized_row_values: list[object] = []
+            datetime_columns: set[int] = set()
+            for column_index, raw_value in enumerate(raw_row_values, start=1):
+                field_name = headers[column_index - 1]
+                try:
+                    normalized_value, is_datetime = _normalize_datetime_for_excel(
+                        raw_value
+                    )
+                except Exception as exc:
+                    raise RuntimeError(
+                        "Failed to normalize datetime for APNF workbook "
+                        f"(sheet={sheet_name}, field={field_name}, value={raw_value!r}): {exc}"
+                    ) from exc
+                normalized_row_values.append(normalized_value)
+                if is_datetime:
+                    datetime_fields_normalized += 1
+                    datetime_columns.add(column_index)
+
+            worksheet.append(normalized_row_values)
+            row_number = worksheet.max_row
+            for column_index in datetime_columns:
+                worksheet.cell(row=row_number, column=column_index).number_format = (
+                    EXCEL_DATETIME_NUMBER_FORMAT
+                )
     if not workbook.sheetnames:
         worksheet = workbook.create_sheet(title="No Data")
         worksheet.append(headers)
     workbook.save(output_path)
-    return output_path
+    return output_path, rows_processed, datetime_fields_normalized
 
 
 async def _generate_short_payments_pdf(
@@ -508,9 +553,23 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 run_id=run_id,
                 rows=len(data.missing_payment_rows),
             )
-            _build_actual_payments_not_found_workbook(
+            _, rows_processed, datetime_fields_normalized = (
+                _build_actual_payments_not_found_workbook(
                 rows=list(data.missing_payment_rows),
                 output_path=actual_payments_not_found_workbook_output_path,
+                business_timezone=tz,
+            )
+            )
+            log_event(
+                logger=logger,
+                phase="render_xlsx",
+                status="ok",
+                message="actual payments not found workbook generated",
+                report_date=resolved_date.isoformat(),
+                run_id=run_id,
+                rows_processed=rows_processed,
+                datetime_fields_normalized=datetime_fields_normalized,
+                timezone=str(getattr(tz, "key", tz)),
             )
             if mtd_attachment_generated and same_day_html is not None:
                 await render_pdf_with_configured_browser(
