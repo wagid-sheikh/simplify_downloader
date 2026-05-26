@@ -6,7 +6,9 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Mapping
 
+import openpyxl
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from openpyxl.workbook import Workbook
 
 from app.common.date_utils import aware_now, get_timezone
 from app.common.db import session_scope
@@ -54,6 +56,12 @@ SHORT_PAYMENTS_OUTPUT_PREFIX = "reports.daily_sales_report_short_payments"
 ACTUAL_PAYMENTS_NOT_FOUND_TEMPLATE_NAME = "actual_payments_not_found_report.html"
 ACTUAL_PAYMENTS_NOT_FOUND_DOCUMENT_TYPE = "daily_sales_actual_payments_not_found_pdf"
 ACTUAL_PAYMENTS_NOT_FOUND_OUTPUT_PREFIX = "reports.daily_sales_report_actual_payments_not_found"
+ACTUAL_PAYMENTS_NOT_FOUND_WORKBOOK_DOCUMENT_TYPE = (
+    "daily_sales_actual_payments_not_found_xlsx"
+)
+ACTUAL_PAYMENTS_NOT_FOUND_WORKBOOK_OUTPUT_PREFIX = (
+    "reports.daily_sales_report_actual_payments_not_found"
+)
 TEMPLATE_DIR = Path("app") / "reports" / "daily_sales_report" / "templates"
 SHARED_TEMPLATE_DIR = Path("app") / "reports" / "shared" / "templates"
 OUTPUT_ROOT = Path("app") / "reports" / "output_files"
@@ -105,7 +113,11 @@ async def _persist_document(
                 reference_name_3="report_date",
                 reference_id_3=report_date.isoformat(),
                 file_name=file_path.name,
-                mime_type="application/pdf",
+                mime_type=(
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    if file_path.suffix.lower() == ".xlsx"
+                    else "application/pdf"
+                ),
                 file_size_bytes=(
                     file_path.stat().st_size if file_path.exists() else None
                 ),
@@ -122,6 +134,52 @@ def _build_context(
     data: DailySalesReportData, run_environment: str
 ) -> dict[str, object]:
     report_date_display = data.report_date.strftime("%d-%b-%Y")
+    missing_payment_rows = list(data.missing_payment_rows)
+    missing_payment_summary_by_cost_center: list[dict[str, object]] = []
+    missing_payment_grouped_by_cost_center: list[dict[str, object]] = []
+    missing_payment_by_cost_center: dict[str, list[object]] = {}
+    for row in sorted(
+        missing_payment_rows,
+        key=lambda item: (
+            str(getattr(item, "cost_center", "") or ""),
+            getattr(item, "order_date", None) or datetime.min,
+            str(getattr(item, "order_number", "") or ""),
+        ),
+        reverse=True,
+    ):
+        cost_center = str(getattr(row, "cost_center", "") or "")
+        missing_payment_by_cost_center.setdefault(cost_center, []).append(row)
+    for cost_center in sorted(missing_payment_by_cost_center):
+        rows = sorted(
+            missing_payment_by_cost_center[cost_center],
+            key=lambda item: (
+                getattr(item, "order_date", None) or datetime.min,
+                str(getattr(item, "order_number", "") or ""),
+            ),
+            reverse=True,
+        )
+        total_order_amount = sum(
+            (
+                getattr(item, "order_amount", Decimal("0")) or Decimal("0")
+                for item in rows
+            ),
+            Decimal("0"),
+        )
+        missing_payment_summary_by_cost_center.append(
+            {
+                "cost_center": cost_center,
+                "count": len(rows),
+                "total_order_amount": total_order_amount,
+            }
+        )
+        missing_payment_grouped_by_cost_center.append(
+            {
+                "cost_center": cost_center,
+                "rows": rows,
+                "group_count": len(rows),
+                "group_total_order_amount": total_order_amount,
+            }
+        )
     return {
         "company_name": "The Shaw Ventures",
         "report_date_display": report_date_display,
@@ -142,7 +200,9 @@ def _build_context(
             data, "auto_cleared_order_numbers_text", ""
         ),
         "same_day_fulfillment_rows": data.same_day_fulfillment_rows,
-        "missing_payment_rows": data.missing_payment_rows,
+        "missing_payment_rows": missing_payment_rows,
+        "missing_payment_summary_by_cost_center": missing_payment_summary_by_cost_center,
+        "missing_payment_grouped_by_cost_center": missing_payment_grouped_by_cost_center,
         "short_payment_rows": getattr(data, "short_payment_rows", []),
         "report_day_orders_by_cost_center": getattr(
             data, "report_day_orders_by_cost_center", []
@@ -164,6 +224,74 @@ def _short_payments_output_path(report_date: date) -> Path:
 
 def _actual_payments_not_found_output_path(report_date: date) -> Path:
     return OUTPUT_ROOT / f"{ACTUAL_PAYMENTS_NOT_FOUND_OUTPUT_PREFIX}_{report_date.isoformat()}.pdf"
+
+
+def _actual_payments_not_found_workbook_output_path(report_date: date) -> Path:
+    return OUTPUT_ROOT / (
+        f"{ACTUAL_PAYMENTS_NOT_FOUND_WORKBOOK_OUTPUT_PREFIX}_{report_date.isoformat()}.xlsx"
+    )
+
+
+def _sanitize_worksheet_name(value: str, used_names: set[str]) -> str:
+    normalized = "".join("_" if char in r'[]:*?/\\' else char for char in value).strip()
+    base_name = normalized[:31] if normalized else "Unspecified"
+    candidate = base_name
+    suffix = 1
+    while candidate in used_names:
+        suffix_text = f"_{suffix}"
+        candidate = f"{base_name[: 31 - len(suffix_text)]}{suffix_text}"
+        suffix += 1
+    used_names.add(candidate)
+    return candidate
+
+
+def _build_actual_payments_not_found_workbook(
+    *, rows: list[object], output_path: Path
+) -> Path:
+    workbook: Workbook = openpyxl.Workbook()
+    workbook.remove(workbook.active)
+    headers = [
+        "Cost Center",
+        "Order Number",
+        "Order Date",
+        "Customer Name",
+        "Mobile Number",
+        "Order Amount",
+    ]
+    rows_by_cost_center: dict[str, list[object]] = {}
+    for row in rows:
+        cost_center = str(getattr(row, "cost_center", "") or "")
+        rows_by_cost_center.setdefault(cost_center, []).append(row)
+
+    used_sheet_names: set[str] = set()
+    for cost_center in sorted(rows_by_cost_center):
+        sheet_name = _sanitize_worksheet_name(cost_center, used_sheet_names)
+        worksheet = workbook.create_sheet(title=sheet_name)
+        worksheet.append(headers)
+        sorted_rows = sorted(
+            rows_by_cost_center[cost_center],
+            key=lambda item: (
+                getattr(item, "order_date", None) or datetime.min,
+                str(getattr(item, "order_number", "") or ""),
+            ),
+            reverse=True,
+        )
+        for row in sorted_rows:
+            worksheet.append(
+                [
+                    getattr(row, "cost_center", ""),
+                    getattr(row, "order_number", ""),
+                    getattr(row, "order_date", None),
+                    getattr(row, "customer_name", ""),
+                    getattr(row, "mobile_number", ""),
+                    getattr(row, "order_amount", None),
+                ]
+            )
+    if not workbook.sheetnames:
+        worksheet = workbook.create_sheet(title="No Data")
+        worksheet.append(headers)
+    workbook.save(output_path)
+    return output_path
 
 
 async def _generate_short_payments_pdf(
@@ -326,6 +454,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
         )
         short_payments_output_path = _short_payments_output_path(resolved_date)
         actual_payments_not_found_output_path = _actual_payments_not_found_output_path(resolved_date)
+        actual_payments_not_found_workbook_output_path = (
+            _actual_payments_not_found_workbook_output_path(resolved_date)
+        )
         to_be_recovered_output_path = (
             OUTPUT_ROOT
             / f"{TO_BE_RECOVERED_OUTPUT_PREFIX}_{resolved_date.isoformat()}.pdf"
@@ -338,6 +469,8 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             to_be_recovered_output_path.unlink()
         if actual_payments_not_found_output_path.exists():
             actual_payments_not_found_output_path.unlink()
+        if actual_payments_not_found_workbook_output_path.exists():
+            actual_payments_not_found_workbook_output_path.unlink()
         try:
             await render_pdf_with_configured_browser(
                 html,
@@ -366,6 +499,19 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 pdf_options={"format": "A4", "landscape": True},
                 logger=logger,
             )
+            log_event(
+                logger=logger,
+                phase="render_xlsx",
+                status="ok",
+                message="generating actual payments not found workbook",
+                report_date=resolved_date.isoformat(),
+                run_id=run_id,
+                rows=len(data.missing_payment_rows),
+            )
+            _build_actual_payments_not_found_workbook(
+                rows=list(data.missing_payment_rows),
+                output_path=actual_payments_not_found_workbook_output_path,
+            )
             if mtd_attachment_generated and same_day_html is not None:
                 await render_pdf_with_configured_browser(
                     same_day_html,
@@ -390,6 +536,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 to_be_recovered_file_path=str(to_be_recovered_output_path),
                 short_payments_file_path=str(short_payments_output_path),
                 actual_payments_not_found_file_path=str(actual_payments_not_found_output_path),
+                actual_payments_not_found_workbook_file_path=str(
+                    actual_payments_not_found_workbook_output_path
+                ),
                 pipeline_name=PIPELINE_NAME,
                 mtd_start=mtd_start.isoformat(),
                 mtd_end=mtd_end.isoformat(),
@@ -423,6 +572,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             short_payments_file_path=str(short_payments_output_path),
             actual_payments_not_found_file_path=str(
                 actual_payments_not_found_output_path
+            ),
+            actual_payments_not_found_workbook_file_path=str(
+                actual_payments_not_found_workbook_output_path
             ),
             pipeline_name=PIPELINE_NAME,
             mtd_start=mtd_start.isoformat(),
@@ -462,6 +614,13 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             file_path=actual_payments_not_found_output_path,
             doc_type=ACTUAL_PAYMENTS_NOT_FOUND_DOCUMENT_TYPE,
         )
+        await _persist_document(
+            database_url=database_url,
+            run_id=run_id,
+            report_date=resolved_date,
+            file_path=actual_payments_not_found_workbook_output_path,
+            doc_type=ACTUAL_PAYMENTS_NOT_FOUND_WORKBOOK_DOCUMENT_TYPE,
+        )
         if mtd_attachment_generated:
             await _persist_document(
                 database_url=database_url,
@@ -490,6 +649,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             actual_payments_not_found_file_path=str(
                 actual_payments_not_found_output_path
             ),
+            actual_payments_not_found_workbook_file_path=str(
+                actual_payments_not_found_workbook_output_path
+            ),
             pipeline_name=PIPELINE_NAME,
             mtd_start=mtd_start.isoformat(),
             mtd_end=mtd_end.isoformat(),
@@ -513,6 +675,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             "actual_payments_not_found_rows": len(data.missing_payment_rows),
             "actual_payments_not_found_pdf_file_path": str(actual_payments_not_found_output_path),
             "actual_payments_not_found_pdf_generated": actual_payments_not_found_pdf_generated,
+            "actual_payments_not_found_workbook_file_path": str(
+                actual_payments_not_found_workbook_output_path
+            ),
             "to_be_recovered_orders": len(data.to_be_recovered),
             "to_be_recovered_total_order_value": str(
                 data.to_be_recovered_total_order_value

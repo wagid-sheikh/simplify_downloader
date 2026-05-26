@@ -206,7 +206,7 @@ async def fetch_same_day_fulfillment_rows(
             sa.func.sum(sa.func.coalesce(sales.c.payment_received, 0)).label("payment_received"),
             string_list_agg(
                 dialect_name=dialect_name,
-                value_expr=sa.func.coalesce(sales.c.payment_mode, ""),
+                value_expr=sa.func.nullif(sa.func.trim(sa.func.coalesce(sales.c.payment_mode, "")), ""),
                 separator=", ",
             ).label("payment_mode"),
         )
@@ -267,7 +267,7 @@ async def fetch_same_day_fulfillment_rows(
 
     rows: list[SameDayFulfillmentRecord] = []
     for entry in entries:
-        cost_center = str(entry.get("cost_center") or "")
+        cost_center = str(entry.get("cost_center") or "").strip() or "--"
         order_number = str(entry.get("order_number") or "")
         rows.append(
             SameDayFulfillmentRecord(

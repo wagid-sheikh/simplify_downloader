@@ -85,6 +85,7 @@ MTD_SAME_DAY_RETRY_DELAY_SECONDS="${MTD_SAME_DAY_RETRY_DELAY_SECONDS:-10}"
 DAILY_RESCUE_AFTER_PENDING_SUCCESS="${DAILY_RESCUE_AFTER_PENDING_SUCCESS:-1}"
 DAILY_RESCUE_MAX_ATTEMPTS="${DAILY_RESCUE_MAX_ATTEMPTS:-1}"
 DAILY_RESCUE_RETRY_DELAY_SECONDS="${DAILY_RESCUE_RETRY_DELAY_SECONDS:-5}"
+ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS="${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS:-1}"
 
 if ! [[ "${LOCK_WAIT_SECONDS}" =~ ^[0-9]+$ ]]; then
   LOCK_WAIT_SECONDS=300
@@ -124,6 +125,8 @@ section() {
   log "$*"
   log "================================================================"
 }
+
+log "python3_version=$(python3 --version 2>&1)"
 
 safe_cat() {
   local file_path="$1"
@@ -610,6 +613,7 @@ log "DAILY_MAX_ATTEMPTS=${DAILY_MAX_ATTEMPTS} DAILY_RETRY_DELAY_SECONDS=${DAILY_
 log "MTD_SAME_DAY_MAX_ATTEMPTS=${MTD_SAME_DAY_MAX_ATTEMPTS} MTD_SAME_DAY_RETRY_DELAY_SECONDS=${MTD_SAME_DAY_RETRY_DELAY_SECONDS}"
 log "PENDING_MAX_ATTEMPTS=${PENDING_MAX_ATTEMPTS} PENDING_RETRY_DELAY_SECONDS=${PENDING_RETRY_DELAY_SECONDS}"
 log "DAILY_RESCUE_AFTER_PENDING_SUCCESS=${DAILY_RESCUE_AFTER_PENDING_SUCCESS} DAILY_RESCUE_MAX_ATTEMPTS=${DAILY_RESCUE_MAX_ATTEMPTS} DAILY_RESCUE_RETRY_DELAY_SECONDS=${DAILY_RESCUE_RETRY_DELAY_SECONDS}"
+log "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS}"
 log "GLOBAL_LOCK_DIR=${GLOBAL_LOCK_DIR}"
 log "LOCAL_LOCK_DIR=${RUN_LOCK_DIR}"
 log "poetry=$(command -v poetry || echo NOT_FOUND)"
@@ -710,6 +714,107 @@ is_deterministic_code_error() {
   return 1
 }
 
+extract_orders_sync_observability() {
+  local jsonl_file="${JSON_LOG_FILE:-${REPO_ROOT}/logs/simplify_downloader.jsonl}"
+  local parse_output
+  local run_id=""
+  local overall_status="unknown"
+  local failed_stores=""
+
+  if [[ ! -f "${jsonl_file}" ]]; then
+    log "WARNING: orders_sync observability skipped: jsonl file not found at ${jsonl_file}"
+    log "orders_sync_failed_stores=[]"
+    log "orders_sync_overall_status=unknown"
+    return 0
+  fi
+
+  parse_output="$(
+    LOG_FILE_PATH="${LOG_FILE}" python3 - "${jsonl_file}" <<'PY'
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+jsonl_path = Path(sys.argv[1])
+log_path = Path(os.environ.get("LOG_FILE_PATH", ""))
+run_id_pattern = re.compile(r'"run_id"\s*:\s*"([^"]+)"')
+run_id = ""
+
+if log_path.exists():
+    with log_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            if '"run_id"' not in line:
+                continue
+            match = run_id_pattern.search(line)
+            if match:
+                run_id = match.group(1)
+
+if not run_id:
+    print("run_id=")
+    print("overall_status=unknown")
+    print("failed_stores=")
+    raise SystemExit(0)
+
+overall_status = "unknown"
+failed_stores = []
+
+with jsonl_path.open("r", encoding="utf-8") as fh:
+    for raw in fh:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+
+        if str(event.get("run_id") or "") != run_id:
+            continue
+
+        phase = str(event.get("phase") or "")
+        if phase == "run_summary":
+            status = str(event.get("overall_status") or "").strip().lower()
+            if status:
+                overall_status = status
+
+        store_outcome = str(event.get("store_outcome") or "").strip().lower()
+        store_code = str(event.get("store_code") or "").strip()
+        if store_outcome == "failed" and store_code and store_code not in failed_stores:
+            failed_stores.append(store_code)
+
+print(f"run_id={run_id}")
+print(f"overall_status={overall_status}")
+print("failed_stores=" + ",".join(failed_stores))
+PY
+  )"
+
+  while IFS='=' read -r key value; do
+    case "${key}" in
+      run_id) run_id="${value}" ;;
+      overall_status) overall_status="${value}" ;;
+      failed_stores) failed_stores="${value}" ;;
+    esac
+  done <<< "${parse_output}"
+
+  if [[ -z "${run_id}" ]]; then
+    log "WARNING: orders_sync observability could not resolve profiler run_id from Script 1 output"
+  fi
+
+  local failed_store_array="[]"
+  if [[ -n "${failed_stores}" ]]; then
+    failed_store_array="[${failed_stores}]"
+  fi
+
+  log "orders_sync_profiler_run_id=${run_id:-unknown}"
+  log "orders_sync_failed_stores=${failed_store_array}"
+  log "orders_sync_overall_status=${overall_status}"
+
+  if [[ "${overall_status}" = "failed" || -n "${failed_stores}" ]]; then
+    log "ERROR: ORDERS SYNC WARNING: profiler run_id=${run_id:-unknown} overall_status=${overall_status} failed_stores=${failed_store_array} (script_rc=${orders_rc})"
+  fi
+}
+
 orders_rc=0
 daily_rc=0
 pending_rc=0
@@ -720,7 +825,8 @@ run_started_epoch="$(date +%s)"
 # ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=1 makes this step return non-zero
 # for persisted overall_status="failed"; keep recording orders_rc while allowing
 # the report pipeline steps to run.
-run_step "Script 1: orders_sync_run_profiler" "./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" || orders_rc=$?
+run_step "Script 1: orders_sync_run_profiler" "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS} ./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" || orders_rc=$?
+extract_orders_sync_observability
 run_step "Script 2: daily_sales_report" "./scripts/run_local_reports_daily_sales.sh" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" || daily_rc=$?
 run_step "Script 3: mtd_same_day_fulfillment_report" "./scripts/run_local_reports_mtd_same_day_fulfillment.sh" "${MTD_SAME_DAY_MAX_ATTEMPTS}" "${MTD_SAME_DAY_RETRY_DELAY_SECONDS}" || mtd_same_day_rc=$?
 # Pending Deliveries must not skip due to a prior successful summary; report CLIs always regenerate.
@@ -749,14 +855,15 @@ log "Report regeneration mode: daily_sales_regenerate=true mtd_same_day_regenera
 
 section "RUN STATUS SUMMARY"
 log "orders_sync_run_profiler_rc=${orders_rc}"
+log "orders_sync_profiler_fail_on_failed_status=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS}"
 log "daily_sales_report_rc=${daily_rc}"
 log "mtd_same_day_fulfillment_report_rc=${mtd_same_day_rc}"
 log "pending_deliveries_rc=${pending_rc}"
 log "daily_sales_report_rescue_rc=${daily_rescue_rc}"
 log "total_duration_seconds=${run_duration_seconds}"
 
-if [[ "${daily_rc}" -ne 0 || "${mtd_same_day_rc}" -ne 0 || "${pending_rc}" -ne 0 ]]; then
-  log "ERROR: One or more required report pipelines failed (daily_sales_report_rc=${daily_rc}, mtd_same_day_fulfillment_report_rc=${mtd_same_day_rc}, pending_deliveries_rc=${pending_rc})."
+if [[ "${orders_rc}" -ne 0 || "${daily_rc}" -ne 0 || "${mtd_same_day_rc}" -ne 0 || "${pending_rc}" -ne 0 ]]; then
+  log "ERROR: One or more required cron steps failed (orders_sync_run_profiler_rc=${orders_rc}, daily_sales_report_rc=${daily_rc}, mtd_same_day_fulfillment_report_rc=${mtd_same_day_rc}, pending_deliveries_rc=${pending_rc})."
   exit 1
 fi
 

@@ -91,10 +91,10 @@ def test_render_html_includes_financial_columns() -> None:
 
 def test_render_html_groups_store_and_formats_duration() -> None:
     rows = [
-        MTDSameDayFulfillmentRow("S1", "A2", datetime(2026, 4, 10, 10), "Alice", "999", "Wash", datetime(2026, 4, 10, 10, 2), "UPI", 0.04, 10, 10),
-        MTDSameDayFulfillmentRow("S1", "A1", datetime(2026, 4, 10, 9), "Bob", None, "Iron", datetime(2026, 4, 10, 9, 14), "CARD", 0.23, 20, 20),
-        MTDSameDayFulfillmentRow("S2", "B1", datetime(2026, 4, 10, 8), "Cara", "888", "Dry", datetime(2026, 4, 10, 13, 23), "CASH", 5.39, 30, 30),
-        MTDSameDayFulfillmentRow("S2", "B2", datetime(2026, 4, 10, 7), "Dan", "777", "Steam", datetime(2026, 4, 10, 7), "UPI", 0.00, 40, 40),
+        MTDSameDayFulfillmentRow("CC1", "S1", "A2", datetime(2026, 4, 10, 10), "Alice", "999", "Wash", datetime(2026, 4, 10, 10, 2), "UPI", 0.04, 10, 10),
+        MTDSameDayFulfillmentRow("CC1", "S1", "A1", datetime(2026, 4, 10, 9), "Bob", None, "Iron", datetime(2026, 4, 10, 9, 14), "CARD", 0.23, 20, 20),
+        MTDSameDayFulfillmentRow("CC2", "S2", "B1", datetime(2026, 4, 10, 8), "Cara", "888", "Dry", datetime(2026, 4, 10, 13, 23), "CASH", 5.39, 30, 30),
+        MTDSameDayFulfillmentRow("CC2", "S2", "B2", datetime(2026, 4, 10, 7), "Dan", "777", "Steam", datetime(2026, 4, 10, 7), "UPI", 0.00, 40, 40),
     ]
     html = render_html(rows=rows, report_date_display='29-Apr-2026', mtd_start_display='01-Apr-2026', mtd_end_display='29-Apr-2026')
     assert "Store: S1" in html and "Store: S2" in html
@@ -102,8 +102,10 @@ def test_render_html_groups_store_and_formats_duration() -> None:
     assert "10-04-2026<br><span class=\"micro-font\">10:00 AM</span>" in html
     assert "10-04-2026<br><span class=\"micro-font\">10:02 AM</span>" in html
     assert "Store Code</th>" in html  # summary only
+    assert "Cost Center</th>" in html
     assert "Customer</th>" in html
     assert "Store Code</th>" in html and "Order Number" in html
+    assert "CC1</td>" in html and "A1</td>" in html
 
 
 @pytest.mark.asyncio

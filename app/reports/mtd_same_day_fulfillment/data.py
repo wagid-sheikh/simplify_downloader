@@ -15,6 +15,7 @@ from app.reports.shared.short_payments import ShortPaymentRow, fetch_short_payme
 
 @dataclass
 class MTDSameDayFulfillmentRow:
+    cost_center: str
     store_code: str
     order_number: str
     order_date: datetime | None
@@ -122,6 +123,7 @@ async def fetch_mtd_same_day_fulfillment(*, database_url: str, report_date: date
                 hours = round((record.payment_date - record.order_date).total_seconds() / 3600, 2)
 
             rows.append(MTDSameDayFulfillmentRow(
+                cost_center=str(record.cost_center or "").strip() or "--",
                 store_code=record.store_code,
                 order_number=record.order_number,
                 order_date=record.order_date,

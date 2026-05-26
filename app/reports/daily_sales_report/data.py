@@ -103,6 +103,7 @@ class ReportDayOrdersByCostCenterRow:
 
 @dataclass
 class SameDayFulfillmentRow:
+    cost_center: str
     store_code: str
     order_number: str
     order_date: datetime | None
@@ -1254,6 +1255,7 @@ async def fetch_daily_sales_report(
                 hours = Decimal(str((payment_dt - order_dt).total_seconds() / 3600)).quantize(Decimal("0.01"))
             same_day_rows.append(
                 SameDayFulfillmentRow(
+                    cost_center=str(record.cost_center or "").strip() or "--",
                     store_code=record.store_code,
                     order_number=record.order_number,
                     order_date=order_dt,

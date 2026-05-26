@@ -306,9 +306,11 @@ def test_run_plan_all_docs_for_run_includes_daily_and_mtd_documents(tmp_path) ->
     main_pdf = tmp_path / "daily.pdf"
     same_day_pdf = tmp_path / "mtd_same_day.pdf"
     short_payments_pdf = tmp_path / "short_payments.pdf"
+    missing_payments_workbook = tmp_path / "actual_payments_not_found.xlsx"
     main_pdf.write_bytes(b"daily")
     same_day_pdf.write_bytes(b"same-day")
     short_payments_pdf.write_bytes(b"short-payments")
+    missing_payments_workbook.write_bytes(b"xlsx")
 
     plan = _build_run_plan(
         pipeline_code="reports.daily_sales_report",
@@ -318,13 +320,14 @@ def test_run_plan_all_docs_for_run_includes_daily_and_mtd_documents(tmp_path) ->
         docs=[
             DocumentRecord(doc_type="daily_sales_report_pdf", store_code=None, path=Path(main_pdf)),
             DocumentRecord(doc_type="daily_sales_short_payments_pdf", store_code=None, path=Path(short_payments_pdf)),
+            DocumentRecord(doc_type="daily_sales_actual_payments_not_found_xlsx", store_code=None, path=Path(missing_payments_workbook)),
             DocumentRecord(doc_type="mtd_same_day_fulfillment_pdf", store_code=None, path=Path(same_day_pdf)),
         ],
         context={"report_date": "2026-04-29"},
     )
 
     assert plan is not None
-    assert plan.attachments == [main_pdf, short_payments_pdf, same_day_pdf]
+    assert plan.attachments == [main_pdf, short_payments_pdf, missing_payments_workbook, same_day_pdf]
 
 
 def test_profiler_context_and_html_include_failed_window_reason() -> None:

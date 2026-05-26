@@ -33,6 +33,7 @@
   <thead>
     <tr>
       <th class="label">#</th>
+      <th class="label">Cost Center</th>
       <th class="label">Order Number</th>
       <th>Order Date</th>
       <th class="label">Payment Date</th>
@@ -47,10 +48,11 @@
   <tbody>
     {% if same_day_grouped_rows_by_store %}
     {% for store_code, store_rows in same_day_grouped_rows_by_store %}
-    <tr class="store-heading-row"><td class="label" colspan="10">Store: {{ store_code }}</td></tr>
+    <tr class="store-heading-row"><td class="label" colspan="11">Store: {{ store_code }}</td></tr>
     {% for row in store_rows %}
     <tr>
       <td>{{ loop.index }}</td>
+      <td class="label">{{ row.cost_center }}</td>
       <td class="label">{{ row.order_number or "--" }}</td>
       <td>{{ row.order_date | format_ddmmyyyy }}<br><span class="micro-font">{{ row.order_date | format_hhmm_ampm }}</span></td>
       <td>{{ row.delivery_or_payment_date | format_ddmmyyyy }}<br><span class="micro-font">{{ row.delivery_or_payment_date | format_hhmm_ampm }}</span></td>
@@ -64,7 +66,7 @@
     {% endfor %}
     {% endfor %}
     {% else %}
-    <tr><td class="center" colspan="10">No records</td></tr>
+    <tr><td class="center" colspan="11">No records</td></tr>
     {% endif %}
   </tbody>
 </table>

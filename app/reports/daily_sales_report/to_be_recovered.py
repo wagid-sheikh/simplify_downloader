@@ -15,6 +15,7 @@ PIPELINE_OUTPUT_PREFIX = "reports.to_be_recovered"
 @dataclass(frozen=True)
 class RecoverySummaryRow:
     cost_center: str
+    count: int
     total_order_amount: Decimal
     total_recoverable_amount: Decimal
 
@@ -28,7 +29,8 @@ class RecoveryDetailGroup:
 
 
 def _row_sort_key(row: RecoveryOrderRow) -> tuple[str, date, str]:
-    return (row.cost_center, row.order_date or date.min, row.order_number)
+    sort_date = row.order_date or date.min
+    return (row.cost_center, -sort_date.toordinal(), row.order_number)
 
 
 def _build_grouped_rows(rows: Iterable[RecoveryOrderRow]) -> list[RecoveryDetailGroup]:
@@ -57,6 +59,7 @@ def _build_summary_rows(
     return [
         RecoverySummaryRow(
             cost_center=group.cost_center,
+            count=len(group.rows),
             total_order_amount=group.group_total_order_amount,
             total_recoverable_amount=group.group_total_recoverable_amount,
         )
@@ -84,6 +87,7 @@ def build_context(
     return {
         "company_name": company_name,
         "report_date_display": report_date.strftime("%d-%b-%Y"),
+        "report_date_value": report_date,
         "run_environment": run_environment,
         "rows": row_list,
         "grouped_rows": grouped_rows,
