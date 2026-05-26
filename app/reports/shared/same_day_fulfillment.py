@@ -267,7 +267,7 @@ async def fetch_same_day_fulfillment_rows(
 
     rows: list[SameDayFulfillmentRecord] = []
     for entry in entries:
-        cost_center = str(entry.get("cost_center") or "")
+        cost_center = str(entry.get("cost_center") or "").strip() or "--"
         order_number = str(entry.get("order_number") or "")
         rows.append(
             SameDayFulfillmentRecord(

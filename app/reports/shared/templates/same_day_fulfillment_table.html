@@ -52,7 +52,7 @@
     {% for row in store_rows %}
     <tr>
       <td>{{ loop.index }}</td>
-      <td class="label">{{ row.cost_center or "--" }}</td>
+      <td class="label">{{ row.cost_center }}</td>
       <td class="label">{{ row.order_number or "--" }}</td>
       <td>{{ row.order_date | format_ddmmyyyy }}<br><span class="micro-font">{{ row.order_date | format_hhmm_ampm }}</span></td>
       <td>{{ row.delivery_or_payment_date | format_ddmmyyyy }}<br><span class="micro-font">{{ row.delivery_or_payment_date | format_hhmm_ampm }}</span></td>

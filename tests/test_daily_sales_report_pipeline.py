@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 import sqlalchemy as sa
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.common.db import session_scope
 from app.reports.daily_sales_report.data import RecoveryOrderRow
@@ -70,6 +71,62 @@ def test_build_context_includes_report_day_orders_by_cost_center() -> None:
     )
     context = pipeline._build_context(payload, "test")
     assert context["report_day_orders_by_cost_center"][0].order_numbers_text == "ORD-1"
+
+
+def test_daily_sales_template_renders_same_day_cost_center_detail_values() -> None:
+    payload = SimpleNamespace(
+        report_date=date(2026, 4, 29),
+        rows=[],
+        totals=SimpleNamespace(),
+        edited_orders=[],
+        edited_orders_summary=None,
+        edited_orders_totals=None,
+        missed_leads=[],
+        cancelled_leads=[],
+        lead_performance_summary=[],
+        to_be_recovered=[],
+        to_be_compensated=[],
+        to_be_recovered_total_order_value=Decimal("0"),
+        to_be_compensated_total_order_value=Decimal("0"),
+        auto_cleared_order_numbers_text="",
+        same_day_fulfillment_rows=[
+            SimpleNamespace(
+                cost_center="CC77",
+                store_code="S77",
+                order_number="ORD-77",
+                order_date=datetime(2026, 4, 29, 10, 30),
+                delivery_or_payment_date=datetime(2026, 4, 29, 11, 10),
+                customer_name="Alex",
+                mobile_number="9999999999",
+                line_items="Wash Shirt × 1",
+                payment_mode="UPI",
+                order_amount=Decimal("120"),
+                payment_received=Decimal("120"),
+                hours=Decimal("0.67"),
+            )
+        ],
+        missing_payment_rows=[],
+        short_payment_rows=[],
+        report_day_orders_by_cost_center=[],
+    )
+    env = Environment(
+        loader=FileSystemLoader(["app/reports/shared/templates"]),
+        autoescape=select_autoescape(["html", "xml"]),
+    )
+    env.filters["format_amount"] = lambda value: str(value)
+    env.filters["format_ddmmyyyy"] = lambda value: str(value)
+    env.filters["format_hhmm_ampm"] = lambda value: str(value)
+    template = env.get_template("same_day_fulfillment_table.html")
+    html = template.render(
+        same_day_title="Same-Day Fulfillment",
+        same_day_grouped_rows_by_store=[("S77", payload.same_day_fulfillment_rows)],
+        same_day_store_summary_rows=[],
+        format_duration_hours=lambda value: str(value),
+        format_duration_minutes=lambda value: str(value),
+    )
+
+    assert "Cost Center" in html
+    assert "CC77</td>" in html and "ORD-77</td>" in html
 
 
 def _create_tables(database_url: str) -> None:

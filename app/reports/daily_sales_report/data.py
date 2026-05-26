@@ -1255,7 +1255,7 @@ async def fetch_daily_sales_report(
                 hours = Decimal(str((payment_dt - order_dt).total_seconds() / 3600)).quantize(Decimal("0.01"))
             same_day_rows.append(
                 SameDayFulfillmentRow(
-                    cost_center=record.cost_center,
+                    cost_center=str(record.cost_center or "").strip() or "--",
                     store_code=record.store_code,
                     order_number=record.order_number,
                     order_date=order_dt,
