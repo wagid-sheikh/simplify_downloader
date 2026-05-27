@@ -144,6 +144,16 @@ BUSINESS_DAY_CANCELLED_OUTPUT_COLUMNS: tuple[str, ...] = (
     "source",
     "customer_type",
 )
+EXISTING_CANCELLED_CURRENT_STATE_OUTPUT_COLUMNS: tuple[str, ...] = (
+    "store_code",
+    "pickup_no",
+    "customer_name",
+    "mobile",
+    "cancel_reason",
+    "cancelled_flag",
+    "customer_type",
+    "lead_created_at",
+)
 COMPLETED_LEADS_TODAY_OUTPUT_COLUMNS: tuple[str, ...] = (
     "store_code",
     "pickup_no",
@@ -359,6 +369,51 @@ async def fetch_business_day_cancelled_td_leads(
             cancelled_at = _parse_td_leads_created_datetime(payload.get("cancelled_at"))
             payload["cancelled_at"] = cancelled_at or payload.get("cancelled_at")
             payload["lead_age_days_at_cancel"] = _calculate_lead_age_days(lead_created_at=payload.get("lead_created_at"), reference_ts=cancelled_at)
+            payload["cancelled_flag"] = resolve_cancelled_flag(
+                cancelled_flag=payload.get("cancelled_flag"),
+                reason=payload.get("cancel_reason"),
+            )
+            rows.append(payload)
+    return await _enrich_td_lead_rows_with_order_history(database_url=database_url, rows=rows)
+
+
+async def fetch_existing_customer_cancelled_current_state_td_leads(*, database_url: str) -> list[dict[str, Any]]:
+    crm_leads_current = sa.table(
+        "crm_leads_current",
+        sa.column("store_code"),
+        sa.column("pickup_no"),
+        sa.column("customer_name"),
+        sa.column("mobile"),
+        sa.column("pickup_created_at"),
+        sa.column("reason"),
+        sa.column("cancelled_flag"),
+        sa.column("customer_type"),
+        sa.column("status_bucket"),
+    )
+    normalized_status_expr = sa.func.lower(sa.func.trim(crm_leads_current.c.status_bucket))
+    normalized_customer_type_expr = sa.func.lower(sa.func.trim(crm_leads_current.c.customer_type))
+
+    query = (
+        sa.select(
+            crm_leads_current.c.store_code.label("store_code"),
+            crm_leads_current.c.pickup_no.label("pickup_no"),
+            crm_leads_current.c.customer_name.label("customer_name"),
+            crm_leads_current.c.mobile.label("mobile"),
+            crm_leads_current.c.reason.label("cancel_reason"),
+            crm_leads_current.c.cancelled_flag.label("cancelled_flag"),
+            crm_leads_current.c.customer_type.label("customer_type"),
+            crm_leads_current.c.pickup_created_at.label("lead_created_at"),
+        )
+        .where(normalized_status_expr == "cancelled")
+        .where(normalized_customer_type_expr == "existing")
+        .order_by(crm_leads_current.c.store_code.asc(), crm_leads_current.c.pickup_no.asc())
+    )
+
+    rows: list[dict[str, Any]] = []
+    async with session_scope(database_url) as session:
+        result = await session.execute(query)
+        for record in result.mappings():
+            payload = {column: record.get(column) for column in EXISTING_CANCELLED_CURRENT_STATE_OUTPUT_COLUMNS}
             payload["cancelled_flag"] = resolve_cancelled_flag(
                 cancelled_flag=payload.get("cancelled_flag"),
                 reason=payload.get("cancel_reason"),
@@ -623,6 +678,7 @@ async def build_td_leads_reporting_payload(
 
     open_leads = await fetch_open_current_td_leads(database_url=database_url, reference_ts=anchor_ts.astimezone(_UTC))
     cancelled_leads_today = await fetch_business_day_cancelled_td_leads(database_url=database_url, reference_ts=anchor_ts)
+    existing_customer_cancelled_current_state = await fetch_existing_customer_cancelled_current_state_td_leads(database_url=database_url)
 
     crm_leads_current = sa.table(
         "crm_leads_current",
@@ -761,6 +817,9 @@ async def build_td_leads_reporting_payload(
             (_without_td_order_history_diagnostics(row) for row in cancelled_leads_today),
             key=lambda row: (str(row.get("store_code") or ""), str(row.get("pickup_no") or ""), str(row.get("cancelled_at") or "")),
         ),
+        "existing_customer_cancelled_current_state": [
+            _without_td_order_history_diagnostics(row) for row in existing_customer_cancelled_current_state
+        ],
         "completed_leads_today": [_without_td_order_history_diagnostics(row) for row in completed_leads_today],
         "action_required": action_required,
     }
@@ -890,6 +949,7 @@ def _build_td_leads_section_table_html_with_rich_cells(
     rich_html_columns: set[int] | None,
 ) -> str:
     header_html = "".join(f"<th align='left'>{html.escape(column)}</th>" for column in headers)
+
     blocks = [
         f"<h5 style='margin:10px 0 6px 0;'>{html.escape(section_label)}</h5>",
         "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse; width:100%; margin-bottom:8px;'>",
@@ -1311,6 +1371,29 @@ def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
     }
 
 
+def _build_td_existing_cancelled_current_state_html(*, rows_payload: Sequence[Mapping[str, Any]]) -> str:
+    rows = [
+        [
+            str(row.get("store_code") or "None"),
+            str(row.get("pickup_no") or "None"),
+            str(row.get("customer_name") or "None"),
+            str(row.get("mobile") or "None"),
+            _build_td_cancelled_context(row={"cancelled_flag": row.get("cancelled_flag"), "reason": row.get("cancel_reason")}),
+            _format_td_customer_type_for_email(row),
+            str(row.get("previous_number_of_orders") if row.get("previous_number_of_orders") is not None else 0),
+            _format_td_average_order_amount(row.get("average_order_amount")),
+            _format_pickup_created_display(row),
+        ]
+        for row in rows_payload
+        if isinstance(row, Mapping)
+    ]
+    return _build_td_leads_section_table_html(
+        section_label=f"Existing Customer Leads Marked as Cancelled (All-time/current-state) ({len(rows)})",
+        headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Cancel Reason/Context", "Customer Type", "Number of Orders", "Average Order Value", "Created Date/Time"),
+        rows=rows,
+    )
+
+
 def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str:
     threshold_days = int(daily_reporting.get("open_leads_high_age_threshold_days") or 0)
     high_age_rows_payload = daily_reporting.get("open_leads_high_age") if isinstance(daily_reporting.get("open_leads_high_age"), list) else []
@@ -1366,6 +1449,7 @@ def _resolve_daily_reporting_for_mode(
                 "open_leads_high_age_threshold_days": action_required.get("open_leads_high_age_threshold_days"),
                 "open_leads_high_age": action_required.get("open_leads_high_age", []),
                 "cancelled_leads_today": reporting_payload.get("cancelled_leads_today", []),
+                "existing_customer_cancelled_current_state": reporting_payload.get("existing_customer_cancelled_current_state", []),
                 "completed_leads_without_order_match": action_required.get("completed_without_order_match", []),
             }
     return _build_td_daily_reporting(summary)
@@ -1386,6 +1470,8 @@ def _build_td_leads_summary_html(
         reporting_mode=reporting_mode,
         reporting_payload=reporting_payload,
     )
+    existing_cancelled_rows = daily_reporting.get("existing_customer_cancelled_current_state") if isinstance(daily_reporting.get("existing_customer_cancelled_current_state"), list) else []
+
     blocks = [
         "<div>",
         "<h3>TD CRM Leads Sync Summary</h3>",
@@ -1397,6 +1483,9 @@ def _build_td_leads_summary_html(
         "<p style='margin:4px 0 0 0; font-size:12px; color:#555555;'>",
         f"Reference run_id: <code>{html.escape(summary.run_id)}</code>",
         "</p>",
+        _build_td_existing_cancelled_current_state_html(rows_payload=existing_cancelled_rows)
+        if reporting_mode in {"meeting", "day_end"}
+        else "",
         _build_td_leads_tables_html(summary=summary),
         _build_td_action_required_html(daily_reporting=daily_reporting),
         "</div>",

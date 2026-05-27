@@ -3982,7 +3982,7 @@ def test_td_leads_run_summary_record_includes_frozen_daily_reporting_for_reporti
     assert frozen["reporting_mode"] == mode
     assert frozen["daily_reporting"] is not None
     assert list(frozen["daily_reporting"].keys()) == [
-        "open_leads_high_age_threshold_days", "open_leads_high_age", "cancelled_leads_today", "completed_leads_without_order_match"
+        "open_leads_high_age_threshold_days", "open_leads_high_age", "cancelled_leads_today", "existing_customer_cancelled_current_state", "completed_leads_without_order_match"
     ]
     assert "action_required" in frozen and isinstance(frozen["action_required"], str)
 
@@ -3993,3 +3993,67 @@ def test_td_leads_run_summary_record_without_reporting_mode_keeps_backward_compa
 
     assert record["metrics_json"]["frozen_day_report_datasets"] is None
     assert "summary_html" in record["metrics_json"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_existing_customer_cancelled_current_state_td_leads_filters_and_ignores_business_day_window(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_existing_cancelled_current_state.db'}"
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(sa.text("""
+                CREATE TABLE crm_leads_current (
+                    store_code TEXT,
+                    pickup_no TEXT,
+                    customer_name TEXT,
+                    mobile TEXT,
+                    pickup_created_at TEXT,
+                    reason TEXT,
+                    cancelled_flag TEXT,
+                    customer_type TEXT,
+                    status_bucket TEXT
+                )
+            """))
+            await connection.execute(sa.text("""
+                CREATE TABLE vw_orders (
+                    store_code TEXT,
+                    mobile_number TEXT,
+                    order_amount NUMERIC
+                )
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO crm_leads_current (store_code,pickup_no,customer_name,mobile,pickup_created_at,reason,cancelled_flag,customer_type,status_bucket) VALUES
+                ('A001','A001-X1','Existing Cancelled','9000000001','2020-01-01 00:00:00+00:00','Customer dropped',NULL,'Existing','cancelled'),
+                ('A001','A001-X2','New Cancelled','9000000002','2026-05-01 00:00:00+00:00','x',NULL,'New','cancelled'),
+                ('A001','A001-X3','Existing Open','9000000003','2026-05-01 00:00:00+00:00','x',NULL,'Existing','pending')
+            """))
+            await connection.execute(sa.text("""
+                INSERT INTO vw_orders (store_code,mobile_number,order_amount) VALUES
+                ('A001','9000000001',100),('A001','9000000001',200)
+            """))
+
+        rows = await td_leads_main.fetch_existing_customer_cancelled_current_state_td_leads(database_url=database_url)
+    finally:
+        await engine.dispose()
+
+    assert [row['pickup_no'] for row in rows] == ['A001-X1']
+    assert rows[0]['previous_number_of_orders'] == 2
+    assert rows[0]['average_order_amount'] == 150.0
+
+
+def test_build_td_leads_summary_html_places_existing_cancelled_current_state_first_for_meeting_and_day_end() -> None:
+    summary = LeadsRunSummary(run_id='run-1', run_env='test', report_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(), started_at=datetime(2026, 5, 1, 9, 0, tzinfo=timezone.utc))
+    summary.store_results['A001'] = StoreLeadResult(store_code='A001', rows=[{'status_bucket':'pending','pickup_no':'A001-1','customer_name':'A','mobile':'9','pickup_created_at':'2026-05-01 09:00:00+00:00','source':'Meta'}], status_counts={'pending':1})
+
+    reporting_payload = {
+        'cancelled_leads_today': [{'store_code':'A001','pickup_no':'A001-C1'}],
+        'existing_customer_cancelled_current_state': [
+            {'store_code':'A001','pickup_no':'A001-EC1','customer_name':'Existing','mobile':'9000000001','cancel_reason':'Customer dropped','cancelled_flag':'customer','customer_type':'Existing','lead_created_at':'2020-01-01 00:00:00+00:00','previous_number_of_orders':0,'average_order_amount':None}
+        ],
+        'action_required': {'open_leads_high_age_threshold_days':2,'open_leads_high_age':[],'completed_without_order_match':[]}
+    }
+
+    for mode in ('meeting','day_end'):
+        html = _build_td_leads_summary_html(summary=summary, duration_human='00:00:10', reporting_mode=mode, reporting_payload=reporting_payload)
+        assert 'Existing Customer Leads Marked as Cancelled (All-time/current-state) (1)' in html
+        assert html.index('Existing Customer Leads Marked as Cancelled (All-time/current-state) (1)') < html.index('Action Required')
