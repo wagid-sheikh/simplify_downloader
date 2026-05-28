@@ -724,6 +724,8 @@ async def fetch_daily_sales_report(
     remaining_days = _remaining_days(report_date)
     day_of_month = report_date.day
     days_in_month = _days_in_month(report_date)
+    report_run_id = f"daily_sales_report:{report_date.isoformat()}"
+    customer_type_fallback_logged = False
 
     cost_center = sa.table(
         "cost_center",
@@ -829,6 +831,7 @@ async def fetch_daily_sales_report(
         sa.column("status_bucket"),
         sa.column("customer_name"),
         sa.column("mobile"),
+        sa.column("customer_type"),
         sa.column("pickup_created_at"),
         sa.column("reason"),
         sa.column("cancelled_flag"),
@@ -1343,6 +1346,30 @@ async def fetch_daily_sales_report(
     async with session_scope(database_url) as session:
         bind = session.bind
         dialect_name = bind.dialect.name if bind is not None else "postgresql"
+        connection = await session.connection()
+        crm_leads_columns = set(
+            await connection.run_sync(
+                lambda sync_conn: {
+                    column["name"] for column in sa.inspect(sync_conn).get_columns("crm_leads_current")
+                }
+            )
+        )
+        has_customer_type_column = "customer_type" in crm_leads_columns
+        crm_leads_customer_type_expr = (
+            crm_leads_current.c.customer_type.label("customer_type")
+            if has_customer_type_column
+            else sa.literal(None).label("customer_type")
+        )
+        if not has_customer_type_column and not customer_type_fallback_logged:
+            logger.warning(
+                "daily_sales_report.crm_leads_current_missing_column",
+                extra={
+                    "run_id": report_run_id,
+                    "table_name": "crm_leads_current",
+                    "column_name": "customer_type",
+                },
+            )
+            customer_type_fallback_logged = True
         missed_leads_stmt = (
             sa.select(
                 td_store_master_primary.c.store_name.label("store_name"),
@@ -1415,7 +1442,7 @@ async def fetch_daily_sales_report(
                 td_store_master_primary.c.store_name.label("store_name"),
                 crm_leads_current.c.customer_name.label("customer_name"),
                 crm_leads_current.c.mobile.label("mobile"),
-                crm_leads_current.c.customer_type.label("customer_type"),
+                crm_leads_customer_type_expr,
                 crm_leads_current.c.reason.label("reason"),
                 normalized_cancelled_flag_expr.label("cancelled_flag"),
                 crm_leads_current.c.pickup_created_at.label("pickup_created_at"),
