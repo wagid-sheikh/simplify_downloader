@@ -3557,12 +3557,49 @@ async def test_td_leads_reporting_enriches_customer_type_and_order_metrics_from_
         "open_leads_high_age": payload["action_required"]["open_leads_high_age"],
         "completed_leads_without_order_match": payload["action_required"]["completed_without_order_match"],
     })
-    assert "Existing | Orders: 2 | Avg. Value: ₹1,234.50" in action_required_html
-    assert "Orders:" not in action_required_html.split("A200-NO", 1)[1].split("A200-HIST", 1)[0]
+    assert "Store Code</th><th align='left'>Pickup No</th><th align='left'>Customer Name</th><th align='left'>Mobile</th><th align='left'>Customer Type</th><th align='left'>Number of Orders</th><th align='left'>Average Order Value</th><th align='left'>Created Date/Time" in action_required_html
+    assert "Lead Age (Days)" not in action_required_html
+    assert "Last Seen Status" not in action_required_html
+    assert "Source" not in action_required_html.split("Open leads with high age", 1)[1].split("Completed leads without order match", 1)[0]
+    assert "A200-HIST</td>" in action_required_html
+    assert "₹1,234.50" in action_required_html
+    new_row_fragment = action_required_html.split("A200-NO", 1)[1].split("</tr>", 1)[0]
+    assert "<td>New</td><td>None</td><td>None</td>" not in new_row_fragment
+    assert "<td>New</td><td></td><td></td>" in new_row_fragment
 
     crm_current_columns = {column["name"] for column in columns}
     assert "previous_number_of_orders" not in crm_current_columns
     assert "average_order_amount" not in crm_current_columns
+
+
+def test_td_leads_tables_html_highlights_cancelled_existing_rows_in_normal_run() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-cancelled-existing-highlight",
+        run_env="local",
+        report_date=datetime(2026, 4, 24, tzinfo=timezone.utc).date(),
+        store_results={
+            "A817": StoreLeadResult(
+                store_code="A817",
+                rows=[
+                    {
+                        "status_bucket": "cancelled",
+                        "pickup_no": "A817-CAN-EX",
+                        "pickup_id": "CAN-EX",
+                        "customer_name": "Existing Cancelled",
+                        "mobile": "9000000100",
+                        "reason": "No inventory",
+                        "customer_type": "Existing",
+                    }
+                ],
+                status_transitions=[{"pickup_no": "A817-CAN-EX", "to_status_bucket": "cancelled"}],
+            )
+        },
+    )
+
+    tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "Leads Marked as Cancelled (1 transitions this run)" in tables_html
+    assert "<tr style='color:#b00020; font-weight:600;'>" in tables_html
 
 
 
