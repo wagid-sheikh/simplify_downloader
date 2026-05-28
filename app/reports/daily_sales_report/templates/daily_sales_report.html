@@ -433,7 +433,7 @@
           <td class="micro-leads-list">
             {% if group.store_cancelled_rows %}
               {% for lead in group.store_cancelled_rows %}
-                ({{ lead.mobile }}, {{ lead.customer_name }} - {{ lead.reason or "--" }}){% if not loop.last %}, {% endif %}
+                <span{% if lead.is_existing_customer_cancelled %} style="color: #dc2626;"{% endif %}>({{ lead.mobile }}, {{ lead.customer_name }} - {{ lead.reason or "--" }})</span>{% if not loop.last %}, {% endif %}
               {% endfor %}
             {% else %}
               --

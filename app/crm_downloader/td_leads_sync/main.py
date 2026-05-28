@@ -144,6 +144,16 @@ BUSINESS_DAY_CANCELLED_OUTPUT_COLUMNS: tuple[str, ...] = (
     "source",
     "customer_type",
 )
+EXISTING_CANCELLED_CURRENT_STATE_OUTPUT_COLUMNS: tuple[str, ...] = (
+    "store_code",
+    "pickup_no",
+    "customer_name",
+    "mobile",
+    "cancel_reason",
+    "cancelled_flag",
+    "customer_type",
+    "lead_created_at",
+)
 COMPLETED_LEADS_TODAY_OUTPUT_COLUMNS: tuple[str, ...] = (
     "store_code",
     "pickup_no",
@@ -359,6 +369,51 @@ async def fetch_business_day_cancelled_td_leads(
             cancelled_at = _parse_td_leads_created_datetime(payload.get("cancelled_at"))
             payload["cancelled_at"] = cancelled_at or payload.get("cancelled_at")
             payload["lead_age_days_at_cancel"] = _calculate_lead_age_days(lead_created_at=payload.get("lead_created_at"), reference_ts=cancelled_at)
+            payload["cancelled_flag"] = resolve_cancelled_flag(
+                cancelled_flag=payload.get("cancelled_flag"),
+                reason=payload.get("cancel_reason"),
+            )
+            rows.append(payload)
+    return await _enrich_td_lead_rows_with_order_history(database_url=database_url, rows=rows)
+
+
+async def fetch_existing_customer_cancelled_current_state_td_leads(*, database_url: str) -> list[dict[str, Any]]:
+    crm_leads_current = sa.table(
+        "crm_leads_current",
+        sa.column("store_code"),
+        sa.column("pickup_no"),
+        sa.column("customer_name"),
+        sa.column("mobile"),
+        sa.column("pickup_created_at"),
+        sa.column("reason"),
+        sa.column("cancelled_flag"),
+        sa.column("customer_type"),
+        sa.column("status_bucket"),
+    )
+    normalized_status_expr = sa.func.lower(sa.func.trim(crm_leads_current.c.status_bucket))
+    normalized_customer_type_expr = sa.func.lower(sa.func.trim(crm_leads_current.c.customer_type))
+
+    query = (
+        sa.select(
+            crm_leads_current.c.store_code.label("store_code"),
+            crm_leads_current.c.pickup_no.label("pickup_no"),
+            crm_leads_current.c.customer_name.label("customer_name"),
+            crm_leads_current.c.mobile.label("mobile"),
+            crm_leads_current.c.reason.label("cancel_reason"),
+            crm_leads_current.c.cancelled_flag.label("cancelled_flag"),
+            crm_leads_current.c.customer_type.label("customer_type"),
+            crm_leads_current.c.pickup_created_at.label("lead_created_at"),
+        )
+        .where(normalized_status_expr == "cancelled")
+        .where(normalized_customer_type_expr == "existing")
+        .order_by(crm_leads_current.c.store_code.asc(), crm_leads_current.c.pickup_no.asc())
+    )
+
+    rows: list[dict[str, Any]] = []
+    async with session_scope(database_url) as session:
+        result = await session.execute(query)
+        for record in result.mappings():
+            payload = {column: record.get(column) for column in EXISTING_CANCELLED_CURRENT_STATE_OUTPUT_COLUMNS}
             payload["cancelled_flag"] = resolve_cancelled_flag(
                 cancelled_flag=payload.get("cancelled_flag"),
                 reason=payload.get("cancel_reason"),
@@ -623,6 +678,7 @@ async def build_td_leads_reporting_payload(
 
     open_leads = await fetch_open_current_td_leads(database_url=database_url, reference_ts=anchor_ts.astimezone(_UTC))
     cancelled_leads_today = await fetch_business_day_cancelled_td_leads(database_url=database_url, reference_ts=anchor_ts)
+    existing_customer_cancelled_current_state = await fetch_existing_customer_cancelled_current_state_td_leads(database_url=database_url)
 
     crm_leads_current = sa.table(
         "crm_leads_current",
@@ -761,6 +817,9 @@ async def build_td_leads_reporting_payload(
             (_without_td_order_history_diagnostics(row) for row in cancelled_leads_today),
             key=lambda row: (str(row.get("store_code") or ""), str(row.get("pickup_no") or ""), str(row.get("cancelled_at") or "")),
         ),
+        "existing_customer_cancelled_current_state": [
+            _without_td_order_history_diagnostics(row) for row in existing_customer_cancelled_current_state
+        ],
         "completed_leads_today": [_without_td_order_history_diagnostics(row) for row in completed_leads_today],
         "action_required": action_required,
     }
@@ -879,6 +938,7 @@ def _build_td_leads_section_table_html(*, section_label: str, headers: Sequence[
         headers=headers,
         rows=rows,
         rich_html_columns=None,
+        row_styles=None,
     )
 
 
@@ -888,8 +948,10 @@ def _build_td_leads_section_table_html_with_rich_cells(
     headers: Sequence[str],
     rows: Sequence[Sequence[Any]],
     rich_html_columns: set[int] | None,
+    row_styles: Sequence[str | None] | None,
 ) -> str:
     header_html = "".join(f"<th align='left'>{html.escape(column)}</th>" for column in headers)
+
     blocks = [
         f"<h5 style='margin:10px 0 6px 0;'>{html.escape(section_label)}</h5>",
         "<table border='1' cellpadding='6' cellspacing='0' style='border-collapse:collapse; width:100%; margin-bottom:8px;'>",
@@ -899,20 +961,30 @@ def _build_td_leads_section_table_html_with_rich_cells(
     if not rows:
         blocks.append(f"<tr><td colspan='{len(headers)}'><em>None</em></td></tr>")
     else:
-        for row in rows:
+        for row_index, row in enumerate(rows):
+            row_style = ""
+            if row_styles and row_index < len(row_styles) and row_styles[row_index]:
+                row_style = f" style='{html.escape(str(row_styles[row_index]), quote=True)}'"
             rendered_cells: list[str] = []
             for cell_index, value in enumerate(row):
+                rendered_value = "None" if value is None else str(value)
                 if rich_html_columns and cell_index in rich_html_columns:
-                    rendered_cells.append(f"<td>{str(value or 'None')}</td>")
+                    rendered_cells.append(f"<td>{rendered_value}</td>")
                 else:
-                    rendered_cells.append(f"<td>{html.escape(str(value or 'None'))}</td>")
-            blocks.append("<tr>" + "".join(rendered_cells) + "</tr>")
+                    rendered_cells.append(f"<td>{html.escape(rendered_value)}</td>")
+            blocks.append(f"<tr{row_style}>" + "".join(rendered_cells) + "</tr>")
     blocks.extend(["</tbody>", "</table>"])
     return "".join(blocks)
 
 
 def _is_customer_cancelled_td_lead(row: Mapping[str, Any]) -> bool:
     return is_customer_cancelled(cancelled_flag=row.get("cancelled_flag"), reason=row.get("reason"))
+
+
+def _is_td_cancelled_existing_row(row: Mapping[str, Any]) -> bool:
+    status_bucket = str(row.get("status_bucket") or "").strip().lower()
+    customer_type = str(row.get("customer_type") or "").strip().lower()
+    return status_bucket == "cancelled" and customer_type == "existing"
 
 
 def _format_pickup_created_display(row: Mapping[str, Any]) -> str:
@@ -1174,6 +1246,7 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
         cancelled_transition_pickup_nos = sorted(cancelled_transition_pickup_nos, key=_cancelled_transition_sort_key)
         cancelled_total = len(cancelled_transition_pickup_nos)
         cancelled_detail_rows: list[list[str]] = []
+        cancelled_row_styles: list[str | None] = []
         for transition_pickup_no in cancelled_transition_pickup_nos:
             matching_row = row_by_pickup_no.get(transition_pickup_no) or {}
             resolved_reason = str(matching_row.get("reason") or "").strip()
@@ -1186,6 +1259,7 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                     _build_td_cancelled_context(row=matching_row),
                 ]
             )
+            cancelled_row_styles.append("color:#b00020; font-weight:600;" if _is_td_cancelled_existing_row(matching_row) else None)
 
         pending_rows = _td_leads_bucket_rows(result, "pending")
         pending_detail_rows: list[list[str]] = []
@@ -1206,6 +1280,7 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                 headers=("Lead Details",),
                 rows=created_rows,
                 rich_html_columns=None,
+                row_styles=None,
             )
         )
         blocks.extend(created_order_metric_markers)
@@ -1215,6 +1290,7 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                 headers=("Lead Details", "Cancellation Context"),
                 rows=cancelled_detail_rows,
                 rich_html_columns=None,
+                row_styles=cancelled_row_styles,
             )
         )
         blocks.append(
@@ -1311,6 +1387,29 @@ def _build_td_daily_reporting(summary: "LeadsRunSummary") -> dict[str, Any]:
     }
 
 
+def _build_td_existing_cancelled_current_state_html(*, rows_payload: Sequence[Mapping[str, Any]]) -> str:
+    rows = [
+        [
+            str(row.get("store_code") or "None"),
+            str(row.get("pickup_no") or "None"),
+            str(row.get("customer_name") or "None"),
+            str(row.get("mobile") or "None"),
+            _build_td_cancelled_context(row={"cancelled_flag": row.get("cancelled_flag"), "reason": row.get("cancel_reason")}),
+            _format_td_customer_type_for_email(row),
+            str(row.get("previous_number_of_orders") if row.get("previous_number_of_orders") is not None else 0),
+            _format_td_average_order_amount(row.get("average_order_amount")),
+            _format_pickup_created_display(row),
+        ]
+        for row in rows_payload
+        if isinstance(row, Mapping)
+    ]
+    return _build_td_leads_section_table_html(
+        section_label=f"Existing Customer Leads Marked as Cancelled (All-time/current-state) ({len(rows)})",
+        headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Cancel Reason/Context", "Customer Type", "Number of Orders", "Average Order Value", "Created Date/Time"),
+        rows=rows,
+    )
+
+
 def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str:
     threshold_days = int(daily_reporting.get("open_leads_high_age_threshold_days") or 0)
     high_age_rows_payload = daily_reporting.get("open_leads_high_age") if isinstance(daily_reporting.get("open_leads_high_age"), list) else []
@@ -1321,10 +1420,33 @@ def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str
             return _format_td_customer_type_for_email(row)
         if column == "lead_created_at":
             return _format_pickup_created_display(row)
+        if column == "previous_number_of_orders":
+            if str(row.get("customer_type") or "").strip().lower() == "new":
+                return ""
+            return str(row.get("previous_number_of_orders") if row.get("previous_number_of_orders") is not None else 0)
+        if column == "average_order_amount":
+            if str(row.get("customer_type") or "").strip().lower() == "new":
+                return ""
+            return _format_td_average_order_amount(row.get("average_order_amount"))
         return str(row.get(column) or "None")
 
+    high_age_columns = (
+        "store_code",
+        "pickup_no",
+        "customer_name",
+        "mobile",
+        "customer_type",
+        "previous_number_of_orders",
+        "average_order_amount",
+        "lead_created_at",
+    )
     high_age_rows = [
-        [_action_cell(row, column) for column in ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS]
+        [_action_cell(row, column) for column in high_age_columns]
+        for row in high_age_rows_payload
+        if isinstance(row, Mapping)
+    ]
+    high_age_row_styles = [
+        "color:#b00020; font-weight:600;" if _is_td_cancelled_existing_row(row) else None
         for row in high_age_rows_payload
         if isinstance(row, Mapping)
     ]
@@ -1336,10 +1458,12 @@ def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str
 
     blocks = ["<div>", "<h4 style='margin:16px 0 8px 0;'>Action Required</h4>"]
     blocks.append(
-        _build_td_leads_section_table_html(
+        _build_td_leads_section_table_html_with_rich_cells(
             section_label=f"Open leads with high age ({threshold_days}+ days) ({len(high_age_rows)})",
-            headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Lead Created At", "Lead Age (Days)", "Source", "Customer Type", "Last Seen Status"),
+            headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Customer Type", "Number of Orders", "Average Order Value", "Created Date/Time"),
             rows=high_age_rows,
+            rich_html_columns=None,
+            row_styles=high_age_row_styles,
         )
     )
     blocks.append(
@@ -1366,6 +1490,7 @@ def _resolve_daily_reporting_for_mode(
                 "open_leads_high_age_threshold_days": action_required.get("open_leads_high_age_threshold_days"),
                 "open_leads_high_age": action_required.get("open_leads_high_age", []),
                 "cancelled_leads_today": reporting_payload.get("cancelled_leads_today", []),
+                "existing_customer_cancelled_current_state": reporting_payload.get("existing_customer_cancelled_current_state", []),
                 "completed_leads_without_order_match": action_required.get("completed_without_order_match", []),
             }
     return _build_td_daily_reporting(summary)
@@ -1386,6 +1511,8 @@ def _build_td_leads_summary_html(
         reporting_mode=reporting_mode,
         reporting_payload=reporting_payload,
     )
+    existing_cancelled_rows = daily_reporting.get("existing_customer_cancelled_current_state") if isinstance(daily_reporting.get("existing_customer_cancelled_current_state"), list) else []
+
     blocks = [
         "<div>",
         "<h3>TD CRM Leads Sync Summary</h3>",
@@ -1397,6 +1524,9 @@ def _build_td_leads_summary_html(
         "<p style='margin:4px 0 0 0; font-size:12px; color:#555555;'>",
         f"Reference run_id: <code>{html.escape(summary.run_id)}</code>",
         "</p>",
+        _build_td_existing_cancelled_current_state_html(rows_payload=existing_cancelled_rows)
+        if reporting_mode in {"meeting", "day_end"}
+        else "",
         _build_td_leads_tables_html(summary=summary),
         _build_td_action_required_html(daily_reporting=daily_reporting),
         "</div>",

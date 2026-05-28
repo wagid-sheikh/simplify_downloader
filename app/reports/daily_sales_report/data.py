@@ -1415,6 +1415,7 @@ async def fetch_daily_sales_report(
                 td_store_master_primary.c.store_name.label("store_name"),
                 crm_leads_current.c.customer_name.label("customer_name"),
                 crm_leads_current.c.mobile.label("mobile"),
+                crm_leads_current.c.customer_type.label("customer_type"),
                 crm_leads_current.c.reason.label("reason"),
                 normalized_cancelled_flag_expr.label("cancelled_flag"),
                 crm_leads_current.c.pickup_created_at.label("pickup_created_at"),
@@ -1439,6 +1440,7 @@ async def fetch_daily_sales_report(
                 lead_base.c.store_name,
                 lead_base.c.customer_name,
                 lead_base.c.mobile,
+                lead_base.c.customer_type,
                 lead_base.c.cancelled_flag,
                 lead_base.c.reason,
             )
@@ -1477,6 +1479,9 @@ async def fetch_daily_sales_report(
                         "customer_name": str(entry["customer_name"] or "--"),
                         "mobile": str(entry["mobile"] or "--"),
                         "reason": (str(entry["reason"] or "").strip() or "--"),
+                        "is_existing_customer_cancelled": (
+                            str(entry["customer_type"] or "").strip().lower() == "existing"
+                        ),
                     }
                 )
         cancelled_leads_grouped = [
