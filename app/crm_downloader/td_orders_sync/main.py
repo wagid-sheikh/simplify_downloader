@@ -3177,10 +3177,11 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger, time
     else:
         reason = None
 
+    probe_status = "ok" if state_valid else ("info" if reason == "login_form_visible" else "warning")
     log_event(
         logger=logger,
         phase="session",
-        status="ok" if state_valid else "warning",
+        status=probe_status,
         message="Probed session with existing storage state",
         store_code=store.store_code,
         response_status=getattr(response, "status", None),
@@ -3195,6 +3196,8 @@ async def _probe_session(page: Page, *, store: TdStore, logger: JsonLogger, time
         probe_error=probe_error,
         probe_target=target_url,
         contains_store_path=contains_store_path,
+        probe_result="valid" if state_valid else "invalid",
+        login_followup_status="not_attempted",
     )
     return SessionProbeResult(
         valid=state_valid,
@@ -7255,17 +7258,25 @@ async def _run_store_discovery(
                     storage_state=str(store.storage_state_path),
                     probe_reason=probe_reason,
                     probe_valid=probe_result.valid,
+                    probe_result="valid",
+                    login_followup_status="not_required",
                     re_login_performed=login_performed,
                 )
             else:
+                probe_severity = "warning"
+                if probe_reason == "login_form_visible":
+                    probe_severity = "info"
                 log_event(
                     logger=store_logger,
                     phase="session",
+                    status=probe_severity,
                     message="Storage state probe invalid; performing login",
                     store_code=store.store_code,
                     storage_state=str(store.storage_state_path),
                     probe_reason=probe_reason,
                     probe_valid=probe_result.valid,
+                    probe_result="invalid",
+                    login_followup_status="started",
                     verification_seen=verification_seen,
                     nav_visible=probe_result.nav_visible,
                     home_card_visible=probe_result.home_card_visible,
@@ -7275,6 +7286,17 @@ async def _run_store_discovery(
                     page, store=store, logger=store_logger, nav_timeout_ms=nav_timeout_ms
                 )
                 login_performed = True
+                log_event(
+                    logger=store_logger,
+                    phase="session",
+                    status="info" if probe_reason == "login_form_visible" and session_reused else ("ok" if session_reused else "warning"),
+                    message="Storage state probe follow-up login outcome",
+                    store_code=store.store_code,
+                    probe_reason=probe_reason,
+                    probe_result="invalid",
+                    login_followup_status="success" if session_reused else "failed",
+                    re_login_performed=True,
+                )
         else:  # no storage state → must login
             probe_reason = "no_storage_state"
             log_event(

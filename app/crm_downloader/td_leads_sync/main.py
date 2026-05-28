@@ -2313,12 +2313,47 @@ async def _run_store(
         verification_seen = False
         if storage_state_exists:
             probe_result = await _probe_session(page, store=store, logger=logger, timeout_ms=NAV_TIMEOUT_MS)
+            probe_reason = probe_result.reason or "state_valid"
             verification_seen = bool(probe_result.verification_seen)
             if probe_result.valid:
                 session_reused = True
+                log_event(
+                    logger=logger,
+                    phase="session",
+                    status="ok",
+                    message="Storage state probe valid; reusing leads session",
+                    store_code=store.store_code,
+                    probe_result="valid",
+                    probe_reason=probe_reason,
+                    login_followup_status="not_required",
+                )
             else:
+                probe_severity = "info" if probe_reason == "login_form_visible" else "warning"
+                log_event(
+                    logger=logger,
+                    phase="session",
+                    status=probe_severity,
+                    message="Storage state probe invalid; performing leads login",
+                    store_code=store.store_code,
+                    probe_result="invalid",
+                    probe_reason=probe_reason,
+                    login_followup_status="started",
+                    verification_seen=verification_seen,
+                    nav_visible=probe_result.nav_visible,
+                    home_card_visible=probe_result.home_card_visible,
+                )
                 session_reused = await _perform_login(page, store=store, logger=logger, nav_timeout_ms=NAV_TIMEOUT_MS)
                 login_performed = True
+                log_event(
+                    logger=logger,
+                    phase="session",
+                    status="info" if probe_reason == "login_form_visible" and session_reused else ("ok" if session_reused else "warning"),
+                    message="Storage state probe follow-up leads login outcome",
+                    store_code=store.store_code,
+                    probe_result="invalid",
+                    probe_reason=probe_reason,
+                    login_followup_status="success" if session_reused else "failed",
+                )
         else:
             session_reused = await _perform_login(page, store=store, logger=logger, nav_timeout_ms=NAV_TIMEOUT_MS)
             login_performed = True
