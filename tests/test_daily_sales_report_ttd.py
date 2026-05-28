@@ -377,6 +377,61 @@ def test_daily_sales_report_cancelled_leads_empty_state_rendering() -> None:
     assert ">None<" in html
 
 
+def test_daily_sales_report_cancelled_leads_existing_customer_highlight() -> None:
+    report_date = date(2026, 1, 19)
+    rows = []
+    totals = _totals_row(rows)
+    report_data = DailySalesReportData(
+        report_date=report_date,
+        rows=rows,
+        totals=totals,
+        edited_orders=[],
+        edited_orders_totals=None,
+        edited_orders_summary=None,
+        missed_leads=[],
+        cancelled_leads=[
+            {
+                "store_name": "Uttam Nagar",
+                "total_cancelled_count": 3,
+                "customer_cancelled_count": 1,
+                "store_cancelled_rows": [
+                    {
+                        "customer_name": "Bob",
+                        "mobile": "8888888888",
+                        "reason": "No stock",
+                        "is_existing_customer_cancelled": True,
+                    },
+                    {
+                        "customer_name": "Alice",
+                        "mobile": "9999999999",
+                        "reason": "Changed mind",
+                        "is_existing_customer_cancelled": False,
+                    },
+                    {
+                        "customer_name": "Chris",
+                        "mobile": "7777777777",
+                        "reason": "--",
+                    },
+                ],
+            }
+        ],
+        lead_performance_summary=[],
+        completed_today_leads=[],
+        td_leads_sync_metrics={},
+        td_leads_sync_lead_changes={},
+    )
+    html = _render_html(_build_context(report_data, "prod"))
+
+    assert "Cancelled Leads for this Month" in html
+    assert ">3<" in html
+    assert "(8888888888, Bob - No stock)" in html
+    assert "(9999999999, Alice - Changed mind)" in html
+    assert "(7777777777, Chris - --)" in html
+    assert '<span style="color: #dc2626;">(8888888888, Bob - No stock)</span>' in html
+    assert '<span style="color: #dc2626;">(9999999999, Alice - Changed mind)</span>' not in html
+    assert '<span style="color: #dc2626;">(7777777777, Chris - --)</span>' not in html
+
+
 def test_daily_sales_report_same_day_section_uses_shared_table_partial() -> None:
     report = DailySalesReportData(
         report_date=date(2026, 4, 29),
