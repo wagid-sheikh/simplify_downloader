@@ -1264,13 +1264,22 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
         pending_rows = _td_leads_bucket_rows(result, "pending")
         pending_detail_rows: list[list[str]] = []
         for row in pending_rows:
-            created_display = _format_pickup_created_display(row)
+            customer_type = _format_td_customer_type_for_email(row)
+            is_new_customer = str(row.get("customer_type") or "").strip().lower() == "new"
+            previous_number_of_orders = (
+                "" if is_new_customer else str(row.get("previous_number_of_orders") if row.get("previous_number_of_orders") is not None else 0)
+            )
+            average_order_amount = "" if is_new_customer else _format_td_average_order_amount(row.get("average_order_amount"))
             pending_detail_rows.append(
                 [
+                    str(row.get("store_code") or result.store_code or "None"),
+                    str(row.get("pickup_no") or "None"),
                     str(row.get("customer_name") or "None"),
                     str(row.get("mobile") or "None"),
-                    str(created_display),
-                    str(row.get("source") or "None"),
+                    customer_type,
+                    previous_number_of_orders,
+                    average_order_amount,
+                    _format_pickup_created_display(row),
                 ]
             )
 
@@ -1296,7 +1305,7 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
         blocks.append(
             _build_td_leads_section_table_html(
                 section_label=f"Pending Leads ({len(pending_rows)})",
-                headers=("Customer Name", "Mobile Number", "Created Date/Time", "Source"),
+                headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Customer Type", "Number of Orders", "Average Order Value", "Created Date/Time"),
                 rows=pending_detail_rows,
             )
         )
