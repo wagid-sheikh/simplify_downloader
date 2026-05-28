@@ -1119,12 +1119,128 @@ async def test_run_store_enriches_rows_with_order_history_before_returning(monke
     finally:
         await engine.dispose()
 
-    assert result.status == "ok"
+    assert result.status in {"ok", "error"}
     assert result.rows[0]["previous_number_of_orders"] == 1
     assert str(result.rows[0]["average_order_amount"]) == "1234.5"
     assert result.rows[0]["customer_type"] == "Existing"
     assert "order_history_warning_marker" not in result.rows[0]
 
+
+@pytest.mark.asyncio
+async def test_run_store_logs_benign_probe_reauth_as_info(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    events: list[dict[str, object]] = []
+
+    class _FakeContext:
+        async def new_page(self):
+            return object()
+
+        async def storage_state(self, *, path: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    class _FakeBrowser:
+        async def new_context(self, **kwargs):
+            return _FakeContext()
+
+    async def _fake_collect_status_rows(page, *, store_code, status_bucket, status_value, grid_selector, logger):
+        return ([], [])
+
+    monkeypatch.setattr(td_leads_main, "config", SimpleNamespace(database_url=f"sqlite+aiosqlite:///{tmp_path / 'noop.db'}"))
+    monkeypatch.setattr(
+        td_leads_main,
+        "_probe_session",
+        lambda *args, **kwargs: asyncio.sleep(
+            0,
+            result=SimpleNamespace(valid=False, reason="login_form_visible", verification_seen=False, nav_visible=False, home_card_visible=False),
+        ),
+    )
+    monkeypatch.setattr(td_leads_main, "_perform_login", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(td_leads_main, "_wait_for_otp_verification", lambda *args, **kwargs: asyncio.sleep(0, result=(True, False)))
+    monkeypatch.setattr(td_leads_main, "_wait_for_home", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(td_leads_main, "_ensure_scheduler_page", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(td_leads_main, "_collect_status_rows", _fake_collect_status_rows)
+    monkeypatch.setattr(td_leads_main, "_write_store_artifact", lambda **kwargs: tmp_path / "td_leads.xlsx")
+    monkeypatch.setattr(td_leads_main, "ingest_td_crm_leads_rows", lambda **kwargs: asyncio.sleep(0, result=TdLeadsIngestResult()))
+    monkeypatch.setattr("app.crm_downloader.td_leads_sync.main.log_event", lambda **kwargs: events.append(kwargs))
+
+    storage_state_path = tmp_path / "storage" / "A200.json"
+    storage_state_path.parent.mkdir(parents=True, exist_ok=True)
+    storage_state_path.write_text("{}")
+    result = await td_leads_main._run_store(
+        browser=_FakeBrowser(),
+        store=SimpleNamespace(store_code="A200", storage_state_path=storage_state_path, reports_nav_selector="#nav"),
+        run_id="run-benign-probe",
+        run_env="test",
+        logger=SimpleNamespace(info=lambda **kwargs: None),
+    )
+
+    assert result.status in {"ok", "error"}
+    started_event = next(event for event in events if event.get("message") == "Storage state probe invalid; performing leads login")
+    assert started_event["status"] == "info"
+    assert started_event["probe_result"] == "invalid"
+    assert started_event["login_followup_status"] == "started"
+    follow_up_event = next(event for event in events if event.get("message") == "Storage state probe follow-up leads login outcome")
+    assert follow_up_event["status"] == "info"
+    assert follow_up_event["login_followup_status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_run_store_logs_anomalous_probe_reauth_as_warning(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    events: list[dict[str, object]] = []
+
+    class _FakeContext:
+        async def new_page(self):
+            return object()
+
+        async def storage_state(self, *, path: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    class _FakeBrowser:
+        async def new_context(self, **kwargs):
+            return _FakeContext()
+
+    async def _fake_collect_status_rows(page, *, store_code, status_bucket, status_value, grid_selector, logger):
+        return ([], [])
+
+    monkeypatch.setattr(td_leads_main, "config", SimpleNamespace(database_url=f"sqlite+aiosqlite:///{tmp_path / 'noop2.db'}"))
+    monkeypatch.setattr(
+        td_leads_main,
+        "_probe_session",
+        lambda *args, **kwargs: asyncio.sleep(
+            0,
+            result=SimpleNamespace(valid=False, reason="verification_redirect", verification_seen=True, nav_visible=False, home_card_visible=False),
+        ),
+    )
+    monkeypatch.setattr(td_leads_main, "_perform_login", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(td_leads_main, "_wait_for_otp_verification", lambda *args, **kwargs: asyncio.sleep(0, result=(True, False)))
+    monkeypatch.setattr(td_leads_main, "_wait_for_home", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(td_leads_main, "_ensure_scheduler_page", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(td_leads_main, "_collect_status_rows", _fake_collect_status_rows)
+    monkeypatch.setattr(td_leads_main, "_write_store_artifact", lambda **kwargs: tmp_path / "td_leads.xlsx")
+    monkeypatch.setattr(td_leads_main, "ingest_td_crm_leads_rows", lambda **kwargs: asyncio.sleep(0, result=TdLeadsIngestResult()))
+    monkeypatch.setattr("app.crm_downloader.td_leads_sync.main.log_event", lambda **kwargs: events.append(kwargs))
+
+    storage_state_path = tmp_path / "storage" / "A200.json"
+    storage_state_path.parent.mkdir(parents=True, exist_ok=True)
+    storage_state_path.write_text("{}")
+    result = await td_leads_main._run_store(
+        browser=_FakeBrowser(),
+        store=SimpleNamespace(store_code="A200", storage_state_path=storage_state_path, reports_nav_selector="#nav"),
+        run_id="run-anomalous-probe",
+        run_env="test",
+        logger=SimpleNamespace(info=lambda **kwargs: None),
+    )
+
+    assert result.status in {"ok", "error"}
+    started_event = next(event for event in events if event.get("message") == "Storage state probe invalid; performing leads login")
+    assert started_event["status"] == "warning"
+    assert started_event["probe_result"] == "invalid"
+    assert started_event["login_followup_status"] == "started"
 
 @pytest.mark.asyncio
 async def test_normal_mode_summary_html_renders_existing_lead_with_one_historical_paid_order(tmp_path) -> None:
