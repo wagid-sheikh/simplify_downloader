@@ -2692,11 +2692,11 @@ async def test_ingest_lead_change_details_dedupes_and_caps_rows(tmp_path) -> Non
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("has_new_leads", "has_cancelled_from_active", "reporting_mode", "expected_subject"),
+    ("has_new_leads", "has_cancelled_from_active", "reporting_mode", "run_overall_status", "expected_subject"),
     [
-        (True, False, "meeting", "NEW LEADS TD CRM Leads run-1 [meeting]"),
-        (False, True, "day_end", "NEW LEADS TD CRM Leads run-1 [day_end]"),
-        (False, False, None, "TD CRM Leads run-1"),
+        (True, False, "meeting", "success", "NEW LEADS TD CRM Leads run-1 [meeting]"),
+        (False, True, "day_end", "success", "NEW LEADS TD CRM Leads run-1 [day_end]"),
+        (False, False, None, "failed", "TD CRM Leads run-1"),
     ],
 )
 async def test_td_leads_seeded_run_notification_plans_email(
@@ -2705,6 +2705,7 @@ async def test_td_leads_seeded_run_notification_plans_email(
     has_new_leads: bool,
     has_cancelled_from_active: bool,
     reporting_mode: str | None,
+    run_overall_status: str,
     expected_subject: str,
 ) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'td_leads_notif.db'}"
@@ -2831,12 +2832,13 @@ async def test_td_leads_seeded_run_notification_plans_email(
                         total_time_taken, summary_text, metrics_json
                     ) VALUES (
                         'td_crm_leads_sync', 'run-1', 'local', '2026-04-22T00:00:00+00:00', '2026-04-22T00:01:00+00:00',
-                        '2026-04-22', 'success', '00:01:00', 'ok',
+                        '2026-04-22', :overall_status, '00:01:00', 'ok',
                         :metrics_json
                     )
                     """
                 ),
                 {
+                    "overall_status": run_overall_status,
                     "metrics_json": json.dumps(
                         {
                             "summary_html": "<div>ok</div>",
@@ -2878,7 +2880,7 @@ async def test_td_leads_seeded_run_notification_plans_email(
                     INSERT INTO email_templates (
                         profile_id, name, subject_template, body_template, is_active
                     ) VALUES (
-                        10, 'run_summary', '{{ subject_prefix }}TD CRM Leads {{ run_id }}{{ reporting_mode_suffix }}', 'Run {{ run_id }} complete in {{ duration_human }}', 1
+                        10, 'run_summary', '{{ subject_prefix }}TD CRM Leads {{ run_id }}{{ reporting_mode_suffix }}', 'Run {{ run_id }} status {{ overall_status_upper }} complete in {{ duration_human }}', 1
                     )
                     """
                 )
@@ -2924,7 +2926,8 @@ async def test_td_leads_seeded_run_notification_plans_email(
         if reporting_mode in {"day_end", "meeting"}:
             assert f"[{reporting_mode}]" in sent_plans[0].subject
         assert "00:01:00" in sent_plans[0].body
-        assert "Run run-1 complete in 00:01:00" in sent_plans[0].body
+        assert "Run run-1 status" in sent_plans[0].body
+        assert f"status {run_overall_status.upper()}" in sent_plans[0].body
     finally:
         await engine.dispose()
 
@@ -3061,10 +3064,16 @@ async def test_td_leads_main_normalizes_store_worker_exceptions_and_persists_sum
         async def close(self) -> None:
             return None
 
-    async def _fake_run_store(*, browser, store, run_id, run_env, logger):
+    async def _fake_run_store_worker(*, browser, store, logger, run_env, run_id, semaphore):
         if store.store_code == "B":
             raise RuntimeError("boom")
-        return td_leads_main.StoreLeadResult(store_code=store.store_code, status="ok")
+        return td_leads_main.TdLeadsStoreWorkerResult(
+            store_code=store.store_code,
+            result=td_leads_main.StoreLeadResult(store_code=store.store_code, status="ok"),
+            queued_at=datetime.now(timezone.utc),
+            queue_wait_ms=0,
+            duration_ms=1,
+        )
 
     async def _fake_notify(pipeline_name, run_id):
         notifications.append((pipeline_name, run_id))
@@ -3078,7 +3087,7 @@ async def test_td_leads_main_normalizes_store_worker_exceptions_and_persists_sum
         lambda logger, summary, finished_at, reporting_mode=None, reporting_payload=None, reporting_schema_errors=None: persisted_summaries.append(summary) or asyncio.sleep(0, result=True),
     )
     monkeypatch.setattr(td_leads_main, "_resolve_td_leads_concurrency_settings", lambda: (2, 2, True))
-    monkeypatch.setattr(td_leads_main, "_run_store", _fake_run_store)
+    monkeypatch.setattr(td_leads_main, "_run_store_worker", _fake_run_store_worker)
     monkeypatch.setattr(td_leads_main, "send_notifications_for_run", _fake_notify)
     monkeypatch.setattr(td_leads_main, "async_playwright", lambda: _FakePlaywrightContext())
     monkeypatch.setattr(td_leads_main, "launch_browser", lambda playwright, logger: asyncio.sleep(0, result=_FakeBrowser()))
@@ -3088,7 +3097,12 @@ async def test_td_leads_main_normalizes_store_worker_exceptions_and_persists_sum
     assert len(persisted_summaries) == 1
     assert persisted_summaries[0].store_results["A"].status == "ok"
     assert persisted_summaries[0].store_results["B"].status == "error"
-    assert "failed" in persisted_summaries[0].store_results["B"].message.lower()
+    assert persisted_summaries[0].run_had_worker_exception is True
+    assert persisted_summaries[0].overall_status() == "failed"
+    record = persisted_summaries[0].build_record(finished_at=persisted_summaries[0].started_at)
+    assert record["overall_status"] == "failed"
+    assert record["metrics_json"]["run_had_worker_exception"] is True
+    assert "did not return a result" in persisted_summaries[0].store_results["B"].message.lower()
     assert notifications == [("td_crm_leads_sync", "run-errors")]
 
 

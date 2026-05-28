@@ -1560,13 +1560,21 @@ class LeadsRunSummary:
     report_date: date
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     store_results: dict[str, StoreLeadResult] = field(default_factory=dict)
+    run_had_worker_exception: bool = False
 
     def overall_status(self) -> str:
-        statuses = [result.status for result in self.store_results.values()]
-        if any(status == "error" for status in statuses):
+        if self.run_had_worker_exception:
             return "failed"
-        if any(status == "warning" for status in statuses):
+        statuses = [str(result.status or "").strip().lower() for result in self.store_results.values()]
+        failure_statuses = {"error", "failed"}
+        success_statuses = {"ok", "success"}
+        warning_statuses = {"warning", "success_with_warnings"}
+        if any(status in failure_statuses for status in statuses):
+            return "failed"
+        if any(status in warning_statuses for status in statuses):
             return "success_with_warnings"
+        if any(status not in success_statuses for status in statuses):
+            return "failed"
         return "success"
 
     def total_rows(self) -> int:
@@ -1694,6 +1702,7 @@ class LeadsRunSummary:
                         result.store_code: dict(result.lead_change_details) for result in self.store_results.values()
                     },
                     "task_stubs": [dict(result.task_stub or {}) for result in self.store_results.values()],
+                    "run_had_worker_exception": self.run_had_worker_exception,
                 }
             ),
             "created_at": self.started_at,
@@ -1775,6 +1784,15 @@ async def _persist_run_summary(
             run_id=summary.run_id,
         )
         return False
+
+    for result in summary.store_results.values():
+        normalized = str(result.status or "").strip().lower()
+        if normalized in {"ok", "success"}:
+            result.status = "ok"
+        elif normalized in {"warning", "success_with_warnings"}:
+            result.status = "warning"
+        else:
+            result.status = "error"
 
     await _enrich_td_summary_with_order_history(database_url=config.database_url, summary=summary)
     record = summary.build_record(
@@ -2590,8 +2608,10 @@ async def main(
                 ]
                 worker_results = await asyncio.gather(*tasks, return_exceptions=True)
                 by_store_code: dict[str, StoreLeadResult] = {}
+                run_had_worker_exception = False
                 for worker_result in worker_results:
                     if isinstance(worker_result, Exception):
+                        run_had_worker_exception = True
                         log_event(
                             logger=logger,
                             phase="store",
@@ -2602,6 +2622,8 @@ async def main(
                         )
                         continue
                     by_store_code[worker_result.store_code] = worker_result.result
+                if run_had_worker_exception:
+                    summary.run_had_worker_exception = True
 
                 for store in stores:
                     summary.store_results[store.store_code] = by_store_code.get(

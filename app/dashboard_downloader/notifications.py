@@ -2880,6 +2880,11 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[st
         "duration_human": duration_human,
         "missing_windows_by_store": profiler_missing_windows,
     }
+    if pipeline_name == "td_crm_leads_sync":
+        normalized_status = _normalize_output_status(context.get("overall_status"))
+        context["overall_status"] = normalized_status
+        context["overall_status_label"] = _format_status_label(normalized_status)
+        context["overall_status_upper"] = _to_upper_status(normalized_status)
     if pipeline_name == "td_orders_sync":
         context.update(_build_td_orders_context(run_data, missing_windows_by_store=profiler_missing_windows))
     elif pipeline_name == "uc_orders_sync":
