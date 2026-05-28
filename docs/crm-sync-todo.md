@@ -335,3 +335,59 @@ Stabilize and complete TD API-driven sync/diagnostics so API modes are reliable,
   * full command used
   * env vars (`TD_API_ARTIFACT_DIR`, source mode)
   * relevant log segment around “Prepared API client” / “Persisted TD API artifacts”.
+
+---
+
+## Task: TD Leads run-summary pending-section enhancement
+
+### Goal
+Align the **Pending Leads** section body in the TD leads run-summary email with the existing **Action Required → Open leads with high age** table contract, while keeping the Pending Leads section header unchanged.
+
+### Requested behavior
+- Keep section label format as-is:
+  - `Pending Leads (N)`
+- Replace Pending Leads table body/columns so it follows this structure:
+  - `Store Code | Pickup No | Customer Name | Mobile | Customer Type | Number of Orders | Average Order Value | Created Date/Time`
+- Ensure row-level rendering rules match Action Required behavior for:
+  - Customer type normalization/display
+  - Existing-customer order metrics (`previous_number_of_orders`, `average_order_amount`)
+  - Blank order metrics for `New` customer-type rows
+  - Created timestamp display formatting
+
+### Scope
+1. Update td_leads_sync email HTML section builder logic for Pending Leads.
+2. Reuse existing helper formatting paths used by Action Required high-age section where feasible (avoid duplicate logic).
+3. Update/extend tests in `tests/crm_downloader/test_td_leads_sync.py` to assert:
+   - Updated Pending Leads headers
+   - Correct data mapping for enriched pending rows
+   - New/existing customer metric rendering behavior
+   - No regression in Action Required sections.
+
+### Acceptance criteria
+- Pending Leads header remains unchanged.
+- Pending Leads table body matches the eight-column Action Required high-age contract.
+- Existing tests remain green, and targeted td_leads_sync tests pass.
+- No unrelated pipeline/report formatting changes are introduced.
+
+### Implementation checklist (actual enhancement task)
+1. In `app/crm_downloader/td_leads_sync/main.py`, update the `Pending Leads` section construction inside `_build_td_leads_tables_html`:
+   - Replace current 4-column pending row mapping (`Customer Name`, `Mobile Number`, `Created Date/Time`, `Source`) with the 8-column contract used by Action Required high-age table.
+   - Column order must be exactly:
+     `store_code`, `pickup_no`, `customer_name`, `mobile`, `customer_type`, `previous_number_of_orders`, `average_order_amount`, `lead_created_at` (displayed as `Created Date/Time`).
+2. Reuse existing render/format helpers already used by `_build_td_action_required_html` for:
+   - customer type formatting (`_format_td_customer_type_for_email`),
+   - average order amount formatting (`_format_td_average_order_amount`),
+   - created date display (`_format_pickup_created_display`).
+3. Apply the same new-customer behavior as Action Required high-age rows:
+   - when customer type resolves to `New`, render `Number of Orders` and `Average Order Value` cells as blank.
+4. Keep the section title unchanged (`Pending Leads (N)`), and do not change section ordering.
+5. Update tests in `tests/crm_downloader/test_td_leads_sync.py`:
+   - Replace assertions expecting the old pending header with assertions for the new 8-column pending header.
+   - Add/adjust fixtures to verify metric-cell blanking for `New` and formatted metrics for `Existing`.
+   - Keep existing Action Required assertions intact and passing.
+6. Run targeted tests for td leads summary/table rendering before merge.
+
+### Definition of done for this enhancement
+- Email summary keeps `Pending Leads (N)` heading.
+- Pending Leads table body is structurally and behaviorally aligned with Action Required high-age rows.
+- Test coverage reflects the new contract and passes for touched td_leads_sync tests.
