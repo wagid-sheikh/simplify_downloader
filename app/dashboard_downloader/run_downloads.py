@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import json
+import random
 from pathlib import Path
 import re
 import subprocess
@@ -50,6 +51,10 @@ DASHBOARD_DOWNLOAD_CONTROL_TIMEOUT_MS = 90_000
 DEFAULT_SESSION_PROBE_URL = HOME_URL
 BOOTSTRAP_ARTIFACTS_DIR = DATA_DIR / "bootstrap_artifacts"
 DASHBOARD_DOWNLOAD_NAV_TIMEOUT_DEFAULT_MS = 90_000
+DOWNLOAD_RETRY_MAX_ATTEMPTS = 3
+DOWNLOAD_RETRY_BASE_DELAY_S = 0.5
+DOWNLOAD_RETRY_MAX_DELAY_S = 5.0
+DOWNLOAD_RETRY_JITTER_S = 0.2
 
 
 class LoginBootstrapError(RuntimeError):
@@ -946,12 +951,77 @@ async def _download_one_spec(
     request = page.context.request
     attempted_refresh = False
 
+    def _is_transient_download_error(exc: Exception) -> bool:
+        if isinstance(exc, (TimeoutError, ConnectionError, asyncio.TimeoutError, PlaywrightTimeoutError)):
+            return True
+
+        err_text = str(exc).lower()
+        transient_markers = (
+            "socket hang up",
+            "timeout",
+            "timed out",
+            "connection reset",
+            "econnreset",
+        )
+        return any(marker in err_text for marker in transient_markers)
+
+    def _retry_delay_s(attempt: int) -> float:
+        # attempt starts from 1 for the first retry.
+        exponential = min(DOWNLOAD_RETRY_BASE_DELAY_S * (2 ** (attempt - 1)), DOWNLOAD_RETRY_MAX_DELAY_S)
+        jitter = random.uniform(0, DOWNLOAD_RETRY_JITTER_S)
+        return exponential + jitter
+
     while True:
-        try:
-            response = await request.get(url)
-        except Exception as exc:
-            _log("error", f"request failed for {spec['key']}", extras={"error": str(exc)})
-            return None, page
+        retry_attempts = 0
+        retry_diagnostics: Dict[str, Any] = {
+            "max_attempts": DOWNLOAD_RETRY_MAX_ATTEMPTS,
+            "retry_count": 0,
+            "retry_errors": [],
+        }
+
+        while True:
+            attempt = retry_attempts + 1
+            try:
+                response = await request.get(url)
+                break
+            except Exception as exc:
+                if not _is_transient_download_error(exc) or attempt >= DOWNLOAD_RETRY_MAX_ATTEMPTS:
+                    if _is_transient_download_error(exc):
+                        retry_diagnostics["retry_count"] = retry_attempts
+                        retry_diagnostics["retry_errors"] = retry_diagnostics["retry_errors"]
+                    _log(
+                        "error",
+                        f"request failed for {spec['key']}",
+                        extras={
+                            "error": str(exc),
+                            "error_class": type(exc).__name__,
+                            "retry": retry_diagnostics,
+                        },
+                    )
+                    return None, page
+
+                retry_attempts += 1
+                retry_diagnostics["retry_count"] = retry_attempts
+                retry_diagnostics["retry_errors"].append(
+                    {
+                        "attempt": attempt,
+                        "error_class": type(exc).__name__,
+                        "error_message": str(exc),
+                    }
+                )
+                _log(
+                    "warning",
+                    f"transient request failure for {spec['key']} — retrying",
+                    extras={
+                        "bucket": spec["key"],
+                        "store_code": sc,
+                        "attempt": attempt,
+                        "max_attempts": DOWNLOAD_RETRY_MAX_ATTEMPTS,
+                        "error_class": type(exc).__name__,
+                        "error_message": str(exc),
+                    },
+                )
+                await asyncio.sleep(_retry_delay_s(retry_attempts))
 
         if response is None:
             _log("error", f"no response returned for {spec['key']}")
