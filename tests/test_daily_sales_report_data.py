@@ -244,6 +244,7 @@ def _create_tables(database_url: str) -> None:
                     status_bucket TEXT,
                     customer_name TEXT,
                     mobile TEXT,
+                    customer_type TEXT,
                     pickup_created_at TIMESTAMP,
                     reason TEXT,
                     cancelled_flag TEXT
@@ -861,6 +862,66 @@ async def test_fetch_daily_sales_report_cancelled_leads_month_window_and_formatt
     assert un_summary["completed_leads"] == 2
     assert un_summary["cancelled_leads"] == 2
     assert un_summary["pending_leads"] == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_uses_customer_type_when_present(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_customer_type_present.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 4, 23)
+
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD','TD','value',1)"))
+        await session.execute(
+            sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1, 'CC-TD', 'UN', 'Uttam Nagar', 'TD')")
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO crm_leads_current (lead_uid, store_code, status_bucket, customer_name, mobile, customer_type, pickup_created_at, reason, cancelled_flag) "
+                "VALUES ('L1', 'UN', 'cancelled', 'Customer One', '9000000001', 'Existing', '2026-04-02 00:00:00', 'NA', 'store')"
+            )
+        )
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    assert report.cancelled_leads[0]["store_cancelled_rows"][0]["is_existing_customer_cancelled"] is True
+
+
+@pytest.mark.asyncio
+async def test_fetch_daily_sales_report_falls_back_when_customer_type_missing(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_customer_type_missing.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 4, 23)
+
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("DROP TABLE crm_leads_current"))
+        await session.execute(
+            sa.text(
+                "CREATE TABLE crm_leads_current (lead_uid TEXT, store_code TEXT, status_bucket TEXT, customer_name TEXT, mobile TEXT, pickup_created_at TIMESTAMP, reason TEXT, cancelled_flag TEXT)"
+            )
+        )
+        await session.execute(sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD','TD','value',1)"))
+        await session.execute(
+            sa.text("INSERT INTO store_master (id, cost_center, store_code, store_name, sync_group) VALUES (1, 'CC-TD', 'UN', 'Uttam Nagar', 'TD')")
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO crm_leads_current (lead_uid, store_code, status_bucket, customer_name, mobile, pickup_created_at, reason, cancelled_flag) "
+                "VALUES ('L1', 'UN', 'cancelled', 'Customer One', '9000000001', '2026-04-02 00:00:00', 'NA', 'store')"
+            )
+        )
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+    assert report.cancelled_leads[0]["store_cancelled_rows"][0]["is_existing_customer_cancelled"] is False
 
 
 def test_completed_reconciliation_string_agg_requires_keyword_arguments() -> None:
