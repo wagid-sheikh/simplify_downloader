@@ -316,25 +316,50 @@ async def _finalize_summary_and_email(
         )
 
     try:
-        await send_notifications_for_run(aggregator.pipeline_name, aggregator.run_id)
-        success_message = (
-            "summary-only notification dispatched (no documents generated)"
-            if summary_only
-            else "notification dispatch completed"
-        )
+        notification_result = await send_notifications_for_run(aggregator.pipeline_name, aggregator.run_id)
+        emails_planned = int(notification_result.get("emails_planned", 0) or 0)
+        emails_sent = int(notification_result.get("emails_sent", 0) or 0)
+        notification_errors = list(notification_result.get("errors", []) or [])
+
+        is_full_success = emails_sent > 0 and emails_sent == emails_planned and not notification_errors
+        if is_full_success:
+            status = "info"
+            message = (
+                "summary-only notification dispatched (no documents generated)"
+                if summary_only
+                else "notification dispatch completed"
+            )
+        else:
+            status = "warning"
+            if emails_planned == 0 and emails_sent == 0:
+                message = "notification dispatch skipped (no eligible recipients)"
+            elif notification_errors:
+                message = "notification dispatch completed with errors"
+            else:
+                message = "notification dispatch partially completed"
+
+        extras = {
+            "emails_planned": emails_planned,
+            "emails_sent": emails_sent,
+            "notification_errors": notification_errors,
+            "summary_only": summary_only,
+            "pipeline_name": aggregator.pipeline_name,
+            "run_id": aggregator.run_id,
+        }
         log_event(
             logger=logger,
             phase="report_email",
-            status="info",
-            message=success_message,
-            extras={"pipeline_name": aggregator.pipeline_name, "run_id": aggregator.run_id},
+            status=status,
+            message=message,
+            extras=extras,
         )
         aggregator.finalize_email(
-            status="info",
-            message=success_message,
+            status=status,
+            message=message,
             recipients=[],
             attachment_count=attachment_count,
         )
+        aggregator.email_metrics.update(extras)
     except Exception as exc:  # pragma: no cover - defensive
         aggregator.finalize_email(
             status="warning",
@@ -347,6 +372,28 @@ async def _finalize_summary_and_email(
             phase="report_email",
             status="warning",
             message="notification dispatch failed",
+            extras={"error": str(exc)},
+        )
+
+    if not database_url:
+        return
+
+    try:
+        final_record = aggregator.build_record(finished_at=final_finished_at)
+        await update_run_summary(database_url, aggregator.run_id, final_record)
+        log_event(
+            logger=logger,
+            phase="run_summary",
+            status="info",
+            message="run summary updated with notification outcome",
+            extras={"overall_status": aggregator.overall_status()},
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        log_event(
+            logger=logger,
+            phase="run_summary",
+            status="error",
+            message="failed to persist run summary after notification dispatch",
             extras={"error": str(exc)},
         )
 
