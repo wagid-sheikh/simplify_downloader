@@ -938,6 +938,7 @@ def _build_td_leads_section_table_html(*, section_label: str, headers: Sequence[
         headers=headers,
         rows=rows,
         rich_html_columns=None,
+        row_styles=None,
     )
 
 
@@ -947,6 +948,7 @@ def _build_td_leads_section_table_html_with_rich_cells(
     headers: Sequence[str],
     rows: Sequence[Sequence[Any]],
     rich_html_columns: set[int] | None,
+    row_styles: Sequence[str | None] | None,
 ) -> str:
     header_html = "".join(f"<th align='left'>{html.escape(column)}</th>" for column in headers)
 
@@ -959,20 +961,30 @@ def _build_td_leads_section_table_html_with_rich_cells(
     if not rows:
         blocks.append(f"<tr><td colspan='{len(headers)}'><em>None</em></td></tr>")
     else:
-        for row in rows:
+        for row_index, row in enumerate(rows):
+            row_style = ""
+            if row_styles and row_index < len(row_styles) and row_styles[row_index]:
+                row_style = f" style='{html.escape(str(row_styles[row_index]), quote=True)}'"
             rendered_cells: list[str] = []
             for cell_index, value in enumerate(row):
+                rendered_value = "None" if value is None else str(value)
                 if rich_html_columns and cell_index in rich_html_columns:
-                    rendered_cells.append(f"<td>{str(value or 'None')}</td>")
+                    rendered_cells.append(f"<td>{rendered_value}</td>")
                 else:
-                    rendered_cells.append(f"<td>{html.escape(str(value or 'None'))}</td>")
-            blocks.append("<tr>" + "".join(rendered_cells) + "</tr>")
+                    rendered_cells.append(f"<td>{html.escape(rendered_value)}</td>")
+            blocks.append(f"<tr{row_style}>" + "".join(rendered_cells) + "</tr>")
     blocks.extend(["</tbody>", "</table>"])
     return "".join(blocks)
 
 
 def _is_customer_cancelled_td_lead(row: Mapping[str, Any]) -> bool:
     return is_customer_cancelled(cancelled_flag=row.get("cancelled_flag"), reason=row.get("reason"))
+
+
+def _is_td_cancelled_existing_row(row: Mapping[str, Any]) -> bool:
+    status_bucket = str(row.get("status_bucket") or "").strip().lower()
+    customer_type = str(row.get("customer_type") or "").strip().lower()
+    return status_bucket == "cancelled" and customer_type == "existing"
 
 
 def _format_pickup_created_display(row: Mapping[str, Any]) -> str:
@@ -1234,6 +1246,7 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
         cancelled_transition_pickup_nos = sorted(cancelled_transition_pickup_nos, key=_cancelled_transition_sort_key)
         cancelled_total = len(cancelled_transition_pickup_nos)
         cancelled_detail_rows: list[list[str]] = []
+        cancelled_row_styles: list[str | None] = []
         for transition_pickup_no in cancelled_transition_pickup_nos:
             matching_row = row_by_pickup_no.get(transition_pickup_no) or {}
             resolved_reason = str(matching_row.get("reason") or "").strip()
@@ -1246,6 +1259,7 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                     _build_td_cancelled_context(row=matching_row),
                 ]
             )
+            cancelled_row_styles.append("color:#b00020; font-weight:600;" if _is_td_cancelled_existing_row(matching_row) else None)
 
         pending_rows = _td_leads_bucket_rows(result, "pending")
         pending_detail_rows: list[list[str]] = []
@@ -1266,6 +1280,7 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                 headers=("Lead Details",),
                 rows=created_rows,
                 rich_html_columns=None,
+                row_styles=None,
             )
         )
         blocks.extend(created_order_metric_markers)
@@ -1275,6 +1290,7 @@ def _build_td_leads_tables_html(*, summary: "LeadsRunSummary") -> str:
                 headers=("Lead Details", "Cancellation Context"),
                 rows=cancelled_detail_rows,
                 rich_html_columns=None,
+                row_styles=cancelled_row_styles,
             )
         )
         blocks.append(
@@ -1404,10 +1420,33 @@ def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str
             return _format_td_customer_type_for_email(row)
         if column == "lead_created_at":
             return _format_pickup_created_display(row)
+        if column == "previous_number_of_orders":
+            if str(row.get("customer_type") or "").strip().lower() == "new":
+                return ""
+            return str(row.get("previous_number_of_orders") if row.get("previous_number_of_orders") is not None else 0)
+        if column == "average_order_amount":
+            if str(row.get("customer_type") or "").strip().lower() == "new":
+                return ""
+            return _format_td_average_order_amount(row.get("average_order_amount"))
         return str(row.get(column) or "None")
 
+    high_age_columns = (
+        "store_code",
+        "pickup_no",
+        "customer_name",
+        "mobile",
+        "customer_type",
+        "previous_number_of_orders",
+        "average_order_amount",
+        "lead_created_at",
+    )
     high_age_rows = [
-        [_action_cell(row, column) for column in ACTION_REQUIRED_HIGH_AGE_OUTPUT_COLUMNS]
+        [_action_cell(row, column) for column in high_age_columns]
+        for row in high_age_rows_payload
+        if isinstance(row, Mapping)
+    ]
+    high_age_row_styles = [
+        "color:#b00020; font-weight:600;" if _is_td_cancelled_existing_row(row) else None
         for row in high_age_rows_payload
         if isinstance(row, Mapping)
     ]
@@ -1419,10 +1458,12 @@ def _build_td_action_required_html(*, daily_reporting: Mapping[str, Any]) -> str
 
     blocks = ["<div>", "<h4 style='margin:16px 0 8px 0;'>Action Required</h4>"]
     blocks.append(
-        _build_td_leads_section_table_html(
+        _build_td_leads_section_table_html_with_rich_cells(
             section_label=f"Open leads with high age ({threshold_days}+ days) ({len(high_age_rows)})",
-            headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Lead Created At", "Lead Age (Days)", "Source", "Customer Type", "Last Seen Status"),
+            headers=("Store Code", "Pickup No", "Customer Name", "Mobile", "Customer Type", "Number of Orders", "Average Order Value", "Created Date/Time"),
             rows=high_age_rows,
+            rich_html_columns=None,
+            row_styles=high_age_row_styles,
         )
     )
     blocks.append(
