@@ -91,3 +91,48 @@ async def test_run_pipeline_ignores_int_bucket_payload(monkeypatch) -> None:
     monkeypatch.setattr(dashboard_pipeline, "_finalize_summary_and_email", fake_finalize)
 
     await dashboard_pipeline.run_pipeline(settings=settings, logger=logger, aggregator=aggregator)
+
+
+@pytest.mark.asyncio
+async def test_finalize_summary_and_email_marks_warning_when_zero_emails_sent(monkeypatch) -> None:
+    settings = PipelineSettings(
+        run_id="run-email-zero",
+        stores={"A100": {"store_name": "Store A100"}},
+        raw_store_env="store_master.etl_flag",
+        dry_run=True,
+        database_url="postgresql+asyncpg://unused",
+    )
+    logger = JsonLogger(run_id=settings.run_id, stream=io.StringIO(), log_file_path=None)
+    aggregator = dashboard_pipeline.RunAggregator(
+        run_id=settings.run_id,
+        run_env="test",
+        store_codes=["A100"],
+    )
+
+    async def fake_insert(_database_url: str, _record: dict) -> None:
+        return None
+
+    async def fake_update(_database_url: str, _run_id: str, record: dict) -> None:
+        assert record["metrics_json"]["email"]["status"] == "warning"
+        assert record["metrics_json"]["email"]["message"] == "notification dispatch skipped (no eligible recipients)"
+        assert record["metrics_json"]["email"]["emails_planned"] == 0
+        assert record["metrics_json"]["email"]["emails_sent"] == 0
+
+    async def fake_send(_pipeline_name: str, _run_id: str) -> dict:
+        return {"emails_planned": 0, "emails_sent": 0, "errors": []}
+
+    monkeypatch.setattr(dashboard_pipeline, "insert_run_summary", fake_insert)
+    monkeypatch.setattr(dashboard_pipeline, "update_run_summary", fake_update)
+    monkeypatch.setattr(dashboard_pipeline, "send_notifications_for_run", fake_send)
+
+    await dashboard_pipeline._finalize_summary_and_email(
+        settings=settings,
+        logger=logger,
+        aggregator=aggregator,
+        report_date=None,
+    )
+
+    assert aggregator.email_metrics["status"] == "warning"
+    assert aggregator.email_metrics["emails_planned"] == 0
+    assert aggregator.email_metrics["emails_sent"] == 0
+    assert aggregator.email_metrics["message"] != "notification dispatch completed"
