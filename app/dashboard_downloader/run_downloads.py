@@ -568,7 +568,16 @@ def _looks_like_login_html_text(html: str) -> bool:
     normalized = _normalize_html_tokens(html)
 
     has_password_field = "type=\"password\"" in normalized or "name=\"password\"" in normalized
-    if has_password_field and any(token in normalized for token in _login_tokens()):
+    legacy_login_tokens = (
+        'id="txtuserid"',
+        'id="txtpassword"',
+        'id="txtbranchpin"',
+        'id="btnlogin"',
+    )
+    if has_password_field and (
+        any(token in normalized for token in _login_tokens())
+        or any(token in normalized for token in legacy_login_tokens)
+    ):
         return True
 
     return False

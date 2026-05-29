@@ -147,10 +147,18 @@ def _header_lookup(header_map: Dict[str, str], key: str) -> str | None:
 
 
 class SkipRow(ValueError):
-    def __init__(self, message: str, *, store_code: str | None = None, report_date: Any = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        store_code: str | None = None,
+        report_date: Any = None,
+        missing_columns: Iterable[str] | None = None,
+    ):
         super().__init__(message)
         self.store_code = store_code
         self.report_date = report_date
+        self.missing_columns = list(missing_columns or [])
 
 
 def coerce_csv_row(
@@ -193,10 +201,23 @@ def coerce_csv_row(
             "missing mobile_number for missed_leads row",
             store_code=data.get("store_code"),
             report_date=data.get("run_date"),
+            missing_columns=["mobile_number"],
         )
 
     missing = [column for column in required_columns if data.get(column) is None]
     if missing:
+        # Source rows with missing phone/customer keys are intentionally skipped,
+        # not fatal, but aggregate counts are surfaced by the ingest service.
+        mobile_required_missing = [
+            column for column in missing if column in {"mobile_no", "mobile_number"}
+        ]
+        if mobile_required_missing:
+            raise SkipRow(
+                f"Missing required values for: {', '.join(sorted(missing))}",
+                store_code=data.get("store_code"),
+                report_date=data.get("run_date"),
+                missing_columns=missing,
+            )
         raise ValueError(f"Missing required values for: {', '.join(sorted(missing))}")
 
     return data

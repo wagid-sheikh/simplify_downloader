@@ -10,6 +10,15 @@ import sqlalchemy as sa
 
 from app.common.db import session_scope
 
+from .data_quality import (
+    DASHBOARD_DATA_QUALITY_WARNING_THRESHOLDS,
+    INVALID_CSV_DOWNLOADS,
+    NAVIGATION_FAILURES,
+    ROW_COERCION_FAILURES,
+    SKIPPED_REQUIRED_ROWS,
+    format_threshold_breach,
+    threshold_for,
+)
 from .db_tables import documents, pipeline_run_summaries
 
 
@@ -103,6 +112,115 @@ class RunAggregator:
         default_factory=lambda: {"status": "pending", "message": "pending", "to": [], "attachment_count": 0}
     )
     issues: deque[str] = field(default_factory=lambda: deque(maxlen=5))
+    data_quality_warnings: Dict[str, Any] = field(
+        default_factory=lambda: {
+            "thresholds": dict(DASHBOARD_DATA_QUALITY_WARNING_THRESHOLDS),
+            "counts": {},
+            "details": {},
+            "breaches": [],
+        }
+    )
+
+    def _add_issue(self, detail: str) -> None:
+        if detail not in self.issues:
+            self.issues.append(detail)
+
+    def _record_data_quality_warning(
+        self, code: str, *, count: int = 1, detail: Mapping[str, Any] | None = None
+    ) -> None:
+        if count <= 0:
+            return
+        counts = self.data_quality_warnings.setdefault("counts", {})
+        counts[code] = int(counts.get(code, 0) or 0) + count
+        if detail:
+            details = self.data_quality_warnings.setdefault("details", {}).setdefault(
+                code, []
+            )
+            if len(details) < 20:
+                details.append(dict(detail))
+        current_count = int(counts[code])
+        threshold = threshold_for(code)
+        breaches = self.data_quality_warnings.setdefault("breaches", [])
+        if current_count >= threshold and not any(
+            item.get("code") == code for item in breaches
+        ):
+            breach = {"code": code, "count": current_count, "threshold": threshold}
+            breaches.append(breach)
+            self._add_issue(
+                "Data quality threshold breached: " + format_threshold_breach(breach)
+            )
+
+    def _record_data_quality_from_event(self, payload: Mapping[str, Any]) -> None:
+        message = str(payload.get("message") or "")
+        if message == "navigation attempt failed":
+            self._record_data_quality_warning(
+                NAVIGATION_FAILURES,
+                detail={
+                    "store_code": payload.get("store_code"),
+                    "target_url": (payload.get("extras") or {}).get("target_url"),
+                    "attempt": (payload.get("extras") or {}).get("attempt"),
+                },
+            )
+        if message.startswith("discarding invalid CSV download"):
+            self._record_data_quality_warning(
+                INVALID_CSV_DOWNLOADS,
+                detail={
+                    "store_code": payload.get("store_code"),
+                    "bucket": payload.get("bucket")
+                    or (payload.get("extras") or {}).get("bucket"),
+                    "reason": (payload.get("extras") or {}).get("reason")
+                    or payload.get("reason"),
+                },
+            )
+        if message == "failed to coerce csv row":
+            details = self.data_quality_warnings.setdefault("details", {}).setdefault(
+                ROW_COERCION_FAILURES, []
+            )
+            if len(details) < 20:
+                details.append(
+                    {
+                        "bucket": payload.get("bucket"),
+                        "merged_file": payload.get("merged_file"),
+                        "row_index": payload.get("row_index"),
+                        "error": payload.get("error"),
+                    }
+                )
+        counts_payload = payload.get("counts")
+        if message == "csv ingest summary" and isinstance(counts_payload, Mapping):
+            self._record_data_quality_warning(
+                ROW_COERCION_FAILURES,
+                count=int(counts_payload.get("failed_rows") or 0),
+                detail={
+                    "bucket": payload.get("bucket"),
+                    "merged_file": payload.get("merged_file"),
+                    "failed_rows": counts_payload.get("failed_rows"),
+                    "total_rows": counts_payload.get("total_rows"),
+                },
+            )
+        skipped_payload = payload.get("skipped_required_rows") or payload.get(
+            "skipped_missing_mobile"
+        )
+        if skipped_payload:
+            if isinstance(skipped_payload, Mapping):
+                total = int(skipped_payload.get("total") or 0)
+                details = skipped_payload.get("details") or []
+            else:
+                details = (
+                    list(skipped_payload)
+                    if isinstance(skipped_payload, Iterable)
+                    and not isinstance(skipped_payload, (str, bytes))
+                    else []
+                )
+                total = sum(
+                    int(item.get("count") or 0)
+                    for item in details
+                    if isinstance(item, Mapping)
+                )
+            self._record_data_quality_warning(
+                SKIPPED_REQUIRED_ROWS,
+                count=total,
+                detail={"bucket": payload.get("bucket"), "details": details[:10]},
+            )
 
     def record_log_event(self, payload: Mapping[str, Any]) -> None:
         phase = payload.get("phase")
@@ -119,8 +237,9 @@ class RunAggregator:
                 detail = f"{detail} (store {store_code})"
             if bucket:
                 detail = f"{detail} (bucket {bucket})"
-            if detail not in self.issues:
-                self.issues.append(detail)
+            self._add_issue(detail)
+
+        self._record_data_quality_from_event(payload)
 
         if phase == "download" and payload.get("message") == "store download completed":
             store_code = payload.get("store_code")
@@ -223,6 +342,7 @@ class RunAggregator:
             },
             "email": dict(self.email_metrics),
             "issues": list(self.issues),
+            "data_quality_warnings": self.data_quality_warnings,
         }
 
     def _phase_status(self, phase: str) -> str:
@@ -259,6 +379,11 @@ class RunAggregator:
         missed_leads = self.bucket_metrics.get("missed_leads", {})
         missed_downloads = missed_leads.get("stores", {}) or {}
         missed_ingested = missed_leads.get("ingested_by_store", {}) or {}
+        breaches = self.data_quality_warnings.get("breaches") or []
+        if breaches:
+            lines.append("- Data quality warning thresholds:")
+            for breach in breaches:
+                lines.append(f"  - {format_threshold_breach(breach)}")
         if missed_downloads or missed_ingested:
             lines.append("- Missed leads by store:")
             for store_code in sorted(set(missed_downloads) | set(missed_ingested)):
