@@ -19,6 +19,9 @@ set -euo pipefail
 # - Bash 3.2 compatible (no associative arrays, no mapfile)
 #
 # Orders profiler exit semantics:
+# - orders_sync_run_profiler.sh performs a DNS/TCP connectivity preflight before
+#   launching Playwright; connectivity failures exit non-zero quickly and are logged
+#   as connectivity_preflight_failed infrastructure failures.
 # - orders_sync_run_profiler.sh normally preserves legacy non-breaking CLI behavior
 #   for persisted overall_status="failed" after summaries/notifications are written.
 # - Set ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=1 to make that profiler CLI step

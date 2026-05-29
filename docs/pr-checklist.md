@@ -22,6 +22,7 @@ Use this before requesting review.
 - [ ] I added/updated tests for changed behavior under `tests/`.
 - [ ] Existing migration tests still make sense for touched schema behavior.
 - [ ] For CLI changes, I validated command paths and argument compatibility in scripts/docs.
+- [ ] For orders sync profiler launches, I checked the connectivity preflight outcome first. If logs show `connectivity_preflight_failed`, treat it as infrastructure/DNS/network failure: do not debug Playwright first; verify host DNS resolution and outbound TCP/443 from the runner to `subs.quickdrycleaning.com`, `store.ucleanlaundry.com`, and `storepanel.ucleanlaundry.com`, then rerun after connectivity is restored.
 - [ ] For cron report reruns, I validated mandatory regeneration (`--force` present for every report step) including retry/rescue paths.
 
 ## 4) API / contract / data impact
