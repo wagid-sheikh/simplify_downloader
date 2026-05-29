@@ -3155,14 +3155,22 @@ async def test_td_leads_main_parallel_worker_path_reduces_elapsed(monkeypatch: p
         await asyncio.sleep(0.12)
         return td_leads_main.StoreLeadResult(store_code=store.store_code, status="ok", message="ok")
 
-    monkeypatch.setattr(td_leads_main, "_load_td_order_stores", lambda logger, store_codes=None: asyncio.sleep(0, result=stores))
+    monkeypatch.setattr(
+        td_leads_main,
+        "_load_td_order_stores",
+        lambda logger, store_codes=None: asyncio.sleep(0, result=stores),
+    )
     monkeypatch.setattr(td_leads_main, "_start_run_summary", _fake_start_summary)
     monkeypatch.setattr(td_leads_main, "_persist_run_summary", _fake_persist_summary)
     monkeypatch.setattr(td_leads_main, "send_notifications_for_run", _fake_notify)
     monkeypatch.setattr(td_leads_main, "_resolve_td_leads_concurrency_settings", lambda: (2, 2, True))
     monkeypatch.setattr(td_leads_main, "_run_store", _fake_run_store)
     monkeypatch.setattr(td_leads_main, "async_playwright", lambda: _FakePlaywrightContext())
-    monkeypatch.setattr(td_leads_main, "launch_browser", lambda playwright, logger: asyncio.sleep(0, result=_FakeBrowser()))
+    monkeypatch.setattr(
+        td_leads_main,
+        "launch_browser",
+        lambda playwright, logger: asyncio.sleep(0, result=_FakeBrowser()),
+    )
 
     started = time.perf_counter()
     await td_leads_main.main(run_env="test", run_id="run-parallel")
@@ -3197,7 +3205,11 @@ async def test_td_leads_main_preserves_summary_store_order_when_workers_finish_o
         await asyncio.sleep(delays[store.store_code])
         return td_leads_main.StoreLeadResult(store_code=store.store_code, status="ok")
 
-    monkeypatch.setattr(td_leads_main, "_load_td_order_stores", lambda logger, store_codes=None: asyncio.sleep(0, result=stores))
+    monkeypatch.setattr(
+        td_leads_main,
+        "_load_td_order_stores",
+        lambda logger, store_codes=None: asyncio.sleep(0, result=stores),
+    )
     monkeypatch.setattr(td_leads_main, "_start_run_summary", lambda logger, summary: asyncio.sleep(0))
     monkeypatch.setattr(
         td_leads_main,
@@ -3207,7 +3219,11 @@ async def test_td_leads_main_preserves_summary_store_order_when_workers_finish_o
     monkeypatch.setattr(td_leads_main, "_resolve_td_leads_concurrency_settings", lambda: (3, 3, True))
     monkeypatch.setattr(td_leads_main, "_run_store", _fake_run_store)
     monkeypatch.setattr(td_leads_main, "async_playwright", lambda: _FakePlaywrightContext())
-    monkeypatch.setattr(td_leads_main, "launch_browser", lambda playwright, logger: asyncio.sleep(0, result=_FakeBrowser()))
+    monkeypatch.setattr(
+        td_leads_main,
+        "launch_browser",
+        lambda playwright, logger: asyncio.sleep(0, result=_FakeBrowser()),
+    )
 
     await td_leads_main.main(run_env="test", run_id="run-order")
 
@@ -3249,21 +3265,33 @@ async def test_td_leads_main_normalizes_store_worker_exceptions_and_persists_sum
         notifications.append((pipeline_name, run_id))
         return {"emails_planned": 0, "emails_sent": 0, "errors": []}
 
-    monkeypatch.setattr(td_leads_main, "_load_td_order_stores", lambda logger, store_codes=None: asyncio.sleep(0, result=stores))
+    monkeypatch.setattr(
+        td_leads_main,
+        "_load_td_order_stores",
+        lambda logger, store_codes=None: asyncio.sleep(0, result=stores),
+    )
     monkeypatch.setattr(td_leads_main, "_start_run_summary", lambda logger, summary: asyncio.sleep(0))
     monkeypatch.setattr(
         td_leads_main,
         "_persist_run_summary",
-        lambda logger, summary, finished_at, reporting_mode=None, reporting_payload=None, reporting_schema_errors=None: persisted_summaries.append(summary) or asyncio.sleep(0, result=True),
+        lambda logger, summary, finished_at, reporting_mode=None, reporting_payload=None, reporting_schema_errors=None: (
+            persisted_summaries.append(summary) or asyncio.sleep(0, result=True)
+        ),
     )
     monkeypatch.setattr(td_leads_main, "_resolve_td_leads_concurrency_settings", lambda: (2, 2, True))
     monkeypatch.setattr(td_leads_main, "_run_store_worker", _fake_run_store_worker)
     monkeypatch.setattr(td_leads_main, "send_notifications_for_run", _fake_notify)
     monkeypatch.setattr(td_leads_main, "async_playwright", lambda: _FakePlaywrightContext())
-    monkeypatch.setattr(td_leads_main, "launch_browser", lambda playwright, logger: asyncio.sleep(0, result=_FakeBrowser()))
+    monkeypatch.setattr(
+        td_leads_main,
+        "launch_browser",
+        lambda playwright, logger: asyncio.sleep(0, result=_FakeBrowser()),
+    )
 
-    await td_leads_main.main(run_env="test", run_id="run-errors")
+    with pytest.raises(SystemExit) as exc_info:
+        await td_leads_main.main(run_env="test", run_id="run-errors")
 
+    assert exc_info.value.code == 1
     assert len(persisted_summaries) == 1
     assert persisted_summaries[0].store_results["A"].status == "ok"
     assert persisted_summaries[0].store_results["B"].status == "error"
@@ -3274,6 +3302,75 @@ async def test_td_leads_main_normalizes_store_worker_exceptions_and_persists_sum
     assert record["metrics_json"]["run_had_worker_exception"] is True
     assert "did not return a result" in persisted_summaries[0].store_results["B"].message.lower()
     assert notifications == [("td_crm_leads_sync", "run-errors")]
+
+
+@pytest.mark.asyncio
+async def test_td_leads_main_exits_nonzero_when_all_store_workers_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stores = [SimpleNamespace(store_code="A"), SimpleNamespace(store_code="B")]
+    persisted_summaries = []
+    notifications: list[tuple[str, str]] = []
+
+    class _FakePlaywrightContext:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeBrowser:
+        async def close(self) -> None:
+            return None
+
+    async def _fake_run_store_worker(*, browser, store, logger, run_env, run_id, semaphore):
+        return td_leads_main.TdLeadsStoreWorkerResult(
+            store_code=store.store_code,
+            result=td_leads_main.StoreLeadResult(
+                store_code=store.store_code,
+                status="error",
+                message="store failed",
+            ),
+            queued_at=datetime.now(timezone.utc),
+            queue_wait_ms=0,
+            duration_ms=1,
+        )
+
+    async def _fake_notify(pipeline_name, run_id):
+        notifications.append((pipeline_name, run_id))
+        return {"emails_planned": 0, "emails_sent": 0, "errors": []}
+
+    monkeypatch.setattr(
+        td_leads_main,
+        "_load_td_order_stores",
+        lambda logger, store_codes=None: asyncio.sleep(0, result=stores),
+    )
+    monkeypatch.setattr(td_leads_main, "_start_run_summary", lambda logger, summary: asyncio.sleep(0))
+    monkeypatch.setattr(
+        td_leads_main,
+        "_persist_run_summary",
+        lambda logger, summary, finished_at, reporting_mode=None, reporting_payload=None, reporting_schema_errors=None: (
+            persisted_summaries.append(summary) or asyncio.sleep(0, result=True)
+        ),
+    )
+    monkeypatch.setattr(td_leads_main, "_resolve_td_leads_concurrency_settings", lambda: (2, 2, True))
+    monkeypatch.setattr(td_leads_main, "_run_store_worker", _fake_run_store_worker)
+    monkeypatch.setattr(td_leads_main, "send_notifications_for_run", _fake_notify)
+    monkeypatch.setattr(td_leads_main, "async_playwright", lambda: _FakePlaywrightContext())
+    monkeypatch.setattr(
+        td_leads_main,
+        "launch_browser",
+        lambda playwright, logger: asyncio.sleep(0, result=_FakeBrowser()),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        await td_leads_main.main(run_env="test", run_id="run-all-errors")
+
+    assert exc_info.value.code == 1
+    assert len(persisted_summaries) == 1
+    assert persisted_summaries[0].overall_status() == "failed"
+    assert {result.status for result in persisted_summaries[0].store_results.values()} == {"error"}
+    assert notifications == [("td_crm_leads_sync", "run-all-errors")]
 
 
 def test_td_leads_parser_accepts_reporting_mode() -> None:
