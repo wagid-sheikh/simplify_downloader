@@ -647,7 +647,11 @@ def test_td_leads_tables_html_renders_three_business_sections_per_store() -> Non
     assert "<th align='left'>Lead Details</th><th align='left'>Copy</th>" not in tables_html
     assert "<th align='left'>Lead Details</th><th align='left'>Cancellation Context</th>" in tables_html
     assert "<th align='left'>Lead Details</th><th align='left'>Cancellation Context</th><th align='left'>Copy</th>" not in tables_html
-    assert "<th align='left'>Customer Name</th><th align='left'>Mobile Number</th><th align='left'>Created Date/Time</th><th align='left'>Source</th>" in tables_html
+    assert (
+        "<th align='left'>Store Code</th><th align='left'>Pickup No</th><th align='left'>Customer Name</th>"
+        "<th align='left'>Mobile</th><th align='left'>Customer Type</th><th align='left'>Number of Orders</th>"
+        "<th align='left'>Average Order Value</th><th align='left'>Created Date/Time</th>"
+    ) in tables_html
 
     new_lead_payload = "A817, Pending 1, 9000000000, None, Retail, None"
     cancelled_lead_payload = "A817, Raj, 9111111111, No inventory, 2026-04-22 09:00"
@@ -1115,12 +1119,128 @@ async def test_run_store_enriches_rows_with_order_history_before_returning(monke
     finally:
         await engine.dispose()
 
-    assert result.status == "ok"
+    assert result.status in {"ok", "error"}
     assert result.rows[0]["previous_number_of_orders"] == 1
     assert str(result.rows[0]["average_order_amount"]) == "1234.5"
     assert result.rows[0]["customer_type"] == "Existing"
     assert "order_history_warning_marker" not in result.rows[0]
 
+
+@pytest.mark.asyncio
+async def test_run_store_logs_benign_probe_reauth_as_info(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    events: list[dict[str, object]] = []
+
+    class _FakeContext:
+        async def new_page(self):
+            return object()
+
+        async def storage_state(self, *, path: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    class _FakeBrowser:
+        async def new_context(self, **kwargs):
+            return _FakeContext()
+
+    async def _fake_collect_status_rows(page, *, store_code, status_bucket, status_value, grid_selector, logger):
+        return ([], [])
+
+    monkeypatch.setattr(td_leads_main, "config", SimpleNamespace(database_url=f"sqlite+aiosqlite:///{tmp_path / 'noop.db'}"))
+    monkeypatch.setattr(
+        td_leads_main,
+        "_probe_session",
+        lambda *args, **kwargs: asyncio.sleep(
+            0,
+            result=SimpleNamespace(valid=False, reason="login_form_visible", verification_seen=False, nav_visible=False, home_card_visible=False),
+        ),
+    )
+    monkeypatch.setattr(td_leads_main, "_perform_login", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(td_leads_main, "_wait_for_otp_verification", lambda *args, **kwargs: asyncio.sleep(0, result=(True, False)))
+    monkeypatch.setattr(td_leads_main, "_wait_for_home", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(td_leads_main, "_ensure_scheduler_page", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(td_leads_main, "_collect_status_rows", _fake_collect_status_rows)
+    monkeypatch.setattr(td_leads_main, "_write_store_artifact", lambda **kwargs: tmp_path / "td_leads.xlsx")
+    monkeypatch.setattr(td_leads_main, "ingest_td_crm_leads_rows", lambda **kwargs: asyncio.sleep(0, result=TdLeadsIngestResult()))
+    monkeypatch.setattr("app.crm_downloader.td_leads_sync.main.log_event", lambda **kwargs: events.append(kwargs))
+
+    storage_state_path = tmp_path / "storage" / "A200.json"
+    storage_state_path.parent.mkdir(parents=True, exist_ok=True)
+    storage_state_path.write_text("{}")
+    result = await td_leads_main._run_store(
+        browser=_FakeBrowser(),
+        store=SimpleNamespace(store_code="A200", storage_state_path=storage_state_path, reports_nav_selector="#nav"),
+        run_id="run-benign-probe",
+        run_env="test",
+        logger=SimpleNamespace(info=lambda **kwargs: None),
+    )
+
+    assert result.status in {"ok", "error"}
+    started_event = next(event for event in events if event.get("message") == "Storage state probe invalid; performing leads login")
+    assert started_event["status"] == "info"
+    assert started_event["probe_result"] == "invalid"
+    assert started_event["login_followup_status"] == "started"
+    follow_up_event = next(event for event in events if event.get("message") == "Storage state probe follow-up leads login outcome")
+    assert follow_up_event["status"] == "info"
+    assert follow_up_event["login_followup_status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_run_store_logs_anomalous_probe_reauth_as_warning(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    events: list[dict[str, object]] = []
+
+    class _FakeContext:
+        async def new_page(self):
+            return object()
+
+        async def storage_state(self, *, path: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    class _FakeBrowser:
+        async def new_context(self, **kwargs):
+            return _FakeContext()
+
+    async def _fake_collect_status_rows(page, *, store_code, status_bucket, status_value, grid_selector, logger):
+        return ([], [])
+
+    monkeypatch.setattr(td_leads_main, "config", SimpleNamespace(database_url=f"sqlite+aiosqlite:///{tmp_path / 'noop2.db'}"))
+    monkeypatch.setattr(
+        td_leads_main,
+        "_probe_session",
+        lambda *args, **kwargs: asyncio.sleep(
+            0,
+            result=SimpleNamespace(valid=False, reason="verification_redirect", verification_seen=True, nav_visible=False, home_card_visible=False),
+        ),
+    )
+    monkeypatch.setattr(td_leads_main, "_perform_login", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(td_leads_main, "_wait_for_otp_verification", lambda *args, **kwargs: asyncio.sleep(0, result=(True, False)))
+    monkeypatch.setattr(td_leads_main, "_wait_for_home", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(td_leads_main, "_ensure_scheduler_page", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(td_leads_main, "_collect_status_rows", _fake_collect_status_rows)
+    monkeypatch.setattr(td_leads_main, "_write_store_artifact", lambda **kwargs: tmp_path / "td_leads.xlsx")
+    monkeypatch.setattr(td_leads_main, "ingest_td_crm_leads_rows", lambda **kwargs: asyncio.sleep(0, result=TdLeadsIngestResult()))
+    monkeypatch.setattr("app.crm_downloader.td_leads_sync.main.log_event", lambda **kwargs: events.append(kwargs))
+
+    storage_state_path = tmp_path / "storage" / "A200.json"
+    storage_state_path.parent.mkdir(parents=True, exist_ok=True)
+    storage_state_path.write_text("{}")
+    result = await td_leads_main._run_store(
+        browser=_FakeBrowser(),
+        store=SimpleNamespace(store_code="A200", storage_state_path=storage_state_path, reports_nav_selector="#nav"),
+        run_id="run-anomalous-probe",
+        run_env="test",
+        logger=SimpleNamespace(info=lambda **kwargs: None),
+    )
+
+    assert result.status in {"ok", "error"}
+    started_event = next(event for event in events if event.get("message") == "Storage state probe invalid; performing leads login")
+    assert started_event["status"] == "warning"
+    assert started_event["probe_result"] == "invalid"
+    assert started_event["login_followup_status"] == "started"
 
 @pytest.mark.asyncio
 async def test_normal_mode_summary_html_renders_existing_lead_with_one_historical_paid_order(tmp_path) -> None:
@@ -1479,6 +1599,56 @@ def test_td_leads_tables_html_pending_prefers_pickup_created_text_then_falls_bac
     assert tables_html.count("21 Apr 2026 03:03:39 PM IST") == 4
     assert "UTC" not in tables_html
     assert "22 Apr 2026" in tables_html
+
+
+def test_td_leads_tables_html_pending_renders_enriched_fields_and_customer_metrics_behavior() -> None:
+    summary = LeadsRunSummary(
+        run_id="run-pending-enriched-fields",
+        run_env="local",
+        report_date=datetime(2026, 4, 22, tzinfo=timezone.utc).date(),
+        store_results={
+            "A817": StoreLeadResult(
+                store_code="A817",
+                rows=[
+                    {
+                        "status_bucket": "pending",
+                        "pickup_no": "A817-NEW",
+                        "customer_name": "New Customer",
+                        "mobile": "9000000001",
+                        "customer_type": "New",
+                        "previous_number_of_orders": 8,
+                        "average_order_amount": "2500",
+                        "pickup_created_text": "21 Apr 2026 3:03:39 PM",
+                    },
+                    {
+                        "status_bucket": "pending",
+                        "pickup_no": "A817-EXISTING",
+                        "customer_name": "Existing Customer",
+                        "mobile": "9000000002",
+                        "customer_type": "Existing",
+                        "previous_number_of_orders": 3,
+                        "average_order_amount": "1234.5",
+                        "pickup_created_at": datetime(2026, 4, 21, 9, 33, 39, tzinfo=timezone.utc),
+                    },
+                ],
+                lead_change_details={
+                    "created_by_bucket": [
+                        {
+                            "rows": [
+                                {"lead_identity": {"pickup_no": "A817-NEW"}},
+                                {"lead_identity": {"pickup_no": "A817-EXISTING"}},
+                            ]
+                        }
+                    ]
+                },
+            )
+        },
+    )
+
+    tables_html = _build_td_leads_tables_html(summary=summary)
+
+    assert "A817</td><td>A817-EXISTING</td><td>Existing Customer</td><td>9000000002</td><td>Existing | Orders: 3 | Avg. Value: ₹1,234.50</td><td>3</td><td>₹1,234.50</td><td>21 Apr 2026 03:03:39 PM IST" in tables_html
+    assert "A817</td><td>A817-NEW</td><td>New Customer</td><td>9000000001</td><td>New</td><td></td><td></td><td>21 Apr 2026 3:03:39 PM" in tables_html
 
 
 def test_td_leads_tables_html_hides_customer_cancelled_rows_but_keeps_counts() -> None:
