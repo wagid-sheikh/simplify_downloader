@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+
+import pytest
 
 from app.dashboard_downloader.notifications import (
     PROFILER_HTML_TEMPLATE,
@@ -403,7 +405,7 @@ def test_send_email_uses_bounded_smtp_timeout(monkeypatch) -> None:
 
     monkeypatch.setattr(notifications.smtplib, "SMTP", FakeSMTP)
 
-    sent = _send_email(
+    result = _send_email(
         SmtpConfig(
             host="smtp.example.test",
             port=587,
@@ -425,5 +427,104 @@ def test_send_email_uses_bounded_smtp_timeout(monkeypatch) -> None:
         ),
     )
 
-    assert sent is True
+    assert result.sent is True
+    assert result.failure is None
     assert captured["timeout"] == notifications.SMTP_CONNECT_TIMEOUT_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_send_notifications_records_smtp_exception(monkeypatch) -> None:
+    from app.dashboard_downloader import notifications
+    from app.dashboard_downloader.notifications import (
+        SmtpConfig,
+        send_notifications_for_run,
+    )
+
+    async def fake_load_notification_resources(_pipeline_name: str, _run_id: str):
+        return (
+            {
+                "pipeline": {"description": "Test pipeline"},
+                "run": {
+                    "run_env": "local",
+                    "report_date": date(2026, 5, 29),
+                    "overall_status": "ok",
+                    "total_time_taken": "00:00:01",
+                    "summary_text": "summary",
+                    "metrics_json": {},
+                    "started_at": datetime(2026, 5, 29, 0, 0, tzinfo=timezone.utc),
+                    "finished_at": datetime(2026, 5, 29, 0, 0, 1, tzinfo=timezone.utc),
+                },
+                "docs": [],
+                "profiles": [
+                    {"id": 1, "code": "run_summary", "scope": "run", "attach_mode": "none"}
+                ],
+                "templates": {
+                    1: {
+                        "subject_template": "Run {{ run_id }}",
+                        "body_template": "{{ summary_text }}",
+                    }
+                },
+                "recipients": {
+                    1: [
+                        {
+                            "store_code": "ALL",
+                            "email_address": "ops@example.test",
+                            "display_name": None,
+                            "send_as": "to",
+                        }
+                    ]
+                },
+                "store_names": {},
+                "profiler_missing_windows": {},
+            },
+            [],
+        )
+
+    class FailingSMTP:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def login(self, _username, _password):
+            return None
+
+        def send_message(self, _message, to_addrs):
+            raise notifications.smtplib.SMTPException(
+                f"failed for {to_addrs[0]} using secret-token"
+            )
+
+    monkeypatch.setattr(
+        notifications, "_load_notification_resources", fake_load_notification_resources
+    )
+    monkeypatch.setattr(
+        notifications,
+        "_load_smtp_config",
+        lambda: SmtpConfig(
+            host="smtp.example.test",
+            port=587,
+            sender="sender@example.test",
+            username="smtp-user",
+            password="secret-token",
+            use_tls=False,
+        ),
+    )
+    monkeypatch.setattr(notifications.smtplib, "SMTP", FailingSMTP)
+
+    result = await send_notifications_for_run("test_pipeline", "run-1")
+
+    assert result["emails_planned"] == 1
+    assert result["emails_sent"] == 0
+    assert result["errors"]
+    error = result["errors"][0]
+    assert error["profile_code"] == "run_summary"
+    assert error["store_code"] is None
+    assert error["recipient_count"] == 1
+    assert error["recipients"] == ["o***@example.test"]
+    assert error["exception_type"] == "SMTPException"
+    assert "ops@example.test" not in error["exception_summary"]
+    assert "secret-token" not in error["exception_summary"]
