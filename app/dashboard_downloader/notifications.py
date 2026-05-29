@@ -26,6 +26,7 @@ from app.dashboard_downloader.db_tables import (
     pipelines,
 )
 from app.common.dashboard_store import store_master
+from app.dashboard_downloader.data_quality import format_threshold_breach
 from app.config import config
 
 logger = logging.getLogger(__name__)
@@ -289,6 +290,43 @@ class EmailSendResult:
 
     def __bool__(self) -> bool:
         return self.sent
+
+
+
+def _dashboard_data_quality_warning_lines(metrics_payload: Mapping[str, Any]) -> list[str]:
+    data_quality = (
+        metrics_payload.get("data_quality_warnings")
+        if isinstance(metrics_payload, Mapping)
+        else None
+    )
+    if not isinstance(data_quality, Mapping):
+        return []
+    breaches = data_quality.get("breaches") or []
+    lines: list[str] = []
+    for breach in breaches:
+        if isinstance(breach, Mapping):
+            line = format_threshold_breach(breach)
+        else:
+            line = str(breach).strip()
+        if line and line not in lines:
+            lines.append(line)
+    return lines
+
+
+def _append_dashboard_data_quality_warnings(
+    summary_text: str, metrics_payload: Mapping[str, Any]
+) -> str:
+    warning_lines = _dashboard_data_quality_warning_lines(metrics_payload)
+    if not warning_lines:
+        return summary_text
+    block = "Dashboard data quality warnings:\n" + "\n".join(
+        f"- {line}" for line in warning_lines
+    )
+    if not summary_text:
+        return block
+    if "Dashboard data quality warnings:" in summary_text:
+        return summary_text
+    return f"{summary_text.rstrip()}\n\n{block}"
 
 
 def _load_smtp_config() -> SmtpConfig:
@@ -2939,7 +2977,13 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[st
         "report_date": run_data.get("report_date").isoformat() if run_data.get("report_date") else "",
         "overall_status": run_data.get("overall_status"),
         "total_time_taken": run_data.get("total_time_taken") or duration_human,
-        "summary_text": run_data.get("summary_text", ""),
+        "summary_text": _append_dashboard_data_quality_warnings(
+            str(run_data.get("summary_text", "") or ""), metrics_payload
+        ),
+        "dashboard_data_quality_warnings": _dashboard_data_quality_warning_lines(metrics_payload),
+        "dashboard_data_quality_warnings_text": "\n".join(
+            _dashboard_data_quality_warning_lines(metrics_payload)
+        ),
         "summary_html": metrics_payload.get("summary_html") or "",
         "lead_tables_html": metrics_payload.get("lead_tables_html") or "",
         "metrics_json": metrics_payload,
@@ -3072,7 +3116,13 @@ async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str
         "report_date": run_data.get("report_date").isoformat() if run_data.get("report_date") else "",
         "overall_status": run_data.get("overall_status"),
         "total_time_taken": run_data.get("total_time_taken") or duration_human,
-        "summary_text": run_data.get("summary_text", ""),
+        "summary_text": _append_dashboard_data_quality_warnings(
+            str(run_data.get("summary_text", "") or ""), metrics_payload
+        ),
+        "dashboard_data_quality_warnings": _dashboard_data_quality_warning_lines(metrics_payload),
+        "dashboard_data_quality_warnings_text": "\n".join(
+            _dashboard_data_quality_warning_lines(metrics_payload)
+        ),
         "summary_html": metrics_payload.get("summary_html") or "",
         "lead_tables_html": metrics_payload.get("lead_tables_html") or "",
         "metrics_json": metrics_payload,

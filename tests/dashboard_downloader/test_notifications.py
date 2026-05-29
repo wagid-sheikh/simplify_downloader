@@ -528,3 +528,24 @@ async def test_send_notifications_records_smtp_exception(monkeypatch) -> None:
     assert error["exception_type"] == "SMTPException"
     assert "ops@example.test" not in error["exception_summary"]
     assert "secret-token" not in error["exception_summary"]
+
+
+def test_dashboard_notification_summary_includes_data_quality_threshold_text() -> None:
+    from app.dashboard_downloader.notifications import _append_dashboard_data_quality_warnings
+
+    summary = _append_dashboard_data_quality_warnings(
+        "Pipeline summary",
+        {
+            "data_quality_warnings": {
+                "breaches": [
+                    {"code": "invalid_csv_downloads", "count": 1, "threshold": 1},
+                    {"code": "skipped_required_rows", "count": 2, "threshold": 1},
+                ]
+            }
+        },
+    )
+
+    assert "Pipeline summary" in summary
+    assert "Dashboard data quality warnings:" in summary
+    assert "invalid CSV downloads discarded: 1 observed (threshold 1)" in summary
+    assert "rows skipped due to missing required fields: 2 observed (threshold 1)" in summary
