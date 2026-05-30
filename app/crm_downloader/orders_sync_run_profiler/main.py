@@ -46,6 +46,12 @@ PIPELINE_BY_GROUP = {
 DEFAULT_MAX_WORKERS = 4
 FAIL_ON_FAILED_STATUS_ENV = "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS"
 
+# Policy: TD garments_fetch_completeness=incomplete is a non-fatal data-completeness
+# warning. Orders and sales can still be usable, but garment-dependent downstream
+# reporting is explicitly degraded and must surface as success_with_warnings.
+TD_GARMENT_INCOMPLETE_COMPLETENESS = "incomplete"
+TD_GARMENT_INCOMPLETE_STATUS = "success_with_warnings"
+TD_GARMENT_DATA_INCOMPLETE_WARNING_PREFIX = "TD_GARMENT_DATA_INCOMPLETE"
 CRON_POOL_SIZE_ENV = "ORDERS_SYNC_PROFILER_DB_POOL_SIZE"
 CRON_MAX_OVERFLOW_ENV = "ORDERS_SYNC_PROFILER_DB_MAX_OVERFLOW"
 PREFLIGHT_ENV = "ORDERS_SYNC_PROFILER_DB_PREFLIGHT"
@@ -945,7 +951,7 @@ def _extract_td_garment_warning_from_summary(
         "garments_fetch_completeness": completeness,
         "garments_final_row_count": final_count,
         "garments_budget_state": budget_state,
-        "is_incomplete": completeness == "incomplete",
+        "is_incomplete": completeness == TD_GARMENT_INCOMPLETE_COMPLETENESS,
     }
 
 
@@ -1424,6 +1430,7 @@ def _build_profiler_summary_text(
                 lines.append(f"    - {window_range}: " + "; ".join(details))
         td_garment_warnings = entry.get("td_garment_incomplete_windows") or []
         if td_garment_warnings:
+            lines.append("  DATA INCOMPLETE: TD garment details incomplete for garment-dependent reports")
             lines.append("  td_garment_incomplete_windows:")
             for window in td_garment_warnings:
                 lines.append(
@@ -1650,9 +1657,15 @@ async def _run_store_windows(
                     summary, store_code=store.store_code
                 )
                 if td_garment_warning and td_garment_warning.get("is_incomplete"):
+                    # Non-fatal, explicit degraded-success policy: do not retry or fail
+                    # otherwise successful orders/sales windows solely because garment
+                    # details hit an API budget/completeness limit.
                     if status == "success":
-                        status = "success_with_warnings"
-                    status_note += " (TD garments_fetch_completeness=incomplete)"
+                        status = TD_GARMENT_INCOMPLETE_STATUS
+                    status_note += (
+                        " (TD garments_fetch_completeness=incomplete; "
+                        "data incomplete for garment-dependent reports)"
+                    )
                     log_event(
                         logger=logger,
                         phase="window",
@@ -2149,7 +2162,9 @@ async def main(
             )
         if td_garment_warnings:
             warning_messages.append(
-                f"TD_GARMENT_WARNINGS: {result.store_code} had {len(td_garment_warnings)} incomplete garment window(s)"
+                f"{TD_GARMENT_DATA_INCOMPLETE_WARNING_PREFIX}: {result.store_code} had "
+                f"{len(td_garment_warnings)} incomplete garment window(s); "
+                "garment-dependent downstream reports may be incomplete"
             )
         warning_messages.extend(
             _window_warning_entries(result.store_code, result.status_counts)

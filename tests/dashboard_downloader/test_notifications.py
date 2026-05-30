@@ -393,7 +393,7 @@ def test_profiler_context_and_html_include_td_garment_warning_details() -> None:
         "metrics_json": {
             "notification_payload": {
                 "overall_status": "success_with_warnings",
-                "warnings": ["TD_GARMENT_WARNINGS: TD01 had 1 incomplete garment window(s)"],
+                "warnings": ["TD_GARMENT_DATA_INCOMPLETE: TD01 had 1 incomplete garment window(s); garment-dependent downstream reports may be incomplete"],
                 "window_summary": {"completed_windows": 1, "expected_windows": 1, "missing_windows": 0},
                 "stores": [
                     {
@@ -429,7 +429,7 @@ def test_profiler_context_and_html_include_td_garment_warning_details() -> None:
     assert context["td_garment_warning_details"][0]["store_code"] == "TD01"
     assert context["td_garment_warning_details"][0]["garments_final_row_count"] == 17
     assert context["stores"][0]["td_garment_incomplete_windows"][0]["from_date"] == "2024-02-01"
-    assert "TD garments incomplete 2024-02-01 to 2024-02-02" in body_html
+    assert "DATA INCOMPLETE: TD garment details incomplete 2024-02-01 to 2024-02-02" in body_html
     assert "final garment rows=17" in body_html
 
 def test_send_email_uses_bounded_smtp_timeout(monkeypatch) -> None:
