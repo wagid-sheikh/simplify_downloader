@@ -19,9 +19,10 @@ set -euo pipefail
 # - Bash 3.2 compatible (no associative arrays, no mapfile)
 #
 # Orders profiler exit semantics:
-# - orders_sync_run_profiler.sh performs a DNS/TCP connectivity preflight before
-#   launching Playwright; connectivity failures exit non-zero quickly and are logged
-#   as connectivity_preflight_failed infrastructure failures.
+# - orders_sync_run_profiler.sh performs a DNS/TCP preflight named
+#   tcp_connectivity_preflight before launching Playwright. Optional app-layer
+#   HTTP checks are classified separately so operators do not mistake TCP
+#   reachability for full application readiness.
 # - orders_sync_run_profiler.sh normally preserves legacy non-breaking CLI behavior
 #   for persisted overall_status="failed" after summaries/notifications are written.
 # - Set ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=1 to make that profiler CLI step
@@ -116,6 +117,7 @@ export PATH="${CRON_PATH}:${PATH}"
 export LANG="${LANG:-en_US.UTF-8}"
 
 GLOBAL_LOCK_ACQUIRED=0
+ORDERS_SYNC_PREFLIGHT_CLASSIFICATION="not_run"
 
 
 log() {
@@ -726,12 +728,13 @@ run_orders_connectivity_preflight() {
   local rc=0
 
   if [[ "${ORDERS_SYNC_SKIP_CONNECTIVITY_PREFLIGHT:-0}" = "1" ]]; then
-    section "Skipping orders sync connectivity preflight"
+    section "Skipping orders sync tcp_connectivity_preflight"
+    ORDERS_SYNC_PREFLIGHT_CLASSIFICATION="skipped"
     log "ORDERS_SYNC_SKIP_CONNECTIVITY_PREFLIGHT=1; assuming caller intentionally bypassed cron preflight."
     return 0
   fi
 
-  section "Running orders sync connectivity preflight"
+  section "Running orders sync tcp_connectivity_preflight"
   log "Command: ${preflight_script}"
   preflight_start="$(date +%s)"
   preflight_log_file="$(mktemp "${LOCK_DIR}/orders_sync_connectivity_preflight.XXXXXX.log")"
@@ -743,17 +746,25 @@ run_orders_connectivity_preflight() {
   fi
 
   cat "${preflight_log_file}" >> "${LOG_FILE}"
+  ORDERS_SYNC_PREFLIGHT_CLASSIFICATION="$(sed -n 's/.*orders_sync_preflight_summary classification=\([^ ]*\).*/\1/p' "${preflight_log_file}" | tail -n 1)"
+  if [[ -z "${ORDERS_SYNC_PREFLIGHT_CLASSIFICATION}" ]]; then
+    if [[ "${rc}" -eq 0 ]]; then
+      ORDERS_SYNC_PREFLIGHT_CLASSIFICATION="legacy_success"
+    else
+      ORDERS_SYNC_PREFLIGHT_CLASSIFICATION="legacy_failed"
+    fi
+  fi
   rm -f "${preflight_log_file}" 2>/dev/null || true
 
   preflight_end="$(date +%s)"
   duration=$((preflight_end - preflight_start))
 
   if [[ "${rc}" -ne 0 ]]; then
-    log "ERROR: orders sync connectivity preflight failed with exit_code=${rc} after ${duration}s; skipping orders_sync_run_profiler before Playwright launch."
+    log "ERROR: orders sync tcp_connectivity_preflight failed with classification=${ORDERS_SYNC_PREFLIGHT_CLASSIFICATION} exit_code=${rc} after ${duration}s; skipping orders_sync_run_profiler before Playwright launch."
     return "${rc}"
   fi
 
-  log "orders sync connectivity preflight succeeded in ${duration}s"
+  log "orders sync tcp_connectivity_preflight completed with classification=${ORDERS_SYNC_PREFLIGHT_CLASSIFICATION} in ${duration}s"
   return 0
 }
 
@@ -850,6 +861,7 @@ PY
   fi
 
   log "orders_sync_profiler_run_id=${run_id:-unknown}"
+  log "orders_sync_preflight_classification=${ORDERS_SYNC_PREFLIGHT_CLASSIFICATION}"
   log "orders_sync_failed_stores=${failed_store_array}"
   log "orders_sync_overall_status=${overall_status}"
 
@@ -871,7 +883,7 @@ if run_orders_connectivity_preflight; then
   run_step "Script 1: orders_sync_run_profiler" "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS} ORDERS_SYNC_SKIP_CONNECTIVITY_PREFLIGHT=1 ./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" || orders_rc=$?
 else
   orders_rc=$?
-  log "Script 1: orders_sync_run_profiler skipped because connectivity preflight failed (orders_sync_run_profiler_rc=${orders_rc})."
+  log "Script 1: orders_sync_run_profiler skipped because tcp_connectivity_preflight failed (classification=${ORDERS_SYNC_PREFLIGHT_CLASSIFICATION}, orders_sync_run_profiler_rc=${orders_rc})."
 fi
 extract_orders_sync_observability
 run_step "Script 2: daily_sales_report" "./scripts/run_local_reports_daily_sales.sh" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" || daily_rc=$?
@@ -901,6 +913,7 @@ log "Report regeneration mode: daily_sales_regenerate=true pending_deliveries_re
 
 section "RUN STATUS SUMMARY"
 log "orders_sync_run_profiler_rc=${orders_rc}"
+log "orders_sync_preflight_classification=${ORDERS_SYNC_PREFLIGHT_CLASSIFICATION}"
 log "orders_sync_profiler_fail_on_failed_status=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS}"
 log "daily_sales_report_rc=${daily_rc}"
 log "pending_deliveries_rc=${pending_rc}"
