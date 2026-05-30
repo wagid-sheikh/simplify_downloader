@@ -162,7 +162,16 @@ PROFILER_HTML_TEMPLATE = """
                       {{ store.secondary_metrics.final_updated or store.secondary_metrics.staging_updated or 0 }}
                     </td>
                     <td style="padding:6px 8px; border:1px solid #e1e1e1;">
-                      {% if store.failed_windows %}
+                      {% if store.td_garment_incomplete_windows %}
+                        <ul style="margin:0; padding-left:16px;">
+                          {% for window in store.td_garment_incomplete_windows %}
+                          <li style="margin:0 0 4px 0;">
+                            TD garments incomplete {{ window.from_date|e }} to {{ window.to_date|e }};
+                            final garment rows={{ window.garments_final_row_count|e }}
+                          </li>
+                          {% endfor %}
+                        </ul>
+                      {% elif store.failed_windows %}
                         <ul style="margin:0; padding-left:16px;">
                           {% for window in store.failed_windows %}
                           <li style="margin:0 0 4px 0;">
@@ -290,7 +299,6 @@ class EmailSendResult:
 
     def __bool__(self) -> bool:
         return self.sent
-
 
 
 def _dashboard_data_quality_warning_lines(metrics_payload: Mapping[str, Any]) -> list[str]:
@@ -2403,6 +2411,53 @@ def _profiler_failed_windows_from_payload(store: Mapping[str, Any]) -> list[dict
     return failed_windows
 
 
+def _profiler_td_garment_warnings_from_payload(store: Mapping[str, Any]) -> list[dict[str, Any]]:
+    existing = store.get("td_garment_incomplete_windows")
+    if isinstance(existing, Sequence) and not isinstance(existing, (str, bytes, Mapping)):
+        warnings: list[dict[str, Any]] = []
+        for entry in existing:
+            if not isinstance(entry, Mapping):
+                continue
+            warnings.append(
+                {
+                    "store_code": _sanitize_profiler_window_text(
+                        entry.get("store_code") or store.get("store_code")
+                    ),
+                    "from_date": _sanitize_profiler_window_text(entry.get("from_date")),
+                    "to_date": _sanitize_profiler_window_text(entry.get("to_date")),
+                    "garments_final_row_count": entry.get("garments_final_row_count"),
+                    "garments_fetch_completeness": _sanitize_profiler_window_text(
+                        entry.get("garments_fetch_completeness")
+                    ),
+                    "garments_budget_state": _sanitize_profiler_window_text(
+                        entry.get("garments_budget_state")
+                    ),
+                }
+            )
+        return warnings
+
+    warnings = []
+    for window in store.get("window_audit") or []:
+        if not isinstance(window, Mapping):
+            continue
+        detail = window.get("td_garment_warning") or {}
+        if not isinstance(detail, Mapping) or not detail.get("is_incomplete"):
+            continue
+        warnings.append(
+            {
+                "store_code": _sanitize_profiler_window_text(store.get("store_code")),
+                "from_date": _sanitize_profiler_window_text(window.get("from_date")),
+                "to_date": _sanitize_profiler_window_text(window.get("to_date")),
+                "garments_final_row_count": detail.get("garments_final_row_count"),
+                "garments_fetch_completeness": _sanitize_profiler_window_text(
+                    detail.get("garments_fetch_completeness")
+                ),
+                "garments_budget_state": _sanitize_profiler_window_text(detail.get("garments_budget_state")),
+            }
+        )
+    return warnings
+
+
 def _format_profiler_failed_windows_note(failed_windows: Sequence[Mapping[str, str]]) -> str:
     lines: list[str] = []
     for window in failed_windows:
@@ -2433,6 +2488,7 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
         _sum_unified_metrics(primary_totals, primary_metrics)
         _sum_unified_metrics(secondary_totals, secondary_metrics)
         failed_windows = _profiler_failed_windows_from_payload(store)
+        td_garment_warnings = _profiler_td_garment_warnings_from_payload(store)
         stores.append(
             {
                 "store_code": store_code,
@@ -2443,6 +2499,8 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
                 "status_conflict_count": store.get("status_conflict_count"),
                 "failed_windows": failed_windows,
                 "failed_windows_note": _format_profiler_failed_windows_note(failed_windows),
+                "td_garment_warning_count": store.get("td_garment_warning_count") or len(td_garment_warnings),
+                "td_garment_incomplete_windows": td_garment_warnings,
                 "primary_metrics": primary_metrics,
                 "secondary_metrics": secondary_metrics,
             }
@@ -2463,6 +2521,11 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
         edited_rows=edited_fact_rows,
         error_rows=error_fact_rows,
     )
+    td_garment_warning_details = [
+        warning
+        for store in stores
+        for warning in (store.get("td_garment_incomplete_windows") or [])
+    ]
     warnings = _normalize_warning_entries(payload.get("warnings") or [])
     if not warnings:
         warnings = _build_profiler_row_fact_warnings(
@@ -2504,6 +2567,8 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
         "missing_window_stores": window_summary.get("missing_store_codes") or [],
         "warnings": warnings,
         "warnings_text": "\n".join(str(entry) for entry in warnings) if warnings else "",
+        "td_garment_warning_count": len(td_garment_warning_details),
+        "td_garment_warning_details": td_garment_warning_details,
         "warnings_count": len(warnings),
         "has_warnings": bool(warnings),
         "notification_payload": payload,
