@@ -510,13 +510,16 @@ async def test_td_garment_incomplete_degrades_success_without_retry(
                 "orders": {
                     "stores": {
                         "TD01": {
+                            "rows_downloaded": 12,
+                            "rows_ingested": 12,
+                            "final_rows": 12,
                             "garments_fetch_completeness": "incomplete",
                             "garments_final_row_count": 17,
                             "garments_budget_state": "near_limit",
                         }
                     }
                 },
-                "sales": {"stores": {"TD01": {}}},
+                "sales": {"stores": {"TD01": {"rows_downloaded": 7, "rows_ingested": 7, "final_rows": 7}}},
             },
         }
 
@@ -559,8 +562,11 @@ async def test_td_garment_incomplete_degrades_success_without_retry(
     assert status_counts["success"] == 0
     assert window_audit[0]["status"] == "success_with_warnings"
     assert window_audit[0]["attempt_no"] == 1
-    assert "data incomplete for garment-dependent reports" in window_audit[0]["status_note"]
+    assert "current data incomplete for garment-dependent reports" in window_audit[0]["status_note"]
+    assert "recovered navigation failure" not in window_audit[0]["status_note"]
     assert window_audit[0]["warning_count"] == 1
+    assert window_audit[0]["ingestion_counts"]["primary"]["rows_ingested"] == 12
+    assert window_audit[0]["ingestion_counts"]["secondary"]["rows_ingested"] == 7
     assert inserted_summaries[0]["overall_status"] == "success_with_warnings"
 
 
@@ -645,9 +651,105 @@ async def test_td_garment_incomplete_after_retry_remains_degraded_success(
         "skipped",
         "success_with_warnings",
     ]
+    assert "recovered navigation failure on previous attempt" in window_audit[0]["status_note"]
+    assert "current data incomplete for garment-dependent reports" in window_audit[0]["status_note"]
     assert "after retry" in window_audit[0]["status_note"]
     assert window_audit[0]["warning_count"] == 1
     assert inserted_summaries[0]["overall_status"] == "success_with_warnings"
+
+
+@pytest.mark.asyncio
+async def test_td_navigation_failure_retries_and_recovers_without_garment_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        profiler,
+        "config",
+        SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:", run_env="test"),
+    )
+
+    async def fake_fetch_last_success_window_end(**_kwargs: object) -> None:
+        return None
+
+    pipeline_run_ids: list[str] = []
+
+    async def fake_pipeline_fn(**kwargs: object) -> None:
+        pipeline_run_ids.append(str(kwargs["run_id"]))
+
+    async def fake_fetch_summary_for_run(_database_url: str, _run_id: str) -> dict:
+        return {
+            "overall_status": "success",
+            "metrics_json": {
+                "orders": {
+                    "stores": {
+                        "TD01": {
+                            "rows_downloaded": 10,
+                            "rows_ingested": 10,
+                            "garments_fetch_completeness": "complete",
+                            "garments_final_row_count": 10,
+                        }
+                    }
+                },
+                "sales": {"stores": {"TD01": {"rows_downloaded": 5, "rows_ingested": 5}}},
+            },
+        }
+
+    log_rows = iter(
+        [
+            {
+                "id": 1,
+                "status": "skipped",
+                "error_message": "Navigation failed: timeout loading TD reports",
+            },
+            {"id": 2, "status": "success", "error_message": None},
+        ]
+    )
+
+    async def fake_fetch_latest_log_row(**_kwargs: object) -> dict:
+        return next(log_rows)
+
+    inserted_summaries: list[dict] = []
+
+    async def fake_insert_run_summary(_database_url: str, summary_record: dict) -> None:
+        inserted_summaries.append(summary_record)
+
+    monkeypatch.setattr(profiler, "fetch_last_success_window_end", fake_fetch_last_success_window_end)
+    monkeypatch.setattr(profiler, "fetch_summary_for_run", fake_fetch_summary_for_run)
+    monkeypatch.setattr(profiler, "_fetch_latest_log_row", fake_fetch_latest_log_row)
+    monkeypatch.setattr(profiler, "insert_run_summary", fake_insert_run_summary)
+
+    overall_status, _windows, _details, status_counts, window_audit, *_ = await profiler._run_store_windows(
+        logger=profiler.JsonLogger(run_id="profiler-run", log_file_path=None),
+        store=StoreProfile(
+            store_code="TD01",
+            store_name="TD Store",
+            cost_center="CC-TD01",
+            sync_config={},
+            start_date=None,
+        ),
+        pipeline_name="td_orders_sync",
+        pipeline_id=101,
+        pipeline_fn=fake_pipeline_fn,
+        run_env="test",
+        run_id="profiler-run",
+        backfill_days=1,
+        window_days=1,
+        overlap_days=0,
+        from_date=date(2024, 2, 1),
+        to_date=date(2024, 2, 1),
+    )
+
+    assert pipeline_run_ids == [
+        "profiler-run_TD01_001",
+        "profiler-run_TD01_001",
+    ]
+    assert overall_status == "success"
+    assert status_counts["success"] == 1
+    assert window_audit[0]["attempt_no"] == 2
+    assert [attempt["status"] for attempt in window_audit[0]["attempts"]] == ["skipped", "success"]
+    assert "recovered navigation failure on previous attempt" in window_audit[0]["status_note"]
+    assert "current data incomplete" not in window_audit[0]["status_note"]
+    assert inserted_summaries[0]["overall_status"] == "success"
 
 
 def test_td_garment_completeness_unavailable_is_not_incomplete_warning() -> None:

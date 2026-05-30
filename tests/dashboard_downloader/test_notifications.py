@@ -944,5 +944,5 @@ def test_report_notification_context_includes_upstream_orders_status() -> None:
     assert context["orders_sync_is_degraded"] is True
     assert context["orders_sync_upstream_status"] == "failed"
     assert context["orders_sync_upstream_run_id"] == "orders-run-1"
-    assert "Orders sync failed before this report; data may be stale." in summary
+    assert "Orders sync was degraded before this report; data may be stale or incomplete." in summary
     assert "run_id=orders-run-1" in summary

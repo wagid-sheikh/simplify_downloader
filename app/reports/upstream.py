@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 DEGRADED_ORDERS_SYNC_MESSAGE = (
-    "Orders sync failed before this report; data may be stale."
+    "Orders sync was degraded before this report; data may be stale or incomplete."
 )
-FAILED_UPSTREAM_STATUSES = frozenset({"failed", "error"})
+DEGRADED_UPSTREAM_STATUSES = frozenset({"failed", "error", "success_with_warnings", "warning"})
 
 
 @dataclass(frozen=True)
@@ -15,7 +15,7 @@ class OrdersSyncUpstreamContext:
 
     @property
     def is_degraded(self) -> bool:
-        return (self.status or "").strip().lower() in FAILED_UPSTREAM_STATUSES
+        return (self.status or "").strip().lower() in DEGRADED_UPSTREAM_STATUSES
 
     @property
     def warning_text(self) -> str:
