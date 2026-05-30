@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import errno
 import json
 import random
 from pathlib import Path
@@ -964,16 +965,29 @@ async def _download_one_spec(
     attempted_refresh = False
 
     def _is_transient_download_error(exc: Exception) -> bool:
-        if isinstance(exc, (TimeoutError, ConnectionError, asyncio.TimeoutError, PlaywrightTimeoutError)):
+        if isinstance(
+            exc, (TimeoutError, ConnectionError, asyncio.TimeoutError, PlaywrightTimeoutError)
+        ):
+            return True
+        if isinstance(exc, OSError) and exc.errno in {
+            errno.ETIMEDOUT,
+            errno.ECONNRESET,
+            errno.ECONNREFUSED,
+        }:
             return True
 
+        # Playwright request failures often surface Node network codes only in the message.
         err_text = _safe_error(exc).lower()
         transient_markers = (
+            "etimedout",
+            "econnreset",
+            "econnrefused",
             "socket hang up",
+            "read etimedout",
+            "network changed",
             "timeout",
             "timed out",
             "connection reset",
-            "econnreset",
         )
         return any(marker in err_text for marker in transient_markers)
 
@@ -997,10 +1011,8 @@ async def _download_one_spec(
                 response = await request.get(url)
                 break
             except Exception as exc:
-                if not _is_transient_download_error(exc) or attempt >= DOWNLOAD_RETRY_MAX_ATTEMPTS:
-                    if _is_transient_download_error(exc):
-                        retry_diagnostics["retry_count"] = retry_attempts
-                        retry_diagnostics["retry_errors"] = retry_diagnostics["retry_errors"]
+                is_transient = _is_transient_download_error(exc)
+                if not is_transient or attempt >= DOWNLOAD_RETRY_MAX_ATTEMPTS:
                     _log(
                         "error",
                         f"request failed for {spec['key']}",
