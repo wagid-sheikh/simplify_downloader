@@ -100,3 +100,28 @@ def test_run_async_invokes_leads_assignment_on_success(monkeypatch):
     assert result == 0
     assert observed["lead_calls"] == 1
     assert observed["run_id"] == "run-success"
+
+
+def test_stores_diagnose_prints_db_driven_enabled_store_codes(monkeypatch, capsys):
+    from app.dashboard_downloader import config as dashboard_config
+
+    async def fake_fetch_store_scope_diagnostics(*, database_url):
+        assert database_url
+        return dashboard_config.StoreScopeDiagnostics(
+            etl_enabled_codes=["A100", "B200"],
+            report_enabled_codes=["B200"],
+            report_eligible_codes=["B200"],
+        )
+
+    monkeypatch.setattr(
+        dashboard_config,
+        "fetch_store_scope_diagnostics",
+        fake_fetch_store_scope_diagnostics,
+    )
+
+    assert cli.main(["stores", "diagnose"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "[stores] etl_enabled_count=2 codes=A100,B200",
+        "[stores] report_enabled_count=1 codes=B200",
+        "[stores] report_eligible_count=1 codes=B200",
+    ]

@@ -66,6 +66,11 @@ headful browser prompts.
 * Store selection is database-driven only. Legacy CLI selectors (for example,
   `--stores_list`) are retired; keep flags updated in `store_master` instead of
   passing ad-hoc lists.
+* Operators can inspect the active DB-driven dashboard scope with
+  `python -m app stores diagnose`. The command prints ETL-enabled, report-enabled,
+  and report-eligible (`etl_flag=true` and `report_flag=true`) counts and store codes.
+  Zero report-eligible stores is non-fatal: report generation is skipped with an
+  actionable warning so intentionally disabled reporting does not stop ingestion.
 * TLS verification for TMS traffic is enabled by default. If Playwright hits a
   certificate failure at runtime, `navigate_with_retry` will recreate the
   browser context with HTTPS checks disabled for that retry only—there is no

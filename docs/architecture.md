@@ -106,6 +106,8 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 - `app/dashboard_downloader/notifications.py` resolves pipeline run context + docs + templates + recipients from DB.
 - SMTP config values are loaded from `app.config`.
 - Supports diagnostics command (`python -m app notifications test ...`).
+- Supports DB-driven dashboard store-scope diagnostics (`python -m app stores diagnose`)
+  for ETL-enabled, report-enabled, and report-eligible store counts and codes.
 
 ## Request / run flow (high level)
 
