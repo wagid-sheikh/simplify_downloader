@@ -266,10 +266,10 @@ async def test_pending_deliveries_persists_orders_sync_upstream_metrics(
         "status": "failed",
         "run_id": "orders-run-1",
         "is_degraded": True,
-        "warning_text": "Orders sync failed before this report; data may be stale.",
+        "warning_text": "Orders sync was degraded before this report; data may be stale or incomplete.",
     }
     assert "Upstream orders sync: status=failed, run_id=orders-run-1." in final_record["summary_text"]
-    assert "Orders sync failed before this report; data may be stale." in final_record["summary_text"]
+    assert "Orders sync was degraded before this report; data may be stale or incomplete." in final_record["summary_text"]
     assert final_record["phases_json"]["upstream_orders_sync"]["warning"] == 1
 
 

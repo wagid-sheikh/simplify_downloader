@@ -1664,7 +1664,7 @@ async def _run_store_windows(
                         status = TD_GARMENT_INCOMPLETE_STATUS
                     status_note += (
                         " (TD garments_fetch_completeness=incomplete; "
-                        "data incomplete for garment-dependent reports)"
+                        "current data incomplete for garment-dependent reports)"
                     )
                     log_event(
                         logger=logger,
@@ -1768,6 +1768,15 @@ async def _run_store_windows(
             if attempt_row_facts:
                 _merge_row_facts(row_facts, attempt_row_facts)
             if attempt > 0:
+                recovered_navigation_failure = any(
+                    _has_timeout_navigation_failure(
+                        str(previous_attempt.get("error_message") or ""),
+                        str(previous_attempt.get("status_note") or ""),
+                    )
+                    for previous_attempt in attempt_audit[:-1]
+                )
+                if recovered_navigation_failure:
+                    status_note += " (recovered navigation failure on previous attempt)"
                 status_note += " (after retry)"
             break
         primary_metrics = _prefix_metrics(

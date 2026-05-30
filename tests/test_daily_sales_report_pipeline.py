@@ -744,7 +744,7 @@ async def test_daily_pipeline_metrics_are_json_safe_with_short_payment_rows(
     assert final_record["metrics_json"]["orders_sync_upstream_status"] == "failed"
     assert final_record["metrics_json"]["orders_sync_upstream_run_id"] == "orders-run-1"
     assert final_record["metrics_json"]["orders_sync_is_degraded"] is True
-    assert "Orders sync failed before this report; data may be stale." in final_record["summary_text"]
+    assert "Orders sync was degraded before this report; data may be stale or incomplete." in final_record["summary_text"]
     assert final_record["phases_json"]["upstream_orders_sync"]["warning"] == 1
     assert final_record["phases_json"]["send_email"]["ok"] == 1
 
@@ -1117,5 +1117,5 @@ def test_daily_sales_context_and_template_mark_degraded_orders_sync() -> None:
     html = pipeline._render_html(context)
 
     assert context["orders_sync_is_degraded"] is True
-    assert "Orders sync failed before this report; data may be stale." in html
+    assert "Orders sync was degraded before this report; data may be stale or incomplete." in html
     assert "Upstream orders sync status: failed; run ID: orders-run-1" in html
