@@ -716,6 +716,47 @@ is_deterministic_code_error() {
   return 1
 }
 
+
+run_orders_connectivity_preflight() {
+  local preflight_script="./scripts/orders_sync_connectivity_preflight.sh"
+  local preflight_log_file
+  local preflight_start
+  local preflight_end
+  local duration
+  local rc=0
+
+  if [[ "${ORDERS_SYNC_SKIP_CONNECTIVITY_PREFLIGHT:-0}" = "1" ]]; then
+    section "Skipping orders sync connectivity preflight"
+    log "ORDERS_SYNC_SKIP_CONNECTIVITY_PREFLIGHT=1; assuming caller intentionally bypassed cron preflight."
+    return 0
+  fi
+
+  section "Running orders sync connectivity preflight"
+  log "Command: ${preflight_script}"
+  preflight_start="$(date +%s)"
+  preflight_log_file="$(mktemp "${LOCK_DIR}/orders_sync_connectivity_preflight.XXXXXX.log")"
+
+  if bash "${preflight_script}" > "${preflight_log_file}" 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  cat "${preflight_log_file}" >> "${LOG_FILE}"
+  rm -f "${preflight_log_file}" 2>/dev/null || true
+
+  preflight_end="$(date +%s)"
+  duration=$((preflight_end - preflight_start))
+
+  if [[ "${rc}" -ne 0 ]]; then
+    log "ERROR: orders sync connectivity preflight failed with exit_code=${rc} after ${duration}s; skipping orders_sync_run_profiler before Playwright launch."
+    return "${rc}"
+  fi
+
+  log "orders sync connectivity preflight succeeded in ${duration}s"
+  return 0
+}
+
 extract_orders_sync_observability() {
   local jsonl_file="${JSON_LOG_FILE:-${REPO_ROOT}/logs/simplify_downloader.jsonl}"
   local parse_output
@@ -826,7 +867,12 @@ run_started_epoch="$(date +%s)"
 # ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=1 makes this step return non-zero
 # for persisted overall_status="failed"; keep recording orders_rc while allowing
 # the report pipeline steps to run.
-run_step "Script 1: orders_sync_run_profiler" "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS} ./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" || orders_rc=$?
+if run_orders_connectivity_preflight; then
+  run_step "Script 1: orders_sync_run_profiler" "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS} ORDERS_SYNC_SKIP_CONNECTIVITY_PREFLIGHT=1 ./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" || orders_rc=$?
+else
+  orders_rc=$?
+  log "Script 1: orders_sync_run_profiler skipped because connectivity preflight failed (orders_sync_run_profiler_rc=${orders_rc})."
+fi
 extract_orders_sync_observability
 run_step "Script 2: daily_sales_report" "./scripts/run_local_reports_daily_sales.sh" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" || daily_rc=$?
 # Pending Deliveries must not skip due to a prior successful summary; report CLIs always regenerate.
