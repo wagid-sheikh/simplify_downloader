@@ -726,7 +726,13 @@ async def test_daily_pipeline_metrics_are_json_safe_with_short_payment_rows(
     )
     monkeypatch.setattr(pipeline, "send_notifications_for_run", _fake_notify)
 
-    await pipeline._run(report_date=report_date, env="test", force=True)
+    await pipeline._run(
+        report_date=report_date,
+        env="test",
+        force=True,
+        orders_sync_upstream_status="failed",
+        orders_sync_upstream_run_id="orders-run-1",
+    )
 
     assert captured_records
     final_record = captured_records[-1]
@@ -735,6 +741,11 @@ async def test_daily_pipeline_metrics_are_json_safe_with_short_payment_rows(
         json.dumps(record["metrics_json"])
 
     assert final_record["metrics_json"]["short_payment_rows"] == 1
+    assert final_record["metrics_json"]["orders_sync_upstream_status"] == "failed"
+    assert final_record["metrics_json"]["orders_sync_upstream_run_id"] == "orders-run-1"
+    assert final_record["metrics_json"]["orders_sync_is_degraded"] is True
+    assert "Orders sync failed before this report; data may be stale." in final_record["summary_text"]
+    assert final_record["phases_json"]["upstream_orders_sync"]["warning"] == 1
     assert final_record["phases_json"]["send_email"]["ok"] == 1
 
 
@@ -1078,3 +1089,33 @@ def test_actual_payments_not_found_workbook_normalizes_tz_aware_datetimes(tmp_pa
         )
     finally:
         workbook.close()
+
+
+def test_daily_sales_context_and_template_mark_degraded_orders_sync() -> None:
+    payload = SimpleNamespace(
+        report_date=date(2026, 4, 29),
+        rows=[],
+        totals=SimpleNamespace(
+            sales_ftd=Decimal("0"), sales_mtd=Decimal("0"), sales_lmtd=Decimal("0"),
+            orders_count_ftd=0, orders_count_mtd=0, orders_count_lmtd=0,
+            collections_ftd=Decimal("0"), collections_mtd=Decimal("0"), collections_lmtd=Decimal("0"),
+            collections_count_ftd=0, collections_count_mtd=0, collections_count_lmtd=0,
+            target=Decimal("0"), achieved=Decimal("0"), ttd=Decimal("0"),
+            delta=Decimal("0"), reqd_per_day=Decimal("0"),
+        ),
+        edited_orders=[], edited_orders_summary=None, edited_orders_totals=None,
+        missed_leads=[], cancelled_leads=[], lead_performance_summary=[],
+        to_be_recovered=[], to_be_compensated=[],
+        to_be_recovered_total_order_value=Decimal("0"),
+        to_be_compensated_total_order_value=Decimal("0"),
+        auto_cleared_order_numbers_text="", same_day_fulfillment_rows=[],
+        missing_payment_rows=[], short_payment_rows=[], report_day_orders_by_cost_center=[],
+    )
+    upstream = pipeline.build_orders_sync_upstream_context(status="failed", run_id="orders-run-1")
+
+    context = pipeline._build_context(payload, "prod", upstream)
+    html = pipeline._render_html(context)
+
+    assert context["orders_sync_is_degraded"] is True
+    assert "Orders sync failed before this report; data may be stale." in html
+    assert "Upstream orders sync status: failed; run ID: orders-run-1" in html

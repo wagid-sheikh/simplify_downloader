@@ -40,6 +40,12 @@ from app.reports.shared.same_day_fulfillment import (
     group_rows_by_store,
 )
 
+from app.reports.upstream import (
+    DEGRADED_ORDERS_SYNC_MESSAGE,
+    OrdersSyncUpstreamContext,
+    build_orders_sync_upstream_context,
+)
+
 from .data import DailySalesReportData, fetch_daily_sales_report
 from .to_be_recovered import (
     DOCUMENT_TYPE as TO_BE_RECOVERED_DOCUMENT_TYPE,
@@ -55,7 +61,9 @@ SHORT_PAYMENTS_DOCUMENT_TYPE = "daily_sales_short_payments_pdf"
 SHORT_PAYMENTS_OUTPUT_PREFIX = "reports.daily_sales_report_short_payments"
 ACTUAL_PAYMENTS_NOT_FOUND_TEMPLATE_NAME = "actual_payments_not_found_report.html"
 ACTUAL_PAYMENTS_NOT_FOUND_DOCUMENT_TYPE = "daily_sales_actual_payments_not_found_pdf"
-ACTUAL_PAYMENTS_NOT_FOUND_OUTPUT_PREFIX = "reports.daily_sales_report_actual_payments_not_found"
+ACTUAL_PAYMENTS_NOT_FOUND_OUTPUT_PREFIX = (
+    "reports.daily_sales_report_actual_payments_not_found"
+)
 ACTUAL_PAYMENTS_NOT_FOUND_WORKBOOK_DOCUMENT_TYPE = (
     "daily_sales_actual_payments_not_found_xlsx"
 )
@@ -66,6 +74,7 @@ TEMPLATE_DIR = Path("app") / "reports" / "daily_sales_report" / "templates"
 SHARED_TEMPLATE_DIR = Path("app") / "reports" / "shared" / "templates"
 OUTPUT_ROOT = Path("app") / "reports" / "output_files"
 EXCEL_DATETIME_NUMBER_FORMAT = "yyyy-mm-dd hh:mm:ss"
+
 
 def _format_amount(value: Decimal | int | float | None) -> str:
     return format_amount(value)
@@ -132,7 +141,9 @@ async def _persist_document(
 
 
 def _build_context(
-    data: DailySalesReportData, run_environment: str
+    data: DailySalesReportData,
+    run_environment: str,
+    orders_sync_upstream: OrdersSyncUpstreamContext | None = None,
 ) -> dict[str, object]:
     report_date_display = data.report_date.strftime("%d-%b-%Y")
     missing_payment_rows = list(data.missing_payment_rows)
@@ -181,10 +192,15 @@ def _build_context(
                 "group_total_order_amount": total_order_amount,
             }
         )
+    orders_sync_upstream = orders_sync_upstream or build_orders_sync_upstream_context()
     return {
         "company_name": "The Shaw Ventures",
         "report_date_display": report_date_display,
         "run_environment": run_environment,
+        "orders_sync_upstream_status": orders_sync_upstream.status or "",
+        "orders_sync_upstream_run_id": orders_sync_upstream.run_id or "",
+        "orders_sync_is_degraded": orders_sync_upstream.is_degraded,
+        "orders_sync_warning_text": orders_sync_upstream.warning_text,
         "rows": data.rows,
         "totals": data.totals,
         "edited_orders": data.edited_orders,
@@ -224,7 +240,10 @@ def _short_payments_output_path(report_date: date) -> Path:
 
 
 def _actual_payments_not_found_output_path(report_date: date) -> Path:
-    return OUTPUT_ROOT / f"{ACTUAL_PAYMENTS_NOT_FOUND_OUTPUT_PREFIX}_{report_date.isoformat()}.pdf"
+    return (
+        OUTPUT_ROOT
+        / f"{ACTUAL_PAYMENTS_NOT_FOUND_OUTPUT_PREFIX}_{report_date.isoformat()}.pdf"
+    )
 
 
 def _actual_payments_not_found_workbook_output_path(report_date: date) -> Path:
@@ -234,7 +253,7 @@ def _actual_payments_not_found_workbook_output_path(report_date: date) -> Path:
 
 
 def _sanitize_worksheet_name(value: str, used_names: set[str]) -> str:
-    normalized = "".join("_" if char in r'[]:*?/\\' else char for char in value).strip()
+    normalized = "".join("_" if char in r"[]:*?/\\" else char for char in value).strip()
     base_name = normalized[:31] if normalized else "Unspecified"
     candidate = base_name
     suffix = 1
@@ -367,7 +386,13 @@ async def _generate_short_payments_pdf(
     return short_payments_output_path
 
 
-async def _run(report_date: date | None, env: str | None, force: bool) -> None:
+async def _run(
+    report_date: date | None,
+    env: str | None,
+    force: bool,
+    orders_sync_upstream_status: str | None = None,
+    orders_sync_upstream_run_id: str | None = None,
+) -> None:
     run_env = resolve_run_env(env)
     run_id = new_run_id()
     logger = get_logger(run_id=run_id)
@@ -375,6 +400,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
         pipeline_name=PIPELINE_NAME, env=run_env, run_id=run_id
     )
     database_url = config.database_url
+    orders_sync_upstream = build_orders_sync_upstream_context(
+        status=orders_sync_upstream_status, run_id=orders_sync_upstream_run_id
+    )
 
     try:
         if not database_url:
@@ -394,6 +422,15 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
         tz = get_timezone()
         resolved_date = report_date or aware_now(tz).date()
         tracker.set_report_date(resolved_date)
+        if orders_sync_upstream.status or orders_sync_upstream.run_id:
+            status_text = orders_sync_upstream.status or "unknown"
+            run_id_text = orders_sync_upstream.run_id or "unknown"
+            tracker.add_summary(
+                f"Upstream orders sync: status={status_text}, run_id={run_id_text}."
+            )
+        if orders_sync_upstream.is_degraded:
+            tracker.mark_phase("upstream_orders_sync", "warning")
+            tracker.add_summary(DEGRADED_ORDERS_SYNC_MESSAGE)
         log_event(
             logger=logger,
             phase="orchestrator",
@@ -401,6 +438,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             report_date=resolved_date.isoformat(),
             run_env=run_env,
             force=force,
+            orders_sync_upstream_status=orders_sync_upstream.status,
+            orders_sync_upstream_run_id=orders_sync_upstream.run_id,
+            orders_sync_is_degraded=orders_sync_upstream.is_degraded,
         )
 
         data = await fetch_daily_sales_report(
@@ -419,7 +459,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             short_payment_rows=len(getattr(data, "short_payment_rows", [])),
         )
 
-        context = _build_context(data, run_env)
+        context = _build_context(data, run_env, orders_sync_upstream)
         html = _render_html(context)
         short_payments_pdf_generated = True
         actual_payments_not_found_pdf_generated = True
@@ -498,7 +538,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             / f"reports.mtd_same_day_fulfillment_{resolved_date.isoformat()}.pdf"
         )
         short_payments_output_path = _short_payments_output_path(resolved_date)
-        actual_payments_not_found_output_path = _actual_payments_not_found_output_path(resolved_date)
+        actual_payments_not_found_output_path = _actual_payments_not_found_output_path(
+            resolved_date
+        )
         actual_payments_not_found_workbook_output_path = (
             _actual_payments_not_found_workbook_output_path(resolved_date)
         )
@@ -555,10 +597,10 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             )
             _, rows_processed, datetime_fields_normalized = (
                 _build_actual_payments_not_found_workbook(
-                rows=list(data.missing_payment_rows),
-                output_path=actual_payments_not_found_workbook_output_path,
-                business_timezone=tz,
-            )
+                    rows=list(data.missing_payment_rows),
+                    output_path=actual_payments_not_found_workbook_output_path,
+                    business_timezone=tz,
+                )
             )
             log_event(
                 logger=logger,
@@ -594,7 +636,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 same_day_file_path=str(same_day_output_path),
                 to_be_recovered_file_path=str(to_be_recovered_output_path),
                 short_payments_file_path=str(short_payments_output_path),
-                actual_payments_not_found_file_path=str(actual_payments_not_found_output_path),
+                actual_payments_not_found_file_path=str(
+                    actual_payments_not_found_output_path
+                ),
                 actual_payments_not_found_workbook_file_path=str(
                     actual_payments_not_found_workbook_output_path
                 ),
@@ -723,6 +767,10 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
 
         tracker.metrics = {
             "report_date": resolved_date.isoformat(),
+            "orders_sync_upstream": orders_sync_upstream.as_metrics(),
+            "orders_sync_upstream_status": orders_sync_upstream.status,
+            "orders_sync_upstream_run_id": orders_sync_upstream.run_id,
+            "orders_sync_is_degraded": orders_sync_upstream.is_degraded,
             "rows": len(data.rows),
             "edited_orders": len(data.edited_orders),
             "mtd_attachment_generated": mtd_attachment_generated,
@@ -732,7 +780,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             "short_payments_pdf_file_path": str(short_payments_output_path),
             "short_payments_pdf_generated": short_payments_pdf_generated,
             "actual_payments_not_found_rows": len(data.missing_payment_rows),
-            "actual_payments_not_found_pdf_file_path": str(actual_payments_not_found_output_path),
+            "actual_payments_not_found_pdf_file_path": str(
+                actual_payments_not_found_output_path
+            ),
             "actual_payments_not_found_pdf_generated": actual_payments_not_found_pdf_generated,
             "actual_payments_not_found_workbook_file_path": str(
                 actual_payments_not_found_workbook_output_path
@@ -819,9 +869,21 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
 
 
 def run_pipeline(
-    report_date: date | None = None, env: str | None = None, force: bool = False
+    report_date: date | None = None,
+    env: str | None = None,
+    force: bool = False,
+    orders_sync_upstream_status: str | None = None,
+    orders_sync_upstream_run_id: str | None = None,
 ) -> None:
-    asyncio.run(_run(report_date, env, force))
+    asyncio.run(
+        _run(
+            report_date,
+            env,
+            force,
+            orders_sync_upstream_status=orders_sync_upstream_status,
+            orders_sync_upstream_run_id=orders_sync_upstream_run_id,
+        )
+    )
 
 
 __all__ = ["run_pipeline"]

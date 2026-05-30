@@ -28,6 +28,7 @@ from app.dashboard_downloader.db_tables import (
 from app.common.dashboard_store import store_master
 from app.dashboard_downloader.data_quality import format_threshold_breach
 from app.config import config
+from app.reports.upstream import DEGRADED_ORDERS_SYNC_MESSAGE
 
 logger = logging.getLogger(__name__)
 SMTP_CONNECT_TIMEOUT_SECONDS = 60
@@ -300,6 +301,43 @@ class EmailSendResult:
     def __bool__(self) -> bool:
         return self.sent
 
+
+
+
+def _orders_sync_upstream_context(metrics_payload: Mapping[str, Any]) -> dict[str, Any]:
+    upstream = metrics_payload.get("orders_sync_upstream")
+    upstream_mapping = upstream if isinstance(upstream, Mapping) else {}
+    status = upstream_mapping.get("status") or metrics_payload.get("orders_sync_upstream_status") or ""
+    run_id = upstream_mapping.get("run_id") or metrics_payload.get("orders_sync_upstream_run_id") or ""
+    is_degraded = bool(
+        upstream_mapping.get("is_degraded")
+        or metrics_payload.get("orders_sync_is_degraded")
+        or str(status).strip().lower() in {"failed", "error"}
+    )
+    return {
+        "orders_sync_upstream_status": str(status or ""),
+        "orders_sync_upstream_run_id": str(run_id or ""),
+        "orders_sync_is_degraded": is_degraded,
+        "orders_sync_warning_text": DEGRADED_ORDERS_SYNC_MESSAGE if is_degraded else "",
+    }
+
+
+def _append_orders_sync_degraded_warning(summary_text: str, metrics_payload: Mapping[str, Any]) -> str:
+    upstream_context = _orders_sync_upstream_context(metrics_payload)
+    details: list[str] = []
+    if upstream_context["orders_sync_upstream_status"]:
+        details.append(f"status={upstream_context['orders_sync_upstream_status']}")
+    if upstream_context["orders_sync_upstream_run_id"]:
+        details.append(f"run_id={upstream_context['orders_sync_upstream_run_id']}")
+    if not details:
+        return summary_text
+    if upstream_context["orders_sync_is_degraded"]:
+        line = f"{DEGRADED_ORDERS_SYNC_MESSAGE} ({', '.join(details)})"
+    else:
+        line = f"Upstream orders sync: {', '.join(details)}"
+    if line in summary_text:
+        return summary_text
+    return f"{summary_text.rstrip()}\n\n{line}" if summary_text else line
 
 def _dashboard_data_quality_warning_lines(metrics_payload: Mapping[str, Any]) -> list[str]:
     data_quality = (
@@ -3042,8 +3080,11 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[st
         "report_date": run_data.get("report_date").isoformat() if run_data.get("report_date") else "",
         "overall_status": run_data.get("overall_status"),
         "total_time_taken": run_data.get("total_time_taken") or duration_human,
-        "summary_text": _append_dashboard_data_quality_warnings(
-            str(run_data.get("summary_text", "") or ""), metrics_payload
+        "summary_text": _append_orders_sync_degraded_warning(
+            _append_dashboard_data_quality_warnings(
+                str(run_data.get("summary_text", "") or ""), metrics_payload
+            ),
+            metrics_payload,
         ),
         "dashboard_data_quality_warnings": _dashboard_data_quality_warning_lines(metrics_payload),
         "dashboard_data_quality_warnings_text": "\n".join(
@@ -3061,6 +3102,7 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[st
         "duration_human": duration_human,
         "missing_windows_by_store": profiler_missing_windows,
     }
+    context.update(_orders_sync_upstream_context(metrics_payload))
     if pipeline_name == "td_crm_leads_sync":
         normalized_status = _normalize_output_status(context.get("overall_status"))
         context["overall_status"] = normalized_status
@@ -3181,8 +3223,11 @@ async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str
         "report_date": run_data.get("report_date").isoformat() if run_data.get("report_date") else "",
         "overall_status": run_data.get("overall_status"),
         "total_time_taken": run_data.get("total_time_taken") or duration_human,
-        "summary_text": _append_dashboard_data_quality_warnings(
-            str(run_data.get("summary_text", "") or ""), metrics_payload
+        "summary_text": _append_orders_sync_degraded_warning(
+            _append_dashboard_data_quality_warnings(
+                str(run_data.get("summary_text", "") or ""), metrics_payload
+            ),
+            metrics_payload,
         ),
         "dashboard_data_quality_warnings": _dashboard_data_quality_warning_lines(metrics_payload),
         "dashboard_data_quality_warnings_text": "\n".join(
@@ -3199,6 +3244,7 @@ async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str
         "duration_seconds": duration_seconds,
         "duration_human": duration_human,
     }
+    context.update(_orders_sync_upstream_context(metrics_payload))
     if pipeline_name == "td_orders_sync":
         context.update(_build_td_orders_context(run_data))
     elif pipeline_name == "uc_orders_sync":
