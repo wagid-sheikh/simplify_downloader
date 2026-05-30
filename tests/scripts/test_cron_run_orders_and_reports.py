@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import stat
 import subprocess
@@ -621,3 +622,197 @@ exit 0
     assert "failure_class=persisted_profiler_failed_status" in log_text
     assert "persisted profiler overall_status=failed" in log_text
     assert "Script 1: orders_sync_run_profiler: attempt 2/2 starting" in log_text
+
+
+def _run_cron_with_profiler_events(tmp_path: Path, events: list[dict[str, object]]) -> str:
+    repo_root = tmp_path
+    scripts_dir = repo_root / "scripts"
+    logs_dir = repo_root / "logs"
+    tmp_dir = repo_root / "tmp"
+    scripts_dir.mkdir(parents=True)
+    logs_dir.mkdir()
+    tmp_dir.mkdir()
+
+    source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
+    _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
+    _write_successful_preflight(scripts_dir)
+
+    event_lines = "\n".join(json.dumps(event) for event in events)
+    _write_executable(
+        scripts_dir / "orders_sync_run_profiler.sh",
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "cat <<'JSON_EVENTS' | tee -a \"${JSON_LOG_FILE}\"\n"
+        f"{event_lines}\n"
+        "JSON_EVENTS\n"
+        "exit 0\n",
+    )
+    _write_executable(
+        scripts_dir / "run_local_reports_pending_deliveries.sh",
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"${TMPDIR:-/tmp}/pending-args.log\"\n"
+        "exit 0\n",
+    )
+    _write_executable(
+        scripts_dir / "run_local_reports_daily_sales.sh",
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"${TMPDIR:-/tmp}/daily-args.log\"\n"
+        "exit 0\n",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "1",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "JSON_LOG_FILE": str(logs_dir / "simplify_downloader.jsonl"),
+            "TMPDIR": str(tmp_path),
+        }
+    )
+
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
+    assert log_files
+    return log_files[-1].read_text(encoding="utf-8")
+
+
+def test_orders_sync_observability_extracts_failed_td_stores_from_profiler_summary(
+    tmp_path: Path,
+) -> None:
+    log_text = _run_cron_with_profiler_events(
+        tmp_path,
+        [
+            {
+                "phase": "store",
+                "message": "child store failed",
+                "run_id": "profiler-td-failed_TD001",
+                "store_code": "TD001",
+                "store_outcome": "failed",
+            },
+            {
+                "phase": "summary",
+                "message": "Orders sync profiler summary",
+                "run_id": "profiler-td-failed",
+                "overall_status": "failed",
+                "status_counts": {"success": 2, "success_with_warnings": 0, "partial": 0, "failed": 1, "skipped": 0},
+                "store_totals": {
+                    "TD001": {
+                        "pipeline_name": "td_orders_sync",
+                        "overall_status": "failed",
+                        "status_counts": {"success": 0, "success_with_warnings": 0, "partial": 0, "failed": 1, "skipped": 0},
+                    },
+                    "TD002": {
+                        "pipeline_name": "td_orders_sync",
+                        "overall_status": "success",
+                        "status_counts": {"success": 2, "success_with_warnings": 0, "partial": 0, "failed": 0, "skipped": 0},
+                    },
+                },
+            },
+        ],
+    )
+
+    assert "orders_sync_profiler_run_id=profiler-td-failed" in log_text
+    assert "orders_sync_overall_status=failed" in log_text
+    assert "orders_sync_failed_stores=[TD001]" in log_text
+    assert "profiler run_id=profiler-td-failed overall_status=failed failed_stores=[TD001]" in log_text
+
+
+def test_orders_sync_observability_preserves_uc_skipped_timeout_windows(
+    tmp_path: Path,
+) -> None:
+    log_text = _run_cron_with_profiler_events(
+        tmp_path,
+        [
+            {
+                "phase": "summary",
+                "message": "Orders sync profiler summary",
+                "run_id": "profiler-uc-skipped",
+                "overall_status": "skipped",
+                "status_counts": {"success": 0, "success_with_warnings": 0, "partial": 0, "failed": 0, "skipped": 1},
+                "store_totals": {
+                    "UC001": {
+                        "pipeline_name": "uc_orders_sync",
+                        "overall_status": "skipped",
+                        "status_counts": {"success": 0, "success_with_warnings": 0, "partial": 0, "failed": 0, "skipped": 1},
+                        "window_audit": [
+                            {
+                                "status": "skipped",
+                                "error": "TimeoutError: Navigation timeout of 30000 ms exceeded",
+                            }
+                        ],
+                    }
+                },
+            }
+        ],
+    )
+
+    assert "orders_sync_profiler_run_id=profiler-uc-skipped" in log_text
+    assert "orders_sync_overall_status=skipped" in log_text
+    assert "orders_sync_failed_stores=[]" in log_text
+    assert "--orders-sync-upstream-status skipped --orders-sync-upstream-run-id profiler-uc-skipped" in log_text
+
+
+def test_orders_sync_observability_preserves_success_with_warnings_garment_summary(
+    tmp_path: Path,
+) -> None:
+    log_text = _run_cron_with_profiler_events(
+        tmp_path,
+        [
+            {
+                "phase": "summary",
+                "message": "Orders sync profiler summary",
+                "run_id": "profiler-garment-warnings",
+                "overall_status": "success_with_warnings",
+                "status_counts": {"success": 2, "success_with_warnings": 1, "partial": 0, "failed": 0, "skipped": 0},
+                "store_totals": {
+                    "TD003": {
+                        "pipeline_name": "td_orders_sync",
+                        "overall_status": "success_with_warnings",
+                        "status_counts": {"success": 0, "success_with_warnings": 1, "partial": 0, "failed": 0, "skipped": 0},
+                        "td_garment_warning_count": 1,
+                        "td_garment_incomplete_windows": [
+                            {"from_date": "2026-05-01", "to_date": "2026-05-02", "garments_final_row_count": 42}
+                        ],
+                    }
+                },
+            }
+        ],
+    )
+
+    assert "orders_sync_profiler_run_id=profiler-garment-warnings" in log_text
+    assert "orders_sync_overall_status=success_with_warnings" in log_text
+    assert "orders_sync_overall_status=unknown" not in log_text
+    assert "orders_sync_failed_stores=[]" in log_text
+    assert "--orders-sync-upstream-status success_with_warnings --orders-sync-upstream-run-id profiler-garment-warnings" in log_text
+
+
+def test_orders_sync_observability_reports_unknown_when_no_profiler_summary_found(
+    tmp_path: Path,
+) -> None:
+    log_text = _run_cron_with_profiler_events(
+        tmp_path,
+        [
+            {"phase": "startup", "message": "profiler started", "run_id": "profiler-no-summary"},
+            {
+                "phase": "summary",
+                "message": "Some other summary",
+                "run_id": "profiler-no-summary",
+                "overall_status": "success",
+            },
+        ],
+    )
+
+    assert "orders_sync_profiler_run_id=profiler-no-summary" in log_text
+    assert "orders_sync_overall_status=unknown" in log_text
+    assert "orders_sync_failed_stores=[]" in log_text
