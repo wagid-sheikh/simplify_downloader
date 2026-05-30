@@ -580,6 +580,257 @@ async def test_send_notifications_records_smtp_exception(monkeypatch) -> None:
     assert "secret-token" not in error["exception_summary"]
 
 
+@pytest.mark.asyncio
+async def test_send_notifications_retries_transient_smtp_failure_then_succeeds(monkeypatch) -> None:
+    from app.dashboard_downloader import notifications
+    from app.dashboard_downloader.notifications import (
+        NotificationSendRetryConfig,
+        SmtpConfig,
+        send_notifications_for_run,
+    )
+
+    attempts = {"count": 0}
+
+    async def fake_load_notification_resources(_pipeline_name: str, _run_id: str):
+        return (
+            {
+                "pipeline": {"description": "Test pipeline"},
+                "run": {
+                    "run_env": "local",
+                    "report_date": date(2026, 5, 29),
+                    "overall_status": "ok",
+                    "total_time_taken": "00:00:01",
+                    "summary_text": "summary",
+                    "metrics_json": {},
+                    "started_at": datetime(2026, 5, 29, 0, 0, tzinfo=timezone.utc),
+                    "finished_at": datetime(2026, 5, 29, 0, 0, 1, tzinfo=timezone.utc),
+                },
+                "docs": [],
+                "profiles": [
+                    {"id": 1, "code": "run_summary", "scope": "run", "attach_mode": "none"}
+                ],
+                "templates": {
+                    1: {
+                        "subject_template": "Run {{ run_id }}",
+                        "body_template": "{{ summary_text }}",
+                    }
+                },
+                "recipients": {
+                    1: [
+                        {
+                            "store_code": "ALL",
+                            "email_address": "ops@example.test",
+                            "display_name": None,
+                            "send_as": "to",
+                        }
+                    ]
+                },
+                "store_names": {},
+                "profiler_missing_windows": {},
+            },
+            [],
+        )
+
+    class FlakySMTP:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def login(self, _username, _password):
+            return None
+
+        def send_message(self, _message, to_addrs):
+            attempts["count"] += 1
+            if attempts["count"] < 3:
+                raise notifications.smtplib.SMTPServerDisconnected("temporary disconnect")
+            assert to_addrs == ["ops@example.test"]
+
+    monkeypatch.setattr(
+        notifications, "_load_notification_resources", fake_load_notification_resources
+    )
+    monkeypatch.setattr(
+        notifications,
+        "_load_smtp_config",
+        lambda: SmtpConfig(
+            host="smtp.example.test",
+            port=587,
+            sender="sender@example.test",
+            username="smtp-user",
+            password="secret-token",
+            use_tls=False,
+        ),
+    )
+    monkeypatch.setattr(
+        notifications,
+        "_load_notification_send_retry_config",
+        lambda: NotificationSendRetryConfig(
+            max_attempts=3,
+            initial_delay_seconds=0,
+            max_delay_seconds=0,
+            transient_exception_types=(notifications.smtplib.SMTPServerDisconnected,),
+        ),
+    )
+    monkeypatch.setattr(notifications.smtplib, "SMTP", FlakySMTP)
+
+    result = await send_notifications_for_run("test_pipeline", "run-1")
+
+    assert attempts["count"] == 3
+    assert result["emails_planned"] == 1
+    assert result["emails_sent"] == 1
+    assert result["errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_send_notifications_does_not_retry_non_transient_configuration_failure(monkeypatch) -> None:
+    from app.dashboard_downloader import notifications
+    from app.dashboard_downloader.notifications import (
+        NotificationSendRetryConfig,
+        SmtpConfig,
+        send_notifications_for_run,
+    )
+
+    attempts = {"count": 0}
+
+    async def fake_load_notification_resources(_pipeline_name: str, _run_id: str):
+        return (
+            {
+                "pipeline": {"description": "Test pipeline"},
+                "run": {
+                    "run_env": "local",
+                    "report_date": date(2026, 5, 29),
+                    "overall_status": "ok",
+                    "total_time_taken": "00:00:01",
+                    "summary_text": "summary",
+                    "metrics_json": {},
+                    "started_at": datetime(2026, 5, 29, 0, 0, tzinfo=timezone.utc),
+                    "finished_at": datetime(2026, 5, 29, 0, 0, 1, tzinfo=timezone.utc),
+                },
+                "docs": [],
+                "profiles": [
+                    {"id": 1, "code": "run_summary", "scope": "run", "attach_mode": "none"}
+                ],
+                "templates": {
+                    1: {
+                        "subject_template": "Run {{ run_id }}",
+                        "body_template": "{{ summary_text }}",
+                    }
+                },
+                "recipients": {
+                    1: [
+                        {
+                            "store_code": "ALL",
+                            "email_address": "ops@example.test",
+                            "display_name": None,
+                            "send_as": "to",
+                        }
+                    ]
+                },
+                "store_names": {},
+                "profiler_missing_windows": {},
+            },
+            [],
+        )
+
+    class AuthFailingSMTP:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def login(self, _username, _password):
+            attempts["count"] += 1
+            raise notifications.smtplib.SMTPAuthenticationError(535, b"bad credentials")
+
+        def send_message(self, _message, to_addrs):
+            raise AssertionError("send_message should not run after auth failure")
+
+    monkeypatch.setattr(
+        notifications, "_load_notification_resources", fake_load_notification_resources
+    )
+    monkeypatch.setattr(
+        notifications,
+        "_load_smtp_config",
+        lambda: SmtpConfig(
+            host="smtp.example.test",
+            port=587,
+            sender="sender@example.test",
+            username="smtp-user",
+            password="secret-token",
+            use_tls=False,
+        ),
+    )
+    monkeypatch.setattr(
+        notifications,
+        "_load_notification_send_retry_config",
+        lambda: NotificationSendRetryConfig(
+            max_attempts=4,
+            initial_delay_seconds=0,
+            max_delay_seconds=0,
+            transient_exception_types=(notifications.smtplib.SMTPServerDisconnected,),
+        ),
+    )
+    monkeypatch.setattr(notifications.smtplib, "SMTP", AuthFailingSMTP)
+
+    result = await send_notifications_for_run("test_pipeline", "run-1")
+
+    assert attempts["count"] == 1
+    assert result["emails_planned"] == 1
+    assert result["emails_sent"] == 0
+    assert result["errors"]
+    assert result["errors"][0]["exception_type"] == "SMTPAuthenticationError"
+    assert result["errors"][0]["attempt_count"] == 1
+    assert result["errors"][0]["final_exception_type"] == "SMTPAuthenticationError"
+
+
+def test_send_email_does_not_retry_recipient_resolution_failure(monkeypatch) -> None:
+    from app.dashboard_downloader import notifications
+    from app.dashboard_downloader.notifications import EmailPlan, SmtpConfig, _send_email
+
+    smtp_calls = {"count": 0}
+
+    class UnexpectedSMTP:
+        def __init__(self, *_args, **_kwargs):
+            smtp_calls["count"] += 1
+
+    monkeypatch.setattr(notifications.smtplib, "SMTP", UnexpectedSMTP)
+
+    result = _send_email(
+        SmtpConfig(
+            host="smtp.example.test",
+            port=587,
+            sender="sender@example.test",
+            username="smtp-user",
+            password="secret-token",
+            use_tls=False,
+        ),
+        EmailPlan(
+            profile_code="run_summary",
+            scope="run",
+            store_code=None,
+            subject="Subject",
+            body="Body",
+            to=[],
+            cc=[],
+            bcc=[],
+            attachments=[],
+        ),
+    )
+
+    assert smtp_calls["count"] == 0
+    assert result.sent is False
+    assert result.failure is not None
+    assert result.failure.exception_type == "NoRecipients"
+    assert result.failure.attempt_count == 1
+
 def test_dashboard_notification_summary_includes_data_quality_threshold_text() -> None:
     from app.dashboard_downloader.notifications import _append_dashboard_data_quality_warnings
 

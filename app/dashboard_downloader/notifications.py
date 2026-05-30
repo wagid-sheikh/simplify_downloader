@@ -5,6 +5,8 @@ import os
 import logging
 import re
 import smtplib
+import socket
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from email.message import EmailMessage
@@ -262,6 +264,14 @@ class SmtpConfig:
     use_tls: bool
 
 
+@dataclass(frozen=True)
+class NotificationSendRetryConfig:
+    max_attempts: int
+    initial_delay_seconds: float
+    max_delay_seconds: float
+    transient_exception_types: tuple[type[BaseException], ...]
+
+
 @dataclass
 class DocumentRecord:
     doc_type: str
@@ -291,6 +301,8 @@ class EmailSendFailure:
     recipients: list[str]
     exception_type: str
     exception_summary: str
+    attempt_count: int = 1
+    final_exception_type: str | None = None
 
 
 @dataclass
@@ -383,6 +395,44 @@ def _load_smtp_config() -> SmtpConfig:
         username=config.report_email_smtp_username or None,
         password=config.report_email_smtp_password or None,
         use_tls=config.report_email_use_tls,
+    )
+
+
+_TRANSIENT_EXCEPTION_REGISTRY: dict[str, type[BaseException]] = {
+    "socket.gaierror": socket.gaierror,
+    "TimeoutError": TimeoutError,
+    "builtins.TimeoutError": TimeoutError,
+    "smtplib.SMTPServerDisconnected": smtplib.SMTPServerDisconnected,
+    "smtplib.SMTPConnectError": smtplib.SMTPConnectError,
+}
+
+
+def _resolve_transient_exception_types(names: Iterable[str]) -> tuple[type[BaseException], ...]:
+    resolved: list[type[BaseException]] = []
+    unknown: list[str] = []
+    for name in names:
+        exception_type = _TRANSIENT_EXCEPTION_REGISTRY.get(str(name).strip())
+        if exception_type is None:
+            unknown.append(str(name))
+            continue
+        if exception_type not in resolved:
+            resolved.append(exception_type)
+    if unknown:
+        logger.warning(
+            "unknown notification retry transient exception names ignored",
+            extra={"exception_names": unknown},
+        )
+    return tuple(resolved)
+
+
+def _load_notification_send_retry_config() -> NotificationSendRetryConfig:
+    return NotificationSendRetryConfig(
+        max_attempts=max(1, int(config.report_email_send_max_attempts)),
+        initial_delay_seconds=max(0.0, float(config.report_email_send_initial_delay_seconds)),
+        max_delay_seconds=max(0.0, float(config.report_email_send_max_delay_seconds)),
+        transient_exception_types=_resolve_transient_exception_types(
+            config.report_email_send_transient_exceptions
+        ),
     )
 
 
@@ -1560,15 +1610,23 @@ def _sanitize_exception_summary(
 
 
 def _email_send_failure(
-    config: SmtpConfig, plan: EmailPlan, recipients: Sequence[str], exc: Exception
+    config: SmtpConfig,
+    plan: EmailPlan,
+    recipients: Sequence[str],
+    exc: Exception,
+    *,
+    attempt_count: int,
 ) -> EmailSendFailure:
+    exception_type = type(exc).__name__
     return EmailSendFailure(
         profile_code=plan.profile_code,
         store_code=plan.store_code,
         recipient_count=len(recipients),
         recipients=[_mask_email_address(recipient) for recipient in recipients],
-        exception_type=type(exc).__name__,
+        exception_type=exception_type,
         exception_summary=_sanitize_exception_summary(exc, config=config, recipients=recipients),
+        attempt_count=attempt_count,
+        final_exception_type=exception_type,
     )
 
 
@@ -1603,29 +1661,67 @@ def _send_email(config: SmtpConfig, plan: EmailPlan) -> EmailSendResult:
             recipients=[],
             exception_type="NoRecipients",
             exception_summary="No recipients resolved for notification email",
+            attempt_count=1,
+            final_exception_type="NoRecipients",
         )
         return EmailSendResult(sent=False, failure=failure)
-    try:
-        if config.use_tls:
-            with smtplib.SMTP(config.host, config.port, timeout=SMTP_CONNECT_TIMEOUT_SECONDS) as client:
-                client.starttls()
-                if config.username and config.password:
-                    client.login(config.username, config.password)
-                client.send_message(message, to_addrs=recipients)
-        else:
-            with smtplib.SMTP(config.host, config.port, timeout=SMTP_CONNECT_TIMEOUT_SECONDS) as client:
-                if config.username and config.password:
-                    client.login(config.username, config.password)
-                client.send_message(message, to_addrs=recipients)
-        return EmailSendResult(sent=True)
-    except Exception as exc:
-        logger.exception(
-            "failed to send notification email",
-            extra={"profile": plan.profile_code, "store_code": plan.store_code},
-        )
-        return EmailSendResult(
-            sent=False, failure=_email_send_failure(config, plan, recipients, exc)
-        )
+    retry_config = _load_notification_send_retry_config()
+    delay_seconds = min(
+        retry_config.initial_delay_seconds, retry_config.max_delay_seconds
+    )
+    attempt = 0
+    while attempt < retry_config.max_attempts:
+        attempt += 1
+        try:
+            if config.use_tls:
+                with smtplib.SMTP(config.host, config.port, timeout=SMTP_CONNECT_TIMEOUT_SECONDS) as client:
+                    client.starttls()
+                    if config.username and config.password:
+                        client.login(config.username, config.password)
+                    client.send_message(message, to_addrs=recipients)
+            else:
+                with smtplib.SMTP(config.host, config.port, timeout=SMTP_CONNECT_TIMEOUT_SECONDS) as client:
+                    if config.username and config.password:
+                        client.login(config.username, config.password)
+                    client.send_message(message, to_addrs=recipients)
+            return EmailSendResult(sent=True)
+        except Exception as exc:
+            is_transient = bool(retry_config.transient_exception_types) and isinstance(
+                exc, retry_config.transient_exception_types
+            )
+            should_retry = is_transient and attempt < retry_config.max_attempts
+            if not should_retry:
+                logger.exception(
+                    "failed to send notification email",
+                    extra={
+                        "profile": plan.profile_code,
+                        "store_code": plan.store_code,
+                        "attempt_count": attempt,
+                        "will_retry": False,
+                    },
+                )
+                return EmailSendResult(
+                    sent=False,
+                    failure=_email_send_failure(
+                        config, plan, recipients, exc, attempt_count=attempt
+                    ),
+                )
+            logger.warning(
+                "transient notification email send failure; retrying",
+                extra={
+                    "profile": plan.profile_code,
+                    "store_code": plan.store_code,
+                    "attempt": attempt,
+                    "max_attempts": retry_config.max_attempts,
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            if delay_seconds > 0:
+                time.sleep(delay_seconds)
+            delay_seconds = min(
+                retry_config.max_delay_seconds,
+                delay_seconds * 2 if delay_seconds else retry_config.initial_delay_seconds,
+            )
 
 
 def _build_email_plans(
@@ -3170,6 +3266,8 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[st
                         ],
                         "exception_type": "SendFailed",
                         "exception_summary": "Notification email send failed",
+                        "attempt_count": 1,
+                        "final_exception_type": "SendFailed",
                     }
                 )
             continue
