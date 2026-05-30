@@ -11,6 +11,13 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
+def _write_successful_preflight(scripts_dir: Path) -> None:
+    _write_executable(
+        scripts_dir / "orders_sync_connectivity_preflight.sh",
+        "#!/usr/bin/env bash\necho 'connectivity_preflight_succeeded'\nexit 0\n",
+    )
+
+
 def test_pending_deliveries_cron_path_always_regenerates_without_force_gate() -> None:
     cron_source = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
     local_pending_source = Path("scripts/run_local_reports_pending_deliveries.sh").read_text(
@@ -35,6 +42,7 @@ def test_cron_returns_non_zero_when_daily_fails_even_if_rescue_succeeds(tmp_path
 
     source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
     _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
+    _write_successful_preflight(scripts_dir)
 
     _write_executable(
         scripts_dir / "orders_sync_run_profiler.sh",
@@ -108,6 +116,7 @@ def test_cron_fail_fast_on_deterministic_code_error(tmp_path: Path) -> None:
 
     source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
     _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
+    _write_successful_preflight(scripts_dir)
 
     _write_executable(scripts_dir / "orders_sync_run_profiler.sh", "#!/usr/bin/env bash\nexit 0\n")
     _write_executable(
@@ -160,6 +169,80 @@ def test_cron_fail_fast_on_deterministic_code_error(tmp_path: Path) -> None:
     assert "attempt 2/4 starting" not in log_text
 
 
+def test_cron_preflight_failure_skips_orders_sync_but_runs_reports(tmp_path: Path) -> None:
+    repo_root = tmp_path
+    scripts_dir = repo_root / "scripts"
+    logs_dir = repo_root / "logs"
+    tmp_dir = repo_root / "tmp"
+    scripts_dir.mkdir(parents=True)
+    logs_dir.mkdir()
+    tmp_dir.mkdir()
+
+    source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
+    _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
+    _write_executable(
+        scripts_dir / "orders_sync_connectivity_preflight.sh",
+        """#!/usr/bin/env bash
+echo 'connectivity_preflight_failed_summary exit_code=7' >&2
+exit 7
+""",
+    )
+    _write_executable(
+        scripts_dir / "orders_sync_run_profiler.sh",
+        """#!/usr/bin/env bash
+printf 'orders sync should not run\n' >> "${TMPDIR:-/tmp}/orders-sync-invoked.log"
+exit 0
+""",
+    )
+    _write_executable(
+        scripts_dir / "run_local_reports_pending_deliveries.sh",
+        """#!/usr/bin/env bash
+printf 'pending ran\n' >> "${TMPDIR:-/tmp}/pending-ran.log"
+exit 0
+""",
+    )
+    _write_executable(
+        scripts_dir / "run_local_reports_daily_sales.sh",
+        """#!/usr/bin/env bash
+printf 'daily ran\n' >> "${TMPDIR:-/tmp}/daily-ran.log"
+exit 0
+""",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "1",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "TMPDIR": str(tmp_path),
+        }
+    )
+
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert not (tmp_path / "orders-sync-invoked.log").exists()
+    assert (tmp_path / "daily-ran.log").read_text(encoding="utf-8") == "daily ran\n"
+    assert (tmp_path / "pending-ran.log").read_text(encoding="utf-8") == "pending ran\n"
+
+    log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
+    assert log_files
+    log_text = log_files[-1].read_text(encoding="utf-8")
+    assert "connectivity_preflight_failed_summary exit_code=7" in log_text
+    assert "orders_sync_run_profiler skipped because connectivity preflight failed" in log_text
+    assert "orders_sync_run_profiler_rc=7" in log_text
+    assert "Running Script 1: orders_sync_run_profiler" not in log_text
+
+
 def test_cron_runs_reports_without_force_flags(tmp_path: Path) -> None:
     repo_root = tmp_path
     scripts_dir = repo_root / "scripts"
@@ -171,6 +254,7 @@ def test_cron_runs_reports_without_force_flags(tmp_path: Path) -> None:
 
     source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
     _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
+    _write_successful_preflight(scripts_dir)
 
     _write_executable(scripts_dir / "orders_sync_run_profiler.sh", "#!/usr/bin/env bash\nexit 0\n")
     _write_executable(
@@ -225,6 +309,7 @@ def test_cron_retries_preserve_mandatory_regeneration_without_force(tmp_path: Pa
 
     source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
     _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
+    _write_successful_preflight(scripts_dir)
 
     _write_executable(scripts_dir / "orders_sync_run_profiler.sh", "#!/usr/bin/env bash\nexit 0\n")
     _write_executable(scripts_dir / "run_local_reports_mtd_same_day_fulfillment.sh", "#!/usr/bin/env bash\nexit 0\n")

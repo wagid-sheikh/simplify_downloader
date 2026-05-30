@@ -11,6 +11,13 @@ def _write_executable(path: Path, body: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
+def _write_successful_preflight(scripts_dir: Path) -> None:
+    _write_executable(
+        scripts_dir / "orders_sync_connectivity_preflight.sh",
+        "#!/usr/bin/env bash\necho 'connectivity_preflight_succeeded'\nexit 0\n",
+    )
+
+
 def test_cron_reports_fail_when_daily_sales_fails(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     fake_bin = tmp_path / "bin"
@@ -34,6 +41,7 @@ def test_cron_reports_fail_when_daily_sales_fails(tmp_path: Path) -> None:
             "PENDING_MAX_ATTEMPTS": "1",
             "ORDERS_MAX_ATTEMPTS": "1",
             "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "ORDERS_SYNC_SKIP_CONNECTIVITY_PREFLIGHT": "1",
         }
     )
 
@@ -59,6 +67,7 @@ def test_cron_does_not_retry_for_undefined_function_error(tmp_path: Path) -> Non
 
     source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
     _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
+    _write_successful_preflight(scripts_dir)
     _write_executable(scripts_dir / "orders_sync_run_profiler.sh", "#!/usr/bin/env bash\nexit 0\n")
     _write_executable(scripts_dir / "run_local_reports_mtd_same_day_fulfillment.sh", "#!/usr/bin/env bash\nexit 0\n")
     _write_executable(scripts_dir / "run_local_reports_pending_deliveries.sh", "#!/usr/bin/env bash\nexit 0\n")
