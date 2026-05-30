@@ -860,20 +860,95 @@ import os
 import re
 import sys
 from pathlib import Path
-
 jsonl_path = Path(sys.argv[1])
 log_path = Path(os.environ.get("LOG_FILE_PATH", ""))
+SUMMARY_PHASE = "summary"
+SUMMARY_MESSAGE = "Orders sync profiler summary"
 run_id_pattern = re.compile(r'"run_id"\s*:\s*"([^"]+)"')
-run_id = ""
 
-if log_path.exists():
+
+def _parse_json_line(raw):
+    stripped = raw.strip()
+    if not stripped or not stripped.startswith("{"):
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _is_summary_event(event, run_id=None):
+    if str(event.get("phase") or "") != SUMMARY_PHASE:
+        return False
+    if str(event.get("message") or "") != SUMMARY_MESSAGE:
+        return False
+    if run_id is not None and str(event.get("run_id") or "") != run_id:
+        return False
+    return True
+
+
+def _status_count(payload, status):
+    try:
+        return int(payload.get(status) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _store_failed(store_summary):
+    status_counts = store_summary.get("status_counts")
+    if isinstance(status_counts, dict) and _status_count(status_counts, "failed") > 0:
+        return True
+    status = str(
+        store_summary.get("overall_status")
+        or store_summary.get("status")
+        or store_summary.get("store_outcome")
+        or ""
+    ).strip().lower()
+    return status == "failed"
+
+
+def _failed_stores_from_summary(summary_event):
+    failed_stores = []
+    store_totals = summary_event.get("store_totals")
+    if isinstance(store_totals, dict):
+        for raw_store_code, raw_store_summary in store_totals.items():
+            store_code = str(raw_store_code or "").strip()
+            if not store_code or not isinstance(raw_store_summary, dict):
+                continue
+            if _store_failed(raw_store_summary) and store_code not in failed_stores:
+                failed_stores.append(store_code)
+    return failed_stores
+
+
+def _cron_step_events():
+    events = []
+    fallback_run_id = ""
+    if not log_path.exists():
+        return events, fallback_run_id
+
+    in_orders_section = False
     with log_path.open("r", encoding="utf-8") as fh:
         for line in fh:
-            if '"run_id"' not in line:
+            if "Running Script 1: orders_sync_run_profiler" in line:
+                in_orders_section = True
+            elif in_orders_section and "Running Script 2:" in line:
+                break
+            if not in_orders_section:
                 continue
-            match = run_id_pattern.search(line)
-            if match:
-                run_id = match.group(1)
+            event = _parse_json_line(line)
+            if event is not None:
+                events.append(event)
+            if '"run_id"' in line:
+                match = run_id_pattern.search(line)
+                if match:
+                    fallback_run_id = match.group(1)
+    return events, fallback_run_id
+
+
+cron_events, fallback_run_id = _cron_step_events()
+summary_event = next((event for event in reversed(cron_events) if _is_summary_event(event)), None)
+run_id = str(summary_event.get("run_id") or "").strip() if summary_event else fallback_run_id
 
 if not run_id:
     print("run_id=")
@@ -881,32 +956,26 @@ if not run_id:
     print("failed_stores=")
     raise SystemExit(0)
 
+# The cron log is scoped to the current wrapper run, so prefer its summary event
+# over the append-only JSONL file. Fall back to JSONL only when the summary line
+# was not captured in stdout/stderr.
+if summary_event is None:
+    with jsonl_path.open("r", encoding="utf-8") as fh:
+        for raw in fh:
+            event = _parse_json_line(raw)
+            if event is None:
+                continue
+            if _is_summary_event(event, run_id):
+                summary_event = event
+
 overall_status = "unknown"
 failed_stores = []
 
-with jsonl_path.open("r", encoding="utf-8") as fh:
-    for raw in fh:
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            event = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-
-        if str(event.get("run_id") or "") != run_id:
-            continue
-
-        phase = str(event.get("phase") or "")
-        if phase == "run_summary":
-            status = str(event.get("overall_status") or "").strip().lower()
-            if status:
-                overall_status = status
-
-        store_outcome = str(event.get("store_outcome") or "").strip().lower()
-        store_code = str(event.get("store_code") or "").strip()
-        if store_outcome == "failed" and store_code and store_code not in failed_stores:
-            failed_stores.append(store_code)
+if summary_event is not None:
+    status = str(summary_event.get("overall_status") or "").strip().lower()
+    if status:
+        overall_status = status
+    failed_stores = _failed_stores_from_summary(summary_event)
 
 print(f"run_id={run_id}")
 print(f"overall_status={overall_status}")
