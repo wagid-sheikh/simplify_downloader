@@ -22,6 +22,30 @@ class _FakePage:
         self.url = url
 
 
+class _VisibleLocator:
+    @property
+    def first(self) -> "_VisibleLocator":
+        return self
+
+    async def wait_for(self, *, state: str, timeout: int) -> None:
+        assert state == "visible"
+        assert timeout > 0
+
+
+@dataclass
+class _HomeReadyPage:
+    url: str
+
+    async def wait_for_url(self, predicate, *, timeout: int) -> None:
+        assert timeout == uc_main.NAV_TIMEOUT_MS
+        if not predicate(self.url):
+            raise uc_main.TimeoutError("home URL did not match")
+
+    def locator(self, selector: str) -> _VisibleLocator:
+        assert selector
+        return _VisibleLocator()
+
+
 class _FakeContext:
     def __init__(self, page: _FakePage) -> None:
         self._page = page
@@ -62,6 +86,39 @@ class _FakeBrowser:
         context = _FakeContext(page)
         self._contexts.append(context)
         return context
+
+
+@pytest.mark.asyncio
+async def test_migrated_uc_dashboard_url_is_ready_without_home_url_timeout() -> None:
+    stream = io.StringIO()
+    logger = JsonLogger(stream=stream, log_file_path=None)
+    store = uc_main.UcStore(
+        store_code="UC567",
+        store_name="UC Store",
+        cost_center="SC3567",
+        sync_config={
+            "urls": {
+                "home": "https://storepanel.ucleanlaundry.com/dashboard",
+                "login": "https://store.ucleanlaundry.com/login",
+            }
+        },
+    )
+    page = _HomeReadyPage(url="https://storepanel.ucleanlaundry.com/dashboard")
+
+    ready = await uc_main._wait_for_home_ready(
+        page=page, store=store, logger=logger, source="test"
+    )
+
+    assert store.home_url == "https://storepanel.ucleanlaundry.com/dashboard"
+    assert uc_main._url_matches_target(page.url, store.home_url)
+    assert ready is True
+    assert "Timed out waiting for home URL" not in stream.getvalue()
+    assert not uc_main._url_matches_target(
+        "https://store.ucleanlaundry.com/login", store.home_url
+    )
+    assert not uc_main._url_matches_target(
+        "https://unrelated.example/dashboard", store.home_url
+    )
 
 
 @pytest.mark.asyncio

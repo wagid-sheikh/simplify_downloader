@@ -72,6 +72,7 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 
 ### 4) CRM order-sync pipelines
 - UC sync: `app/crm_downloader/uc_orders_sync/main.py`.
+- UC dashboard readiness is DB-driven through `store_master.sync_config.urls.home`; the current dashboard host is `storepanel.ucleanlaundry.com`. The deprecated `store.ucleanlaundry.com/dashboard` value must be migrated rather than hardcoded as an application fallback.
 - TD sync: `app/crm_downloader/td_orders_sync/main.py`.
 - TD leads sync: `app/crm_downloader/td_leads_sync/main.py`.
 - Shared window logic: `app/crm_downloader/orders_sync_window.py`.
