@@ -124,6 +124,10 @@ SUPPORTED_HEADER_MAPS: tuple[tuple[str, Mapping[str, str]], ...] = (
 
 MOBILE_FALLBACK_NUMBER = "8888999762"
 
+ZERO_ROW_EXPORT_VALID_EMPTY_WORKBOOK = "valid_empty_workbook"
+ZERO_ROW_EXPORT_MALFORMED = "malformed_or_missing_expected_columns"
+ZERO_ROW_EXPORT_UNCONFIRMED = "unconfirmed_zero_row_export"
+
 
 def _stringify_value(value: Any) -> str:
     try:
@@ -149,6 +153,7 @@ class UcOrdersIngestResult:
     rows_skipped_invalid_reasons: dict[str, int] = field(default_factory=dict)
     dropped_rows: list[dict[str, Any]] = field(default_factory=list)
     warning_rows: list[dict[str, Any]] = field(default_factory=list)
+    zero_row_export_classification: str | None = None
 
 
 def _is_totals_row(values: Sequence[Any]) -> bool:
@@ -496,7 +501,14 @@ def _coerce_row(
 
 def _read_workbook_rows(
     workbook_path: Path, *, warnings: list[str], logger: JsonLogger, store_code: str
-) -> tuple[list[Dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], int, dict[str, int]]:
+) -> tuple[
+    list[Dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    int,
+    dict[str, int],
+    str | None,
+]:
     wb = openpyxl.load_workbook(workbook_path, data_only=True)
     sheet = wb.active
     header_cells = list(next(sheet.iter_rows(min_row=1, max_row=1, values_only=False)))
@@ -514,10 +526,22 @@ def _read_workbook_rows(
             selected_header_map = header_map
             selected_missing = missing
 
+    data_rows = list(sheet.iter_rows(min_row=2, values_only=False))
+    rows_downloaded = len(data_rows)
+    has_non_blank_data_rows = any(
+        any(cell.value not in (None, "") for cell in row_cells)
+        for row_cells in data_rows
+    )
     if selected_header_map is None:
         raise ValueError("UC GST workbook has no supported header schema")
     if selected_missing:
-        raise ValueError(f"UC GST workbook missing expected columns: {sorted(selected_missing)}")
+        message = f"UC GST workbook missing expected columns: {sorted(selected_missing)}"
+        # Header-only malformed exports are operational warnings, not successful empties.
+        # Keep rejecting malformed workbooks with data so bad source rows are never hidden.
+        if not has_non_blank_data_rows:
+            warnings.append(message)
+            return [], [], [], rows_downloaded, {}, ZERO_ROW_EXPORT_MALFORMED
+        raise ValueError(message)
 
     header_indices = {header: idx for idx, header in enumerate(header_values) if header}
     invoice_date_header = next(
@@ -534,9 +558,6 @@ def _read_workbook_rows(
     warning_rows: list[dict[str, Any]] = []
     dropped_rows: list[dict[str, Any]] = []
     skip_reason_counts: dict[str, int] = {}
-    data_rows = list(sheet.iter_rows(min_row=2, values_only=False))
-    rows_downloaded = len(data_rows)
-
     invalid_phone_numbers: set[str] = set()
 
     for row_cells in data_rows:
@@ -591,7 +612,21 @@ def _read_workbook_rows(
                     or "Row dropped due to missing required values",
                 }
             )
-    return rows, warning_rows, dropped_rows, rows_downloaded, skip_reason_counts
+    zero_row_export_classification = None
+    if not rows:
+        zero_row_export_classification = (
+            ZERO_ROW_EXPORT_VALID_EMPTY_WORKBOOK
+            if rows_downloaded == 0
+            else ZERO_ROW_EXPORT_UNCONFIRMED
+        )
+    return (
+        rows,
+        warning_rows,
+        dropped_rows,
+        rows_downloaded,
+        skip_reason_counts,
+        zero_row_export_classification,
+    )
 
 
 def _make_insert(table: sa.Table, values: Mapping[str, Any], *, use_sqlite: bool) -> sa.sql.dml.Insert:
@@ -625,7 +660,14 @@ async def ingest_uc_orders_workbook(
     logger: JsonLogger,
 ) -> UcOrdersIngestResult:
     warnings: list[str] = []
-    rows, warning_rows, dropped_rows, rows_downloaded, skip_reason_counts = _read_workbook_rows(
+    (
+        rows,
+        warning_rows,
+        dropped_rows,
+        rows_downloaded,
+        skip_reason_counts,
+        zero_row_export_classification,
+    ) = _read_workbook_rows(
         workbook_path, warnings=warnings, logger=logger, store_code=store_code
     )
     rows_skipped_invalid = sum(skip_reason_counts.values())
@@ -646,6 +688,7 @@ async def ingest_uc_orders_workbook(
             message="No rows parsed from UC GST workbook",
             store_code=store_code,
             workbook=str(workbook_path),
+            zero_row_export_classification=zero_row_export_classification,
         )
         return UcOrdersIngestResult(
             staging_rows=0,
@@ -661,6 +704,7 @@ async def ingest_uc_orders_workbook(
             rows_skipped_invalid_reasons=skip_reason_counts,
             dropped_rows=dropped_rows,
             warning_rows=warning_rows,
+            zero_row_export_classification=zero_row_export_classification,
         )
 
     metadata = sa.MetaData()

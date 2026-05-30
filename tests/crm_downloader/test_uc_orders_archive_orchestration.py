@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.crm_downloader.uc_orders_sync import ingest as uc_ingest
 from app.crm_downloader.uc_orders_sync import main as uc_main
 from app.dashboard_downloader.json_logger import JsonLogger
 
@@ -427,3 +428,88 @@ def test_run_summary_final_status_not_success_when_windows_missing_or_errors() -
 
     assert summary_missing.overall_status() == "failed"
     assert summary_store_error.overall_status() == "failed"
+
+
+@pytest.mark.parametrize(
+    ("classification", "expected_status"),
+    [
+        (uc_main.ZERO_ROW_EXPORT_VALID_EMPTY_WORKBOOK, "success"),
+        (uc_main.ZERO_ROW_EXPORT_SOURCE_NO_DATA, "success"),
+        (uc_ingest.ZERO_ROW_EXPORT_MALFORMED, "success_with_warnings"),
+        (uc_main.ZERO_ROW_EXPORT_UNCONFIRMED, "success_with_warnings"),
+        (uc_main.ZERO_ROW_EXPORT_DEGRADED_NAVIGATION, "success_with_warnings"),
+    ],
+)
+def test_zero_row_export_classification_controls_sync_status(
+    classification: str, expected_status: str
+) -> None:
+    outcome = uc_main.StoreOutcome(
+        status="ok",
+        message="empty export",
+        download_path="/tmp/uc-empty.xlsx",
+        rows_downloaded=0,
+        staging_rows=0,
+        final_rows=0,
+        zero_row_export_classification=classification,
+    )
+
+    assert (
+        uc_main._resolve_sync_log_status(
+            outcome=outcome, download_succeeded=True, row_count=0
+        )
+        == expected_status
+    )
+
+
+def test_degraded_navigation_empty_export_is_in_run_summary_and_notification() -> None:
+    summary = uc_main.UcOrdersDiscoverySummary(
+        run_id="run-degraded-empty",
+        run_env="test",
+        report_date=date(2025, 1, 1),
+        report_end_date=date(2025, 1, 1),
+        started_at=datetime.now(timezone.utc),
+        store_codes=["A103"],
+    )
+    outcome = uc_main.StoreOutcome(
+        status="ok",
+        message="empty export after degraded navigation",
+        download_path="/tmp/uc-empty.xlsx",
+        rows_downloaded=0,
+        staging_rows=0,
+        final_rows=0,
+        zero_row_export_classification=uc_main.ZERO_ROW_EXPORT_DEGRADED_NAVIGATION,
+    )
+    summary.record_store("A103", outcome)
+    summary.window_audit.append(
+        {
+            "store_code": "A103",
+            "zero_row_export_classification": outcome.zero_row_export_classification,
+        }
+    )
+
+    record = summary.build_record(finished_at=datetime.now(timezone.utc))
+    metrics = record["metrics_json"]
+    notification_store = metrics["notification_payload"]["stores"][0]
+
+    assert record["overall_status"] == "success_with_warnings"
+    assert metrics["window_audit"][0]["zero_row_export_classification"] == (
+        uc_main.ZERO_ROW_EXPORT_DEGRADED_NAVIGATION
+    )
+    assert notification_store["zero_row_export_classification"] == (
+        uc_main.ZERO_ROW_EXPORT_DEGRADED_NAVIGATION
+    )
+    assert metrics["notification_payload"]["warnings"] == [
+        "UC_ZERO_ROW_EXPORT: A103 classified as downloaded_after_degraded_navigation"
+    ]
+
+
+def test_degraded_navigation_wins_over_source_no_data_classification() -> None:
+    classification, reason_code = uc_main._classify_zero_row_export(
+        base_count=0,
+        gst_api_extract=uc_main.GstApiExtract(),
+        ingest_classification=uc_main.ZERO_ROW_EXPORT_VALID_EMPTY_WORKBOOK,
+        home_url_navigation_timed_out=True,
+    )
+
+    assert classification == uc_main.ZERO_ROW_EXPORT_DEGRADED_NAVIGATION
+    assert reason_code == uc_main.REASON_ZERO_ROWS_AFTER_NAV_TIMEOUT

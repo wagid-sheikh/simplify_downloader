@@ -37,7 +37,11 @@ from app.crm_downloader.uc_orders_sync.gst_api_extract import (
     GstApiExtract,
     collect_gst_orders_via_api,
 )
-from app.crm_downloader.uc_orders_sync.ingest import ingest_uc_orders_workbook
+from app.crm_downloader.uc_orders_sync.ingest import (
+    ZERO_ROW_EXPORT_UNCONFIRMED,
+    ZERO_ROW_EXPORT_VALID_EMPTY_WORKBOOK,
+    ingest_uc_orders_workbook,
+)
 from app.crm_downloader.uc_orders_sync.gst_publish import (
     publish_uc_gst_order_details_to_line_items,
     publish_uc_gst_order_details_to_orders,
@@ -70,6 +74,8 @@ REASON_ARCHIVE_INGEST_FAILED = "archive_ingest_failed"
 REASON_SOURCE_CONFIRMED_ZERO_ROWS = "source_confirmed_zero_rows"
 REASON_ZERO_ROWS_AFTER_NAV_TIMEOUT = "zero_rows_after_navigation_timeout"
 REASON_ZERO_ROWS_UNCONFIRMED = "zero_rows_unconfirmed"
+ZERO_ROW_EXPORT_SOURCE_NO_DATA = "source_no_data"
+ZERO_ROW_EXPORT_DEGRADED_NAVIGATION = "downloaded_after_degraded_navigation"
 REASON_GST_PUBLISH_SKIPPED_DUE_INGEST_FAILURE = "gst_publish_skipped_due_ingest_failure"
 NAV_TIMEOUT_MS = 90_000
 ARCHIVE_FILTER_REFRESH_TIMEOUT_MS = 20_000
@@ -429,6 +435,7 @@ class StoreOutcome:
     base_rows_extracted: int | None = None
     rows_missing_estimate: int | None = None
     archive_extractor_error_counters: dict[str, int] = field(default_factory=dict)
+    zero_row_export_classification: str | None = None
 
 
 @dataclass
@@ -593,6 +600,11 @@ def _zero_row_export_is_confirmed(outcome: StoreOutcome | None) -> bool:
     if outcome is None:
         return False
     reason_codes = set(outcome.reason_codes or [])
+    if outcome.zero_row_export_classification in {
+        ZERO_ROW_EXPORT_VALID_EMPTY_WORKBOOK,
+        ZERO_ROW_EXPORT_SOURCE_NO_DATA,
+    }:
+        return True
     if REASON_SOURCE_CONFIRMED_ZERO_ROWS in reason_codes:
         return True
     return bool(
@@ -616,6 +628,8 @@ def _known_zero_row_outcome(outcome: StoreOutcome | None) -> bool:
 def _has_unconfirmed_zero_row_signal(outcome: StoreOutcome | None) -> bool:
     if outcome is None or _zero_row_export_is_confirmed(outcome):
         return False
+    if outcome.zero_row_export_classification is not None:
+        return True
     reason_codes = set(outcome.reason_codes or [])
     if (
         REASON_ZERO_ROWS_AFTER_NAV_TIMEOUT in reason_codes
@@ -642,6 +656,24 @@ def _gst_api_extract_confirms_zero_rows(extract: GstApiExtract | None) -> bool:
         and not extract.payment_detail_rows
         and not extract.skipped_order_counters
     )
+
+
+def _classify_zero_row_export(
+    *,
+    base_count: int,
+    gst_api_extract: GstApiExtract | None,
+    ingest_classification: str | None,
+    home_url_navigation_timed_out: bool,
+) -> tuple[str | None, str | None]:
+    if base_count != 0:
+        return ingest_classification, None
+    if home_url_navigation_timed_out:
+        return ZERO_ROW_EXPORT_DEGRADED_NAVIGATION, REASON_ZERO_ROWS_AFTER_NAV_TIMEOUT
+    if _gst_api_extract_confirms_zero_rows(gst_api_extract):
+        return ZERO_ROW_EXPORT_SOURCE_NO_DATA, REASON_SOURCE_CONFIRMED_ZERO_ROWS
+    if ingest_classification == ZERO_ROW_EXPORT_VALID_EMPTY_WORKBOOK:
+        return ingest_classification, None
+    return ingest_classification or ZERO_ROW_EXPORT_UNCONFIRMED, REASON_ZERO_ROWS_UNCONFIRMED
 
 
 def _classify_store_window_status(outcome: StoreOutcome | None) -> str:
@@ -1007,6 +1039,9 @@ class UcOrdersDiscoverySummary:
                 "footer_baseline_stable": (
                     outcome.footer_baseline_stable if outcome else False
                 ),
+                "zero_row_export_classification": (
+                    outcome.zero_row_export_classification if outcome else None
+                ),
             }
         return summary
 
@@ -1019,6 +1054,15 @@ class UcOrdersDiscoverySummary:
             warnings.append(
                 f"UC_STORE_WARNINGS: {store_code} reported {warning_count} row-level warning(s)"
             )
+        for store_code, outcome in self.store_outcomes.items():
+            classification = outcome.zero_row_export_classification if outcome else None
+            if classification and classification not in {
+                ZERO_ROW_EXPORT_VALID_EMPTY_WORKBOOK,
+                ZERO_ROW_EXPORT_SOURCE_NO_DATA,
+            }:
+                warnings.append(
+                    f"UC_ZERO_ROW_EXPORT: {store_code} classified as {classification}"
+                )
         return warnings
 
     def _build_notification_payload(
@@ -1090,6 +1134,9 @@ class UcOrdersDiscoverySummary:
                     ),
                     "footer_baseline_stable": (
                         outcome.footer_baseline_stable if outcome else False
+                    ),
+                    "zero_row_export_classification": (
+                        outcome.zero_row_export_classification if outcome else None
                     ),
                     "stage_statuses": dict(outcome.stage_statuses) if outcome else {},
                     "stage_metrics": dict(outcome.stage_metrics) if outcome else {},
@@ -1907,7 +1954,7 @@ async def _update_orders_sync_log(
 
 def _build_unified_metrics(
     outcome: StoreOutcome | None,
-) -> tuple[dict[str, int | None], dict[str, int | None]]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     primary_metrics = {
         "primary_rows_downloaded": outcome.rows_downloaded if outcome else None,
         "primary_rows_ingested": outcome.final_rows if outcome else None,
@@ -1916,6 +1963,9 @@ def _build_unified_metrics(
         "primary_staging_updated": outcome.staging_updated if outcome else None,
         "primary_final_inserted": outcome.final_inserted if outcome else None,
         "primary_final_updated": outcome.final_updated if outcome else None,
+        "zero_row_export_classification": (
+            outcome.zero_row_export_classification if outcome else None
+        ),
     }
     secondary_metrics = {
         "secondary_rows_downloaded": None,
@@ -3626,6 +3676,7 @@ async def _run_store_discovery(
         gst_rows_skipped_invalid_reasons: dict[str, int] | None = None
         gst_warning_rows: list[dict[str, Any]] = []
         gst_dropped_rows: list[dict[str, Any]] = []
+        gst_zero_row_export_classification: str | None = None
         gst_api_extract: GstApiExtract | None = None
         gst_api_gst_path: Path | None = None
         gst_api_base_path: Path | None = None
@@ -3941,6 +3992,7 @@ async def _run_store_discovery(
                             "final_updated": ingest_result.final_updated,
                             "rows_skipped_invalid": ingest_result.rows_skipped_invalid,
                             "rows_skipped_invalid_reasons": ingest_result.rows_skipped_invalid_reasons,
+                            "zero_row_export_classification": ingest_result.zero_row_export_classification,
                         }
                         gst_staging_rows = ingest_result.staging_rows
                         gst_final_rows = ingest_result.final_rows
@@ -3954,6 +4006,9 @@ async def _run_store_discovery(
                         )
                         gst_warning_rows = list(ingest_result.warning_rows)
                         gst_dropped_rows = list(ingest_result.dropped_rows)
+                        gst_zero_row_export_classification = (
+                            ingest_result.zero_row_export_classification
+                        )
                         log_event(
                             logger=logger,
                             phase="ingest",
@@ -4068,25 +4123,28 @@ async def _run_store_discovery(
         source_confirmed_zero_rows = (
             base_count == 0 and _gst_api_extract_confirms_zero_rows(gst_api_extract)
         )
-        if source_confirmed_zero_rows:
-            _append_reason_code(REASON_SOURCE_CONFIRMED_ZERO_ROWS)
-        elif base_count == 0:
-            zero_row_reason = (
-                REASON_ZERO_ROWS_AFTER_NAV_TIMEOUT
-                if home_url_navigation_timed_out
-                else REASON_ZERO_ROWS_UNCONFIRMED
-            )
-            _append_reason_code(zero_row_reason)
-            log_event(
-                logger=logger,
-                phase="download",
-                status="warning",
-                message="UC zero-row export could not be confirmed as true no-data",
-                store_code=store.store_code,
-                reason_code=zero_row_reason,
-                home_url_navigation_timed_out=home_url_navigation_timed_out,
-                source_confirmed_zero_rows=source_confirmed_zero_rows,
-            )
+        zero_row_export_classification, zero_row_reason = _classify_zero_row_export(
+            base_count=base_count,
+            gst_api_extract=gst_api_extract,
+            ingest_classification=gst_zero_row_export_classification,
+            home_url_navigation_timed_out=home_url_navigation_timed_out,
+        )
+        _append_reason_code(zero_row_reason)
+        if base_count == 0:
+            if zero_row_export_classification not in {
+                ZERO_ROW_EXPORT_VALID_EMPTY_WORKBOOK,
+                ZERO_ROW_EXPORT_SOURCE_NO_DATA,
+            }:
+                log_event(
+                    logger=logger,
+                    phase="download",
+                    status="warning",
+                    message="UC zero-row export could not be confirmed as a clean empty export",
+                    store_code=store.store_code,
+                    zero_row_export_classification=zero_row_export_classification,
+                    home_url_navigation_timed_out=home_url_navigation_timed_out,
+                    source_confirmed_zero_rows=source_confirmed_zero_rows,
+                )
         download_succeeded = True
         await _update_orders_sync_log(
             logger=logger,
@@ -4114,6 +4172,7 @@ async def _run_store_discovery(
                 "payments_observed_in_delivery_window": payment_details_count,
                 "source": "gst_api_only",
                 "reason_codes": reason_codes,
+                "zero_row_export_classification": zero_row_export_classification,
             },
         }
 
@@ -4438,6 +4497,7 @@ async def _run_store_discovery(
             base_rows_extracted=base_count,
             rows_missing_estimate=rows_missing_estimate,
             archive_extractor_error_counters={},
+            zero_row_export_classification=zero_row_export_classification,
         )
         summary.record_store(store.store_code, outcome)
         log_event(
@@ -4552,6 +4612,7 @@ async def _run_store_discovery(
             footer_baseline_stable=outcome.footer_baseline_stable,
             base_rows_extracted=outcome.base_rows_extracted,
             rows_missing_estimate=outcome.rows_missing_estimate,
+            zero_row_export_classification=outcome.zero_row_export_classification,
             primary_metrics=primary_metrics,
             secondary_metrics=secondary_metrics,
         )
@@ -4591,6 +4652,7 @@ async def _run_store_discovery(
                 "footer_baseline_stable": outcome.footer_baseline_stable,
                 "base_rows_extracted": outcome.base_rows_extracted,
                 "rows_missing_estimate": outcome.rows_missing_estimate,
+                "zero_row_export_classification": outcome.zero_row_export_classification,
                 "attempt_no": attempt_no,
                 "orders_sync_log_id": sync_log_id,
             }
