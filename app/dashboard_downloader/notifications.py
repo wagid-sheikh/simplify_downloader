@@ -6,6 +6,7 @@ import logging
 import re
 import smtplib
 import socket
+import ssl
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -459,6 +460,7 @@ _TRANSIENT_EXCEPTION_REGISTRY: dict[str, type[BaseException]] = {
     "ConnectionResetError": ConnectionResetError,
     "builtins.ConnectionResetError": ConnectionResetError,
     "socket.gaierror": socket.gaierror,
+    "ssl.SSLEOFError": ssl.SSLEOFError,
     "TimeoutError": TimeoutError,
     "builtins.TimeoutError": TimeoutError,
     "smtplib.SMTPServerDisconnected": smtplib.SMTPServerDisconnected,
