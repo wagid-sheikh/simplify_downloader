@@ -20,7 +20,12 @@ from app.dashboard_downloader.report_generator import (
     render_store_report_pdf,
 )
 from app.dashboard_downloader.run_summary import PIPELINE_NAME, RunAggregator
-from app.dashboard_downloader.config import fetch_store_codes, normalize_store_codes
+from app.dashboard_downloader.config import (
+    StoreScopeDiagnostics,
+    fetch_store_codes,
+    fetch_store_scope_diagnostics,
+    normalize_store_codes,
+)
 from app.config import config
 
 DEFAULT_TEMPLATE_DIR = Path(__file__).with_name("templates")
@@ -47,12 +52,18 @@ def resolve_report_date(arg_value: str | None = None) -> date:
     return get_daily_report_date()
 
 
-def _log_skip(logger: JsonLogger) -> None:
+def _log_store_scope_diagnostics(logger: JsonLogger, diagnostics: StoreScopeDiagnostics) -> None:
+    no_report_eligible_stores = diagnostics.report_eligible_count == 0
     log_event(
         logger=logger,
         phase="report",
-        status="info",
-        message="no report-eligible stores found in store_master, skipping report generation",
+        status="warning" if no_report_eligible_stores else "info",
+        message=(
+            "no report-eligible stores found in store_master, skipping report generation"
+            if no_report_eligible_stores
+            else "dashboard store scope diagnostics"
+        ),
+        extras=diagnostics.as_dict(),
     )
 
 
@@ -61,7 +72,10 @@ async def _resolve_store_codes(
 ) -> List[str]:
     normalized = normalize_store_codes(store_codes or [])
     resolved = await fetch_store_codes(
-        database_url=database_url, report_flag=True, store_codes=normalized or None
+        database_url=database_url,
+        etl_flag=True,
+        report_flag=True,
+        store_codes=normalized or None,
     )
     if normalized:
         missing = [code for code in normalized if code not in resolved]
@@ -329,6 +343,9 @@ async def run_store_reports_for_date(
         )
         return []
 
+    diagnostics = await fetch_store_scope_diagnostics(database_url=resolved_db_url)
+    _log_store_scope_diagnostics(logger, diagnostics)
+
     try:
         codes = await _resolve_store_codes(
             database_url=resolved_db_url, store_codes=store_codes, logger=logger
@@ -343,7 +360,6 @@ async def run_store_reports_for_date(
         return []
 
     if not codes:
-        _log_skip(logger)
         return []
 
     template_file = _resolve_template_file(Path(template_path))

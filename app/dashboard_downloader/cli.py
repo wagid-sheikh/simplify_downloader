@@ -223,6 +223,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     upgrade_parser.add_argument("--revision", default="head")
     db_sub.add_parser("check", help="Validate required tables and notification seeds")
 
+    stores_parser = subparsers.add_parser("stores", help="Store scope diagnostics")
+    stores_sub = stores_parser.add_subparsers(dest="stores_command", required=True)
+    stores_sub.add_parser("diagnose", help="Report DB-driven dashboard store scopes")
+
     notifications_parser = subparsers.add_parser("notifications", help="Notification diagnostics")
     notifications_sub = notifications_parser.add_subparsers(dest="notifications_command", required=True)
     notif_test_parser = notifications_sub.add_parser("test", help="Validate SMTP/profiles/docs for a run")
@@ -268,6 +272,29 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"[db-check] {issue}")
             return 1
         print("[db-check] database looks healthy")
+        return 0
+
+    if args.command == "stores" and args.stores_command == "diagnose":
+        from app.config import config as runtime_config
+        from app.dashboard_downloader.config import fetch_store_scope_diagnostics
+
+        diagnostics = asyncio.run(
+            fetch_store_scope_diagnostics(database_url=runtime_config.database_url)
+        )
+        print(
+            f"[stores] etl_enabled_count={diagnostics.etl_enabled_count} "
+            f"codes={','.join(diagnostics.etl_enabled_codes) or '-'}"
+        )
+        print(
+            f"[stores] report_enabled_count={diagnostics.report_enabled_count} "
+            f"codes={','.join(diagnostics.report_enabled_codes) or '-'}"
+        )
+        print(
+            f"[stores] report_eligible_count={diagnostics.report_eligible_count} "
+            f"codes={','.join(diagnostics.report_eligible_codes) or '-'}"
+        )
+        if diagnostics.report_eligible_count == 0:
+            print("[stores] WARNING: no report-eligible stores; report generation will be skipped")
         return 0
 
     if args.command == "notifications" and args.notifications_command == "test":
