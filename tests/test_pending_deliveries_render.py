@@ -142,3 +142,25 @@ def test_render_html_uses_16_30_bucket_without_15_plus_bucket() -> None:
     assert "ORD-16" in html
     assert "ORD-30" in html
     assert "ORD-31" not in html
+
+
+def test_render_html_marks_report_degraded_after_failed_orders_sync() -> None:
+    html = render_html(
+        {
+            "report_date_display": "20-May-2025",
+            "run_id": "run-1",
+            "timezone": "Asia/Kolkata",
+            "run_environment": "prod",
+            "orders_sync_is_degraded": True,
+            "orders_sync_warning_text": "Orders sync failed before this report; data may be stale.",
+            "orders_sync_upstream_status": "failed",
+            "orders_sync_upstream_run_id": "orders-run-1",
+            "summary_sections": [],
+            "cost_center_sections": [],
+            "total_count": 0,
+            "total_pending_amount": Decimal("0"),
+        }
+    )
+
+    assert "Orders sync failed before this report; data may be stale." in html
+    assert "Upstream orders sync status: failed; run ID: orders-run-1" in html

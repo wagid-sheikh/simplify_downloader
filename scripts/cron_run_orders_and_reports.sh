@@ -121,6 +121,8 @@ export LANG="${LANG:-en_US.UTF-8}"
 
 GLOBAL_LOCK_ACQUIRED=0
 ORDERS_SYNC_PREFLIGHT_CLASSIFICATION="not_run"
+ORDERS_SYNC_PROFILER_RUN_ID=""
+ORDERS_SYNC_PROFILER_STATUS="unknown"
 
 
 log() {
@@ -929,6 +931,9 @@ PY
     failed_store_array="[${failed_stores}]"
   fi
 
+  ORDERS_SYNC_PROFILER_RUN_ID="${run_id}"
+  ORDERS_SYNC_PROFILER_STATUS="${overall_status}"
+
   log "orders_sync_profiler_run_id=${run_id:-unknown}"
   log "orders_sync_preflight_classification=${ORDERS_SYNC_PREFLIGHT_CLASSIFICATION}"
   log "orders_sync_failed_stores=${failed_store_array}"
@@ -943,6 +948,9 @@ PY
 }
 
 orders_rc=0
+orders_sync_report_args=""
+daily_report_cmd="./scripts/run_local_reports_daily_sales.sh"
+pending_report_cmd="./scripts/run_local_reports_pending_deliveries.sh"
 daily_rc=0
 pending_rc=0
 daily_rescue_rc=0
@@ -958,16 +966,32 @@ else
   log "Script 1: orders_sync_run_profiler skipped because tcp_connectivity_preflight failed (classification=${ORDERS_SYNC_PREFLIGHT_CLASSIFICATION}, orders_sync_run_profiler_rc=${orders_rc})."
 fi
 extract_orders_sync_observability
-run_step "Script 2: daily_sales_report" "./scripts/run_local_reports_daily_sales.sh" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" || daily_rc=$?
+orders_sync_upstream_status="${ORDERS_SYNC_PROFILER_STATUS:-unknown}"
+if [[ "${orders_rc}" -ne 0 ]]; then
+  orders_sync_upstream_status="failed"
+fi
+orders_sync_report_args=""
+if [[ "${orders_rc}" -ne 0 || "${orders_sync_upstream_status}" != "unknown" || -n "${ORDERS_SYNC_PROFILER_RUN_ID}" ]]; then
+  orders_sync_report_args="--orders-sync-upstream-status ${orders_sync_upstream_status}"
+  if [[ -n "${ORDERS_SYNC_PROFILER_RUN_ID}" ]]; then
+    orders_sync_report_args="${orders_sync_report_args} --orders-sync-upstream-run-id ${ORDERS_SYNC_PROFILER_RUN_ID}"
+  fi
+fi
+if [[ -n "${orders_sync_report_args}" ]]; then
+  daily_report_cmd="${daily_report_cmd} ${orders_sync_report_args}"
+  pending_report_cmd="${pending_report_cmd} ${orders_sync_report_args}"
+fi
+log "orders_sync_downstream_report_args=${orders_sync_report_args:-<none>}"
+run_step "Script 2: daily_sales_report" "${daily_report_cmd}" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" || daily_rc=$?
 # Pending Deliveries must not skip due to a prior successful summary; report CLIs always regenerate.
-run_step "Script 3: pending_deliveries" "./scripts/run_local_reports_pending_deliveries.sh" "${PENDING_MAX_ATTEMPTS}" "${PENDING_RETRY_DELAY_SECONDS}" || pending_rc=$?
+run_step "Script 3: pending_deliveries" "${pending_report_cmd}" "${PENDING_MAX_ATTEMPTS}" "${PENDING_RETRY_DELAY_SECONDS}" || pending_rc=$?
 
 if [[ "${pending_rc}" -eq 0 && "${daily_rc}" -ne 0 && "${DAILY_RESCUE_AFTER_PENDING_SUCCESS}" -eq 1 ]]; then
   section "OPTIONAL DAILY RESCUE PASS"
   log "Pending deliveries succeeded while daily sales failed; running optional daily rescue pass."
   run_step \
     "Script 2B: daily_sales_report_rescue" \
-    "./scripts/run_local_reports_daily_sales.sh" \
+    "${daily_report_cmd}" \
     "${DAILY_RESCUE_MAX_ATTEMPTS}" \
     "${DAILY_RESCUE_RETRY_DELAY_SECONDS}" || daily_rescue_rc=$?
 

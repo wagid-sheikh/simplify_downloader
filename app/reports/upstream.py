@@ -1,0 +1,38 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+DEGRADED_ORDERS_SYNC_MESSAGE = (
+    "Orders sync failed before this report; data may be stale."
+)
+FAILED_UPSTREAM_STATUSES = frozenset({"failed", "error"})
+
+
+@dataclass(frozen=True)
+class OrdersSyncUpstreamContext:
+    status: str | None = None
+    run_id: str | None = None
+
+    @property
+    def is_degraded(self) -> bool:
+        return (self.status or "").strip().lower() in FAILED_UPSTREAM_STATUSES
+
+    @property
+    def warning_text(self) -> str:
+        return DEGRADED_ORDERS_SYNC_MESSAGE if self.is_degraded else ""
+
+    def as_metrics(self) -> dict[str, str | bool | None]:
+        return {
+            "status": self.status,
+            "run_id": self.run_id,
+            "is_degraded": self.is_degraded,
+            "warning_text": self.warning_text,
+        }
+
+
+def build_orders_sync_upstream_context(
+    *, status: str | None = None, run_id: str | None = None
+) -> OrdersSyncUpstreamContext:
+    normalized_status = (status or "").strip().lower() or None
+    normalized_run_id = (run_id or "").strip() or None
+    return OrdersSyncUpstreamContext(status=normalized_status, run_id=normalized_run_id)

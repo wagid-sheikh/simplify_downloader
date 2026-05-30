@@ -75,6 +75,20 @@ def _build_parser() -> argparse.ArgumentParser:
             action="store_true",
             help="Deprecated no-op; reports always regenerate and append new summaries/documents",
         )
+        report_subparser.add_argument(
+            "--orders-sync-upstream-status",
+            dest="orders_sync_upstream_status",
+            type=str,
+            default=None,
+            help="Status of the upstream orders sync run that preceded this report",
+        )
+        report_subparser.add_argument(
+            "--orders-sync-upstream-run-id",
+            dest="orders_sync_upstream_run_id",
+            type=str,
+            default=None,
+            help="Run ID of the upstream orders sync run that preceded this report",
+        )
 
     _add_common_report_args(report_subparsers.add_parser("daily-sales", help="Run daily sales report"))
     _add_common_report_args(
@@ -131,6 +145,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             report_args.extend(["--report-date", parsed.report_date])
         if parsed.env:
             report_args.extend(["--env", parsed.env])
+        if parsed.orders_sync_upstream_status:
+            report_args.extend(["--orders-sync-upstream-status", parsed.orders_sync_upstream_status])
+        if parsed.orders_sync_upstream_run_id:
+            report_args.extend(["--orders-sync-upstream-run-id", parsed.orders_sync_upstream_run_id])
         # --force is retained at this wrapper for backward compatibility, but
         # operational reports now regenerate on every invocation.
 

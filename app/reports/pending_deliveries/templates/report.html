@@ -64,6 +64,20 @@
       .adjusted-row {
         color: #b91c1c;
       }
+      .degraded-warning {
+        margin: 10px 0 14px;
+        padding: 8px 10px;
+        border: 1px solid #f59e0b;
+        background: #fffbeb;
+        color: #92400e;
+        font-weight: 700;
+      }
+      .degraded-warning .detail {
+        display: block;
+        font-size: 11px;
+        font-weight: 500;
+        margin-top: 3px;
+      }
     </style>
   </head>
   <body>
@@ -74,6 +88,12 @@
       <span><strong>Timezone:</strong> {{ timezone }}</span>
       <span><strong>Run Environment:</strong> {{ run_environment }}</span>
     </div>
+    {% if orders_sync_is_degraded %}
+    <div class="degraded-warning">
+      {{ orders_sync_warning_text }}
+      <span class="detail">Upstream orders sync status: {{ orders_sync_upstream_status or "unknown" }}{% if orders_sync_upstream_run_id %}; run ID: {{ orders_sync_upstream_run_id }}{% endif %}</span>
+    </div>
+    {% endif %}
 
     <h2>Summary</h2>
     <p class="store-meta"><strong>Amounts:</strong> displayed in INR with paise (2 decimals).</p>

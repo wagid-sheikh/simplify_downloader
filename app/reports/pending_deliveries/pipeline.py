@@ -17,6 +17,12 @@ from app.dashboard_downloader.pipelines.base import (
     update_summary_record,
 )
 
+from app.reports.upstream import (
+    DEGRADED_ORDERS_SYNC_MESSAGE,
+    OrdersSyncUpstreamContext,
+    build_orders_sync_upstream_context,
+)
+
 from .data import (
     PendingDeliveriesReportData,
     fetch_pending_deliveries_report,
@@ -34,14 +40,20 @@ def _build_context(
     run_id: str,
     timezone_label: str,
     run_environment: str,
+    orders_sync_upstream: OrdersSyncUpstreamContext | None = None,
 ) -> dict[str, object]:
     report_date_display = data.report_date.strftime("%d-%b-%Y")
+    orders_sync_upstream = orders_sync_upstream or build_orders_sync_upstream_context()
     return {
         "report_date_display": report_date_display,
         "report_date": data.report_date.isoformat(),
         "run_id": run_id,
         "timezone": timezone_label,
         "run_environment": run_environment,
+        "orders_sync_upstream_status": orders_sync_upstream.status or "",
+        "orders_sync_upstream_run_id": orders_sync_upstream.run_id or "",
+        "orders_sync_is_degraded": orders_sync_upstream.is_degraded,
+        "orders_sync_warning_text": orders_sync_upstream.warning_text,
         "summary_sections": data.summary_sections,
         "cost_center_sections": data.cost_center_sections,
         "total_count": data.total_count,
@@ -72,7 +84,9 @@ async def _persist_document(
                 reference_id_3=report_date.isoformat(),
                 file_name=file_path.name,
                 mime_type=mime_type,
-                file_size_bytes=file_path.stat().st_size if file_path.exists() else None,
+                file_size_bytes=(
+                    file_path.stat().st_size if file_path.exists() else None
+                ),
                 storage_backend="fs",
                 file_path=str(file_path),
                 created_at=datetime.now(timezone.utc),
@@ -82,17 +96,30 @@ async def _persist_document(
         await session.commit()
 
 
-async def _run(report_date: date | None, env: str | None, force: bool) -> None:
+async def _run(
+    report_date: date | None,
+    env: str | None,
+    force: bool,
+    orders_sync_upstream_status: str | None = None,
+    orders_sync_upstream_run_id: str | None = None,
+) -> None:
     run_env = resolve_run_env(env)
     run_id = new_run_id()
     logger = get_logger(run_id=run_id)
-    tracker = PipelinePhaseTracker(pipeline_name=PIPELINE_NAME, env=run_env, run_id=run_id)
+    tracker = PipelinePhaseTracker(
+        pipeline_name=PIPELINE_NAME, env=run_env, run_id=run_id
+    )
     database_url = config.database_url
+    orders_sync_upstream = build_orders_sync_upstream_context(
+        status=orders_sync_upstream_status, run_id=orders_sync_upstream_run_id
+    )
 
     try:
         if not database_url:
             tracker.mark_phase("load_data", "error")
-            tracker.add_summary("Database URL is missing; cannot generate pending deliveries report.")
+            tracker.add_summary(
+                "Database URL is missing; cannot generate pending deliveries report."
+            )
             tracker.overall = "error"
             log_event(
                 logger=logger,
@@ -105,6 +132,15 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
         tz = get_timezone()
         resolved_date = report_date or aware_now(tz).date()
         tracker.set_report_date(resolved_date)
+        if orders_sync_upstream.status or orders_sync_upstream.run_id:
+            status_text = orders_sync_upstream.status or "unknown"
+            run_id_text = orders_sync_upstream.run_id or "unknown"
+            tracker.add_summary(
+                f"Upstream orders sync: status={status_text}, run_id={run_id_text}."
+            )
+        if orders_sync_upstream.is_degraded:
+            tracker.mark_phase("upstream_orders_sync", "warning")
+            tracker.add_summary(DEGRADED_ORDERS_SYNC_MESSAGE)
         log_event(
             logger=logger,
             phase="orchestrator",
@@ -112,6 +148,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             report_date=resolved_date.isoformat(),
             run_env=run_env,
             force=force,
+            orders_sync_upstream_status=orders_sync_upstream.status,
+            orders_sync_upstream_run_id=orders_sync_upstream.run_id,
+            orders_sync_is_degraded=orders_sync_upstream.is_degraded,
         )
 
         data = await fetch_pending_deliveries_report(
@@ -132,6 +171,7 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
             run_id=run_id,
             timezone_label=tz.key,
             run_environment=run_env,
+            orders_sync_upstream=orders_sync_upstream,
         )
         html = render_html(context)
         tracker.mark_phase("render_html", "ok")
@@ -144,7 +184,11 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
 
         OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
         output_path = OUTPUT_ROOT / f"{PIPELINE_NAME}_{resolved_date.isoformat()}.pdf"
-        workbook_path = workbook_output_path(output_root=OUTPUT_ROOT, pipeline_name=PIPELINE_NAME, report_date=resolved_date)
+        workbook_path = workbook_output_path(
+            output_root=OUTPUT_ROOT,
+            pipeline_name=PIPELINE_NAME,
+            report_date=resolved_date,
+        )
         if output_path.exists():
             output_path.unlink()
         try:
@@ -234,6 +278,10 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
 
         tracker.metrics = {
             "report_date": resolved_date.isoformat(),
+            "orders_sync_upstream": orders_sync_upstream.as_metrics(),
+            "orders_sync_upstream_status": orders_sync_upstream.status,
+            "orders_sync_upstream_run_id": orders_sync_upstream.run_id,
+            "orders_sync_is_degraded": orders_sync_upstream.is_degraded,
             "rows": data.total_count,
             "workbook_rows": workbook_row_count,
             "workbook_sheet_count": workbook_sheet_count,
@@ -248,7 +296,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
         await persist_summary_record(database_url, pre_record)
 
         try:
-            notification_result = await send_notifications_for_run(PIPELINE_NAME, run_id)
+            notification_result = await send_notifications_for_run(
+                PIPELINE_NAME, run_id
+            )
             emails_planned = int(notification_result.get("emails_planned") or 0)
             emails_sent = int(notification_result.get("emails_sent") or 0)
             notification_errors = notification_result.get("errors") or []
@@ -265,7 +315,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 )
             else:
                 tracker.mark_phase("send_email", "warning")
-                tracker.add_summary("Notification dispatch completed but no emails were sent; see logs.")
+                tracker.add_summary(
+                    "Notification dispatch completed but no emails were sent; see logs."
+                )
                 tracker.overall = "warning"
                 log_event(
                     logger=logger,
@@ -279,7 +331,9 @@ async def _run(report_date: date | None, env: str | None, force: bool) -> None:
                 )
         except Exception as exc:  # pragma: no cover - defensive guardrail
             tracker.mark_phase("send_email", "warning")
-            tracker.add_summary(f"Notification dispatch failed; see logs for details ({exc}).")
+            tracker.add_summary(
+                f"Notification dispatch failed; see logs for details ({exc})."
+            )
             tracker.overall = "warning"
             log_event(
                 logger=logger,

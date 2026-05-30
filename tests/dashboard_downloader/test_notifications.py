@@ -599,3 +599,27 @@ def test_dashboard_notification_summary_includes_data_quality_threshold_text() -
     assert "Dashboard data quality warnings:" in summary
     assert "invalid CSV downloads discarded: 1 observed (threshold 1)" in summary
     assert "rows skipped due to missing required fields: 2 observed (threshold 1)" in summary
+
+
+def test_report_notification_context_includes_upstream_orders_status() -> None:
+    from app.dashboard_downloader.notifications import (
+        _append_orders_sync_degraded_warning,
+        _orders_sync_upstream_context,
+    )
+
+    metrics = {
+        "orders_sync_upstream": {
+            "status": "failed",
+            "run_id": "orders-run-1",
+            "is_degraded": True,
+        }
+    }
+
+    context = _orders_sync_upstream_context(metrics)
+    summary = _append_orders_sync_degraded_warning("Report generated.", metrics)
+
+    assert context["orders_sync_is_degraded"] is True
+    assert context["orders_sync_upstream_status"] == "failed"
+    assert context["orders_sync_upstream_run_id"] == "orders-run-1"
+    assert "Orders sync failed before this report; data may be stale." in summary
+    assert "run_id=orders-run-1" in summary

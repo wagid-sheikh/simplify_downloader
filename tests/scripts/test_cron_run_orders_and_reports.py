@@ -205,6 +205,7 @@ exit 0
         scripts_dir / "run_local_reports_pending_deliveries.sh",
         """#!/usr/bin/env bash
 printf 'pending ran\n' >> "${TMPDIR:-/tmp}/pending-ran.log"
+printf '%s\n' "$*" >> "${TMPDIR:-/tmp}/pending-args.log"
 exit 0
 """,
     )
@@ -212,6 +213,7 @@ exit 0
         scripts_dir / "run_local_reports_daily_sales.sh",
         """#!/usr/bin/env bash
 printf 'daily ran\n' >> "${TMPDIR:-/tmp}/daily-ran.log"
+printf '%s\n' "$*" >> "${TMPDIR:-/tmp}/daily-args.log"
 exit 0
 """,
     )
@@ -240,6 +242,10 @@ exit 0
     assert not (tmp_path / "orders-sync-invoked.log").exists()
     assert (tmp_path / "daily-ran.log").read_text(encoding="utf-8") == "daily ran\n"
     assert (tmp_path / "pending-ran.log").read_text(encoding="utf-8") == "pending ran\n"
+    daily_args = (tmp_path / "daily-args.log").read_text(encoding="utf-8")
+    pending_args = (tmp_path / "pending-args.log").read_text(encoding="utf-8")
+    assert "--orders-sync-upstream-status failed" in daily_args
+    assert "--orders-sync-upstream-status failed" in pending_args
 
     log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
     assert log_files
