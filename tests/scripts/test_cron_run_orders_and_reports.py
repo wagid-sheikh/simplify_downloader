@@ -14,7 +14,10 @@ def _write_executable(path: Path, body: str) -> None:
 def _write_successful_preflight(scripts_dir: Path) -> None:
     _write_executable(
         scripts_dir / "orders_sync_connectivity_preflight.sh",
-        "#!/usr/bin/env bash\necho 'connectivity_preflight_succeeded'\nexit 0\n",
+        "#!/usr/bin/env bash\n"
+        "echo 'orders_sync_preflight_summary classification=tcp_ok_app_ok exit_code=0'\n"
+        "echo 'tcp_connectivity_preflight_succeeded classification=tcp_ok_app_ok'\n"
+        "exit 0\n",
     )
 
 
@@ -183,7 +186,8 @@ def test_cron_preflight_failure_skips_orders_sync_but_runs_reports(tmp_path: Pat
     _write_executable(
         scripts_dir / "orders_sync_connectivity_preflight.sh",
         """#!/usr/bin/env bash
-echo 'connectivity_preflight_failed_summary exit_code=7' >&2
+echo 'orders_sync_preflight_summary classification=tcp_failed exit_code=7' >&2
+echo 'tcp_connectivity_preflight_failed_summary exit_code=7' >&2
 exit 7
 """,
     )
@@ -237,8 +241,8 @@ exit 0
     log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
     assert log_files
     log_text = log_files[-1].read_text(encoding="utf-8")
-    assert "connectivity_preflight_failed_summary exit_code=7" in log_text
-    assert "orders_sync_run_profiler skipped because connectivity preflight failed" in log_text
+    assert "tcp_connectivity_preflight_failed_summary exit_code=7" in log_text
+    assert "orders_sync_run_profiler skipped because tcp_connectivity_preflight failed" in log_text
     assert "orders_sync_run_profiler_rc=7" in log_text
     assert "Running Script 1: orders_sync_run_profiler" not in log_text
 
@@ -354,3 +358,68 @@ exit 0
     args_lines = (tmp_path / "daily-args.log").read_text(encoding="utf-8").splitlines()
     assert len(args_lines) == 2
     assert all("--force" not in line for line in args_lines)
+
+
+def test_cron_logs_app_layer_preflight_failure_classification(tmp_path: Path) -> None:
+    repo_root = tmp_path
+    scripts_dir = repo_root / "scripts"
+    logs_dir = repo_root / "logs"
+    tmp_dir = repo_root / "tmp"
+    scripts_dir.mkdir(parents=True)
+    logs_dir.mkdir()
+    tmp_dir.mkdir()
+
+    source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
+    _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
+    _write_executable(
+        scripts_dir / "orders_sync_connectivity_preflight.sh",
+        """#!/usr/bin/env bash
+echo 'tcp_connectivity_preflight_dns_ok target_host=example.test latency_ms=1'
+echo 'tcp_connectivity_preflight_tcp_ok target_host=example.test latency_ms=2'
+echo 'app_layer_preflight_http_failed target_host=example.test status_code=500 response_class=5xx expected_classes=2xx,3xx,4xx latency_ms=3' >&2
+echo 'orders_sync_preflight_summary classification=app_layer_failed exit_code=1' >&2
+echo 'app_layer_preflight_failed_summary exit_code=1' >&2
+exit 1
+""",
+    )
+    _write_executable(
+        scripts_dir / "orders_sync_run_profiler.sh",
+        """#!/usr/bin/env bash
+printf 'orders sync should not run\n' >> "${TMPDIR:-/tmp}/orders-sync-invoked.log"
+exit 0
+""",
+    )
+    _write_executable(scripts_dir / "run_local_reports_pending_deliveries.sh", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(scripts_dir / "run_local_reports_daily_sales.sh", "#!/usr/bin/env bash\nexit 0\n")
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "1",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "TMPDIR": str(tmp_path),
+        }
+    )
+
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert not (tmp_path / "orders-sync-invoked.log").exists()
+
+    log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
+    assert log_files
+    log_text = log_files[-1].read_text(encoding="utf-8")
+    assert "tcp_connectivity_preflight_tcp_ok" in log_text
+    assert "app_layer_preflight_http_failed" in log_text
+    assert "orders_sync_preflight_classification=app_layer_failed" in log_text
+    assert "orders sync tcp_connectivity_preflight completed" not in log_text
+    assert "tcp_connectivity_preflight_succeeded" not in log_text
