@@ -584,3 +584,172 @@ async def test_profiler_payload_surfaces_td_garment_incomplete_warning(
     ]
     assert any("TD_GARMENT_WARNINGS: TD01" in warning for warning in payload["warnings"])
     assert "final_garment_rows=17" in summary["summary_text"]
+
+
+@pytest.mark.asyncio
+async def test_uc_timeout_skipped_window_retries_and_can_recover(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        profiler,
+        "config",
+        SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:", run_env="test"),
+    )
+
+    async def fake_fetch_last_success_window_end(**_kwargs: object) -> None:
+        return None
+
+    inserted_summaries: list[dict] = []
+    pipeline_run_ids: list[str] = []
+
+    async def fake_pipeline_fn(**kwargs: object) -> None:
+        pipeline_run_ids.append(str(kwargs["run_id"]))
+
+    async def fake_fetch_summary_for_run(_database_url: str, _run_id: str) -> dict:
+        return {}
+
+    async def fake_fetch_latest_log_row(**kwargs: object) -> dict:
+        run_id = str(kwargs["run_id"])
+        if run_id.endswith("attempt1"):
+            return {
+                "id": 1,
+                "status": "skipped",
+                "error_message": "Timeout while loading Archive Orders page",
+            }
+        return {"id": 2, "status": "success", "error_message": None}
+
+    async def fake_insert_run_summary(_database_url: str, summary_record: dict) -> None:
+        inserted_summaries.append(summary_record)
+
+    monkeypatch.setattr(
+        profiler, "fetch_last_success_window_end", fake_fetch_last_success_window_end
+    )
+    monkeypatch.setattr(profiler, "fetch_summary_for_run", fake_fetch_summary_for_run)
+    monkeypatch.setattr(profiler, "_fetch_latest_log_row", fake_fetch_latest_log_row)
+    monkeypatch.setattr(profiler, "insert_run_summary", fake_insert_run_summary)
+
+    overall_status, _windows, _details, status_counts, window_audit, *_ = await profiler._run_store_windows(
+        logger=profiler.JsonLogger(run_id="profiler-run", log_file_path=None),
+        store=StoreProfile(
+            store_code="UC01",
+            store_name="UC Store",
+            cost_center="CC-UC01",
+            sync_config={},
+            start_date=None,
+        ),
+        pipeline_name="uc_orders_sync",
+        pipeline_id=101,
+        pipeline_fn=fake_pipeline_fn,
+        run_env="test",
+        run_id="profiler-run",
+        backfill_days=1,
+        window_days=1,
+        overlap_days=0,
+        from_date=date(2024, 1, 1),
+        to_date=date(2024, 1, 1),
+    )
+
+    assert pipeline_run_ids == [
+        "profiler-run_UC01_001_attempt1",
+        "profiler-run_UC01_001_attempt2",
+    ]
+    assert overall_status == "success"
+    assert status_counts["success"] == 1
+    assert window_audit[0]["attempt_no"] == 2
+    assert [attempt["status"] for attempt in window_audit[0]["attempts"]] == [
+        "skipped",
+        "success",
+    ]
+    assert inserted_summaries[0]["overall_status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_profiler_promotes_all_timeout_uc_windows_to_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        profiler,
+        "config",
+        SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:", run_env="test"),
+    )
+
+    async def fake_fetch_last_success_window_end(**_kwargs: object) -> None:
+        return None
+
+    inserted_summaries: list[dict] = []
+
+    async def fake_pipeline_fn(**_kwargs: object) -> None:
+        return None
+
+    async def fake_fetch_summary_for_run(_database_url: str, _run_id: str) -> dict:
+        return {}
+
+    async def fake_fetch_latest_log_row(**_kwargs: object) -> dict:
+        return {
+            "id": 1,
+            "status": "skipped",
+            "error_message": "session load timeout before Archive Orders navigation",
+        }
+
+    async def fake_insert_run_summary(_database_url: str, summary_record: dict) -> None:
+        inserted_summaries.append(summary_record)
+
+    monkeypatch.setattr(
+        profiler, "fetch_last_success_window_end", fake_fetch_last_success_window_end
+    )
+    monkeypatch.setattr(profiler, "fetch_summary_for_run", fake_fetch_summary_for_run)
+    monkeypatch.setattr(profiler, "_fetch_latest_log_row", fake_fetch_latest_log_row)
+    monkeypatch.setattr(profiler, "insert_run_summary", fake_insert_run_summary)
+
+    overall_status, _windows, _details, status_counts, window_audit, *_ = await profiler._run_store_windows(
+        logger=profiler.JsonLogger(run_id="profiler-run", log_file_path=None),
+        store=StoreProfile(
+            store_code="UC01",
+            store_name="UC Store",
+            cost_center="CC-UC01",
+            sync_config={},
+            start_date=None,
+        ),
+        pipeline_name="uc_orders_sync",
+        pipeline_id=101,
+        pipeline_fn=fake_pipeline_fn,
+        run_env="test",
+        run_id="profiler-run",
+        backfill_days=1,
+        window_days=1,
+        overlap_days=0,
+        from_date=date(2024, 1, 1),
+        to_date=date(2024, 1, 1),
+    )
+
+    assert overall_status == "failed"
+    assert status_counts["failed"] == 1
+    assert status_counts["skipped"] == 0
+    assert window_audit[0]["status"] == "failed"
+    assert window_audit[0]["attempt_no"] == 2
+    assert "timeout/navigation failure promoted to failed" in window_audit[0]["status_note"]
+    assert inserted_summaries[0]["overall_status"] == "failed"
+
+
+def test_timeout_retry_gate_checks_error_status_note_and_skip_reason() -> None:
+    assert profiler._should_retry_window_status(
+        status="skipped",
+        error_message="Timeout while loading Archive Orders page",
+        status_note=None,
+    )
+    assert profiler._should_retry_window_status(
+        status="partial",
+        error_message=None,
+        status_note="Archive Orders navigation failed",
+    )
+    assert profiler._should_retry_window_status(
+        status="skipped",
+        error_message=None,
+        status_note=None,
+        skip_reason="session load timeout",
+    )
+    assert not profiler._should_retry_window_status(
+        status="skipped",
+        error_message=None,
+        status_note="no data",
+    )

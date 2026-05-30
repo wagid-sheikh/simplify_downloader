@@ -1110,3 +1110,35 @@ async def test_collect_archive_orders_logs_first_page_baseline_and_drift_warning
     assert first_page_log["current_footer_window"] == [1, 30, 30]
     assert drift_log["baseline_footer_window"] == [1, 20, 30]
     assert drift_log["current_footer_window"] == [1, 30, 30]
+
+
+def test_store_outcome_marks_archive_timeout_without_output_failed() -> None:
+    outcome = uc_main.StoreOutcome(
+        status="warning",
+        message="Timeout while loading Archive Orders page",
+        skip_reason="timeout",
+    )
+
+    status = uc_main._resolve_sync_log_status(
+        outcome=outcome, download_succeeded=False, row_count=0
+    )
+    note = uc_main._resolve_sync_log_status_note(
+        status=status, outcome=outcome, row_count=0
+    )
+
+    assert status == "failed"
+    assert note == "timeout"
+
+
+def test_store_outcome_keeps_genuine_no_data_non_failed() -> None:
+    outcome = uc_main.StoreOutcome(status="warning", message="No Archive Orders rows found")
+
+    status = uc_main._resolve_sync_log_status(
+        outcome=outcome, download_succeeded=False, row_count=0
+    )
+    note = uc_main._resolve_sync_log_status_note(
+        status=status, outcome=outcome, row_count=0
+    )
+
+    assert status == "skipped"
+    assert note == "No Archive Orders rows found"

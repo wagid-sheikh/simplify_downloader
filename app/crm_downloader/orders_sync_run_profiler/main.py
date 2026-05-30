@@ -743,6 +743,31 @@ async def _persist_missing_windows_log_rows(
         )
 
 
+def _extract_summary_window_context(
+    summary: Mapping[str, Any] | None, *, store_code: str, from_date: date, to_date: date
+) -> dict[str, Any]:
+    if not summary:
+        return {}
+    metrics = _coerce_dict(summary.get("metrics_json"))
+    windows = metrics.get("window_audit")
+    if not isinstance(windows, Sequence) or isinstance(windows, (str, bytes)):
+        return {}
+    normalized_code = store_code.upper()
+    from_value = from_date.isoformat()
+    to_value = to_date.isoformat()
+    for window in windows:
+        if not isinstance(window, Mapping):
+            continue
+        if str(window.get("store_code") or "").upper() != normalized_code:
+            continue
+        if str(window.get("from_date") or "") != from_value:
+            continue
+        if str(window.get("to_date") or "") != to_value:
+            continue
+        return dict(window)
+    return {}
+
+
 def _extract_window_download_paths(
     summary: Mapping[str, Any] | None, *, store_code: str
 ) -> dict[str, Any]:
@@ -1026,6 +1051,51 @@ def _has_positive_ingestion_rows(ingestion_counts: Mapping[str, Any]) -> bool:
         if payload and _has_positive_metric(payload):
             return True
     return False
+
+
+TIMEOUT_NAVIGATION_RETRY_TOKENS = (
+    "timeout",
+    "timed out",
+    "navigation failed",
+    "session load",
+    "session-load",
+    "session timeout",
+    "archive orders navigation failed",
+    "loading archive orders page",
+    "page.goto",
+    "net::err",
+)
+
+
+def _has_timeout_navigation_failure(*messages: str | None) -> bool:
+    combined = " ".join(message for message in messages if message).lower()
+    return any(token in combined for token in TIMEOUT_NAVIGATION_RETRY_TOKENS)
+
+
+def _should_retry_window_status(
+    *,
+    status: str,
+    error_message: str | None,
+    status_note: str | None,
+    skip_reason: str | None = None,
+) -> bool:
+    if status == "failed":
+        return True
+    if status not in {"skipped", "partial"}:
+        return False
+    return _has_timeout_navigation_failure(error_message, status_note, skip_reason)
+
+
+def _should_promote_retryable_status_to_failed(
+    *,
+    status: str,
+    error_message: str | None,
+    status_note: str | None,
+    skip_reason: str | None = None,
+) -> bool:
+    return status in {"skipped", "partial"} and _has_timeout_navigation_failure(
+        error_message, status_note, skip_reason
+    )
 
 
 def _normalize_window_status(
@@ -1556,8 +1626,15 @@ async def _run_store_windows(
                 )
                 status_note += mapped_note
             summary_overall_status = None
+            summary_window_context: dict[str, Any] = {}
             if isinstance(summary, Mapping):
                 summary_overall_status = str(summary.get("overall_status") or "")
+                summary_window_context = _extract_summary_window_context(
+                    summary,
+                    store_code=store.store_code,
+                    from_date=window_start,
+                    to_date=window_end,
+                )
             resolved_status, resolved_note = _resolve_window_outcome_status(
                 raw_status=status,
                 summary_overall_status=summary_overall_status,
@@ -1620,6 +1697,28 @@ async def _run_store_windows(
                     error_message=error_message,
                     warning_count=uc_warning_count,
                 )
+            summary_status_note = str(summary_window_context.get("status_note") or "") or None
+            summary_skip_reason = str(summary_window_context.get("skip_reason") or "") or None
+            retryable_timeout_status = _should_promote_retryable_status_to_failed(
+                status=status,
+                error_message=error_message,
+                status_note=status_note or summary_status_note,
+                skip_reason=summary_skip_reason,
+            )
+            should_retry = attempt == 0 and _should_retry_window_status(
+                status=status,
+                error_message=error_message,
+                status_note=status_note or summary_status_note,
+                skip_reason=summary_skip_reason,
+            )
+            if retryable_timeout_status and not should_retry:
+                if status_note:
+                    status_note += " (timeout/navigation failure promoted to failed)"
+                else:
+                    status_note = " (timeout/navigation failure promoted to failed)"
+                if not error_message:
+                    error_message = status_note.strip(" ()")
+                status = "failed"
             note_for_attempt = status_note
             if attempt > 0:
                 note_for_attempt += " (after retry)"
@@ -1640,7 +1739,7 @@ async def _run_store_windows(
             )
             if not fetched_status:
                 break
-            if status == "failed" and attempt == 0:
+            if should_retry:
                 log_event(
                     logger=logger,
                     phase="window",

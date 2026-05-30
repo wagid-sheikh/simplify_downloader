@@ -1872,18 +1872,39 @@ def _has_rows(row_count: int | None, staging_rows: int | None) -> bool:
     return any(count is not None and count > 0 for count in (row_count, staging_rows))
 
 
+UC_RETRYABLE_FAILURE_TOKENS = (
+    "timeout",
+    "timed out",
+    "navigation failed",
+    "session load",
+    "session-load",
+    "session timeout",
+    "archive orders navigation failed",
+    "loading archive orders page",
+)
+
+
+def _is_retryable_navigation_failure(outcome: StoreOutcome) -> bool:
+    combined = " ".join(
+        str(value) for value in (outcome.message, outcome.skip_reason) if value
+    ).lower()
+    return any(token in combined for token in UC_RETRYABLE_FAILURE_TOKENS)
+
+
 def _resolve_sync_log_status(
     *, outcome: StoreOutcome, download_succeeded: bool, row_count: int | None
 ) -> str:
     if outcome.status == "error":
         return "failed"
+    reason_codes = set(outcome.reason_codes or [])
+    if "archive_api_auth_failure" in reason_codes:
+        return "failed"
+    if _is_retryable_navigation_failure(outcome):
+        return "failed"
     has_rows = _has_rows(row_count, outcome.staging_rows)
     has_output = download_succeeded or has_rows
     if not has_output:
         return "skipped"
-    reason_codes = set(outcome.reason_codes or [])
-    if "archive_api_auth_failure" in reason_codes:
-        return "failed"
     if "partial_extraction" in reason_codes:
         return "partial"
     if (
@@ -1898,6 +1919,8 @@ def _resolve_sync_log_status(
 def _resolve_sync_log_status_note(
     *, status: str, outcome: StoreOutcome, row_count: int | None
 ) -> str | None:
+    if status == "failed" and _is_retryable_navigation_failure(outcome):
+        return outcome.skip_reason or outcome.message
     if status == "skipped":
         no_data = not outcome.download_path and outcome.staging_rows == 0
         has_rows = _has_rows(row_count, outcome.staging_rows)
@@ -4333,7 +4356,7 @@ async def _run_store_discovery(
         )
     except TimeoutError as exc:
         outcome = StoreOutcome(
-            status="warning",
+            status="error",
             message="Timeout while loading Archive Orders page",
             final_url=page.url,
             storage_state=(
