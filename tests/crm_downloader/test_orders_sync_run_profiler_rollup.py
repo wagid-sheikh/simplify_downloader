@@ -461,6 +461,7 @@ def test_profiler_summary_text_includes_failed_uc_window_reason() -> None:
     assert "Page.goto: net::ERR_CERT_DATE_INVALID" in summary
     assert "stack details" in summary
 
+
 def test_extract_td_garment_warning_from_summary_flags_incomplete() -> None:
     summary = {
         "metrics_json": {
@@ -484,6 +485,205 @@ def test_extract_td_garment_warning_from_summary_flags_incomplete() -> None:
         "garments_budget_state": "near_limit",
         "is_incomplete": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_td_garment_incomplete_degrades_success_without_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        profiler,
+        "config",
+        SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:", run_env="test"),
+    )
+
+    async def fake_fetch_last_success_window_end(**_kwargs: object) -> None:
+        return None
+
+    async def fake_pipeline_fn(**_kwargs: object) -> None:
+        return None
+
+    async def fake_fetch_summary_for_run(_database_url: str, _run_id: str) -> dict:
+        return {
+            "overall_status": "success",
+            "metrics_json": {
+                "orders": {
+                    "stores": {
+                        "TD01": {
+                            "garments_fetch_completeness": "incomplete",
+                            "garments_final_row_count": 17,
+                            "garments_budget_state": "near_limit",
+                        }
+                    }
+                },
+                "sales": {"stores": {"TD01": {}}},
+            },
+        }
+
+    async def fake_fetch_latest_log_row(**_kwargs: object) -> dict:
+        return {"id": 1, "status": "success", "error_message": None}
+
+    inserted_summaries: list[dict] = []
+
+    async def fake_insert_run_summary(_database_url: str, summary_record: dict) -> None:
+        inserted_summaries.append(summary_record)
+
+    monkeypatch.setattr(profiler, "fetch_last_success_window_end", fake_fetch_last_success_window_end)
+    monkeypatch.setattr(profiler, "fetch_summary_for_run", fake_fetch_summary_for_run)
+    monkeypatch.setattr(profiler, "_fetch_latest_log_row", fake_fetch_latest_log_row)
+    monkeypatch.setattr(profiler, "insert_run_summary", fake_insert_run_summary)
+
+    overall_status, _windows, _details, status_counts, window_audit, *_ = await profiler._run_store_windows(
+        logger=profiler.JsonLogger(run_id="profiler-run", log_file_path=None),
+        store=StoreProfile(
+            store_code="TD01",
+            store_name="TD Store",
+            cost_center="CC-TD01",
+            sync_config={},
+            start_date=None,
+        ),
+        pipeline_name="td_orders_sync",
+        pipeline_id=101,
+        pipeline_fn=fake_pipeline_fn,
+        run_env="test",
+        run_id="profiler-run",
+        backfill_days=1,
+        window_days=1,
+        overlap_days=0,
+        from_date=date(2024, 2, 1),
+        to_date=date(2024, 2, 1),
+    )
+
+    assert overall_status == "success_with_warnings"
+    assert status_counts["success_with_warnings"] == 1
+    assert status_counts["success"] == 0
+    assert window_audit[0]["status"] == "success_with_warnings"
+    assert window_audit[0]["attempt_no"] == 1
+    assert "data incomplete for garment-dependent reports" in window_audit[0]["status_note"]
+    assert window_audit[0]["warning_count"] == 1
+    assert inserted_summaries[0]["overall_status"] == "success_with_warnings"
+
+
+@pytest.mark.asyncio
+async def test_td_garment_incomplete_after_retry_remains_degraded_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        profiler,
+        "config",
+        SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:", run_env="test"),
+    )
+
+    async def fake_fetch_last_success_window_end(**_kwargs: object) -> None:
+        return None
+
+    async def fake_pipeline_fn(**_kwargs: object) -> None:
+        return None
+
+    async def fake_fetch_summary_for_run(_database_url: str, _run_id: str) -> dict:
+        return {
+            "overall_status": "success",
+            "metrics_json": {
+                "orders": {
+                    "stores": {
+                        "TD01": {
+                            "garments_fetch_completeness": "incomplete",
+                            "garments_final_row_count": 19,
+                            "garments_budget_state": "exhausted",
+                        }
+                    }
+                },
+                "sales": {"stores": {"TD01": {}}},
+            },
+        }
+
+    log_rows = iter(
+        [
+            {"id": 1, "status": "skipped", "error_message": "session load timeout"},
+            {"id": 2, "status": "success", "error_message": None},
+        ]
+    )
+
+    async def fake_fetch_latest_log_row(**_kwargs: object) -> dict:
+        return next(log_rows)
+
+    inserted_summaries: list[dict] = []
+
+    async def fake_insert_run_summary(_database_url: str, summary_record: dict) -> None:
+        inserted_summaries.append(summary_record)
+
+    monkeypatch.setattr(profiler, "fetch_last_success_window_end", fake_fetch_last_success_window_end)
+    monkeypatch.setattr(profiler, "fetch_summary_for_run", fake_fetch_summary_for_run)
+    monkeypatch.setattr(profiler, "_fetch_latest_log_row", fake_fetch_latest_log_row)
+    monkeypatch.setattr(profiler, "insert_run_summary", fake_insert_run_summary)
+
+    overall_status, _windows, _details, status_counts, window_audit, *_ = await profiler._run_store_windows(
+        logger=profiler.JsonLogger(run_id="profiler-run", log_file_path=None),
+        store=StoreProfile(
+            store_code="TD01",
+            store_name="TD Store",
+            cost_center="CC-TD01",
+            sync_config={},
+            start_date=None,
+        ),
+        pipeline_name="td_orders_sync",
+        pipeline_id=101,
+        pipeline_fn=fake_pipeline_fn,
+        run_env="test",
+        run_id="profiler-run",
+        backfill_days=1,
+        window_days=1,
+        overlap_days=0,
+        from_date=date(2024, 2, 1),
+        to_date=date(2024, 2, 1),
+    )
+
+    assert overall_status == "success_with_warnings"
+    assert status_counts["success_with_warnings"] == 1
+    assert window_audit[0]["attempt_no"] == 2
+    assert [attempt["status"] for attempt in window_audit[0]["attempts"]] == [
+        "skipped",
+        "success_with_warnings",
+    ]
+    assert "after retry" in window_audit[0]["status_note"]
+    assert window_audit[0]["warning_count"] == 1
+    assert inserted_summaries[0]["overall_status"] == "success_with_warnings"
+
+
+def test_td_garment_completeness_unavailable_is_not_incomplete_warning() -> None:
+    assert profiler._extract_td_garment_warning_from_summary(
+        {"metrics_json": {"orders": {"stores": {"TD01": {}}}}}, store_code="TD01"
+    ) is None
+
+    warning = profiler._extract_td_garment_warning_from_summary(
+        {
+            "metrics_json": {
+                "orders": {
+                    "stores": {
+                        "TD01": {
+                            "garments_fetch_completeness": "unknown",
+                            "garments_final_row_count": 0,
+                        }
+                    }
+                }
+            }
+        },
+        store_code="TD01",
+    )
+
+    assert warning is not None
+    assert warning["garments_fetch_completeness"] == "unknown"
+    assert warning["is_incomplete"] is False
+    assert profiler._td_garment_warning_entries(
+        [
+            {
+                "store_code": "TD01",
+                "from_date": "2024-02-01",
+                "to_date": "2024-02-01",
+                "td_garment_warning": warning,
+            }
+        ]
+    ) == []
 
 
 @pytest.mark.asyncio
@@ -582,7 +782,7 @@ async def test_profiler_payload_surfaces_td_garment_incomplete_warning(
             "garments_budget_state": "near_limit",
         }
     ]
-    assert any("TD_GARMENT_WARNINGS: TD01" in warning for warning in payload["warnings"])
+    assert any("TD_GARMENT_DATA_INCOMPLETE: TD01" in warning for warning in payload["warnings"])
     assert "final_garment_rows=17" in summary["summary_text"]
 
 

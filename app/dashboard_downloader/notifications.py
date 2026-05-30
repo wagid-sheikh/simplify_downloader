@@ -169,8 +169,9 @@ PROFILER_HTML_TEMPLATE = """
                         <ul style="margin:0; padding-left:16px;">
                           {% for window in store.td_garment_incomplete_windows %}
                           <li style="margin:0 0 4px 0;">
-                            TD garments incomplete {{ window.from_date|e }} to {{ window.to_date|e }};
-                            final garment rows={{ window.garments_final_row_count|e }}
+                            DATA INCOMPLETE: TD garment details incomplete {{ window.from_date|e }} to {{ window.to_date|e }};
+                            final garment rows={{ window.garments_final_row_count|e }};
+                            garment-dependent reports may be incomplete
                           </li>
                           {% endfor %}
                         </ul>
@@ -2661,6 +2662,14 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
         for warning in (store.get("td_garment_incomplete_windows") or [])
     ]
     warnings = _normalize_warning_entries(payload.get("warnings") or [])
+    if td_garment_warning_details and not any("TD_GARMENT_DATA_INCOMPLETE" in str(warning) for warning in warnings):
+        affected_stores = sorted(
+            {str(warning.get("store_code") or "UNKNOWN") for warning in td_garment_warning_details}
+        )
+        warnings.append(
+            "TD_GARMENT_DATA_INCOMPLETE: TD garment details data incomplete for "
+            f"{', '.join(affected_stores)}; garment-dependent downstream reports may be incomplete"
+        )
     if not warnings:
         warnings = _build_profiler_row_fact_warnings(
             warning_rows=warning_fact_rows,
