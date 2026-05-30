@@ -22,6 +22,77 @@ def _write_successful_preflight(scripts_dir: Path) -> None:
     )
 
 
+def _run_pending_deliveries_wrapper(tmp_path: Path, *args: str) -> list[str]:
+    repo_root = tmp_path
+    scripts_dir = repo_root / "scripts"
+    bin_dir = repo_root / "bin"
+    scripts_dir.mkdir()
+    bin_dir.mkdir()
+
+    source_wrapper = Path("scripts/run_local_reports_pending_deliveries.sh").read_text(
+        encoding="utf-8"
+    )
+    wrapper = scripts_dir / "run_local_reports_pending_deliveries.sh"
+    _write_executable(wrapper, source_wrapper)
+    _write_executable(
+        bin_dir / "poetry",
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "printf '%s\\n' \"$*\" >> \"${POETRY_ARGS_LOG}\"\n",
+    )
+
+    args_log = tmp_path / "poetry-args.log"
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "POETRY_ARGS_LOG": str(args_log),
+        }
+    )
+
+    result = subprocess.run(
+        [str(wrapper), *args],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    return args_log.read_text(encoding="utf-8").splitlines()
+
+
+def test_pending_deliveries_wrapper_keeps_upstream_flags_out_of_recovery_step(
+    tmp_path: Path,
+) -> None:
+    invocations = _run_pending_deliveries_wrapper(
+        tmp_path,
+        "--orders-sync-upstream-status",
+        "success",
+        "--orders-sync-upstream-run-id",
+        "profiler-123",
+    )
+
+    assert invocations == [
+        "run python -m app recovery mark-aged-pending-deliveries --env prod",
+        "run python -m app report pending-deliveries --env prod "
+        "--orders-sync-upstream-status success "
+        "--orders-sync-upstream-run-id profiler-123",
+    ]
+
+
+def test_pending_deliveries_wrapper_runs_with_zero_recovery_args_under_strict_shell_mode(
+    tmp_path: Path,
+) -> None:
+    invocations = _run_pending_deliveries_wrapper(tmp_path)
+
+    assert invocations == [
+        "run python -m app recovery mark-aged-pending-deliveries --env prod",
+        "run python -m app report pending-deliveries --env prod",
+    ]
+
+
 def test_pending_deliveries_cron_path_always_regenerates_without_force_gate() -> None:
     cron_source = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
     local_pending_source = Path("scripts/run_local_reports_pending_deliveries.sh").read_text(
@@ -35,6 +106,8 @@ def test_pending_deliveries_cron_path_always_regenerates_without_force_gate() ->
     assert 'run_local_reports_pending_deliveries.sh"' in cron_source
     assert "pending-deliveries --env prod --force" not in local_pending_source
     assert "pending-deliveries --env prod" in local_pending_source
+    assert '${recovery_args[@]+"${recovery_args[@]}"}' in local_pending_source
+    assert '--env prod "${recovery_args[@]}"' not in local_pending_source
 
 
 def test_cron_returns_non_zero_when_daily_fails_even_if_rescue_succeeds(tmp_path: Path) -> None:
