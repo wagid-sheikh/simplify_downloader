@@ -94,6 +94,45 @@ def test_json_logger_emits_suppressed_normalization_summary_per_file() -> None:
     assert summary["normalization_events_suppressed"] == 2
 
 
+def test_json_logger_redacts_sensitive_values_recursively() -> None:
+    stream = io.StringIO()
+    logger = JsonLogger(run_id="run-redaction", stream=stream, log_file_path=None)
+
+    logger.info(
+        phase="download",
+        message=(
+            "request failed\n"
+            "cookie: dashboard-cookie-secret\n"
+            "authorization: Bearer dashboard-auth-secret"
+        ),
+        request={
+            "headers": {
+                "set-cookie": "session=header-secret",
+                "proxy-authorization": "Basic proxy-secret",
+            },
+            "sessionId": "session-secret",
+            "csrfToken": "csrf-secret",
+            "apiToken": "api-secret",
+        },
+    )
+
+    output = stream.getvalue()
+    event = json.loads(output)
+    for secret in (
+        "dashboard-cookie-secret",
+        "dashboard-auth-secret",
+        "header-secret",
+        "proxy-secret",
+        "session-secret",
+        "csrf-secret",
+        "api-secret",
+    ):
+        assert secret not in output
+    assert event["request"]["headers"]["set-cookie"] == "<redacted>"
+    assert event["request"]["sessionId"] == "<redacted>"
+    assert event["message"].count("<redacted>") == 2
+
+
 def test_get_logger_is_idempotent_for_same_run_id(monkeypatch) -> None:
     stream = io.StringIO()
     monkeypatch.setattr(json_logger, "_LOGGER_REGISTRY", {})

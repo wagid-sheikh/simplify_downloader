@@ -215,6 +215,7 @@ Operational notes:
 
 - Primary auth appears to be service credentials for CRM endpoints and SMTP; no user-facing auth layer in this repo.
 - Sensitive artifacts include storage-state browser cookies, report PDFs, logs, and encrypted DB config values.
+- **Required production remediation:** rotate the exposed dashboard session credentials immediately, invalidate the prior sessions, and remove archived logs containing leaked values or protect them with access controls until secure deletion is complete. JSON logging now redacts sensitive headers, session identifiers, CSRF tokens, and API tokens, but sanitization does not retroactively clean existing archives.
 
 ## Integration points
 
