@@ -359,9 +359,21 @@ async def _run(
 
 
 def run_pipeline(
-    report_date: date | None = None, env: str | None = None, force: bool = False
+    report_date: date | None = None,
+    env: str | None = None,
+    force: bool = False,
+    orders_sync_upstream_status: str | None = None,
+    orders_sync_upstream_run_id: str | None = None,
 ) -> None:
-    asyncio.run(_run(report_date, env, force))
+    asyncio.run(
+        _run(
+            report_date=report_date,
+            env=env,
+            force=force,
+            orders_sync_upstream_status=orders_sync_upstream_status,
+            orders_sync_upstream_run_id=orders_sync_upstream_run_id,
+        )
+    )
 
 
 __all__ = ["run_pipeline"]
