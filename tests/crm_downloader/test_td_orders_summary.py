@@ -8,6 +8,7 @@ from app.crm_downloader.td_orders_sync.main import (
     StoreReport,
     TdOrdersDiscoverySummary,
     _build_dataset_order_set_verdict,
+    _build_garments_health_summary,
     _build_sales_order_row_count_verdict,
     _compare_row_count_diagnostics,
     _filter_non_order_summary_rows,
@@ -465,6 +466,7 @@ def test_sync_log_status_note_separates_current_garment_incompleteness() -> None
         status="warning",
         message="Orders completed with warnings",
         garments_fetch_completeness="incomplete",
+        garments_incomplete_reason={"code": "pagination_budget_exhausted", "message": "pagination budget exhausted"},
     )
     status = _resolve_sync_log_status(
         orders_report=orders_report,
@@ -485,6 +487,7 @@ def test_sync_log_status_note_separates_current_garment_incompleteness() -> None
     assert note is not None
     assert "Orders completed with warnings" in note
     assert "Current data incomplete: TD garment details fetch incomplete" in note
+    assert "reason=pagination budget exhausted" in note
 
 
 def test_summary_payload_exposes_data_ingest_status_and_observability_warnings() -> None:
@@ -508,3 +511,35 @@ def test_summary_payload_exposes_data_ingest_status_and_observability_warnings()
     assert notification_store["data_ingest_status"] == "success"
     assert notification_store["ingest_status"] == "success"
     assert "api_artifact_persistence_warning" in notification_store["observability_warnings"][0]
+
+
+def test_garments_health_summary_marks_orphaned_parent_relationship_incomplete() -> None:
+    from app.crm_downloader.td_orders_sync.garment_ingest import TdGarmentIngestResult
+    from app.crm_downloader.td_orders_sync.td_api_client import TdApiFetchResult
+
+    summary = _build_garments_health_summary(
+        api_fetch_result=TdApiFetchResult(
+            endpoint_health={
+                "/garments/details": {
+                    "garments_fetch_completeness": "complete",
+                    "garments_attempted_page_count": 2,
+                    "garments_completed_page_count": 2,
+                    "garments_expected_page_count": 2,
+                }
+            }
+        ),
+        garment_ingest_result=TdGarmentIngestResult(
+            staging_rows=2, staging_inserted=2, staging_updated=0, final_rows=2,
+            final_inserted=2, final_updated=0, row_count=2, source_id_duplicate_rows=0,
+            changed_rows=0, late_updates=0, orphan_rows=1,
+        ),
+    )
+
+    assert summary["garments_fetch_completeness"] == "incomplete"
+    assert summary["garments_incomplete_reason"] == {
+        "code": "orphaned_parent_order_relationship",
+        "message": "orphaned parent-order relationship",
+    }
+    assert summary["garments_attempted_page_count"] == 2
+    assert summary["garments_completed_page_count"] == 2
+    assert summary["garments_expected_page_count"] == 2

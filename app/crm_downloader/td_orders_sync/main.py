@@ -222,20 +222,45 @@ def _build_garments_health_summary(
     *,
     api_fetch_result: TdApiFetchResult | None,
     garment_ingest_result: TdGarmentIngestResult | None,
-) -> dict[str, int | float]:
+) -> dict[str, Any]:
     endpoint_health = dict((api_fetch_result.endpoint_health or {}).get("/garments/details") or {}) if api_fetch_result else {}
-    pages_attempted = int(endpoint_health.get("pages_attempted") or 0)
-    timeout_count = int(endpoint_health.get("timeout_count") or 0)
-    retry_success_count = int(endpoint_health.get("retry_success_count") or 0)
     row_count = int(garment_ingest_result.row_count or 0) if garment_ingest_result else 0
     orphan_rows = int(garment_ingest_result.orphan_rows or 0) if garment_ingest_result else 0
+    completeness = str(endpoint_health.get("garments_fetch_completeness") or "unknown")
+    incomplete_reason = endpoint_health.get("garments_incomplete_reason")
+    if orphan_rows > 0:
+        completeness = "incomplete"
+        incomplete_reason = {
+            "code": "orphaned_parent_order_relationship",
+            "message": "orphaned parent-order relationship",
+        }
     return {
-        "pages_attempted": pages_attempted,
-        "timeout_count": timeout_count,
-        "retry_success_count": retry_success_count,
+        "pages_attempted": int(endpoint_health.get("pages_attempted") or 0),
+        "timeout_count": int(endpoint_health.get("timeout_count") or 0),
+        "retry_count": int(endpoint_health.get("retry_count") or 0),
+        "retry_success_count": int(endpoint_health.get("retry_success_count") or 0),
         "final_row_count": row_count,
         "orphan_rows": orphan_rows,
+        "garments_fetch_completeness": completeness,
+        "garments_incomplete_reason": incomplete_reason,
+        "garments_attempted_page_count": int(endpoint_health.get("garments_attempted_page_count") or 0),
+        "garments_completed_page_count": int(endpoint_health.get("garments_completed_page_count") or 0),
+        "garments_expected_page_count": endpoint_health.get("garments_expected_page_count"),
+        "garments_timeout_count": int(endpoint_health.get("garments_timeout_count") or 0),
+        "garments_retry_count": int(endpoint_health.get("garments_retry_count") or 0),
     }
+
+
+def _apply_garments_health_to_report(report: "StoreReport", garments_health: Mapping[str, Any]) -> None:
+    report.garments_fetch_completeness = str(garments_health.get("garments_fetch_completeness") or "unknown")
+    report.garments_final_row_count = int(garments_health.get("garments_final_row_count") or garments_health.get("final_row_count") or 0)
+    report.garments_budget_state = str(garments_health.get("garments_budget_state") or "within_budget")
+    report.garments_incomplete_reason = garments_health.get("garments_incomplete_reason")
+    report.garments_attempted_page_count = int(garments_health.get("garments_attempted_page_count") or 0)
+    report.garments_completed_page_count = int(garments_health.get("garments_completed_page_count") or 0)
+    report.garments_expected_page_count = garments_health.get("garments_expected_page_count")
+    report.garments_timeout_count = int(garments_health.get("garments_timeout_count") or 0)
+    report.garments_retry_count = int(garments_health.get("garments_retry_count") or 0)
 
 
 async def _evaluate_garment_orphan_alert(
@@ -1033,6 +1058,12 @@ class StoreReport:
     garments_fetch_completeness: str | None = None
     garments_final_row_count: int | None = None
     garments_budget_state: str | None = None
+    garments_incomplete_reason: Mapping[str, str] | None = None
+    garments_attempted_page_count: int | None = None
+    garments_completed_page_count: int | None = None
+    garments_expected_page_count: int | None = None
+    garments_timeout_count: int | None = None
+    garments_retry_count: int | None = None
     compare_metrics: dict[str, Any] = field(default_factory=dict)
     api_request_metadata: list[dict[str, Any]] = field(default_factory=list)
     auth_diagnostics: dict[str, Any] = field(default_factory=dict)
@@ -1072,6 +1103,12 @@ class StoreReport:
             "garments_fetch_completeness": self.garments_fetch_completeness,
             "garments_final_row_count": self.garments_final_row_count,
             "garments_budget_state": self.garments_budget_state,
+            "garments_incomplete_reason": dict(self.garments_incomplete_reason) if self.garments_incomplete_reason else None,
+            "garments_attempted_page_count": self.garments_attempted_page_count,
+            "garments_completed_page_count": self.garments_completed_page_count,
+            "garments_expected_page_count": self.garments_expected_page_count,
+            "garments_timeout_count": self.garments_timeout_count,
+            "garments_retry_count": self.garments_retry_count,
             "compare_metrics": dict(self.compare_metrics),
             "api_request_metadata": list(self.api_request_metadata),
             "auth_diagnostics": dict(self.auth_diagnostics),
@@ -1791,6 +1828,12 @@ class TdOrdersDiscoverySummary:
             "garments_fetch_completeness": report.garments_fetch_completeness,
             "garments_final_row_count": report.garments_final_row_count,
             "garments_budget_state": report.garments_budget_state,
+            "garments_incomplete_reason": dict(report.garments_incomplete_reason) if report.garments_incomplete_reason else None,
+            "garments_attempted_page_count": report.garments_attempted_page_count,
+            "garments_completed_page_count": report.garments_completed_page_count,
+            "garments_expected_page_count": report.garments_expected_page_count,
+            "garments_timeout_count": report.garments_timeout_count,
+            "garments_retry_count": report.garments_retry_count,
             "message": report.message,
             "error_message": report.error_message,
             "warnings": list(report.warnings),
@@ -2728,6 +2771,7 @@ def _resolve_sync_log_status_note(
             if orders_report.garments_fetch_completeness == "incomplete":
                 _add(
                     "Current data incomplete: TD garment details fetch incomplete; "
+                    f"reason={(orders_report.garments_incomplete_reason or {}).get('message', 'unknown')}; "
                     "garment-dependent reports are degraded"
                 )
     elif not run_orders:
@@ -7816,9 +7860,7 @@ async def _run_store_discovery(
                         garments_completeness = str(garments_health.get("garments_fetch_completeness") or "unknown")
                         garments_budget_state = str(garments_health.get("garments_budget_state") or "within_budget")
                         garments_final_rows = int(garments_health.get("garments_final_row_count") or len(api_fetch_result.garments_rows))
-                        orders_report.garments_fetch_completeness = garments_completeness
-                        orders_report.garments_final_row_count = garments_final_rows
-                        orders_report.garments_budget_state = garments_budget_state
+                        _apply_garments_health_to_report(orders_report, garments_health)
                         if garments_budget_state == "near_limit" and garments_completeness == "complete":
                             _append_unique_warning(
                                 orders_report,
@@ -7828,6 +7870,7 @@ async def _run_store_discovery(
                             _append_unique_warning(
                                 orders_report,
                                 "DATA INCOMPLETE: TD garment details fetch incomplete; "
+                                f"reason={(orders_report.garments_incomplete_reason or {}).get('message', 'unknown')}; "
                                 "garment-dependent downstream reports may be incomplete",
                             )
                             orders_report.status = "warning"
@@ -8509,6 +8552,7 @@ async def _run_store_discovery(
                 **dict(orders_report.garment_reconciliation),
                 **garments_health_summary,
             }
+            _apply_garments_health_to_report(orders_report, garments_health_summary)
 
         garment_total_rows = len(api_fetch_result.garments_rows) if "api_fetch_result" in locals() else 0
         garment_matched_rows = garment_ingest_result.row_count if garment_ingest_result else (garment_total_rows if garment_total_rows == 0 else 0)

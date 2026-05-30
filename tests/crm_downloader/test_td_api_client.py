@@ -25,6 +25,7 @@ from app.crm_downloader.td_orders_sync.td_api_artifacts import (
 from app.crm_downloader.td_orders_sync.td_api_client import (
     TdApiClient,
     TdApiClientConfig,
+    _build_garments_incomplete_reason,
     _extract_rows,
     _filter_summary_rows,
 )
@@ -2121,3 +2122,101 @@ async def test_garments_timeout_recovered_metric_emitted_separately_from_partial
     assert result["error"] is None
     assert client._metrics_counters["garments_timeout_recovered_runs|endpoint=/garments/details"] == 1
     assert all("garments_partial_fetch_runs" not in key for key in client._metrics_counters)
+
+
+def test_garments_incomplete_reason_normalizes_operator_categories() -> None:
+    assert _build_garments_incomplete_reason(endpoint_error="http_500", parsing_failure=False, pagination_budget_exhausted=False) == {"code": "endpoint_error", "message": "endpoint error"}
+    assert _build_garments_incomplete_reason(endpoint_error="garments_response_parsing_failure", parsing_failure=True, pagination_budget_exhausted=False) == {"code": "response_parsing_failure", "message": "response parsing failure"}
+    assert _build_garments_incomplete_reason(endpoint_error=None, parsing_failure=False, pagination_budget_exhausted=False) == {"code": "unknown", "message": "unknown"}
+
+
+@pytest.mark.asyncio
+async def test_garments_fetch_complete_records_structured_page_metrics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TdApiClient(
+        store_code="a123",
+        context=None,
+        storage_state_path=tmp_path / "s.json",  # type: ignore[arg-type]
+        config=TdApiClientConfig(min_interval_seconds=0),
+    )
+    responses = iter(
+        [
+            type("_Result", (), {"ok": True, "payload": {"data": [{"orderNo": "G-1"}], "totalPages": 2}, "error": None, "status": 200, "attempts": 1, "latency_ms": 10, "timeout_failures": 0})(),
+            type("_Result", (), {"ok": True, "payload": {"data": [{"orderNo": "G-2"}], "totalPages": 2}, "error": None, "status": 200, "attempts": 1, "latency_ms": 10, "timeout_failures": 0})(),
+        ]
+    )
+
+    async def _fake_get_json(**_: object) -> object:
+        return next(responses)
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+    await client._fetch_endpoint_rows(
+        endpoint="/garments/details",
+        params={"startDate": "2026-01-01", "endDate": "2026-01-02", "page": 1, "pageSize": 500},
+        metadata=[], errors={}, error_diagnostics={}, endpoint_health=endpoint_health,
+    )
+
+    health = endpoint_health["/garments/details"]
+    assert health["garments_fetch_completeness"] == "complete"
+    assert health["garments_incomplete_reason"] is None
+    assert health["garments_attempted_page_count"] == 2
+    assert health["garments_completed_page_count"] == 2
+    assert health["garments_expected_page_count"] == 2
+    assert health["garments_timeout_count"] == 0
+    assert health["garments_retry_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_garments_transient_timeout_recovery_records_retry_metrics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TdApiClient(store_code="a123", context=None, storage_state_path=tmp_path / "s.json", config=TdApiClientConfig(min_interval_seconds=0))  # type: ignore[arg-type]
+
+    async def _fake_get_json(**_: object) -> object:
+        return type("_Result", (), {"ok": True, "payload": {"data": [{"orderNo": "G-1"}], "totalPages": 1}, "error": None, "status": 200, "attempts": 2, "latency_ms": 10, "timeout_failures": 1})()
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+    await client._fetch_endpoint_rows(endpoint="/garments/details", params={"startDate": "2026-01-01", "endDate": "2026-01-02", "page": 1, "pageSize": 500}, metadata=[], errors={}, error_diagnostics={}, endpoint_health=endpoint_health)
+
+    health = endpoint_health["/garments/details"]
+    assert health["garments_fetch_completeness"] == "complete"
+    assert health["garments_timeout_count"] == 1
+    assert health["garments_retry_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_garments_timeout_exhaustion_records_structured_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TdApiClient(store_code="a123", context=None, storage_state_path=tmp_path / "s.json", config=TdApiClientConfig(min_interval_seconds=0, page_size_fallbacks=(), garments_max_timeout_pages=1))  # type: ignore[arg-type]
+
+    async def _fake_get_json(**_: object) -> object:
+        return type("_Result", (), {"ok": False, "payload": None, "error": "read_timeout", "status": None, "attempts": 2, "latency_ms": 10, "timeout_failures": 2})()
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+    await client._fetch_endpoint_rows(endpoint="/garments/details", params={"startDate": "2026-01-01", "endDate": "2026-01-02", "page": 1, "pageSize": 500}, metadata=[], errors={}, error_diagnostics={}, endpoint_health=endpoint_health)
+
+    health = endpoint_health["/garments/details"]
+    assert health["garments_fetch_completeness"] == "incomplete"
+    assert health["garments_incomplete_reason"] == {"code": "endpoint_timeout_after_retry_exhaustion", "message": "endpoint timeout after retry exhaustion"}
+    assert health["garments_attempted_page_count"] == 1
+    assert health["garments_completed_page_count"] == 0
+    assert health["garments_timeout_count"] == 2
+    assert health["garments_retry_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_garments_pagination_budget_exhaustion_records_structured_reason(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = TdApiClient(store_code="a123", context=None, storage_state_path=tmp_path / "s.json", config=TdApiClientConfig(min_interval_seconds=0, max_pages=1))  # type: ignore[arg-type]
+
+    async def _fake_get_json(**_: object) -> object:
+        return type("_Result", (), {"ok": True, "payload": {"data": [{"orderNo": "G-1"}], "totalPages": 3}, "error": None, "status": 200, "attempts": 1, "latency_ms": 10, "timeout_failures": 0})()
+
+    monkeypatch.setattr(client, "_get_json", _fake_get_json)
+    endpoint_health: dict[str, dict[str, object]] = {}
+    await client._fetch_endpoint_rows(endpoint="/garments/details", params={"startDate": "2026-01-01", "endDate": "2026-01-02", "page": 1, "pageSize": 500}, metadata=[], errors={}, error_diagnostics={}, endpoint_health=endpoint_health)
+
+    health = endpoint_health["/garments/details"]
+    assert health["garments_fetch_completeness"] == "incomplete"
+    assert health["garments_incomplete_reason"] == {"code": "pagination_budget_exhausted", "message": "pagination budget exhausted"}
+    assert health["garments_attempted_page_count"] == 1
+    assert health["garments_completed_page_count"] == 1
+    assert health["garments_expected_page_count"] == 3

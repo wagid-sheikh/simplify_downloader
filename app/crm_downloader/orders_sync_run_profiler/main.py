@@ -947,10 +947,17 @@ def _extract_td_garment_warning_from_summary(
         return None
     final_count = orders_store.get("garments_final_row_count")
     budget_state = str(orders_store.get("garments_budget_state") or "").strip() or None
+    reason = _coerce_dict(orders_store.get("garments_incomplete_reason")) or None
     return {
         "garments_fetch_completeness": completeness,
         "garments_final_row_count": final_count,
         "garments_budget_state": budget_state,
+        "garments_incomplete_reason": reason,
+        "garments_attempted_page_count": orders_store.get("garments_attempted_page_count"),
+        "garments_completed_page_count": orders_store.get("garments_completed_page_count"),
+        "garments_expected_page_count": orders_store.get("garments_expected_page_count"),
+        "garments_timeout_count": orders_store.get("garments_timeout_count"),
+        "garments_retry_count": orders_store.get("garments_retry_count"),
         "is_incomplete": completeness == TD_GARMENT_INCOMPLETE_COMPLETENESS,
     }
 
@@ -971,6 +978,12 @@ def _td_garment_warning_entries(window_audit: Iterable[Mapping[str, Any]] | None
                 ),
                 "garments_final_row_count": warning.get("garments_final_row_count"),
                 "garments_budget_state": _sanitize_profiler_window_text(warning.get("garments_budget_state")),
+                "garments_incomplete_reason": _coerce_dict(warning.get("garments_incomplete_reason")) or None,
+                "garments_attempted_page_count": warning.get("garments_attempted_page_count"),
+                "garments_completed_page_count": warning.get("garments_completed_page_count"),
+                "garments_expected_page_count": warning.get("garments_expected_page_count"),
+                "garments_timeout_count": warning.get("garments_timeout_count"),
+                "garments_retry_count": warning.get("garments_retry_count"),
             }
         )
     return entries
@@ -1436,7 +1449,11 @@ def _build_profiler_summary_text(
                 lines.append(
                     "    - "
                     f"{window.get('from_date')} to {window.get('to_date')}: "
-                    f"final_garment_rows={window.get('garments_final_row_count')}"
+                    f"final_garment_rows={window.get('garments_final_row_count')}; "
+                    f"reason={(window.get('garments_incomplete_reason') or {}).get('message', 'unknown')}; "
+                    f"pages={window.get('garments_completed_page_count')}/{window.get('garments_expected_page_count') or '?'} "
+                    f"completed ({window.get('garments_attempted_page_count')} attempted); "
+                    f"timeouts={window.get('garments_timeout_count')}; retries={window.get('garments_retry_count')}"
                 )
         if entry.get("status_conflict_count"):
             lines.append(
@@ -1664,6 +1681,7 @@ async def _run_store_windows(
                         status = TD_GARMENT_INCOMPLETE_STATUS
                     status_note += (
                         " (TD garments_fetch_completeness=incomplete; "
+                        f"reason={(td_garment_warning.get('garments_incomplete_reason') or {}).get('message', 'unknown')}; "
                         "current data incomplete for garment-dependent reports)"
                     )
                     log_event(
@@ -1680,6 +1698,12 @@ async def _run_store_windows(
                         to_date=window_end,
                         garments_final_row_count=td_garment_warning.get("garments_final_row_count"),
                         garments_budget_state=td_garment_warning.get("garments_budget_state"),
+                        garments_incomplete_reason=td_garment_warning.get("garments_incomplete_reason"),
+                        garments_attempted_page_count=td_garment_warning.get("garments_attempted_page_count"),
+                        garments_completed_page_count=td_garment_warning.get("garments_completed_page_count"),
+                        garments_expected_page_count=td_garment_warning.get("garments_expected_page_count"),
+                        garments_timeout_count=td_garment_warning.get("garments_timeout_count"),
+                        garments_retry_count=td_garment_warning.get("garments_retry_count"),
                     )
             if log_row:
                 ingestion_counts = _merge_ingestion_counts(
@@ -2173,6 +2197,7 @@ async def main(
             warning_messages.append(
                 f"{TD_GARMENT_DATA_INCOMPLETE_WARNING_PREFIX}: {result.store_code} had "
                 f"{len(td_garment_warnings)} incomplete garment window(s); "
+                f"reasons={', '.join(sorted({str((warning.get('garments_incomplete_reason') or {}).get('message') or 'unknown') for warning in td_garment_warnings}))}; "
                 "garment-dependent downstream reports may be incomplete"
             )
         warning_messages.extend(
