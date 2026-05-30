@@ -702,8 +702,8 @@ run_step() {
       if is_deterministic_code_error "${attempt_log_file}"; then
         step_end="$(date +%s)"
         duration=$((step_end - step_start))
-        log "ERROR: ${step_name}: failure_class=deterministic_code_failure; deterministic code error detected; failing fast without retries (exit_code=${rc}, duration=${duration}s)."
-        log "ERROR: ${step_name}: retry_skipped_reason=deterministic_code_error"
+        log "ERROR: ${step_name}: failure_class=deterministic_environment_or_cli_error; retry_skipped=true; deterministic code, environment, or CLI error detected; failing fast without retries (exit_code=${rc}, duration=${duration}s)."
+        log "ERROR: ${step_name}: retry_skipped_reason=deterministic_environment_or_cli_error"
         rm -f "${attempt_log_file}" 2>/dev/null || true
         return "${rc}"
       fi
@@ -780,7 +780,7 @@ is_deterministic_code_error() {
   fi
 
   local deterministic_error_pattern
-  deterministic_error_pattern="TypeError|SyntaxError|ImportError|ModuleNotFoundError|UndefinedFunctionError|UndefinedColumnError|psycopg2\\.errors\\.UndefinedFunction|psycopg2\\.errors\\.UndefinedColumn|sqlalchemy\\.exc\\.ProgrammingError|\\bProgrammingError\\b"
+  deterministic_error_pattern="TypeError|SyntaxError|ImportError|ModuleNotFoundError|UndefinedFunctionError|UndefinedColumnError|psycopg2\\.errors\\.UndefinedFunction|psycopg2\\.errors\\.UndefinedColumn|sqlalchemy\\.exc\\.ProgrammingError|\\bProgrammingError\\b|unbound variable|usage: app|error: unrecognized arguments|No such file or directory|Poetry could not find a pyproject\.toml"
 
   if output_matches_pattern "${output_file}" "${deterministic_error_pattern}"; then
     return 0

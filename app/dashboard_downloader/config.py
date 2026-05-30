@@ -1,6 +1,7 @@
 # File: dashboard_downloader/config.py
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
@@ -79,6 +80,60 @@ def global_credentials() -> tuple[str, str]:
 
 def normalize_store_codes(values: Iterable[str]) -> List[str]:
     return sorted({token.strip().upper() for token in values if token and token.strip()})
+
+
+@dataclass(frozen=True)
+class StoreScopeDiagnostics:
+    """Active store codes grouped by dashboard ingestion and reporting flags."""
+
+    etl_enabled_codes: List[str]
+    report_enabled_codes: List[str]
+    report_eligible_codes: List[str]
+
+    @property
+    def etl_enabled_count(self) -> int:
+        return len(self.etl_enabled_codes)
+
+    @property
+    def report_enabled_count(self) -> int:
+        return len(self.report_enabled_codes)
+
+    @property
+    def report_eligible_count(self) -> int:
+        return len(self.report_eligible_codes)
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "etl_enabled_count": self.etl_enabled_count,
+            "report_enabled_count": self.report_enabled_count,
+            "report_eligible_count": self.report_eligible_count,
+            "etl_enabled_codes": self.etl_enabled_codes,
+            "report_enabled_codes": self.report_enabled_codes,
+            "report_eligible_codes": self.report_eligible_codes,
+        }
+
+
+async def fetch_store_scope_diagnostics(*, database_url: str) -> StoreScopeDiagnostics:
+    """Return DB-driven active store scope diagnostics without hardcoded store lists."""
+
+    async with session_scope(database_url) as session:
+        result = await session.execute(
+            sa.select(
+                sa.func.upper(store_master.c.store_code),
+                store_master.c.etl_flag,
+                store_master.c.report_flag,
+            ).where(store_master.c.is_active.is_(True))
+        )
+        rows = list(result)
+
+    etl_enabled_codes = normalize_store_codes(row[0] for row in rows if row[1])
+    report_enabled_codes = normalize_store_codes(row[0] for row in rows if row[2])
+    report_eligible_codes = normalize_store_codes(row[0] for row in rows if row[1] and row[2])
+    return StoreScopeDiagnostics(
+        etl_enabled_codes=etl_enabled_codes,
+        report_enabled_codes=report_enabled_codes,
+        report_eligible_codes=report_eligible_codes,
+    )
 
 
 async def fetch_store_codes(

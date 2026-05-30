@@ -28,7 +28,7 @@ for arg in "$@"; do
 done
 
 echo "[run_local_reports_pending_deliveries] phase=recovery.mark-aged-pending-deliveries"
-poetry run python -m app recovery mark-aged-pending-deliveries --env prod "${recovery_args[@]}"
+poetry run python -m app recovery mark-aged-pending-deliveries --env prod ${recovery_args[@]+"${recovery_args[@]}"}
 
 echo "[run_local_reports_pending_deliveries] pipeline=pending-deliveries mode=read-only"
 exec poetry run python -m app report pending-deliveries --env prod "$@"

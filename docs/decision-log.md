@@ -8,6 +8,15 @@
 
 ---
 
+### DL-021
+- **Date:** 2026-05-30
+- **Status:** Active
+- **Decision:** Keep skipping `repeat_customers` rows missing required `mobile_no`, exclude them from repeat-customer reporting until corrected, and notify operators using store-level skipped-row counts only.
+- **Context:** A missing mobile number breaks the repeat-customer ingest identity, but notification emails must remain actionable without leaking customer-sensitive row data.
+- **Evidence:** `app/dashboard_downloader/config.py`, `app/common/ingest/service.py`, `app/dashboard_downloader/notifications.py`, and `tests/dashboard_downloader/test_notifications.py`.
+- **Implications:** Dashboard data-quality notifications list affected store codes and row counts, instruct operators to correct missing mobile numbers in the source dashboard, and require a dashboard pipeline rerun before corrected rows enter repeat-customer reporting.
+- **Follow-up:** Preserve the safe store-count-only notification boundary if future dashboard data-quality warnings add row-level diagnostics.
+
 ### DL-020
 - **Date:** 2026-05-20
 - **Status:** Active

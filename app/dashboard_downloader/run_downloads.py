@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import errno
 import json
 import random
 from pathlib import Path
@@ -44,7 +45,7 @@ from .config import (
 )
 from .dashboard_scraper import extract_dashboard_summary
 from .settings import GLOBAL_CREDENTIAL_ERROR, PipelineSettings
-from .json_logger import JsonLogger, log_event
+from .json_logger import JsonLogger, log_event, sanitize_log_value
 
 
 DASHBOARD_DOWNLOAD_CONTROL_TIMEOUT_MS = 90_000
@@ -957,20 +958,36 @@ async def _download_one_spec(
             extras={"url": url, **(extras or {})},
         )
 
+    def _safe_error(exc: Exception) -> str:
+        return sanitize_log_value(str(exc))
+
     request = page.context.request
     attempted_refresh = False
 
     def _is_transient_download_error(exc: Exception) -> bool:
-        if isinstance(exc, (TimeoutError, ConnectionError, asyncio.TimeoutError, PlaywrightTimeoutError)):
+        if isinstance(
+            exc, (TimeoutError, ConnectionError, asyncio.TimeoutError, PlaywrightTimeoutError)
+        ):
+            return True
+        if isinstance(exc, OSError) and exc.errno in {
+            errno.ETIMEDOUT,
+            errno.ECONNRESET,
+            errno.ECONNREFUSED,
+        }:
             return True
 
-        err_text = str(exc).lower()
+        # Playwright request failures often surface Node network codes only in the message.
+        err_text = _safe_error(exc).lower()
         transient_markers = (
+            "etimedout",
+            "econnreset",
+            "econnrefused",
             "socket hang up",
+            "read etimedout",
+            "network changed",
             "timeout",
             "timed out",
             "connection reset",
-            "econnreset",
         )
         return any(marker in err_text for marker in transient_markers)
 
@@ -994,15 +1011,13 @@ async def _download_one_spec(
                 response = await request.get(url)
                 break
             except Exception as exc:
-                if not _is_transient_download_error(exc) or attempt >= DOWNLOAD_RETRY_MAX_ATTEMPTS:
-                    if _is_transient_download_error(exc):
-                        retry_diagnostics["retry_count"] = retry_attempts
-                        retry_diagnostics["retry_errors"] = retry_diagnostics["retry_errors"]
+                is_transient = _is_transient_download_error(exc)
+                if not is_transient or attempt >= DOWNLOAD_RETRY_MAX_ATTEMPTS:
                     _log(
                         "error",
                         f"request failed for {spec['key']}",
                         extras={
-                            "error": str(exc),
+                            "error": _safe_error(exc),
                             "error_class": type(exc).__name__,
                             "retry": retry_diagnostics,
                         },
@@ -1015,7 +1030,7 @@ async def _download_one_spec(
                     {
                         "attempt": attempt,
                         "error_class": type(exc).__name__,
-                        "error_message": str(exc),
+                        "error_message": _safe_error(exc),
                     }
                 )
                 _log(
@@ -1027,7 +1042,7 @@ async def _download_one_spec(
                         "attempt": attempt,
                         "max_attempts": DOWNLOAD_RETRY_MAX_ATTEMPTS,
                         "error_class": type(exc).__name__,
-                        "error_message": str(exc),
+                        "error_message": _safe_error(exc),
                     },
                 )
                 await asyncio.sleep(_retry_delay_s(retry_attempts))
@@ -1040,12 +1055,12 @@ async def _download_one_spec(
             status = response.status
         except Exception as exc:  # pragma: no cover - defensive guard
             status = None
-            _log("warning", f"unable to read status for {spec['key']}", extras={"error": str(exc)})
+            _log("warning", f"unable to read status for {spec['key']}", extras={"error": _safe_error(exc)})
 
         try:
             body = await response.body()
         except Exception as exc:
-            _log("error", f"unable to read body for {spec['key']}", extras={"error": str(exc)})
+            _log("error", f"unable to read body for {spec['key']}", extras={"error": _safe_error(exc)})
             body = b""
 
         if status == 200 and body and not _looks_like_login_html_bytes(body):
@@ -1064,7 +1079,7 @@ async def _download_one_spec(
                     _log(
                         "warning",
                         f"unable to delete invalid download for {spec['key']}",
-                        extras={"error": str(exc)},
+                        extras={"error": _safe_error(exc)},
                     )
                 return None, page
             return final_path, page
@@ -1098,7 +1113,7 @@ async def _download_one_spec(
                 page, store_cfg, logger, settings=settings, nav_timeout_ms=nav_timeout_ms
             )
         except Exception as exc:
-            _log("error", f"session refresh failed for {spec['key']}", extras={"error": str(exc)})
+            _log("error", f"session refresh failed for {spec['key']}", extras={"error": _safe_error(exc)})
             return None, page
 
 

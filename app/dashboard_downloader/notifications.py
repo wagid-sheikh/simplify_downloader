@@ -6,6 +6,7 @@ import logging
 import re
 import smtplib
 import socket
+import ssl
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -28,7 +29,10 @@ from app.dashboard_downloader.db_tables import (
     pipelines,
 )
 from app.common.dashboard_store import store_master
-from app.dashboard_downloader.data_quality import format_threshold_breach
+from app.dashboard_downloader.data_quality import (
+    SKIPPED_REQUIRED_ROWS,
+    format_threshold_breach,
+)
 from app.config import config
 from app.reports.upstream import DEGRADED_ORDERS_SYNC_MESSAGE
 
@@ -352,6 +356,46 @@ def _append_orders_sync_degraded_warning(summary_text: str, metrics_payload: Map
         return summary_text
     return f"{summary_text.rstrip()}\n\n{line}" if summary_text else line
 
+REPEAT_CUSTOMERS_MISSING_MOBILE_ACTION = (
+    "Operator action: correct missing mobile numbers in the source dashboard, then "
+    "rerun the dashboard pipeline. These rows are excluded from repeat-customer "
+    "reporting until corrected."
+)
+
+
+def _repeat_customers_missing_mobile_counts(
+    data_quality: Mapping[str, Any],
+) -> dict[str, int]:
+    """Return safe store-level counts without copying customer row payloads into emails."""
+    details_by_code = data_quality.get("details") or {}
+    if not isinstance(details_by_code, Mapping):
+        return {}
+    skipped_groups = details_by_code.get(SKIPPED_REQUIRED_ROWS) or []
+    if not isinstance(skipped_groups, list):
+        return {}
+
+    store_counts: dict[str, int] = {}
+    for group in skipped_groups:
+        if not isinstance(group, Mapping):
+            continue
+        details = group.get("details") or []
+        if not isinstance(details, list):
+            continue
+        for detail in details:
+            if not isinstance(detail, Mapping):
+                continue
+            if (
+                detail.get("bucket") != "repeat_customers"
+                or detail.get("column") != "mobile_no"
+            ):
+                continue
+            store_code = str(detail.get("store_code") or "").strip()
+            count = int(detail.get("count") or 0)
+            if store_code and count > 0:
+                store_counts[store_code] = store_counts.get(store_code, 0) + count
+    return store_counts
+
+
 def _dashboard_data_quality_warning_lines(metrics_payload: Mapping[str, Any]) -> list[str]:
     data_quality = (
         metrics_payload.get("data_quality_warnings")
@@ -369,6 +413,19 @@ def _dashboard_data_quality_warning_lines(metrics_payload: Mapping[str, Any]) ->
             line = str(breach).strip()
         if line and line not in lines:
             lines.append(line)
+
+    store_counts = _repeat_customers_missing_mobile_counts(data_quality)
+    if store_counts:
+        affected_stores = ", ".join(
+            f"{store_code}={count}" for store_code, count in sorted(store_counts.items())
+        )
+        lines.extend(
+            [
+                "repeat_customers rows skipped because mobile_no is missing "
+                f"(affected stores and row counts: {affected_stores})",
+                REPEAT_CUSTOMERS_MISSING_MOBILE_ACTION,
+            ]
+        )
     return lines
 
 
@@ -403,6 +460,7 @@ _TRANSIENT_EXCEPTION_REGISTRY: dict[str, type[BaseException]] = {
     "ConnectionResetError": ConnectionResetError,
     "builtins.ConnectionResetError": ConnectionResetError,
     "socket.gaierror": socket.gaierror,
+    "ssl.SSLEOFError": ssl.SSLEOFError,
     "TimeoutError": TimeoutError,
     "builtins.TimeoutError": TimeoutError,
     "smtplib.SMTPServerDisconnected": smtplib.SMTPServerDisconnected,

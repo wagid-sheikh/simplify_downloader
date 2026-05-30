@@ -4,10 +4,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import time
 from contextlib import contextmanager
 from collections import defaultdict
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional
@@ -15,9 +17,103 @@ from typing import Any, Dict, Iterator, Optional
 LOG_STATUSES = frozenset({"debug", "ok", "info", "warning", "error"})
 DEFAULT_MAX_EVENT_BYTES = max(1024, int(os.getenv("JSON_LOG_MAX_EVENT_BYTES", "65536")))
 
-__all__ = ["LOG_STATUSES", "JsonLogger", "get_logger", "log_event", "timed_event", "new_run_id"]
+__all__ = [
+    "LOG_STATUSES",
+    "JsonLogger",
+    "get_logger",
+    "log_event",
+    "new_run_id",
+    "sanitize_log_value",
+    "timed_event",
+]
 
 STATUS_NORMALIZED_WARNING_TOKEN = "status_normalized:"
+REDACTED_LOG_VALUE = "<redacted>"
+_SENSITIVE_LOG_KEYS = frozenset(
+    {
+        "api_key",
+        "api_token",
+        "authorization",
+        "cookie",
+        "cookies",
+        "csrf",
+        "csrf_token",
+        "jsessionid",
+        "proxy_authorization",
+        "session",
+        "session_id",
+        "session_identifier",
+        "sessionid",
+        "set_cookie",
+        "token",
+        "xsrf",
+        "xsrf_token",
+    }
+)
+_SENSITIVE_TEXT_LABEL = (
+    r"(?:set[-_ ]?cookie|proxy[-_ ]?authorization|authorization|cookies?|"
+    r"jsessionid|session[-_ ]?(?:id|identifier)|session|csrf(?:[-_ ]?token)?|"
+    r"xsrf(?:[-_ ]?token)?|api[-_ ]?(?:key|token)|(?:access|refresh)[-_ ]?token|token)"
+)
+_SENSITIVE_HEADER_PATTERN = re.compile(
+    rf"(?im)^(?P<prefix>\s*{_SENSITIVE_TEXT_LABEL}\s*:\s*).*$"
+)
+_SENSITIVE_QUOTED_VALUE_PATTERN = re.compile(
+    rf"(?i)(?P<prefix>[\"']?{_SENSITIVE_TEXT_LABEL}[\"']?\s*[:=]\s*)"
+    rf"(?P<quote>[\"'])(?P<value>.*?)(?P=quote)"
+)
+_SENSITIVE_UNQUOTED_VALUE_PATTERN = re.compile(
+    rf"(?i)(?P<prefix>\b{_SENSITIVE_TEXT_LABEL}\b\s*[:=]\s*)"
+    r"(?P<value>[^\s,};&]+)"
+)
+_SENSITIVE_QUERY_VALUE_PATTERN = re.compile(
+    rf"(?i)(?P<prefix>[?&]{_SENSITIVE_TEXT_LABEL}=)[^&#\s]+"
+)
+
+
+def _normalized_log_key(key: Any) -> str:
+    with_word_boundaries = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key).strip())
+    return re.sub(r"[^a-z0-9]+", "_", with_word_boundaries.lower()).strip("_")
+
+
+def _is_sensitive_log_key(key: Any) -> bool:
+    normalized = _normalized_log_key(key)
+    return normalized in _SENSITIVE_LOG_KEYS or normalized.endswith("_token")
+
+
+def _sanitize_log_string(value: str) -> str:
+    sanitized = _SENSITIVE_HEADER_PATTERN.sub(
+        lambda match: f"{match.group('prefix')}{REDACTED_LOG_VALUE}", value
+    )
+    sanitized = _SENSITIVE_QUOTED_VALUE_PATTERN.sub(
+        lambda match: f"{match.group('prefix')}{match.group('quote')}"
+        f"{REDACTED_LOG_VALUE}{match.group('quote')}",
+        sanitized,
+    )
+    sanitized = _SENSITIVE_QUERY_VALUE_PATTERN.sub(
+        lambda match: f"{match.group('prefix')}{REDACTED_LOG_VALUE}", sanitized
+    )
+    return _SENSITIVE_UNQUOTED_VALUE_PATTERN.sub(
+        lambda match: f"{match.group('prefix')}{REDACTED_LOG_VALUE}", sanitized
+    )
+
+
+def sanitize_log_value(value: Any) -> Any:
+    """Recursively redact sensitive mapping values and secrets embedded in strings."""
+    if isinstance(value, str):
+        return _sanitize_log_string(value)
+    if isinstance(value, Mapping):
+        return {
+            key: REDACTED_LOG_VALUE if _is_sensitive_log_key(key) else sanitize_log_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [sanitize_log_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(sanitize_log_value(item) for item in value)
+    if isinstance(value, set):
+        return {sanitize_log_value(item) for item in value}
+    return value
 
 
 class StatusNormalizationSuppressionFilter(logging.Filter):
@@ -154,6 +250,7 @@ class JsonLogger:
             self.file_handle.flush()
 
     def _encode_event(self, event: Dict[str, Any]) -> str:
+        event = sanitize_log_value(event)
         encoded = json.dumps(event, default=str, ensure_ascii=False)
         if len(encoded.encode("utf-8")) <= self.max_event_bytes:
             return encoded
@@ -199,7 +296,9 @@ class JsonLogger:
         if self.closed:
             return
         status = self._validate_status(status)
-        payload = {"phase": phase, "status": status, "message": message, **fields}
+        payload = sanitize_log_value(
+            {"phase": phase, "status": status, "message": message, **fields}
+        )
         if not self._passes_filters(payload):
             return
         if self.aggregator:

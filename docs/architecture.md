@@ -64,8 +64,15 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
   - persist run summary,
   - trigger notifications.
 
+#### Repeat-customer missing-mobile data-quality handling
+- `repeat_customers.mobile_no` is required for ingest identity. Rows missing `mobile_no` remain skipped rather than being persisted with an invalid dedupe key.
+- Skipped rows are excluded from repeat-customer reporting until corrected at the source and reingested.
+- Dashboard data-quality notifications expose only affected store codes and skipped-row counts; they must not include customer-sensitive row payloads or mobile numbers.
+- **Operator action:** correct the missing mobile numbers in the source dashboard, then rerun the dashboard pipeline so corrected rows can enter repeat-customer reporting.
+
 ### 4) CRM order-sync pipelines
 - UC sync: `app/crm_downloader/uc_orders_sync/main.py`.
+- UC dashboard readiness is DB-driven through `store_master.sync_config.urls.home`; the current dashboard host is `storepanel.ucleanlaundry.com`. The deprecated `store.ucleanlaundry.com/dashboard` value must be migrated rather than hardcoded as an application fallback.
 - TD sync: `app/crm_downloader/td_orders_sync/main.py`.
 - TD leads sync: `app/crm_downloader/td_leads_sync/main.py`.
 - Shared window logic: `app/crm_downloader/orders_sync_window.py`.
@@ -106,6 +113,8 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 - `app/dashboard_downloader/notifications.py` resolves pipeline run context + docs + templates + recipients from DB.
 - SMTP config values are loaded from `app.config`.
 - Supports diagnostics command (`python -m app notifications test ...`).
+- Supports DB-driven dashboard store-scope diagnostics (`python -m app stores diagnose`)
+  for ETL-enabled, report-enabled, and report-eligible store counts and codes.
 
 ## Request / run flow (high level)
 
@@ -215,6 +224,7 @@ Operational notes:
 
 - Primary auth appears to be service credentials for CRM endpoints and SMTP; no user-facing auth layer in this repo.
 - Sensitive artifacts include storage-state browser cookies, report PDFs, logs, and encrypted DB config values.
+- **Required production remediation:** rotate the exposed dashboard session credentials immediately, invalidate the prior sessions, and remove archived logs containing leaked values or protect them with access controls until secure deletion is complete. JSON logging now redacts sensitive headers, session identifiers, CSRF tokens, and API tokens, but sanitization does not retroactively clean existing archives.
 
 ## Integration points
 

@@ -48,3 +48,39 @@ async def test_load_settings_requires_etl_flagged_stores(monkeypatch):
 
     with pytest.raises(ValueError, match="No stores are flagged for ETL"):
         await settings.load_settings(dry_run=False, run_id="run-1")
+
+
+@pytest.mark.asyncio
+async def test_fetch_store_scope_diagnostics_groups_active_db_store_codes(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from app.dashboard_downloader import config as dashboard_config
+
+    class FakeSession:
+        async def execute(self, statement):
+            return [
+                ("A100", True, False),
+                ("b200", True, True),
+                ("C300", False, True),
+                ("B200", True, True),
+            ]
+
+    @asynccontextmanager
+    async def fake_session_scope(database_url):
+        assert database_url == "postgresql://example"
+        yield FakeSession()
+
+    monkeypatch.setattr(dashboard_config, "session_scope", fake_session_scope)
+
+    diagnostics = await dashboard_config.fetch_store_scope_diagnostics(
+        database_url="postgresql://example"
+    )
+
+    assert diagnostics.as_dict() == {
+        "etl_enabled_count": 2,
+        "report_enabled_count": 2,
+        "report_eligible_count": 1,
+        "etl_enabled_codes": ["A100", "B200"],
+        "report_enabled_codes": ["B200", "C300"],
+        "report_eligible_codes": ["B200"],
+    }

@@ -120,6 +120,7 @@ DEFAULT_REPORT_EMAIL_SEND_MAX_DELAY_SECONDS = 30.0
 DEFAULT_REPORT_EMAIL_SEND_TRANSIENT_EXCEPTIONS = (
     "ConnectionResetError",
     "socket.gaierror",
+    "ssl.SSLEOFError",
     "TimeoutError",
     "smtplib.SMTPServerDisconnected",
     "smtplib.SMTPConnectError",
