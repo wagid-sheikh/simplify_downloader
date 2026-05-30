@@ -229,6 +229,51 @@ async def test_mtd_same_day_report_regenerates_for_same_date_with_previous_summa
 
 
 @pytest.mark.asyncio
+async def test_pending_deliveries_persists_orders_sync_upstream_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _render_paths, _documents, summaries = _install_common_mocks(
+        monkeypatch, pending_pipeline, tmp_path, emails_sent=1
+    )
+
+    async def _fake_data(*_args, **_kwargs):
+        return SimpleNamespace(
+            report_date=REPORT_DATE,
+            summary_sections=[],
+            cost_center_sections=[],
+            total_count=0,
+            total_pending_amount=0,
+        )
+
+    monkeypatch.setattr(pending_pipeline, "fetch_pending_deliveries_report", _fake_data)
+    monkeypatch.setattr(pending_pipeline, "render_html", lambda _context: "html")
+
+    await pending_pipeline._run(
+        report_date=REPORT_DATE,
+        env="test",
+        force=False,
+        orders_sync_upstream_status="FAILED",
+        orders_sync_upstream_run_id="orders-run-1",
+    )
+
+    assert summaries
+    final_record = summaries[-1]
+    assert final_record["metrics_json"]["orders_sync_upstream_status"] == "failed"
+    assert final_record["metrics_json"]["orders_sync_upstream_run_id"] == "orders-run-1"
+    assert final_record["metrics_json"]["orders_sync_is_degraded"] is True
+    assert final_record["metrics_json"]["orders_sync_upstream"] == {
+        "status": "failed",
+        "run_id": "orders-run-1",
+        "is_degraded": True,
+        "warning_text": "Orders sync failed before this report; data may be stale.",
+    }
+    assert "Upstream orders sync: status=failed, run_id=orders-run-1." in final_record["summary_text"]
+    assert "Orders sync failed before this report; data may be stale." in final_record["summary_text"]
+    assert final_record["phases_json"]["upstream_orders_sync"]["warning"] == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("emails_sent,expected_previous_status", [(1, "ok"), (0, "warning")])
 async def test_pending_deliveries_report_regenerates_for_same_date_with_previous_summary(
     tmp_path: Path,
