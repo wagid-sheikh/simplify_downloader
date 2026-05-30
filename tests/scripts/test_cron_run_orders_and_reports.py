@@ -95,6 +95,171 @@ def test_pending_deliveries_wrapper_runs_with_zero_recovery_args_under_strict_sh
     ]
 
 
+_CRON_UPSTREAM_ARGS = (
+    "--orders-sync-upstream-status",
+    "success_with_warnings",
+    "--orders-sync-upstream-run-id",
+    "profiler-cron-smoke",
+)
+
+
+def _run_report_wrapper_through_app(
+    tmp_path: Path, wrapper_name: str, *args: str
+) -> tuple[subprocess.CompletedProcess[str], list[dict[str, object]]]:
+    bin_dir = tmp_path / "bin"
+    python_path = tmp_path / "pythonpath"
+    bin_dir.mkdir()
+    python_path.mkdir()
+    invocation_log = tmp_path / "report-adapter-invocations.jsonl"
+
+    _write_executable(
+        bin_dir / "poetry",
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "[[ \"$1\" == \"run\" ]]\n"
+        "shift\n"
+        "exec \"$@\"\n",
+    )
+    (python_path / "sitecustomize.py").write_text(
+        """
+import json
+import os
+from pathlib import Path
+
+from app.recovery import main as recovery_main
+from app.reports.daily_sales_report import pipeline as daily_pipeline
+from app.reports.pending_deliveries import pipeline as pending_pipeline
+
+
+def _record(pipeline, **kwargs):
+    path = Path(os.environ["REPORT_ADAPTER_INVOCATION_LOG"])
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"pipeline": pipeline, **kwargs}, default=str) + "\\n")
+
+
+async def _fake_recovery_run(report_date, env):
+    _record("recovery", report_date=report_date, env=env)
+
+
+async def _fake_pending_run(
+    report_date,
+    env,
+    force,
+    orders_sync_upstream_status=None,
+    orders_sync_upstream_run_id=None,
+):
+    _record(
+        "pending-deliveries",
+        report_date=report_date,
+        env=env,
+        force=force,
+        orders_sync_upstream_status=orders_sync_upstream_status,
+        orders_sync_upstream_run_id=orders_sync_upstream_run_id,
+    )
+
+
+async def _fake_daily_run(
+    report_date,
+    env,
+    force,
+    orders_sync_upstream_status=None,
+    orders_sync_upstream_run_id=None,
+):
+    _record(
+        "daily-sales",
+        report_date=report_date,
+        env=env,
+        force=force,
+        orders_sync_upstream_status=orders_sync_upstream_status,
+        orders_sync_upstream_run_id=orders_sync_upstream_run_id,
+    )
+
+
+recovery_main._run = _fake_recovery_run
+pending_pipeline._run = _fake_pending_run
+daily_pipeline._run = _fake_daily_run
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "PYTHONPATH": os.pathsep.join(
+                filter(None, [str(python_path), str(Path.cwd()), env.get("PYTHONPATH")])
+            ),
+            "REPORT_ADAPTER_INVOCATION_LOG": str(invocation_log),
+        }
+    )
+    result = subprocess.run(
+        [str(Path("scripts") / wrapper_name), *args],
+        cwd=Path.cwd(),
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    invocations = (
+        [json.loads(line) for line in invocation_log.read_text(encoding="utf-8").splitlines()]
+        if invocation_log.exists()
+        else []
+    )
+    return result, invocations
+
+
+def _assert_wrapper_smoke_succeeded(result: subprocess.CompletedProcess[str]) -> None:
+    output = f"{result.stdout}\n{result.stderr}"
+    assert result.returncode == 0, output
+    assert "TypeError" not in output
+    assert "usage: app" not in output
+    assert "unrecognized arguments" not in output
+    assert "unbound variable" not in output
+
+
+def test_pending_deliveries_wrapper_reaches_async_pipeline_with_cron_upstream_args(
+    tmp_path: Path,
+) -> None:
+    result, invocations = _run_report_wrapper_through_app(
+        tmp_path, "run_local_reports_pending_deliveries.sh", *_CRON_UPSTREAM_ARGS
+    )
+
+    _assert_wrapper_smoke_succeeded(result)
+    assert [invocation["pipeline"] for invocation in invocations] == [
+        "recovery",
+        "pending-deliveries",
+    ]
+    pending_invocation = invocations[1]
+    assert pending_invocation.pop("report_date")
+    assert pending_invocation == {
+        "pipeline": "pending-deliveries",
+        "env": "prod",
+        "force": False,
+        "orders_sync_upstream_status": "success_with_warnings",
+        "orders_sync_upstream_run_id": "profiler-cron-smoke",
+    }
+
+
+def test_daily_sales_wrapper_reaches_async_pipeline_with_cron_upstream_args(
+    tmp_path: Path,
+) -> None:
+    result, invocations = _run_report_wrapper_through_app(
+        tmp_path, "run_local_reports_daily_sales.sh", *_CRON_UPSTREAM_ARGS
+    )
+
+    _assert_wrapper_smoke_succeeded(result)
+    assert len(invocations) == 1
+    daily_invocation = invocations[0]
+    assert daily_invocation.pop("report_date")
+    assert daily_invocation == {
+        "pipeline": "daily-sales",
+        "env": "prod",
+        "force": False,
+        "orders_sync_upstream_status": "success_with_warnings",
+        "orders_sync_upstream_run_id": "profiler-cron-smoke",
+    }
+
+
 def test_pending_deliveries_cron_path_always_regenerates_without_force_gate() -> None:
     cron_source = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
     local_pending_source = Path("scripts/run_local_reports_pending_deliveries.sh").read_text(
