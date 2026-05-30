@@ -6,6 +6,8 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 def _write_executable(path: Path, body: str) -> None:
     path.write_text(body, encoding="utf-8")
@@ -108,6 +110,16 @@ def test_pending_deliveries_cron_path_always_regenerates_without_force_gate() ->
     assert "pending-deliveries --env prod" in local_pending_source
     assert '${recovery_args[@]+"${recovery_args[@]}"}' in local_pending_source
     assert '--env prod "${recovery_args[@]}"' not in local_pending_source
+
+
+def test_cron_marks_environment_and_cli_errors_as_deterministic() -> None:
+    cron_source = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
+
+    assert "unbound variable" in cron_source
+    assert "usage: app" in cron_source
+    assert "error: unrecognized arguments" in cron_source
+    assert "No such file or directory" in cron_source
+    assert "Poetry could not find a pyproject\\.toml" in cron_source
 
 
 def test_cron_returns_non_zero_when_daily_fails_even_if_rescue_succeeds(tmp_path: Path) -> None:
@@ -243,9 +255,9 @@ def test_cron_fail_fast_on_deterministic_code_error(tmp_path: Path) -> None:
     log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
     assert log_files
     log_text = log_files[-1].read_text(encoding="utf-8")
-    assert "deterministic code error detected; failing fast without retries" in log_text
-    assert "retry_skipped_reason=deterministic_code_error" in log_text
-    assert "failure_class=deterministic_code_failure" in log_text
+    assert "deterministic code, environment, or CLI error detected; failing fast without retries" in log_text
+    assert "retry_skipped_reason=deterministic_environment_or_cli_error" in log_text
+    assert "failure_class=deterministic_environment_or_cli_error; retry_skipped=true" in log_text
     assert "attempt 2/4 starting" not in log_text
 
 
@@ -509,6 +521,78 @@ exit 0
     assert "tcp_connectivity_preflight_succeeded" not in log_text
 
 
+@pytest.mark.parametrize(
+    "failure_output",
+    [
+        "./scripts/orders_sync_run_profiler.sh: line 4: REQUIRED_PATH: unbound variable",
+        "usage: app [-h]\\napp: error: unrecognized arguments: --obsolete-option",
+    ],
+    ids=["unbound-variable", "argparse-unrecognized-arguments"],
+)
+def test_cron_does_not_retry_deterministic_environment_or_cli_errors(
+    tmp_path: Path, failure_output: str
+) -> None:
+    repo_root = tmp_path
+    scripts_dir = repo_root / "scripts"
+    logs_dir = repo_root / "logs"
+    tmp_dir = repo_root / "tmp"
+    scripts_dir.mkdir(parents=True)
+    logs_dir.mkdir()
+    tmp_dir.mkdir()
+
+    source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
+    _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
+    _write_successful_preflight(scripts_dir)
+    _write_executable(
+        scripts_dir / "orders_sync_run_profiler.sh",
+        "#!/usr/bin/env bash\n"
+        "COUNT_FILE=\"${TMPDIR:-/tmp}/orders-call-count\"\n"
+        "count=0\n"
+        "[[ -f \"${COUNT_FILE}\" ]] && count=$(cat \"${COUNT_FILE}\")\n"
+        "count=$((count + 1))\n"
+        "printf '%s' \"${count}\" > \"${COUNT_FILE}\"\n"
+        f"printf '%b\\n' '{failure_output}' >&2\n"
+        "exit 1\n",
+    )
+    _write_executable(
+        scripts_dir / "run_local_reports_pending_deliveries.sh", "#!/usr/bin/env bash\nexit 0\n"
+    )
+    _write_executable(
+        scripts_dir / "run_local_reports_daily_sales.sh", "#!/usr/bin/env bash\nexit 0\n"
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "3",
+            "ORDERS_RETRY_DELAY_SECONDS": "0",
+            "ORDERS_RETRY_JITTER_SECONDS": "0",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "TMPDIR": str(tmp_path),
+        }
+    )
+
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert (tmp_path / "orders-call-count").read_text(encoding="utf-8") == "1"
+
+    log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
+    assert log_files
+    log_text = log_files[-1].read_text(encoding="utf-8")
+    assert "failure_class=deterministic_environment_or_cli_error; retry_skipped=true" in log_text
+    assert "Script 1: orders_sync_run_profiler: attempt 2/3 starting" not in log_text
+
+
 def test_cron_retries_transient_orders_profiler_failure(tmp_path: Path) -> None:
     repo_root = tmp_path
     scripts_dir = repo_root / "scripts"
@@ -529,7 +613,7 @@ count=0
 [[ -f "${COUNT_FILE}" ]] && count=$(cat "${COUNT_FILE}")
 count=$((count + 1))
 printf '%s' "${count}" > "${COUNT_FILE}"
-if [[ "${count}" -eq 1 ]]; then
+if [[ "${count}" -le 2 ]]; then
   echo 'playwright._impl._errors.TimeoutError: Navigation timeout of 30000 ms exceeded' >&2
   exit 1
 fi
@@ -543,9 +627,11 @@ exit 0
     env = os.environ.copy()
     env.update(
         {
-            "ORDERS_MAX_ATTEMPTS": "2",
-            "ORDERS_RETRY_DELAY_SECONDS": "0",
+            "ORDERS_MAX_ATTEMPTS": "3",
+            "ORDERS_RETRY_DELAY_SECONDS": "1",
             "ORDERS_RETRY_JITTER_SECONDS": "0",
+            "ORDERS_RETRY_BACKOFF_MULTIPLIER": "2",
+            "ORDERS_RETRY_MAX_DELAY_SECONDS": "2",
             "DAILY_MAX_ATTEMPTS": "1",
             "PENDING_MAX_ATTEMPTS": "1",
             "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
@@ -563,14 +649,16 @@ exit 0
     )
 
     assert result.returncode == 0
-    assert (tmp_path / "orders-call-count").read_text(encoding="utf-8") == "2"
+    assert (tmp_path / "orders-call-count").read_text(encoding="utf-8") == "3"
 
     log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
     assert log_files
     log_text = log_files[-1].read_text(encoding="utf-8")
     assert "failure_class=transient_playwright_navigation_failure" in log_text
     assert "transient Playwright/navigation failure detected" in log_text
-    assert "Script 1: orders_sync_run_profiler: attempt 2/2 starting" in log_text
+    assert "sleeping 1s before retry (base_delay_seconds=1, jitter_seconds=0, next_base_delay_seconds=2)" in log_text
+    assert "sleeping 2s before retry (base_delay_seconds=2, jitter_seconds=0, next_base_delay_seconds=4)" in log_text
+    assert "Script 1: orders_sync_run_profiler: attempt 3/3 starting" in log_text
     assert "orders_sync_run_profiler_rc=0" in log_text
 
 
@@ -629,8 +717,8 @@ exit 1
     log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
     assert log_files
     log_text = log_files[-1].read_text(encoding="utf-8")
-    assert "failure_class=deterministic_code_failure" in log_text
-    assert "retry_skipped_reason=deterministic_code_error" in log_text
+    assert "failure_class=deterministic_environment_or_cli_error; retry_skipped=true" in log_text
+    assert "retry_skipped_reason=deterministic_environment_or_cli_error" in log_text
     assert "Script 1: orders_sync_run_profiler: attempt 2/3 starting" not in log_text
 
 
