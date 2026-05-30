@@ -9,4 +9,8 @@
 # UC_ONLY=1 exec poetry run python -m app.crm_downloader.orders_sync_run_profiler.main "$@"
 export ORDERS_SYNC_PROFILER_DB_POOL_SIZE="${ORDERS_SYNC_PROFILER_DB_POOL_SIZE:-8}"
 export ORDERS_SYNC_PROFILER_DB_MAX_OVERFLOW="${ORDERS_SYNC_PROFILER_DB_MAX_OVERFLOW:-4}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+"${SCRIPT_DIR}/orders_sync_connectivity_preflight.sh"
+
 exec poetry run python -m app.crm_downloader.orders_sync_run_profiler.main "$@"

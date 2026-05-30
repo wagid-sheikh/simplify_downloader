@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.dashboard_downloader.data_quality import SKIPPED_REQUIRED_ROWS, threshold_for
 from app.dashboard_downloader.json_logger import JsonLogger, log_event
 
 from ..db import session_scope
@@ -77,7 +78,7 @@ def _load_csv_rows(
     logger: JsonLogger | None = None,
     *,
     row_context: Dict[str, Any] | None = None,
-    skip_counters: Dict[tuple[str, str], int] | None = None,
+    skip_counters: Dict[tuple[str, str, str, str], int] | None = None,
 ) -> Iterable[Dict[str, Any]]:
     total_rows = 0
     coerced_rows = 0
@@ -86,23 +87,25 @@ def _load_csv_rows(
     suppressed_failures = 0
     failure_logs_emitted = 0
 
-    def emit_summary(message: str = "csv ingest summary", *, status: str | None = None) -> None:
+    def emit_summary(
+        message: str = "csv ingest summary", *, status: str | None = None
+    ) -> None:
         if not logger:
             return
-            log_event(
-                logger=logger,
-                phase="ingest",
-                status=status or ("warning" if failed_rows else "info"),
-                bucket=bucket,
-                merged_file=str(csv_path),
-                counts={
-                    "total_rows": total_rows,
-                    "coerced_rows": coerced_rows,
-                    "failed_rows": failed_rows,
-                    "skipped_rows": skipped_rows,
-                },
-                message=message,
-            )
+        log_event(
+            logger=logger,
+            phase="ingest",
+            status=status or ("warning" if failed_rows else "info"),
+            bucket=bucket,
+            merged_file=str(csv_path),
+            counts={
+                "total_rows": total_rows,
+                "coerced_rows": coerced_rows,
+                "failed_rows": failed_rows,
+                "skipped_rows": skipped_rows,
+            },
+            message=message,
+        )
 
     if not csv_path.exists():
         emit_summary("csv file not found")
@@ -174,7 +177,11 @@ def _load_csv_rows(
                             if isinstance(report_date, date):
                                 report_date = report_date.isoformat()
                             report_date_text = str(report_date or "")
-                            skip_counters[(store_code, report_date_text)] += 1
+                            missing_columns = exc.missing_columns or ["required_field"]
+                            for column in missing_columns:
+                                skip_counters[
+                                    (bucket, column, store_code, report_date_text)
+                                ] += 1
                         continue
                     except ValueError as exc:
                         failed_rows += 1
@@ -413,7 +420,7 @@ async def ingest_bucket(
     totals = {"rows": 0, "deduped_rows": 0}
     ingested_by_store: Dict[str, int] = defaultdict(int)
     row_context = {"run_id": run_id, "run_date": run_date}
-    skipped_missing_mobile: Dict[tuple[str, str], int] = defaultdict(int)
+    skipped_required_rows: Dict[tuple[str, str, str, str], int] = defaultdict(int)
     store_counts: Dict[str, int] | None = None
     if bucket == "missed_leads":
         store_counts = defaultdict(int)
@@ -425,7 +432,7 @@ async def ingest_bucket(
                     csv_path,
                     logger,
                     row_context=row_context,
-                    skip_counters=skipped_missing_mobile,
+                    skip_counters=skipped_required_rows,
                 ),
                 batch_size,
             ):
@@ -472,13 +479,23 @@ async def ingest_bucket(
         message="ingestion complete",
     )
 
-    if bucket == "missed_leads" and skipped_missing_mobile:
+    if skipped_required_rows:
         entries = []
         details = []
-        for (store_code, report_date), count in sorted(skipped_missing_mobile.items()):
-            entries.append(f"{store_code}-{report_date}-{count}")
+        total_skipped_required = 0
+        for (bucket_name, column, store_code, report_date), count in sorted(
+            skipped_required_rows.items()
+        ):
+            total_skipped_required += count
+            entries.append(f"{bucket_name}/{column}/{store_code}-{report_date}-{count}")
             details.append(
-                {"store_code": store_code, "report_date": report_date, "count": count}
+                {
+                    "bucket": bucket_name,
+                    "column": column,
+                    "store_code": store_code,
+                    "report_date": report_date,
+                    "count": count,
+                }
             )
 
         log_event(
@@ -486,13 +503,22 @@ async def ingest_bucket(
             phase="ingest",
             bucket=bucket,
             merged_file=str(csv_path),
-            status="info",
+            status=(
+                "warning"
+                if total_skipped_required >= threshold_for(SKIPPED_REQUIRED_ROWS)
+                else "info"
+            ),
             message=(
-                "missed_leads rows skipped due to missing mobile_number: "
+                "rows skipped due to missing required values: "
                 + ", ".join(entries)
             ),
-            skipped_missing_mobile=details,
+            skipped_required_rows={
+                "total": total_skipped_required,
+                "details": details,
+            },
         )
+        totals["skipped_required_rows"] = total_skipped_required
+        totals["skipped_required_row_details"] = details
     if store_counts is not None:
         totals["store_rows"] = dict(store_counts)
     return totals

@@ -67,7 +67,7 @@ def test_load_csv_rows_counts_missing_mobile(tmp_path: Path):
         encoding="utf-8",
     )
 
-    skip_counters: defaultdict[tuple[str, str], int] = defaultdict(int)
+    skip_counters: defaultdict[tuple[str, str, str, str], int] = defaultdict(int)
 
     rows = list(
         service._load_csv_rows(
@@ -81,7 +81,7 @@ def test_load_csv_rows_counts_missing_mobile(tmp_path: Path):
 
     assert len(rows) == 1
     assert rows[0]["mobile_number"] == "9999"
-    assert dict(skip_counters) == {("A001", "2024-01-01"): 2}
+    assert dict(skip_counters) == {("missed_leads", "mobile_number", "A001", "2024-01-01"): 2}
 
 
 @pytest.mark.asyncio
@@ -98,6 +98,10 @@ async def test_ingest_bucket_logs_missing_mobile_summary(monkeypatch, tmp_path: 
 
     @asynccontextmanager
     async def fake_session_scope(database_url):
+        class _DummyResult:
+            def __iter__(self):
+                return iter([("A001", 1)])
+
         class _DummySession:
             async def __aenter__(self):
                 return self
@@ -108,11 +112,14 @@ async def test_ingest_bucket_logs_missing_mobile_summary(monkeypatch, tmp_path: 
             def begin(self):
                 return self
 
+            async def execute(self, _stmt):
+                return _DummyResult()
+
         yield _DummySession()
 
     ingested_batches: list[list[dict]] = []
 
-    async def fake_upsert_batch(session, bucket, rows):
+    async def fake_upsert_batch(session, bucket, rows, **_kwargs):
         ingested_batches.append(rows)
         return {"affected_rows": len(rows), "deduped_rows": len(rows)}
 
@@ -137,7 +144,9 @@ async def test_ingest_bucket_logs_missing_mobile_summary(monkeypatch, tmp_path: 
         run_date=date(2024, 1, 1),
     )
 
-    assert totals == {"rows": 1, "deduped_rows": 1}
+    assert totals["rows"] == 1
+    assert totals["deduped_rows"] == 1
+    assert totals["skipped_required_rows"] == 2
     assert len(ingested_batches) == 1
     assert len(ingested_batches[0]) == 1
     ingested_row = ingested_batches[0][0]
@@ -150,10 +159,20 @@ async def test_ingest_bucket_logs_missing_mobile_summary(monkeypatch, tmp_path: 
     summary_events = [
         event
         for event in events
-        if "skipped_missing_mobile" in event
-        and "missing mobile_number" in event.get("message", "")
+        if "skipped_required_rows" in event
+        and "missing required values" in event.get("message", "")
     ]
     assert summary_events, "expected summary event for missing mobile numbers"
-    assert summary_events[0]["skipped_missing_mobile"] == [
-        {"store_code": "A001", "report_date": "2024-01-01", "count": 2}
-    ]
+    assert summary_events[0]["status"] == "warning"
+    assert summary_events[0]["skipped_required_rows"] == {
+        "total": 2,
+        "details": [
+            {
+                "bucket": "missed_leads",
+                "column": "mobile_number",
+                "store_code": "A001",
+                "report_date": "2024-01-01",
+                "count": 2,
+            }
+        ],
+    }

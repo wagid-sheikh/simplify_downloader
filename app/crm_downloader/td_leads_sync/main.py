@@ -2722,6 +2722,17 @@ async def main(
             notification_errors=notification_result.get("errors"),
         )
 
+    overall_status = summary.overall_status()
+    if overall_status == "failed":
+        log_event(
+            logger=logger,
+            phase="finalize",
+            status="error",
+            message="TD leads run failed; exiting with non-zero status",
+            run_id=resolved_run_id,
+            overall_status=overall_status,
+        )
+        raise SystemExit(1)
 
 
 def _build_parser() -> argparse.ArgumentParser:

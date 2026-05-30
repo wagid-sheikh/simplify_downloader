@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import logging
+import re
 import smtplib
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -25,6 +26,7 @@ from app.dashboard_downloader.db_tables import (
     pipelines,
 )
 from app.common.dashboard_store import store_master
+from app.dashboard_downloader.data_quality import format_threshold_breach
 from app.config import config
 
 logger = logging.getLogger(__name__)
@@ -269,6 +271,62 @@ class EmailPlan:
     bcc: list[str]
     attachments: list[Path]
     body_html: str | None = None
+
+
+@dataclass
+class EmailSendFailure:
+    profile_code: str
+    store_code: str | None
+    recipient_count: int
+    recipients: list[str]
+    exception_type: str
+    exception_summary: str
+
+
+@dataclass
+class EmailSendResult:
+    sent: bool
+    failure: EmailSendFailure | None = None
+
+    def __bool__(self) -> bool:
+        return self.sent
+
+
+
+def _dashboard_data_quality_warning_lines(metrics_payload: Mapping[str, Any]) -> list[str]:
+    data_quality = (
+        metrics_payload.get("data_quality_warnings")
+        if isinstance(metrics_payload, Mapping)
+        else None
+    )
+    if not isinstance(data_quality, Mapping):
+        return []
+    breaches = data_quality.get("breaches") or []
+    lines: list[str] = []
+    for breach in breaches:
+        if isinstance(breach, Mapping):
+            line = format_threshold_breach(breach)
+        else:
+            line = str(breach).strip()
+        if line and line not in lines:
+            lines.append(line)
+    return lines
+
+
+def _append_dashboard_data_quality_warnings(
+    summary_text: str, metrics_payload: Mapping[str, Any]
+) -> str:
+    warning_lines = _dashboard_data_quality_warning_lines(metrics_payload)
+    if not warning_lines:
+        return summary_text
+    block = "Dashboard data quality warnings:\n" + "\n".join(
+        f"- {line}" for line in warning_lines
+    )
+    if not summary_text:
+        return block
+    if "Dashboard data quality warnings:" in summary_text:
+        return summary_text
+    return f"{summary_text.rstrip()}\n\n{block}"
 
 
 def _load_smtp_config() -> SmtpConfig:
@@ -1426,7 +1484,49 @@ def _build_store_plans(
     return plans
 
 
-def _send_email(config: SmtpConfig, plan: EmailPlan) -> bool:
+def _mask_email_address(email: str) -> str:
+    """Return a recipient identifier useful for triage without exposing full addresses."""
+
+    local, separator, domain = str(email).partition("@")
+    if not separator:
+        return "<redacted>"
+    if not local or len(local) == 1:
+        masked_local = "*"
+    else:
+        masked_local = f"{local[0]}***"
+    return f"{masked_local}@{domain}"
+
+
+def _sanitize_exception_summary(
+    exc: Exception, *, config: SmtpConfig, recipients: Sequence[str]
+) -> str:
+    summary = f"{type(exc).__name__}: {exc}"
+    sensitive_values = [config.username, config.password, config.sender, *recipients]
+    for value in sensitive_values:
+        if value:
+            summary = summary.replace(str(value), "<redacted>")
+    summary = re.sub(
+        r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+        "<redacted-email>",
+        summary,
+    )
+    return summary[:500]
+
+
+def _email_send_failure(
+    config: SmtpConfig, plan: EmailPlan, recipients: Sequence[str], exc: Exception
+) -> EmailSendFailure:
+    return EmailSendFailure(
+        profile_code=plan.profile_code,
+        store_code=plan.store_code,
+        recipient_count=len(recipients),
+        recipients=[_mask_email_address(recipient) for recipient in recipients],
+        exception_type=type(exc).__name__,
+        exception_summary=_sanitize_exception_summary(exc, config=config, recipients=recipients),
+    )
+
+
+def _send_email(config: SmtpConfig, plan: EmailPlan) -> EmailSendResult:
     message = EmailMessage()
     message["Subject"] = plan.subject
     message["From"] = config.sender
@@ -1450,7 +1550,15 @@ def _send_email(config: SmtpConfig, plan: EmailPlan) -> bool:
         )
     recipients = _unique(plan.to + plan.cc + plan.bcc)
     if not recipients:
-        return False
+        failure = EmailSendFailure(
+            profile_code=plan.profile_code,
+            store_code=plan.store_code,
+            recipient_count=0,
+            recipients=[],
+            exception_type="NoRecipients",
+            exception_summary="No recipients resolved for notification email",
+        )
+        return EmailSendResult(sent=False, failure=failure)
     try:
         if config.use_tls:
             with smtplib.SMTP(config.host, config.port, timeout=SMTP_CONNECT_TIMEOUT_SECONDS) as client:
@@ -1463,13 +1571,15 @@ def _send_email(config: SmtpConfig, plan: EmailPlan) -> bool:
                 if config.username and config.password:
                     client.login(config.username, config.password)
                 client.send_message(message, to_addrs=recipients)
-        return True
-    except Exception:
+        return EmailSendResult(sent=True)
+    except Exception as exc:
         logger.exception(
             "failed to send notification email",
             extra={"profile": plan.profile_code, "store_code": plan.store_code},
         )
-        return False
+        return EmailSendResult(
+            sent=False, failure=_email_send_failure(config, plan, recipients, exc)
+        )
 
 
 def _build_email_plans(
@@ -2867,7 +2977,13 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[st
         "report_date": run_data.get("report_date").isoformat() if run_data.get("report_date") else "",
         "overall_status": run_data.get("overall_status"),
         "total_time_taken": run_data.get("total_time_taken") or duration_human,
-        "summary_text": run_data.get("summary_text", ""),
+        "summary_text": _append_dashboard_data_quality_warnings(
+            str(run_data.get("summary_text", "") or ""), metrics_payload
+        ),
+        "dashboard_data_quality_warnings": _dashboard_data_quality_warning_lines(metrics_payload),
+        "dashboard_data_quality_warnings_text": "\n".join(
+            _dashboard_data_quality_warning_lines(metrics_payload)
+        ),
         "summary_html": metrics_payload.get("summary_html") or "",
         "lead_tables_html": metrics_payload.get("lead_tables_html") or "",
         "metrics_json": metrics_payload,
@@ -2929,8 +3045,37 @@ async def send_notifications_for_run(pipeline_name: str, run_id: str) -> dict[st
 
     sent = 0
     for plan in plans:
-        if _send_email(smtp_config, plan):
+        send_result = _send_email(smtp_config, plan)
+        # Keep compatibility with tests or callers that monkeypatch _send_email to
+        # the legacy bool contract while production returns structured details.
+        if isinstance(send_result, bool):
+            if send_result:
+                sent += 1
+            else:
+                recipients = _unique(plan.to + plan.cc + plan.bcc)
+                result["errors"].append(
+                    {
+                        "profile_code": plan.profile_code,
+                        "store_code": plan.store_code,
+                        "recipient_count": len(recipients),
+                        "recipients": [
+                            _mask_email_address(recipient) for recipient in recipients
+                        ],
+                        "exception_type": "SendFailed",
+                        "exception_summary": "Notification email send failed",
+                    }
+                )
+            continue
+
+        if send_result.sent:
             sent += 1
+        elif send_result.failure:
+            result["errors"].append(send_result.failure.__dict__)
+
+    if len(plans) > sent and not result["errors"]:
+        result["errors"].append(
+            f"notification dispatch incomplete: emails_planned={len(plans)} emails_sent={sent}"
+        )
     result["emails_sent"] = sent
     result["emails_planned"] = len(plans)
     logger.info(
@@ -2971,7 +3116,13 @@ async def diagnose_notification_run(pipeline_name: str, run_id: str) -> list[str
         "report_date": run_data.get("report_date").isoformat() if run_data.get("report_date") else "",
         "overall_status": run_data.get("overall_status"),
         "total_time_taken": run_data.get("total_time_taken") or duration_human,
-        "summary_text": run_data.get("summary_text", ""),
+        "summary_text": _append_dashboard_data_quality_warnings(
+            str(run_data.get("summary_text", "") or ""), metrics_payload
+        ),
+        "dashboard_data_quality_warnings": _dashboard_data_quality_warning_lines(metrics_payload),
+        "dashboard_data_quality_warnings_text": "\n".join(
+            _dashboard_data_quality_warning_lines(metrics_payload)
+        ),
         "summary_html": metrics_payload.get("summary_html") or "",
         "lead_tables_html": metrics_payload.get("lead_tables_html") or "",
         "metrics_json": metrics_payload,
