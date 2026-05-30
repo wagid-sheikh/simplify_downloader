@@ -18,6 +18,49 @@ from app.reports.shared.short_payments import ShortPaymentRow
 REPORT_DATE = date(2026, 4, 29)
 
 
+@pytest.mark.parametrize("module", [daily_pipeline, pending_pipeline])
+def test_operational_report_public_adapter_forwards_cron_upstream_context_to_async_run(
+    monkeypatch: pytest.MonkeyPatch, module
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    async def _fake_run(
+        report_date,
+        env,
+        force,
+        orders_sync_upstream_status=None,
+        orders_sync_upstream_run_id=None,
+    ) -> None:
+        captured.append(
+            {
+                "report_date": report_date,
+                "env": env,
+                "force": force,
+                "orders_sync_upstream_status": orders_sync_upstream_status,
+                "orders_sync_upstream_run_id": orders_sync_upstream_run_id,
+            }
+        )
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+
+    module.run_pipeline(
+        report_date=REPORT_DATE,
+        env="prod",
+        orders_sync_upstream_status="success_with_warnings",
+        orders_sync_upstream_run_id="profiler-cron-smoke",
+    )
+
+    assert captured == [
+        {
+            "report_date": REPORT_DATE,
+            "env": "prod",
+            "force": False,
+            "orders_sync_upstream_status": "success_with_warnings",
+            "orders_sync_upstream_run_id": "profiler-cron-smoke",
+        }
+    ]
+
+
 def _install_common_mocks(monkeypatch: pytest.MonkeyPatch, module, tmp_path: Path, emails_sent: int) -> tuple[list[Path], list[dict], list[dict]]:
     render_paths: list[Path] = []
     documents: list[dict] = []
