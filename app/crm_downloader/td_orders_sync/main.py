@@ -1030,6 +1030,9 @@ class StoreReport:
     edited_rows_count: int | None = None
     duplicate_rows_count: int | None = None
     garment_reconciliation: dict[str, Any] = field(default_factory=dict)
+    garments_fetch_completeness: str | None = None
+    garments_final_row_count: int | None = None
+    garments_budget_state: str | None = None
     compare_metrics: dict[str, Any] = field(default_factory=dict)
     api_request_metadata: list[dict[str, Any]] = field(default_factory=list)
     auth_diagnostics: dict[str, Any] = field(default_factory=dict)
@@ -1066,6 +1069,9 @@ class StoreReport:
             "edited_rows_count": self.edited_rows_count,
             "duplicate_rows_count": self.duplicate_rows_count,
             "garment_reconciliation": dict(self.garment_reconciliation),
+            "garments_fetch_completeness": self.garments_fetch_completeness,
+            "garments_final_row_count": self.garments_final_row_count,
+            "garments_budget_state": self.garments_budget_state,
             "compare_metrics": dict(self.compare_metrics),
             "api_request_metadata": list(self.api_request_metadata),
             "auth_diagnostics": dict(self.auth_diagnostics),
@@ -1753,6 +1759,9 @@ class TdOrdersDiscoverySummary:
                 "dropped_rows_count": None,
                 "edited_rows_count": None,
                 "duplicate_rows_count": None,
+                "garments_fetch_completeness": None,
+                "garments_final_row_count": None,
+                "garments_budget_state": None,
                 "warnings": [],
                 "warning_rows": [],
                 "dropped_rows": [],
@@ -1779,6 +1788,9 @@ class TdOrdersDiscoverySummary:
             "dropped_rows_count": report.dropped_rows_count,
             "edited_rows_count": report.edited_rows_count,
             "duplicate_rows_count": report.duplicate_rows_count,
+            "garments_fetch_completeness": report.garments_fetch_completeness,
+            "garments_final_row_count": report.garments_final_row_count,
+            "garments_budget_state": report.garments_budget_state,
             "message": report.message,
             "error_message": report.error_message,
             "warnings": list(report.warnings),
@@ -7797,6 +7809,9 @@ async def _run_store_discovery(
                         garments_completeness = str(garments_health.get("garments_fetch_completeness") or "unknown")
                         garments_budget_state = str(garments_health.get("garments_budget_state") or "within_budget")
                         garments_final_rows = int(garments_health.get("garments_final_row_count") or len(api_fetch_result.garments_rows))
+                        orders_report.garments_fetch_completeness = garments_completeness
+                        orders_report.garments_final_row_count = garments_final_rows
+                        orders_report.garments_budget_state = garments_budget_state
                         if garments_budget_state == "near_limit" and garments_completeness == "complete":
                             _append_unique_warning(
                                 orders_report,

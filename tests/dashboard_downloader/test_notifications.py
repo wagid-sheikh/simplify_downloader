@@ -223,7 +223,6 @@ def test_unified_context_contract_for_uc_orders() -> None:
     assert context["optional_notes_block"]
 
 
-
 def test_store_scope_td_uc_allows_global_recipient_without_documents() -> None:
     profile = {"code": "store_reports", "scope": "store", "attach_mode": "per_store_pdf"}
     template = {"subject_template": "{{ store_code }}", "body_template": "{{ store_name }}"}
@@ -381,6 +380,57 @@ def test_profiler_context_and_html_include_failed_window_reason() -> None:
     assert "Page.goto: net::ERR_CERT_DATE_INVALID" in body_html
     assert "status_note=window execution failed" in body_html
 
+
+def test_profiler_context_and_html_include_td_garment_warning_details() -> None:
+    run_data = {
+        "run_id": "profiler-run-td",
+        "run_env": "test",
+        "report_date": "2024-02-02",
+        "overall_status": "success_with_warnings",
+        "summary_text": "Orders Sync Profiler Run Summary",
+        "started_at": "2024-02-02T05:00:00+00:00",
+        "finished_at": "2024-02-02T05:01:00+00:00",
+        "metrics_json": {
+            "notification_payload": {
+                "overall_status": "success_with_warnings",
+                "warnings": ["TD_GARMENT_WARNINGS: TD01 had 1 incomplete garment window(s)"],
+                "window_summary": {"completed_windows": 1, "expected_windows": 1, "missing_windows": 0},
+                "stores": [
+                    {
+                        "store_code": "TD01",
+                        "pipeline_name": "td_orders_sync",
+                        "status": "success_with_warnings",
+                        "window_count": 1,
+                        "td_garment_warning_count": 1,
+                        "td_garment_incomplete_windows": [
+                            {
+                                "store_code": "TD01",
+                                "from_date": "2024-02-01",
+                                "to_date": "2024-02-02",
+                                "garments_fetch_completeness": "incomplete",
+                                "garments_final_row_count": 17,
+                                "garments_budget_state": "near_limit",
+                            }
+                        ],
+                        "primary_metrics": {},
+                        "secondary_metrics": {},
+                    }
+                ],
+            }
+        },
+    }
+
+    context = _build_profiler_context(run_data)
+    html_context = dict(context)
+    html_context.update({"run_id": "profiler-run-td", "run_env": "test", "report_date": "2024-02-02"})
+    body_html = _render_template(PROFILER_HTML_TEMPLATE, html_context)
+
+    assert context["td_garment_warning_count"] == 1
+    assert context["td_garment_warning_details"][0]["store_code"] == "TD01"
+    assert context["td_garment_warning_details"][0]["garments_final_row_count"] == 17
+    assert context["stores"][0]["td_garment_incomplete_windows"][0]["from_date"] == "2024-02-01"
+    assert "TD garments incomplete 2024-02-01 to 2024-02-02" in body_html
+    assert "final garment rows=17" in body_html
 
 def test_send_email_uses_bounded_smtp_timeout(monkeypatch) -> None:
     from app.dashboard_downloader import notifications

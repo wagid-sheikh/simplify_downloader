@@ -897,6 +897,54 @@ def _extract_ingestion_counts_from_summary(
     }
 
 
+def _extract_td_garment_warning_from_summary(
+    summary: Mapping[str, Any] | None, *, store_code: str
+) -> dict[str, Any] | None:
+    if not summary:
+        return None
+    metrics = _coerce_dict(summary.get("metrics_json"))
+    if not metrics:
+        return None
+    normalized_code = store_code.upper()
+    orders_store = _coerce_dict(
+        _coerce_dict(_coerce_dict(metrics.get("orders")).get("stores")).get(normalized_code)
+    )
+    if not orders_store:
+        return None
+    completeness = str(orders_store.get("garments_fetch_completeness") or "").strip().lower()
+    if not completeness:
+        return None
+    final_count = orders_store.get("garments_final_row_count")
+    budget_state = str(orders_store.get("garments_budget_state") or "").strip() or None
+    return {
+        "garments_fetch_completeness": completeness,
+        "garments_final_row_count": final_count,
+        "garments_budget_state": budget_state,
+        "is_incomplete": completeness == "incomplete",
+    }
+
+
+def _td_garment_warning_entries(window_audit: Iterable[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for window in window_audit or []:
+        warning = _coerce_dict(window.get("td_garment_warning"))
+        if not warning or not warning.get("is_incomplete"):
+            continue
+        entries.append(
+            {
+                "store_code": _sanitize_profiler_window_text(window.get("store_code")),
+                "from_date": _sanitize_profiler_window_text(window.get("from_date")),
+                "to_date": _sanitize_profiler_window_text(window.get("to_date")),
+                "garments_fetch_completeness": _sanitize_profiler_window_text(
+                    warning.get("garments_fetch_completeness")
+                ),
+                "garments_final_row_count": warning.get("garments_final_row_count"),
+                "garments_budget_state": _sanitize_profiler_window_text(warning.get("garments_budget_state")),
+            }
+        )
+    return entries
+
+
 def _extract_uc_warning_count_from_summary(
     summary: Mapping[str, Any] | None, *, store_code: str
 ) -> int:
@@ -1304,6 +1352,15 @@ def _build_profiler_summary_text(
                 if window["error_message"]:
                     details.append(f"error_message={window['error_message']}")
                 lines.append(f"    - {window_range}: " + "; ".join(details))
+        td_garment_warnings = entry.get("td_garment_incomplete_windows") or []
+        if td_garment_warnings:
+            lines.append("  td_garment_incomplete_windows:")
+            for window in td_garment_warnings:
+                lines.append(
+                    "    - "
+                    f"{window.get('from_date')} to {window.get('to_date')}: "
+                    f"final_garment_rows={window.get('garments_final_row_count')}"
+                )
         if entry.get("status_conflict_count"):
             lines.append(
                 f"  warning: {entry['status_conflict_count']} window(s) skipped but rows present"
@@ -1422,6 +1479,7 @@ async def _run_store_windows(
         ingestion_counts: dict[str, Any] = {}
         uc_payload: dict[str, Any] | None = None
         uc_warning_count = 0
+        td_garment_warning: dict[str, Any] | None = None
         status_conflict = False
         attempts = 0
         attempt_run_id = window_run_id
@@ -1510,6 +1568,29 @@ async def _run_store_windows(
             summary_ingestion_counts = _extract_ingestion_counts_from_summary(
                 summary, store_code=store.store_code, pipeline_name=pipeline_name
             )
+            if pipeline_name == "td_orders_sync":
+                td_garment_warning = _extract_td_garment_warning_from_summary(
+                    summary, store_code=store.store_code
+                )
+                if td_garment_warning and td_garment_warning.get("is_incomplete"):
+                    if status == "success":
+                        status = "success_with_warnings"
+                    status_note += " (TD garments_fetch_completeness=incomplete)"
+                    log_event(
+                        logger=logger,
+                        phase="window",
+                        status="warning",
+                        message="TD garment fetch incomplete for profiler window",
+                        store_code=store.store_code,
+                        pipeline_name=pipeline_name,
+                        run_id=attempt_run_id,
+                        window_index=index,
+                        window_attempt=attempts,
+                        from_date=window_start,
+                        to_date=window_end,
+                        garments_final_row_count=td_garment_warning.get("garments_final_row_count"),
+                        garments_budget_state=td_garment_warning.get("garments_budget_state"),
+                    )
             if log_row:
                 ingestion_counts = _merge_ingestion_counts(
                     _extract_ingestion_counts_from_log(log_row, pipeline_name=pipeline_name),
@@ -1553,6 +1634,8 @@ async def _run_store_windows(
                     "download_paths": download_paths,
                     "ingestion_counts": ingestion_counts,
                     "orders_sync_log_id": log_row.get("id") if log_row else None,
+                    "td_garment_warning": td_garment_warning,
+                    "warning_count": 1 if td_garment_warning and td_garment_warning.get("is_incomplete") else 0,
                 }
             )
             if not fetched_status:
@@ -1604,6 +1687,7 @@ async def _run_store_windows(
         window_audit.append(
             {
                 "window_index": index,
+                "store_code": store.store_code,
                 "from_date": window_start.isoformat(),
                 "to_date": window_end.isoformat(),
                 "status": status,
@@ -1617,7 +1701,12 @@ async def _run_store_windows(
                 "attempt_run_id": attempt_run_id,
                 "orders_sync_log_id": log_row.get("id") if log_row else None,
                 "attempts": attempt_audit,
-                "warning_count": uc_payload["warning_count"] if pipeline_name == "uc_orders_sync" and uc_payload else 0,
+                "td_garment_warning": td_garment_warning,
+                "warning_count": (
+                    uc_payload["warning_count"]
+                    if pipeline_name == "uc_orders_sync" and uc_payload
+                    else (1 if td_garment_warning and td_garment_warning.get("is_incomplete") else 0)
+                ),
             }
         )
         if pipeline_name == "uc_orders_sync":
@@ -1934,6 +2023,12 @@ async def main(
         pipeline_entry["window_count"] += result.window_count
         _merge_status_counts(pipeline_entry["status_counts"], result.status_counts)
         _accumulate_ingestion_totals(pipeline_entry["ingestion_totals"], {"total": result.ingestion_totals})
+        status_conflicts = [
+            window
+            for window in result.window_audit
+            if window.get("status_conflict")
+        ]
+        td_garment_warnings = _td_garment_warning_entries(result.window_audit)
         store_totals[result.store_code] = {
             "pipeline_group": result.pipeline_group,
             "pipeline_name": result.pipeline_name,
@@ -1944,15 +2039,18 @@ async def main(
             "status_counts": result.status_counts,
             "window_audit": result.window_audit,
             "ingestion_totals": result.ingestion_totals,
+            "td_garment_warning_count": len(td_garment_warnings),
+            "td_garment_incomplete_windows": td_garment_warnings,
         }
-        status_conflicts = [
-            window
-            for window in result.window_audit
-            if window.get("status_conflict")
-        ]
+        for warning in td_garment_warnings:
+            warning["store_code"] = result.store_code
         if status_conflicts:
             warning_messages.append(
                 f"{result.store_code}: {len(status_conflicts)} window(s) skipped but rows present"
+            )
+        if td_garment_warnings:
+            warning_messages.append(
+                f"TD_GARMENT_WARNINGS: {result.store_code} had {len(td_garment_warnings)} incomplete garment window(s)"
             )
         warning_messages.extend(
             _window_warning_entries(result.store_code, result.status_counts)
@@ -1981,6 +2079,8 @@ async def main(
                 "status_counts": result.status_counts,
                 "window_audit": result.window_audit,
                 "status_conflict_count": len(status_conflicts),
+                "td_garment_warning_count": len(td_garment_warnings),
+                "td_garment_incomplete_windows": td_garment_warnings,
                 "primary_metrics": primary_metrics,
                 "secondary_metrics": secondary_metrics,
             }
