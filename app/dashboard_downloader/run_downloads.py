@@ -44,7 +44,7 @@ from .config import (
 )
 from .dashboard_scraper import extract_dashboard_summary
 from .settings import GLOBAL_CREDENTIAL_ERROR, PipelineSettings
-from .json_logger import JsonLogger, log_event
+from .json_logger import JsonLogger, log_event, sanitize_log_value
 
 
 DASHBOARD_DOWNLOAD_CONTROL_TIMEOUT_MS = 90_000
@@ -957,6 +957,9 @@ async def _download_one_spec(
             extras={"url": url, **(extras or {})},
         )
 
+    def _safe_error(exc: Exception) -> str:
+        return sanitize_log_value(str(exc))
+
     request = page.context.request
     attempted_refresh = False
 
@@ -964,7 +967,7 @@ async def _download_one_spec(
         if isinstance(exc, (TimeoutError, ConnectionError, asyncio.TimeoutError, PlaywrightTimeoutError)):
             return True
 
-        err_text = str(exc).lower()
+        err_text = _safe_error(exc).lower()
         transient_markers = (
             "socket hang up",
             "timeout",
@@ -1002,7 +1005,7 @@ async def _download_one_spec(
                         "error",
                         f"request failed for {spec['key']}",
                         extras={
-                            "error": str(exc),
+                            "error": _safe_error(exc),
                             "error_class": type(exc).__name__,
                             "retry": retry_diagnostics,
                         },
@@ -1015,7 +1018,7 @@ async def _download_one_spec(
                     {
                         "attempt": attempt,
                         "error_class": type(exc).__name__,
-                        "error_message": str(exc),
+                        "error_message": _safe_error(exc),
                     }
                 )
                 _log(
@@ -1027,7 +1030,7 @@ async def _download_one_spec(
                         "attempt": attempt,
                         "max_attempts": DOWNLOAD_RETRY_MAX_ATTEMPTS,
                         "error_class": type(exc).__name__,
-                        "error_message": str(exc),
+                        "error_message": _safe_error(exc),
                     },
                 )
                 await asyncio.sleep(_retry_delay_s(retry_attempts))
@@ -1040,12 +1043,12 @@ async def _download_one_spec(
             status = response.status
         except Exception as exc:  # pragma: no cover - defensive guard
             status = None
-            _log("warning", f"unable to read status for {spec['key']}", extras={"error": str(exc)})
+            _log("warning", f"unable to read status for {spec['key']}", extras={"error": _safe_error(exc)})
 
         try:
             body = await response.body()
         except Exception as exc:
-            _log("error", f"unable to read body for {spec['key']}", extras={"error": str(exc)})
+            _log("error", f"unable to read body for {spec['key']}", extras={"error": _safe_error(exc)})
             body = b""
 
         if status == 200 and body and not _looks_like_login_html_bytes(body):
@@ -1064,7 +1067,7 @@ async def _download_one_spec(
                     _log(
                         "warning",
                         f"unable to delete invalid download for {spec['key']}",
-                        extras={"error": str(exc)},
+                        extras={"error": _safe_error(exc)},
                     )
                 return None, page
             return final_path, page
@@ -1098,7 +1101,7 @@ async def _download_one_spec(
                 page, store_cfg, logger, settings=settings, nav_timeout_ms=nav_timeout_ms
             )
         except Exception as exc:
-            _log("error", f"session refresh failed for {spec['key']}", extras={"error": str(exc)})
+            _log("error", f"session refresh failed for {spec['key']}", extras={"error": _safe_error(exc)})
             return None, page
 
 

@@ -121,5 +121,44 @@ async def test_download_one_spec_emits_single_final_error_with_retry_metadata(mo
     assert len(retry_meta["retry_errors"]) == 2
 
 
+@pytest.mark.asyncio
+async def test_download_one_spec_redacts_playwright_request_headers_from_jsonl(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.dashboard_downloader.run_downloads.DATA_DIR", tmp_path)
+
+    stream = io.StringIO()
+    logger = JsonLogger(run_id="run-redaction", stream=stream, log_file_path=None)
+    settings = PipelineSettings(run_id="run-redaction", stores={}, raw_store_env="")
+    playwright_error = Exception(
+        "APIRequestContext.get: request failed\n"
+        "cookie: dashboard-session-secret\n"
+        "authorization: Bearer dashboard-auth-secret"
+    )
+    page = _FakePage([playwright_error])
+    store_cfg = {"store_code": "A100"}
+    spec = {
+        "key": "repeat_customers",
+        "url_template": "https://example.com/file?store_code={sc}",
+        "out_name_template": "{sc}-repeat.csv",
+    }
+
+    saved_path, _ = await _download_one_spec(
+        page,
+        store_cfg,
+        spec,
+        logger=logger,
+        nav_timeout_ms=100,
+        settings=settings,
+    )
+
+    assert saved_path is None
+    output = stream.getvalue()
+    assert "dashboard-session-secret" not in output
+    assert "dashboard-auth-secret" not in output
+    assert output.count("<redacted>") == 2
+    event = json.loads(output)
+    assert event["message"] == "request failed for repeat_customers"
+    assert event["extras"]["error"].count("<redacted>") == 2
+
+
 async def _noop():
     return None
