@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from app.config import Config, ConfigError, _build_database_url
+from app.config import (
+    DEFAULT_REPORT_EMAIL_SEND_MAX_ATTEMPTS,
+    DEFAULT_REPORT_EMAIL_SEND_TRANSIENT_EXCEPTIONS,
+    Config,
+    ConfigError,
+    _build_database_url,
+)
 from app.crypto import encrypt_secret
 
 
@@ -124,6 +130,10 @@ def test_config_loads_expected_values(monkeypatch, tmp_path):
     assert cfg.td_global_password == "change-me-global-password"
     assert cfg.report_email_smtp_port == 587
     assert cfg.report_email_use_tls is True
+    assert DEFAULT_REPORT_EMAIL_SEND_MAX_ATTEMPTS > 1
+    assert cfg.report_email_send_max_attempts == DEFAULT_REPORT_EMAIL_SEND_MAX_ATTEMPTS
+    assert "ssl.SSLEOFError" in DEFAULT_REPORT_EMAIL_SEND_TRANSIENT_EXCEPTIONS
+    assert "ssl.SSLEOFError" in cfg.report_email_send_transient_exceptions
     assert cfg.pdf_render_headless is True
     assert cfg.report_email_smtp_password == "change-me-smtp-password"
     assert cfg.pdf_render_chrome_executable is None
