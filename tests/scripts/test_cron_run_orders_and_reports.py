@@ -816,3 +816,57 @@ def test_orders_sync_observability_reports_unknown_when_no_profiler_summary_foun
     assert "orders_sync_profiler_run_id=profiler-no-summary" in log_text
     assert "orders_sync_overall_status=unknown" in log_text
     assert "orders_sync_failed_stores=[]" in log_text
+
+
+def test_pending_deliveries_wrapper_keeps_upstream_args_out_of_recovery(tmp_path: Path) -> None:
+    repo_root = tmp_path
+    scripts_dir = repo_root / "scripts"
+    fake_bin = repo_root / "bin"
+    scripts_dir.mkdir(parents=True)
+    fake_bin.mkdir()
+
+    wrapper_source = Path("scripts/run_local_reports_pending_deliveries.sh").read_text(encoding="utf-8")
+    _write_executable(scripts_dir / "run_local_reports_pending_deliveries.sh", wrapper_source)
+    _write_executable(
+        fake_bin / "poetry",
+        "#!/usr/bin/env bash\n"
+        "printf '%s\n' \"$*\" >> \"${TMPDIR}/poetry-args.log\"\n"
+        "exit 0\n",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{fake_bin}:{env.get('PATH', '')}",
+            "TMPDIR": str(tmp_path),
+        }
+    )
+
+    result = subprocess.run(
+        [
+            str(scripts_dir / "run_local_reports_pending_deliveries.sh"),
+            "--report-date",
+            "2026-04-29",
+            "--orders-sync-upstream-status",
+            "failed",
+            "--orders-sync-upstream-run-id",
+            "orders-run-1",
+        ],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    args_lines = (tmp_path / "poetry-args.log").read_text(encoding="utf-8").splitlines()
+    assert len(args_lines) == 2
+    recovery_args, report_args = args_lines
+    assert "recovery mark-aged-pending-deliveries" in recovery_args
+    assert "--report-date 2026-04-29" in recovery_args
+    assert "--orders-sync-upstream-status" not in recovery_args
+    assert "--orders-sync-upstream-run-id" not in recovery_args
+    assert "report pending-deliveries" in report_args
+    assert "--orders-sync-upstream-status failed" in report_args
+    assert "--orders-sync-upstream-run-id orders-run-1" in report_args
