@@ -482,6 +482,78 @@ def test_send_email_uses_bounded_smtp_timeout(monkeypatch) -> None:
     assert captured["timeout"] == notifications.SMTP_CONNECT_TIMEOUT_SECONDS
 
 
+def test_send_email_retries_connection_reset_during_starttls_then_succeeds(monkeypatch) -> None:
+    from app.dashboard_downloader import notifications
+    from app.dashboard_downloader.notifications import (
+        EmailPlan,
+        NotificationSendRetryConfig,
+        SmtpConfig,
+        _send_email,
+    )
+
+    attempts = {"starttls": 0, "send": 0}
+
+    class FlakyStartTlsSMTP:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def starttls(self):
+            attempts["starttls"] += 1
+            if attempts["starttls"] == 1:
+                raise ConnectionResetError("connection reset during TLS negotiation")
+
+        def login(self, _username, _password):
+            return None
+
+        def send_message(self, _message, to_addrs):
+            attempts["send"] += 1
+            assert to_addrs == ["ops@example.test"]
+
+    monkeypatch.setattr(notifications.smtplib, "SMTP", FlakyStartTlsSMTP)
+    monkeypatch.setattr(
+        notifications,
+        "_load_notification_send_retry_config",
+        lambda: NotificationSendRetryConfig(
+            max_attempts=2,
+            initial_delay_seconds=0,
+            max_delay_seconds=0,
+            transient_exception_types=(ConnectionResetError,),
+        ),
+    )
+
+    result = _send_email(
+        SmtpConfig(
+            host="smtp.example.test",
+            port=587,
+            sender="sender@example.test",
+            username="smtp-user",
+            password="secret-token",
+            use_tls=True,
+        ),
+        EmailPlan(
+            profile_code="run_summary",
+            scope="run",
+            store_code=None,
+            subject="Subject",
+            body="Body",
+            to=["ops@example.test"],
+            cc=[],
+            bcc=[],
+            attachments=[],
+        ),
+    )
+
+    assert attempts == {"starttls": 2, "send": 1}
+    assert result.sent is True
+    assert result.failure is None
+
+
 @pytest.mark.asyncio
 async def test_send_notifications_records_smtp_exception(monkeypatch) -> None:
     from app.dashboard_downloader import notifications

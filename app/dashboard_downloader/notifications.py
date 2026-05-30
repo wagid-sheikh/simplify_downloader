@@ -400,6 +400,8 @@ def _load_smtp_config() -> SmtpConfig:
 
 
 _TRANSIENT_EXCEPTION_REGISTRY: dict[str, type[BaseException]] = {
+    "ConnectionResetError": ConnectionResetError,
+    "builtins.ConnectionResetError": ConnectionResetError,
     "socket.gaierror": socket.gaierror,
     "TimeoutError": TimeoutError,
     "builtins.TimeoutError": TimeoutError,
