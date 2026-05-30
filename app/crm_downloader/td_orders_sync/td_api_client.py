@@ -29,6 +29,14 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT_ERROR_CLASSES = {"read_timeout", "connect_timeout", "total_timeout", "network_timeout", "timeout", "TimeoutError", "PlaywrightError"}
 _GARMENTS_WALL_TIME_SOFT_THRESHOLD_RATIO = 0.9
+_GARMENTS_INCOMPLETE_REASON_MESSAGES = {
+    "pagination_budget_exhausted": "pagination budget exhausted",
+    "endpoint_timeout_after_retry_exhaustion": "endpoint timeout after retry exhaustion",
+    "endpoint_error": "endpoint error",
+    "response_parsing_failure": "response parsing failure",
+    "orphaned_parent_order_relationship": "orphaned parent-order relationship",
+    "unknown": "unknown",
+}
 
 _SUMMARY_MARKERS = ("total", "summary", "grand total")
 _LABEL_LIKE_FIELD_SIGNALS = ("label", "name", "title", "description", "remark", "note", "particular")
@@ -47,6 +55,40 @@ _STABLE_TRANSACTION_ID_FIELDS = (
     "paymentid",
     "payment_id",
 )
+
+
+def _build_garments_incomplete_reason(
+    *,
+    endpoint_error: str | None,
+    parsing_failure: bool,
+    pagination_budget_exhausted: bool,
+) -> dict[str, str] | None:
+    """Normalize low-level garment API failures into an operator-facing reason contract."""
+    if pagination_budget_exhausted or endpoint_error == "garments_wall_time_budget_cutoff":
+        code = "pagination_budget_exhausted"
+    elif endpoint_error in _TIMEOUT_ERROR_CLASSES or endpoint_error == "garments_timeout_budget_exhausted":
+        code = "endpoint_timeout_after_retry_exhaustion"
+    elif parsing_failure:
+        code = "response_parsing_failure"
+    elif endpoint_error:
+        code = "endpoint_error"
+    else:
+        code = "unknown"
+    return {"code": code, "message": _GARMENTS_INCOMPLETE_REASON_MESSAGES[code]}
+
+
+def _has_unparseable_rows_payload(payload: Any, rows: list[dict[str, Any]]) -> bool:
+    """Detect non-empty response containers that the supported row parser cannot consume."""
+    if rows or not isinstance(payload, Mapping):
+        return False
+    for key in ("data", "items", "results", "rows", "records"):
+        if key not in payload:
+            continue
+        value = payload[key]
+        if value in (None, [], {}):
+            return False
+        return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -160,6 +202,7 @@ class _JsonFetchResult:
     attempts: int = 0
     auth_shape: str = "legacy"
     latency_ms: int | None = None
+    timeout_failures: int = 0
 
 
 @dataclass(frozen=True)
@@ -575,6 +618,8 @@ class TdApiClient:
         garments_fetch_message = "TD garments fetch completeness could not be determined"
         garments_expected_total_rows: int | None = None
         garments_unique_row_ids: set[str] = set()
+        garments_response_parsing_failure = False
+        garments_pagination_budget_exhausted = False
         last_successful_page = page - 1
 
         logger.info(
@@ -603,6 +648,7 @@ class TdApiClient:
                 budget_ms = int(self.config.garments_max_wall_time_ms)
                 if elapsed_wall_time_ms >= budget_ms:
                     garments_degraded_reason = "garments_wall_time_budget_cutoff"
+                    garments_pagination_budget_exhausted = True
                     garments_budget_state = "cutoff"
                     errors[endpoint] = garments_degraded_reason
                     remaining_pages_estimate = _estimate_remaining_pages(
@@ -651,12 +697,14 @@ class TdApiClient:
             endpoint_attempts += max(int(page_result.attempts or 0), 0)
             endpoint_pages_attempted += 1
             endpoint_retry_count += max(int(page_result.attempts or 0) - 1, 0)
-            if page_result.error in _TIMEOUT_ERROR_CLASSES:
+            endpoint_timeout_count += max(int(getattr(page_result, "timeout_failures", 0) or 0), 0)
+            if page_result.error in _TIMEOUT_ERROR_CLASSES and not getattr(page_result, "timeout_failures", 0):
                 endpoint_timeout_count += 1
             if is_garments_endpoint:
                 garments_pages_attempted += 1
                 garments_retry_count += max(int(page_result.attempts or 0) - 1, 0)
-                if page_result.error in _TIMEOUT_ERROR_CLASSES:
+                garments_timeout_count += max(int(getattr(page_result, "timeout_failures", 0) or 0), 0)
+                if page_result.error in _TIMEOUT_ERROR_CLASSES and not getattr(page_result, "timeout_failures", 0):
                     garments_timeout_count += 1
                 if page_result.ok:
                     garments_pages_succeeded += 1
@@ -809,6 +857,9 @@ class TdApiClient:
                 break
 
             rows = _extract_rows(page_payload)
+            if is_garments_endpoint and _has_unparseable_rows_payload(page_payload, rows):
+                garments_response_parsing_failure = True
+                errors[endpoint] = "garments_response_parsing_failure"
             last_successful_page = page
             if fallback_used:
                 fallback_successes += 1
@@ -932,6 +983,11 @@ class TdApiClient:
             if total_rows_hint is not None and cumulative_rows >= total_rows_hint:
                 break
             if page >= self.config.max_pages:
+                if is_garments_endpoint:
+                    garments_pagination_budget_exhausted = True
+                    garments_degraded_reason = "garments_pagination_budget_exhausted"
+                    garments_budget_state = "cutoff"
+                    errors[endpoint] = garments_degraded_reason
                 logger.warning(
                     "TD API max page cap reached before dataset completion",
                     extra={
@@ -989,6 +1045,20 @@ class TdApiClient:
                 {
                     "garments_budget_state": garments_budget_state,
                     "garments_fetch_completeness": garments_completion,
+                    "garments_incomplete_reason": (
+                        _build_garments_incomplete_reason(
+                            endpoint_error=errors.get(endpoint),
+                            parsing_failure=garments_response_parsing_failure,
+                            pagination_budget_exhausted=garments_pagination_budget_exhausted,
+                        )
+                        if garments_completion == "incomplete"
+                        else None
+                    ),
+                    "garments_attempted_page_count": garments_pages_attempted,
+                    "garments_completed_page_count": garments_pages_succeeded,
+                    "garments_expected_page_count": total_pages_hint,
+                    "garments_timeout_count": garments_timeout_count,
+                    "garments_retry_count": garments_retry_count,
                     "garments_expected_total_rows": garments_expected_total_rows,
                     "garments_fetched_unique_row_ids": len(garments_unique_row_ids),
                     "garments_final_row_count": cumulative_rows,
@@ -1073,7 +1143,7 @@ class TdApiClient:
             )
 
             partial_fetch_error = errors.get(endpoint)
-            if partial_fetch_error in {"garments_wall_time_budget_cutoff", "garments_timeout_budget_exhausted"}:
+            if partial_fetch_error in {"garments_wall_time_budget_cutoff", "garments_timeout_budget_exhausted", "garments_pagination_budget_exhausted"}:
                 self._increment_metric(
                     name="garments_partial_fetch_runs",
                     endpoint=endpoint,
@@ -1540,6 +1610,7 @@ class TdApiClient:
                     attempts=cumulative_attempts,
                     auth_shape=shape_result.auth_shape,
                     latency_ms=shape_result.latency_ms,
+                    timeout_failures=shape_result.timeout_failures,
                 )
 
             logger.info(
@@ -1563,6 +1634,7 @@ class TdApiClient:
             attempts=cumulative_attempts,
             auth_shape=(shape_last_result.auth_shape if shape_last_result else "legacy"),
             latency_ms=(shape_last_result.latency_ms if shape_last_result else None),
+            timeout_failures=(shape_last_result.timeout_failures if shape_last_result else 0),
         )
 
     async def _execute_json_request_shape(
@@ -1740,7 +1812,7 @@ class TdApiClient:
                             "timeout_diagnostics": timeout_diagnostics,
                         },
                     )
-                    return _JsonFetchResult(ok=True, payload=payload, status=status_code, attempts=attempts, auth_shape=auth_shape.name, latency_ms=latency_ms)
+                    return _JsonFetchResult(ok=True, payload=payload, status=status_code, attempts=attempts, auth_shape=auth_shape.name, latency_ms=latency_ms, timeout_failures=timeout_failures)
                 if status_code not in {408, 429, 500, 502, 503, 504}:
                     return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code, attempts=attempts, auth_shape=auth_shape.name, latency_ms=latency_ms)
                 last_error = RuntimeError(f"HTTP {status_code} from {endpoint}")
@@ -1838,13 +1910,13 @@ class TdApiClient:
                 break
 
         if status_code is not None:
-            return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code, attempts=attempts, auth_shape=auth_shape.name)
+            return _JsonFetchResult(ok=False, payload=None, error=f"http_{status_code}", status=status_code, attempts=attempts, auth_shape=auth_shape.name, timeout_failures=timeout_failures)
         if last_error:
             message = str(last_error)
             if message in {"connect_timeout", "read_timeout", "total_timeout"}:
-                return _JsonFetchResult(ok=False, payload=None, error=message, status=None, attempts=attempts, auth_shape=auth_shape.name)
-            return _JsonFetchResult(ok=False, payload=None, error=type(last_error).__name__, status=None, attempts=attempts, auth_shape=auth_shape.name)
-        return _JsonFetchResult(ok=False, payload=None, error="unknown_error", status=None, attempts=attempts, auth_shape=auth_shape.name)
+                return _JsonFetchResult(ok=False, payload=None, error=message, status=None, attempts=attempts, auth_shape=auth_shape.name, timeout_failures=timeout_failures)
+            return _JsonFetchResult(ok=False, payload=None, error=type(last_error).__name__, status=None, attempts=attempts, auth_shape=auth_shape.name, timeout_failures=timeout_failures)
+        return _JsonFetchResult(ok=False, payload=None, error="unknown_error", status=None, attempts=attempts, auth_shape=auth_shape.name, timeout_failures=timeout_failures)
 
     async def _attempt_auth_refresh_once(self) -> bool:
         if self._auth_state.refresh_attempted:

@@ -471,6 +471,12 @@ def test_extract_td_garment_warning_from_summary_flags_incomplete() -> None:
                         "garments_fetch_completeness": "incomplete",
                         "garments_final_row_count": 42,
                         "garments_budget_state": "near_limit",
+                        "garments_incomplete_reason": {"code": "pagination_budget_exhausted", "message": "pagination budget exhausted"},
+                        "garments_attempted_page_count": 5,
+                        "garments_completed_page_count": 4,
+                        "garments_expected_page_count": 6,
+                        "garments_timeout_count": 1,
+                        "garments_retry_count": 2,
                     }
                 }
             }
@@ -483,6 +489,12 @@ def test_extract_td_garment_warning_from_summary_flags_incomplete() -> None:
         "garments_fetch_completeness": "incomplete",
         "garments_final_row_count": 42,
         "garments_budget_state": "near_limit",
+        "garments_incomplete_reason": {"code": "pagination_budget_exhausted", "message": "pagination budget exhausted"},
+        "garments_attempted_page_count": 5,
+        "garments_completed_page_count": 4,
+        "garments_expected_page_count": 6,
+        "garments_timeout_count": 1,
+        "garments_retry_count": 2,
         "is_incomplete": True,
     }
 
@@ -840,6 +852,12 @@ async def test_profiler_payload_surfaces_td_garment_incomplete_warning(
                         "garments_fetch_completeness": "incomplete",
                         "garments_final_row_count": 17,
                         "garments_budget_state": "near_limit",
+                        "garments_incomplete_reason": {"code": "pagination_budget_exhausted", "message": "pagination budget exhausted"},
+                        "garments_attempted_page_count": 5,
+                        "garments_completed_page_count": 4,
+                        "garments_expected_page_count": 6,
+                        "garments_timeout_count": 1,
+                        "garments_retry_count": 2,
                         "is_incomplete": True,
                     },
                     "warning_count": 1,
@@ -882,6 +900,12 @@ async def test_profiler_payload_surfaces_td_garment_incomplete_warning(
             "garments_fetch_completeness": "incomplete",
             "garments_final_row_count": 17,
             "garments_budget_state": "near_limit",
+            "garments_incomplete_reason": {"code": "pagination_budget_exhausted", "message": "pagination budget exhausted"},
+            "garments_attempted_page_count": 5,
+            "garments_completed_page_count": 4,
+            "garments_expected_page_count": 6,
+            "garments_timeout_count": 1,
+            "garments_retry_count": 2,
         }
     ]
     assert any("TD_GARMENT_DATA_INCOMPLETE: TD01" in warning for warning in payload["warnings"])
