@@ -114,6 +114,15 @@ REQUIRED_DB_KEYS = PLAINTEXT_DB_KEYS + ENCRYPTED_DB_KEYS
 
 TRUE_VALUES = {"1", "true", "yes", "on"}
 FALSE_VALUES = {"0", "false", "no", "off"}
+DEFAULT_REPORT_EMAIL_SEND_MAX_ATTEMPTS = 3
+DEFAULT_REPORT_EMAIL_SEND_INITIAL_DELAY_SECONDS = 1.0
+DEFAULT_REPORT_EMAIL_SEND_MAX_DELAY_SECONDS = 30.0
+DEFAULT_REPORT_EMAIL_SEND_TRANSIENT_EXCEPTIONS = (
+    "socket.gaierror",
+    "TimeoutError",
+    "smtplib.SMTPServerDisconnected",
+    "smtplib.SMTPConnectError",
+)
 _NON_INTERACTIVE_OVERRIDE_LOGGED = False
 
 
@@ -179,6 +188,24 @@ def _parse_int(value: str, *, key: str) -> int:
         message = f"Config key {key} must be an integer; got {value!r}"
         logger.error(message)
         raise ConfigError(message)
+
+
+def _parse_float(value: str, *, key: str) -> float:
+    try:
+        return float(value.strip())
+    except (TypeError, ValueError):
+        message = f"Config key {key} must be a number; got {value!r}"
+        logger.error(message)
+        raise ConfigError(message)
+
+
+def _clean_csv(value: str, *, key: str) -> tuple[str, ...]:
+    entries = tuple(part.strip() for part in value.split(",") if part.strip())
+    if not entries:
+        message = f"Config key {key} must contain at least one value"
+        logger.error(message)
+        raise ConfigError(message)
+    return entries
 
 
 def _clean_url(value: str, *, key: str) -> str:
@@ -341,6 +368,10 @@ class Config:
     report_email_smtp_username: str
     report_email_smtp_password: str
     report_email_use_tls: bool
+    report_email_send_max_attempts: int
+    report_email_send_initial_delay_seconds: float
+    report_email_send_max_delay_seconds: float
+    report_email_send_transient_exceptions: tuple[str, ...]
     pdf_render_backend: str
     pdf_render_headless: bool
     etl_headless: bool
@@ -377,6 +408,40 @@ class Config:
 
         report_email_use_tls = _parse_bool(
             db_values["REPORT_EMAIL_USE_TLS"], key="REPORT_EMAIL_USE_TLS"
+        )
+        report_email_send_max_attempts = _parse_int(
+            db_values.get(
+                "REPORT_EMAIL_SEND_MAX_ATTEMPTS",
+                str(DEFAULT_REPORT_EMAIL_SEND_MAX_ATTEMPTS),
+            ),
+            key="REPORT_EMAIL_SEND_MAX_ATTEMPTS",
+        )
+        if report_email_send_max_attempts < 1:
+            raise ConfigError("Config key REPORT_EMAIL_SEND_MAX_ATTEMPTS must be >= 1")
+        report_email_send_initial_delay_seconds = _parse_float(
+            db_values.get(
+                "REPORT_EMAIL_SEND_INITIAL_DELAY_SECONDS",
+                str(DEFAULT_REPORT_EMAIL_SEND_INITIAL_DELAY_SECONDS),
+            ),
+            key="REPORT_EMAIL_SEND_INITIAL_DELAY_SECONDS",
+        )
+        if report_email_send_initial_delay_seconds < 0:
+            raise ConfigError("Config key REPORT_EMAIL_SEND_INITIAL_DELAY_SECONDS must be >= 0")
+        report_email_send_max_delay_seconds = _parse_float(
+            db_values.get(
+                "REPORT_EMAIL_SEND_MAX_DELAY_SECONDS",
+                str(DEFAULT_REPORT_EMAIL_SEND_MAX_DELAY_SECONDS),
+            ),
+            key="REPORT_EMAIL_SEND_MAX_DELAY_SECONDS",
+        )
+        if report_email_send_max_delay_seconds < 0:
+            raise ConfigError("Config key REPORT_EMAIL_SEND_MAX_DELAY_SECONDS must be >= 0")
+        report_email_send_transient_exceptions = _clean_csv(
+            db_values.get(
+                "REPORT_EMAIL_SEND_TRANSIENT_EXCEPTIONS",
+                ",".join(DEFAULT_REPORT_EMAIL_SEND_TRANSIENT_EXCEPTIONS),
+            ),
+            key="REPORT_EMAIL_SEND_TRANSIENT_EXCEPTIONS",
         )
         pdf_render_headless = _parse_bool(
             db_values["PDF_RENDER_HEADLESS"], key="PDF_RENDER_HEADLESS"
@@ -469,6 +534,10 @@ class Config:
             report_email_smtp_username=report_email_smtp_username,
             report_email_smtp_password=report_email_smtp_password,
             report_email_use_tls=report_email_use_tls,
+            report_email_send_max_attempts=report_email_send_max_attempts,
+            report_email_send_initial_delay_seconds=report_email_send_initial_delay_seconds,
+            report_email_send_max_delay_seconds=report_email_send_max_delay_seconds,
+            report_email_send_transient_exceptions=report_email_send_transient_exceptions,
             pdf_render_backend=pdf_render_backend,
             pdf_render_headless=pdf_render_headless,
             etl_headless=etl_headless,
