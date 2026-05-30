@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+import runpy
+import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import pytest
+
 import app.__main__ as app_main
 
 
@@ -140,5 +147,68 @@ def test_pending_deliveries_direct_cli_accepts_upstream_args(monkeypatch) -> Non
             "force": False,
             "orders_sync_upstream_status": "FAILED",
             "orders_sync_upstream_run_id": "orders-run-1",
+        }
+    ]
+
+
+def test_pending_deliveries_cli_forwards_degraded_upstream_context_end_to_end(monkeypatch) -> None:
+    import app.reports.pending_deliveries.main as pending_main
+    import app.reports.pending_deliveries.pipeline as pending_pipeline
+
+    captured: list[dict[str, object]] = []
+
+    async def _fake_run(
+        report_date,
+        env,
+        force,
+        orders_sync_upstream_status=None,
+        orders_sync_upstream_run_id=None,
+    ) -> None:
+        captured.append(
+            {
+                "report_date": report_date,
+                "env": env,
+                "force": force,
+                "orders_sync_upstream_status": orders_sync_upstream_status,
+                "orders_sync_upstream_run_id": orders_sync_upstream_run_id,
+            }
+        )
+
+    monkeypatch.setattr(pending_main, "get_timezone", lambda: ZoneInfo("UTC"))
+    monkeypatch.setattr(
+        pending_main,
+        "aware_now",
+        lambda _timezone: datetime(2026, 5, 30, tzinfo=ZoneInfo("UTC")),
+    )
+    monkeypatch.setattr(pending_pipeline, "_run", _fake_run)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "python",
+            "report",
+            "pending-deliveries",
+            "--env",
+            "prod",
+            "--orders-sync-upstream-status",
+            "success_with_warnings",
+            "--orders-sync-upstream-run-id",
+            "test-run",
+        ],
+    )
+
+    with pytest.warns(RuntimeWarning, match="found in sys.modules"):
+        with pytest.raises(SystemExit) as exc_info:
+            runpy.run_module("app.__main__", run_name="__main__")
+
+    assert exc_info.value.code == 0
+    assert captured == [
+        {
+            "report_date": pending_main.date(2026, 5, 30),
+            "env": "prod",
+            "force": False,
+            "orders_sync_upstream_status": "success_with_warnings",
+            "orders_sync_upstream_run_id": "test-run",
         }
     ]
