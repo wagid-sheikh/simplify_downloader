@@ -13,6 +13,13 @@ set -euo pipefail
 # Runtime flow semantics:
 # - Acquires global lock first (`tmp/cron_heavy_pipelines.lock`) to serialize
 #   heavy wrappers, then local lock (`tmp/cron_run_td_leads_sync.lock`).
+# - TD leads normally runs in ~2-3 minutes, but it shares the global lock with
+#   orders/reports, which normally runs ~9-11 minutes. The default
+#   LOCK_WAIT_SECONDS=900 intentionally lets TD leads wait through a normal
+#   orders/reports window instead of failing cron during expected contention.
+# - If the wait still times out while a live owner holds the lock, this wrapper
+#   logs status=skipped_due_to_lock_contention and exits 0 because the run was
+#   intentionally suppressed by lock policy, not a TD leads failure.
 # - Runs `scripts/run_local_td_leads_sync.sh`, which executes:
 #     poetry run python -m app crm td-leads-sync
 # - All stdout/stderr is written to:
@@ -61,14 +68,21 @@ GLOBAL_LOCK_PGID_FILE="${GLOBAL_LOCK_DIR}/pgid"
 
 KILL_WAIT_SECONDS="${KILL_WAIT_SECONDS:-5}"
 MAX_RUNTIME_SECONDS="${MAX_RUNTIME_SECONDS:-5400}"
-LOCK_WAIT_SECONDS="${LOCK_WAIT_SECONDS:-300}"
+LOCK_WAIT_SECONDS="${LOCK_WAIT_SECONDS:-}"
 LOCK_POLL_SECONDS="${LOCK_POLL_SECONDS:-5}"
 SAFE_MODE="${SAFE_MODE:-1}"
 CRON_HOME="${CRON_HOME:-${HOME:-/tmp}}"
 CRON_PATH="${CRON_PATH:-/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
 
+# Allow cron.env to document TD-specific lock policy without changing the
+# orders/reports wrapper default. Direct LOCK_WAIT_SECONDS still wins.
+if [[ -z "${LOCK_WAIT_SECONDS:-}" && -n "${TD_LEADS_LOCK_WAIT_SECONDS:-}" ]]; then
+  LOCK_WAIT_SECONDS="${TD_LEADS_LOCK_WAIT_SECONDS}"
+fi
+LOCK_WAIT_SECONDS="${LOCK_WAIT_SECONDS:-900}"
+
 if ! [[ "${LOCK_WAIT_SECONDS}" =~ ^[0-9]+$ ]]; then
-  LOCK_WAIT_SECONDS=300
+  LOCK_WAIT_SECONDS=900
 fi
 if ! [[ "${MAX_RUNTIME_SECONDS}" =~ ^[0-9]+$ ]]; then
   MAX_RUNTIME_SECONDS=5400
@@ -88,6 +102,8 @@ export PATH="${CRON_PATH}:${PATH}"
 export LANG="${LANG:-en_US.UTF-8}"
 
 GLOBAL_LOCK_ACQUIRED=0
+RUN_LOCK_ACQUIRED=0
+LOCK_CONTENTION_SKIP_STATUS="skipped_due_to_lock_contention"
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S %Z')] $*" >> "${LOG_FILE}"
@@ -97,6 +113,17 @@ section() {
   log "================================================================"
   log "$*"
   log "================================================================"
+}
+
+skip_due_to_lock_contention() {
+  local lock_scope="$1"
+  local owner_pid="$2"
+  local waited_seconds="$3"
+  local reason="$4"
+
+  log "[${lock_scope} lock] status=${LOCK_CONTENTION_SKIP_STATUS} reason=${reason} owner_pid=${owner_pid:-unknown} waited_seconds=${waited_seconds} timeout_seconds=${LOCK_WAIT_SECONDS}"
+  section "CRON RUN SKIPPED DUE TO LOCK CONTENTION"
+  exit 0
 }
 
 safe_cat() {
@@ -286,6 +313,7 @@ write_lock_metadata() {
 acquire_fresh_lock() {
   if mkdir "${RUN_LOCK_DIR}" 2>/dev/null; then
     write_lock_metadata "$@"
+    RUN_LOCK_ACQUIRED=1
     log "[local lock] Lock acquired successfully. PID=$$"
     return 0
   fi
@@ -319,8 +347,7 @@ acquire_lock_with_wait() {
       elapsed_secs="$(get_pid_elapsed_seconds "${existing_pid}" 2>/dev/null || true)"
 
       if [[ "${LOCK_WAIT_SECONDS}" -eq 0 ]]; then
-        log "[local lock] Lock held by live PID=${existing_pid} and waiting disabled (LOCK_WAIT_SECONDS=0). Exiting."
-        exit 1
+        skip_due_to_lock_contention "local" "${existing_pid}" "${waited_seconds}" "waiting_disabled"
       fi
 
       if [[ "${wait_started_logged}" -eq 0 ]]; then
@@ -329,8 +356,7 @@ acquire_lock_with_wait() {
       fi
 
       if [[ "${waited_seconds}" -ge "${LOCK_WAIT_SECONDS}" ]]; then
-        log "[local lock] Timed out waiting for lock after ${waited_seconds}s (timeout=${LOCK_WAIT_SECONDS}s, owner_pid=${existing_pid}). Exiting."
-        exit 1
+        skip_due_to_lock_contention "local" "${existing_pid}" "${waited_seconds}" "timeout"
       fi
 
       log "[local lock] Lock still held by live PID=${existing_pid}; waited=${waited_seconds}s/${LOCK_WAIT_SECONDS}s. Sleeping ${LOCK_POLL_SECONDS}s before retry."
@@ -384,8 +410,7 @@ acquire_global_lock_with_wait() {
       elapsed_secs="$(get_pid_elapsed_seconds "${existing_pid}" 2>/dev/null || true)"
 
       if [[ "${LOCK_WAIT_SECONDS}" -eq 0 ]]; then
-        log "[global lock] Lock held by live PID=${existing_pid} and waiting disabled (LOCK_WAIT_SECONDS=0). Exiting."
-        exit 1
+        skip_due_to_lock_contention "global" "${existing_pid}" "${waited_seconds}" "waiting_disabled"
       fi
 
       if [[ "${wait_started_logged}" -eq 0 ]]; then
@@ -394,8 +419,7 @@ acquire_global_lock_with_wait() {
       fi
 
       if [[ "${waited_seconds}" -ge "${LOCK_WAIT_SECONDS}" ]]; then
-        log "[global lock] Timed out waiting for lock after ${waited_seconds}s (timeout=${LOCK_WAIT_SECONDS}s, owner_pid=${existing_pid}). Exiting."
-        exit 1
+        skip_due_to_lock_contention "global" "${existing_pid}" "${waited_seconds}" "timeout"
       fi
 
       log "[global lock] Lock still held by live PID=${existing_pid}; waited=${waited_seconds}s/${LOCK_WAIT_SECONDS}s. Sleeping ${LOCK_POLL_SECONDS}s before retry."
@@ -467,6 +491,7 @@ maybe_cleanup_stale_lock() {
   fi
 
   write_lock_metadata "$@"
+  RUN_LOCK_ACQUIRED=1
   log "Fresh lock acquired after stale cleanup. PID=$$"
 }
 
@@ -480,7 +505,9 @@ cleanup() {
     log "Run exiting with non-zero status=${exit_code} via trap=${trap_name}"
   fi
 
-  remove_lock_artifacts
+  if [[ "${RUN_LOCK_ACQUIRED}" -eq 1 ]]; then
+    remove_lock_artifacts
+  fi
   if [[ "${GLOBAL_LOCK_ACQUIRED}" -eq 1 ]]; then
     remove_global_lock_artifacts
   fi

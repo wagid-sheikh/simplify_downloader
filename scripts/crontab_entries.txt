@@ -10,8 +10,21 @@ SHELL=/bin/bash
 5 20 * * * /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_orders_and_reports.sh
 30 20 * * * /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_orders_and_reports.sh
 
-*/12 10-20 * * * /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_td_leads_sync.sh >> /Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_td_leads_sync.log 2>&1
+# Heavy-pipeline lock contention note:
+# - orders/reports normally runs for about 9-11 minutes in archived runs and
+#   holds tmp/cron_heavy_pipelines.lock while it runs.
+# - TD leads normally runs for about 2-3 minutes, but it uses the same global
+#   lock so it does not compete with orders/report browser, DB, and email work.
+# - Keep TD_LEADS_LOCK_WAIT_SECONDS/LOCK_WAIT_SECONDS at 900 seconds (15 minutes)
+#   or higher. This lets TD leads wait through a normal orders/reports window
+#   instead of failing when it starts during expected contention.
+# - If a live heavy pipeline still owns the lock after the wait, the TD leads
+#   wrapper logs status=skipped_due_to_lock_contention and exits successfully;
+#   that is an intentional suppression, not a generic TD leads failure.
+*/12 10-20 * * * LOCK_WAIT_SECONDS=900 /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_td_leads_sync.sh >> /Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_td_leads_sync.log 2>&1
 
-10 19 * * * /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_td_leads_sync.sh reporting_mode=meeting >> /Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_td_leads_sync.log 2>&1
+# Meeting/day-end reporting runs also use the extended lock wait because they
+# are close to evening orders/report starts.
+10 19 * * * LOCK_WAIT_SECONDS=900 /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_td_leads_sync.sh reporting_mode=meeting >> /Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_td_leads_sync.log 2>&1
 
-55 20 * * * /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_td_leads_sync.sh reporting_mode=day_end >> /Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_td_leads_sync.log 2>&1
+55 20 * * * LOCK_WAIT_SECONDS=900 /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_td_leads_sync.sh reporting_mode=day_end >> /Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_td_leads_sync.log 2>&1
