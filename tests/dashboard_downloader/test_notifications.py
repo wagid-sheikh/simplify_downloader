@@ -912,8 +912,30 @@ def test_dashboard_notification_summary_includes_data_quality_threshold_text() -
             "data_quality_warnings": {
                 "breaches": [
                     {"code": "invalid_csv_downloads", "count": 1, "threshold": 1},
-                    {"code": "skipped_required_rows", "count": 2, "threshold": 1},
-                ]
+                    {"code": "skipped_required_rows", "count": 3, "threshold": 1},
+                ],
+                "details": {
+                    "skipped_required_rows": [
+                        {
+                            "bucket": "repeat_customers",
+                            "details": [
+                                {
+                                    "bucket": "repeat_customers",
+                                    "column": "mobile_no",
+                                    "store_code": "B002",
+                                    "count": 1,
+                                    "mobile_no": "customer-sensitive-value",
+                                },
+                                {
+                                    "bucket": "repeat_customers",
+                                    "column": "mobile_no",
+                                    "store_code": "A001",
+                                    "count": 2,
+                                },
+                            ],
+                        }
+                    ]
+                },
             }
         },
     )
@@ -921,7 +943,11 @@ def test_dashboard_notification_summary_includes_data_quality_threshold_text() -
     assert "Pipeline summary" in summary
     assert "Dashboard data quality warnings:" in summary
     assert "invalid CSV downloads discarded: 1 observed (threshold 1)" in summary
-    assert "rows skipped due to missing required fields: 2 observed (threshold 1)" in summary
+    assert "rows skipped due to missing required fields: 3 observed (threshold 1)" in summary
+    assert "affected stores and row counts: A001=2, B002=1" in summary
+    assert "correct missing mobile numbers in the source dashboard" in summary
+    assert "excluded from repeat-customer reporting until corrected" in summary
+    assert "customer-sensitive-value" not in summary
 
 
 def test_report_notification_context_includes_upstream_orders_status() -> None:
