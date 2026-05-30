@@ -7820,8 +7820,11 @@ async def _run_store_discovery(
                         elif garments_completeness == "incomplete":
                             _append_unique_warning(
                                 orders_report,
-                                "garments_data_risk: incomplete fetch under budget pressure",
+                                "DATA INCOMPLETE: TD garment details fetch incomplete; "
+                                "garment-dependent downstream reports may be incomplete",
                             )
+                            orders_report.status = "warning"
+                            orders_status = "warning"
                         log_event(
                             logger=store_logger,
                             phase="window_summary",
