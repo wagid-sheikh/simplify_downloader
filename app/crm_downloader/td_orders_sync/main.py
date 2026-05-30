@@ -2651,6 +2651,8 @@ def _resolve_sync_log_status(
 
     orders_success = orders_status in {"ok", "warning"}
     sales_success = sales_status in {"ok", "warning"}
+    orders_warning = orders_status == "warning"
+    sales_warning = sales_status == "warning"
     orders_skipped = orders_status == "skipped"
     sales_skipped = sales_status == "skipped"
     sales_intentionally_skipped = sales_skipped and not run_sales
@@ -2668,7 +2670,7 @@ def _resolve_sync_log_status(
     if orders_skipped and sales_skipped:
         return "skipped"
     if orders_success and (sales_success or sales_intentionally_skipped):
-        return "success"
+        return "success_with_warnings" if (orders_warning or sales_warning) else "success"
     if orders_success or sales_success:
         return "partial"
     if orders_skipped or sales_skipped:
@@ -2710,7 +2712,7 @@ def _resolve_sync_log_status_note(
     run_sales: bool,
     run_garment_sync: bool = True,
 ) -> str | None:
-    if status not in {"skipped", "partial"}:
+    if status not in {"skipped", "partial", "success_with_warnings"}:
         return None
     notes: list[str] = []
 
@@ -2723,6 +2725,11 @@ def _resolve_sync_log_status_note(
             _add(orders_report.message or "Orders skipped")
         elif orders_report.status == "warning":
             _add(orders_report.message or "Orders completed with warnings")
+            if orders_report.garments_fetch_completeness == "incomplete":
+                _add(
+                    "Current data incomplete: TD garment details fetch incomplete; "
+                    "garment-dependent reports are degraded"
+                )
     elif not run_orders:
         _add("Orders sync skipped by flag")
 
@@ -2751,7 +2758,7 @@ def _resolve_sync_log_message(
 ) -> str | None:
     if status == "failed":
         return error_message
-    if status in {"skipped", "partial"}:
+    if status in {"skipped", "partial", "success_with_warnings"}:
         if error_message and status_note and status_note not in error_message:
             return f"{error_message}; {status_note}"
         return error_message or status_note

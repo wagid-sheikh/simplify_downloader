@@ -152,7 +152,7 @@ def test_render_html_marks_report_degraded_after_failed_orders_sync() -> None:
             "timezone": "Asia/Kolkata",
             "run_environment": "prod",
             "orders_sync_is_degraded": True,
-            "orders_sync_warning_text": "Orders sync failed before this report; data may be stale.",
+            "orders_sync_warning_text": "Orders sync was degraded before this report; data may be stale or incomplete.",
             "orders_sync_upstream_status": "failed",
             "orders_sync_upstream_run_id": "orders-run-1",
             "summary_sections": [],
@@ -162,5 +162,5 @@ def test_render_html_marks_report_degraded_after_failed_orders_sync() -> None:
         }
     )
 
-    assert "Orders sync failed before this report; data may be stale." in html
+    assert "Orders sync was degraded before this report; data may be stale or incomplete." in html
     assert "Upstream orders sync status: failed; run ID: orders-run-1" in html

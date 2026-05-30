@@ -67,9 +67,10 @@ PIPELINE_NAME = "uc_orders_sync"
 STAGE_CREATED_COHORT_EXTRACT = "created_cohort_extract"
 STAGE_ORDERS_INGEST = "ingest"
 REASON_ARCHIVE_INGEST_FAILED = "archive_ingest_failed"
-REASON_GST_PUBLISH_SKIPPED_DUE_INGEST_FAILURE = (
-    "gst_publish_skipped_due_ingest_failure"
-)
+REASON_SOURCE_CONFIRMED_ZERO_ROWS = "source_confirmed_zero_rows"
+REASON_ZERO_ROWS_AFTER_NAV_TIMEOUT = "zero_rows_after_navigation_timeout"
+REASON_ZERO_ROWS_UNCONFIRMED = "zero_rows_unconfirmed"
+REASON_GST_PUBLISH_SKIPPED_DUE_INGEST_FAILURE = "gst_publish_skipped_due_ingest_failure"
 NAV_TIMEOUT_MS = 90_000
 ARCHIVE_FILTER_REFRESH_TIMEOUT_MS = 20_000
 SPINNER_CSS_SELECTORS = [".spinner", ".loading", ".loader", ".k-loading-mask"]
@@ -493,8 +494,7 @@ async def _wait_for_row_stable(row: Locator) -> None:
     with contextlib.suppress(Exception):
         await row.scroll_into_view_if_needed(timeout=5_000)
     with contextlib.suppress(Exception):
-        await row.evaluate(
-            """async (el) => {
+        await row.evaluate("""async (el) => {
                 const sleepFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
                 let last = el.getBoundingClientRect();
                 for (let i = 0; i < 3; i += 1) {
@@ -510,8 +510,7 @@ async def _wait_for_row_stable(row: Locator) -> None:
                     }
                     last = next;
                 }
-            }"""
-        )
+            }""")
 
 
 async def _collect_selector_diagnostics(
@@ -590,6 +589,61 @@ def _normalize_output_status(status: str | None) -> str:
     return mapping.get(normalized, normalized or "unknown")
 
 
+def _zero_row_export_is_confirmed(outcome: StoreOutcome | None) -> bool:
+    if outcome is None:
+        return False
+    reason_codes = set(outcome.reason_codes or [])
+    if REASON_SOURCE_CONFIRMED_ZERO_ROWS in reason_codes:
+        return True
+    return bool(
+        outcome.post_filter_footer_total == 0 and outcome.footer_baseline_stable
+    )
+
+
+def _known_zero_row_outcome(outcome: StoreOutcome | None) -> bool:
+    if outcome is None:
+        return False
+    counts = (
+        outcome.rows_downloaded,
+        outcome.base_rows_extracted,
+        outcome.staging_rows,
+        outcome.final_rows,
+    )
+    known_counts = [count for count in counts if count is not None]
+    return bool(known_counts) and all(count == 0 for count in known_counts)
+
+
+def _has_unconfirmed_zero_row_signal(outcome: StoreOutcome | None) -> bool:
+    if outcome is None or _zero_row_export_is_confirmed(outcome):
+        return False
+    reason_codes = set(outcome.reason_codes or [])
+    if (
+        REASON_ZERO_ROWS_AFTER_NAV_TIMEOUT in reason_codes
+        or REASON_ZERO_ROWS_UNCONFIRMED in reason_codes
+        or "footer_baseline_unavailable" in reason_codes
+    ):
+        return True
+    return bool(
+        _known_zero_row_outcome(outcome)
+        and (
+            outcome.post_filter_footer_total is None
+            or not outcome.footer_baseline_stable
+        )
+    )
+
+
+def _gst_api_extract_confirms_zero_rows(extract: GstApiExtract | None) -> bool:
+    if extract is None:
+        return False
+    return bool(
+        not extract.gst_rows
+        and not extract.base_rows
+        and not extract.order_detail_rows
+        and not extract.payment_detail_rows
+        and not extract.skipped_order_counters
+    )
+
+
 def _classify_store_window_status(outcome: StoreOutcome | None) -> str:
     if outcome is None:
         return "skipped"
@@ -608,7 +662,7 @@ def _classify_store_window_status(outcome: StoreOutcome | None) -> str:
     if "failed" in stage_statuses or "error" in stage_statuses:
         return "partial"
     if (
-        "footer_baseline_unavailable" in reason_codes
+        _has_unconfirmed_zero_row_signal(outcome)
         or _has_non_trivial_gst_publish_warning(outcome)
         or outcome.status == "warning"
     ):
@@ -685,7 +739,10 @@ def _has_non_trivial_gst_publish_warning(outcome: StoreOutcome | None) -> bool:
     if outcome is None:
         return False
     publish_reason_codes = _gst_publish_reason_codes(outcome)
-    if "gst_lifecycle_parent_coverage_near_zero" in publish_reason_codes or "preflight_parent_coverage_near_zero" in publish_reason_codes:
+    if (
+        "gst_lifecycle_parent_coverage_near_zero" in publish_reason_codes
+        or "preflight_parent_coverage_near_zero" in publish_reason_codes
+    ):
         return True
     return False
 
@@ -912,7 +969,9 @@ class UcOrdersDiscoverySummary:
                         outcome.orders_created_in_window if outcome else None
                     ),
                     "payments_observed_in_delivery_window": (
-                        outcome.payments_observed_in_delivery_window if outcome else None
+                        outcome.payments_observed_in_delivery_window
+                        if outcome
+                        else None
                     ),
                     "staging_rows": outcome.staging_rows if outcome else None,
                     "final_rows": outcome.final_rows if outcome else None,
@@ -1010,7 +1069,9 @@ class UcOrdersDiscoverySummary:
                         outcome.orders_created_in_window if outcome else None
                     ),
                     "payments_observed_in_delivery_window": (
-                        outcome.payments_observed_in_delivery_window if outcome else None
+                        outcome.payments_observed_in_delivery_window
+                        if outcome
+                        else None
                     ),
                     "rows_skipped_invalid": (
                         outcome.rows_skipped_invalid if outcome else None
@@ -1908,7 +1969,7 @@ def _resolve_sync_log_status(
     if "partial_extraction" in reason_codes:
         return "partial"
     if (
-        "footer_baseline_unavailable" in reason_codes
+        _has_unconfirmed_zero_row_signal(outcome)
         or _has_non_trivial_gst_publish_warning(outcome)
         or outcome.status == "warning"
     ):
@@ -3717,38 +3778,29 @@ async def _run_store_discovery(
                 from_date=from_date,
                 to_date=to_date,
             )
-            gst_api_gst_path = (
-                download_dir / _format_gst_filename(store.store_code, from_date, to_date)
+            gst_api_gst_path = download_dir / _format_gst_filename(
+                store.store_code, from_date, to_date
             )
-            gst_api_base_path = (
-                download_dir
-                / _format_gst_derived_filename(
-                    store.store_code,
-                    from_date,
-                    to_date,
-                    artifact_type="base_order_info",
-                    run_id=run_id,
-                )
+            gst_api_base_path = download_dir / _format_gst_derived_filename(
+                store.store_code,
+                from_date,
+                to_date,
+                artifact_type="base_order_info",
+                run_id=run_id,
             )
-            gst_api_order_details_path = (
-                download_dir
-                / _format_gst_derived_filename(
-                    store.store_code,
-                    from_date,
-                    to_date,
-                    artifact_type="order_details",
-                    run_id=run_id,
-                )
+            gst_api_order_details_path = download_dir / _format_gst_derived_filename(
+                store.store_code,
+                from_date,
+                to_date,
+                artifact_type="order_details",
+                run_id=run_id,
             )
-            gst_api_payment_details_path = (
-                download_dir
-                / _format_gst_derived_filename(
-                    store.store_code,
-                    from_date,
-                    to_date,
-                    artifact_type="payment_details",
-                    run_id=run_id,
-                )
+            gst_api_payment_details_path = download_dir / _format_gst_derived_filename(
+                store.store_code,
+                from_date,
+                to_date,
+                artifact_type="payment_details",
+                run_id=run_id,
             )
             _write_excel_rows(
                 gst_api_gst_path,
@@ -3790,7 +3842,9 @@ async def _run_store_discovery(
             gst_ingest_stage_statuses[STAGE_CREATED_COHORT_EXTRACT] = "success"
             gst_ingest_stage_metrics[STAGE_CREATED_COHORT_EXTRACT] = {
                 "orders_created_in_window": len(gst_api_extract.base_rows),
-                "created_cohort_order_detail_rows": len(gst_api_extract.order_detail_rows),
+                "created_cohort_order_detail_rows": len(
+                    gst_api_extract.order_detail_rows
+                ),
                 "created_cohort_payment_rows": len(gst_api_extract.payment_detail_rows),
                 "skipped_order_counters": gst_api_extract.skipped_order_counters,
                 "skipped_order_codes": gst_api_extract.skipped_order_codes,
@@ -3825,12 +3879,20 @@ async def _run_store_discovery(
             return
 
         try:
-            gst_download_path = str(gst_api_gst_path) if gst_api_gst_path is not None else None
-            gst_download_ok = bool(gst_api_gst_path is not None and gst_api_gst_path.exists())
-            gst_row_count = len(gst_api_extract.gst_rows) if gst_api_extract is not None else 0
+            gst_download_path = (
+                str(gst_api_gst_path) if gst_api_gst_path is not None else None
+            )
+            gst_download_ok = bool(
+                gst_api_gst_path is not None and gst_api_gst_path.exists()
+            )
+            gst_row_count = (
+                len(gst_api_extract.gst_rows) if gst_api_extract is not None else 0
+            )
 
             if not gst_download_ok or not gst_download_path:
-                raise FileNotFoundError("GST API output unavailable; aborting store run")
+                raise FileNotFoundError(
+                    "GST API output unavailable; aborting store run"
+                )
 
             log_event(
                 logger=logger,
@@ -3906,7 +3968,9 @@ async def _run_store_discovery(
                         )
                     except Exception as exc:
                         gst_ingest_stage_statuses[STAGE_ORDERS_INGEST] = "failed"
-                        gst_ingest_stage_metrics[STAGE_ORDERS_INGEST] = {"error": str(exc)}
+                        gst_ingest_stage_metrics[STAGE_ORDERS_INGEST] = {
+                            "error": str(exc)
+                        }
                         log_event(
                             logger=logger,
                             phase="ingest",
@@ -3981,6 +4045,7 @@ async def _run_store_discovery(
         def _append_reason_code(code: str) -> None:
             if code and code not in reason_codes:
                 reason_codes.append(code)
+
         log_event(
             logger=logger,
             phase="archive_api_extract",
@@ -3990,9 +4055,38 @@ async def _run_store_discovery(
         )
         rows_missing_estimate: int | None = None
         base_count = len(gst_api_extract.base_rows) if gst_api_extract else 0
-        order_details_count = len(gst_api_extract.order_detail_rows) if gst_api_extract else 0
-        payment_details_count = len(gst_api_extract.payment_detail_rows) if gst_api_extract else 0
+        order_details_count = (
+            len(gst_api_extract.order_detail_rows) if gst_api_extract else 0
+        )
+        payment_details_count = (
+            len(gst_api_extract.payment_detail_rows) if gst_api_extract else 0
+        )
         row_count = base_count
+        home_url_navigation_timed_out = bool(
+            getattr(page, "_uc_home_url_timeout", False)
+        )
+        source_confirmed_zero_rows = (
+            base_count == 0 and _gst_api_extract_confirms_zero_rows(gst_api_extract)
+        )
+        if source_confirmed_zero_rows:
+            _append_reason_code(REASON_SOURCE_CONFIRMED_ZERO_ROWS)
+        elif base_count == 0:
+            zero_row_reason = (
+                REASON_ZERO_ROWS_AFTER_NAV_TIMEOUT
+                if home_url_navigation_timed_out
+                else REASON_ZERO_ROWS_UNCONFIRMED
+            )
+            _append_reason_code(zero_row_reason)
+            log_event(
+                logger=logger,
+                phase="download",
+                status="warning",
+                message="UC zero-row export could not be confirmed as true no-data",
+                store_code=store.store_code,
+                reason_code=zero_row_reason,
+                home_url_navigation_timed_out=home_url_navigation_timed_out,
+                source_confirmed_zero_rows=source_confirmed_zero_rows,
+            )
         download_succeeded = True
         await _update_orders_sync_log(
             logger=logger,
@@ -4014,7 +4108,9 @@ async def _run_store_discovery(
                 "base_rows": base_count,
                 "order_details_rows": order_details_count,
                 "payment_details_rows": payment_details_count,
-                "orders_created_in_window": len(gst_api_extract.base_rows) if gst_api_extract else None,
+                "orders_created_in_window": (
+                    len(gst_api_extract.base_rows) if gst_api_extract else None
+                ),
                 "payments_observed_in_delivery_window": payment_details_count,
                 "source": "gst_api_only",
                 "reason_codes": reason_codes,
@@ -4182,10 +4278,12 @@ async def _run_store_discovery(
                     )
 
                 try:
-                    line_items_publish = await publish_uc_gst_order_details_to_line_items(
-                        database_url=config.database_url,
-                        run_id=run_id,
-                        store_code=store.store_code,
+                    line_items_publish = (
+                        await publish_uc_gst_order_details_to_line_items(
+                            database_url=config.database_url,
+                            run_id=run_id,
+                            store_code=store.store_code,
+                        )
                     )
                     gst_publish_order_line_items = {
                         "inserted": line_items_publish.inserted,
@@ -4270,13 +4368,10 @@ async def _run_store_discovery(
                         "payment_details_to_sales": sales_error,
                     }
 
-        archive_warning_count = (
-            _gst_publish_warning_count_for_metrics(
-                gst_publish_orders,
-                gst_publish_sales,
-            )
-            + _archive_ingest_warning_count_for_stage_metrics(stage_metrics)
-        )
+        archive_warning_count = _gst_publish_warning_count_for_metrics(
+            gst_publish_orders,
+            gst_publish_sales,
+        ) + _archive_ingest_warning_count_for_stage_metrics(stage_metrics)
         publish_reason_codes = sorted(
             _gst_publish_reason_codes_for_metrics(
                 gst_publish_orders,
@@ -4286,9 +4381,7 @@ async def _run_store_discovery(
         for code in publish_reason_codes:
             _append_reason_code(code)
         status_label = (
-            "warning"
-            if any(v == "failed" for v in stage_statuses.values())
-            else "ok"
+            "warning" if any(v == "failed" for v in stage_statuses.values()) else "ok"
         )
         download_message = (
             f"GST-derived archive feed prepared {base_count} rows; "
@@ -4861,9 +4954,7 @@ async def _resolve_login_field_locator(
             )
     dom_summary = await _get_login_dom_summary(page)
     login_page_version_signature = await _get_login_page_version_signature(page=page)
-    artifact_paths = await _capture_login_dom_mismatch_artifacts(
-        page=page, store=store
-    )
+    artifact_paths = await _capture_login_dom_mismatch_artifacts(page=page, store=store)
     setattr(page, "_uc_login_page_version_signature", login_page_version_signature)
     setattr(
         page,
@@ -5083,6 +5174,7 @@ async def _wait_for_home_ready(
             lambda url: _url_matches_target(url, home_url), timeout=NAV_TIMEOUT_MS
         )
     except TimeoutError:
+        setattr(page, "_uc_home_url_timeout", True)
         log_event(
             logger=logger,
             phase="navigation",
@@ -6550,8 +6642,7 @@ async def _get_calendar_header_text(
             continue
     if allow_fallback:
         try:
-            text = await calendar.evaluate(
-                """(node) => {
+            text = await calendar.evaluate("""(node) => {
                     const candidates = node.querySelectorAll('*');
                     for (const el of candidates) {
                         const value = (el.textContent || '').trim();
@@ -6560,8 +6651,7 @@ async def _get_calendar_header_text(
                         }
                     }
                     return null;
-                }"""
-            )
+                }""")
             if text:
                 return str(text).strip()
         except Exception:
@@ -7274,11 +7364,9 @@ async def _locate_nav_ancestor_by_text(
             continue
         for handle in handles:
             try:
-                ancestor = await handle.evaluate_handle(
-                    """
+                ancestor = await handle.evaluate_handle("""
                     (node) => node.closest('a, button, [role="menuitem"]')
-                    """
-                )
+                    """)
                 element = ancestor.as_element()
                 if element is not None:
                     return element

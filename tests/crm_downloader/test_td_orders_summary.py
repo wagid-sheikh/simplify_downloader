@@ -14,6 +14,7 @@ from app.crm_downloader.td_orders_sync.main import (
     _normalize_json_safe,
     _resolve_compare_rows,
     _resolve_sync_log_status,
+    _resolve_sync_log_status_note,
 )
 
 
@@ -71,6 +72,7 @@ def test_summary_records_orders_and_sales_results() -> None:
     orders_report = StoreReport(
         status="warning",
         filenames=["orders_A1.xlsx"],
+        source_mode="ui",
         staging_rows=2,
         final_rows=2,
         warnings=["duplicate rows dropped"],
@@ -447,7 +449,7 @@ def test_daily_reconciliation_uses_ingestion_status_as_pass_fail_truth() -> None
     assert daily["stores_failed"] == []
 
 
-def test_sync_log_status_treats_warning_as_success_when_ingest_completed() -> None:
+def test_sync_log_status_marks_warning_ingest_as_success_with_warnings() -> None:
     status = _resolve_sync_log_status(
         orders_report=StoreReport(status="warning"),
         sales_report=StoreReport(status="ok"),
@@ -455,7 +457,34 @@ def test_sync_log_status_treats_warning_as_success_when_ingest_completed() -> No
         run_sales=True,
     )
 
-    assert status == "success"
+    assert status == "success_with_warnings"
+
+
+def test_sync_log_status_note_separates_current_garment_incompleteness() -> None:
+    orders_report = StoreReport(
+        status="warning",
+        message="Orders completed with warnings",
+        garments_fetch_completeness="incomplete",
+    )
+    status = _resolve_sync_log_status(
+        orders_report=orders_report,
+        sales_report=StoreReport(status="ok"),
+        run_orders=True,
+        run_sales=True,
+    )
+    note = _resolve_sync_log_status_note(
+        status=status,
+        orders_report=orders_report,
+        sales_report=StoreReport(status="ok"),
+        outcome=None,
+        run_orders=True,
+        run_sales=True,
+    )
+
+    assert status == "success_with_warnings"
+    assert note is not None
+    assert "Orders completed with warnings" in note
+    assert "Current data incomplete: TD garment details fetch incomplete" in note
 
 
 def test_summary_payload_exposes_data_ingest_status_and_observability_warnings() -> None:

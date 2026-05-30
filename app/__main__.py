@@ -60,7 +60,11 @@ def _build_parser() -> argparse.ArgumentParser:
     report_parser = subparsers.add_parser("report", help="Run report pipelines")
     report_subparsers = report_parser.add_subparsers(dest="report_command", required=True)
 
-    def _add_common_report_args(report_subparser: argparse.ArgumentParser) -> None:
+    def _add_common_report_args(
+        report_subparser: argparse.ArgumentParser,
+        *,
+        include_orders_sync_upstream: bool = False,
+    ) -> None:
         report_subparser.add_argument(
             "--report-date",
             dest="report_date",
@@ -75,24 +79,29 @@ def _build_parser() -> argparse.ArgumentParser:
             action="store_true",
             help="Deprecated no-op; reports always regenerate and append new summaries/documents",
         )
-        report_subparser.add_argument(
-            "--orders-sync-upstream-status",
-            dest="orders_sync_upstream_status",
-            type=str,
-            default=None,
-            help="Status of the upstream orders sync run that preceded this report",
-        )
-        report_subparser.add_argument(
-            "--orders-sync-upstream-run-id",
-            dest="orders_sync_upstream_run_id",
-            type=str,
-            default=None,
-            help="Run ID of the upstream orders sync run that preceded this report",
-        )
+        if include_orders_sync_upstream:
+            report_subparser.add_argument(
+                "--orders-sync-upstream-status",
+                dest="orders_sync_upstream_status",
+                type=str,
+                default=None,
+                help="Status of the upstream orders sync run that preceded this report",
+            )
+            report_subparser.add_argument(
+                "--orders-sync-upstream-run-id",
+                dest="orders_sync_upstream_run_id",
+                type=str,
+                default=None,
+                help="Run ID of the upstream orders sync run that preceded this report",
+            )
 
-    _add_common_report_args(report_subparsers.add_parser("daily-sales", help="Run daily sales report"))
     _add_common_report_args(
-        report_subparsers.add_parser("pending-deliveries", help="Run pending deliveries report")
+        report_subparsers.add_parser("daily-sales", help="Run daily sales report"),
+        include_orders_sync_upstream=True,
+    )
+    _add_common_report_args(
+        report_subparsers.add_parser("pending-deliveries", help="Run pending deliveries report"),
+        include_orders_sync_upstream=True,
     )
     _add_common_report_args(
         report_subparsers.add_parser("mtd-same-day-fulfillment", help="Run MTD same-day fulfillment report")
@@ -145,10 +154,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             report_args.extend(["--report-date", parsed.report_date])
         if parsed.env:
             report_args.extend(["--env", parsed.env])
-        if parsed.orders_sync_upstream_status:
-            report_args.extend(["--orders-sync-upstream-status", parsed.orders_sync_upstream_status])
-        if parsed.orders_sync_upstream_run_id:
-            report_args.extend(["--orders-sync-upstream-run-id", parsed.orders_sync_upstream_run_id])
+        orders_sync_upstream_status = getattr(parsed, "orders_sync_upstream_status", None)
+        orders_sync_upstream_run_id = getattr(parsed, "orders_sync_upstream_run_id", None)
+        if orders_sync_upstream_status:
+            report_args.extend(["--orders-sync-upstream-status", orders_sync_upstream_status])
+        if orders_sync_upstream_run_id:
+            report_args.extend(["--orders-sync-upstream-run-id", orders_sync_upstream_run_id])
         # --force is retained at this wrapper for backward compatibility, but
         # operational reports now regenerate on every invocation.
 

@@ -806,11 +806,77 @@ def test_store_outcome_marks_warning_when_footer_baseline_unavailable() -> None:
     assert status == "success_with_warnings"
 
 
-def test_store_outcome_marks_failed_when_archive_api_auth_failure_reason_present() -> None:
+def test_zero_row_source_confirmed_export_remains_successful() -> None:
+    outcome = uc_main.StoreOutcome(
+        status="ok",
+        message="GST-derived archive feed prepared 0 rows",
+        reason_codes=[uc_main.REASON_SOURCE_CONFIRMED_ZERO_ROWS],
+        rows_downloaded=0,
+        staging_rows=0,
+        final_rows=0,
+        download_path="/tmp/uc-zero.xlsx",
+    )
+
+    status = uc_main._resolve_sync_log_status(
+        outcome=outcome, download_succeeded=True, row_count=0
+    )
+
+    assert status == "success"
+    assert uc_main._classify_store_window_status(outcome) == "success"
+
+
+def test_zero_rows_after_navigation_timeout_degrades_to_warning() -> None:
+    outcome = uc_main.StoreOutcome(
+        status="ok",
+        message="GST-derived archive feed prepared 0 rows",
+        reason_codes=[uc_main.REASON_ZERO_ROWS_AFTER_NAV_TIMEOUT],
+        rows_downloaded=0,
+        staging_rows=0,
+        final_rows=0,
+        download_path="/tmp/uc-zero.xlsx",
+    )
+
+    status = uc_main._resolve_sync_log_status(
+        outcome=outcome, download_succeeded=True, row_count=0
+    )
+
+    assert status == "success_with_warnings"
+    assert uc_main._classify_store_window_status(outcome) == "success_with_warnings"
+
+
+def test_zero_rows_with_missing_or_unstable_footer_baseline_degrades_to_warning() -> (
+    None
+):
+    outcome = uc_main.StoreOutcome(
+        status="ok",
+        message="Archive Orders extracted 0 rows",
+        rows_downloaded=0,
+        staging_rows=0,
+        final_rows=0,
+        download_path="/tmp/uc-zero.xlsx",
+        post_filter_footer_total=None,
+        footer_baseline_source="fallback_unknown",
+        footer_baseline_stable=False,
+    )
+
+    status = uc_main._resolve_sync_log_status(
+        outcome=outcome, download_succeeded=True, row_count=0
+    )
+
+    assert status == "success_with_warnings"
+    assert uc_main._classify_store_window_status(outcome) == "success_with_warnings"
+
+
+def test_store_outcome_marks_failed_when_archive_api_auth_failure_reason_present() -> (
+    None
+):
     outcome = uc_main.StoreOutcome(
         status="warning",
         message="auth failure",
-        reason_codes=["archive_api_auth_failure", "gst_lifecycle_parent_order_context_missing"],
+        reason_codes=[
+            "archive_api_auth_failure",
+            "gst_lifecycle_parent_order_context_missing",
+        ],
     )
 
     status = uc_main._resolve_sync_log_status(
@@ -860,8 +926,6 @@ def test_summary_overall_status_rolls_up_publish_preflight_warning() -> None:
     assert payload["stores"][0]["status"] == "success_with_warnings"
 
 
-
-
 def test_store_outcome_keeps_missing_required_field_warning_informational() -> None:
     outcome = uc_main.StoreOutcome(
         status="ok",
@@ -876,6 +940,7 @@ def test_store_outcome_keeps_missing_required_field_warning_informational() -> N
 
     assert status == "success"
     assert uc_main._classify_store_window_status(outcome) == "success"
+
 
 def test_store_outcome_keeps_high_publish_skips_informational() -> None:
     outcome = uc_main.StoreOutcome(
@@ -1131,7 +1196,9 @@ def test_store_outcome_marks_archive_timeout_without_output_failed() -> None:
 
 
 def test_store_outcome_keeps_genuine_no_data_non_failed() -> None:
-    outcome = uc_main.StoreOutcome(status="warning", message="No Archive Orders rows found")
+    outcome = uc_main.StoreOutcome(
+        status="warning", message="No Archive Orders rows found"
+    )
 
     status = uc_main._resolve_sync_log_status(
         outcome=outcome, download_succeeded=False, row_count=0
