@@ -460,3 +460,127 @@ def test_profiler_summary_text_includes_failed_uc_window_reason() -> None:
     assert "status_note=window execution failed" in summary
     assert "Page.goto: net::ERR_CERT_DATE_INVALID" in summary
     assert "stack details" in summary
+
+def test_extract_td_garment_warning_from_summary_flags_incomplete() -> None:
+    summary = {
+        "metrics_json": {
+            "orders": {
+                "stores": {
+                    "TEST": {
+                        "garments_fetch_completeness": "incomplete",
+                        "garments_final_row_count": 42,
+                        "garments_budget_state": "near_limit",
+                    }
+                }
+            }
+        }
+    }
+
+    warning = profiler._extract_td_garment_warning_from_summary(summary, store_code="test")
+
+    assert warning == {
+        "garments_fetch_completeness": "incomplete",
+        "garments_final_row_count": 42,
+        "garments_budget_state": "near_limit",
+        "is_incomplete": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_profiler_payload_surfaces_td_garment_incomplete_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    persisted_summaries: list[dict] = []
+    monkeypatch.setattr(
+        profiler,
+        "config",
+        SimpleNamespace(database_url="sqlite+aiosqlite:///:memory:", run_env="test"),
+    )
+    monkeypatch.setattr(
+        profiler,
+        "get_logger",
+        lambda **kwargs: profiler.JsonLogger(run_id=kwargs.get("run_id"), log_file_path=None),
+    )
+
+    async def fake_fetch_pipeline_id(**_kwargs: object) -> int:
+        return 101
+
+    async def fake_load_store_profiles(**_kwargs: object) -> list[StoreProfile]:
+        return [
+            StoreProfile(
+                store_code="TD01",
+                store_name="TD Store",
+                cost_center="CC-TD01",
+                sync_config={},
+                start_date=None,
+            )
+        ]
+
+    async def fake_process_store(**_kwargs: object) -> StoreRunResult:
+        status_counts = profiler._init_status_counts()
+        status_counts["success_with_warnings"] = 1
+        return StoreRunResult(
+            store_code="TD01",
+            pipeline_group="TD",
+            pipeline_name="td_orders_sync",
+            cost_center="CC-TD01",
+            overall_status="success_with_warnings",
+            window_count=1,
+            windows=[(date(2024, 2, 1), date(2024, 2, 2))],
+            status_counts=status_counts,
+            window_audit=[
+                {
+                    "store_code": "TD01",
+                    "from_date": "2024-02-01",
+                    "to_date": "2024-02-02",
+                    "status": "success_with_warnings",
+                    "td_garment_warning": {
+                        "garments_fetch_completeness": "incomplete",
+                        "garments_final_row_count": 17,
+                        "garments_budget_state": "near_limit",
+                        "is_incomplete": True,
+                    },
+                    "warning_count": 1,
+                    "ingestion_counts": {},
+                }
+            ],
+            ingestion_totals=profiler._init_ingestion_totals(),
+            row_facts=_init_row_facts(),
+        )
+
+    async def fake_insert_run_summary(_database_url: str, summary_record: dict) -> None:
+        persisted_summaries.append(summary_record)
+
+    async def fake_persist_missing_windows_log_rows(**_kwargs: object) -> None:
+        return None
+
+    async def fake_send_notifications_for_run(_pipeline_name: str, _run_id: str) -> dict:
+        return {"emails_planned": 1, "emails_sent": 1, "errors": []}
+
+    monkeypatch.setattr(profiler, "_fetch_pipeline_id", fake_fetch_pipeline_id)
+    monkeypatch.setattr(profiler, "_load_store_profiles", fake_load_store_profiles)
+    monkeypatch.setattr(profiler, "_process_store", fake_process_store)
+    monkeypatch.setattr(profiler, "insert_run_summary", fake_insert_run_summary)
+    monkeypatch.setattr(profiler, "_persist_missing_windows_log_rows", fake_persist_missing_windows_log_rows)
+    monkeypatch.setattr(profiler, "send_notifications_for_run", fake_send_notifications_for_run)
+
+    await profiler.main(sync_group="TD", max_workers=1, run_env="test", run_id="profiler-td-garment")
+
+    summary = persisted_summaries[0]
+    payload = summary["metrics_json"]["notification_payload"]
+    store = payload["stores"][0]
+
+    assert summary["overall_status"] == "success_with_warnings"
+    assert store["td_garment_warning_count"] == 1
+    assert store["td_garment_incomplete_windows"] == [
+        {
+            "store_code": "TD01",
+            "from_date": "2024-02-01",
+            "to_date": "2024-02-02",
+            "garments_fetch_completeness": "incomplete",
+            "garments_final_row_count": 17,
+            "garments_budget_state": "near_limit",
+        }
+    ]
+    assert any("TD_GARMENT_WARNINGS: TD01" in warning for warning in payload["warnings"])
+    assert "final_garment_rows=17" in summary["summary_text"]
