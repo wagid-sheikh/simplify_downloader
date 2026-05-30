@@ -28,6 +28,8 @@ def test_pending_deliveries_cron_path_always_regenerates_without_force_gate() ->
     )
 
     assert "report CLIs always regenerate" in cron_source
+    assert 'ORDERS_MAX_ATTEMPTS="${ORDERS_MAX_ATTEMPTS:-3}"' in cron_source
+    assert 'ORDERS_RETRY_DELAY_SECONDS="${ORDERS_RETRY_DELAY_SECONDS:-30}"' in cron_source
     assert "PENDING_DELIVERIES_REGENERATE_ARGS" not in cron_source
     assert 'run_local_reports_pending_deliveries.sh"' in cron_source
     assert "pending-deliveries --env prod --force" not in local_pending_source
@@ -169,6 +171,7 @@ def test_cron_fail_fast_on_deterministic_code_error(tmp_path: Path) -> None:
     log_text = log_files[-1].read_text(encoding="utf-8")
     assert "deterministic code error detected; failing fast without retries" in log_text
     assert "retry_skipped_reason=deterministic_code_error" in log_text
+    assert "failure_class=deterministic_code_failure" in log_text
     assert "attempt 2/4 starting" not in log_text
 
 
@@ -242,6 +245,7 @@ exit 0
     assert log_files
     log_text = log_files[-1].read_text(encoding="utf-8")
     assert "tcp_connectivity_preflight_failed_summary exit_code=7" in log_text
+    assert "failure_class=connectivity_preflight_failure" in log_text
     assert "orders_sync_run_profiler skipped because tcp_connectivity_preflight failed" in log_text
     assert "orders_sync_run_profiler_rc=7" in log_text
     assert "Running Script 1: orders_sync_run_profiler" not in log_text
@@ -423,3 +427,191 @@ exit 0
     assert "orders_sync_preflight_classification=app_layer_failed" in log_text
     assert "orders sync tcp_connectivity_preflight completed" not in log_text
     assert "tcp_connectivity_preflight_succeeded" not in log_text
+
+
+def test_cron_retries_transient_orders_profiler_failure(tmp_path: Path) -> None:
+    repo_root = tmp_path
+    scripts_dir = repo_root / "scripts"
+    logs_dir = repo_root / "logs"
+    tmp_dir = repo_root / "tmp"
+    scripts_dir.mkdir(parents=True)
+    logs_dir.mkdir()
+    tmp_dir.mkdir()
+
+    source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
+    _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
+    _write_successful_preflight(scripts_dir)
+    _write_executable(
+        scripts_dir / "orders_sync_run_profiler.sh",
+        """#!/usr/bin/env bash
+COUNT_FILE="${TMPDIR:-/tmp}/orders-call-count"
+count=0
+[[ -f "${COUNT_FILE}" ]] && count=$(cat "${COUNT_FILE}")
+count=$((count + 1))
+printf '%s' "${count}" > "${COUNT_FILE}"
+if [[ "${count}" -eq 1 ]]; then
+  echo 'playwright._impl._errors.TimeoutError: Navigation timeout of 30000 ms exceeded' >&2
+  exit 1
+fi
+echo '{"run_id":"orders-transient-success"}'
+exit 0
+""",
+    )
+    _write_executable(scripts_dir / "run_local_reports_pending_deliveries.sh", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(scripts_dir / "run_local_reports_daily_sales.sh", "#!/usr/bin/env bash\nexit 0\n")
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "2",
+            "ORDERS_RETRY_DELAY_SECONDS": "0",
+            "ORDERS_RETRY_JITTER_SECONDS": "0",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "TMPDIR": str(tmp_path),
+        }
+    )
+
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert (tmp_path / "orders-call-count").read_text(encoding="utf-8") == "2"
+
+    log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
+    assert log_files
+    log_text = log_files[-1].read_text(encoding="utf-8")
+    assert "failure_class=transient_playwright_navigation_failure" in log_text
+    assert "transient Playwright/navigation failure detected" in log_text
+    assert "Script 1: orders_sync_run_profiler: attempt 2/2 starting" in log_text
+    assert "orders_sync_run_profiler_rc=0" in log_text
+
+
+def test_cron_does_not_retry_deterministic_orders_profiler_error(tmp_path: Path) -> None:
+    repo_root = tmp_path
+    scripts_dir = repo_root / "scripts"
+    logs_dir = repo_root / "logs"
+    tmp_dir = repo_root / "tmp"
+    scripts_dir.mkdir(parents=True)
+    logs_dir.mkdir()
+    tmp_dir.mkdir()
+
+    source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
+    _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
+    _write_successful_preflight(scripts_dir)
+    _write_executable(
+        scripts_dir / "orders_sync_run_profiler.sh",
+        """#!/usr/bin/env bash
+COUNT_FILE="${TMPDIR:-/tmp}/orders-call-count"
+count=0
+[[ -f "${COUNT_FILE}" ]] && count=$(cat "${COUNT_FILE}")
+count=$((count + 1))
+printf '%s' "${count}" > "${COUNT_FILE}"
+echo 'SyntaxError: invalid syntax' >&2
+exit 1
+""",
+    )
+    _write_executable(scripts_dir / "run_local_reports_pending_deliveries.sh", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(scripts_dir / "run_local_reports_daily_sales.sh", "#!/usr/bin/env bash\nexit 0\n")
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "3",
+            "ORDERS_RETRY_DELAY_SECONDS": "0",
+            "ORDERS_RETRY_JITTER_SECONDS": "0",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "TMPDIR": str(tmp_path),
+        }
+    )
+
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert (tmp_path / "orders-call-count").read_text(encoding="utf-8") == "1"
+
+    log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
+    assert log_files
+    log_text = log_files[-1].read_text(encoding="utf-8")
+    assert "failure_class=deterministic_code_failure" in log_text
+    assert "retry_skipped_reason=deterministic_code_error" in log_text
+    assert "Script 1: orders_sync_run_profiler: attempt 2/3 starting" not in log_text
+
+
+def test_cron_retries_persisted_profiler_failed_status(tmp_path: Path) -> None:
+    repo_root = tmp_path
+    scripts_dir = repo_root / "scripts"
+    logs_dir = repo_root / "logs"
+    tmp_dir = repo_root / "tmp"
+    scripts_dir.mkdir(parents=True)
+    logs_dir.mkdir()
+    tmp_dir.mkdir()
+
+    source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
+    _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
+    _write_successful_preflight(scripts_dir)
+    _write_executable(
+        scripts_dir / "orders_sync_run_profiler.sh",
+        """#!/usr/bin/env bash
+COUNT_FILE="${TMPDIR:-/tmp}/orders-call-count"
+count=0
+[[ -f "${COUNT_FILE}" ]] && count=$(cat "${COUNT_FILE}")
+count=$((count + 1))
+printf '%s' "${count}" > "${COUNT_FILE}"
+if [[ "${count}" -eq 1 ]]; then
+  echo 'orders sync final profiler overall_status=failed' >&2
+  exit 1
+fi
+exit 0
+""",
+    )
+    _write_executable(scripts_dir / "run_local_reports_pending_deliveries.sh", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(scripts_dir / "run_local_reports_daily_sales.sh", "#!/usr/bin/env bash\nexit 0\n")
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "2",
+            "ORDERS_RETRY_DELAY_SECONDS": "0",
+            "ORDERS_RETRY_JITTER_SECONDS": "0",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "TMPDIR": str(tmp_path),
+        }
+    )
+
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert (tmp_path / "orders-call-count").read_text(encoding="utf-8") == "2"
+
+    log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
+    assert log_files
+    log_text = log_files[-1].read_text(encoding="utf-8")
+    assert "failure_class=persisted_profiler_failed_status" in log_text
+    assert "persisted profiler overall_status=failed" in log_text
+    assert "Script 1: orders_sync_run_profiler: attempt 2/2 starting" in log_text

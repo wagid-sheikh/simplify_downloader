@@ -77,8 +77,11 @@ STALE_LOCK_MAX_AGE_SECONDS="${STALE_LOCK_MAX_AGE_SECONDS:-7200}"
 ALLOW_STALE_OWNER_TERMINATION="${ALLOW_STALE_OWNER_TERMINATION:-0}"
 CRON_HOME="${CRON_HOME:-${HOME:-/tmp}}"
 CRON_PATH="${CRON_PATH:-/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
-ORDERS_MAX_ATTEMPTS="${ORDERS_MAX_ATTEMPTS:-1}"
-ORDERS_RETRY_DELAY_SECONDS="${ORDERS_RETRY_DELAY_SECONDS:-5}"
+ORDERS_MAX_ATTEMPTS="${ORDERS_MAX_ATTEMPTS:-3}"
+ORDERS_RETRY_DELAY_SECONDS="${ORDERS_RETRY_DELAY_SECONDS:-30}"
+ORDERS_RETRY_BACKOFF_MULTIPLIER="${ORDERS_RETRY_BACKOFF_MULTIPLIER:-2}"
+ORDERS_RETRY_MAX_DELAY_SECONDS="${ORDERS_RETRY_MAX_DELAY_SECONDS:-300}"
+ORDERS_RETRY_JITTER_SECONDS="${ORDERS_RETRY_JITTER_SECONDS:-10}"
 DAILY_MAX_ATTEMPTS="${DAILY_MAX_ATTEMPTS:-3}"
 DAILY_RETRY_DELAY_SECONDS="${DAILY_RETRY_DELAY_SECONDS:-10}"
 PENDING_MAX_ATTEMPTS="${PENDING_MAX_ATTEMPTS:-3}"
@@ -613,6 +616,7 @@ log "LOCK_WAIT_SECONDS=${LOCK_WAIT_SECONDS}"
 log "LOCK_POLL_SECONDS=${LOCK_POLL_SECONDS}"
 log "SAFE_MODE=${SAFE_MODE}"
 log "ORDERS_MAX_ATTEMPTS=${ORDERS_MAX_ATTEMPTS} ORDERS_RETRY_DELAY_SECONDS=${ORDERS_RETRY_DELAY_SECONDS}"
+log "ORDERS_RETRY_BACKOFF_MULTIPLIER=${ORDERS_RETRY_BACKOFF_MULTIPLIER} ORDERS_RETRY_MAX_DELAY_SECONDS=${ORDERS_RETRY_MAX_DELAY_SECONDS} ORDERS_RETRY_JITTER_SECONDS=${ORDERS_RETRY_JITTER_SECONDS}"
 log "DAILY_MAX_ATTEMPTS=${DAILY_MAX_ATTEMPTS} DAILY_RETRY_DELAY_SECONDS=${DAILY_RETRY_DELAY_SECONDS}"
 log "MTD_SAME_DAY_MAX_ATTEMPTS=${MTD_SAME_DAY_MAX_ATTEMPTS} MTD_SAME_DAY_RETRY_DELAY_SECONDS=${MTD_SAME_DAY_RETRY_DELAY_SECONDS}"
 log "PENDING_MAX_ATTEMPTS=${PENDING_MAX_ATTEMPTS} PENDING_RETRY_DELAY_SECONDS=${PENDING_RETRY_DELAY_SECONDS}"
@@ -642,6 +646,9 @@ run_step() {
   local step_cmd="$2"
   local max_attempts="${3:-1}"
   local retry_delay_seconds="${4:-5}"
+  local retry_jitter_seconds="${5:-0}"
+  local retry_backoff_multiplier="${6:-1}"
+  local retry_max_delay_seconds="${7:-${retry_delay_seconds}}"
   local step_start
   local step_end
   local duration
@@ -649,11 +656,29 @@ run_step() {
   local rc=0
   local attempt_log_file
   local report_date
+  local sleep_seconds
+  local jitter_seconds
   report_date="$(extract_report_date_from_cmd "${step_cmd}")"
+
+  if ! [[ "${max_attempts}" =~ ^[0-9]+$ ]] || [[ "${max_attempts}" -lt 1 ]]; then
+    max_attempts=1
+  fi
+  if ! [[ "${retry_delay_seconds}" =~ ^[0-9]+$ ]]; then
+    retry_delay_seconds=5
+  fi
+  if ! [[ "${retry_jitter_seconds}" =~ ^[0-9]+$ ]]; then
+    retry_jitter_seconds=0
+  fi
+  if ! [[ "${retry_backoff_multiplier}" =~ ^[0-9]+$ ]] || [[ "${retry_backoff_multiplier}" -lt 1 ]]; then
+    retry_backoff_multiplier=1
+  fi
+  if ! [[ "${retry_max_delay_seconds}" =~ ^[0-9]+$ ]]; then
+    retry_max_delay_seconds="${retry_delay_seconds}"
+  fi
 
   section "Running ${step_name}"
   log "Command: ${step_cmd}"
-  log "Attempts configured: ${max_attempts}; retry_delay_seconds=${retry_delay_seconds}"
+  log "Attempts configured: ${max_attempts}; retry_delay_seconds=${retry_delay_seconds}; retry_backoff_multiplier=${retry_backoff_multiplier}; retry_max_delay_seconds=${retry_max_delay_seconds}; retry_jitter_seconds=${retry_jitter_seconds}"
 
   while [[ "${attempt}" -le "${max_attempts}" ]]; do
     log "${step_name}: attempt ${attempt}/${max_attempts} starting (report_date=${report_date}, regenerate=true)"
@@ -675,11 +700,12 @@ run_step() {
       if is_deterministic_code_error "${attempt_log_file}"; then
         step_end="$(date +%s)"
         duration=$((step_end - step_start))
-        log "ERROR: ${step_name}: deterministic code error detected; failing fast without retries (exit_code=${rc}, duration=${duration}s)."
+        log "ERROR: ${step_name}: failure_class=deterministic_code_failure; deterministic code error detected; failing fast without retries (exit_code=${rc}, duration=${duration}s)."
         log "ERROR: ${step_name}: retry_skipped_reason=deterministic_code_error"
         rm -f "${attempt_log_file}" 2>/dev/null || true
         return "${rc}"
       fi
+      log_retryable_failure_classification "${step_name}" "${attempt_log_file}" "${rc}"
       rm -f "${attempt_log_file}" 2>/dev/null || true
     fi
     step_end="$(date +%s)"
@@ -688,13 +714,60 @@ run_step() {
 
     attempt=$((attempt + 1))
     if [[ "${attempt}" -le "${max_attempts}" ]]; then
-      log "${step_name}: sleeping ${retry_delay_seconds}s before retry"
-      sleep "${retry_delay_seconds}"
+      sleep_seconds="${retry_delay_seconds}"
+      if [[ "${retry_max_delay_seconds}" -gt 0 && "${sleep_seconds}" -gt "${retry_max_delay_seconds}" ]]; then
+        sleep_seconds="${retry_max_delay_seconds}"
+      fi
+      jitter_seconds=0
+      if [[ "${retry_jitter_seconds}" -gt 0 ]]; then
+        jitter_seconds=$((RANDOM % (retry_jitter_seconds + 1)))
+      fi
+      sleep_seconds=$((sleep_seconds + jitter_seconds))
+      log "${step_name}: sleeping ${sleep_seconds}s before retry (base_delay_seconds=${retry_delay_seconds}, jitter_seconds=${jitter_seconds}, next_base_delay_seconds=$((retry_delay_seconds * retry_backoff_multiplier)))"
+      sleep "${sleep_seconds}"
+      retry_delay_seconds=$((retry_delay_seconds * retry_backoff_multiplier))
+      if [[ "${retry_max_delay_seconds}" -gt 0 && "${retry_delay_seconds}" -gt "${retry_max_delay_seconds}" ]]; then
+        retry_delay_seconds="${retry_max_delay_seconds}"
+      fi
     fi
   done
 
   log "ERROR: ${step_name} failed after ${max_attempts} attempts"
   return "${rc}"
+}
+
+log_retryable_failure_classification() {
+  local step_name="$1"
+  local output_file="$2"
+  local rc="$3"
+
+  if [[ ! -f "${output_file}" ]]; then
+    log "WARNING: ${step_name}: failure_class=transient_or_unknown; no attempt output available; retrying if attempts remain (exit_code=${rc})."
+    return 0
+  fi
+
+  if output_matches_pattern "${output_file}" "overall_status[=\": ]+failed|persisted.*overall_status.*failed|final profiler overall_status.*failed"; then
+    log "WARNING: ${step_name}: failure_class=persisted_profiler_failed_status; persisted profiler overall_status=failed; retrying if attempts remain (exit_code=${rc})."
+    return 0
+  fi
+
+  if output_matches_pattern "${output_file}" "Playwright|TimeoutError|Navigation timeout|net::ERR_|ERR_NAME_NOT_RESOLVED|ERR_CONNECTION|ERR_TIMED_OUT|Target page, context or browser has been closed|browser has disconnected"; then
+    log "WARNING: ${step_name}: failure_class=transient_playwright_navigation_failure; transient Playwright/navigation failure detected; retrying if attempts remain (exit_code=${rc})."
+    return 0
+  fi
+
+  log "WARNING: ${step_name}: failure_class=transient_or_unknown; retrying if attempts remain (exit_code=${rc})."
+}
+
+output_matches_pattern() {
+  local output_file="$1"
+  local pattern="$2"
+
+  if command -v rg >/dev/null 2>&1; then
+    rg -qi "${pattern}" "${output_file}"
+  else
+    grep -Eiq "${pattern}" "${output_file}"
+  fi
 }
 
 is_deterministic_code_error() {
@@ -707,11 +780,7 @@ is_deterministic_code_error() {
   local deterministic_error_pattern
   deterministic_error_pattern="TypeError|SyntaxError|ImportError|ModuleNotFoundError|UndefinedFunctionError|UndefinedColumnError|psycopg2\\.errors\\.UndefinedFunction|psycopg2\\.errors\\.UndefinedColumn|sqlalchemy\\.exc\\.ProgrammingError|\\bProgrammingError\\b"
 
-  if command -v rg >/dev/null 2>&1; then
-    if rg -q "${deterministic_error_pattern}" "${output_file}"; then
-      return 0
-    fi
-  elif grep -Eq "${deterministic_error_pattern}" "${output_file}"; then
+  if output_matches_pattern "${output_file}" "${deterministic_error_pattern}"; then
     return 0
   fi
 
@@ -760,7 +829,7 @@ run_orders_connectivity_preflight() {
   duration=$((preflight_end - preflight_start))
 
   if [[ "${rc}" -ne 0 ]]; then
-    log "ERROR: orders sync tcp_connectivity_preflight failed with classification=${ORDERS_SYNC_PREFLIGHT_CLASSIFICATION} exit_code=${rc} after ${duration}s; skipping orders_sync_run_profiler before Playwright launch."
+    log "ERROR: failure_class=connectivity_preflight_failure; orders sync tcp_connectivity_preflight failed with classification=${ORDERS_SYNC_PREFLIGHT_CLASSIFICATION} exit_code=${rc} after ${duration}s; skipping orders_sync_run_profiler before Playwright launch."
     return "${rc}"
   fi
 
@@ -866,6 +935,9 @@ PY
   log "orders_sync_overall_status=${overall_status}"
 
   if [[ "${overall_status}" = "failed" || -n "${failed_stores}" ]]; then
+    if [[ "${overall_status}" = "failed" ]]; then
+      log "ERROR: failure_class=persisted_profiler_failed_status; persisted profiler overall_status=failed for run_id=${run_id:-unknown}."
+    fi
     log "ERROR: ORDERS SYNC WARNING: profiler run_id=${run_id:-unknown} overall_status=${overall_status} failed_stores=${failed_store_array} (script_rc=${orders_rc})"
   fi
 }
@@ -880,7 +952,7 @@ run_started_epoch="$(date +%s)"
 # for persisted overall_status="failed"; keep recording orders_rc while allowing
 # the report pipeline steps to run.
 if run_orders_connectivity_preflight; then
-  run_step "Script 1: orders_sync_run_profiler" "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS} ORDERS_SYNC_SKIP_CONNECTIVITY_PREFLIGHT=1 ./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" || orders_rc=$?
+  run_step "Script 1: orders_sync_run_profiler" "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS} ORDERS_SYNC_SKIP_CONNECTIVITY_PREFLIGHT=1 ./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" "${ORDERS_RETRY_JITTER_SECONDS}" "${ORDERS_RETRY_BACKOFF_MULTIPLIER}" "${ORDERS_RETRY_MAX_DELAY_SECONDS}" || orders_rc=$?
 else
   orders_rc=$?
   log "Script 1: orders_sync_run_profiler skipped because tcp_connectivity_preflight failed (classification=${ORDERS_SYNC_PREFLIGHT_CLASSIFICATION}, orders_sync_run_profiler_rc=${orders_rc})."
