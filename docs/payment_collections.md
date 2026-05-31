@@ -50,7 +50,7 @@ This table is the verified payment evidence table for current payment reconcilia
 - Group-short rows are allocated sequentially by `order_date ASC, order_number ASC` before deciding which orders are short.
 - `TO_BE_RECOVERED` and `TO_BE_COMPENSATED` are excluded from normal missing-payment rows.
 - `RECOVERED`, `COMPENSATED`, and `WRITE_OFF` are excluded from normal pending-delivery buckets.
-- `Actual Payments Not Found` remains date-window based for Daily/MTD reports unless separately changed.
+- `Actual Payments Not Found` is intentionally current/open across all order dates; Daily/MTD report windows do not restrict it. Eligibility requires a `sales` row and no valid qualifying payment proof.
 - A separate `Short Payment` sub-report is required for underpaid orders; it must not be merged into `Actual Payments Not Found`.
 - `Short Payment` is a current/open action list across all order dates. It behaves like `TO_BE_RECOVERED` by showing current unresolved action rows, and Daily/MTD report date windows do not restrict Short Payment eligibility.
 - Short Payment still excludes `TO_BE_RECOVERED`, `TO_BE_COMPENSATED`, `RECOVERED`, `COMPENSATED`, `WRITE_OFF`, and zero-value orders.
