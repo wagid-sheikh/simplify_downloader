@@ -1,10 +1,12 @@
 import asyncio
 import io
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.dashboard_downloader import run_downloads
 from app.dashboard_downloader.json_logger import JsonLogger
+from app.dashboard_downloader.run_summary import RunAggregator
 from app.dashboard_downloader.run_downloads import (
     HOME_URL,
     LOGIN_URL,
@@ -184,3 +186,84 @@ def test_capture_bootstrap_artifacts_skips_dom_logging(monkeypatch, tmp_path):
     assert "html_dump" not in extras
     assert page.content_called is False
     assert not list(artifacts_dir.glob("*.html"))
+
+
+def test_bootstrap_logs_warning_when_disconnect_recovers_via_fresh_login(monkeypatch, tmp_path):
+    log_stream = io.StringIO()
+    logger = JsonLogger(run_id="test-recovered", stream=log_stream, log_file_path=None)
+    aggregator = RunAggregator(
+        run_id="test-recovered", run_env="test", store_codes=["001"]
+    )
+    logger.aggregator = aggregator
+
+    fake_context = FakeContext()
+    page = FakePage(context=fake_context)
+    retry = {
+        "attempt": 3,
+        "max_attempts": 3,
+        "target_url": HOME_URL,
+        "error_type": "TimeoutError",
+        "error_message": "internet disconnected",
+        "retry_context": "bootstrap_session_probe",
+    }
+
+    async def fake_run_session_probe(*_args, **_kwargs):
+        aggregator.record_log_event(
+            {
+                "phase": "download",
+                "status": "error",
+                "message": "navigation attempt failed",
+                "store_code": "001",
+                "extras": retry,
+            }
+        )
+        return False, {"terminal_retry_exhausted": True, "retry": retry}, fake_context
+
+    async def fake_navigate_with_retry(page, url, timeout_ms, logger=None, store_code=None):
+        page.url = TD_BASE_URL if "login" in url else url
+        return page, FakeResponse(status=200)
+
+    async def fake_perform_login(*_args, **_kwargs):
+        return {"post_login_url": TD_BASE_URL, "still_login_page": False}
+
+    async def fake_persist_storage_state(ctx, *, target_path, logger, store_code):
+        return tmp_path / "state.json"
+
+    async def fake_navigate_via_home(page, store_cfg, logger, **kwargs):
+        return page
+
+    monkeypatch.setattr(run_downloads, "_run_session_probe", fake_run_session_probe)
+    monkeypatch.setattr(run_downloads, "navigate_with_retry", fake_navigate_with_retry)
+    monkeypatch.setattr(run_downloads, "_perform_login_flow", fake_perform_login)
+    monkeypatch.setattr(run_downloads, "_persist_storage_state", fake_persist_storage_state)
+    monkeypatch.setattr(run_downloads, "_navigate_via_home_to_dashboard", fake_navigate_via_home)
+    monkeypatch.setattr(run_downloads, "_is_login_page", _async_false)
+    monkeypatch.setattr(run_downloads, "_resolve_global_credentials", lambda _settings: ("user", "pass"))
+
+    result_page = run(
+        _bootstrap_session_via_home_and_tracker(
+            page,
+            {"store_code": "001", "home_url": HOME_URL, "login_url": LOGIN_URL},
+            logger,
+            settings=None,
+            storage_state_file=None,
+            storage_state_source=None,
+            nav_timeout_ms=5_000,
+        )
+    )
+    aggregator.record_log_event({"phase": "audit", "status": "ok", "message": "audit complete"})
+
+    assert result_page is page
+    assert aggregator.overall_status() == "warning"
+    telemetry = aggregator.build_record(finished_at=datetime.now(timezone.utc))["metrics_json"][
+        "bootstrap_retry_telemetry"
+    ]
+    assert telemetry["recovered_count"] == 1
+    logs = [json.loads(line) for line in log_stream.getvalue().splitlines() if line.strip()]
+    assert any(
+        entry.get("message") == "bootstrap connectivity recovered successfully"
+        and entry.get("status") == "warning"
+        and entry.get("extras", {}).get("recovery_strategy")
+        == "fresh_login"
+        for entry in logs
+    )

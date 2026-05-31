@@ -120,6 +120,9 @@ class RunAggregator:
             "breaches": [],
         }
     )
+    bootstrap_retry_telemetry: Dict[str, Any] = field(
+        default_factory=lambda: {"incidents": [], "recovered_count": 0}
+    )
 
     def _add_issue(self, detail: str) -> None:
         if detail not in self.issues:
@@ -240,6 +243,7 @@ class RunAggregator:
             self._add_issue(detail)
 
         self._record_data_quality_from_event(payload)
+        self._record_bootstrap_retry_telemetry(payload, status=status)
 
         if phase == "download" and payload.get("message") == "store download completed":
             store_code = payload.get("store_code")
@@ -255,6 +259,62 @@ class RunAggregator:
         if phase == "report_email":
             self.email_metrics["last_message"] = payload.get("message")
             self.email_metrics["status"] = status
+
+    def _record_bootstrap_retry_telemetry(
+        self, payload: Mapping[str, Any], *, status: str
+    ) -> None:
+        """Reclassify only terminal bootstrap-probe errors that later recover."""
+
+        if payload.get("phase") != "download":
+            return
+
+        message = str(payload.get("message") or "")
+        extras = payload.get("extras") or {}
+        if not isinstance(extras, Mapping):
+            return
+
+        retry_context = extras.get("retry_context")
+        if (
+            message == "navigation attempt failed"
+            and status == "error"
+            and retry_context == "bootstrap_session_probe"
+        ):
+            self.bootstrap_retry_telemetry.setdefault("incidents", []).append(
+                {
+                    "retry_context": retry_context,
+                    "status": "error",
+                    "recovered": False,
+                    "retry": dict(extras),
+                }
+            )
+            return
+
+        recovered_context = extras.get("recovered_retry_context")
+        if (
+            message != "bootstrap connectivity recovered successfully"
+            or status != "warning"
+            or recovered_context != "bootstrap_session_probe"
+        ):
+            return
+
+        for incident in reversed(self.bootstrap_retry_telemetry.setdefault("incidents", [])):
+            if incident.get("retry_context") != recovered_context or incident.get("recovered"):
+                continue
+            incident.update(
+                {
+                    "status": "warning",
+                    "recovered": True,
+                    "recovery_strategy": extras.get("recovery_strategy"),
+                }
+            )
+            self.bootstrap_retry_telemetry["recovered_count"] = int(
+                self.bootstrap_retry_telemetry.get("recovered_count", 0) or 0
+            ) + 1
+            # The recovery event already added one warning. Remove only the
+            # matching terminal probe error; unrelated completion failures stay fatal.
+            counters = self.phase_counters["download"]
+            counters["error"] = max(0, int(counters.get("error", 0) or 0) - 1)
+            break
 
     def set_report_date(self, report_date: date) -> None:
         self.report_date = report_date
@@ -343,6 +403,7 @@ class RunAggregator:
             "email": dict(self.email_metrics),
             "issues": list(self.issues),
             "data_quality_warnings": self.data_quality_warnings,
+            "bootstrap_retry_telemetry": self.bootstrap_retry_telemetry,
         }
 
     def _phase_status(self, phase: str) -> str:
@@ -379,6 +440,14 @@ class RunAggregator:
         missed_leads = self.bucket_metrics.get("missed_leads", {})
         missed_downloads = missed_leads.get("stores", {}) or {}
         missed_ingested = missed_leads.get("ingested_by_store", {}) or {}
+        recovered_bootstrap_count = int(
+            self.bootstrap_retry_telemetry.get("recovered_count", 0) or 0
+        )
+        if recovered_bootstrap_count:
+            lines.append(
+                "- Bootstrap connectivity recovered successfully "
+                f"after terminal retry exhaustion: {recovered_bootstrap_count} incident(s)"
+            )
         breaches = self.data_quality_warnings.get("breaches") or []
         if breaches:
             lines.append("- Data quality warning thresholds:")
