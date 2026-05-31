@@ -193,6 +193,8 @@ def _build_context(
             }
         )
     orders_sync_upstream = orders_sync_upstream or build_orders_sync_upstream_context()
+    integrity_findings = list(getattr(data, "integrity_findings", []))
+    integrity_has_errors = any(finding.severity == "error" for finding in integrity_findings)
     return {
         "company_name": "The Shaw Ventures",
         "report_date_display": report_date_display,
@@ -201,6 +203,8 @@ def _build_context(
         "orders_sync_upstream_run_id": orders_sync_upstream.run_id or "",
         "orders_sync_is_degraded": orders_sync_upstream.is_degraded,
         "orders_sync_warning_text": orders_sync_upstream.warning_text,
+        "integrity_findings": integrity_findings,
+        "integrity_has_errors": integrity_has_errors,
         "rows": data.rows,
         "totals": data.totals,
         "edited_orders": data.edited_orders,
@@ -457,7 +461,20 @@ async def _run(
             edited_orders=len(data.edited_orders),
             missing_payment_rows=len(data.missing_payment_rows),
             short_payment_rows=len(getattr(data, "short_payment_rows", [])),
+            integrity_findings=len(getattr(data, "integrity_findings", [])),
         )
+        integrity_findings = list(getattr(data, "integrity_findings", []))
+        integrity_errors = [finding for finding in integrity_findings if finding.severity == "error"]
+        integrity_warnings = [finding for finding in integrity_findings if finding.severity == "warning"]
+        if integrity_findings:
+            tracker.mark_phase("validate_integrity", "warning")
+            tracker.add_summary(
+                f"Daily Sales integrity findings: {len(integrity_errors)} hard error(s), "
+                f"{len(integrity_warnings)} warning(s). "
+                + " ".join(finding.message for finding in integrity_findings)
+            )
+        else:
+            tracker.mark_phase("validate_integrity", "ok")
 
         context = _build_context(data, run_env, orders_sync_upstream)
         html = _render_html(context)
@@ -773,6 +790,10 @@ async def _run(
             "orders_sync_is_degraded": orders_sync_upstream.is_degraded,
             "rows": len(data.rows),
             "edited_orders": len(data.edited_orders),
+            "integrity_findings": [finding.as_metrics_payload() for finding in integrity_findings],
+            "integrity_error_count": len(integrity_errors),
+            "integrity_warning_count": len(integrity_warnings),
+            "integrity_invalid_data_report": bool(integrity_errors),
             "mtd_attachment_generated": mtd_attachment_generated,
             "mtd_attachment_row_count": len(mtd_rows),
             "mtd_attachment_error": mtd_attachment_error,

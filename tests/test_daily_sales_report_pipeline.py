@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.common.db import session_scope
-from app.reports.daily_sales_report.data import RecoveryOrderRow
+from app.reports.daily_sales_report.data import DailySalesIntegrityFinding, RecoveryOrderRow, _totals_row
 from app.reports.daily_sales_report.to_be_recovered import (
     build_context as build_to_be_recovered_context,
 )
@@ -705,6 +705,14 @@ async def test_daily_pipeline_metrics_are_json_safe_with_short_payment_rows(
             same_day_fulfillment_rows=[],
             missing_payment_rows=[],
             short_payment_rows=[short_payment_row],
+            integrity_findings=[DailySalesIntegrityFinding(
+                severity="error",
+                code="store_ftd_count_mismatch",
+                cost_center="CC1",
+                message="CC1: FTD count does not match the report-day order population.",
+                expected=2,
+                actual=1,
+            )],
         )
 
     async def _fake_mtd_rows(*args, **kwargs):
@@ -744,6 +752,10 @@ async def test_daily_pipeline_metrics_are_json_safe_with_short_payment_rows(
     assert final_record["metrics_json"]["orders_sync_upstream_status"] == "failed"
     assert final_record["metrics_json"]["orders_sync_upstream_run_id"] == "orders-run-1"
     assert final_record["metrics_json"]["orders_sync_is_degraded"] is True
+    assert final_record["metrics_json"]["integrity_error_count"] == 1
+    assert final_record["metrics_json"]["integrity_invalid_data_report"] is True
+    assert final_record["metrics_json"]["integrity_findings"][0]["code"] == "store_ftd_count_mismatch"
+    assert "CC1: FTD count does not match the report-day order population." in final_record["summary_text"]
     assert "Orders sync was degraded before this report; data may be stale or incomplete." in final_record["summary_text"]
     assert final_record["phases_json"]["upstream_orders_sync"]["warning"] == 1
     assert final_record["phases_json"]["send_email"]["ok"] == 1
@@ -1119,3 +1131,19 @@ def test_daily_sales_context_and_template_mark_degraded_orders_sync() -> None:
     assert context["orders_sync_is_degraded"] is True
     assert "Orders sync was degraded before this report; data may be stale or incomplete." in html
     assert "Upstream orders sync status: failed; run ID: orders-run-1" in html
+
+
+
+def test_daily_sales_template_renders_invalid_data_integrity_section() -> None:
+    finding = SimpleNamespace(severity="error", message="CC1: FTD count does not match the report-day order population.")
+    payload = SimpleNamespace(
+        report_date=date(2026, 4, 29), rows=[], totals=_totals_row([]), edited_orders=[],
+        edited_orders_summary=None, edited_orders_totals=None, missed_leads=[], cancelled_leads=[],
+        lead_performance_summary=[], to_be_recovered=[], to_be_compensated=[],
+        to_be_recovered_total_order_value=Decimal("0"), to_be_compensated_total_order_value=Decimal("0"),
+        auto_cleared_order_numbers_text="", same_day_fulfillment_rows=[], missing_payment_rows=[], short_payment_rows=[],
+        report_day_orders_by_cost_center=[], integrity_findings=[finding],
+    )
+    html = pipeline._render_html(pipeline._build_context(payload, "test"))
+    assert "INVALID DATA REPORT" in html
+    assert "CC1: FTD count does not match the report-day order population." in html

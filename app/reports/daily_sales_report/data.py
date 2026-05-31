@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
@@ -99,6 +100,30 @@ class MissingPaymentRow:
 class ReportDayOrdersByCostCenterRow:
     cost_center: str
     order_numbers_text: str
+    order_numbers: List[str] = field(default_factory=list)
+    orders_count: int = 0
+    order_amount: Decimal = Decimal("0")
+    zero_value_orders_count: int = 0
+
+
+@dataclass
+class DailySalesIntegrityFinding:
+    severity: str
+    code: str
+    message: str
+    cost_center: str | None = None
+    expected: str | int | None = None
+    actual: str | int | None = None
+
+    def as_metrics_payload(self) -> dict[str, str | int | None]:
+        return {
+            "severity": self.severity,
+            "code": self.code,
+            "cost_center": self.cost_center,
+            "message": self.message,
+            "expected": self.expected,
+            "actual": self.actual,
+        }
 
 
 @dataclass
@@ -141,6 +166,7 @@ class DailySalesReportData:
     missing_payment_rows: List[MissingPaymentRow] = field(default_factory=list)
     short_payment_rows: List[ShortPaymentRow] = field(default_factory=list)
     report_day_orders_by_cost_center: List[ReportDayOrdersByCostCenterRow] = field(default_factory=list)
+    integrity_findings: List[DailySalesIntegrityFinding] = field(default_factory=list)
 
 
 LEAD_BENCHMARKS = {
@@ -696,6 +722,90 @@ def _totals_row(rows: Iterable[DailySalesRow]) -> DailySalesRow:
     return totals
 
 
+def _build_integrity_findings(
+    *,
+    rows: Iterable[DailySalesRow],
+    totals: DailySalesRow,
+    report_day_orders_by_cost_center: Iterable[ReportDayOrdersByCostCenterRow],
+) -> list[DailySalesIntegrityFinding]:
+    """Reconcile rendered FTD metrics against the descriptive report-day population."""
+
+    rows = list(rows)
+    populations = {row.cost_center: row for row in report_day_orders_by_cost_center}
+    findings: list[DailySalesIntegrityFinding] = []
+    for row in rows:
+        population = populations.get(row.cost_center) or ReportDayOrdersByCostCenterRow(
+            cost_center=row.cost_center, order_numbers_text="-"
+        )
+        if row.orders_count_ftd != population.orders_count:
+            findings.append(DailySalesIntegrityFinding(
+                severity="error",
+                code="store_ftd_count_mismatch",
+                cost_center=row.cost_center,
+                message=f"{row.cost_center}: FTD count does not match the report-day order population.",
+                expected=population.orders_count,
+                actual=row.orders_count_ftd,
+            ))
+        if row.sales_ftd != population.order_amount:
+            findings.append(DailySalesIntegrityFinding(
+                severity="error",
+                code="store_ftd_amount_mismatch",
+                cost_center=row.cost_center,
+                message=f"{row.cost_center}: FTD Order Amount does not match the report-day order population.",
+                expected=str(population.order_amount),
+                actual=str(row.sales_ftd),
+            ))
+        duplicate_order_numbers = sorted(
+            order_number
+            for order_number, count in Counter(population.order_numbers).items()
+            if count > 1
+        )
+        if duplicate_order_numbers:
+            findings.append(DailySalesIntegrityFinding(
+                severity="error",
+                code="duplicate_ftd_order_number",
+                cost_center=row.cost_center,
+                message=f"{row.cost_center}: duplicate report-day order number(s): {', '.join(duplicate_order_numbers)}.",
+                actual=len(duplicate_order_numbers),
+            ))
+        if row.orders_count_ftd > 0 and row.sales_ftd == 0:
+            findings.append(DailySalesIntegrityFinding(
+                severity="warning",
+                code="ftd_orders_with_zero_total_amount",
+                cost_center=row.cost_center,
+                message=f"{row.cost_center}: {row.orders_count_ftd} FTD order(s) have a zero total Order Amount.",
+                actual=row.orders_count_ftd,
+            ))
+        if population.zero_value_orders_count > 1:
+            findings.append(DailySalesIntegrityFinding(
+                severity="warning",
+                code="multiple_zero_value_ftd_orders",
+                cost_center=row.cost_center,
+                message=f"{row.cost_center}: {population.zero_value_orders_count} zero-value FTD orders require review.",
+                actual=population.zero_value_orders_count,
+            ))
+
+    expected_total_count = sum((row.orders_count_ftd for row in rows), 0)
+    expected_total_amount = sum((row.sales_ftd for row in rows), Decimal("0"))
+    if totals.orders_count_ftd != expected_total_count:
+        findings.append(DailySalesIntegrityFinding(
+            severity="error",
+            code="total_ftd_count_mismatch",
+            message="Total FTD count does not equal the sum of store-level FTD counts.",
+            expected=expected_total_count,
+            actual=totals.orders_count_ftd,
+        ))
+    if totals.sales_ftd != expected_total_amount:
+        findings.append(DailySalesIntegrityFinding(
+            severity="error",
+            code="total_ftd_amount_mismatch",
+            message="Total FTD Order Amount does not equal the sum of store-level FTD amounts.",
+            expected=str(expected_total_amount),
+            actual=str(totals.sales_ftd),
+        ))
+    return findings
+
+
 def _edited_totals(rows: Iterable[EditedOrderRow]) -> EditedOrderRow | None:
     rows = list(rows)
     if not rows:
@@ -1004,6 +1114,7 @@ async def fetch_daily_sales_report(
         sa.select(
             orders.c.cost_center.label("cost_center"),
             orders.c.order_number.label("order_number"),
+            orders.c.order_amount.label("order_amount"),
         )
         .where(orders.c.order_date >= ranges["start_day"])
         .where(orders.c.order_date < ranges["next_day"])
@@ -1033,6 +1144,9 @@ async def fetch_daily_sales_report(
                     ),
                     sa.literal("-"),
                 ).label("order_numbers_text"),
+                sa.func.count(report_day_orders_base.c.order_number).label("orders_count"),
+                sa.func.coalesce(sa.func.sum(report_day_orders_base.c.order_amount), 0).label("order_amount"),
+                sa.func.coalesce(sa.func.sum(sa.case((report_day_orders_base.c.order_amount == 0, 1), else_=0)), 0).label("zero_value_orders_count"),
             )
             .select_from(
                 cost_center.outerjoin(
@@ -1052,10 +1166,30 @@ async def fetch_daily_sales_report(
         )
         result = await session.execute(stmt)
         report_day_orders_result = await session.execute(report_day_orders_stmt)
+        report_day_population_result = await session.execute(
+            sa.select(
+                report_day_orders_base.c.cost_center,
+                report_day_orders_base.c.order_number,
+            ).order_by(
+                report_day_orders_base.c.cost_center.asc(),
+                report_day_orders_base.c.order_number.asc(),
+            )
+        )
+        report_day_order_numbers: dict[str, list[str]] = {}
+        for population_entry in report_day_population_result.mappings():
+            if population_entry["order_number"] is None:
+                continue
+            report_day_order_numbers.setdefault(str(population_entry["cost_center"]), []).append(
+                str(population_entry["order_number"])
+            )
         report_day_orders_by_cost_center_rows = [
             ReportDayOrdersByCostCenterRow(
                 cost_center=str(entry["cost_center"]),
                 order_numbers_text=str(entry["order_numbers_text"] or "-"),
+                order_numbers=report_day_order_numbers.get(str(entry["cost_center"]), []),
+                orders_count=int(entry["orders_count"] or 0),
+                order_amount=_decimal(entry["order_amount"]),
+                zero_value_orders_count=int(entry["zero_value_orders_count"] or 0),
             )
             for entry in report_day_orders_result.mappings()
         ]
@@ -1294,6 +1428,11 @@ async def fetch_daily_sales_report(
 
     totals = _totals_row(rows)
     totals.ttd = _calculate_ttd(totals.target, totals.achieved, day_of_month, days_in_month)
+    integrity_findings = _build_integrity_findings(
+        rows=rows,
+        totals=totals,
+        report_day_orders_by_cost_center=report_day_orders_by_cost_center_rows,
+    )
     edited_totals = _edited_totals(edited_rows)
     edited_orders_summary = None
     if edited_rows:
@@ -1721,4 +1860,5 @@ async def fetch_daily_sales_report(
         missing_payment_rows=missing_payment_rows,
         short_payment_rows=short_payment_rows,
         report_day_orders_by_cost_center=report_day_orders_by_cost_center_rows,
+        integrity_findings=integrity_findings,
     )

@@ -1588,6 +1588,12 @@ async def test_fetch_daily_sales_report_report_day_orders_by_cost_center(tmp_pat
         ("BB", "B-001"),
         ("CC", "-"),
     ]
+    alpha_population = report.report_day_orders_by_cost_center[0]
+    assert alpha_population.order_numbers == ["A-001", "A-002", "A-ZERO"]
+    assert alpha_population.orders_count == 3
+    assert alpha_population.order_amount == Decimal("200")
+    assert alpha_population.zero_value_orders_count == 1
+    assert report.integrity_findings == []
 
     # Keep the reporting regression tied to ingestion semantics: a source-supplied
     # zero remains descriptive data, while absent money fields degrade the window.
@@ -2221,3 +2227,96 @@ async def test_auto_clear_keeps_to_be_recovered_when_payment_proof_is_missing(
     assert status["recovery_status"] == "TO_BE_RECOVERED"
     assert status["recovery_category"] == "MISSING_PAYMENT"
     assert status["recovery_notes"] is None
+
+
+
+def _integrity_daily_row(*, count: int, amount: str):
+    row = _data_module._totals_row([])
+    row.cost_center = "CC1"
+    row.cost_center_name = "Store One"
+    row.orders_count_ftd = count
+    row.sales_ftd = Decimal(amount)
+    return row
+
+
+def _integrity_findings(*, row_count: int, row_amount: str, order_numbers: list[str], population_amount: str, zero_count: int = 0):
+    row = _integrity_daily_row(count=row_count, amount=row_amount)
+    totals = _data_module._totals_row([row])
+    population = _data_module.ReportDayOrdersByCostCenterRow(
+        cost_center="CC1",
+        order_numbers_text=", ".join(order_numbers) or "-",
+        order_numbers=order_numbers,
+        orders_count=len(order_numbers),
+        order_amount=Decimal(population_amount),
+        zero_value_orders_count=zero_count,
+    )
+    return _data_module._build_integrity_findings(
+        rows=[row], totals=totals, report_day_orders_by_cost_center=[population]
+    )
+
+
+def test_daily_sales_integrity_matching_summary_and_order_number_list() -> None:
+    findings = _integrity_findings(
+        row_count=2, row_amount="125", order_numbers=["ORD-1", "ORD-2"], population_amount="125"
+    )
+    assert findings == []
+
+
+def test_daily_sales_integrity_explicit_zero_value_order_remains_listed() -> None:
+    findings = _integrity_findings(
+        row_count=1, row_amount="0", order_numbers=["ZERO-1"], population_amount="0", zero_count=1
+    )
+    assert [finding.code for finding in findings] == ["ftd_orders_with_zero_total_amount"]
+
+
+def test_daily_sales_integrity_multiple_zero_value_orders_generate_warning() -> None:
+    findings = _integrity_findings(
+        row_count=2, row_amount="0", order_numbers=["ZERO-1", "ZERO-2"], population_amount="0", zero_count=2
+    )
+    assert [finding.code for finding in findings] == [
+        "ftd_orders_with_zero_total_amount",
+        "multiple_zero_value_ftd_orders",
+    ]
+    assert all(finding.severity == "warning" for finding in findings)
+
+
+def test_daily_sales_integrity_count_mismatch_is_hard_error() -> None:
+    findings = _integrity_findings(
+        row_count=1, row_amount="125", order_numbers=["ORD-1", "ORD-2"], population_amount="125"
+    )
+    assert [(finding.code, finding.severity) for finding in findings] == [
+        ("store_ftd_count_mismatch", "error")
+    ]
+
+
+def test_daily_sales_integrity_amount_mismatch_is_hard_error() -> None:
+    findings = _integrity_findings(
+        row_count=2, row_amount="124", order_numbers=["ORD-1", "ORD-2"], population_amount="125"
+    )
+    assert [(finding.code, finding.severity) for finding in findings] == [
+        ("store_ftd_amount_mismatch", "error")
+    ]
+
+
+def test_daily_sales_integrity_duplicate_order_number_is_hard_error() -> None:
+    findings = _integrity_findings(
+        row_count=2, row_amount="125", order_numbers=["ORD-1", "ORD-1"], population_amount="125"
+    )
+    assert [(finding.code, finding.severity) for finding in findings] == [
+        ("duplicate_ftd_order_number", "error")
+    ]
+
+
+def test_daily_sales_integrity_aggregate_total_mismatch_is_hard_error() -> None:
+    row = _integrity_daily_row(count=1, amount="125")
+    totals = _data_module._totals_row([row])
+    totals.orders_count_ftd = 2
+    totals.sales_ftd = Decimal("126")
+    population = _data_module.ReportDayOrdersByCostCenterRow(
+        cost_center="CC1", order_numbers_text="ORD-1", order_numbers=["ORD-1"], orders_count=1, order_amount=Decimal("125")
+    )
+    findings = _data_module._build_integrity_findings(rows=[row], totals=totals, report_day_orders_by_cost_center=[population])
+    assert [(finding.code, finding.severity) for finding in findings] == [
+        ("total_ftd_count_mismatch", "error"),
+        ("total_ftd_amount_mismatch", "error"),
+    ]

@@ -189,6 +189,20 @@
         font-weight: 700;
         text-align: center;
       }
+      .integrity-warning {
+        margin: 10px 0 14px;
+        padding: 8px 10px;
+        border: 2px solid #dc2626;
+        background: #fef2f2;
+        color: #991b1b;
+      }
+      .integrity-warning.warning-only {
+        border-color: #f59e0b;
+        background: #fffbeb;
+        color: #92400e;
+      }
+      .integrity-warning .heading { font-weight: 700; text-align: center; }
+      .integrity-warning ul { margin: 6px 0 0 18px; padding: 0; }
       .degraded-warning .detail {
         display: block;
         font-size: 10px;
@@ -228,6 +242,18 @@
     <div class="degraded-warning">
       {{ orders_sync_warning_text }}
       <span class="detail">Upstream orders sync status: {{ orders_sync_upstream_status or "unknown" }}{% if orders_sync_upstream_run_id %}; run ID: {{ orders_sync_upstream_run_id }}{% endif %}</span>
+    </div>
+    {% endif %}
+    {% if integrity_findings %}
+    <div class="integrity-warning{% if not integrity_has_errors %} warning-only{% endif %}">
+      <div class="heading">
+        {% if integrity_has_errors %}INVALID DATA REPORT — Daily Sales reconciliation errors detected{% else %}Daily Sales integrity warnings{% endif %}
+      </div>
+      <ul class="micro-font">
+        {% for finding in integrity_findings %}
+        <li><strong>{{ finding.severity | upper }}</strong>: {{ finding.message }}</li>
+        {% endfor %}
+      </ul>
     </div>
     {% endif %}
 
