@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 import openpyxl
 import sqlalchemy as sa
-from playwright.async_api import Browser, BrowserContext, Page, async_playwright
+from playwright.async_api import Browser, BrowserContext, Error as PlaywrightError, Page, async_playwright
 
 from app.common.db import session_scope
 from app.common.date_utils import aware_now, get_timezone
@@ -46,6 +46,10 @@ from app.dashboard_downloader.run_summary import (
 PIPELINE_NAME = "td_crm_leads_sync"
 SCHEDULER_PATH = "/App/New_Admin/frmHomePickUpScheduler"
 NAV_TIMEOUT_MS = 90_000
+SCHEDULER_NAVIGATION_MAX_ATTEMPTS = 3
+SCHEDULER_NAVIGATION_ATTEMPT_TIMEOUT_SECONDS = 120
+SCHEDULER_NAVIGATION_RESET_TIMEOUT_SECONDS = 30
+SCHEDULER_NAVIGATION_RETRY_BASE_DELAY_SECONDS = 0.25
 SCHEDULER_HOME_ALERT_SELECTOR = "#achrPickUp"
 OVERDUE_ORDERS_MODAL_SELECTOR = "#pnlOrderOverDuePopup"
 OVERDUE_ORDERS_MODAL_CLOSE_SELECTORS: tuple[str, ...] = (
@@ -1935,7 +1939,7 @@ async def _dismiss_overdue_orders_modal(page: Page) -> tuple[str, bool]:
     return "no_supported_dismissal", await _is_overdue_orders_modal_visible(page)
 
 
-async def _ensure_scheduler_page(page: Page, *, store: TdStore, logger: JsonLogger) -> bool:
+async def _open_scheduler_page_once(page: Page, *, store: TdStore, logger: JsonLogger, attempt: int) -> bool:
     target_url = _scheduler_url_for_store(store.store_code)
     url_pattern = re.compile(r".*/frmHomePickUpScheduler(?:\.aspx)?(?:\?.*)?$", re.IGNORECASE)
     entry_selector = ",".join((SCHEDULER_HOME_ALERT_SELECTOR, *SCHEDULER_FALLBACK_SELECTORS))
@@ -1954,6 +1958,7 @@ async def _ensure_scheduler_page(page: Page, *, store: TdStore, logger: JsonLogg
 
     branch_used = "unknown"
     dismissal_action = "not_checked"
+    fallback_url_navigation_used = False
     try:
         entrypoint_available = True
         try:
@@ -1975,6 +1980,7 @@ async def _ensure_scheduler_page(page: Page, *, store: TdStore, logger: JsonLogg
                 dismissal_error = None
             if modal_remains_visible:
                 branch_used = "fallback_direct_url"
+                fallback_url_navigation_used = True
                 log_event(
                     logger=logger,
                     phase="navigation",
@@ -2002,6 +2008,7 @@ async def _ensure_scheduler_page(page: Page, *, store: TdStore, logger: JsonLogg
                 await _wait_for_scheduler_ready()
             except Exception as click_exc:
                 branch_used = "fallback_direct_url"
+                fallback_url_navigation_used = True
                 log_event(
                     logger=logger,
                     phase="navigation",
@@ -2016,6 +2023,7 @@ async def _ensure_scheduler_page(page: Page, *, store: TdStore, logger: JsonLogg
                 await _navigate_directly()
         elif branch_used != "fallback_direct_url":
             branch_used = "fallback_direct_url"
+            fallback_url_navigation_used = True
             log_event(
                 logger=logger,
                 phase="navigation",
@@ -2033,27 +2041,111 @@ async def _ensure_scheduler_page(page: Page, *, store: TdStore, logger: JsonLogg
             store_code=store.store_code,
             url=page.url,
             navigation_branch=branch_used,
+            attempt=attempt,
+            max_attempts=SCHEDULER_NAVIGATION_MAX_ATTEMPTS,
+            fallback_url_navigation_used=fallback_url_navigation_used,
         )
-        return True
+        return fallback_url_navigation_used
     except Exception as exc:
-        final_url = page.url
-        final_title: str | None = None
-        with contextlib.suppress(Exception):
-            final_title = await page.title()
-        log_event(
-            logger=logger,
-            phase="navigation",
-            status="error",
-            message="Failed to open Pickup Scheduler page",
-            store_code=store.store_code,
-            url=target_url,
-            navigation_branch=branch_used,
-            awaited_selectors=list(SCHEDULER_READY_SELECTORS),
-            final_url=final_url,
-            final_title=final_title,
-            error=str(exc),
-        )
+        # Preserve navigation context for the retry wrapper without retrying unrelated store work.
+        setattr(exc, "scheduler_navigation_branch", branch_used)
+        setattr(exc, "scheduler_fallback_url_navigation_used", fallback_url_navigation_used)
+        raise
+
+
+def _is_transient_scheduler_navigation_failure(exc: Exception) -> bool:
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError, ConnectionError)):
+        return True
+    if not isinstance(exc, PlaywrightError):
         return False
+    error_text = f"{exc.__class__.__name__}: {exc}".lower()
+    return any(
+        marker in error_text
+        for marker in (
+            "timeout",
+            "navigation",
+            "net::err_",
+            "page closed",
+            "page has been closed",
+            "target closed",
+            "browser has been closed",
+            "context closed",
+            "session closed",
+            "stale",
+        )
+    )
+
+
+async def _reset_scheduler_page_before_retry(page: Page, *, target_url: str) -> None:
+    try:
+        await page.reload(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+    except Exception:
+        # If the current document cannot be refreshed, force a clean scheduler navigation.
+        await page.goto(target_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+
+
+async def _ensure_scheduler_page(page: Page, *, store: TdStore, logger: JsonLogger) -> bool:
+    target_url = _scheduler_url_for_store(store.store_code)
+    for attempt in range(1, SCHEDULER_NAVIGATION_MAX_ATTEMPTS + 1):
+        try:
+            await asyncio.wait_for(
+                _open_scheduler_page_once(page, store=store, logger=logger, attempt=attempt),
+                timeout=SCHEDULER_NAVIGATION_ATTEMPT_TIMEOUT_SECONDS,
+            )
+            return True
+        except Exception as exc:
+            failure_class = exc.__class__.__name__
+            fallback_url_navigation_used = bool(getattr(exc, "scheduler_fallback_url_navigation_used", False))
+            branch_used = str(getattr(exc, "scheduler_navigation_branch", "unknown"))
+            transient_failure = _is_transient_scheduler_navigation_failure(exc)
+            retrying = transient_failure and attempt < SCHEDULER_NAVIGATION_MAX_ATTEMPTS
+            final_title: str | None = None
+            with contextlib.suppress(Exception):
+                final_title = await page.title()
+            log_event(
+                logger=logger,
+                phase="navigation",
+                status="warning" if retrying else "error",
+                message="Pickup Scheduler navigation failed; retrying" if retrying else "Failed to open Pickup Scheduler page",
+                store_code=store.store_code,
+                url=target_url,
+                navigation_branch=branch_used,
+                awaited_selectors=list(SCHEDULER_READY_SELECTORS),
+                final_url=page.url,
+                final_title=final_title,
+                error=str(exc),
+                attempt=attempt,
+                max_attempts=SCHEDULER_NAVIGATION_MAX_ATTEMPTS,
+                failure_class=failure_class,
+                fallback_url_navigation_used=fallback_url_navigation_used,
+                transient_failure=transient_failure,
+                retrying=retrying,
+            )
+            if not retrying:
+                return False
+
+            try:
+                await asyncio.wait_for(
+                    _reset_scheduler_page_before_retry(page, target_url=target_url),
+                    timeout=SCHEDULER_NAVIGATION_RESET_TIMEOUT_SECONDS,
+                )
+            except Exception as reset_exc:
+                log_event(
+                    logger=logger,
+                    phase="navigation",
+                    status="warning",
+                    message="Pickup Scheduler retry page reset failed; continuing with next bounded attempt",
+                    store_code=store.store_code,
+                    attempt=attempt,
+                    max_attempts=SCHEDULER_NAVIGATION_MAX_ATTEMPTS,
+                    failure_class=reset_exc.__class__.__name__,
+                    fallback_url_navigation_used=True,
+                    error=str(reset_exc),
+                )
+            delay_seconds = min(SCHEDULER_NAVIGATION_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), 1.0)
+            await asyncio.sleep(delay_seconds)
+
+    return False
 
 
 async def _scrape_grid_rows(page: Page, *, grid_selector: str) -> tuple[list[str], list[dict[str, Any]]]:
