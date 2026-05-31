@@ -45,6 +45,10 @@ Recommended variables for the cron env file:
 | `CRON_HOME` | Stable home directory for the cron user; the script exports this to `HOME`. |
 | `CRON_PATH` | Extra PATH entries needed for Poetry/Python. |
 | `ENV_FILE` | (Optional) Override the env file path; defaults to `scripts/cron.env`. |
+| `ORDERS_STEP_TIMEOUT_SECONDS` | Per-attempt watchdog for the orders profiler step; defaults to `5400`. Timed-out attempts are retryable until `ORDERS_MAX_ATTEMPTS` is exhausted. |
+| `DAILY_SALES_STEP_TIMEOUT_SECONDS` | Per-attempt watchdog for Daily Sales report generation; defaults to `1800`. |
+| `PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS` | Per-attempt watchdog for Pending Deliveries report generation; defaults to `1800`. |
+| `ORDERS_SYNC_PROFILER_SHUTDOWN_TIMEOUT_SECONDS` | Bound for each profiler loop-shutdown phase; defaults to `5`. |
 
 Example crontab entry (runs at 6:00 AM daily and logs via the script):
 

@@ -8,6 +8,15 @@
 
 ---
 
+### DL-022
+- **Date:** 2026-05-31
+- **Status:** Active
+- **Decision:** Bound orders-profiler loop shutdown and run each orders/reports cron step in its own watchdog-controlled child process group.
+- **Context:** A cancellation-resistant Playwright/browser cleanup could otherwise prevent a fatal profiler exception from returning non-zero, retain cron locks indefinitely, and block required reports.
+- **Evidence:** `app/crm_downloader/orders_sync_run_profiler/main.py`, `scripts/cron_run_orders_and_reports.sh`, `scripts/cron.env.example`, `tests/crm_downloader/test_orders_sync_run_profiler_rollup.py`, and `tests/scripts/test_cron_run_orders_and_reports.py`.
+- **Implications:** Profiler shutdown logs pending-task diagnostics and bounds task, async-generator, and executor cleanup waits. Cron step timeouts terminate the child process group, classify timeout exit code `124` as retryable until configured attempts are exhausted, release locks, and continue downstream report attempts.
+- **Follow-up:** Tune watchdog defaults using production duration telemetry rather than disabling the watchdogs.
+
 ### DL-021
 - **Date:** 2026-05-30
 - **Status:** Active
