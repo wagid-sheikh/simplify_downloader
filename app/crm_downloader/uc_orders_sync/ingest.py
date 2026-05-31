@@ -113,6 +113,7 @@ API_HEADER_MAP: Mapping[str, str] = {
     "final_amount": "gross_amount",
 }
 
+SOURCE_AMOUNT_FIELDS = ("gross_amount", "net_amount")
 NUMERIC_FIELDS = {"net_amount", "cgst", "sgst", "gross_amount"}
 
 REQUIRED_HEADERS = set(LEGACY_HEADER_MAP.keys())
@@ -154,6 +155,7 @@ class UcOrdersIngestResult:
     dropped_rows: list[dict[str, Any]] = field(default_factory=list)
     warning_rows: list[dict[str, Any]] = field(default_factory=list)
     zero_row_export_classification: str | None = None
+    amount_metrics: dict[str, Any] = field(default_factory=dict)
 
 
 def _is_totals_row(values: Sequence[Any]) -> bool:
@@ -318,6 +320,54 @@ def _parse_numeric(value: Any, *, warnings: list[str], field: str, row_remarks: 
         return Decimal("0")
 
 
+def _parse_source_amount(
+    value: Any, *, present: bool, warnings: list[str], field: str
+) -> tuple[Decimal | None, str]:
+    if not present:
+        provenance = "absent"
+    elif value is None or (isinstance(value, str) and not value.strip()):
+        provenance = "empty"
+    else:
+        try:
+            parsed = Decimal(str(value).replace(",", "").strip())
+        except (InvalidOperation, ValueError):
+            provenance = "malformed"
+        else:
+            return parsed, "explicit_zero" if parsed == 0 else "parsed_non_zero"
+    warnings.append(f"AMOUNT_INGEST_WARNING field={field} provenance={provenance}")
+    return None, provenance
+
+
+def _amount_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    metrics: dict[str, Any] = {
+        "explicit_zero_value_order_count": 0,
+        "missing_amount_field_count": 0,
+        "malformed_amount_field_count": 0,
+        "canonical_zero_value_order_count": 0,
+        "parsed_source_gross_amount_sum": Decimal("0"),
+        "parsed_source_net_amount_sum": Decimal("0"),
+    }
+    for row in rows:
+        provenance = row.get("_amount_provenance") or {}
+        metrics["missing_amount_field_count"] += sum(
+            status in {"absent", "empty"} for status in provenance.values()
+        )
+        metrics["malformed_amount_field_count"] += sum(
+            status == "malformed" for status in provenance.values()
+        )
+        gross = row.get("gross_amount")
+        net = row.get("net_amount")
+        if gross is not None:
+            metrics["parsed_source_gross_amount_sum"] += gross
+        if net is not None:
+            metrics["parsed_source_net_amount_sum"] += net
+        if (gross or Decimal("0")) == 0:
+            metrics["canonical_zero_value_order_count"] += 1
+            if provenance.get("gross_amount") == "explicit_zero":
+                metrics["explicit_zero_value_order_count"] += 1
+    return metrics
+
+
 def _parse_s_no(value: Any, *, warnings: list[str], row_remarks: list[str]) -> int | None:
     if value is None or value == "":
         return None
@@ -443,12 +493,15 @@ def _normalize_gstin(value: Any) -> str | None:
     return normalized or None
 
 
-def _build_ingest_remarks_payload(*, warnings: list[str], failures: list[str] | None = None) -> str | None:
-    if not warnings and not failures:
+def _build_ingest_remarks_payload(
+    *, warnings: list[str], failures: list[str] | None = None, amount_provenance: Mapping[str, str] | None = None
+) -> str | None:
+    if not warnings and not failures and not amount_provenance:
         return None
     payload = {
         "warnings": list(warnings),
         "failures": list(failures or []),
+        "amount_provenance": dict(amount_provenance or {}),
     }
     return json.dumps(payload, ensure_ascii=False)
 
@@ -471,14 +524,25 @@ def _coerce_row(
     )
     raw_invoice_date = row.get("invoice_date")
     row["invoice_date"] = _parse_invoice_date_strict(raw_invoice_date, warnings=warnings, row_remarks=row_remarks)
+    amount_provenance: dict[str, str] = {}
+    present_fields = set(header_map[header] for header in raw if header in header_map)
     for field in NUMERIC_FIELDS:
-        row[field] = _parse_numeric(row.get(field), warnings=warnings, field=field, row_remarks=row_remarks)
+        if field in SOURCE_AMOUNT_FIELDS:
+            row[field], amount_provenance[field] = _parse_source_amount(
+                row.get(field), present=field in present_fields, warnings=warnings, field=field
+            )
+        else:
+            row[field] = _parse_numeric(row.get(field), warnings=warnings, field=field, row_remarks=row_remarks)
+    row["_amount_provenance"] = amount_provenance
+    if any(status in {"absent", "empty", "malformed"} for status in amount_provenance.values()):
+        row_remarks.append("AMOUNT_PROVENANCE_WARNING")
     row["mobile_number"] = _normalize_phone(
         row.get("mobile_number"),
         warnings=warnings,
         invalid_phone_numbers=invalid_phone_numbers,
         row_remarks=row_remarks,
     )
+    row["_has_ingest_warning"] = bool(row_remarks)
     raw_gstin = row.get("customer_gstin")
     row["customer_gstin"] = _normalize_gstin(raw_gstin)
 
@@ -495,7 +559,10 @@ def _coerce_row(
         drop_reason = warning
         return {}, row_remarks, drop_reason
 
-    row["ingest_remarks"] = _build_ingest_remarks_payload(warnings=row_remarks)
+    row["ingest_remarks"] = _build_ingest_remarks_payload(
+        warnings=row_remarks,
+        amount_provenance=amount_provenance if row.get("_has_ingest_warning") else None,
+    )
     return row, row_remarks, drop_reason
 
 
@@ -518,7 +585,9 @@ def _read_workbook_rows(
     selected_missing: set[str] = set()
     for _, header_map in SUPPORTED_HEADER_MAPS:
         missing = set(header_map.keys()) - set(headers)
-        if not missing:
+        amount_headers = {header for header, field in header_map.items() if field in SOURCE_AMOUNT_FIELDS}
+        required_missing = missing - amount_headers
+        if not required_missing:
             selected_header_map = header_map
             selected_missing = set()
             break
@@ -582,7 +651,7 @@ def _read_workbook_rows(
         )
         order_number = _stringify_value(raw_row.get(order_number_header or "Booking ID"))
         if normalized:
-            if normalized.get("ingest_remarks"):
+            if normalized.get("_has_ingest_warning"):
                 warning_rows.append(
                     {
                         "store_code": store_code,
@@ -689,6 +758,7 @@ async def ingest_uc_orders_workbook(
             store_code=store_code,
             workbook=str(workbook_path),
             zero_row_export_classification=zero_row_export_classification,
+            amount_metrics=_amount_metrics(rows),
         )
         return UcOrdersIngestResult(
             staging_rows=0,
@@ -903,6 +973,7 @@ async def ingest_uc_orders_workbook(
         rows_skipped_invalid_reasons=skip_reason_counts,
         dropped_rows=dropped_rows,
         warning_rows=warning_rows,
+        amount_metrics=_amount_metrics(rows),
     )
 
 

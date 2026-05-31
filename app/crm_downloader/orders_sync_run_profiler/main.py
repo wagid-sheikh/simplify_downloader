@@ -909,6 +909,7 @@ def _extract_ingestion_counts_from_summary(
             "staging_updated": source.get("staging_updated"),
             "final_inserted": source.get("final_inserted"),
             "final_updated": source.get("final_updated"),
+            **_coerce_dict(source.get("amount_metrics")),
         }
 
     if pipeline_name == "uc_orders_sync":
@@ -1248,6 +1249,15 @@ def _coerce_int(value: Any) -> int | None:
         return None
 
 
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _accumulate_ingestion_totals(
     target: dict[str, int], ingestion_counts: Mapping[str, Any]
 ) -> dict[str, int]:
@@ -1298,7 +1308,7 @@ def _select_summary_overall_status(status_counts: Mapping[str, int]) -> str:
     return _rollup_overall_status(status_counts)
 
 
-UNIFIED_METRIC_FIELDS = (
+COUNT_METRIC_FIELDS = (
     "rows_downloaded",
     "rows_ingested",
     "staging_rows",
@@ -1306,13 +1316,25 @@ UNIFIED_METRIC_FIELDS = (
     "staging_updated",
     "final_inserted",
     "final_updated",
+    "explicit_zero_value_order_count",
+    "missing_amount_field_count",
+    "malformed_amount_field_count",
+    "canonical_zero_value_order_count",
 )
+AMOUNT_SUM_METRIC_FIELDS = (
+    "parsed_source_gross_amount_sum",
+    "parsed_source_net_amount_sum",
+)
+UNIFIED_METRIC_FIELDS = COUNT_METRIC_FIELDS + AMOUNT_SUM_METRIC_FIELDS
 
 
 def _build_unified_metrics(metrics: Mapping[str, Any] | None) -> dict[str, Any]:
     if not metrics:
         return {field: None for field in UNIFIED_METRIC_FIELDS}
-    payload = {field: _coerce_int(metrics.get(field)) for field in UNIFIED_METRIC_FIELDS}
+    payload = {field: _coerce_int(metrics.get(field)) for field in COUNT_METRIC_FIELDS}
+    payload.update(
+        {field: _coerce_float(metrics.get(field)) for field in AMOUNT_SUM_METRIC_FIELDS}
+    )
     if "label" in metrics:
         payload["label"] = metrics.get("label")
     if payload.get("rows_ingested") is None:
@@ -1324,11 +1346,15 @@ def _build_unified_metrics(metrics: Mapping[str, Any] | None) -> dict[str, Any]:
     return payload
 
 
-def _sum_unified_metrics(totals: dict[str, int], metrics: Mapping[str, Any]) -> None:
-    for field in UNIFIED_METRIC_FIELDS:
+def _sum_unified_metrics(totals: dict[str, Any], metrics: Mapping[str, Any]) -> None:
+    for field in COUNT_METRIC_FIELDS:
         value = _coerce_int(metrics.get(field))
         if value is not None:
             totals[field] = totals.get(field, 0) + value
+    for field in AMOUNT_SUM_METRIC_FIELDS:
+        value = _coerce_float(metrics.get(field))
+        if value is not None:
+            totals[field] = totals.get(field, 0.0) + value
 
 
 def _build_window_summary(
@@ -1355,6 +1381,12 @@ def _format_unified_metrics(metrics: Mapping[str, Any]) -> str:
         f"rows_ingested={metrics.get('rows_ingested')}",
         f"inserted={inserted}",
         f"updated={updated}",
+        f"explicit_zero_value_orders={metrics.get('explicit_zero_value_order_count')}",
+        f"missing_amount_fields={metrics.get('missing_amount_field_count')}",
+        f"malformed_amount_fields={metrics.get('malformed_amount_field_count')}",
+        f"canonical_zero_value_orders={metrics.get('canonical_zero_value_order_count')}",
+        f"parsed_source_gross_amount_sum={metrics.get('parsed_source_gross_amount_sum')}",
+        f"parsed_source_net_amount_sum={metrics.get('parsed_source_net_amount_sum')}",
     ]
     label = metrics.get("label")
     if label:
