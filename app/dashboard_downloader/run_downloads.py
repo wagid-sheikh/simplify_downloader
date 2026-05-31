@@ -76,6 +76,14 @@ class NavigationCertificateError(RuntimeError):
     pass
 
 
+class NavigationRetryExhaustedError(TimeoutError):
+    """Raised when navigation retry attempts are exhausted."""
+
+    def __init__(self, message: str, *, retry: Dict[str, Any]) -> None:
+        super().__init__(message)
+        self.retry = retry
+
+
 def _chrome_process_running_for_profile(profile_dir: Path) -> bool:
     profile_dir = profile_dir.expanduser().resolve()
     try:
@@ -180,6 +188,7 @@ async def navigate_with_retry(
     *,
     logger: JsonLogger | None = None,
     store_code: str | None = None,
+    retry_context: str | None = None,
 ) -> tuple[Page, Any]:
     last_error: Exception | None = None
     last_status: int | None = None
@@ -224,6 +233,7 @@ async def navigate_with_retry(
                         "error_type": error_type,
                         "error_message": str(exc),
                         "wait_time_s": wait_time_s,
+                        "retry_context": retry_context,
                     },
                 )
             attempt += 1
@@ -348,6 +358,7 @@ async def navigate_with_retry(
                             "error_type": error_type,
                             "error_message": str(exc),
                             "wait_time_s": wait_time_s,
+                            "retry_context": retry_context,
                         },
                     )
                 attempt += 1
@@ -378,7 +389,17 @@ async def navigate_with_retry(
     message = f"Navigation to {url} failed after {max_attempts} attempts; last_error={error_detail}"
     if last_status is not None:
         message = f"{message} (status={last_status})"
-    raise TimeoutError(message) from last_error
+    retry = {
+        "attempt": max_attempts,
+        "max_attempts": max_attempts,
+        "target_url": url,
+        "timeout_ms": timeout_ms,
+        "response_status": last_status,
+        "error_type": type(last_error).__name__ if last_error else "UnknownError",
+        "error_message": str(last_error),
+        "retry_context": retry_context,
+    }
+    raise NavigationRetryExhaustedError(message, retry=retry) from last_error
 
 
 async def _retry_page_with_ignored_https(page: Page) -> tuple[Page, BrowserContext]:
@@ -714,6 +735,7 @@ async def _run_session_probe(
             nav_timeout_ms,
             logger=logger,
             store_code=store_code,
+            retry_context="bootstrap_session_probe",
         )
         context = probe_page.context
         extras["current_url"] = probe_page.url
@@ -734,6 +756,10 @@ async def _run_session_probe(
                     extras["login_html_detected"] = True
     except PlaywrightTimeoutError as exc:
         extras["error"] = str(exc)
+    except NavigationRetryExhaustedError as exc:
+        extras["error"] = str(exc)
+        extras["retry"] = dict(exc.retry)
+        extras["terminal_retry_exhausted"] = True
     except Exception as exc:  # pragma: no cover - navigation/runtime guard
         extras["error"] = str(exc)
     finally:
@@ -1532,6 +1558,21 @@ async def _bootstrap_session_via_home_and_tracker(
         password=password,
         nav_timeout_ms=nav_timeout_ms,
     )
+
+    if probe_extras.get("terminal_retry_exhausted"):
+        _log(
+            "warning",
+            "bootstrap connectivity recovered successfully",
+            extras={
+                "recovered_retry_context": "bootstrap_session_probe",
+                "recovery_strategy": (
+                    "fresh_login"
+                    if login_attempted
+                    else "fallback_navigation"
+                ),
+                "retry": probe_extras.get("retry"),
+            },
+        )
 
     return tms_page
 
