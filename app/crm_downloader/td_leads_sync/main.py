@@ -47,6 +47,14 @@ PIPELINE_NAME = "td_crm_leads_sync"
 SCHEDULER_PATH = "/App/New_Admin/frmHomePickUpScheduler"
 NAV_TIMEOUT_MS = 90_000
 SCHEDULER_HOME_ALERT_SELECTOR = "#achrPickUp"
+OVERDUE_ORDERS_MODAL_SELECTOR = "#pnlOrderOverDuePopup"
+OVERDUE_ORDERS_MODAL_CLOSE_SELECTORS: tuple[str, ...] = (
+    f"{OVERDUE_ORDERS_MODAL_SELECTOR} .close",
+    f"{OVERDUE_ORDERS_MODAL_SELECTOR} [aria-label='Close']",
+    f"{OVERDUE_ORDERS_MODAL_SELECTOR} [data-dismiss='modal']",
+    f"{OVERDUE_ORDERS_MODAL_SELECTOR} [data-bs-dismiss='modal']",
+)
+SCHEDULER_DIRECT_URL_FALLBACK_ACTION = "controlled_direct_scheduler_url"
 SCHEDULER_FALLBACK_SELECTORS: tuple[str, ...] = (
     "a[href*='frmHomePickUpScheduler.aspx']",
     "a[href*='frmHomePickUpScheduler']",
@@ -1881,6 +1889,52 @@ def _scheduler_url_for_store(store_code: str) -> str:
     return f"https://subs.quickdrycleaning.com/{store_code.lower()}{SCHEDULER_PATH}"
 
 
+async def _is_overdue_orders_modal_visible(page: Page) -> bool:
+    modal = page.locator(OVERDUE_ORDERS_MODAL_SELECTOR)
+    return bool(await modal.count()) and await modal.is_visible()
+
+
+async def _dismiss_overdue_orders_modal(page: Page) -> tuple[str, bool]:
+    """Dismiss the scheduler-blocking overdue-orders modal without forcing a click through it."""
+    if not await _is_overdue_orders_modal_visible(page):
+        return "not_visible", False
+
+    for selector in OVERDUE_ORDERS_MODAL_CLOSE_SELECTORS:
+        close_button = page.locator(selector)
+        if await close_button.count() and await close_button.is_visible():
+            with contextlib.suppress(Exception):
+                await close_button.click()
+                return f"close_button:{selector}", await _is_overdue_orders_modal_visible(page)
+
+    # Bootstrap-style modals support a backdrop dismissal unless explicitly configured as static.
+    backdrop_dismissed = await page.evaluate(
+        """(selector) => {
+            const modal = document.querySelector(selector);
+            if (!modal || modal.getAttribute('data-backdrop') === 'static' || modal.getAttribute('data-bs-backdrop') === 'static') {
+                return false;
+            }
+            modal.click();
+            return true;
+        }""",
+        OVERDUE_ORDERS_MODAL_SELECTOR,
+    )
+    if backdrop_dismissed and not await _is_overdue_orders_modal_visible(page):
+        return "backdrop_safe_click", False
+
+    keyboard_permitted = await page.evaluate(
+        """(selector) => {
+            const modal = document.querySelector(selector);
+            return Boolean(modal) && modal.getAttribute('data-keyboard') !== 'false' && modal.getAttribute('data-bs-keyboard') !== 'false';
+        }""",
+        OVERDUE_ORDERS_MODAL_SELECTOR,
+    )
+    if keyboard_permitted:
+        await page.keyboard.press("Escape")
+        return "escape_key", await _is_overdue_orders_modal_visible(page)
+
+    return "no_supported_dismissal", await _is_overdue_orders_modal_visible(page)
+
+
 async def _ensure_scheduler_page(page: Page, *, store: TdStore, logger: JsonLogger) -> bool:
     target_url = _scheduler_url_for_store(store.store_code)
     url_pattern = re.compile(r".*/frmHomePickUpScheduler(?:\.aspx)?(?:\?.*)?$", re.IGNORECASE)
@@ -1893,39 +1947,85 @@ async def _ensure_scheduler_page(page: Page, *, store: TdStore, logger: JsonLogg
                 return
         await page.wait_for_selector("#drpStatus", timeout=NAV_TIMEOUT_MS)
 
+    async def _navigate_directly() -> None:
+        await page.goto(target_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+        await page.wait_for_url(url_pattern, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+        await _wait_for_scheduler_ready()
+
     branch_used = "unknown"
+    dismissal_action = "not_checked"
     try:
-        await page.wait_for_selector(entry_selector, timeout=15_000)
+        entrypoint_available = True
+        try:
+            await page.wait_for_selector(entry_selector, timeout=15_000)
+        except Exception:
+            entrypoint_available = False
 
-        if await page.locator(SCHEDULER_HOME_ALERT_SELECTOR).count():
+        click_selector: str | None = None
+        if entrypoint_available and await page.locator(SCHEDULER_HOME_ALERT_SELECTOR).count():
+            click_selector = SCHEDULER_HOME_ALERT_SELECTOR
             branch_used = "home_alert_click"
-            async with page.expect_navigation(url=url_pattern, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS):
-                await page.click(SCHEDULER_HOME_ALERT_SELECTOR)
-        else:
-            fallback_selector_used: str | None = None
-            for selector in SCHEDULER_FALLBACK_SELECTORS:
-                if await page.locator(selector).count():
-                    fallback_selector_used = selector
-                    break
-
-            if fallback_selector_used:
-                branch_used = f"fallback_click:{fallback_selector_used}"
-                async with page.expect_navigation(url=url_pattern, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS):
-                    await page.click(fallback_selector_used)
+            try:
+                dismissal_action, modal_remains_visible = await _dismiss_overdue_orders_modal(page)
+            except Exception as dismissal_exc:
+                dismissal_action = "dismissal_error"
+                modal_remains_visible = True
+                dismissal_error = str(dismissal_exc)
             else:
+                dismissal_error = None
+            if modal_remains_visible:
                 branch_used = "fallback_direct_url"
                 log_event(
                     logger=logger,
                     phase="navigation",
                     status="warning",
-                    message="Pickup Scheduler click entrypoint missing; using controlled URL fallback",
+                    message="Overdue-orders modal remained visible; using controlled URL fallback",
                     store_code=store.store_code,
-                    url=target_url,
+                    modal_selector=OVERDUE_ORDERS_MODAL_SELECTOR,
+                    attempted_dismissal_action=dismissal_action,
+                    fallback_action=SCHEDULER_DIRECT_URL_FALLBACK_ACTION,
+                    error=dismissal_error,
                 )
-                await page.goto(target_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
-                await page.wait_for_url(url_pattern, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+                await _navigate_directly()
+                click_selector = None
+        elif entrypoint_available:
+            for selector in SCHEDULER_FALLBACK_SELECTORS:
+                if await page.locator(selector).count():
+                    click_selector = selector
+                    branch_used = f"fallback_click:{selector}"
+                    break
 
-        await _wait_for_scheduler_ready()
+        if click_selector is not None:
+            try:
+                async with page.expect_navigation(url=url_pattern, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS):
+                    await page.click(click_selector)
+                await _wait_for_scheduler_ready()
+            except Exception as click_exc:
+                branch_used = "fallback_direct_url"
+                log_event(
+                    logger=logger,
+                    phase="navigation",
+                    status="warning",
+                    message="Pickup Scheduler click navigation failed; using controlled URL fallback",
+                    store_code=store.store_code,
+                    modal_selector=OVERDUE_ORDERS_MODAL_SELECTOR,
+                    attempted_dismissal_action=dismissal_action,
+                    fallback_action=SCHEDULER_DIRECT_URL_FALLBACK_ACTION,
+                    error=str(click_exc),
+                )
+                await _navigate_directly()
+        elif branch_used != "fallback_direct_url":
+            branch_used = "fallback_direct_url"
+            log_event(
+                logger=logger,
+                phase="navigation",
+                status="warning",
+                message="Pickup Scheduler click entrypoint missing; using controlled URL fallback",
+                store_code=store.store_code,
+                url=target_url,
+            )
+            await _navigate_directly()
+
         log_event(
             logger=logger,
             phase="navigation",
