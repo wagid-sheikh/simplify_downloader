@@ -164,6 +164,7 @@ def _create_tables(database_url: str) -> None:
                 CREATE TABLE orders_sync_log (
                     cost_center TEXT,
                     orders_pulled_at TIMESTAMP,
+                    status TEXT,
                     updated_at TIMESTAMP,
                     created_at TIMESTAMP
                 )
@@ -936,8 +937,8 @@ def test_completed_reconciliation_string_agg_requires_keyword_arguments() -> Non
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_orders_sync_uses_updated_at_fallback(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "daily_sales_report_sync_fallback.db"
+async def test_fetch_daily_sales_report_orders_sync_uses_successful_refresh_timestamp(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_sync_success.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
 
@@ -947,18 +948,13 @@ async def test_fetch_daily_sales_report_orders_sync_uses_updated_at_fallback(tmp
 
     async with session_scope(database_url) as session:
         await session.execute(
-            sa.text(
-                """
-                INSERT INTO cost_center (cost_center, description, target_type, is_active)
-                VALUES ('CC-TD', 'TD Cost Center', 'value', 1)
-                """
-            )
+            sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD', 'TD Cost Center', 'value', 1)")
         )
         await session.execute(
             sa.text(
                 """
-                INSERT INTO orders_sync_log (cost_center, orders_pulled_at, updated_at, created_at)
-                VALUES ('CC-TD', NULL, '2026-01-19 07:25:00', '2026-01-19 07:10:00')
+                INSERT INTO orders_sync_log (cost_center, orders_pulled_at, status, updated_at, created_at)
+                VALUES ('CC-TD', '2026-01-19 07:20:00', 'success', '2026-01-19 07:25:00', '2026-01-19 07:10:00')
                 """
             )
         )
@@ -967,7 +963,11 @@ async def test_fetch_daily_sales_report_orders_sync_uses_updated_at_fallback(tmp
     report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
 
     td_row = next(row for row in report.rows if row.cost_center == "CC-TD")
-    assert td_row.orders_sync_time == "07:25"
+    assert td_row.orders_sync_time == "07:20"
+    assert td_row.last_successful_orders_refresh_at == datetime(2026, 1, 19, 7, 20, tzinfo=tz)
+    assert td_row.last_orders_sync_attempt_at == datetime(2026, 1, 19, 7, 25, tzinfo=tz)
+    assert td_row.latest_orders_sync_outcome == "success"
+    assert td_row.orders_sync_warning is False
 
 
 @pytest.mark.asyncio
@@ -1064,8 +1064,11 @@ async def test_fetch_daily_sales_report_deprecates_td_lead_change_details_payloa
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_orders_sync_uses_created_at_string_fallback(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "daily_sales_report_sync_created_fallback.db"
+@pytest.mark.parametrize("latest_status", ["failed", "skipped"])
+async def test_fetch_daily_sales_report_orders_sync_warns_after_unsuccessful_newer_attempt(
+    tmp_path, monkeypatch, latest_status
+) -> None:
+    db_path = tmp_path / f"daily_sales_report_sync_{latest_status}.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
 
@@ -1075,27 +1078,66 @@ async def test_fetch_daily_sales_report_orders_sync_uses_created_at_string_fallb
 
     async with session_scope(database_url) as session:
         await session.execute(
-            sa.text(
-                """
-                INSERT INTO cost_center (cost_center, description, target_type, is_active)
-                VALUES ('CC-TD', 'TD Cost Center', 'value', 1)
-                """
-            )
+            sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD', 'TD Cost Center', 'value', 1)")
         )
         await session.execute(
             sa.text(
                 """
-                INSERT INTO orders_sync_log (cost_center, orders_pulled_at, updated_at, created_at)
-                VALUES ('CC-TD', NULL, NULL, '2026-01-19T05:45:00Z')
+                INSERT INTO orders_sync_log (cost_center, orders_pulled_at, status, updated_at, created_at) VALUES
+                ('CC-TD', '2026-01-19 07:20:00', 'success', '2026-01-19 07:25:00', '2026-01-19 07:10:00'),
+                ('CC-TD', NULL, :latest_status, '2026-01-19 08:05:00', '2026-01-19 08:00:00')
                 """
-            )
+            ),
+            {"latest_status": latest_status},
         )
         await session.commit()
 
     report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
 
     td_row = next(row for row in report.rows if row.cost_center == "CC-TD")
-    assert td_row.orders_sync_time == "11:15"
+    assert td_row.orders_sync_time == "07:20"
+    assert td_row.last_successful_orders_refresh_at == datetime(2026, 1, 19, 7, 20, tzinfo=tz)
+    assert td_row.last_orders_sync_attempt_at == datetime(2026, 1, 19, 8, 5, tzinfo=tz)
+    assert td_row.latest_orders_sync_outcome == latest_status
+    assert td_row.orders_sync_warning is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("latest_status", "expected_warning"), [("failed", True), ("success", False)])
+async def test_fetch_daily_sales_report_orders_sync_does_not_fake_success_from_attempt_timestamps(
+    tmp_path, monkeypatch, latest_status, expected_warning
+) -> None:
+    db_path = tmp_path / f"daily_sales_report_sync_without_refresh_{latest_status}.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 1, 19)
+
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD', 'TD Cost Center', 'value', 1)")
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders_sync_log (cost_center, orders_pulled_at, status, updated_at, created_at)
+                VALUES ('CC-TD', NULL, :latest_status, '2026-01-19 08:05:00', '2026-01-19 08:00:00')
+                """
+            ),
+            {"latest_status": latest_status},
+        )
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    td_row = next(row for row in report.rows if row.cost_center == "CC-TD")
+    assert td_row.orders_sync_time is None
+    assert td_row.last_successful_orders_refresh_at is None
+    assert td_row.last_orders_sync_attempt_at == datetime(2026, 1, 19, 8, 5, tzinfo=tz)
+    assert td_row.latest_orders_sync_outcome == latest_status
+    assert td_row.orders_sync_warning is expected_warning
 
 
 @pytest.mark.asyncio

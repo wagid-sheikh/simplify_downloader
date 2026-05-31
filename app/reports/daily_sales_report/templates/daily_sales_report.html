@@ -180,6 +180,10 @@
       .same-day-detail-table th:nth-child(4) { white-space: nowrap; }
       .same-day-detail-table td:nth-child(5),
       .same-day-detail-table td:nth-child(6) { white-space: normal; word-break: break-word; }
+      .sync-warning-marker {
+        color: #b45309;
+        font-weight: 700;
+      }
       .degraded-warning {
         margin: 10px 0 14px;
         padding: 8px 10px;
@@ -326,7 +330,11 @@
           </td>
           <td>{{ row.delta | format_amount }}</td>
           <td>{{ row.reqd_per_day | format_amount }}</td>
-          <td class="center">{{ row.orders_sync_time or "--" }}</td>
+          <td class="center">
+            {{ row.orders_sync_time or "--" }}{% if row.orders_sync_warning %}
+            <span class="sync-warning-marker" title="Latest orders sync attempt: {{ row.latest_orders_sync_outcome or 'unknown' }} at {{ row.last_orders_sync_attempt_at or 'unknown time' }}">⚠</span>
+            {% endif %}
+          </td>
         </tr>
         {% endfor %}
         <tr class="totals-row">

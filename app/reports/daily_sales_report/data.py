@@ -21,6 +21,10 @@ from app.reports.shared.short_payments import ShortPaymentRow, fetch_missing_pay
 
 logger = logging.getLogger(__name__)
 
+# TS must advance only after a fully healthy pull; degraded attempts remain visible separately.
+HEALTHY_DATA_BEARING_ORDERS_SYNC_STATUSES = frozenset({"success"})
+ORDERS_SYNC_WARNING_STATUSES = frozenset({"failed", "partial", "skipped", "success_with_warnings", "warning"})
+
 
 @dataclass
 class DailySalesRow:
@@ -51,6 +55,10 @@ class DailySalesRow:
     pickup_total_conv_pct: Decimal | None
     delivery_tat_pct: Decimal | None
     kpi_snapshot_label: str
+    last_successful_orders_refresh_at: datetime | None = None
+    last_orders_sync_attempt_at: datetime | None = None
+    latest_orders_sync_outcome: str | None = None
+    orders_sync_warning: bool = False
 
 
 @dataclass
@@ -553,17 +561,54 @@ def _build_orders_count_agg(orders: sa.Table, ranges: dict[str, datetime]) -> sa
 
 
 def _build_orders_sync_agg(orders_sync_log: sa.Table) -> sa.Subquery:
-    sync_ts = sa.func.coalesce(
-        orders_sync_log.c.orders_pulled_at,
-        orders_sync_log.c.updated_at,
-        orders_sync_log.c.created_at,
+    normalized_status = sa.func.lower(sa.func.trim(orders_sync_log.c.status))
+    # Attempt time is operational telemetry, not a substitute for a missing successful pull time.
+    attempt_ts = sa.func.coalesce(orders_sync_log.c.updated_at, orders_sync_log.c.created_at)
+    cost_centers = sa.select(orders_sync_log.c.cost_center.label("cost_center")).distinct().subquery()
+    successful_refreshes = (
+        sa.select(
+            orders_sync_log.c.cost_center.label("cost_center"),
+            sa.func.max(orders_sync_log.c.orders_pulled_at).label("last_successful_orders_refresh_at"),
+        )
+        .where(normalized_status.in_(HEALTHY_DATA_BEARING_ORDERS_SYNC_STATUSES))
+        .group_by(orders_sync_log.c.cost_center)
+        .subquery()
+    )
+    ranked_attempts = (
+        sa.select(
+            orders_sync_log.c.cost_center.label("cost_center"),
+            attempt_ts.label("last_orders_sync_attempt_at"),
+            normalized_status.label("latest_orders_sync_outcome"),
+            sa.func.row_number()
+            .over(
+                partition_by=orders_sync_log.c.cost_center,
+                order_by=(attempt_ts.desc(), orders_sync_log.c.created_at.desc()),
+            )
+            .label("attempt_rank"),
+        )
+        .subquery()
+    )
+    latest_attempts = (
+        sa.select(
+            ranked_attempts.c.cost_center,
+            ranked_attempts.c.last_orders_sync_attempt_at,
+            ranked_attempts.c.latest_orders_sync_outcome,
+        )
+        .where(ranked_attempts.c.attempt_rank == 1)
+        .subquery()
     )
     return (
         sa.select(
-            orders_sync_log.c.cost_center.label("cost_center"),
-            sa.func.max(sync_ts).label("orders_pulled_at"),
+            cost_centers.c.cost_center,
+            successful_refreshes.c.last_successful_orders_refresh_at,
+            latest_attempts.c.last_orders_sync_attempt_at,
+            latest_attempts.c.latest_orders_sync_outcome,
         )
-        .group_by(orders_sync_log.c.cost_center)
+        .select_from(
+            cost_centers.outerjoin(
+                successful_refreshes, successful_refreshes.c.cost_center == cost_centers.c.cost_center
+            ).outerjoin(latest_attempts, latest_attempts.c.cost_center == cost_centers.c.cost_center)
+        )
         .subquery()
     )
 
@@ -885,6 +930,7 @@ async def fetch_daily_sales_report(
         "orders_sync_log",
         sa.column("cost_center"),
         sa.column("orders_pulled_at"),
+        sa.column("status"),
         sa.column("updated_at"),
         sa.column("created_at"),
     )
@@ -1050,7 +1096,9 @@ async def fetch_daily_sales_report(
             sales_agg.c.collections_count_lmtd,
             targets.c.sale_target,
             targets.c.collection_target,
-            orders_sync_agg.c.orders_pulled_at,
+            orders_sync_agg.c.last_successful_orders_refresh_at,
+            orders_sync_agg.c.last_orders_sync_attempt_at,
+            orders_sync_agg.c.latest_orders_sync_outcome,
             sa.case(
                 (
                     store_master_primary.c.sync_group == "TD",
@@ -1221,8 +1269,26 @@ async def fetch_daily_sales_report(
             elif remaining_days:
                 reqd_per_day = abs(delta) / Decimal(str(remaining_days))
 
-            orders_pulled_at = _parse_orders_sync_timestamp(entry["orders_pulled_at"], tz=tz)
-            orders_sync_time = orders_pulled_at.strftime("%H:%M") if orders_pulled_at else None
+            last_successful_orders_refresh_at = _parse_orders_sync_timestamp(
+                entry["last_successful_orders_refresh_at"], tz=tz
+            )
+            last_orders_sync_attempt_at = _parse_orders_sync_timestamp(
+                entry["last_orders_sync_attempt_at"], tz=tz
+            )
+            latest_orders_sync_outcome = entry["latest_orders_sync_outcome"]
+            orders_sync_time = (
+                last_successful_orders_refresh_at.strftime("%H:%M")
+                if last_successful_orders_refresh_at
+                else None
+            )
+            orders_sync_warning = bool(
+                latest_orders_sync_outcome in ORDERS_SYNC_WARNING_STATUSES
+                and last_orders_sync_attempt_at
+                and (
+                    last_successful_orders_refresh_at is None
+                    or last_orders_sync_attempt_at > last_successful_orders_refresh_at
+                )
+            )
 
             sale_target = _decimal(entry["sale_target"]) if entry["sale_target"] is not None else None
             collection_target = (
@@ -1273,6 +1339,10 @@ async def fetch_daily_sales_report(
                     pickup_total_conv_pct=_decimal(entry["pickup_total_conv_pct"]) if entry["pickup_total_conv_pct"] is not None else None,
                     delivery_tat_pct=_decimal(entry["delivery_tat_pct"]) if entry["delivery_tat_pct"] is not None else None,
                     kpi_snapshot_label=str(entry["kpi_snapshot_label"] or "--"),
+                    last_successful_orders_refresh_at=last_successful_orders_refresh_at,
+                    last_orders_sync_attempt_at=last_orders_sync_attempt_at,
+                    latest_orders_sync_outcome=str(latest_orders_sync_outcome) if latest_orders_sync_outcome else None,
+                    orders_sync_warning=orders_sync_warning,
                 )
             )
 
