@@ -410,6 +410,12 @@ def test_profiler_context_and_html_include_td_garment_warning_details() -> None:
                                 "garments_fetch_completeness": "incomplete",
                                 "garments_final_row_count": 17,
                                 "garments_budget_state": "near_limit",
+                                "garments_incomplete_reason": {"code": "pagination_budget_exhausted", "message": "pagination budget exhausted"},
+                                "garments_attempted_page_count": 5,
+                                "garments_completed_page_count": 4,
+                                "garments_expected_page_count": 6,
+                                "garments_timeout_count": 1,
+                                "garments_retry_count": 2,
                             }
                         ],
                         "primary_metrics": {},
@@ -431,6 +437,9 @@ def test_profiler_context_and_html_include_td_garment_warning_details() -> None:
     assert context["stores"][0]["td_garment_incomplete_windows"][0]["from_date"] == "2024-02-01"
     assert "DATA INCOMPLETE: TD garment details incomplete 2024-02-01 to 2024-02-02" in body_html
     assert "final garment rows=17" in body_html
+    assert "reason=pagination budget exhausted" in body_html
+    assert "pages=4/6 completed" in body_html
+    assert "timeouts=1; retries=2" in body_html
 
 def test_send_email_uses_bounded_smtp_timeout(monkeypatch) -> None:
     from app.dashboard_downloader import notifications

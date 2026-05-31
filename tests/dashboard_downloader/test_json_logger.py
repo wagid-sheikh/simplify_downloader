@@ -94,43 +94,116 @@ def test_json_logger_emits_suppressed_normalization_summary_per_file() -> None:
     assert summary["normalization_events_suppressed"] == 2
 
 
-def test_json_logger_redacts_sensitive_values_recursively() -> None:
+def test_json_logger_redacts_complete_cookie_header_lines_in_playwright_errors() -> None:
     stream = io.StringIO()
     logger = JsonLogger(run_id="run-redaction", stream=stream, log_file_path=None)
+    request_url = "https://dashboard.example.test/reports/orders?store=TD-042"
+    secrets = (
+        "session-cookie-secret",
+        "csrf-cookie-secret",
+        "support-cookie-secret",
+        "set-cookie-session-secret",
+        "set-cookie-csrf-secret",
+        "set-cookie-support-secret",
+        "authorization-secret",
+    )
 
-    logger.info(
+    logger.error(
         phase="download",
         message=(
-            "request failed\n"
-            "cookie: dashboard-cookie-secret\n"
-            "authorization: Bearer dashboard-auth-secret"
+            "playwright._impl._errors.TimeoutError: page.goto: Timeout 30000ms exceeded.\n"
+            f"Request URL: {request_url}\n"
+            "Request headers:\n"
+            "  cookie: JSESSIONID=session-cookie-secret; "
+            "csrftoken=csrf-cookie-secret; supportToken=support-cookie-secret\n"
+            "Response headers:\n"
+            "  set-cookie: JSESSIONID=set-cookie-session-secret; Path=/; HttpOnly; "
+            "csrftoken=set-cookie-csrf-secret; supportToken=set-cookie-support-secret\n"
+            "  authorization: Bearer authorization-secret"
         ),
-        request={
-            "headers": {
-                "set-cookie": "session=header-secret",
-                "proxy-authorization": "Basic proxy-secret",
-            },
-            "sessionId": "session-secret",
-            "csrfToken": "csrf-secret",
-            "apiToken": "api-secret",
-        },
+        store_code="TD-042",
+        error_class="TimeoutError",
+        timeout_type="navigation",
+        retry_attempt=2,
     )
 
     output = stream.getvalue()
     event = json.loads(output)
-    for secret in (
-        "dashboard-cookie-secret",
-        "dashboard-auth-secret",
-        "header-secret",
-        "proxy-secret",
-        "session-secret",
-        "csrf-secret",
-        "api-secret",
-    ):
+    for secret in secrets:
+        assert secret not in output
+    assert "cookie: <redacted>" in event["message"]
+    assert "set-cookie: <redacted>" in event["message"]
+    assert "authorization: <redacted>" in event["message"]
+    assert event["message"].count("<redacted>") == 3
+    assert request_url in event["message"]
+    assert event["store_code"] == "TD-042"
+    assert event["error_class"] == "TimeoutError"
+    assert event["timeout_type"] == "navigation"
+    assert event["retry_attempt"] == 2
+
+
+def test_json_logger_redacts_nested_mappings_and_stringified_exception_messages() -> None:
+    stream = io.StringIO()
+    logger = JsonLogger(run_id="run-nested-redaction", stream=stream, log_file_path=None)
+    request_url = "https://dashboard.example.test/reports/orders?store=UC-007"
+    playwright_error = RuntimeError(
+        "playwright._impl._errors.TimeoutError: request timed out\n"
+        f"Request URL: {request_url}\n"
+        "cookie: JSESSIONID=nested-session-secret; "
+        "csrftoken=nested-csrf-secret; supportToken=nested-support-secret\n"
+        "authorization: Bearer nested-authorization-secret"
+    )
+    secrets = (
+        "nested-session-secret",
+        "nested-csrf-secret",
+        "nested-support-secret",
+        "nested-authorization-secret",
+        "mapping-session-secret",
+        "mapping-csrf-secret",
+        "mapping-support-secret",
+        "mapping-api-secret",
+        "mapping-proxy-secret",
+    )
+
+    logger.error(
+        phase="download",
+        message="request failed",
+        request={
+            "url": request_url,
+            "headers": {
+                "set-cookie": "JSESSIONID=mapping-session-secret; csrftoken=mapping-csrf-secret",
+                "proxy-authorization": "Basic mapping-proxy-secret",
+            },
+            "credentials": {
+                "supportToken": "mapping-support-secret",
+                "apiToken": "mapping-api-secret",
+            },
+            "failure": {
+                "exception_message": str(playwright_error),
+                "error_class": "TimeoutError",
+                "timeout_type": "request",
+            },
+        },
+        store_code="UC-007",
+        retry_attempt=3,
+    )
+
+    output = stream.getvalue()
+    event = json.loads(output)
+    for secret in secrets:
         assert secret not in output
     assert event["request"]["headers"]["set-cookie"] == "<redacted>"
-    assert event["request"]["sessionId"] == "<redacted>"
-    assert event["message"].count("<redacted>") == 2
+    assert event["request"]["headers"]["proxy-authorization"] == "<redacted>"
+    assert event["request"]["credentials"]["supportToken"] == "<redacted>"
+    assert event["request"]["credentials"]["apiToken"] == "<redacted>"
+    exception_message = event["request"]["failure"]["exception_message"]
+    assert exception_message.count("<redacted>") == 2
+    assert request_url in exception_message
+    assert event["request"]["url"] == request_url
+    assert event["store_code"] == "UC-007"
+    assert event["request"]["failure"]["error_class"] == "TimeoutError"
+    assert event["request"]["failure"]["timeout_type"] == "request"
+    assert event["retry_attempt"] == 3
 
 
 def test_get_logger_is_idempotent_for_same_run_id(monkeypatch) -> None:

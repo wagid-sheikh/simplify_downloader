@@ -175,6 +175,10 @@ PROFILER_HTML_TEMPLATE = """
                           <li style="margin:0 0 4px 0;">
                             DATA INCOMPLETE: TD garment details incomplete {{ window.from_date|e }} to {{ window.to_date|e }};
                             final garment rows={{ window.garments_final_row_count|e }};
+                            reason={{ (window.garments_incomplete_reason.message if window.garments_incomplete_reason else 'unknown')|e }};
+                            pages={{ window.garments_completed_page_count|e }}/{{ (window.garments_expected_page_count or '?')|e }} completed
+                            ({{ window.garments_attempted_page_count|e }} attempted);
+                            timeouts={{ window.garments_timeout_count|e }}; retries={{ window.garments_retry_count|e }};
                             garment-dependent reports may be incomplete
                           </li>
                           {% endfor %}
@@ -2627,6 +2631,12 @@ def _profiler_td_garment_warnings_from_payload(store: Mapping[str, Any]) -> list
                     "garments_budget_state": _sanitize_profiler_window_text(
                         entry.get("garments_budget_state")
                     ),
+                    "garments_incomplete_reason": dict(entry.get("garments_incomplete_reason") or {}),
+                    "garments_attempted_page_count": entry.get("garments_attempted_page_count"),
+                    "garments_completed_page_count": entry.get("garments_completed_page_count"),
+                    "garments_expected_page_count": entry.get("garments_expected_page_count"),
+                    "garments_timeout_count": entry.get("garments_timeout_count"),
+                    "garments_retry_count": entry.get("garments_retry_count"),
                 }
             )
         return warnings
@@ -2648,6 +2658,12 @@ def _profiler_td_garment_warnings_from_payload(store: Mapping[str, Any]) -> list
                     detail.get("garments_fetch_completeness")
                 ),
                 "garments_budget_state": _sanitize_profiler_window_text(detail.get("garments_budget_state")),
+                "garments_incomplete_reason": dict(detail.get("garments_incomplete_reason") or {}),
+                "garments_attempted_page_count": detail.get("garments_attempted_page_count"),
+                "garments_completed_page_count": detail.get("garments_completed_page_count"),
+                "garments_expected_page_count": detail.get("garments_expected_page_count"),
+                "garments_timeout_count": detail.get("garments_timeout_count"),
+                "garments_retry_count": detail.get("garments_retry_count"),
             }
         )
     return warnings
@@ -2728,7 +2744,8 @@ def _build_profiler_context(run_data: dict[str, Any]) -> dict[str, Any]:
         )
         warnings.append(
             "TD_GARMENT_DATA_INCOMPLETE: TD garment details data incomplete for "
-            f"{', '.join(affected_stores)}; garment-dependent downstream reports may be incomplete"
+            f"{', '.join(affected_stores)}; reasons={', '.join(sorted({str((warning.get('garments_incomplete_reason') or {}).get('message') or 'unknown') for warning in td_garment_warning_details}))}; "
+            "garment-dependent downstream reports may be incomplete"
         )
     if not warnings:
         warnings = _build_profiler_row_fact_warnings(

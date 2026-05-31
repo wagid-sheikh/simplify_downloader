@@ -437,3 +437,47 @@ async def test_uc_ingest_flow_keeps_rows_with_new_datetime_shape(tmp_path: Path)
     async with session_scope(database_url) as session:
         stg_count = await session.execute(sa.select(sa.func.count()).select_from(stg_table))
     assert stg_count.scalar_one() > 0
+
+
+@pytest.mark.asyncio
+async def test_uc_ingest_classifies_valid_empty_workbook(tmp_path: Path) -> None:
+    workbook_path = tmp_path / "valid-empty.xlsx"
+    wb = openpyxl.Workbook()
+    wb.active.append(list(_expected_headers()))
+    wb.save(workbook_path)
+
+    result = await ingest_uc_orders_workbook(
+        workbook_path=workbook_path,
+        store_code="S001",
+        cost_center="CC01",
+        run_id="run-valid-empty",
+        run_date=datetime.now(timezone.utc),
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'valid-empty.db'}",
+        logger=get_logger(run_id="run-valid-empty"),
+    )
+
+    assert result.staging_rows == 0
+    assert result.zero_row_export_classification == uc_ingest.ZERO_ROW_EXPORT_VALID_EMPTY_WORKBOOK
+    assert result.warnings == []
+
+
+@pytest.mark.asyncio
+async def test_uc_ingest_classifies_malformed_empty_workbook(tmp_path: Path) -> None:
+    workbook_path = tmp_path / "malformed-empty.xlsx"
+    wb = openpyxl.Workbook()
+    wb.active.append(["Booking ID", "Invoice Date"])
+    wb.save(workbook_path)
+
+    result = await ingest_uc_orders_workbook(
+        workbook_path=workbook_path,
+        store_code="S001",
+        cost_center="CC01",
+        run_id="run-malformed-empty",
+        run_date=datetime.now(timezone.utc),
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'malformed-empty.db'}",
+        logger=get_logger(run_id="run-malformed-empty"),
+    )
+
+    assert result.staging_rows == 0
+    assert result.zero_row_export_classification == uc_ingest.ZERO_ROW_EXPORT_MALFORMED
+    assert any("missing expected columns" in warning for warning in result.warnings)

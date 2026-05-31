@@ -18,6 +18,49 @@ from app.reports.shared.short_payments import ShortPaymentRow
 REPORT_DATE = date(2026, 4, 29)
 
 
+@pytest.mark.parametrize("module", [daily_pipeline, pending_pipeline])
+def test_operational_report_public_adapter_forwards_cron_upstream_context_to_async_run(
+    monkeypatch: pytest.MonkeyPatch, module
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    async def _fake_run(
+        report_date,
+        env,
+        force,
+        orders_sync_upstream_status=None,
+        orders_sync_upstream_run_id=None,
+    ) -> None:
+        captured.append(
+            {
+                "report_date": report_date,
+                "env": env,
+                "force": force,
+                "orders_sync_upstream_status": orders_sync_upstream_status,
+                "orders_sync_upstream_run_id": orders_sync_upstream_run_id,
+            }
+        )
+
+    monkeypatch.setattr(module, "_run", _fake_run)
+
+    module.run_pipeline(
+        report_date=REPORT_DATE,
+        env="prod",
+        orders_sync_upstream_status="success_with_warnings",
+        orders_sync_upstream_run_id="profiler-cron-smoke",
+    )
+
+    assert captured == [
+        {
+            "report_date": REPORT_DATE,
+            "env": "prod",
+            "force": False,
+            "orders_sync_upstream_status": "success_with_warnings",
+            "orders_sync_upstream_run_id": "profiler-cron-smoke",
+        }
+    ]
+
+
 def _install_common_mocks(monkeypatch: pytest.MonkeyPatch, module, tmp_path: Path, emails_sent: int) -> tuple[list[Path], list[dict], list[dict]]:
     render_paths: list[Path] = []
     documents: list[dict] = []
@@ -228,8 +271,30 @@ async def test_mtd_same_day_report_regenerates_for_same_date_with_previous_summa
     assert summaries[-1]["overall_status"] == expected_previous_status
 
 
-@pytest.mark.asyncio
-async def test_pending_deliveries_persists_orders_sync_upstream_metrics(
+def test_pending_deliveries_public_adapter_preserves_legacy_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, object]] = []
+
+    async def _fake_run(**kwargs) -> None:
+        captured.append(kwargs)
+
+    monkeypatch.setattr(pending_pipeline, "_run", _fake_run)
+
+    pending_pipeline.run_pipeline(report_date=REPORT_DATE, env="test", force=True)
+
+    assert captured == [
+        {
+            "report_date": REPORT_DATE,
+            "env": "test",
+            "force": True,
+            "orders_sync_upstream_status": None,
+            "orders_sync_upstream_run_id": None,
+        }
+    ]
+
+
+def test_pending_deliveries_public_adapter_persists_orders_sync_upstream_metrics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -249,27 +314,36 @@ async def test_pending_deliveries_persists_orders_sync_upstream_metrics(
     monkeypatch.setattr(pending_pipeline, "fetch_pending_deliveries_report", _fake_data)
     monkeypatch.setattr(pending_pipeline, "render_html", lambda _context: "html")
 
-    await pending_pipeline._run(
+    pending_pipeline.run_pipeline(
         report_date=REPORT_DATE,
         env="test",
         force=False,
-        orders_sync_upstream_status="FAILED",
-        orders_sync_upstream_run_id="orders-run-1",
+        orders_sync_upstream_status="success_with_warnings",
+        orders_sync_upstream_run_id="test-run",
     )
 
     assert summaries
     final_record = summaries[-1]
-    assert final_record["metrics_json"]["orders_sync_upstream_status"] == "failed"
-    assert final_record["metrics_json"]["orders_sync_upstream_run_id"] == "orders-run-1"
+    assert (
+        final_record["metrics_json"]["orders_sync_upstream_status"]
+        == "success_with_warnings"
+    )
+    assert final_record["metrics_json"]["orders_sync_upstream_run_id"] == "test-run"
     assert final_record["metrics_json"]["orders_sync_is_degraded"] is True
     assert final_record["metrics_json"]["orders_sync_upstream"] == {
-        "status": "failed",
-        "run_id": "orders-run-1",
+        "status": "success_with_warnings",
+        "run_id": "test-run",
         "is_degraded": True,
         "warning_text": "Orders sync was degraded before this report; data may be stale or incomplete.",
     }
-    assert "Upstream orders sync: status=failed, run_id=orders-run-1." in final_record["summary_text"]
-    assert "Orders sync was degraded before this report; data may be stale or incomplete." in final_record["summary_text"]
+    assert (
+        "Upstream orders sync: status=success_with_warnings, run_id=test-run."
+        in final_record["summary_text"]
+    )
+    assert (
+        "Orders sync was degraded before this report; data may be stale or incomplete."
+        in final_record["summary_text"]
+    )
     assert final_record["phases_json"]["upstream_orders_sync"]["warning"] == 1
 
 

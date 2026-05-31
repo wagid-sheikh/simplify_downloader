@@ -55,7 +55,7 @@ _SENSITIVE_TEXT_LABEL = (
     r"jsessionid|session[-_ ]?(?:id|identifier)|session|csrf(?:[-_ ]?token)?|"
     r"xsrf(?:[-_ ]?token)?|api[-_ ]?(?:key|token)|(?:access|refresh)[-_ ]?token|token)"
 )
-_SENSITIVE_HEADER_PATTERN = re.compile(
+_SENSITIVE_HEADER_LINE_PATTERN = re.compile(
     rf"(?im)^(?P<prefix>\s*{_SENSITIVE_TEXT_LABEL}\s*:\s*).*$"
 )
 _SENSITIVE_QUOTED_VALUE_PATTERN = re.compile(
@@ -82,7 +82,9 @@ def _is_sensitive_log_key(key: Any) -> bool:
 
 
 def _sanitize_log_string(value: str) -> str:
-    sanitized = _SENSITIVE_HEADER_PATTERN.sub(
+    # Redact header lines before generic key/value matching so cookie delimiters
+    # cannot leave later cookie pairs visible in serialized Playwright errors.
+    sanitized = _SENSITIVE_HEADER_LINE_PATTERN.sub(
         lambda match: f"{match.group('prefix')}{REDACTED_LOG_VALUE}", value
     )
     sanitized = _SENSITIVE_QUOTED_VALUE_PATTERN.sub(
