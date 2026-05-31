@@ -138,6 +138,24 @@ Operational logs explicitly label waits/acquisition as `[global lock]` vs
 `[local lock]` so operators can quickly identify whether contention is shared
 across heavy wrappers or specific to one wrapper.
 
+If an orders-and-reports run leaves stale locks behind, inspect them before any
+manual termination. Run the recovery helper in its default dry-run mode first:
+
+```bash
+DRY_RUN=1 ./scripts/kill_orders_and_reports_stale.sh
+```
+
+Review the printed process-group snapshot and confirm that it belongs to this
+repository. Only then run the explicit termination step:
+
+```bash
+FORCE=1 ./scripts/kill_orders_and_reports_stale.sh
+```
+
+The helper validates directory-based lock metadata (`pid`, `pgid`, `command`,
+and `started_at`), refuses unrelated commands, prints snapshots around
+termination, and removes a lock directory only after its process group is gone.
+
 For order-sync profiler, the run additionally:
 - computes date windows per store,
 - runs TD/UC sync workers,
