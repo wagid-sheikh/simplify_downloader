@@ -92,6 +92,9 @@ DAILY_RESCUE_AFTER_PENDING_SUCCESS="${DAILY_RESCUE_AFTER_PENDING_SUCCESS:-1}"
 DAILY_RESCUE_MAX_ATTEMPTS="${DAILY_RESCUE_MAX_ATTEMPTS:-1}"
 DAILY_RESCUE_RETRY_DELAY_SECONDS="${DAILY_RESCUE_RETRY_DELAY_SECONDS:-5}"
 ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS="${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS:-1}"
+ORDERS_STEP_TIMEOUT_SECONDS="${ORDERS_STEP_TIMEOUT_SECONDS:-5400}"
+DAILY_SALES_STEP_TIMEOUT_SECONDS="${DAILY_SALES_STEP_TIMEOUT_SECONDS:-1800}"
+PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS="${PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS:-1800}"
 
 if ! [[ "${LOCK_WAIT_SECONDS}" =~ ^[0-9]+$ ]]; then
   LOCK_WAIT_SECONDS=300
@@ -111,6 +114,16 @@ fi
 if ! [[ "${DAILY_RESCUE_AFTER_PENDING_SUCCESS}" =~ ^[01]$ ]]; then
   DAILY_RESCUE_AFTER_PENDING_SUCCESS=1
 fi
+for timeout_var_name in ORDERS_STEP_TIMEOUT_SECONDS DAILY_SALES_STEP_TIMEOUT_SECONDS PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS; do
+  timeout_var_value="${!timeout_var_name}"
+  if ! [[ "${timeout_var_value}" =~ ^[0-9]+$ ]]; then
+    case "${timeout_var_name}" in
+      ORDERS_STEP_TIMEOUT_SECONDS) ORDERS_STEP_TIMEOUT_SECONDS=5400 ;;
+      DAILY_SALES_STEP_TIMEOUT_SECONDS) DAILY_SALES_STEP_TIMEOUT_SECONDS=1800 ;;
+      PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS) PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS=1800 ;;
+    esac
+  fi
+done
 
 mkdir -p "${LOG_DIR}" "${LOCK_DIR}"
 cd "${REPO_ROOT}"
@@ -326,6 +339,28 @@ terminate_by_pgid_or_pid() {
 
   log "Process-group metadata unavailable/invalid. Falling back to single PID termination for PID=${pid}"
   terminate_pid_gracefully "${pid}"
+}
+
+terminate_child_process_group() {
+  local pgid="$1"
+  local child_pid="$2"
+  local i
+
+  log "Attempting graceful termination for child process group PGID=${pgid} (child_pid=${child_pid})"
+  kill -TERM "-${pgid}" 2>/dev/null || true
+  for ((i=1; i<=KILL_WAIT_SECONDS; i++)); do
+    if ! pid_is_alive "${child_pid}"; then
+      log "Child PID=${child_pid} terminated after process-group TERM"
+      return 0
+    fi
+    sleep 1
+  done
+  if pid_is_alive "${child_pid}"; then
+    log "Child PID=${child_pid} still alive after ${KILL_WAIT_SECONDS}s, sending SIGKILL to PGID=${pgid}"
+    kill -KILL "-${pgid}" 2>/dev/null || true
+    sleep 1
+  fi
+  ! pid_is_alive "${child_pid}"
 }
 
 remove_lock_artifacts() {
@@ -624,6 +659,7 @@ log "MTD_SAME_DAY_MAX_ATTEMPTS=${MTD_SAME_DAY_MAX_ATTEMPTS} MTD_SAME_DAY_RETRY_D
 log "PENDING_MAX_ATTEMPTS=${PENDING_MAX_ATTEMPTS} PENDING_RETRY_DELAY_SECONDS=${PENDING_RETRY_DELAY_SECONDS}"
 log "DAILY_RESCUE_AFTER_PENDING_SUCCESS=${DAILY_RESCUE_AFTER_PENDING_SUCCESS} DAILY_RESCUE_MAX_ATTEMPTS=${DAILY_RESCUE_MAX_ATTEMPTS} DAILY_RESCUE_RETRY_DELAY_SECONDS=${DAILY_RESCUE_RETRY_DELAY_SECONDS}"
 log "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS}"
+log "ORDERS_STEP_TIMEOUT_SECONDS=${ORDERS_STEP_TIMEOUT_SECONDS} DAILY_SALES_STEP_TIMEOUT_SECONDS=${DAILY_SALES_STEP_TIMEOUT_SECONDS} PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS=${PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS}"
 log "GLOBAL_LOCK_DIR=${GLOBAL_LOCK_DIR}"
 log "LOCAL_LOCK_DIR=${RUN_LOCK_DIR}"
 log "poetry=$(command -v poetry || echo NOT_FOUND)"
@@ -651,6 +687,7 @@ run_step() {
   local retry_jitter_seconds="${5:-0}"
   local retry_backoff_multiplier="${6:-1}"
   local retry_max_delay_seconds="${7:-${retry_delay_seconds}}"
+  local runtime_limit_seconds="${8:-0}"
   local step_start
   local step_end
   local duration
@@ -660,6 +697,10 @@ run_step() {
   local report_date
   local sleep_seconds
   local jitter_seconds
+  local child_pid
+  local child_pgid
+  local now
+  local timed_out
   report_date="$(extract_report_date_from_cmd "${step_cmd}")"
 
   if ! [[ "${max_attempts}" =~ ^[0-9]+$ ]] || [[ "${max_attempts}" -lt 1 ]]; then
@@ -677,18 +718,46 @@ run_step() {
   if ! [[ "${retry_max_delay_seconds}" =~ ^[0-9]+$ ]]; then
     retry_max_delay_seconds="${retry_delay_seconds}"
   fi
+  if ! [[ "${runtime_limit_seconds}" =~ ^[0-9]+$ ]]; then
+    runtime_limit_seconds=0
+  fi
 
   section "Running ${step_name}"
   log "Command: ${step_cmd}"
-  log "Attempts configured: ${max_attempts}; retry_delay_seconds=${retry_delay_seconds}; retry_backoff_multiplier=${retry_backoff_multiplier}; retry_max_delay_seconds=${retry_max_delay_seconds}; retry_jitter_seconds=${retry_jitter_seconds}"
+  log "Attempts configured: ${max_attempts}; retry_delay_seconds=${retry_delay_seconds}; retry_backoff_multiplier=${retry_backoff_multiplier}; retry_max_delay_seconds=${retry_max_delay_seconds}; retry_jitter_seconds=${retry_jitter_seconds}; runtime_limit_seconds=${runtime_limit_seconds}"
 
   while [[ "${attempt}" -le "${max_attempts}" ]]; do
     log "${step_name}: attempt ${attempt}/${max_attempts} starting (report_date=${report_date}, regenerate=true)"
     step_start="$(date +%s)"
 
     attempt_log_file="$(mktemp "${LOCK_DIR}/cron_step_attempt.XXXXXX.log")"
+    rc=0
 
-    if bash -c "${step_cmd}" > "${attempt_log_file}" 2>&1; then
+    python3 -c 'import os, sys; os.setsid(); os.execvp("bash", ["bash", "-c", sys.argv[1]])' "${step_cmd}" > "${attempt_log_file}" 2>&1 &
+    child_pid=$!
+    child_pgid="${child_pid}"
+    timed_out=0
+    log "${step_name}: child_pid=${child_pid} child_pgid=${child_pgid} runtime_limit_seconds=${runtime_limit_seconds}"
+    while pid_is_alive "${child_pid}"; do
+      now="$(date +%s)"
+      duration=$((now - step_start))
+      if [[ "${runtime_limit_seconds}" -gt 0 && "${duration}" -ge "${runtime_limit_seconds}" ]]; then
+        timed_out=1
+        rc=124
+        log "ERROR: ${step_name}: attempt ${attempt}/${max_attempts} exceeded runtime_limit_seconds=${runtime_limit_seconds}; terminating child_pid=${child_pid} child_pgid=${child_pgid}"
+        terminate_child_process_group "${child_pgid}" "${child_pid}" || true
+        break
+      fi
+      sleep 0.1
+    done
+    if [[ "${timed_out}" -eq 0 ]]; then
+      wait "${child_pid}" || rc=$?
+    else
+      wait "${child_pid}" 2>/dev/null || true
+      printf '%s\n' "step_runtime_timeout runtime_limit_seconds=${runtime_limit_seconds} child_pid=${child_pid} child_pgid=${child_pgid}" >> "${attempt_log_file}"
+    fi
+
+    if [[ "${rc}" -eq 0 ]]; then
       cat "${attempt_log_file}" >> "${LOG_FILE}"
       rm -f "${attempt_log_file}" 2>/dev/null || true
       step_end="$(date +%s)"
@@ -696,10 +765,11 @@ run_step() {
       log "${step_name}: attempt ${attempt}/${max_attempts} succeeded in ${duration}s"
       return 0
     else
-      rc=$?
       cat "${attempt_log_file}" >> "${LOG_FILE}"
 
-      if is_deterministic_code_error "${attempt_log_file}"; then
+      if [[ "${timed_out}" -eq 1 ]]; then
+        log "WARNING: ${step_name}: failure_class=step_runtime_timeout; retrying if attempts remain (exit_code=${rc})."
+      elif is_deterministic_code_error "${attempt_log_file}"; then
         step_end="$(date +%s)"
         duration=$((step_end - step_start))
         log "ERROR: ${step_name}: failure_class=deterministic_environment_or_cli_error; retry_skipped=true; deterministic code, environment, or CLI error detected; failing fast without retries (exit_code=${rc}, duration=${duration}s)."
@@ -707,7 +777,9 @@ run_step() {
         rm -f "${attempt_log_file}" 2>/dev/null || true
         return "${rc}"
       fi
-      log_retryable_failure_classification "${step_name}" "${attempt_log_file}" "${rc}"
+      if [[ "${timed_out}" -eq 0 ]]; then
+        log_retryable_failure_classification "${step_name}" "${attempt_log_file}" "${rc}"
+      fi
       rm -f "${attempt_log_file}" 2>/dev/null || true
     fi
     step_end="$(date +%s)"
@@ -1029,7 +1101,7 @@ run_started_epoch="$(date +%s)"
 # for persisted overall_status="failed"; keep recording orders_rc while allowing
 # the report pipeline steps to run.
 if run_orders_connectivity_preflight; then
-  run_step "Script 1: orders_sync_run_profiler" "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS} ORDERS_SYNC_SKIP_CONNECTIVITY_PREFLIGHT=1 ./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" "${ORDERS_RETRY_JITTER_SECONDS}" "${ORDERS_RETRY_BACKOFF_MULTIPLIER}" "${ORDERS_RETRY_MAX_DELAY_SECONDS}" || orders_rc=$?
+  run_step "Script 1: orders_sync_run_profiler" "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=${ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS} ORDERS_SYNC_SKIP_CONNECTIVITY_PREFLIGHT=1 ./scripts/orders_sync_run_profiler.sh" "${ORDERS_MAX_ATTEMPTS}" "${ORDERS_RETRY_DELAY_SECONDS}" "${ORDERS_RETRY_JITTER_SECONDS}" "${ORDERS_RETRY_BACKOFF_MULTIPLIER}" "${ORDERS_RETRY_MAX_DELAY_SECONDS}" "${ORDERS_STEP_TIMEOUT_SECONDS}" || orders_rc=$?
 else
   orders_rc=$?
   log "Script 1: orders_sync_run_profiler skipped because tcp_connectivity_preflight failed (classification=${ORDERS_SYNC_PREFLIGHT_CLASSIFICATION}, orders_sync_run_profiler_rc=${orders_rc})."
@@ -1051,9 +1123,9 @@ if [[ -n "${orders_sync_report_args}" ]]; then
   pending_report_cmd="${pending_report_cmd} ${orders_sync_report_args}"
 fi
 log "orders_sync_downstream_report_args=${orders_sync_report_args:-<none>}"
-run_step "Script 2: daily_sales_report" "${daily_report_cmd}" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" || daily_rc=$?
+run_step "Script 2: daily_sales_report" "${daily_report_cmd}" "${DAILY_MAX_ATTEMPTS}" "${DAILY_RETRY_DELAY_SECONDS}" 0 1 "${DAILY_RETRY_DELAY_SECONDS}" "${DAILY_SALES_STEP_TIMEOUT_SECONDS}" || daily_rc=$?
 # Pending Deliveries must not skip due to a prior successful summary; report CLIs always regenerate.
-run_step "Script 3: pending_deliveries" "${pending_report_cmd}" "${PENDING_MAX_ATTEMPTS}" "${PENDING_RETRY_DELAY_SECONDS}" || pending_rc=$?
+run_step "Script 3: pending_deliveries" "${pending_report_cmd}" "${PENDING_MAX_ATTEMPTS}" "${PENDING_RETRY_DELAY_SECONDS}" 0 1 "${PENDING_RETRY_DELAY_SECONDS}" "${PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS}" || pending_rc=$?
 
 if [[ "${pending_rc}" -eq 0 && "${daily_rc}" -ne 0 && "${DAILY_RESCUE_AFTER_PENDING_SUCCESS}" -eq 1 ]]; then
   section "OPTIONAL DAILY RESCUE PASS"
@@ -1062,7 +1134,11 @@ if [[ "${pending_rc}" -eq 0 && "${daily_rc}" -ne 0 && "${DAILY_RESCUE_AFTER_PEND
     "Script 2B: daily_sales_report_rescue" \
     "${daily_report_cmd}" \
     "${DAILY_RESCUE_MAX_ATTEMPTS}" \
-    "${DAILY_RESCUE_RETRY_DELAY_SECONDS}" || daily_rescue_rc=$?
+    "${DAILY_RESCUE_RETRY_DELAY_SECONDS}" \
+    0 \
+    1 \
+    "${DAILY_RESCUE_RETRY_DELAY_SECONDS}" \
+    "${DAILY_SALES_STEP_TIMEOUT_SECONDS}" || daily_rescue_rc=$?
 
   if [[ "${daily_rescue_rc}" -eq 0 ]]; then
     log "Daily rescue pass succeeded; preserving original daily_sales_report_rc=${daily_rc} for required-step status."

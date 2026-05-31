@@ -1079,3 +1079,92 @@ def test_timeout_retry_gate_checks_error_status_note_and_skip_reason() -> None:
         error_message=None,
         status_note="no data",
     )
+
+
+def test_cancel_pending_tasks_is_bounded_for_cancellation_resistant_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import time
+
+    events: list[dict[str, object]] = []
+    release = asyncio.Event()
+
+    async def cancellation_resistant_task() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    monkeypatch.setattr(profiler, "log_event", lambda **kwargs: events.append(kwargs))
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    task = loop.create_task(cancellation_resistant_task(), name="resistant-browser-cleanup")
+    loop.run_until_complete(asyncio.sleep(0))
+
+    started = time.monotonic()
+    forced_cleanup_required = profiler._cancel_pending_tasks(
+        loop=loop,
+        logger=SimpleNamespace(),
+        timeout_seconds=0.05,
+    )
+    elapsed = time.monotonic() - started
+
+    assert forced_cleanup_required is True
+    assert elapsed < 0.5
+    assert events[-1]["pending_task_count"] == 1
+    assert events[-1]["cancellation_timeout_seconds"] == 0.05
+    assert events[-1]["forced_cleanup_required"] is True
+    assert "resistant-browser-cleanup" in str(events[-1]["pending_tasks"])
+
+    release.set()
+    loop.run_until_complete(task)
+    asyncio.set_event_loop(None)
+    loop.close()
+
+
+def test_profiler_main_fatal_error_forces_bounded_exit_when_task_resists_cancellation() -> None:
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(
+        """
+        import asyncio
+        import app.crm_downloader.orders_sync_run_profiler.main as profiler
+
+        class Logger:
+            def close(self):
+                pass
+
+        async def resistant_cleanup():
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await asyncio.Event().wait()
+
+        async def fatal_main(**kwargs):
+            asyncio.create_task(resistant_cleanup(), name="stalled-browser-context-cleanup")
+            await asyncio.sleep(0)
+            raise RuntimeError("simulated fatal application exception")
+
+        profiler.main = fatal_main
+        profiler.get_logger = lambda **kwargs: Logger()
+        profiler.log_event = lambda **kwargs: None
+        profiler._main()
+        """
+    )
+    env = os.environ.copy()
+    env["ORDERS_SYNC_PROFILER_SHUTDOWN_TIMEOUT_SECONDS"] = "0.1"
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=3,
+    )
+
+    assert result.returncode == 1

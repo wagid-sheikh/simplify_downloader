@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import fcntl
 import json
+import math
 import os
 import random
 from contextlib import asynccontextmanager
@@ -56,6 +57,8 @@ CRON_POOL_SIZE_ENV = "ORDERS_SYNC_PROFILER_DB_POOL_SIZE"
 CRON_MAX_OVERFLOW_ENV = "ORDERS_SYNC_PROFILER_DB_MAX_OVERFLOW"
 PREFLIGHT_ENV = "ORDERS_SYNC_PROFILER_DB_PREFLIGHT"
 MAX_CONNECTION_RETRIES_ENV = "ORDERS_SYNC_PROFILER_DB_RETRIES"
+SHUTDOWN_TIMEOUT_ENV = "ORDERS_SYNC_PROFILER_SHUTDOWN_TIMEOUT_SECONDS"
+DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 5.0
 
 
 def _resolve_pool_settings() -> PoolSettings:
@@ -2416,6 +2419,103 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _shutdown_timeout_seconds() -> float:
+    raw_value = os.getenv(SHUTDOWN_TIMEOUT_ENV, str(DEFAULT_SHUTDOWN_TIMEOUT_SECONDS)).strip()
+    try:
+        timeout_seconds = float(raw_value)
+    except ValueError:
+        return DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
+    if not math.isfinite(timeout_seconds):
+        return DEFAULT_SHUTDOWN_TIMEOUT_SECONDS
+    return max(0.1, timeout_seconds)
+
+
+def _task_description(task: asyncio.Task[Any]) -> str:
+    name = task.get_name()
+    coroutine = task.get_coro()
+    return f"{name}: {coroutine!r}"
+
+
+def _run_cleanup_awaitable_with_timeout(
+    *,
+    loop: asyncio.AbstractEventLoop,
+    awaitable: Any,
+    timeout_seconds: float,
+) -> bool:
+    """Run one shutdown awaitable without allowing cancellation-resistant work to block exit."""
+    task = loop.create_task(awaitable)
+    _, pending = loop.run_until_complete(asyncio.wait({task}, timeout=timeout_seconds))
+    if not pending:
+        # Retrieve exceptions so loop shutdown does not emit an unhelpful warning.
+        task.exception()
+        return False
+    task.cancel()
+    return True
+
+
+def _cancel_pending_tasks(
+    *,
+    loop: asyncio.AbstractEventLoop,
+    logger: JsonLogger,
+    timeout_seconds: float,
+) -> bool:
+    pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+    task_descriptions = [_task_description(task) for task in pending]
+    log_event(
+        logger=logger,
+        phase="shutdown",
+        status="info",
+        message="Cancelling pending profiler tasks",
+        pending_task_count=len(pending),
+        pending_tasks=task_descriptions,
+        cancellation_timeout_seconds=timeout_seconds,
+        forced_cleanup_required=False,
+    )
+    if not pending:
+        return False
+
+    for task in pending:
+        task.cancel()
+    _, still_pending = loop.run_until_complete(asyncio.wait(pending, timeout=timeout_seconds))
+    forced_cleanup_required = bool(still_pending)
+    log_event(
+        logger=logger,
+        phase="shutdown",
+        status="warning" if forced_cleanup_required else "info",
+        message="Pending profiler task cancellation completed",
+        pending_task_count=len(still_pending),
+        pending_tasks=[_task_description(task) for task in still_pending],
+        cancellation_timeout_seconds=timeout_seconds,
+        forced_cleanup_required=forced_cleanup_required,
+    )
+    return forced_cleanup_required
+
+
+def _shutdown_loop(*, loop: asyncio.AbstractEventLoop, logger: JsonLogger) -> bool:
+    timeout_seconds = _shutdown_timeout_seconds()
+    forced_cleanup_required = _cancel_pending_tasks(
+        loop=loop, logger=logger, timeout_seconds=timeout_seconds
+    )
+    for operation_name, awaitable in (
+        ("async_generator_shutdown", loop.shutdown_asyncgens()),
+        ("default_executor_shutdown", loop.shutdown_default_executor()),
+    ):
+        timed_out = _run_cleanup_awaitable_with_timeout(
+            loop=loop, awaitable=awaitable, timeout_seconds=timeout_seconds
+        )
+        forced_cleanup_required = forced_cleanup_required or timed_out
+        log_event(
+            logger=logger,
+            phase="shutdown",
+            status="warning" if timed_out else "info",
+            message="Profiler loop cleanup operation completed",
+            shutdown_operation=operation_name,
+            cancellation_timeout_seconds=timeout_seconds,
+            forced_cleanup_required=timed_out,
+        )
+    return forced_cleanup_required
+
+
 def _main() -> None:
     args = _build_parser().parse_args()
     resolved_run_id = args.run_id or new_run_id()
@@ -2470,18 +2570,17 @@ def _main() -> None:
             error_type=type(exc).__name__,
         )
     finally:
+        forced_cleanup_required = False
         try:
-            pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
-            if pending:
-                for task in pending:
-                    task.cancel()
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-            loop.run_until_complete(loop.shutdown_asyncgens())
-            loop.run_until_complete(loop.shutdown_default_executor())
+            forced_cleanup_required = _shutdown_loop(loop=loop, logger=logger)
         finally:
             asyncio.set_event_loop(None)
             loop.close()
             logger.close()
+    if forced_cleanup_required:
+        # SystemExit still waits for non-daemon executor threads. A forced exit is
+        # the final safety valve when browser or executor cleanup ignores cancellation.
+        os._exit(exit_code or 1)
     if exit_code:
         raise SystemExit(exit_code)
 

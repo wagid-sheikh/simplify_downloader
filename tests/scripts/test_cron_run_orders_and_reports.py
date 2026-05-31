@@ -1196,3 +1196,71 @@ def test_pending_deliveries_wrapper_keeps_upstream_args_out_of_recovery(tmp_path
     assert "report pending-deliveries" in report_args
     assert "--orders-sync-upstream-status failed" in report_args
     assert "--orders-sync-upstream-run-id orders-run-1" in report_args
+
+
+def test_cron_terminates_timed_out_orders_group_releases_lock_and_runs_reports(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path
+    scripts_dir = repo_root / "scripts"
+    logs_dir = repo_root / "logs"
+    tmp_dir = repo_root / "tmp"
+    scripts_dir.mkdir(parents=True)
+    logs_dir.mkdir()
+    tmp_dir.mkdir()
+
+    source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
+    _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
+    _write_successful_preflight(scripts_dir)
+    _write_executable(
+        scripts_dir / "orders_sync_run_profiler.sh",
+        "#!/usr/bin/env bash\nexec sleep 30\n",
+    )
+    _write_executable(
+        scripts_dir / "run_local_reports_daily_sales.sh",
+        "#!/usr/bin/env bash\nprintf 'daily ran\\n' > \"${TMPDIR:-/tmp}/daily-ran.log\"\nexit 0\n",
+    )
+    _write_executable(
+        scripts_dir / "run_local_reports_pending_deliveries.sh",
+        "#!/usr/bin/env bash\nprintf 'pending ran\\n' > \"${TMPDIR:-/tmp}/pending-ran.log\"\nexit 0\n",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "1",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "ORDERS_STEP_TIMEOUT_SECONDS": "1",
+            "DAILY_SALES_STEP_TIMEOUT_SECONDS": "5",
+            "PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS": "5",
+            "KILL_WAIT_SECONDS": "1",
+            "TMPDIR": str(tmp_path),
+        }
+    )
+
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 1
+    assert (tmp_path / "daily-ran.log").read_text(encoding="utf-8").strip() == "daily ran"
+    assert (tmp_path / "pending-ran.log").read_text(encoding="utf-8").strip() == "pending ran"
+    assert not (tmp_dir / "cron_run_orders_and_reports.lock").exists()
+    assert not (tmp_dir / "cron_heavy_pipelines.lock").exists()
+
+    log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
+    assert log_files
+    log_text = log_files[-1].read_text(encoding="utf-8")
+    assert "exceeded runtime_limit_seconds=1" in log_text
+    assert "failure_class=step_runtime_timeout" in log_text
+    assert "Script 1: orders_sync_run_profiler failed after 1 attempts" in log_text
+    assert "orders_sync_run_profiler_rc=124" in log_text
+    assert "Script 2: daily_sales_report: attempt 1/1 succeeded" in log_text

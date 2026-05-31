@@ -136,7 +136,10 @@ For heavy cron wrappers in `scripts/` (including `cron_run_td_leads_sync.sh` and
 
 Operational logs explicitly label waits/acquisition as `[global lock]` vs
 `[local lock]` so operators can quickly identify whether contention is shared
-across heavy wrappers or specific to one wrapper.
+across heavy wrappers or specific to one wrapper. The orders/reports wrapper
+launches every pipeline step in a dedicated child process group and enforces
+step-specific watchdog limits, so a stalled orders browser cleanup cannot hold
+the lock or block required report generation indefinitely.
 
 For order-sync profiler, the run additionally:
 - computes date windows per store,
