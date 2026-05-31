@@ -77,7 +77,7 @@ Container paths:
    - Raw `orders.net_amount`, `orders.gross_amount`, and `orders.adjustment` are source/ingest fields.
    - Reports and payment/recovery decisions must use `vw_orders.order_amount`; direct report reads from `orders` are prohibited unless explicitly approved.
    - Ingest/sync code may use raw columns only for source synchronization, reconciliation, or raw-payload audit purposes.
-   - `Actual Payments Not Found` is date-window based by `vw_orders.order_date` for Daily/MTD reports.
+   - `Actual Payments Not Found` is intentionally current/open across all order dates; Daily/MTD report windows do not restrict it. Eligibility requires a `sales` row and no valid qualifying payment proof.
    - `Short Payments` is intentionally current/open across all order dates; Daily/MTD report windows do not restrict it unless this contract is intentionally changed in code and docs together.
    - `To Be Recovered` is current/open by recovery status (`TO_BE_RECOVERED`) rather than by Daily/MTD report date window.
    - Payment comparisons use tolerance `1`; overpayments count as paid in full.
