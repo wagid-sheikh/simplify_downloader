@@ -2093,11 +2093,20 @@ def test_write_store_artifact_removes_temp_and_logs_failure(monkeypatch: pytest.
 
 
 class _FakeLocator:
-    def __init__(self, count: int) -> None:
-        self._count = count
+    def __init__(self, page: "_FakePage", selector: str) -> None:
+        self.page = page
+        self.selector = selector
 
     async def count(self) -> int:
-        return self._count
+        return 1 if self.selector in self.page.selectors_present else 0
+
+    async def is_visible(self) -> bool:
+        return self.selector in self.page.visible_selectors
+
+    async def click(self) -> None:
+        self.page.clicked.append(self.selector)
+        if self.selector in td_leads_main.OVERDUE_ORDERS_MODAL_CLOSE_SELECTORS and self.page.modal_dismissal_succeeds:
+            self.page.visible_selectors.discard(td_leads_main.OVERDUE_ORDERS_MODAL_SELECTOR)
 
 
 class _FakeNavigationContext:
@@ -2108,9 +2117,20 @@ class _FakeNavigationContext:
         return False
 
 
+class _FakeKeyboard:
+    def __init__(self, page: "_FakePage") -> None:
+        self.page = page
+
+    async def press(self, key: str) -> None:
+        self.page.pressed_keys.append(key)
+        if key == "Escape" and self.page.modal_dismissal_succeeds:
+            self.page.visible_selectors.discard(td_leads_main.OVERDUE_ORDERS_MODAL_SELECTOR)
+
+
 class _FakePage:
     def __init__(self, *, selectors_present: set[str], url: str = "https://subs.quickdrycleaning.com/a668/App/home") -> None:
         self.selectors_present = selectors_present
+        self.visible_selectors = set(selectors_present)
         self.url = url
         self.waited_selectors: list[str] = []
         self.clicked: list[str] = []
@@ -2119,6 +2139,12 @@ class _FakePage:
         self.expect_navigation_calls = 0
         self.title_text = "Pickup Scheduler"
         self.fail_ready = False
+        self.fail_click = False
+        self.fail_goto = False
+        self.reload_calls = 0
+        self.modal_dismissal_succeeds = True
+        self.pressed_keys: list[str] = []
+        self.keyboard = _FakeKeyboard(self)
 
     async def wait_for_selector(self, selector: str, timeout: int | None = None) -> None:
         self.waited_selectors.append(selector)
@@ -2126,7 +2152,7 @@ class _FakePage:
             raise TimeoutError("status selector timeout")
 
     def locator(self, selector: str) -> _FakeLocator:
-        return _FakeLocator(1 if selector in self.selectors_present else 0)
+        return _FakeLocator(self, selector)
 
     def expect_navigation(self, **kwargs) -> _FakeNavigationContext:
         self.expect_navigation_calls += 1
@@ -2134,17 +2160,30 @@ class _FakePage:
 
     async def click(self, selector: str) -> None:
         self.clicked.append(selector)
+        if self.fail_click:
+            raise TimeoutError("pointer interception timeout")
         self.url = "https://subs.quickdrycleaning.com/a668/App/New_Admin/frmHomePickUpScheduler.aspx"
 
     async def goto(self, url: str, **kwargs) -> None:
         self.goto_urls.append(url)
+        if self.fail_goto:
+            raise TimeoutError("direct scheduler URL timeout")
         self.url = "https://subs.quickdrycleaning.com/a668/App/New_Admin/frmHomePickUpScheduler.aspx"
+
+    async def reload(self, **kwargs) -> None:
+        self.reload_calls += 1
 
     async def wait_for_url(self, pattern, **kwargs) -> None:
         self.waited_url_patterns.append(pattern)
 
     async def title(self) -> str:
         return self.title_text
+
+    async def evaluate(self, script: str, selector: str) -> bool:
+        if "modal.click()" in script and self.modal_dismissal_succeeds:
+            self.visible_selectors.discard(selector)
+            return True
+        return "data-keyboard" in script
 
 
 @pytest.mark.asyncio
@@ -2163,6 +2202,156 @@ async def test_ensure_scheduler_page_prefers_pickup_alert_click(monkeypatch: pyt
     assert not page.goto_urls
     assert page.expect_navigation_calls == 1
     assert any(event.get("navigation_branch") == "home_alert_click" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_ensure_scheduler_page_dismisses_visible_overdue_orders_modal_before_click(monkeypatch: pytest.MonkeyPatch) -> None:
+    close_selector = td_leads_main.OVERDUE_ORDERS_MODAL_CLOSE_SELECTORS[0]
+    page = _FakePage(selectors_present={"#achrPickUp", td_leads_main.OVERDUE_ORDERS_MODAL_SELECTOR, close_selector})
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.crm_downloader.td_leads_sync.main.log_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+
+    ok = await _ensure_scheduler_page(page, store=SimpleNamespace(store_code="A668"), logger=SimpleNamespace())
+
+    assert ok is True
+    assert page.clicked == [close_selector, "#achrPickUp"]
+    assert not page.goto_urls
+
+
+@pytest.mark.asyncio
+async def test_ensure_scheduler_page_intercepted_click_uses_controlled_direct_url_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    page = _FakePage(selectors_present={"#achrPickUp"})
+    page.fail_click = True
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.crm_downloader.td_leads_sync.main.log_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+
+    ok = await _ensure_scheduler_page(page, store=SimpleNamespace(store_code="A668"), logger=SimpleNamespace())
+
+    assert ok is True
+    assert page.goto_urls == [td_leads_main._scheduler_url_for_store("A668")]
+    assert page.waited_url_patterns
+    warning = next(event for event in events if event.get("status") == "warning")
+    assert warning["store_code"] == "A668"
+    assert warning["modal_selector"] == td_leads_main.OVERDUE_ORDERS_MODAL_SELECTOR
+    assert warning["attempted_dismissal_action"] == "not_visible"
+    assert warning["fallback_action"] == td_leads_main.SCHEDULER_DIRECT_URL_FALLBACK_ACTION
+
+
+@pytest.mark.asyncio
+async def test_ensure_scheduler_page_modal_dismissal_and_direct_url_fallback_both_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    page = _FakePage(selectors_present={"#achrPickUp", td_leads_main.OVERDUE_ORDERS_MODAL_SELECTOR})
+    page.modal_dismissal_succeeds = False
+    page.fail_goto = True
+    events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "app.crm_downloader.td_leads_sync.main.log_event",
+        lambda **kwargs: events.append(kwargs),
+    )
+
+    ok = await _ensure_scheduler_page(page, store=SimpleNamespace(store_code="A668"), logger=SimpleNamespace())
+
+    assert ok is False
+    assert page.clicked == []
+    assert page.goto_urls == [td_leads_main._scheduler_url_for_store("A668")] * td_leads_main.SCHEDULER_NAVIGATION_MAX_ATTEMPTS
+    warning = next(event for event in events if event.get("status") == "warning")
+    assert warning["store_code"] == "A668"
+    assert warning["modal_selector"] == td_leads_main.OVERDUE_ORDERS_MODAL_SELECTOR
+    assert warning["attempted_dismissal_action"] == "escape_key"
+    assert warning["fallback_action"] == td_leads_main.SCHEDULER_DIRECT_URL_FALLBACK_ACTION
+    assert any(event.get("status") == "error" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_ensure_scheduler_page_transient_failure_recovers_after_page_reload(monkeypatch: pytest.MonkeyPatch) -> None:
+    page = _FakePage(selectors_present={"#achrPickUp"})
+    events: list[dict[str, object]] = []
+    attempts: list[int] = []
+
+    async def _fake_open_scheduler_page_once(page, *, store, logger, attempt):
+        attempts.append(attempt)
+        if attempt == 1:
+            raise TimeoutError("temporary scheduler navigation timeout")
+        return False
+
+    monkeypatch.setattr(td_leads_main, "_open_scheduler_page_once", _fake_open_scheduler_page_once)
+    monkeypatch.setattr(td_leads_main, "log_event", lambda **kwargs: events.append(kwargs))
+
+    ok = await _ensure_scheduler_page(page, store=SimpleNamespace(store_code="A668"), logger=SimpleNamespace())
+
+    assert ok is True
+    assert attempts == [1, 2]
+    assert page.reload_calls == 1
+    retry_event = next(event for event in events if event.get("retrying") is True)
+    assert retry_event["attempt"] == 1
+    assert retry_event["max_attempts"] == td_leads_main.SCHEDULER_NAVIGATION_MAX_ATTEMPTS
+    assert retry_event["failure_class"] == "TimeoutError"
+    assert retry_event["fallback_url_navigation_used"] is False
+
+
+@pytest.mark.asyncio
+async def test_ensure_scheduler_page_persistent_transient_failure_exhausts_bounded_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
+    page = _FakePage(selectors_present={"#achrPickUp"})
+    events: list[dict[str, object]] = []
+    attempts: list[int] = []
+
+    async def _fake_open_scheduler_page_once(page, *, store, logger, attempt):
+        attempts.append(attempt)
+        raise TimeoutError("persistent scheduler navigation timeout")
+
+    monkeypatch.setattr(td_leads_main, "_open_scheduler_page_once", _fake_open_scheduler_page_once)
+    monkeypatch.setattr(td_leads_main, "log_event", lambda **kwargs: events.append(kwargs))
+
+    ok = await _ensure_scheduler_page(page, store=SimpleNamespace(store_code="A668"), logger=SimpleNamespace())
+
+    assert ok is False
+    assert attempts == [1, 2, 3]
+    assert page.reload_calls == td_leads_main.SCHEDULER_NAVIGATION_MAX_ATTEMPTS - 1
+    assert events[-1]["status"] == "error"
+    assert events[-1]["attempt"] == td_leads_main.SCHEDULER_NAVIGATION_MAX_ATTEMPTS
+    assert events[-1]["retrying"] is False
+
+
+@pytest.mark.asyncio
+async def test_ensure_scheduler_page_successful_store_is_not_rerun(monkeypatch: pytest.MonkeyPatch) -> None:
+    page = _FakePage(selectors_present={"#achrPickUp"})
+    attempts: list[int] = []
+
+    async def _fake_open_scheduler_page_once(page, *, store, logger, attempt):
+        attempts.append(attempt)
+        return False
+
+    monkeypatch.setattr(td_leads_main, "_open_scheduler_page_once", _fake_open_scheduler_page_once)
+
+    ok = await _ensure_scheduler_page(page, store=SimpleNamespace(store_code="A668"), logger=SimpleNamespace())
+
+    assert ok is True
+    assert attempts == [1]
+    assert page.reload_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_ensure_scheduler_page_does_not_retry_deterministic_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    page = _FakePage(selectors_present={"#achrPickUp"})
+    attempts: list[int] = []
+
+    async def _fake_open_scheduler_page_once(page, *, store, logger, attempt):
+        attempts.append(attempt)
+        raise ValueError("deterministic parsing defect")
+
+    monkeypatch.setattr(td_leads_main, "_open_scheduler_page_once", _fake_open_scheduler_page_once)
+    monkeypatch.setattr(td_leads_main, "log_event", lambda **_kwargs: None)
+
+    ok = await _ensure_scheduler_page(page, store=SimpleNamespace(store_code="A668"), logger=SimpleNamespace())
+
+    assert ok is False
+    assert attempts == [1]
+    assert page.reload_calls == 0
 
 
 @pytest.mark.asyncio
