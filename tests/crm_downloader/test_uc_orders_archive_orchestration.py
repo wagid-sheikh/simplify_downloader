@@ -7,9 +7,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import sqlalchemy as sa
 
 from app.crm_downloader.uc_orders_sync import ingest as uc_ingest
 from app.crm_downloader.uc_orders_sync import main as uc_main
+from app.dashboard_downloader.db_tables import orders_sync_log
 from app.dashboard_downloader.json_logger import JsonLogger
 
 
@@ -513,3 +515,47 @@ def test_degraded_navigation_wins_over_source_no_data_classification() -> None:
 
     assert classification == uc_main.ZERO_ROW_EXPORT_DEGRADED_NAVIGATION
     assert reason_code == uc_main.REASON_ZERO_ROWS_AFTER_NAV_TIMEOUT
+
+
+def test_unified_metrics_can_update_orders_sync_log_with_zero_row_classification() -> None:
+    outcome = uc_main.StoreOutcome(
+        status="ok",
+        message="confirmed empty source export",
+        rows_downloaded=0,
+        staging_rows=0,
+        final_rows=0,
+        zero_row_export_classification=uc_main.ZERO_ROW_EXPORT_SOURCE_NO_DATA,
+    )
+    primary_metrics, secondary_metrics = uc_main._build_unified_metrics(outcome)
+    values = {**primary_metrics, **secondary_metrics}
+
+    engine = sa.create_engine("sqlite://")
+    sync_log_table = orders_sync_log.to_metadata(sa.MetaData())
+    sync_log_table.create(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            sync_log_table.insert().values(
+                id=1,
+                pipeline_id=1,
+                run_id="run-zero-row",
+                run_env="test",
+                store_code="UC001",
+                from_date=date(2025, 1, 1),
+                to_date=date(2025, 1, 1),
+                status="running",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        connection.execute(
+            sa.update(orders_sync_log)
+            .where(orders_sync_log.c.id == 1)
+            .values(**values)
+        )
+        classification = connection.scalar(
+            sa.select(orders_sync_log.c.zero_row_export_classification).where(
+                orders_sync_log.c.id == 1
+            )
+        )
+
+    assert classification == uc_main.ZERO_ROW_EXPORT_SOURCE_NO_DATA
