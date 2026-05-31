@@ -284,3 +284,9 @@
 - **Evidence:** `app/reports/daily_sales_report/data.py`, `tests/test_daily_sales_report_data.py`.
 - **Implications:** Daily report semantics stay unchanged (same-day filters, row grouping, summed payment_received), while query compilation remains valid for both production and test dialects.
 - **Follow-up:** Keep portability tests whenever adding new SQL aggregate concatenations.
+
+## 2026-05-31 — Daily Sales integrity failures deliver a marked operator artifact
+
+- **Decision:** Daily Sales validates the active-cost-center FTD order population, store-level count and `vw_orders.order_amount` sum, duplicate order numbers, suspicious zero-value populations, and aggregate totals. Structured findings are persisted in `pipeline_run_summaries.metrics_json` and rendered in the core PDF.
+- **Delivery policy:** Hard reconciliation errors do **not** suppress the configured Daily Sales notification. The core PDF is visibly marked `INVALID DATA REPORT`, and concise non-customer-sensitive findings are included in the run summary used by notification context. This preserves operator visibility without pretending the report is valid. A separate operators-only recipient route was not introduced because notification metadata currently has no dedicated integrity-failure recipient contract.
+- **Evidence:** `app/reports/daily_sales_report/data.py`, `app/reports/daily_sales_report/pipeline.py`, `app/reports/daily_sales_report/templates/daily_sales_report.html`, `tests/test_daily_sales_report_data.py`, `tests/test_daily_sales_report_pipeline.py`.
