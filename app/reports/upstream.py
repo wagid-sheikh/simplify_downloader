@@ -3,9 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 DEGRADED_ORDERS_SYNC_MESSAGE = (
-    "Orders sync was degraded before this report; data may be stale or incomplete."
+    "Orders sync was not verified as successful before this report; "
+    "data freshness or completeness could not be verified."
 )
-DEGRADED_UPSTREAM_STATUSES = frozenset({"failed", "error", "success_with_warnings", "warning"})
+HEALTHY_ORDERS_SYNC_STATUSES = frozenset({"success"})
+DEGRADED_ORDERS_SYNC_STATUSES = frozenset(
+    {
+        "failed",
+        "error",
+        "success_with_warnings",
+        "warning",
+        "partial",
+        "skipped",
+        "unknown",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -15,7 +27,9 @@ class OrdersSyncUpstreamContext:
 
     @property
     def is_degraded(self) -> bool:
-        return (self.status or "").strip().lower() in DEGRADED_UPSTREAM_STATUSES
+        # Reports must fail closed: cron runs without a verified successful
+        # profiler status cannot claim that upstream data is fresh or complete.
+        return self.status not in HEALTHY_ORDERS_SYNC_STATUSES
 
     @property
     def warning_text(self) -> str:
