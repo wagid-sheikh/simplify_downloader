@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -8,6 +8,12 @@ from sqlalchemy.dialects import postgresql, sqlite
 from app.reports.same_day_fulfillment import same_day_date_expr
 
 from app.common.db import session_scope
+from app.crm_downloader.td_orders_sync.ingest import (
+    _orders_table as _td_orders_table,
+    _stg_td_orders_table,
+    ingest_td_orders_rows,
+)
+from app.dashboard_downloader.json_logger import get_logger
 import importlib.util
 from pathlib import Path
 import sys
@@ -1567,6 +1573,7 @@ async def test_fetch_daily_sales_report_report_day_orders_by_cost_center(tmp_pat
                 VALUES
                     ('AA', 'A-002', '2026-04-29T10:00:00+05:30', 'TumbleDry', 100),
                     ('AA', 'A-001', '2026-04-29T09:00:00+05:30', 'TumbleDry', 100),
+                    ('AA', 'A-ZERO', '2026-04-29T10:30:00+05:30', 'TumbleDry', 0),
                     ('AA', 'A-003', '2026-04-30T09:00:00+05:30', 'TumbleDry', 100),
                     ('BB', 'B-001', '2026-04-29T11:00:00+05:30', 'TumbleDry', 100),
                     ('ZZ', 'Z-001', '2026-04-29T08:00:00+05:30', 'TumbleDry', 100)
@@ -1577,10 +1584,39 @@ async def test_fetch_daily_sales_report_report_day_orders_by_cost_center(tmp_pat
 
     report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
     assert [(row.cost_center, row.order_numbers_text) for row in report.report_day_orders_by_cost_center] == [
-        ("AA", "A-001, A-002"),
+        ("AA", "A-001, A-002, A-ZERO"),
         ("BB", "B-001"),
         ("CC", "-"),
     ]
+
+    # Keep the reporting regression tied to ingestion semantics: a source-supplied
+    # zero remains descriptive data, while absent money fields degrade the window.
+    ingest_database_url = f"sqlite+aiosqlite:///{tmp_path / 'daily_sales_missing_amount_ingest.db'}"
+    metadata = sa.MetaData()
+    _stg_td_orders_table(metadata)
+    _td_orders_table(metadata)
+    engine = sa.create_engine(ingest_database_url.replace("+aiosqlite", ""))
+    metadata.create_all(engine)
+    engine.dispose()
+    ingest_result = await ingest_td_orders_rows(
+        rows=[
+            {
+                "orderNo": "DAILY-MISSING-AMOUNT",
+                "orderDate": "2026-04-29T12:00:00+05:30",
+                "customerPhone": "9999999999",
+            }
+        ],
+        store_code="AA",
+        cost_center="AA",
+        run_id="daily-sales-missing-amount",
+        run_date=datetime(2026, 4, 29, 13, 0, tzinfo=ZoneInfo("Asia/Kolkata")),
+        database_url=ingest_database_url,
+        logger=get_logger("daily-sales-missing-amount"),
+    )
+    assert ingest_result.final_rows == 1
+    assert ingest_result.amount_metrics["missing_amount_field_count"] == 2
+    assert len(ingest_result.warning_rows) == 1
+    assert any("AMOUNT_INGEST_WARNING" in warning for warning in ingest_result.warnings)
 
 
 @pytest.mark.asyncio

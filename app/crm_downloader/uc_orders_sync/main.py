@@ -436,6 +436,7 @@ class StoreOutcome:
     rows_missing_estimate: int | None = None
     archive_extractor_error_counters: dict[str, int] = field(default_factory=dict)
     zero_row_export_classification: str | None = None
+    amount_metrics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -1042,6 +1043,7 @@ class UcOrdersDiscoverySummary:
                 "zero_row_export_classification": (
                     outcome.zero_row_export_classification if outcome else None
                 ),
+                "amount_metrics": dict(outcome.amount_metrics) if outcome else {},
             }
         return summary
 
@@ -1138,6 +1140,7 @@ class UcOrdersDiscoverySummary:
                     "zero_row_export_classification": (
                         outcome.zero_row_export_classification if outcome else None
                     ),
+                    "amount_metrics": dict(outcome.amount_metrics) if outcome else {},
                     "stage_statuses": dict(outcome.stage_statuses) if outcome else {},
                     "stage_metrics": dict(outcome.stage_metrics) if outcome else {},
                 }
@@ -3676,6 +3679,7 @@ async def _run_store_discovery(
         gst_rows_skipped_invalid_reasons: dict[str, int] | None = None
         gst_warning_rows: list[dict[str, Any]] = []
         gst_dropped_rows: list[dict[str, Any]] = []
+        gst_amount_metrics: dict[str, Any] = {}
         gst_zero_row_export_classification: str | None = None
         gst_api_extract: GstApiExtract | None = None
         gst_api_gst_path: Path | None = None
@@ -3982,7 +3986,9 @@ async def _run_store_discovery(
                             database_url=config.database_url,
                             logger=logger,
                         )
-                        gst_ingest_stage_statuses[STAGE_ORDERS_INGEST] = "success"
+                        gst_ingest_stage_statuses[STAGE_ORDERS_INGEST] = (
+                            "success_with_warnings" if ingest_result.warning_rows else "success"
+                        )
                         gst_ingest_stage_metrics[STAGE_ORDERS_INGEST] = {
                             "staging_rows": ingest_result.staging_rows,
                             "final_rows": ingest_result.final_rows,
@@ -3993,6 +3999,7 @@ async def _run_store_discovery(
                             "rows_skipped_invalid": ingest_result.rows_skipped_invalid,
                             "rows_skipped_invalid_reasons": ingest_result.rows_skipped_invalid_reasons,
                             "zero_row_export_classification": ingest_result.zero_row_export_classification,
+                            "amount_metrics": dict(ingest_result.amount_metrics),
                         }
                         gst_staging_rows = ingest_result.staging_rows
                         gst_final_rows = ingest_result.final_rows
@@ -4006,6 +4013,7 @@ async def _run_store_discovery(
                         )
                         gst_warning_rows = list(ingest_result.warning_rows)
                         gst_dropped_rows = list(ingest_result.dropped_rows)
+                        gst_amount_metrics = dict(ingest_result.amount_metrics)
                         gst_zero_row_export_classification = (
                             ingest_result.zero_row_export_classification
                         )
@@ -4089,6 +4097,7 @@ async def _run_store_discovery(
                 rows_skipped_invalid_reasons=gst_rows_skipped_invalid_reasons,
                 warning_rows=gst_warning_rows,
                 dropped_rows=gst_dropped_rows,
+                amount_metrics=gst_amount_metrics,
                 stage_statuses=dict(gst_ingest_stage_statuses),
                 stage_metrics=dict(gst_ingest_stage_metrics),
             )
@@ -4430,7 +4439,7 @@ async def _run_store_discovery(
         archive_warning_count = _gst_publish_warning_count_for_metrics(
             gst_publish_orders,
             gst_publish_sales,
-        ) + _archive_ingest_warning_count_for_stage_metrics(stage_metrics)
+        ) + _archive_ingest_warning_count_for_stage_metrics(stage_metrics) + len(gst_warning_rows)
         publish_reason_codes = sorted(
             _gst_publish_reason_codes_for_metrics(
                 gst_publish_orders,
@@ -4440,7 +4449,7 @@ async def _run_store_discovery(
         for code in publish_reason_codes:
             _append_reason_code(code)
         status_label = (
-            "warning" if any(v == "failed" for v in stage_statuses.values()) else "ok"
+            "warning" if any(v in {"failed", "success_with_warnings"} for v in stage_statuses.values()) else "ok"
         )
         download_message = (
             f"GST-derived archive feed prepared {base_count} rows; "
@@ -4485,6 +4494,7 @@ async def _run_store_discovery(
             rows_skipped_invalid_reasons=gst_rows_skipped_invalid_reasons,
             warning_rows=gst_warning_rows,
             dropped_rows=gst_dropped_rows,
+            amount_metrics=gst_amount_metrics,
             gst_publish_orders=gst_publish_orders,
             gst_publish_sales=gst_publish_sales,
             warning_count=archive_warning_count,

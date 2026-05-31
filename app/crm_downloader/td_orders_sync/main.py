@@ -1054,6 +1054,7 @@ class StoreReport:
     dropped_rows_count: int | None = None
     edited_rows_count: int | None = None
     duplicate_rows_count: int | None = None
+    amount_metrics: dict[str, Any] = field(default_factory=dict)
     garment_reconciliation: dict[str, Any] = field(default_factory=dict)
     garments_fetch_completeness: str | None = None
     garments_final_row_count: int | None = None
@@ -1099,6 +1100,7 @@ class StoreReport:
             "dropped_rows_count": self.dropped_rows_count,
             "edited_rows_count": self.edited_rows_count,
             "duplicate_rows_count": self.duplicate_rows_count,
+            "amount_metrics": dict(self.amount_metrics),
             "garment_reconciliation": dict(self.garment_reconciliation),
             "garments_fetch_completeness": self.garments_fetch_completeness,
             "garments_final_row_count": self.garments_final_row_count,
@@ -1796,6 +1798,7 @@ class TdOrdersDiscoverySummary:
                 "dropped_rows_count": None,
                 "edited_rows_count": None,
                 "duplicate_rows_count": None,
+                "amount_metrics": {},
                 "garments_fetch_completeness": None,
                 "garments_final_row_count": None,
                 "garments_budget_state": None,
@@ -1825,6 +1828,7 @@ class TdOrdersDiscoverySummary:
             "dropped_rows_count": report.dropped_rows_count,
             "edited_rows_count": report.edited_rows_count,
             "duplicate_rows_count": report.duplicate_rows_count,
+            "amount_metrics": dict(report.amount_metrics),
             "garments_fetch_completeness": report.garments_fetch_completeness,
             "garments_final_row_count": report.garments_final_row_count,
             "garments_budget_state": report.garments_budget_state,
@@ -7822,6 +7826,7 @@ async def _run_store_discovery(
                             staging_rows=(api_orders_ingest_result.staging_rows if api_orders_ingest_result else None),
                             final_rows=(api_orders_ingest_result.final_rows if api_orders_ingest_result else None),
                             warnings=(api_orders_ingest_result.warnings if api_orders_ingest_result else []),
+                            amount_metrics=(api_orders_ingest_result.amount_metrics if api_orders_ingest_result else {}),
                             source_mode=source_mode,
                         )
                         sales_report = StoreReport(
@@ -8057,6 +8062,7 @@ async def _run_store_discovery(
                         dropped_rows=ingest_result.dropped_rows if ingest_result else [],
                         message=outcome_message,
                         warnings=ingest_result.warnings if ingest_result else [],
+                        amount_metrics=ingest_result.amount_metrics if ingest_result else {},
                     )
 
                     if run_sales:
