@@ -129,6 +129,7 @@ orders_sync_log = sa.Table(
     sa.Column("secondary_staging_updated", sa.BigInteger()),
     sa.Column("secondary_final_inserted", sa.BigInteger()),
     sa.Column("secondary_final_updated", sa.BigInteger()),
+    sa.Column("zero_row_export_classification", sa.Text()),
     sa.Column("status", sa.String(length=64), nullable=False),
     sa.Column("attempt_no", sa.Integer(), nullable=False, server_default=sa.text("1")),
     sa.Column("error_message", sa.Text()),
