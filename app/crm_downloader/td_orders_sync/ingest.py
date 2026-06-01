@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -156,6 +157,8 @@ HEADER_MAP: Mapping[str, str] = {
     "Coupon Code": "coupon_code",
 }
 
+SOURCE_AMOUNT_FIELDS = ("gross_amount", "net_amount")
+
 NUMERIC_FIELDS = {
     "pieces",
     "weight",
@@ -251,6 +254,7 @@ class TdOrdersIngestResult:
     phone_fallback_rows: int = 0
     phone_fallback_unique_values: int = 0
     phone_fallback_top_invalid_values: list[dict[str, Any]] = field(default_factory=list)
+    amount_metrics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -454,6 +458,59 @@ def _parse_numeric(value: Any, *, warnings: list[str], field: str, row_remarks: 
         return Decimal("0")
 
 
+def _parse_source_amount(
+    value: Any, *, present: bool, warnings: list[str], field: str
+) -> tuple[Decimal | None, str]:
+    if not present:
+        provenance = "absent"
+    elif value is None or (isinstance(value, str) and not value.strip()):
+        provenance = "empty"
+    else:
+        try:
+            parsed = Decimal(str(value).replace(",", "").strip())
+        except (InvalidOperation, ValueError):
+            provenance = "malformed"
+        else:
+            return parsed, "explicit_zero" if parsed == 0 else "parsed_non_zero"
+    warnings.append(f"AMOUNT_INGEST_WARNING field={field} provenance={provenance}")
+    return None, provenance
+
+
+def _amount_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    metrics: dict[str, Any] = {
+        "explicit_zero_value_order_count": 0,
+        "missing_amount_field_count": 0,
+        "malformed_amount_field_count": 0,
+        "canonical_zero_value_order_count": 0,
+        "parsed_source_gross_amount_sum": Decimal("0"),
+        "parsed_source_net_amount_sum": Decimal("0"),
+    }
+    for row in rows:
+        provenance = row.get("_amount_provenance") or {}
+        metrics["missing_amount_field_count"] += sum(
+            status in {"absent", "empty"} for status in provenance.values()
+        )
+        metrics["malformed_amount_field_count"] += sum(
+            status == "malformed" for status in provenance.values()
+        )
+        gross = row.get("gross_amount")
+        net = row.get("net_amount")
+        if gross is not None:
+            metrics["parsed_source_gross_amount_sum"] += gross
+        if net is not None:
+            metrics["parsed_source_net_amount_sum"] += net
+        canonical = net if net not in (None, Decimal("0")) else gross
+        adjustment = row.get("adjustment") or Decimal("0")
+        canonical = max(Decimal("0"), (canonical or Decimal("0")) - max(Decimal("0"), adjustment))
+        if canonical == 0:
+            metrics["canonical_zero_value_order_count"] += 1
+            if any(status == "explicit_zero" for status in provenance.values()) and all(
+                status in {"explicit_zero", "absent", "empty", "malformed"} for status in provenance.values()
+            ):
+                metrics["explicit_zero_value_order_count"] += 1
+    return metrics
+
+
 def _parse_datetime(
     value: Any, *, tz: ZoneInfo, field: str, warnings: list[str], row_remarks: list[str]
 ) -> datetime | None:
@@ -476,6 +533,7 @@ def _coerce_row(
     row: Dict[str, Any] = {}
     row_remarks: list[str] = []
     drop_reason: str | None = None
+    present_headers = set(raw.get("__present_headers__", HEADER_MAP.keys()))
     for header, field in HEADER_MAP.items():
         row[field] = raw.get(header)
 
@@ -490,8 +548,19 @@ def _coerce_row(
         row["last_payment_activity"], tz=tz, field="last_payment_activity", warnings=warnings, row_remarks=row_remarks
     )
 
+    amount_provenance: dict[str, str] = {}
     for field in NUMERIC_FIELDS:
-        row[field] = _parse_numeric(row[field], warnings=warnings, field=field, row_remarks=row_remarks)
+        if field in SOURCE_AMOUNT_FIELDS:
+            header = next(header for header, mapped_field in HEADER_MAP.items() if mapped_field == field)
+            row[field], amount_provenance[field] = _parse_source_amount(
+                row[field], present=header in present_headers, warnings=warnings, field=field
+            )
+        else:
+            row[field] = _parse_numeric(row[field], warnings=warnings, field=field, row_remarks=row_remarks)
+    row["_amount_provenance"] = amount_provenance
+    amount_has_warning = any(status in {"absent", "empty", "malformed"} for status in amount_provenance.values())
+    if amount_has_warning:
+        row_remarks.append(f"AMOUNT_PROVENANCE={json.dumps(amount_provenance, sort_keys=True)}")
 
     row["mobile_number"] = _normalize_phone(
         row.get("mobile_number"),
@@ -499,6 +568,7 @@ def _coerce_row(
         phone_fallback_stats=phone_fallback_stats,
         row_remarks=row_remarks,
     )
+    row["_has_ingest_warning"] = bool(row_remarks) or amount_has_warning
     if row["order_number"] in (None, ""):
         warning = "Skipping row with blank order_number"
         warnings.append(warning)
@@ -564,7 +634,7 @@ def _read_workbook_rows(
         )
         order_number = _stringify_value(raw_row.get("Order No."))
         if normalized:
-            if normalized.get("ingest_remarks"):
+            if normalized.get("_has_ingest_warning"):
                 warning_rows.append(
                     {
                         "store_code": store_code,
@@ -592,16 +662,23 @@ def _read_workbook_rows(
 
 def _coerce_input_row(raw: Mapping[str, Any]) -> Dict[str, Any]:
     if any(header in raw for header in HEADER_MAP):
-        return {header: raw.get(header) for header in HEADER_MAP}
+        return {
+            **{header: raw.get(header) for header in HEADER_MAP},
+            "__present_headers__": {header for header in HEADER_MAP if header in raw},
+        }
 
     coerced: Dict[str, Any] = {}
+    present_headers: set[str] = set()
     for header, aliases in ROW_FIELD_ALIASES.items():
         value = None
         for alias in aliases:
-            if alias in raw and raw.get(alias) not in (None, ""):
+            if alias in raw:
+                present_headers.add(header)
                 value = raw.get(alias)
-                break
+                if value not in (None, ""):
+                    break
         coerced[header] = value
+    coerced["__present_headers__"] = present_headers
     return coerced
 
 
@@ -622,7 +699,7 @@ def _read_input_rows(
         )
         order_number = _stringify_value(raw_row.get("Order No."))
         if normalized:
-            if normalized.get("ingest_remarks"):
+            if normalized.get("_has_ingest_warning"):
                 warning_rows.append(
                     {
                         "store_code": store_code,
@@ -783,6 +860,7 @@ async def _ingest_td_orders_rows(
             phone_fallback_rows=phone_fallback_stats.fallback_rows,
             phone_fallback_unique_values=len(phone_fallback_stats.invalid_phone_numbers),
             phone_fallback_top_invalid_values=_phone_fallback_top_invalid_values(phone_fallback_stats),
+            amount_metrics=_amount_metrics(rows),
         )
 
     metadata = sa.MetaData()
@@ -919,6 +997,7 @@ async def _ingest_td_orders_rows(
         phone_fallback_rows=phone_fallback_stats.fallback_rows,
         phone_fallback_unique_values=len(phone_fallback_stats.invalid_phone_numbers),
         phone_fallback_top_invalid_values=_phone_fallback_top_invalid_values(phone_fallback_stats),
+        amount_metrics=_amount_metrics(rows),
     )
 
 

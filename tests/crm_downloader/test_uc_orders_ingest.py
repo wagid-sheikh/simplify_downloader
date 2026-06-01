@@ -481,3 +481,113 @@ async def test_uc_ingest_classifies_malformed_empty_workbook(tmp_path: Path) -> 
     assert result.staging_rows == 0
     assert result.zero_row_export_classification == uc_ingest.ZERO_ROW_EXPORT_MALFORMED
     assert any("missing expected columns" in warning for warning in result.warnings)
+
+
+def _build_uc_api_amount_workbook(
+    path: Path,
+    *,
+    order_number: str,
+    taxable_value: object = "200",
+    final_amount: object = "236",
+    omit_taxable_value: bool = False,
+    omit_final_amount: bool = False,
+) -> Path:
+    headers = [
+        "order_number",
+        "invoice_number",
+        "invoice_date",
+        "name",
+        "customer_phone",
+        "payment_status",
+        "customer_gst",
+        "city_name",
+        "taxable_value",
+        "cgst",
+        "sgst",
+        "final_amount",
+    ]
+    values: list[object] = [
+        order_number,
+        f"INV-{order_number}",
+        "10/01/2025",
+        "Amount Test",
+        "9999988887",
+        "Paid",
+        "GSTIN-AMOUNT",
+        "KA",
+        taxable_value,
+        "18",
+        "18",
+        final_amount,
+    ]
+    omitted = set()
+    if omit_taxable_value:
+        omitted.add("taxable_value")
+    if omit_final_amount:
+        omitted.add("final_amount")
+    filtered = [(header, value) for header, value in zip(headers, values) if header not in omitted]
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append([header for header, _ in filtered])
+    ws.append([value for _, value in filtered])
+    wb.save(path)
+    return path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case_name", "kwargs", "expected_gross", "expected_net", "missing_fields", "malformed_fields", "explicit_zero_orders"),
+    [
+        ("missing-final", {"omit_final_amount": True}, None, 200, 1, 0, 0),
+        ("missing-taxable", {"omit_taxable_value": True}, 236, None, 1, 0, 0),
+        ("explicit-zero", {"taxable_value": 0, "final_amount": "0"}, 0, 0, 0, 0, 1),
+        ("malformed", {"taxable_value": "bad-net", "final_amount": "bad-gross"}, None, None, 0, 2, 0),
+        ("valid", {"taxable_value": "200", "final_amount": "236"}, 236, 200, 0, 0, 0),
+    ],
+)
+async def test_uc_amount_provenance_metrics_and_persistence(
+    tmp_path: Path,
+    case_name: str,
+    kwargs: dict[str, object],
+    expected_gross: int | None,
+    expected_net: int | None,
+    missing_fields: int,
+    malformed_fields: int,
+    explicit_zero_orders: int,
+) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / f'uc_amount_{case_name}.db'}"
+    workbook = _build_uc_api_amount_workbook(
+        tmp_path / f"uc_amount_{case_name}.xlsx",
+        order_number=f"UC-{case_name.upper()}",
+        **kwargs,
+    )
+
+    result = await ingest_uc_orders_workbook(
+        workbook_path=workbook,
+        store_code="S001",
+        cost_center="C001",
+        run_id=f"run-{case_name}",
+        run_date=datetime(2025, 1, 3),
+        database_url=database_url,
+        logger=get_logger(f"test_uc_amount_{case_name}"),
+    )
+
+    assert result.final_rows == 1
+    assert result.amount_metrics["missing_amount_field_count"] == missing_fields
+    assert result.amount_metrics["malformed_amount_field_count"] == malformed_fields
+    assert result.amount_metrics["explicit_zero_value_order_count"] == explicit_zero_orders
+    assert result.amount_metrics["canonical_zero_value_order_count"] == int((expected_gross or 0) == 0)
+    assert bool(result.warning_rows) is bool(missing_fields or malformed_fields)
+
+    metadata = sa.MetaData()
+    orders_table = _orders_table(metadata)
+    async with session_scope(database_url) as session:
+        persisted = (
+            await session.execute(
+                sa.select(orders_table.c.gross_amount, orders_table.c.net_amount).where(
+                    orders_table.c.order_number == f"UC-{case_name.upper()}"
+                )
+            )
+        ).one()
+    assert (float(persisted.gross_amount) if persisted.gross_amount is not None else None) == expected_gross
+    assert (float(persisted.net_amount) if persisted.net_amount is not None else None) == expected_net

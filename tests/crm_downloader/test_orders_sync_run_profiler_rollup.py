@@ -1168,3 +1168,40 @@ def test_profiler_main_fatal_error_forces_bounded_exit_when_task_resists_cancell
     )
 
     assert result.returncode == 1
+
+
+def test_profiler_rolls_amount_metrics_into_notification_context() -> None:
+    summary = {
+        "metrics_json": {
+            "orders": {
+                "stores": {
+                    "TD01": {
+                        "rows_downloaded": 2,
+                        "final_rows": 2,
+                        "amount_metrics": {
+                            "explicit_zero_value_order_count": 1,
+                            "missing_amount_field_count": 2,
+                            "malformed_amount_field_count": 1,
+                            "canonical_zero_value_order_count": 2,
+                            "parsed_source_gross_amount_sum": 125.5,
+                            "parsed_source_net_amount_sum": 100,
+                        },
+                    }
+                }
+            },
+            "sales": {"stores": {"TD01": {}}},
+        }
+    }
+
+    counts = profiler._extract_ingestion_counts_from_summary(
+        summary, store_code="TD01", pipeline_name="td_orders_sync"
+    )
+    unified = profiler._build_unified_metrics(counts["primary"])
+
+    assert unified["explicit_zero_value_order_count"] == 1
+    assert unified["missing_amount_field_count"] == 2
+    assert unified["malformed_amount_field_count"] == 1
+    assert unified["canonical_zero_value_order_count"] == 2
+    assert unified["parsed_source_gross_amount_sum"] == 125.5
+    assert unified["parsed_source_net_amount_sum"] == 100.0
+    assert "missing_amount_fields=2" in profiler._format_unified_metrics(unified)

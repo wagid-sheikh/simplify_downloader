@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -8,6 +8,12 @@ from sqlalchemy.dialects import postgresql, sqlite
 from app.reports.same_day_fulfillment import same_day_date_expr
 
 from app.common.db import session_scope
+from app.crm_downloader.td_orders_sync.ingest import (
+    _orders_table as _td_orders_table,
+    _stg_td_orders_table,
+    ingest_td_orders_rows,
+)
+from app.dashboard_downloader.json_logger import get_logger
 import importlib.util
 from pathlib import Path
 import sys
@@ -158,6 +164,7 @@ def _create_tables(database_url: str) -> None:
                 CREATE TABLE orders_sync_log (
                     cost_center TEXT,
                     orders_pulled_at TIMESTAMP,
+                    status TEXT,
                     updated_at TIMESTAMP,
                     created_at TIMESTAMP
                 )
@@ -930,8 +937,8 @@ def test_completed_reconciliation_string_agg_requires_keyword_arguments() -> Non
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_orders_sync_uses_updated_at_fallback(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "daily_sales_report_sync_fallback.db"
+async def test_fetch_daily_sales_report_orders_sync_uses_successful_refresh_timestamp(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "daily_sales_report_sync_success.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
 
@@ -941,18 +948,13 @@ async def test_fetch_daily_sales_report_orders_sync_uses_updated_at_fallback(tmp
 
     async with session_scope(database_url) as session:
         await session.execute(
-            sa.text(
-                """
-                INSERT INTO cost_center (cost_center, description, target_type, is_active)
-                VALUES ('CC-TD', 'TD Cost Center', 'value', 1)
-                """
-            )
+            sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD', 'TD Cost Center', 'value', 1)")
         )
         await session.execute(
             sa.text(
                 """
-                INSERT INTO orders_sync_log (cost_center, orders_pulled_at, updated_at, created_at)
-                VALUES ('CC-TD', NULL, '2026-01-19 07:25:00', '2026-01-19 07:10:00')
+                INSERT INTO orders_sync_log (cost_center, orders_pulled_at, status, updated_at, created_at)
+                VALUES ('CC-TD', '2026-01-19 07:20:00', 'success', '2026-01-19 07:25:00', '2026-01-19 07:10:00')
                 """
             )
         )
@@ -961,7 +963,11 @@ async def test_fetch_daily_sales_report_orders_sync_uses_updated_at_fallback(tmp
     report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
 
     td_row = next(row for row in report.rows if row.cost_center == "CC-TD")
-    assert td_row.orders_sync_time == "07:25"
+    assert td_row.orders_sync_time == "07:20"
+    assert td_row.last_successful_orders_refresh_at == datetime(2026, 1, 19, 7, 20, tzinfo=tz)
+    assert td_row.last_orders_sync_attempt_at == datetime(2026, 1, 19, 7, 25, tzinfo=tz)
+    assert td_row.latest_orders_sync_outcome == "success"
+    assert td_row.orders_sync_warning is False
 
 
 @pytest.mark.asyncio
@@ -1058,8 +1064,11 @@ async def test_fetch_daily_sales_report_deprecates_td_lead_change_details_payloa
 
 
 @pytest.mark.asyncio
-async def test_fetch_daily_sales_report_orders_sync_uses_created_at_string_fallback(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "daily_sales_report_sync_created_fallback.db"
+@pytest.mark.parametrize("latest_status", ["failed", "skipped"])
+async def test_fetch_daily_sales_report_orders_sync_warns_after_unsuccessful_newer_attempt(
+    tmp_path, monkeypatch, latest_status
+) -> None:
+    db_path = tmp_path / f"daily_sales_report_sync_{latest_status}.db"
     database_url = f"sqlite+aiosqlite:///{db_path}"
     _create_tables(database_url)
 
@@ -1069,27 +1078,66 @@ async def test_fetch_daily_sales_report_orders_sync_uses_created_at_string_fallb
 
     async with session_scope(database_url) as session:
         await session.execute(
-            sa.text(
-                """
-                INSERT INTO cost_center (cost_center, description, target_type, is_active)
-                VALUES ('CC-TD', 'TD Cost Center', 'value', 1)
-                """
-            )
+            sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD', 'TD Cost Center', 'value', 1)")
         )
         await session.execute(
             sa.text(
                 """
-                INSERT INTO orders_sync_log (cost_center, orders_pulled_at, updated_at, created_at)
-                VALUES ('CC-TD', NULL, NULL, '2026-01-19T05:45:00Z')
+                INSERT INTO orders_sync_log (cost_center, orders_pulled_at, status, updated_at, created_at) VALUES
+                ('CC-TD', '2026-01-19 07:20:00', 'success', '2026-01-19 07:25:00', '2026-01-19 07:10:00'),
+                ('CC-TD', NULL, :latest_status, '2026-01-19 08:05:00', '2026-01-19 08:00:00')
                 """
-            )
+            ),
+            {"latest_status": latest_status},
         )
         await session.commit()
 
     report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
 
     td_row = next(row for row in report.rows if row.cost_center == "CC-TD")
-    assert td_row.orders_sync_time == "11:15"
+    assert td_row.orders_sync_time == "07:20"
+    assert td_row.last_successful_orders_refresh_at == datetime(2026, 1, 19, 7, 20, tzinfo=tz)
+    assert td_row.last_orders_sync_attempt_at == datetime(2026, 1, 19, 8, 5, tzinfo=tz)
+    assert td_row.latest_orders_sync_outcome == latest_status
+    assert td_row.orders_sync_warning is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("latest_status", "expected_warning"), [("failed", True), ("success", False)])
+async def test_fetch_daily_sales_report_orders_sync_does_not_fake_success_from_attempt_timestamps(
+    tmp_path, monkeypatch, latest_status, expected_warning
+) -> None:
+    db_path = tmp_path / f"daily_sales_report_sync_without_refresh_{latest_status}.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    tz = ZoneInfo("Asia/Kolkata")
+    monkeypatch.setattr(_data_module, "get_timezone", lambda: tz)
+    report_date = date(2026, 1, 19)
+
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text("INSERT INTO cost_center (cost_center, description, target_type, is_active) VALUES ('CC-TD', 'TD Cost Center', 'value', 1)")
+        )
+        await session.execute(
+            sa.text(
+                """
+                INSERT INTO orders_sync_log (cost_center, orders_pulled_at, status, updated_at, created_at)
+                VALUES ('CC-TD', NULL, :latest_status, '2026-01-19 08:05:00', '2026-01-19 08:00:00')
+                """
+            ),
+            {"latest_status": latest_status},
+        )
+        await session.commit()
+
+    report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
+
+    td_row = next(row for row in report.rows if row.cost_center == "CC-TD")
+    assert td_row.orders_sync_time is None
+    assert td_row.last_successful_orders_refresh_at is None
+    assert td_row.last_orders_sync_attempt_at == datetime(2026, 1, 19, 8, 5, tzinfo=tz)
+    assert td_row.latest_orders_sync_outcome == latest_status
+    assert td_row.orders_sync_warning is expected_warning
 
 
 @pytest.mark.asyncio
@@ -1567,6 +1615,7 @@ async def test_fetch_daily_sales_report_report_day_orders_by_cost_center(tmp_pat
                 VALUES
                     ('AA', 'A-002', '2026-04-29T10:00:00+05:30', 'TumbleDry', 100),
                     ('AA', 'A-001', '2026-04-29T09:00:00+05:30', 'TumbleDry', 100),
+                    ('AA', 'A-ZERO', '2026-04-29T10:30:00+05:30', 'TumbleDry', 0),
                     ('AA', 'A-003', '2026-04-30T09:00:00+05:30', 'TumbleDry', 100),
                     ('BB', 'B-001', '2026-04-29T11:00:00+05:30', 'TumbleDry', 100),
                     ('ZZ', 'Z-001', '2026-04-29T08:00:00+05:30', 'TumbleDry', 100)
@@ -1577,10 +1626,45 @@ async def test_fetch_daily_sales_report_report_day_orders_by_cost_center(tmp_pat
 
     report = await fetch_daily_sales_report(database_url=database_url, report_date=report_date)
     assert [(row.cost_center, row.order_numbers_text) for row in report.report_day_orders_by_cost_center] == [
-        ("AA", "A-001, A-002"),
+        ("AA", "A-001, A-002, A-ZERO"),
         ("BB", "B-001"),
         ("CC", "-"),
     ]
+    alpha_population = report.report_day_orders_by_cost_center[0]
+    assert alpha_population.order_numbers == ["A-001", "A-002", "A-ZERO"]
+    assert alpha_population.orders_count == 3
+    assert alpha_population.order_amount == Decimal("200")
+    assert alpha_population.zero_value_orders_count == 1
+    assert report.integrity_findings == []
+
+    # Keep the reporting regression tied to ingestion semantics: a source-supplied
+    # zero remains descriptive data, while absent money fields degrade the window.
+    ingest_database_url = f"sqlite+aiosqlite:///{tmp_path / 'daily_sales_missing_amount_ingest.db'}"
+    metadata = sa.MetaData()
+    _stg_td_orders_table(metadata)
+    _td_orders_table(metadata)
+    engine = sa.create_engine(ingest_database_url.replace("+aiosqlite", ""))
+    metadata.create_all(engine)
+    engine.dispose()
+    ingest_result = await ingest_td_orders_rows(
+        rows=[
+            {
+                "orderNo": "DAILY-MISSING-AMOUNT",
+                "orderDate": "2026-04-29T12:00:00+05:30",
+                "customerPhone": "9999999999",
+            }
+        ],
+        store_code="AA",
+        cost_center="AA",
+        run_id="daily-sales-missing-amount",
+        run_date=datetime(2026, 4, 29, 13, 0, tzinfo=ZoneInfo("Asia/Kolkata")),
+        database_url=ingest_database_url,
+        logger=get_logger("daily-sales-missing-amount"),
+    )
+    assert ingest_result.final_rows == 1
+    assert ingest_result.amount_metrics["missing_amount_field_count"] == 2
+    assert len(ingest_result.warning_rows) == 1
+    assert any("AMOUNT_INGEST_WARNING" in warning for warning in ingest_result.warnings)
 
 
 @pytest.mark.asyncio
@@ -2185,3 +2269,96 @@ async def test_auto_clear_keeps_to_be_recovered_when_payment_proof_is_missing(
     assert status["recovery_status"] == "TO_BE_RECOVERED"
     assert status["recovery_category"] == "MISSING_PAYMENT"
     assert status["recovery_notes"] is None
+
+
+
+def _integrity_daily_row(*, count: int, amount: str):
+    row = _data_module._totals_row([])
+    row.cost_center = "CC1"
+    row.cost_center_name = "Store One"
+    row.orders_count_ftd = count
+    row.sales_ftd = Decimal(amount)
+    return row
+
+
+def _integrity_findings(*, row_count: int, row_amount: str, order_numbers: list[str], population_amount: str, zero_count: int = 0):
+    row = _integrity_daily_row(count=row_count, amount=row_amount)
+    totals = _data_module._totals_row([row])
+    population = _data_module.ReportDayOrdersByCostCenterRow(
+        cost_center="CC1",
+        order_numbers_text=", ".join(order_numbers) or "-",
+        order_numbers=order_numbers,
+        orders_count=len(order_numbers),
+        order_amount=Decimal(population_amount),
+        zero_value_orders_count=zero_count,
+    )
+    return _data_module._build_integrity_findings(
+        rows=[row], totals=totals, report_day_orders_by_cost_center=[population]
+    )
+
+
+def test_daily_sales_integrity_matching_summary_and_order_number_list() -> None:
+    findings = _integrity_findings(
+        row_count=2, row_amount="125", order_numbers=["ORD-1", "ORD-2"], population_amount="125"
+    )
+    assert findings == []
+
+
+def test_daily_sales_integrity_explicit_zero_value_order_remains_listed() -> None:
+    findings = _integrity_findings(
+        row_count=1, row_amount="0", order_numbers=["ZERO-1"], population_amount="0", zero_count=1
+    )
+    assert [finding.code for finding in findings] == ["ftd_orders_with_zero_total_amount"]
+
+
+def test_daily_sales_integrity_multiple_zero_value_orders_generate_warning() -> None:
+    findings = _integrity_findings(
+        row_count=2, row_amount="0", order_numbers=["ZERO-1", "ZERO-2"], population_amount="0", zero_count=2
+    )
+    assert [finding.code for finding in findings] == [
+        "ftd_orders_with_zero_total_amount",
+        "multiple_zero_value_ftd_orders",
+    ]
+    assert all(finding.severity == "warning" for finding in findings)
+
+
+def test_daily_sales_integrity_count_mismatch_is_hard_error() -> None:
+    findings = _integrity_findings(
+        row_count=1, row_amount="125", order_numbers=["ORD-1", "ORD-2"], population_amount="125"
+    )
+    assert [(finding.code, finding.severity) for finding in findings] == [
+        ("store_ftd_count_mismatch", "error")
+    ]
+
+
+def test_daily_sales_integrity_amount_mismatch_is_hard_error() -> None:
+    findings = _integrity_findings(
+        row_count=2, row_amount="124", order_numbers=["ORD-1", "ORD-2"], population_amount="125"
+    )
+    assert [(finding.code, finding.severity) for finding in findings] == [
+        ("store_ftd_amount_mismatch", "error")
+    ]
+
+
+def test_daily_sales_integrity_duplicate_order_number_is_hard_error() -> None:
+    findings = _integrity_findings(
+        row_count=2, row_amount="125", order_numbers=["ORD-1", "ORD-1"], population_amount="125"
+    )
+    assert [(finding.code, finding.severity) for finding in findings] == [
+        ("duplicate_ftd_order_number", "error")
+    ]
+
+
+def test_daily_sales_integrity_aggregate_total_mismatch_is_hard_error() -> None:
+    row = _integrity_daily_row(count=1, amount="125")
+    totals = _data_module._totals_row([row])
+    totals.orders_count_ftd = 2
+    totals.sales_ftd = Decimal("126")
+    population = _data_module.ReportDayOrdersByCostCenterRow(
+        cost_center="CC1", order_numbers_text="ORD-1", order_numbers=["ORD-1"], orders_count=1, order_amount=Decimal("125")
+    )
+    findings = _data_module._build_integrity_findings(rows=[row], totals=totals, report_day_orders_by_cost_center=[population])
+    assert [(finding.code, finding.severity) for finding in findings] == [
+        ("total_ftd_count_mismatch", "error"),
+        ("total_ftd_amount_mismatch", "error"),
+    ]

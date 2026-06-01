@@ -442,6 +442,93 @@ async def test_ingest_td_orders_rows_api_payload(tmp_path: Path) -> None:
     assert result.final_rows == 1
     assert result.rows_downloaded == 1
     assert result.warnings == []
+    assert result.amount_metrics == {
+        "explicit_zero_value_order_count": 0,
+        "missing_amount_field_count": 0,
+        "malformed_amount_field_count": 0,
+        "canonical_zero_value_order_count": 0,
+        "parsed_source_gross_amount_sum": Decimal("1200"),
+        "parsed_source_net_amount_sum": Decimal("1100"),
+    }
+
+    metadata = sa.MetaData()
+    stg_table = _stg_td_orders_table(metadata)
+    orders_table = _orders_table(metadata)
+    async with session_scope(database_url) as session:
+        stg_row = (
+            await session.execute(
+                sa.select(stg_table.c.gross_amount, stg_table.c.net_amount).where(
+                    stg_table.c.order_number == "ORD-API-001"
+                )
+            )
+        ).one()
+        order_row = (
+            await session.execute(
+                sa.select(orders_table.c.gross_amount, orders_table.c.net_amount).where(
+                    orders_table.c.order_number == "ORD-API-001"
+                )
+            )
+        ).one()
+        await session.execute(
+            sa.text(
+                "CREATE VIEW vw_orders AS SELECT *, "
+                "CASE WHEN net_amount IS NOT NULL AND net_amount <> 0 THEN net_amount ELSE gross_amount END "
+                "AS order_amount FROM orders"
+            )
+        )
+        canonical_amount = (
+            await session.execute(
+                sa.text("SELECT order_amount FROM vw_orders WHERE order_number = 'ORD-API-001'")
+            )
+        ).scalar_one()
+
+    assert stg_row == (Decimal("1200.00"), Decimal("1100.00"))
+    assert order_row == (Decimal("1200.00"), Decimal("1100.00"))
+    assert canonical_amount == Decimal("1100")
+
+
+@pytest.mark.asyncio
+async def test_td_amount_provenance_preserves_explicit_zero_and_degrades_unusable_amounts(tmp_path: Path) -> None:
+    db_path = tmp_path / "orders_amount_provenance.db"
+    database_url = f"sqlite+aiosqlite:///{db_path}"
+    _create_tables(database_url)
+
+    result = await ingest_td_orders_rows(
+        rows=[
+            {"orderNo": "TD-ZERO", "orderDate": "2025-05-10", "customerPhone": "9999999999", "grossAmount": "0", "netAmount": 0},
+            {"orderNo": "TD-MISSING", "orderDate": "2025-05-10", "customerPhone": "9999999999"},
+            {"orderNo": "TD-MALFORMED", "orderDate": "2025-05-10", "customerPhone": "9999999999", "grossAmount": "bad", "netAmount": ""},
+        ],
+        store_code="A668",
+        cost_center="UN3668",
+        run_id="amount-provenance",
+        run_date=datetime(2025, 5, 20, 12, 0, tzinfo=ZoneInfo("Asia/Kolkata")),
+        database_url=database_url,
+        logger=get_logger(run_id="amount-provenance"),
+    )
+
+    assert result.final_rows == 3
+    assert result.amount_metrics == {
+        "explicit_zero_value_order_count": 1,
+        "missing_amount_field_count": 3,
+        "malformed_amount_field_count": 1,
+        "canonical_zero_value_order_count": 3,
+        "parsed_source_gross_amount_sum": Decimal("0"),
+        "parsed_source_net_amount_sum": Decimal("0"),
+    }
+    assert len(result.warning_rows) == 2
+    assert any("provenance=absent" in warning for warning in result.warnings)
+    assert any("provenance=malformed" in warning for warning in result.warnings)
+
+    metadata = sa.MetaData()
+    orders_table = _orders_table(metadata)
+    async with session_scope(database_url) as session:
+        persisted = (await session.execute(sa.select(orders_table.c.order_number, orders_table.c.gross_amount, orders_table.c.net_amount).order_by(orders_table.c.order_number))).all()
+    assert persisted == [
+        ("TD-MALFORMED", None, None),
+        ("TD-MISSING", None, None),
+        ("TD-ZERO", Decimal("0.00"), Decimal("0.00")),
+    ]
 
 
 @pytest.mark.asyncio
