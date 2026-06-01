@@ -157,6 +157,19 @@ age) and then takes exactly one action without polling:
    dead PID's recorded process group is still alive, or a command points outside
    the expected repository wrapper, fail safely without deleting the lock.
 
+The TD-leads wrapper also invokes
+`app.crm_downloader.td_leads_sync.wrapper_notifications` after watchdog timeout,
+stale-owner termination, active-owner suppression, and ambiguous-lock fail-safe
+outcomes. The helper persists a sanitized `td_leads_wrapper_ops`
+`pipeline_run_summaries` event containing wrapper timestamp, host, local-lock
+path, owner PID/PGID/age, recovery action, and resulting status. Delivery uses a
+dedicated DB-driven profile/template. Repeated suppressions for the same active
+owner are persisted but deduplicated after the initial email; a successfully
+completed fresh run after stale-owner termination emits a recovery email. The
+wrapper log records helper delivery success or failure. Operational event content
+must not include credentials, CRM payloads, customer names, mobile numbers, or
+scraped rows.
+
 The thresholds are intentionally pipeline-specific:
 `TD_LEADS_STALE_OWNER_SECONDS=300` supports the TD-leads 10–20 minute service
 objective conservatively, while `ORDERS_REPORTS_STALE_OWNER_SECONDS=7200`

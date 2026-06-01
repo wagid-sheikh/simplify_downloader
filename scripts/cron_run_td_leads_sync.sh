@@ -90,6 +90,38 @@ export LANG="${LANG:-en_US.UTF-8}"
 
 RUN_LOCK_ACQUIRED=0
 TIMEOUT_HANDLING_IN_PROGRESS=0
+STALE_OWNER_RECOVERED=0
+RECOVERED_OWNER_PID="unknown"
+RECOVERED_OWNER_PGID="unknown"
+RECOVERED_OWNER_AGE_SECONDS="unknown"
+
+notify_wrapper_event() {
+  local resulting_status="$1"
+  local owner_pid="${2:-unknown}"
+  local owner_pgid="${3:-unknown}"
+  local owner_age_seconds="${4:-unknown}"
+  local recovery_action="${5:-none}"
+  local helper_module="${REPO_ROOT}/app/crm_downloader/td_leads_sync/wrapper_notifications.py"
+  local output
+
+  if [[ ! -f "${helper_module}" ]]; then
+    log "[wrapper notification] status=${resulting_status} delivery=skipped helper_unavailable=${helper_module}"
+    return 0
+  fi
+  if output="$(poetry run python -m app.crm_downloader.td_leads_sync.wrapper_notifications \
+    --wrapper-timestamp "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    --hostname "$(hostname)" \
+    --local-lock-path "${RUN_LOCK_DIR}" \
+    --owner-pid "${owner_pid}" \
+    --owner-pgid "${owner_pgid}" \
+    --owner-age-seconds "${owner_age_seconds}" \
+    --recovery-action "${recovery_action}" \
+    --status "${resulting_status}" 2>&1)"; then
+    log "[wrapper notification] status=${resulting_status} delivery=success result=${output}"
+  else
+    log "WARNING: [wrapper notification] status=${resulting_status} delivery=failure result=${output}"
+  fi
+}
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S %Z')] $*" >> "${LOG_FILE}"
@@ -283,12 +315,14 @@ acquire_local_lock() {
 
   if [[ -z "${existing_pid}" ]] || ! [[ "${existing_pid}" =~ ^[0-9]+$ ]] || [[ -z "${existing_pgid}" ]] || ! [[ "${existing_pgid}" =~ ^[0-9]+$ ]]; then
     log "WARNING: Local-lock PID/PGID metadata is missing or malformed. Leaving lock untouched."
+    notify_wrapper_event "lock_metadata_ambiguous" "${existing_pid:-unknown}" "${existing_pgid:-unknown}" "${lock_age_seconds:-unknown}" "preserved_lock_for_operator_inspection"
     exit 1
   fi
 
   if ! pid_is_alive "${existing_pid}"; then
     if process_group_is_alive "${existing_pgid}"; then
       log "WARNING: Local-lock owner PID=${existing_pid} is gone but PGID=${existing_pgid} is still alive. Leaving lock untouched."
+      notify_wrapper_event "lock_metadata_ambiguous" "${existing_pid}" "${existing_pgid}" "${lock_age_seconds:-unknown}" "preserved_lock_for_operator_inspection"
       exit 1
     fi
     log "[local lock] Owner PID=${existing_pid} and PGID=${existing_pgid} are gone; removing stale lock."
@@ -298,11 +332,13 @@ acquire_local_lock() {
 
   if [[ -z "${lock_age_seconds}" ]]; then
     log "WARNING: Live local-lock owner has missing, invalid, or future started_at_epoch metadata. Leaving lock untouched."
+    notify_wrapper_event "lock_metadata_ambiguous" "${existing_pid}" "${existing_pgid}" "unknown" "preserved_lock_for_operator_inspection"
     exit 1
   fi
 
   if [[ "${lock_age_seconds}" -lt "${TD_LEADS_STALE_OWNER_SECONDS}" ]]; then
     log "[local lock] status=skipped_due_to_active_same_pipeline_owner owner_pid=${existing_pid} owner_pgid=${existing_pgid} lock_age_seconds=${lock_age_seconds} stale_owner_seconds=${TD_LEADS_STALE_OWNER_SECONDS}"
+    notify_wrapper_event "skipped_due_to_active_same_pipeline_owner" "${existing_pid}" "${existing_pgid}" "${lock_age_seconds}" "suppressed_overlapping_invocation"
     exit 0
   fi
 
@@ -310,10 +346,12 @@ acquire_local_lock() {
   live_cmd="$(get_pid_command_line "${existing_pid}")"
   if [[ "${live_pgid}" != "${existing_pgid}" ]]; then
     log "WARNING: PID/PGID mismatch for stale-owner candidate PID=${existing_pid}: metadata_pgid=${existing_pgid} live_pgid=${live_pgid:-<missing>}. Leaving lock untouched."
+    notify_wrapper_event "lock_metadata_ambiguous" "${existing_pid}" "${existing_pgid}" "${lock_age_seconds}" "preserved_lock_for_operator_inspection"
     exit 1
   fi
   if ! command_references_expected_wrapper "${existing_cmd}" "${expected_script}" || ! command_references_expected_wrapper "${live_cmd}" "${expected_script}"; then
     log "WARNING: Stale-owner command does not belong to expected repository wrapper. expected=${expected_script} metadata_command=${existing_cmd:-<missing>} live_command=${live_cmd:-<missing>}. Leaving lock untouched."
+    notify_wrapper_event "lock_metadata_ambiguous" "${existing_pid}" "${existing_pgid}" "${lock_age_seconds}" "preserved_lock_for_operator_inspection"
     exit 1
   fi
 
@@ -323,10 +361,16 @@ acquire_local_lock() {
   fi
   if pid_is_alive "${existing_pid}" || process_group_is_alive "${existing_pgid}"; then
     log "WARNING: Stale-owner process group verification failed for PID=${existing_pid} PGID=${existing_pgid}. Leaving lock untouched."
+    notify_wrapper_event "lock_metadata_ambiguous" "${existing_pid}" "${existing_pgid}" "${lock_age_seconds}" "preserved_lock_for_operator_inspection"
     exit 1
   fi
 
   log "[local lock] Confirmed stale-owner process group is gone; removing stale lock."
+  notify_wrapper_event "stale_owner_terminated" "${existing_pid}" "${existing_pgid}" "${lock_age_seconds}" "terminated_stale_owner_process_group"
+  STALE_OWNER_RECOVERED=1
+  RECOVERED_OWNER_PID="${existing_pid}"
+  RECOVERED_OWNER_PGID="${existing_pgid}"
+  RECOVERED_OWNER_AGE_SECONDS="${lock_age_seconds}"
   reacquire_after_stale_cleanup "${existing_pid}" "${existing_pgid}" "$@"
 }
 
@@ -457,6 +501,7 @@ run_step() {
         RUN_LOCK_ACQUIRED=0
       fi
       TIMEOUT_HANDLING_IN_PROGRESS=0
+      notify_wrapper_event "watchdog_timeout" "${child_pid}" "${child_pgid}" "${duration}" "terminated_watchdog_child_process_group"
       return 124
     fi
     sleep 1
@@ -501,6 +546,14 @@ if [[ ${td_leads_args_count} -gt 0 ]]; then
   run_step "Script 1: td_leads_sync" "./scripts/run_local_td_leads_sync.sh" "${TD_LEADS_ARGS[@]}"
 else
   run_step "Script 1: td_leads_sync" "./scripts/run_local_td_leads_sync.sh"
+fi
+
+# A healthy completion closes any unresolved same-lock incident. The helper
+# suppresses this event when no alert edge is open, so ordinary runs do not email.
+if [[ "${STALE_OWNER_RECOVERED}" -eq 1 ]]; then
+  notify_wrapper_event "fresh_run_succeeded_after_stale_owner_terminated" "${RECOVERED_OWNER_PID}" "${RECOVERED_OWNER_PGID}" "${RECOVERED_OWNER_AGE_SECONDS}" "fresh_td_leads_run_completed_successfully"
+else
+  notify_wrapper_event "fresh_run_succeeded_after_stale_owner_terminated" "$$" "$(get_pid_pgid "$$")" "0" "fresh_td_leads_run_completed_successfully"
 fi
 
 section "CRON RUN FINISHED SUCCESSFULLY"
