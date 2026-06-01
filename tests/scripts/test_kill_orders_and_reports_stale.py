@@ -239,3 +239,71 @@ def test_removes_stale_lock_after_process_group_exits(tmp_path: Path) -> None:
     assert f"Process group {pgid} is gone; removing lock directory." in result.stdout
     assert f"After snapshot for PGID {pgid}:" in result.stdout
     assert not lock_dir.exists()
+
+
+def test_force_removes_obsolete_global_lock_after_recorded_group_is_gone(tmp_path: Path) -> None:
+    recovery_script, scripts_dir, _ = _prepare_script(tmp_path)
+    process = _start_repo_process(scripts_dir)
+    command = str(process.args[0])
+    pgid = process.pid
+    _stop_process(process)
+    time.sleep(0.05)
+    obsolete_lock = tmp_path / "tmp" / "cron_heavy_pipelines.lock"
+    _write_lock(obsolete_lock, pid=pgid, pgid=pgid, command=command)
+
+    result = _run_recovery(recovery_script, FORCE="1")
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert f"Obsolete global lock rollout cleanup: {obsolete_lock}" in result.stdout
+    assert f"Process group {pgid} is gone; removing lock directory." in result.stdout
+    assert not obsolete_lock.exists()
+
+
+def test_dry_run_retains_obsolete_global_lock_until_recorded_group_is_confirmed_gone(
+    tmp_path: Path,
+) -> None:
+    recovery_script, scripts_dir, _ = _prepare_script(tmp_path)
+    process = _start_repo_process(scripts_dir)
+    obsolete_lock = tmp_path / "tmp" / "cron_heavy_pipelines.lock"
+    try:
+        _write_lock(
+            obsolete_lock, pid=process.pid, pgid=process.pid, command=str(process.args[0])
+        )
+
+        result = _run_recovery(recovery_script)
+
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert f"Obsolete global lock rollout cleanup: {obsolete_lock}" in result.stdout
+        assert "Dry run only: FORCE!=1, no termination executed." in result.stdout
+        assert process.poll() is None
+        assert obsolete_lock.is_dir()
+    finally:
+        _stop_process(process)
+
+
+def test_force_terminates_obsolete_global_lock_owner_before_rollout_cleanup(
+    tmp_path: Path,
+) -> None:
+    recovery_script, scripts_dir, _ = _prepare_script(tmp_path)
+    process = _start_repo_process(scripts_dir)
+    obsolete_lock = tmp_path / "tmp" / "cron_heavy_pipelines.lock"
+    try:
+        _write_lock(
+            obsolete_lock, pid=process.pid, pgid=process.pid, command=str(process.args[0])
+        )
+
+        result = _run_recovery(
+            recovery_script,
+            FORCE="1",
+            TERM_WAIT_SECONDS="0",
+            KILL_WAIT_SECONDS="0",
+        )
+        process.wait(timeout=5)
+
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert f"Obsolete global lock rollout cleanup: {obsolete_lock}" in result.stdout
+        assert f"Sending TERM to process group -{process.pid}" in result.stdout
+        assert "is gone; removing lock directory." in result.stdout
+        assert not obsolete_lock.exists()
+    finally:
+        _stop_process(process)

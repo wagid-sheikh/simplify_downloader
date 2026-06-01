@@ -1264,3 +1264,79 @@ def test_cron_terminates_timed_out_orders_group_releases_lock_and_runs_reports(
     assert "Script 1: orders_sync_run_profiler failed after 1 attempts" in log_text
     assert "orders_sync_run_profiler_rc=124" in log_text
     assert "Script 2: daily_sales_report: attempt 1/1 succeeded" in log_text
+
+
+def _prepare_minimal_orders_cron(tmp_path: Path) -> tuple[Path, Path]:
+    repo_root = tmp_path
+    scripts_dir = repo_root / "scripts"
+    (repo_root / "logs").mkdir()
+    (repo_root / "tmp").mkdir()
+    scripts_dir.mkdir()
+    source = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
+    _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source)
+    _write_successful_preflight(scripts_dir)
+    for name in (
+        "orders_sync_run_profiler.sh",
+        "run_local_reports_daily_sales.sh",
+        "run_local_reports_mtd_same_day_fulfillment.sh",
+        "run_local_reports_pending_deliveries.sh",
+    ):
+        _write_executable(scripts_dir / name, "#!/usr/bin/env bash\nexit 0\n")
+    return repo_root, scripts_dir
+
+
+def _run_minimal_orders_cron(repo_root: Path, scripts_dir: Path) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.update(
+        {
+            "LOCK_WAIT_SECONDS": "0",
+            "ORDERS_MAX_ATTEMPTS": "1",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "MTD_SAME_DAY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "TMPDIR": str(repo_root),
+        }
+    )
+    return subprocess.run(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_active_td_leads_lock_does_not_block_orders_reports(tmp_path: Path) -> None:
+    repo_root, scripts_dir = _prepare_minimal_orders_cron(tmp_path)
+    unrelated_lock = repo_root / "tmp" / "cron_run_td_leads_sync.lock"
+    unrelated_lock.mkdir()
+    (unrelated_lock / "pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+    result = _run_minimal_orders_cron(repo_root, scripts_dir)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert unrelated_lock.is_dir()
+    assert not (repo_root / "tmp" / "cron_heavy_pipelines.lock").exists()
+
+
+def test_active_orders_reports_lock_blocks_second_orders_reports_instance(tmp_path: Path) -> None:
+    repo_root, scripts_dir = _prepare_minimal_orders_cron(tmp_path)
+    local_lock = repo_root / "tmp" / "cron_run_orders_and_reports.lock"
+    local_lock.mkdir()
+    (local_lock / "pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+    result = _run_minimal_orders_cron(repo_root, scripts_dir)
+
+    assert result.returncode == 1
+    log_files = sorted((repo_root / "logs").glob("cron_run_orders_and_reports_*.log"))
+    assert log_files
+    assert "waiting disabled (LOCK_WAIT_SECONDS=0)" in log_files[-1].read_text(encoding="utf-8")
+
+
+def test_orders_reports_wrapper_does_not_reference_retired_global_lock() -> None:
+    source = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
+
+    assert "cron_heavy_pipelines.lock" not in source
+    assert "GLOBAL_LOCK" not in source

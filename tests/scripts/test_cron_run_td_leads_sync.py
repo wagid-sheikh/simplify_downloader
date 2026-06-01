@@ -126,3 +126,45 @@ def test_td_leads_cron_enforces_max_runtime_seconds(tmp_path: Path) -> None:
     assert result.returncode == 124
     log_text = _latest_log_text(repo_root)
     assert "exceeded MAX_RUNTIME_SECONDS=1s" in log_text
+
+
+def test_active_orders_reports_lock_does_not_block_td_leads(tmp_path: Path) -> None:
+    repo_root, scripts_dir = _prepare_repo(tmp_path)
+    unrelated_lock = repo_root / "tmp" / "cron_run_orders_and_reports.lock"
+    unrelated_lock.mkdir()
+    (unrelated_lock / "pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+    _write_executable(
+        scripts_dir / "run_local_td_leads_sync.sh",
+        "#!/usr/bin/env bash\nprintf 'ran\\n' > \"${TMPDIR:-/tmp}/td-leads-ran\"\nexit 0\n",
+    )
+
+    result = _run_cron(repo_root, scripts_dir)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (tmp_path / "td-leads-ran").read_text(encoding="utf-8") == "ran\n"
+    assert unrelated_lock.is_dir()
+    assert not (repo_root / "tmp" / "cron_heavy_pipelines.lock").exists()
+
+
+def test_active_td_leads_lock_suppresses_second_td_leads_instance(tmp_path: Path) -> None:
+    repo_root, scripts_dir = _prepare_repo(tmp_path)
+    local_lock = repo_root / "tmp" / "cron_run_td_leads_sync.lock"
+    local_lock.mkdir()
+    (local_lock / "pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+    _write_executable(
+        scripts_dir / "run_local_td_leads_sync.sh",
+        "#!/usr/bin/env bash\nprintf 'unexpected\\n' > \"${TMPDIR:-/tmp}/td-leads-ran\"\nexit 0\n",
+    )
+
+    result = _run_cron(repo_root, scripts_dir)
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert not (tmp_path / "td-leads-ran").exists()
+    assert "status=skipped_due_to_lock_contention" in _latest_log_text(repo_root)
+
+
+def test_td_leads_wrapper_does_not_reference_retired_global_lock() -> None:
+    source = Path("scripts/cron_run_td_leads_sync.sh").read_text(encoding="utf-8")
+
+    assert "cron_heavy_pipelines.lock" not in source
+    assert "GLOBAL_LOCK" not in source
