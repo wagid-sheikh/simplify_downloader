@@ -10,18 +10,15 @@ SHELL=/bin/bash
 5 20 * * * /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_orders_and_reports.sh
 30 20 * * * /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_orders_and_reports.sh
 
-# Pipeline-local lock recovery note:
-# - TD leads and orders/reports acquire separate pipeline-specific lock dirs.
-# - Wrappers do not wait for locks. A young live same-pipeline owner causes a
-#   successful status=skipped_due_to_active_same_pipeline_owner exit.
-# - Dead lock owners are cleaned up immediately. Aged live owners are recovered
-#   only after PID, PGID, and repository-wrapper command validation succeeds.
-# - scripts/cron.env configures the TD-leads watchdog as
-#   TD_LEADS_MAX_RUNTIME_SECONDS=300 and TD_LEADS_STALE_OWNER_SECONDS=300, while
-#   keeping a separately reviewed ORDERS_REPORTS_STALE_OWNER_SECONDS threshold.
+# TD leads runs every 12 minutes from 10:00 through 20:59. It uses only
+# tmp/cron_run_td_leads_sync.lock and may overlap orders/reports. A healthy
+# previous TD-leads owner is never bypassed: the new invocation logs a visible
+# suppression and exits quickly. A stale owner older than the configured
+# threshold is terminated by process group, verified gone, and replaced.
 */12 10-20 * * * /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_td_leads_sync.sh >> /Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_td_leads_sync.log 2>&1
 
-# Meeting/day-end reporting runs use the same pipeline-local recovery state machine.
+# Meeting/day-end TD-leads runs use the same same-pipeline single-flight recovery
+# policy: suppress a healthy TD-leads owner or replace a verified-gone stale one.
 10 19 * * * /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_td_leads_sync.sh reporting_mode=meeting >> /Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_td_leads_sync.log 2>&1
 
 55 20 * * * /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_td_leads_sync.sh reporting_mode=day_end >> /Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_td_leads_sync.log 2>&1

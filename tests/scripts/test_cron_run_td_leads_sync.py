@@ -247,6 +247,12 @@ def test_td_leads_wrapper_does_not_reference_retired_global_lock() -> None:
     assert "GLOBAL_LOCK" not in source
 
 
+def test_td_leads_crontab_does_not_document_retired_global_lock_wait_policy() -> None:
+    source = Path("scripts/crontab_entries.txt").read_text(encoding="utf-8")
+
+    assert "cron_heavy_pipelines.lock" not in source
+    assert "900" not in source
+
 
 def test_dead_td_leads_owner_lock_is_cleaned_up_and_reacquired(tmp_path: Path) -> None:
     repo_root, scripts_dir = _prepare_repo(tmp_path)
