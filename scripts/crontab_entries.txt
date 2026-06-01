@@ -16,8 +16,9 @@ SHELL=/bin/bash
 #   successful status=skipped_due_to_active_same_pipeline_owner exit.
 # - Dead lock owners are cleaned up immediately. Aged live owners are recovered
 #   only after PID, PGID, and repository-wrapper command validation succeeds.
-# - scripts/cron.env configures TD_LEADS_STALE_OWNER_SECONDS=300 and keeps a
-#   separately reviewed ORDERS_REPORTS_STALE_OWNER_SECONDS threshold.
+# - scripts/cron.env configures the TD-leads watchdog as
+#   TD_LEADS_MAX_RUNTIME_SECONDS=300 and TD_LEADS_STALE_OWNER_SECONDS=300, while
+#   keeping a separately reviewed ORDERS_REPORTS_STALE_OWNER_SECONDS threshold.
 */12 10-20 * * * /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_td_leads_sync.sh >> /Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_td_leads_sync.log 2>&1
 
 # Meeting/day-end reporting runs use the same pipeline-local recovery state machine.

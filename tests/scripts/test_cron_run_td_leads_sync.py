@@ -74,6 +74,16 @@ def _wait_for_path(path: Path, timeout_seconds: float = 5) -> None:
     raise AssertionError(f"Timed out waiting for {path}")
 
 
+def _pid_is_non_zombie_alive(pid: int) -> bool:
+    result = subprocess.run(
+        ["ps", "-o", "state=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return bool(result.stdout.strip()) and not result.stdout.strip().startswith("Z")
+
+
 def test_td_leads_cron_no_cli_args_is_nounset_safe(tmp_path: Path) -> None:
     repo_root, scripts_dir = _prepare_repo(tmp_path)
     _write_executable(
@@ -134,7 +144,7 @@ def test_td_leads_cron_ignores_invalid_reporting_mode(tmp_path: Path) -> None:
     assert "Invalid reporting_mode 'invalid' ignored" in log_text
 
 
-def test_td_leads_cron_enforces_max_runtime_seconds(tmp_path: Path) -> None:
+def test_td_leads_cron_enforces_deprecated_max_runtime_seconds_override(tmp_path: Path) -> None:
     repo_root, scripts_dir = _prepare_repo(tmp_path)
     _write_executable(
         scripts_dir / "run_local_td_leads_sync.sh",
@@ -142,7 +152,7 @@ def test_td_leads_cron_enforces_max_runtime_seconds(tmp_path: Path) -> None:
     )
 
     env = os.environ.copy()
-    env.update({"TMPDIR": str(repo_root), "MAX_RUNTIME_SECONDS": "1"})
+    env.update({"TMPDIR": str(repo_root), "TD_LEADS_MAX_RUNTIME_SECONDS": "30", "MAX_RUNTIME_SECONDS": "1"})
     result = subprocess.run(
         [str(scripts_dir / "cron_run_td_leads_sync.sh")],
         cwd=repo_root,
@@ -155,7 +165,45 @@ def test_td_leads_cron_enforces_max_runtime_seconds(tmp_path: Path) -> None:
 
     assert result.returncode == 124
     log_text = _latest_log_text(repo_root)
-    assert "exceeded MAX_RUNTIME_SECONDS=1s" in log_text
+    assert "exceeded TD_LEADS_MAX_RUNTIME_SECONDS=1s" in log_text
+
+
+def test_td_leads_watchdog_terminates_descendant_process_group(tmp_path: Path) -> None:
+    repo_root, scripts_dir = _prepare_repo(tmp_path)
+    descendant_pid_file = tmp_path / "td_leads_descendant_pid"
+    _write_executable(
+        scripts_dir / "run_local_td_leads_sync.sh",
+        """#!/usr/bin/env bash
+trap '' TERM
+(
+  trap '' TERM
+  while :; do sleep 1; done
+) &
+printf '%s\n' "$!" > "${TMPDIR:-/tmp}/td_leads_descendant_pid"
+while :; do sleep 1; done
+""",
+    )
+
+    env = os.environ.copy()
+    env.update({"TMPDIR": str(repo_root), "TD_LEADS_MAX_RUNTIME_SECONDS": "1", "KILL_WAIT_SECONDS": "1"})
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_td_leads_sync.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 124
+    descendant_pid = int(descendant_pid_file.read_text(encoding="utf-8").strip())
+    assert not _pid_is_non_zombie_alive(descendant_pid)
+    assert not (repo_root / "tmp" / "cron_run_td_leads_sync.lock").exists()
+    log_text = _latest_log_text(repo_root)
+    assert "child_pid=" in log_text and "child_pgid=" in log_text
+    assert "sending KILL" in log_text
+    assert "disappeared after KILL" in log_text
 
 
 def test_active_orders_reports_lock_does_not_block_td_leads(tmp_path: Path) -> None:

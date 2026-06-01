@@ -33,9 +33,9 @@ Notification profiles and run summaries now standardise on the
 
 ## 2.1 Cron environment configuration
 
-The cron runner script (`scripts/cron_run_orders_and_reports.sh`) loads a small
-environment file before it executes so that cron does not rely on machine-local
-paths. Copy `scripts/cron.env.example` to `scripts/cron.env`, set the values for
+The cron runner scripts (`scripts/cron_run_orders_and_reports.sh` and
+`scripts/cron_run_td_leads_sync.sh`) load a small environment file before they
+execute so that cron does not rely on machine-local paths. Copy `scripts/cron.env.example` to `scripts/cron.env`, set the values for
 the cron user, and optionally point cron at a custom `ENV_FILE` path.
 
 Recommended variables for the cron env file:
@@ -45,6 +45,7 @@ Recommended variables for the cron env file:
 | `CRON_HOME` | Stable home directory for the cron user; the script exports this to `HOME`. |
 | `CRON_PATH` | Extra PATH entries needed for Poetry/Python. |
 | `ENV_FILE` | (Optional) Override the env file path; defaults to `scripts/cron.env`. |
+| `TD_LEADS_MAX_RUNTIME_SECONDS` | TD-leads sync watchdog; defaults explicitly to `300`. A deprecated direct per-invocation `MAX_RUNTIME_SECONDS` compatibility override takes precedence when it is set. |
 | `ORDERS_STEP_TIMEOUT_SECONDS` | Per-attempt watchdog for the orders profiler step; defaults to `5400`. Timed-out attempts are retryable until `ORDERS_MAX_ATTEMPTS` is exhausted. |
 | `DAILY_SALES_STEP_TIMEOUT_SECONDS` | Per-attempt watchdog for Daily Sales report generation; defaults to `1800`. |
 | `PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS` | Per-attempt watchdog for Pending Deliveries report generation; defaults to `1800`. |
@@ -64,6 +65,10 @@ terminated as a complete process group only after its repository-wrapper
 command and live PID/PGID relationship validate; `TERM` is followed by bounded
 wait and `KILL` escalation when required. Malformed, mismatched, unrelated, or
 otherwise ambiguous ownership always fails safely without deleting the lock.
+The TD-leads run step also launches in a dedicated session. Its watchdog sends
+`TERM` and, when any non-zombie group member survives the bounded grace period,
+`KILL` to that complete process group before verifying shutdown and allowing the
+cleanup trap to remove the TD-leads lock.
 
 Example crontab entry (runs at 6:00 AM daily and logs via the script):
 
