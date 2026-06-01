@@ -28,7 +28,7 @@
 - **Status:** Active
 - **Decision:** TD-leads and orders/reports cron wrappers acquire only pipeline-specific lock directories; the shared `tmp/cron_heavy_pipelines.lock` runtime lock is retired.
 - **Context:** The shared heavy-pipeline lock unnecessarily serialized independent wrappers. Per-pipeline locking still prevents duplicate runs of the same pipeline while allowing TD leads and orders/reports to run concurrently.
-- **Evidence:** `scripts/cron_run_td_leads_sync.sh`, `scripts/cron_run_orders_and_reports.sh`, `scripts/kill_orders_and_reports_stale.sh`, `tests/scripts/test_cron_run_td_leads_sync.py`, `tests/scripts/test_cron_run_orders_and_reports.py`, and `tests/scripts/test_kill_orders_and_reports_stale.py`.
+- **Evidence:** `scripts/cron_run_td_leads_sync.sh`, `scripts/cron_run_orders_and_reports.sh`, `scripts/inspect_or_kill_pipeline_stale.sh`, `scripts/kill_orders_and_reports_stale.sh`, `tests/scripts/test_cron_run_td_leads_sync.py`, `tests/scripts/test_cron_run_orders_and_reports.py`, and `tests/scripts/test_inspect_or_kill_pipeline_stale.py`.
 - **Implications:** Each wrapper preserves local ownership metadata, stale-lock handling, cleanup traps, and watchdogs. Runtime wrappers do not recreate the obsolete global lock. The stale-kill helper includes an explicit rollout cleanup path that removes an existing obsolete global-lock directory only after its recorded process group is gone or safely terminated.
 - **Follow-up:** Remove the rollout-only obsolete-global-lock cleanup branch after deployed hosts have cleared legacy directories.
 

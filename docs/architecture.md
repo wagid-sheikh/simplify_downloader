@@ -180,9 +180,11 @@ process-group shutdown. The TD-leads run-step watchdog defaults explicitly to
 `MAX_RUNTIME_SECONDS` value takes precedence only when supplied for compatibility.
 The retired
 `tmp/cron_heavy_pipelines.lock` directory is not recreated at runtime. During
-rollout, `scripts/kill_orders_and_reports_stale.sh` provides an explicit one-time
+rollout, `scripts/inspect_or_kill_pipeline_stale.sh` provides an explicit one-time
 cleanup path for an obsolete global-lock directory and removes it only after its
-recorded process group is gone or has been safely terminated. The orders/reports
+recorded process group is gone or has been safely terminated. The legacy
+`scripts/kill_orders_and_reports_stale.sh` entrypoint forwards to
+`orders-reports` during rollout. The orders/reports
 wrapper launches every pipeline step in a dedicated child process group and
 enforces step-specific watchdog limits, so a stalled orders browser cleanup
 cannot hold its local lock or block required report generation indefinitely. The
@@ -191,23 +193,33 @@ on timeout it sends group `TERM`, waits a bounded grace period, escalates group
 `KILL` while any non-zombie member survives, verifies that the group disappeared,
 and only then allows its cleanup trap to remove the local lock.
 
-If an orders-and-reports run leaves stale locks behind, inspect them before any
-manual termination. Run the recovery helper in its default dry-run mode first:
+If a TD-leads or orders-and-reports run leaves a stale lock behind, inspect the
+specific pipeline before any manual termination. The general operator helper
+defaults to dry-run inspection:
 
 ```bash
-DRY_RUN=1 ./scripts/kill_orders_and_reports_stale.sh
+./scripts/inspect_or_kill_pipeline_stale.sh td-leads
+./scripts/inspect_or_kill_pipeline_stale.sh orders-reports
 ```
 
-Review the printed process-group snapshot and confirm that it belongs to this
-repository. Only then run the explicit termination step:
+Review the printed process-group snapshots and confirm that they belong to this
+repository. Only then run the explicit termination step for the affected
+pipeline:
 
 ```bash
-FORCE=1 ./scripts/kill_orders_and_reports_stale.sh
+FORCE=1 ./scripts/inspect_or_kill_pipeline_stale.sh td-leads
+FORCE=1 ./scripts/inspect_or_kill_pipeline_stale.sh orders-reports
 ```
 
-The helper validates directory-based lock metadata (`pid`, `pgid`, `command`,
-and `started_at`), refuses unrelated commands, prints snapshots around
-termination, and removes a lock directory only after its process group is gone.
+The helper maps those names to `tmp/cron_run_td_leads_sync.lock` and
+`tmp/cron_run_orders_and_reports.lock`, validates directory-based lock metadata
+(`pid`, `pgid`, `command`, `started_at`, `host`, and `cwd`), refuses malformed or
+unrelated ownership, verifies PID-to-PGID membership, prints snapshots before
+and after inspection, and removes a lock directory only after its process group
+is gone. It also handles the retired `tmp/cron_heavy_pipelines.lock` as an
+explicit rollout-cleanup case. The legacy
+`scripts/kill_orders_and_reports_stale.sh` command remains a forwarding wrapper
+for `orders-reports` during rollout.
 
 For order-sync profiler, the run additionally:
 - computes date windows per store,

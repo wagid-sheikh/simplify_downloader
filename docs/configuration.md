@@ -65,6 +65,17 @@ email delivery. Watchdog, stale-owner, suppression, ambiguous-lock, and recovery
 edges are persisted to `pipeline_run_summaries`; repeated same-owner suppressions
 are deduplicated for email delivery.
 
+For manual operator recovery, use `scripts/inspect_or_kill_pipeline_stale.sh`
+with the explicit `td-leads` or `orders-reports` pipeline name. It defaults to
+dry-run inspection; set `FORCE=1` only after reviewing its before-and-after
+process snapshots. The helper reads `pid`, `pgid`, `command`, `started_at`,
+`host`, and `cwd` lock metadata, verifies process-group ownership before sending
+`TERM`, escalates to `KILL` after a bounded wait, and removes locks only after
+the group is gone. It also checks the retired `tmp/cron_heavy_pipelines.lock`
+as an explicit rollout-cleanup case. The legacy
+`scripts/kill_orders_and_reports_stale.sh` forwards to `orders-reports` during
+rollout.
+
 Both cron wrappers use a pipeline-local recovery state machine rather than a
 long lock-wait loop. Each wrapper first attempts `mkdir` for its lock. On
 contention it logs PID, PGID, command, host, start timestamp, and calculated
