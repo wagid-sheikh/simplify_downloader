@@ -8,6 +8,13 @@
 
 ---
 
+### DL-024
+- **Date:** 2026-06-01
+- **Status:** Active
+- **Decision:** The TD-leads cron run step launches its local sync inside a dedicated session and applies watchdog termination to the complete child process group. The explicit default is `TD_LEADS_MAX_RUNTIME_SECONDS=300`; deprecated `MAX_RUNTIME_SECONDS` is retained only as a direct compatibility override and takes precedence when supplied.
+- **Context:** Killing only the immediate shell PID is unsafe because CRM/browser descendants can outlive it and continue working after the wrapper removes `tmp/cron_run_td_leads_sync.lock`. Timeout handling now sends group `TERM`, waits a bounded grace period, escalates group `KILL` while any non-zombie member survives, verifies disappearance, and returns `124` before cleanup traps remove the local lock.
+- **Evidence:** `scripts/cron_run_td_leads_sync.sh`, `scripts/cron.env`, `scripts/cron.env.example`, `scripts/crontab_entries.txt`, and `tests/scripts/test_cron_run_td_leads_sync.py`.
+
 ### DL-023
 - **Date:** 2026-06-01
 - **Status:** Active

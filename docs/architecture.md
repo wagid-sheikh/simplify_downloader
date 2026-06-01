@@ -161,15 +161,22 @@ The thresholds are intentionally pipeline-specific:
 `TD_LEADS_STALE_OWNER_SECONDS=300` supports the TD-leads 10–20 minute service
 objective conservatively, while `ORDERS_REPORTS_STALE_OWNER_SECONDS=7200`
 remains separately reviewed because orders/report workloads and retries differ.
-`STALE_OWNER_TERM_WAIT_SECONDS` and `STALE_OWNER_KILL_WAIT_SECONDS` bound process
-group shutdown. The retired
+`STALE_OWNER_TERM_WAIT_SECONDS` and `STALE_OWNER_KILL_WAIT_SECONDS` bound stale-owner
+process-group shutdown. The TD-leads run-step watchdog defaults explicitly to
+`TD_LEADS_MAX_RUNTIME_SECONDS=300`; a deprecated per-invocation
+`MAX_RUNTIME_SECONDS` value takes precedence only when supplied for compatibility.
+The retired
 `tmp/cron_heavy_pipelines.lock` directory is not recreated at runtime. During
 rollout, `scripts/kill_orders_and_reports_stale.sh` provides an explicit one-time
 cleanup path for an obsolete global-lock directory and removes it only after its
 recorded process group is gone or has been safely terminated. The orders/reports
 wrapper launches every pipeline step in a dedicated child process group and
 enforces step-specific watchdog limits, so a stalled orders browser cleanup
-cannot hold its local lock or block required report generation indefinitely.
+cannot hold its local lock or block required report generation indefinitely. The
+TD-leads wrapper uses the same dedicated-session pattern for its local sync step:
+on timeout it sends group `TERM`, waits a bounded grace period, escalates group
+`KILL` while any non-zombie member survives, verifies that the group disappeared,
+and only then allows its cleanup trap to remove the local lock.
 
 If an orders-and-reports run leaves stale locks behind, inspect them before any
 manual termination. Run the recovery helper in its default dry-run mode first:

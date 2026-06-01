@@ -56,15 +56,20 @@ LOCK_CMD_FILE="${RUN_LOCK_DIR}/command"
 LOCK_PGID_FILE="${RUN_LOCK_DIR}/pgid"
 
 KILL_WAIT_SECONDS="${KILL_WAIT_SECONDS:-5}"
-MAX_RUNTIME_SECONDS="${MAX_RUNTIME_SECONDS:-5400}"
+TD_LEADS_MAX_RUNTIME_SECONDS="${TD_LEADS_MAX_RUNTIME_SECONDS:-300}"
+# Deprecated compatibility override: when explicitly set, the legacy generic
+# variable wins for this invocation. Prefer TD_LEADS_MAX_RUNTIME_SECONDS.
+if [[ -n "${MAX_RUNTIME_SECONDS+x}" ]]; then
+  TD_LEADS_MAX_RUNTIME_SECONDS="${MAX_RUNTIME_SECONDS}"
+fi
 TD_LEADS_STALE_OWNER_SECONDS="${TD_LEADS_STALE_OWNER_SECONDS:-300}"
 STALE_OWNER_TERM_WAIT_SECONDS="${STALE_OWNER_TERM_WAIT_SECONDS:-5}"
 STALE_OWNER_KILL_WAIT_SECONDS="${STALE_OWNER_KILL_WAIT_SECONDS:-5}"
 CRON_HOME="${CRON_HOME:-${HOME:-/tmp}}"
 CRON_PATH="${CRON_PATH:-/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
 
-if ! [[ "${MAX_RUNTIME_SECONDS}" =~ ^[0-9]+$ ]]; then
-  MAX_RUNTIME_SECONDS=5400
+if ! [[ "${TD_LEADS_MAX_RUNTIME_SECONDS}" =~ ^[0-9]+$ ]]; then
+  TD_LEADS_MAX_RUNTIME_SECONDS=300
 fi
 if ! [[ "${TD_LEADS_STALE_OWNER_SECONDS}" =~ ^[0-9]+$ ]]; then
   TD_LEADS_STALE_OWNER_SECONDS=300
@@ -84,6 +89,7 @@ export PATH="${CRON_PATH}:${PATH}"
 export LANG="${LANG:-en_US.UTF-8}"
 
 RUN_LOCK_ACQUIRED=0
+TIMEOUT_HANDLING_IN_PROGRESS=0
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S %Z')] $*" >> "${LOG_FILE}"
@@ -324,18 +330,38 @@ acquire_local_lock() {
   reacquire_after_stale_cleanup "${existing_pid}" "${existing_pgid}" "$@"
 }
 
-terminate_pid_gracefully() {
-  local pid="$1"
+terminate_child_process_group() {
+  local pgid="$1"
+  local child_pid="$2"
   local i
-  if ! pid_is_alive "${pid}"; then return 0; fi
-  kill -TERM "${pid}" 2>/dev/null || true
+
+  log "Attempting graceful termination for child process group PGID=${pgid} (child_pid=${child_pid})"
+  kill -TERM "-${pgid}" 2>/dev/null || true
   for ((i=0; i<KILL_WAIT_SECONDS; i++)); do
-    if ! pid_is_alive "${pid}"; then return 0; fi
+    if ! process_group_is_alive "${pgid}"; then
+      log "Confirmed child process group PGID=${pgid} disappeared after TERM"
+      return 0
+    fi
     sleep 1
   done
-  kill -KILL "${pid}" 2>/dev/null || true
-  sleep 1
-  ! pid_is_alive "${pid}"
+
+  if process_group_is_alive "${pgid}"; then
+    log "Child process group PGID=${pgid} still has non-zombie members after ${KILL_WAIT_SECONDS}s; sending KILL"
+    kill -KILL "-${pgid}" 2>/dev/null || true
+  fi
+  for ((i=0; i<KILL_WAIT_SECONDS; i++)); do
+    if ! process_group_is_alive "${pgid}"; then
+      log "Confirmed child process group PGID=${pgid} disappeared after KILL"
+      return 0
+    fi
+    sleep 1
+  done
+
+  if process_group_is_alive "${pgid}"; then
+    log "WARNING: Child process group PGID=${pgid} still has non-zombie members after KILL"
+    return 1
+  fi
+  log "Confirmed child process group PGID=${pgid} disappeared after KILL"
 }
 
 cleanup() {
@@ -349,7 +375,11 @@ cleanup() {
   fi
 
   if [[ "${RUN_LOCK_ACQUIRED}" -eq 1 ]]; then
-    remove_lock_artifacts
+    if [[ "${TIMEOUT_HANDLING_IN_PROGRESS}" -eq 1 ]]; then
+      log "WARNING: Timeout process-group handling is still in progress; preserving local lock for safe recovery."
+    else
+      remove_lock_artifacts
+    fi
   fi
 }
 
@@ -386,7 +416,7 @@ log "LANG=${LANG}"
 log "TD_LEADS_STALE_OWNER_SECONDS=${TD_LEADS_STALE_OWNER_SECONDS}"
 log "STALE_OWNER_TERM_WAIT_SECONDS=${STALE_OWNER_TERM_WAIT_SECONDS}"
 log "STALE_OWNER_KILL_WAIT_SECONDS=${STALE_OWNER_KILL_WAIT_SECONDS}"
-log "MAX_RUNTIME_SECONDS=${MAX_RUNTIME_SECONDS}"
+log "TD_LEADS_MAX_RUNTIME_SECONDS=${TD_LEADS_MAX_RUNTIME_SECONDS}"
 log "LOCAL_LOCK_DIR=${RUN_LOCK_DIR}"
 log "poetry=$(command -v poetry || echo NOT_FOUND)"
 log "shell_pid=$$"
@@ -407,18 +437,26 @@ run_step() {
   log "Command: $(printf '%q ' "${step_cmd[@]}")"
 
   step_start="$(date +%s)"
-  "${step_cmd[@]}" >> "${LOG_FILE}" 2>&1 &
+  python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "${step_cmd[@]}" >> "${LOG_FILE}" 2>&1 &
   local child_pid=$!
+  local child_pgid="${child_pid}"
   local child_status=0
+  log "${step_name}: child_pid=${child_pid} child_pgid=${child_pgid} runtime_limit_seconds=${TD_LEADS_MAX_RUNTIME_SECONDS}"
   local now
 
   while pid_is_alive "${child_pid}"; do
     now="$(date +%s)"
     duration=$((now - step_start))
-    if [[ "${MAX_RUNTIME_SECONDS}" -gt 0 && "${duration}" -ge "${MAX_RUNTIME_SECONDS}" ]]; then
-      log "ERROR: ${step_name} exceeded MAX_RUNTIME_SECONDS=${MAX_RUNTIME_SECONDS}s; terminating child_pid=${child_pid}"
-      terminate_pid_gracefully "${child_pid}" || true
-      wait "${child_pid}" 2>/dev/null || true
+    if [[ "${TD_LEADS_MAX_RUNTIME_SECONDS}" -gt 0 && "${duration}" -ge "${TD_LEADS_MAX_RUNTIME_SECONDS}" ]]; then
+      log "ERROR: ${step_name} exceeded TD_LEADS_MAX_RUNTIME_SECONDS=${TD_LEADS_MAX_RUNTIME_SECONDS}s; terminating child_pid=${child_pid} child_pgid=${child_pgid}"
+      TIMEOUT_HANDLING_IN_PROGRESS=1
+      if terminate_child_process_group "${child_pgid}" "${child_pid}"; then
+        wait "${child_pid}" 2>/dev/null || true
+      else
+        log "WARNING: ${step_name}: child process group PGID=${child_pgid} did not disappear; preserving local lock for safe recovery."
+        RUN_LOCK_ACQUIRED=0
+      fi
+      TIMEOUT_HANDLING_IN_PROGRESS=0
       return 124
     fi
     sleep 1

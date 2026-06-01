@@ -151,7 +151,7 @@ Practical map of where to work for major capabilities.
   - `docker-compose.yml`, `Dockerfile`
 - **Notes/Risks:** Script assumptions around env vars and alembic execution must stay aligned with `app/config.py` rules.
 
-- Pipeline lock policy: TD leads and orders/reports acquire only their own `tmp/cron_run_*.lock` directories, preserving per-pipeline ownership metadata, stale-lock recovery, cleanup traps, and watchdogs without cross-pipeline blocking. `scripts/kill_orders_and_reports_stale.sh` retains an explicit rollout cleanup path for the retired `tmp/cron_heavy_pipelines.lock` directory.
+- Pipeline lock policy: TD leads and orders/reports acquire only their own `tmp/cron_run_*.lock` directories, preserving per-pipeline ownership metadata, stale-lock recovery, cleanup traps, and watchdogs without cross-pipeline blocking. The TD-leads watchdog defaults to `TD_LEADS_MAX_RUNTIME_SECONDS=300`, runs the local sync in a dedicated session, and terminates/verifies the full child process group before lock cleanup. `scripts/kill_orders_and_reports_stale.sh` retains an explicit rollout cleanup path for the retired `tmp/cron_heavy_pipelines.lock` directory.
 
 - Daily and MTD same-day fulfillment outputs now include Order Amount and Payment Received columns (`Order Amount` comes from `vw_orders.order_amount`; `Payment Received` remains collection/payment data, with payment rows summed per order for deterministic multi-payment reporting).
 
