@@ -9,10 +9,8 @@ KILL_WAIT_SECONDS="${KILL_WAIT_SECONDS:-1}"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_DIR="$REPO_ROOT/tmp"
-LOCK_DIRS=(
-  "$TMP_DIR/cron_run_orders_and_reports.lock"
-  "$TMP_DIR/cron_heavy_pipelines.lock"
-)
+ORDERS_REPORTS_LOCK_DIR="$TMP_DIR/cron_run_orders_and_reports.lock"
+OBSOLETE_GLOBAL_LOCK_DIR="$TMP_DIR/cron_heavy_pipelines.lock"
 
 print_snapshot() {
   local label="$1"
@@ -168,9 +166,15 @@ if [ "$DRY_RUN" = "1" ] && [ "$FORCE" = "1" ]; then
   echo "FORCE=1 overrides dry run and allows termination."
 fi
 
-for lock_dir in "${LOCK_DIRS[@]}"; do
-  inspect_or_kill_process_group "$lock_dir"
-done
+inspect_or_kill_process_group "$ORDERS_REPORTS_LOCK_DIR"
+
+# Rollout cleanup only: wrappers no longer create this directory. Keep this
+# explicit path until deployed hosts have removed any legacy global lock.
+if [ -d "$OBSOLETE_GLOBAL_LOCK_DIR" ]; then
+  echo
+  echo "Obsolete global lock rollout cleanup: $OBSOLETE_GLOBAL_LOCK_DIR"
+  inspect_or_kill_process_group "$OBSOLETE_GLOBAL_LOCK_DIR"
+fi
 
 if [ "$FORCE" = "1" ]; then
   find "$TMP_DIR" -maxdepth 1 -name 'cron_step_attempt.*.log' -type f -delete 2>/dev/null || true

@@ -126,21 +126,23 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
 5. Run summary rows inserted/updated in `pipeline_run_summaries`.
 6. Notifications are planned from DB metadata and sent via SMTP.
 
-### Cron wrapper lock hierarchy
+### Cron wrapper pipeline-specific locks
 
-For heavy cron wrappers in `scripts/` (including `cron_run_td_leads_sync.sh` and
-`cron_run_orders_and_reports.sh`), locking is intentionally layered:
+Heavy cron wrappers in `scripts/` acquire only their own pipeline lock:
 
-1. Acquire global lock: `tmp/cron_heavy_pipelines.lock`.
-2. Acquire per-script lock (for example `tmp/cron_run_td_leads_sync.lock`).
-3. Execute wrapper run steps.
+1. TD leads acquires `tmp/cron_run_td_leads_sync.lock`.
+2. Orders/reports acquires `tmp/cron_run_orders_and_reports.lock`.
+3. Each wrapper executes its own run steps without blocking the other pipeline.
 
-Operational logs explicitly label waits/acquisition as `[global lock]` vs
-`[local lock]` so operators can quickly identify whether contention is shared
-across heavy wrappers or specific to one wrapper. The orders/reports wrapper
-launches every pipeline step in a dedicated child process group and enforces
-step-specific watchdog limits, so a stalled orders browser cleanup cannot hold
-the lock or block required report generation indefinitely.
+Each wrapper preserves PID-aware ownership metadata, stale-lock inspection,
+cleanup traps, and runtime watchdog behavior for its own lock. The retired
+`tmp/cron_heavy_pipelines.lock` directory is not recreated at runtime. During
+rollout, `scripts/kill_orders_and_reports_stale.sh` provides an explicit one-time
+cleanup path for an obsolete global-lock directory and removes it only after its
+recorded process group is gone or has been safely terminated. The orders/reports
+wrapper launches every pipeline step in a dedicated child process group and
+enforces step-specific watchdog limits, so a stalled orders browser cleanup
+cannot hold its local lock or block required report generation indefinitely.
 
 If an orders-and-reports run leaves stale locks behind, inspect them before any
 manual termination. Run the recovery helper in its default dry-run mode first:

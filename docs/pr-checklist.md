@@ -42,7 +42,7 @@ Use this before requesting review.
 
 - [ ] I reviewed `.github/workflows` impact (CI/deploy assumptions still hold).
 - [ ] I reviewed Docker/script implications if runtime command or env expectations changed.
-- [ ] For heavy cron wrappers, lock hierarchy is preserved: global lock (`tmp/cron_heavy_pipelines.lock`) first, then per-script lock, then run steps; logs clearly distinguish global vs local lock waits.
+- [ ] For heavy cron wrappers, each wrapper acquires only its pipeline-specific lock; no runtime path recreates retired `tmp/cron_heavy_pipelines.lock`, and rollout cleanup removes that obsolete directory only after its recorded process group is gone or safely terminated.
 - [ ] I considered rollback behavior and failure modes for this change.
 
 ## 6) Documentation
