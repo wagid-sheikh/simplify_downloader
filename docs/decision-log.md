@@ -8,6 +8,14 @@
 
 ---
 
+### DL-025
+- **Date:** 2026-06-01
+- **Status:** Active
+- **Decision:** Route TD-leads wrapper watchdog, stale-owner, same-owner suppression, and ambiguous-lock outcomes through a sanitized repository-local operational helper backed by the dedicated `td_leads_wrapper_ops` notification contract.
+- **Context:** Wrapper-only failures previously existed only in host log files. They could suppress fresh work or kill stale process groups without generating an operator-visible, deduplicated notification trail.
+- **Evidence:** `app/crm_downloader/td_leads_sync/wrapper_notifications.py`, `scripts/cron_run_td_leads_sync.sh`, `alembic/versions/0121_td_leads_wrapper_ops.py`, and `tests/crm_downloader/test_td_leads_wrapper_notifications.py`.
+- **Implications:** Every operational edge is persisted in `pipeline_run_summaries`; the first same-owner suppression is emailed, repeated suppressions are retained as telemetry without cron-interval email spam, and a successful fresh run after stale-owner termination emits a recovery email. Payloads remain operational-only and redact credential-like, email, and phone-number text.
+
 ### DL-024
 - **Date:** 2026-06-01
 - **Status:** Active

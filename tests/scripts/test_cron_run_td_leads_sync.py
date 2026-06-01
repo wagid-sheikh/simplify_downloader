@@ -355,3 +355,50 @@ def test_rapid_td_leads_invocations_do_not_run_concurrently(tmp_path: Path) -> N
     finally:
         os.killpg(owner.pid, signal.SIGKILL)
         owner.wait()
+
+
+def test_td_leads_wrapper_logs_operational_notification_delivery_success(tmp_path: Path) -> None:
+    repo_root, scripts_dir = _prepare_repo(tmp_path)
+    _write_executable(
+        scripts_dir / "run_local_td_leads_sync.sh", "#!/usr/bin/env bash\nexec sleep 30\n"
+    )
+    helper_path = (
+        repo_root
+        / "app"
+        / "crm_downloader"
+        / "td_leads_sync"
+        / "wrapper_notifications.py"
+    )
+    helper_path.parent.mkdir(parents=True)
+    helper_path.write_text(
+        "# marker file for wrapper helper availability\n", encoding="utf-8"
+    )
+    bin_dir = repo_root / "bin"
+    bin_dir.mkdir()
+    _write_executable(
+        bin_dir / "poetry", "#!/usr/bin/env bash\nprintf '{\"emails_sent\": 1}\\n'\n"
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "TMPDIR": str(repo_root),
+            "CRON_PATH": str(bin_dir),
+            "TD_LEADS_MAX_RUNTIME_SECONDS": "1",
+            "KILL_WAIT_SECONDS": "1",
+        }
+    )
+
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_td_leads_sync.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 124
+    log_text = _latest_log_text(repo_root)
+    assert "[wrapper notification] status=watchdog_timeout delivery=success" in log_text
+    assert '{"emails_sent": 1}' in log_text

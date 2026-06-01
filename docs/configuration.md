@@ -59,6 +59,12 @@ Recommended variables for the cron env file:
 | `STALE_OWNER_TERM_WAIT_SECONDS` | Bounded grace period after sending `TERM` to a validated stale-owner process group; defaults to `5`. |
 | `STALE_OWNER_KILL_WAIT_SECONDS` | Bounded verification period after escalating a surviving validated stale-owner process group to `KILL`; defaults to `5`. |
 
+TD-leads wrapper operational alerts depend on the DB-backed `td_leads_wrapper_ops`
+pipeline/profile/template/recipient seed. Apply Alembic head before relying on wrapper
+email delivery. Watchdog, stale-owner, suppression, ambiguous-lock, and recovery
+edges are persisted to `pipeline_run_summaries`; repeated same-owner suppressions
+are deduplicated for email delivery.
+
 Both cron wrappers use a pipeline-local recovery state machine rather than a
 long lock-wait loop. Each wrapper first attempts `mkdir` for its lock. On
 contention it logs PID, PGID, command, host, start timestamp, and calculated
