@@ -6,12 +6,13 @@ import contextlib
 import html
 import os
 import re
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Awaitable, Mapping, Sequence, TypeVar
 from zoneinfo import ZoneInfo
 
 import openpyxl
@@ -131,6 +132,37 @@ _IST = ZoneInfo("Asia/Kolkata")
 _UTC = ZoneInfo("UTC")
 TD_LEADS_MAX_WORKERS_DEFAULT = 2
 TD_LEADS_MAX_WORKERS_MIN = 1
+_T = TypeVar("_T")
+
+
+class TdLeadsPhaseTimeoutError(TimeoutError):
+    """Typed failure raised when a bounded TD-leads async phase exceeds its deadline."""
+
+    def __init__(self, *, phase_name: str, timeout_seconds: float, duration_ms: int) -> None:
+        self.phase_name = phase_name
+        self.timeout_seconds = timeout_seconds
+        self.duration_ms = duration_ms
+        super().__init__(f"TD leads phase {phase_name!r} exceeded {timeout_seconds}s timeout")
+
+
+def _timeout_seconds(config_key: str, default: int) -> int:
+    return int(getattr(config, config_key, default))
+
+
+async def _run_bounded_phase(awaitable: Awaitable[_T], *, logger: JsonLogger, run_id: str, store_code: str | None, phase_name: str, timeout_seconds: float) -> _T:
+    """Execute one async phase with structured start, completion, and timeout telemetry."""
+    started_at = time.perf_counter()
+    fields = {"run_id": run_id, "store_code": store_code, "phase_name": phase_name, "timeout_seconds": timeout_seconds}
+    log_event(logger=logger, phase=phase_name, status="info", message="phase_started", **fields)
+    try:
+        result = await asyncio.wait_for(awaitable, timeout=timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
+        log_event(logger=logger, phase=phase_name, status="error", message="phase_timeout", duration_ms=duration_ms, **fields)
+        raise TdLeadsPhaseTimeoutError(phase_name=phase_name, timeout_seconds=timeout_seconds, duration_ms=duration_ms) from exc
+    duration_ms = int((time.perf_counter() - started_at) * 1000)
+    log_event(logger=logger, phase=phase_name, message="phase_completed", duration_ms=duration_ms, **fields)
+    return result
 OPEN_STATUS_CANDIDATES: tuple[str, ...] = ("pending", "open", "new", "in_progress")
 OPEN_LEADS_OUTPUT_COLUMNS: tuple[str, ...] = (
     "store_code",
@@ -2084,16 +2116,23 @@ async def _reset_scheduler_page_before_retry(page: Page, *, target_url: str) -> 
         await page.goto(target_url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
 
 
-async def _ensure_scheduler_page(page: Page, *, store: TdStore, logger: JsonLogger) -> bool:
+async def _ensure_scheduler_page(page: Page, *, store: TdStore, logger: JsonLogger, run_id: str | None = None) -> bool:
     target_url = _scheduler_url_for_store(store.store_code)
+    started_at = time.perf_counter()
+    if hasattr(logger, "info"):
+        log_event(logger=logger, phase="scheduler_navigation", status="info", message="phase_started", run_id=run_id, store_code=store.store_code)
     for attempt in range(1, SCHEDULER_NAVIGATION_MAX_ATTEMPTS + 1):
         try:
             await asyncio.wait_for(
                 _open_scheduler_page_once(page, store=store, logger=logger, attempt=attempt),
                 timeout=SCHEDULER_NAVIGATION_ATTEMPT_TIMEOUT_SECONDS,
             )
+            if hasattr(logger, "info"):
+                log_event(logger=logger, phase="scheduler_navigation", message="phase_completed", run_id=run_id, store_code=store.store_code, duration_ms=int((time.perf_counter() - started_at) * 1000))
             return True
         except Exception as exc:
+            if isinstance(exc, asyncio.TimeoutError):
+                log_event(logger=logger, phase="scheduler_navigation_attempt", status="error", message="phase_timeout", run_id=run_id, store_code=store.store_code, phase_name="scheduler_navigation_attempt", timeout_seconds=SCHEDULER_NAVIGATION_ATTEMPT_TIMEOUT_SECONDS, duration_ms=int((time.perf_counter() - started_at) * 1000))
             failure_class = exc.__class__.__name__
             fallback_url_navigation_used = bool(getattr(exc, "scheduler_fallback_url_navigation_used", False))
             branch_used = str(getattr(exc, "scheduler_navigation_branch", "unknown"))
@@ -2120,6 +2159,8 @@ async def _ensure_scheduler_page(page: Page, *, store: TdStore, logger: JsonLogg
                 fallback_url_navigation_used=fallback_url_navigation_used,
                 transient_failure=transient_failure,
                 retrying=retrying,
+                run_id=run_id,
+                navigation_duration_ms=int((time.perf_counter() - started_at) * 1000),
             )
             if not retrying:
                 return False
@@ -2491,20 +2532,19 @@ async def _run_store(
 ) -> StoreLeadResult:
     result = StoreLeadResult(store_code=store.store_code)
     context: BrowserContext | None = None
+    operation_timeout = _timeout_seconds("td_leads_browser_operation_timeout_seconds", 90)
+    cleanup_timeout = _timeout_seconds("td_leads_browser_cleanup_timeout_seconds", 10)
 
     try:
         storage_state_exists = store.storage_state_path.exists()
-        context = await browser.new_context(
-            storage_state=str(store.storage_state_path) if storage_state_exists else None,
-            accept_downloads=False,
-        )
-        page = await context.new_page()
+        context = await _run_bounded_phase(browser.new_context(storage_state=str(store.storage_state_path) if storage_state_exists else None, accept_downloads=False), logger=logger, run_id=run_id, store_code=store.store_code, phase_name="browser_context_create", timeout_seconds=operation_timeout)
+        page = await _run_bounded_phase(context.new_page(), logger=logger, run_id=run_id, store_code=store.store_code, phase_name="page_create", timeout_seconds=operation_timeout)
 
         session_reused = False
         login_performed = False
         verification_seen = False
         if storage_state_exists:
-            probe_result = await _probe_session(page, store=store, logger=logger, timeout_ms=NAV_TIMEOUT_MS)
+            probe_result = await _run_bounded_phase(_probe_session(page, store=store, logger=logger, timeout_ms=NAV_TIMEOUT_MS), logger=logger, run_id=run_id, store_code=store.store_code, phase_name="session_probe", timeout_seconds=operation_timeout)
             probe_reason = probe_result.reason or "state_valid"
             verification_seen = bool(probe_result.verification_seen)
             if probe_result.valid:
@@ -2534,7 +2574,7 @@ async def _run_store(
                     nav_visible=probe_result.nav_visible,
                     home_card_visible=probe_result.home_card_visible,
                 )
-                session_reused = await _perform_login(page, store=store, logger=logger, nav_timeout_ms=NAV_TIMEOUT_MS)
+                session_reused = await _run_bounded_phase(_perform_login(page, store=store, logger=logger, nav_timeout_ms=NAV_TIMEOUT_MS), logger=logger, run_id=run_id, store_code=store.store_code, phase_name="login", timeout_seconds=operation_timeout)
                 login_performed = True
                 log_event(
                     logger=logger,
@@ -2547,7 +2587,7 @@ async def _run_store(
                     login_followup_status="success" if session_reused else "failed",
                 )
         else:
-            session_reused = await _perform_login(page, store=store, logger=logger, nav_timeout_ms=NAV_TIMEOUT_MS)
+            session_reused = await _run_bounded_phase(_perform_login(page, store=store, logger=logger, nav_timeout_ms=NAV_TIMEOUT_MS), logger=logger, run_id=run_id, store_code=store.store_code, phase_name="login", timeout_seconds=operation_timeout)
             login_performed = True
 
         if not session_reused:
@@ -2556,24 +2596,13 @@ async def _run_store(
             return result
 
         if login_performed or verification_seen:
-            verification_ok, verification_seen = await _wait_for_otp_verification(
-                page,
-                store=store,
-                logger=logger,
-                nav_selector=store.reports_nav_selector,
-            )
+            verification_ok, verification_seen = await _run_bounded_phase(_wait_for_otp_verification(page, store=store, logger=logger, nav_selector=store.reports_nav_selector), logger=logger, run_id=run_id, store_code=store.store_code, phase_name="otp_verification", timeout_seconds=operation_timeout)
             if not verification_ok:
                 result.status = "error"
                 result.message = "OTP was not completed before dwell deadline"
                 return result
 
-        home_ready = await _wait_for_home(
-            page,
-            store=store,
-            logger=logger,
-            nav_selector=store.reports_nav_selector,
-            timeout_ms=NAV_TIMEOUT_MS,
-        )
+        home_ready = await _run_bounded_phase(_wait_for_home(page, store=store, logger=logger, nav_selector=store.reports_nav_selector, timeout_ms=NAV_TIMEOUT_MS), logger=logger, run_id=run_id, store_code=store.store_code, phase_name="home_wait", timeout_seconds=operation_timeout)
         if not home_ready:
             result.status = "error"
             result.message = "Home page not ready after login"
@@ -2582,7 +2611,7 @@ async def _run_store(
         store.storage_state_path.parent.mkdir(parents=True, exist_ok=True)
         await context.storage_state(path=str(store.storage_state_path))
 
-        if not await _ensure_scheduler_page(page, store=store, logger=logger):
+        if not await _ensure_scheduler_page(page, store=store, logger=logger, run_id=run_id):
             result.status = "error"
             result.message = "Pickup Scheduler page could not be opened"
             return result
@@ -2593,17 +2622,12 @@ async def _run_store(
 
         for status_bucket, status_value, grid_selector in STATUS_CONFIG:
             try:
-                status_rows, status_warnings = await _collect_status_rows(
-                    page,
-                    store_code=store.store_code,
-                    status_bucket=status_bucket,
-                    status_value=status_value,
-                    grid_selector=grid_selector,
-                    logger=logger,
-                )
+                status_rows, status_warnings = await _run_bounded_phase(_collect_status_rows(page, store_code=store.store_code, status_bucket=status_bucket, status_value=status_value, grid_selector=grid_selector, logger=logger), logger=logger, run_id=run_id, store_code=store.store_code, phase_name=f"scrape_status_{status_bucket}", timeout_seconds=operation_timeout)
                 all_rows.extend(status_rows)
                 warnings.extend(status_warnings)
                 status_counts[status_bucket] += len(status_rows)
+            except TdLeadsPhaseTimeoutError:
+                raise
             except Exception as exc:
                 warning = f"status_bucket_failed:{status_bucket}:{exc}"
                 warnings.append(warning)
@@ -2694,8 +2718,11 @@ async def _run_store(
         return result
     finally:
         if context is not None:
-            with contextlib.suppress(Exception):
-                await context.close()
+            try:
+                await _run_bounded_phase(context.close(), logger=logger, run_id=run_id, store_code=store.store_code, phase_name="context_cleanup", timeout_seconds=cleanup_timeout)
+            except Exception as exc:
+                result.status = "error"
+                result.message = f"TD leads context cleanup failed: {exc}"
 
 
 async def _run_store_worker(
@@ -2722,13 +2749,7 @@ async def _run_store_worker(
         concurrency_limited=True,
     )
     try:
-        result = await _run_store(
-            browser=browser,
-            store=store,
-            run_id=run_id,
-            run_env=run_env,
-            logger=store_logger,
-        )
+        result = await _run_bounded_phase(_run_store(browser=browser, store=store, run_id=run_id, run_env=run_env, logger=store_logger), logger=store_logger, run_id=run_id, store_code=store.store_code, phase_name="store_worker", timeout_seconds=_timeout_seconds("td_leads_store_worker_timeout_seconds", 240))
         duration_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
         log_event(
             logger=store_logger,
@@ -2842,7 +2863,15 @@ async def main(
                     )
                     for store in stores
                 ]
-                worker_results = await asyncio.gather(*tasks, return_exceptions=True)
+                try:
+                    worker_results = await _run_bounded_phase(asyncio.gather(*tasks, return_exceptions=True), logger=logger, run_id=resolved_run_id, store_code=None, phase_name="overall_gather", timeout_seconds=_timeout_seconds("td_leads_gather_timeout_seconds", 270))
+                except TdLeadsPhaseTimeoutError:
+                    summary.run_had_worker_exception = True
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    worker_results = []
                 by_store_code: dict[str, StoreLeadResult] = {}
                 run_had_worker_exception = False
                 for worker_result in worker_results:
@@ -2871,8 +2900,10 @@ async def main(
                         ),
                     )
             finally:
-                with contextlib.suppress(Exception):
-                    await browser.close()
+                try:
+                    await _run_bounded_phase(browser.close(), logger=logger, run_id=resolved_run_id, store_code=None, phase_name="browser_cleanup", timeout_seconds=_timeout_seconds("td_leads_browser_cleanup_timeout_seconds", 10))
+                except Exception:
+                    summary.run_had_worker_exception = True
 
     finished_at = datetime.now(timezone.utc)
     if reporting_mode in {"meeting", "day_end"}:

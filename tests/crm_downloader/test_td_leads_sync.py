@@ -4564,3 +4564,190 @@ def test_build_td_leads_summary_html_places_existing_cancelled_current_state_fir
         html = _build_td_leads_summary_html(summary=summary, duration_human='00:00:10', reporting_mode=mode, reporting_payload=reporting_payload)
         assert 'Existing Customer Leads Marked as Cancelled (All-time/current-state) (1)' in html
         assert html.index('Existing Customer Leads Marked as Cancelled (All-time/current-state) (1)') < html.index('Action Required')
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stalled_phase", "expected_phase"),
+    [
+        ("browser_context_create", "browser_context_create"),
+        ("page_create", "page_create"),
+        ("session_probe", "session_probe"),
+        ("store_worker", "store_worker"),
+        ("overall_gather", "overall_gather"),
+        ("context_cleanup", "context_cleanup"),
+        ("browser_cleanup", "browser_cleanup"),
+    ],
+)
+async def test_td_leads_timeouts_persist_failed_summary_and_attempt_notification(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    stalled_phase: str,
+    expected_phase: str,
+) -> None:
+    events: list[dict[str, object]] = []
+    persisted_summaries: list[LeadsRunSummary] = []
+    notifications: list[tuple[str, str]] = []
+    store = SimpleNamespace(
+        store_code="A200",
+        storage_state_path=tmp_path / "storage" / "A200.json",
+        reports_nav_selector="#nav",
+    )
+    if stalled_phase == "session_probe":
+        store.storage_state_path.parent.mkdir(parents=True)
+        store.storage_state_path.write_text("{}")
+
+    async def _never_returns() -> None:
+        await asyncio.Event().wait()
+
+    class _FakeContext:
+        async def new_page(self):
+            if stalled_phase == "page_create":
+                return await _never_returns()
+            return object()
+
+        async def storage_state(self, *, path: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            if stalled_phase == "context_cleanup":
+                await _never_returns()
+
+    class _FakeBrowser:
+        async def new_context(self, **kwargs):
+            if stalled_phase == "browser_context_create":
+                return await _never_returns()
+            return _FakeContext()
+
+        async def close(self) -> None:
+            if stalled_phase == "browser_cleanup":
+                await _never_returns()
+
+    class _FakePlaywrightContext:
+        async def __aenter__(self):
+            return object()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    async def _fake_notify(pipeline_name: str, run_id: str):
+        notifications.append((pipeline_name, run_id))
+        return {"emails_planned": 1, "emails_sent": 1, "errors": []}
+
+    async def _successful_worker(**kwargs):
+        return td_leads_main.TdLeadsStoreWorkerResult(
+            store_code="A200",
+            result=StoreLeadResult(store_code="A200", status="ok"),
+            queued_at=datetime.now(timezone.utc),
+            queue_wait_ms=0,
+            duration_ms=1,
+        )
+
+    monkeypatch.setattr(
+        td_leads_main, "config", SimpleNamespace(database_url="", run_env="test")
+    )
+
+    def _test_timeout_seconds(config_key: str, default: int) -> float:
+        if config_key == "td_leads_gather_timeout_seconds":
+            return 0.01 if stalled_phase == "overall_gather" else 0.2
+        if config_key == "td_leads_store_worker_timeout_seconds":
+            return 0.01 if stalled_phase == "store_worker" else 0.1
+        if config_key == "td_leads_browser_cleanup_timeout_seconds":
+            return 0.01
+        return 0.01
+
+    monkeypatch.setattr(td_leads_main, "_timeout_seconds", _test_timeout_seconds)
+    monkeypatch.setattr(
+        td_leads_main, "log_event", lambda **kwargs: events.append(kwargs)
+    )
+    monkeypatch.setattr(
+        td_leads_main,
+        "_load_td_order_stores",
+        lambda logger, store_codes=None: asyncio.sleep(0, result=[store]),
+    )
+    monkeypatch.setattr(
+        td_leads_main, "_start_run_summary", lambda logger, summary: asyncio.sleep(0)
+    )
+    monkeypatch.setattr(
+        td_leads_main,
+        "_persist_run_summary",
+        lambda logger, summary, finished_at, reporting_mode=None, reporting_payload=None, reporting_schema_errors=None: (
+            persisted_summaries.append(summary) or asyncio.sleep(0, result=True)
+        ),
+    )
+    monkeypatch.setattr(td_leads_main, "send_notifications_for_run", _fake_notify)
+    monkeypatch.setattr(
+        td_leads_main, "_resolve_td_leads_concurrency_settings", lambda: (1, 1, False)
+    )
+    monkeypatch.setattr(
+        td_leads_main, "async_playwright", lambda: _FakePlaywrightContext()
+    )
+    monkeypatch.setattr(
+        td_leads_main,
+        "launch_browser",
+        lambda playwright, logger: asyncio.sleep(0, result=_FakeBrowser()),
+    )
+    monkeypatch.setattr(
+        td_leads_main,
+        "_perform_login",
+        lambda *args, **kwargs: asyncio.sleep(0, result=True),
+    )
+    monkeypatch.setattr(
+        td_leads_main,
+        "_wait_for_otp_verification",
+        lambda *args, **kwargs: asyncio.sleep(0, result=(True, False)),
+    )
+    monkeypatch.setattr(
+        td_leads_main,
+        "_wait_for_home",
+        lambda *args, **kwargs: asyncio.sleep(0, result=True),
+    )
+    monkeypatch.setattr(
+        td_leads_main,
+        "_ensure_scheduler_page",
+        lambda *args, **kwargs: asyncio.sleep(0, result=True),
+    )
+    monkeypatch.setattr(
+        td_leads_main,
+        "_collect_status_rows",
+        lambda *args, **kwargs: asyncio.sleep(0, result=([], [])),
+    )
+    monkeypatch.setattr(
+        td_leads_main,
+        "_write_store_artifact",
+        lambda **kwargs: tmp_path / "td_leads.xlsx",
+    )
+
+    if stalled_phase == "session_probe":
+        monkeypatch.setattr(
+            td_leads_main, "_probe_session", lambda *args, **kwargs: _never_returns()
+        )
+    if stalled_phase == "store_worker":
+        monkeypatch.setattr(
+            td_leads_main, "_run_store", lambda **kwargs: _never_returns()
+        )
+    if stalled_phase == "overall_gather":
+        monkeypatch.setattr(
+            td_leads_main, "_run_store_worker", lambda **kwargs: _never_returns()
+        )
+    if stalled_phase == "browser_cleanup":
+        monkeypatch.setattr(td_leads_main, "_run_store_worker", _successful_worker)
+
+    started_at = time.monotonic()
+    with pytest.raises(SystemExit) as exc_info:
+        await td_leads_main.main(run_env="test", run_id=f"run-timeout-{stalled_phase}")
+    elapsed = time.monotonic() - started_at
+
+    assert exc_info.value.code == 1
+    assert elapsed < 0.5
+    timeout_event = next(
+        event
+        for event in events
+        if event.get("message") == "phase_timeout"
+        and event.get("phase_name") == expected_phase
+    )
+    assert timeout_event["run_id"] == f"run-timeout-{stalled_phase}"
+    assert timeout_event["timeout_seconds"] == 0.01
+    assert isinstance(timeout_event["duration_ms"], int)
+    assert "store_code" in timeout_event
+    assert len(persisted_summaries) == 1
+    assert persisted_summaries[0].overall_status() == "failed"
+    assert notifications == [("td_crm_leads_sync", f"run-timeout-{stalled_phase}")]
