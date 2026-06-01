@@ -53,6 +53,10 @@ def _base_rows(secret_key: str) -> dict[str, str]:
         "pipeline_skip_dom_logging": "false",
         "skip_lead_assignment": "false",
         "UC_IGNORE_HTTPS_ERRORS": "false",
+        "TD_LEADS_BROWSER_OPERATION_TIMEOUT_SECONDS": "90",
+        "TD_LEADS_BROWSER_CLEANUP_TIMEOUT_SECONDS": "10",
+        "TD_LEADS_STORE_WORKER_TIMEOUT_SECONDS": "240",
+        "TD_LEADS_GATHER_TIMEOUT_SECONDS": "270",
     }
     rows["TD_GLOBAL_PASSWORD"] = encrypt_secret(secret_key, "change-me-global-password")
     rows["REPORT_EMAIL_SMTP_PASSWORD"] = encrypt_secret(secret_key, "change-me-smtp-password")

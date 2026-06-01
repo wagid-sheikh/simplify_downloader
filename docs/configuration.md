@@ -46,6 +46,10 @@ Recommended variables for the cron env file:
 | `CRON_PATH` | Extra PATH entries needed for Poetry/Python. |
 | `ENV_FILE` | (Optional) Override the env file path; defaults to `scripts/cron.env`. |
 | `TD_LEADS_MAX_RUNTIME_SECONDS` | TD-leads sync watchdog; defaults explicitly to `300`. A deprecated direct per-invocation `MAX_RUNTIME_SECONDS` compatibility override takes precedence when it is set. |
+| `TD_LEADS_BROWSER_OPERATION_TIMEOUT_SECONDS` | DB-backed Python deadline for each ordinary TD-leads Playwright operation, including context/page creation, session checks, login/home waits, and each status-bucket scrape; defaults to `90`. This is intentionally separate from the outer shell watchdog. |
+| `TD_LEADS_BROWSER_CLEANUP_TIMEOUT_SECONDS` | DB-backed Python deadline for each TD-leads Playwright context/browser cleanup phase; defaults to `10`. |
+| `TD_LEADS_STORE_WORKER_TIMEOUT_SECONDS` | DB-backed Python deadline for one TD-leads store worker; defaults to `240`. |
+| `TD_LEADS_GATHER_TIMEOUT_SECONDS` | DB-backed Python deadline for the complete TD-leads worker collection; defaults to `270`. Pending workers are cancelled before failed-run summary persistence and notification delivery; keep this below the shell watchdog configured for the deployment workload. |
 | `ORDERS_STEP_TIMEOUT_SECONDS` | Per-attempt watchdog for the orders profiler step; defaults to `5400`. Timed-out attempts are retryable until `ORDERS_MAX_ATTEMPTS` is exhausted. |
 | `DAILY_SALES_STEP_TIMEOUT_SECONDS` | Per-attempt watchdog for Daily Sales report generation; defaults to `1800`. |
 | `PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS` | Per-attempt watchdog for Pending Deliveries report generation; defaults to `1800`. |

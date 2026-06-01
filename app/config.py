@@ -58,6 +58,11 @@ if os.getenv("DEBUG_CONFIG") == "1":
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_TD_LEADS_BROWSER_OPERATION_TIMEOUT_SECONDS = 90
+DEFAULT_TD_LEADS_BROWSER_CLEANUP_TIMEOUT_SECONDS = 10
+DEFAULT_TD_LEADS_STORE_WORKER_TIMEOUT_SECONDS = 240
+DEFAULT_TD_LEADS_GATHER_TIMEOUT_SECONDS = 270
+
 ENV_ONLY_KEYS = [
     "SECRET_KEY",
     "RUN_ENV",
@@ -190,6 +195,13 @@ def _parse_int(value: str, *, key: str) -> int:
         message = f"Config key {key} must be an integer; got {value!r}"
         logger.error(message)
         raise ConfigError(message)
+
+
+def _parse_positive_int(value: str, *, key: str) -> int:
+    parsed = _parse_int(value, key=key)
+    if parsed < 1:
+        raise ConfigError(f"Config key {key} must be >= 1")
+    return parsed
 
 
 def _parse_float(value: str, *, key: str) -> float:
@@ -382,6 +394,10 @@ class Config:
     pipeline_skip_dom_logging: bool
     skip_lead_assignment: bool
     uc_ignore_https_errors: bool
+    td_leads_browser_operation_timeout_seconds: int
+    td_leads_browser_cleanup_timeout_seconds: int
+    td_leads_store_worker_timeout_seconds: int
+    td_leads_gather_timeout_seconds: int
 
     @classmethod
     def load_from_env_and_db(cls) -> Config:
@@ -469,6 +485,10 @@ class Config:
         uc_ignore_https_errors = _parse_bool(
             db_values["UC_IGNORE_HTTPS_ERRORS"], key="UC_IGNORE_HTTPS_ERRORS"
         )
+        td_leads_browser_operation_timeout_seconds = _parse_positive_int(db_values.get("TD_LEADS_BROWSER_OPERATION_TIMEOUT_SECONDS", str(DEFAULT_TD_LEADS_BROWSER_OPERATION_TIMEOUT_SECONDS)), key="TD_LEADS_BROWSER_OPERATION_TIMEOUT_SECONDS")
+        td_leads_browser_cleanup_timeout_seconds = _parse_positive_int(db_values.get("TD_LEADS_BROWSER_CLEANUP_TIMEOUT_SECONDS", str(DEFAULT_TD_LEADS_BROWSER_CLEANUP_TIMEOUT_SECONDS)), key="TD_LEADS_BROWSER_CLEANUP_TIMEOUT_SECONDS")
+        td_leads_store_worker_timeout_seconds = _parse_positive_int(db_values.get("TD_LEADS_STORE_WORKER_TIMEOUT_SECONDS", str(DEFAULT_TD_LEADS_STORE_WORKER_TIMEOUT_SECONDS)), key="TD_LEADS_STORE_WORKER_TIMEOUT_SECONDS")
+        td_leads_gather_timeout_seconds = _parse_positive_int(db_values.get("TD_LEADS_GATHER_TIMEOUT_SECONDS", str(DEFAULT_TD_LEADS_GATHER_TIMEOUT_SECONDS)), key="TD_LEADS_GATHER_TIMEOUT_SECONDS")
 
         td_store_dashboard_path = _clean_text(
             db_values["TD_STORE_DASHBOARD_PATH"], key="TD_STORE_DASHBOARD_PATH"
@@ -548,6 +568,10 @@ class Config:
             pipeline_skip_dom_logging=pipeline_skip_dom_logging,
             skip_lead_assignment=skip_lead_assignment,
             uc_ignore_https_errors=uc_ignore_https_errors,
+            td_leads_browser_operation_timeout_seconds=td_leads_browser_operation_timeout_seconds,
+            td_leads_browser_cleanup_timeout_seconds=td_leads_browser_cleanup_timeout_seconds,
+            td_leads_store_worker_timeout_seconds=td_leads_store_worker_timeout_seconds,
+            td_leads_gather_timeout_seconds=td_leads_gather_timeout_seconds,
         )
 
 
