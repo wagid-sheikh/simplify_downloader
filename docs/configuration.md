@@ -49,6 +49,21 @@ Recommended variables for the cron env file:
 | `DAILY_SALES_STEP_TIMEOUT_SECONDS` | Per-attempt watchdog for Daily Sales report generation; defaults to `1800`. |
 | `PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS` | Per-attempt watchdog for Pending Deliveries report generation; defaults to `1800`. |
 | `ORDERS_SYNC_PROFILER_SHUTDOWN_TIMEOUT_SECONDS` | Bound for each profiler loop-shutdown phase; defaults to `5`. |
+| `TD_LEADS_STALE_OWNER_SECONDS` | TD-leads local-lock age threshold before strict stale-owner process-group recovery; defaults to `300` seconds to support the 10–20 minute service objective conservatively. |
+| `ORDERS_REPORTS_STALE_OWNER_SECONDS` | Separately reviewed orders/reports local-lock age threshold before strict stale-owner process-group recovery; defaults to `7200` seconds because normal workload and retries differ from TD leads. |
+| `STALE_OWNER_TERM_WAIT_SECONDS` | Bounded grace period after sending `TERM` to a validated stale-owner process group; defaults to `5`. |
+| `STALE_OWNER_KILL_WAIT_SECONDS` | Bounded verification period after escalating a surviving validated stale-owner process group to `KILL`; defaults to `5`. |
+
+Both cron wrappers use a pipeline-local recovery state machine rather than a
+long lock-wait loop. Each wrapper first attempts `mkdir` for its lock. On
+contention it logs PID, PGID, command, host, start timestamp, and calculated
+age. A fully dead owner is cleaned up and reacquired immediately. A younger
+live owner is preserved and causes a successful
+`status=skipped_due_to_active_same_pipeline_owner` exit. An aged live owner is
+terminated as a complete process group only after its repository-wrapper
+command and live PID/PGID relationship validate; `TERM` is followed by bounded
+wait and `KILL` escalation when required. Malformed, mismatched, unrelated, or
+otherwise ambiguous ownership always fails safely without deleting the lock.
 
 Example crontab entry (runs at 6:00 AM daily and logs via the script):
 

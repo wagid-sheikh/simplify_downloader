@@ -134,8 +134,35 @@ Heavy cron wrappers in `scripts/` acquire only their own pipeline lock:
 2. Orders/reports acquires `tmp/cron_run_orders_and_reports.lock`.
 3. Each wrapper executes its own run steps without blocking the other pipeline.
 
-Each wrapper preserves PID-aware ownership metadata, stale-lock inspection,
-cleanup traps, and runtime watchdog behavior for its own lock. The retired
+Each wrapper uses the same pipeline-specific local-lock recovery state machine.
+It first attempts `mkdir` for its lock directory and writes fresh ownership
+metadata on success. If the directory exists, the wrapper logs the full local
+snapshot (`pid`, `pgid`, `command`, `host`, `started_at`, and calculated lock
+age) and then takes exactly one action without polling:
+
+1. If both the recorded owner PID and process group are gone, remove the stale
+   lock directory, reacquire it, write fresh metadata, and continue.
+2. If the owner PID is alive and the calculated lock age is below that
+   pipeline's threshold, log
+   `status=skipped_due_to_active_same_pipeline_owner`, preserve the lock, and
+   exit successfully.
+3. If the owner PID is alive and aged beyond the threshold, require numeric
+   PID/PGID metadata, an exact live PID-to-PGID match, and both recorded and live
+   commands referencing the expected wrapper inside this repository. Send
+   `TERM` to the complete process group, wait a bounded grace period, escalate
+   to group `KILL` when necessary, and remove the lock only after the group is
+   confirmed gone. Reacquire the directory and write fresh metadata before
+   continuing.
+4. If metadata is malformed, the PID/PGID relationship is inconsistent, the
+   dead PID's recorded process group is still alive, or a command points outside
+   the expected repository wrapper, fail safely without deleting the lock.
+
+The thresholds are intentionally pipeline-specific:
+`TD_LEADS_STALE_OWNER_SECONDS=300` supports the TD-leads 10–20 minute service
+objective conservatively, while `ORDERS_REPORTS_STALE_OWNER_SECONDS=7200`
+remains separately reviewed because orders/report workloads and retries differ.
+`STALE_OWNER_TERM_WAIT_SECONDS` and `STALE_OWNER_KILL_WAIT_SECONDS` bound process
+group shutdown. The retired
 `tmp/cron_heavy_pipelines.lock` directory is not recreated at runtime. During
 rollout, `scripts/kill_orders_and_reports_stale.sh` provides an explicit one-time
 cleanup path for an obsolete global-lock directory and removes it only after its

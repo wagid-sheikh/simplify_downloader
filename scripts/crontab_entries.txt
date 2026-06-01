@@ -10,15 +10,17 @@ SHELL=/bin/bash
 5 20 * * * /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_orders_and_reports.sh
 30 20 * * * /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_orders_and_reports.sh
 
-# TD-leads duplicate-run contention note:
+# Pipeline-local lock recovery note:
 # - TD leads and orders/reports acquire separate pipeline-specific lock dirs.
-# - Keep TD_LEADS_LOCK_WAIT_SECONDS/LOCK_WAIT_SECONDS at 900 seconds (15 minutes)
-#   if a delayed TD-leads run should wait for an earlier TD-leads owner.
-# - If that local lock remains live after the wait, the TD wrapper logs
-#   status=skipped_due_to_lock_contention and exits successfully.
-*/12 10-20 * * * LOCK_WAIT_SECONDS=900 /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_td_leads_sync.sh >> /Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_td_leads_sync.log 2>&1
+# - Wrappers do not wait for locks. A young live same-pipeline owner causes a
+#   successful status=skipped_due_to_active_same_pipeline_owner exit.
+# - Dead lock owners are cleaned up immediately. Aged live owners are recovered
+#   only after PID, PGID, and repository-wrapper command validation succeeds.
+# - scripts/cron.env configures TD_LEADS_STALE_OWNER_SECONDS=300 and keeps a
+#   separately reviewed ORDERS_REPORTS_STALE_OWNER_SECONDS threshold.
+*/12 10-20 * * * /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_td_leads_sync.sh >> /Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_td_leads_sync.log 2>&1
 
-# Meeting/day-end reporting runs also use the extended local duplicate-run wait.
-10 19 * * * LOCK_WAIT_SECONDS=900 /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_td_leads_sync.sh reporting_mode=meeting >> /Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_td_leads_sync.log 2>&1
+# Meeting/day-end reporting runs use the same pipeline-local recovery state machine.
+10 19 * * * /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_td_leads_sync.sh reporting_mode=meeting >> /Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_td_leads_sync.log 2>&1
 
-55 20 * * * LOCK_WAIT_SECONDS=900 /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_td_leads_sync.sh reporting_mode=day_end >> /Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_td_leads_sync.log 2>&1
+55 20 * * * /bin/bash /Users/wagidsheikh/crm_backend/simplify_downloader/scripts/cron_run_td_leads_sync.sh reporting_mode=day_end >> /Users/wagidsheikh/crm_backend/simplify_downloader/logs/cron_run_td_leads_sync.log 2>&1
