@@ -352,6 +352,27 @@ Operational notes:
 - Keep pipeline telemetry structured (`log_event`, run IDs, phase/status).
 - Treat DB notification metadata as runtime contract for email behavior.
 
+### Operator-triggered `order_line_items` historical rebuild
+
+The dedicated historical rebuild command is `python -m app crm rebuild-order-line-items`. It replays authoritative CRM line-item snapshots in bounded date windows and is intentionally separate from SQL-only deduplication: repeated line-item rows can be legitimate source data, so correction requires CRM snapshot replay rather than classifying duplicate database rows in isolation.
+
+Typical invocations:
+
+```bash
+poetry run python -m app crm rebuild-order-line-items --source td --stores TD001 --start-date 2025-01-01 --end-date 2025-01-31 --window-size 7 --dry-run
+poetry run python -m app crm rebuild-order-line-items --source both --start-date 2025-01-01 --end-date 2025-03-31 --window-size 7
+bash scripts/run_local_order_line_items_rebuild.sh --source uc --stores UC001 --start-date 2025-01-01 --end-date 2025-01-15 --window-size 3
+```
+
+Operational behavior and limitations:
+
+- Source selection is `td`, `uc`, or `both`; store scope is optional and otherwise uses active `store_master.sync_orders_flag` rows for the selected source group.
+- `--dry-run` fetches source snapshots and reports planned replacements without mutating `order_line_items` or staging tables.
+- TD windows use the TD garment snapshot replacement path (`ingest_td_garment_rows`). UC windows stage GST-derived order-detail snapshots and then use the UC final replacement path (`publish_uc_gst_order_details_to_line_items`).
+- Only `complete_with_rows` and `complete_empty` outcomes replace local rows. `incomplete_or_failed` outcomes preserve existing rows and are logged as skipped.
+- Every window emits a structured checkpoint (`source`, `store_code`, `window_start`, `window_end`) plus inspected/complete/skipped/deleted/inserted/orphan counts and dry-run state via `JsonLogger`/`log_event`; operators can resume by rerunning from the last incomplete checkpoint window.
+- The default source fetchers rely on valid CRM browser storage-state/auth context. If CRM auth has expired, refresh normal TD/UC sessions first and rerun the rebuild.
+
 ## Legacy markdown status (triaged)
 
 From code-audit perspective:

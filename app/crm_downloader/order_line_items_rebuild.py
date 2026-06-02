@@ -1,0 +1,647 @@
+from __future__ import annotations
+
+import argparse
+import asyncio
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Any, Literal, Mapping, Protocol, Sequence
+
+import sqlalchemy as sa
+
+from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
+from app.common.db import session_scope
+from app.config import config
+from app.crm_downloader.browser import launch_browser
+from app.crm_downloader.td_orders_sync.garment_ingest import (
+    TdGarmentIngestResult,
+    ingest_td_garment_rows,
+    order_line_items_table,
+)
+from app.crm_downloader.td_orders_sync.main import _load_td_order_stores
+from app.crm_downloader.td_orders_sync.td_api_client import TdApiClient
+from app.crm_downloader.uc_orders_sync.gst_api_extract import collect_gst_orders_via_api
+from app.crm_downloader.uc_orders_sync.gst_publish import (
+    publish_uc_gst_order_details_to_line_items,
+)
+from app.crm_downloader.uc_orders_sync.main import _load_uc_order_stores
+from app.dashboard_downloader.json_logger import (
+    JsonLogger,
+    get_logger,
+    log_event,
+    new_run_id,
+)
+
+Source = Literal["td", "uc"]
+SnapshotOutcome = Literal[
+    "complete_with_rows", "complete_empty", "incomplete_or_failed"
+]
+
+
+@dataclass(frozen=True)
+class RebuildWindow:
+    start: date
+    end: date
+
+
+@dataclass(frozen=True)
+class RebuildStore:
+    source: Source
+    store_code: str
+    cost_center: str
+    raw_store: Any | None = None
+
+
+@dataclass
+class SourceSnapshot:
+    line_item_rows: list[Mapping[str, Any]] = field(default_factory=list)
+    order_snapshots: list[Mapping[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class WindowMetrics:
+    source: Source
+    store_code: str
+    cost_center: str
+    window_start: date
+    window_end: date
+    inspected_orders: int = 0
+    complete_with_rows_orders: int = 0
+    complete_empty_orders: int = 0
+    skipped_incomplete_orders: int = 0
+    deleted_rows: int = 0
+    inserted_rows: int = 0
+    orphan_rows: int = 0
+    dry_run: bool = False
+
+    def checkpoint(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "store_code": self.store_code,
+            "cost_center": self.cost_center,
+            "window_start": self.window_start.isoformat(),
+            "window_end": self.window_end.isoformat(),
+            "dry_run": self.dry_run,
+            "inspected_orders": self.inspected_orders,
+            "complete_with_rows_orders": self.complete_with_rows_orders,
+            "complete_empty_orders": self.complete_empty_orders,
+            "skipped_incomplete_orders": self.skipped_incomplete_orders,
+            "deleted_rows": self.deleted_rows,
+            "inserted_rows": self.inserted_rows,
+            "orphan_rows": self.orphan_rows,
+        }
+
+
+class SnapshotFetcher(Protocol):
+    async def __call__(
+        self,
+        *,
+        source: Source,
+        store: RebuildStore,
+        window: RebuildWindow,
+        run_id: str,
+        logger: JsonLogger,
+    ) -> SourceSnapshot: ...
+
+
+def iter_windows(
+    start_date: date, end_date: date, window_size_days: int
+) -> list[RebuildWindow]:
+    if window_size_days < 1:
+        raise ValueError("window_size_days must be at least 1")
+    if end_date < start_date:
+        raise ValueError("end date must be on or after start date")
+    windows: list[RebuildWindow] = []
+    current = start_date
+    while current <= end_date:
+        window_end = min(current + timedelta(days=window_size_days - 1), end_date)
+        windows.append(RebuildWindow(start=current, end=window_end))
+        current = window_end + timedelta(days=1)
+    return windows
+
+
+def _order_number(row: Mapping[str, Any]) -> str:
+    return str(
+        row.get("order_number")
+        or row.get("order_no")
+        or row.get("orderNumber")
+        or row.get("order_code")
+        or row.get("normalized_order_number")
+        or ""
+    ).strip()
+
+
+def _outcome(row: Mapping[str, Any]) -> SnapshotOutcome:
+    raw = (
+        str(
+            row.get("garment_snapshot_outcome")
+            or row.get("snapshot_outcome")
+            or row.get("outcome")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+    if raw in {"complete_with_rows", "complete_empty", "incomplete_or_failed"}:
+        return raw  # type: ignore[return-value]
+    return "incomplete_or_failed"
+
+
+async def _count_existing_rows(
+    *, database_url: str, cost_center: str, order_numbers: Sequence[str]
+) -> int:
+    if not order_numbers:
+        return 0
+    metadata = sa.MetaData()
+    line_items = order_line_items_table(metadata)
+    async with session_scope(database_url) as session:
+        stmt = (
+            sa.select(sa.func.count())
+            .select_from(line_items)
+            .where(
+                sa.and_(
+                    line_items.c.cost_center == cost_center,
+                    line_items.c.order_number.in_(list(order_numbers)),
+                )
+            )
+        )
+        return int((await session.execute(stmt)).scalar_one() or 0)
+
+
+async def _count_orphans(
+    *,
+    database_url: str,
+    cost_center: str,
+    order_numbers: Sequence[str],
+    inserted_rows_by_order: Mapping[str, int],
+) -> int:
+    if not order_numbers:
+        return 0
+    async with session_scope(database_url) as session:
+        rows = (
+            (
+                await session.execute(
+                    sa.text(
+                        "SELECT order_number FROM orders WHERE cost_center = :cost_center AND order_number IN :order_numbers"
+                    ).bindparams(sa.bindparam("order_numbers", expanding=True)),
+                    {"cost_center": cost_center, "order_numbers": list(order_numbers)},
+                )
+            )
+            .scalars()
+            .all()
+        )
+    existing = {str(row) for row in rows}
+    return sum(
+        count
+        for order_number, count in inserted_rows_by_order.items()
+        if order_number not in existing
+    )
+
+
+async def _dry_run_metrics(
+    *,
+    source: Source,
+    store: RebuildStore,
+    window: RebuildWindow,
+    snapshot: SourceSnapshot,
+    database_url: str,
+) -> WindowMetrics:
+    snapshots = list(snapshot.order_snapshots)
+    complete_with_rows = [
+        _order_number(row)
+        for row in snapshots
+        if _outcome(row) == "complete_with_rows" and _order_number(row)
+    ]
+    complete_empty = [
+        _order_number(row)
+        for row in snapshots
+        if _outcome(row) == "complete_empty" and _order_number(row)
+    ]
+    replaceable = [*complete_with_rows, *complete_empty]
+    rows_by_order: dict[str, int] = {}
+    for row in snapshot.line_item_rows:
+        order_number = _order_number(row)
+        if order_number:
+            rows_by_order[order_number] = rows_by_order.get(order_number, 0) + 1
+    return WindowMetrics(
+        source=source,
+        store_code=store.store_code,
+        cost_center=store.cost_center,
+        window_start=window.start,
+        window_end=window.end,
+        inspected_orders=len(snapshots),
+        complete_with_rows_orders=len(complete_with_rows),
+        complete_empty_orders=len(complete_empty),
+        skipped_incomplete_orders=sum(
+            1 for row in snapshots if _outcome(row) == "incomplete_or_failed"
+        ),
+        deleted_rows=await _count_existing_rows(
+            database_url=database_url,
+            cost_center=store.cost_center,
+            order_numbers=replaceable,
+        ),
+        inserted_rows=sum(
+            rows_by_order.get(order_number, 0) for order_number in complete_with_rows
+        ),
+        orphan_rows=await _count_orphans(
+            database_url=database_url,
+            cost_center=store.cost_center,
+            order_numbers=complete_with_rows,
+            inserted_rows_by_order=rows_by_order,
+        ),
+        dry_run=True,
+    )
+
+
+async def _stage_uc_snapshot(
+    *,
+    database_url: str,
+    run_id: str,
+    store: RebuildStore,
+    snapshot: SourceSnapshot,
+    run_date: datetime,
+) -> None:
+    async with session_scope(database_url) as session:
+        for seq, row in enumerate(snapshot.line_item_rows, start=1):
+            await session.execute(
+                sa.text("""
+                INSERT INTO stg_uc_archive_order_details
+                (run_id, run_date, cost_center, store_code, order_code, service, item_name, rate, quantity, weight, amount, order_datetime_raw, line_hash, ingest_row_seq, ingest_remarks)
+                VALUES (:run_id, :run_date, :cost_center, :store_code, :order_code, :service, :item_name, :rate, :quantity, :weight, :amount, :order_datetime_raw, :line_hash, :ingest_row_seq, :ingest_remarks)
+            """),
+                {
+                    "run_id": run_id,
+                    "run_date": run_date,
+                    "cost_center": row.get("cost_center") or store.cost_center,
+                    "store_code": row.get("store_code") or store.store_code,
+                    "order_code": _order_number(row),
+                    "service": row.get("service") or row.get("service_name"),
+                    "item_name": row.get("item_name") or row.get("garment_name"),
+                    "rate": row.get("rate"),
+                    "quantity": row.get("quantity"),
+                    "weight": row.get("weight"),
+                    "amount": row.get("amount"),
+                    "order_datetime_raw": row.get("order_datetime_raw"),
+                    "line_hash": row.get("line_hash") or row.get("line_item_key"),
+                    "ingest_row_seq": row.get("ingest_row_seq") or seq,
+                    "ingest_remarks": row.get("ingest_remarks"),
+                },
+            )
+        for row in snapshot.order_snapshots:
+            order_number = _order_number(row)
+            if not order_number:
+                continue
+            await session.execute(
+                sa.text("""
+                INSERT INTO stg_uc_order_detail_snapshots
+                (run_id, run_date, cost_center, store_code, order_code, normalized_order_number, snapshot_outcome, detail_row_count, ingest_remarks)
+                VALUES (:run_id, :run_date, :cost_center, :store_code, :order_code, :normalized_order_number, :snapshot_outcome, :detail_row_count, :ingest_remarks)
+            """),
+                {
+                    "run_id": run_id,
+                    "run_date": run_date,
+                    "cost_center": row.get("cost_center") or store.cost_center,
+                    "store_code": row.get("store_code") or store.store_code,
+                    "order_code": order_number,
+                    "normalized_order_number": order_number,
+                    "snapshot_outcome": _outcome(row),
+                    "detail_row_count": row.get("detail_row_count")
+                    or row.get("garment_row_count")
+                    or 0,
+                    "ingest_remarks": row.get("ingest_remarks"),
+                },
+            )
+        await session.commit()
+
+
+def _td_metrics_from_result(
+    *,
+    store: RebuildStore,
+    window: RebuildWindow,
+    result: TdGarmentIngestResult,
+    dry_run: bool,
+) -> WindowMetrics:
+    return WindowMetrics(
+        source="td",
+        store_code=store.store_code,
+        cost_center=store.cost_center,
+        window_start=window.start,
+        window_end=window.end,
+        inspected_orders=result.authoritative_orders_inspected,
+        complete_with_rows_orders=result.complete_with_rows_orders,
+        complete_empty_orders=result.complete_empty_orders,
+        skipped_incomplete_orders=result.replacement_skipped_incomplete_orders,
+        deleted_rows=result.deleted_final_rows,
+        inserted_rows=result.inserted_final_rows,
+        orphan_rows=result.orphan_rows,
+        dry_run=dry_run,
+    )
+
+
+async def rebuild_window(
+    *,
+    source: Source,
+    store: RebuildStore,
+    window: RebuildWindow,
+    run_id: str,
+    run_date: datetime,
+    database_url: str,
+    dry_run: bool,
+    logger: JsonLogger,
+    fetch_snapshot: SnapshotFetcher,
+) -> WindowMetrics:
+    snapshot = await fetch_snapshot(
+        source=source, store=store, window=window, run_id=run_id, logger=logger
+    )
+    if dry_run:
+        metrics = await _dry_run_metrics(
+            source=source,
+            store=store,
+            window=window,
+            snapshot=snapshot,
+            database_url=database_url,
+        )
+    elif source == "td":
+        result = await ingest_td_garment_rows(
+            rows=snapshot.line_item_rows,
+            authoritative_order_scope=snapshot.order_snapshots,
+            replacement_allowed=True,
+            store_code=store.store_code,
+            cost_center=store.cost_center,
+            run_id=run_id,
+            run_date=run_date,
+            window_from_date=window.start,
+            window_to_date=window.end,
+            database_url=database_url,
+        )
+        metrics = _td_metrics_from_result(
+            store=store, window=window, result=result, dry_run=False
+        )
+    else:
+        await _stage_uc_snapshot(
+            database_url=database_url,
+            run_id=run_id,
+            store=store,
+            snapshot=snapshot,
+            run_date=run_date,
+        )
+        result = await publish_uc_gst_order_details_to_line_items(
+            database_url=database_url, run_id=run_id, store_code=store.store_code
+        )
+        metrics = WindowMetrics(
+            source="uc",
+            store_code=store.store_code,
+            cost_center=store.cost_center,
+            window_start=window.start,
+            window_end=window.end,
+            inspected_orders=result.invoices_inspected,
+            complete_with_rows_orders=result.complete_with_rows_invoices,
+            complete_empty_orders=result.complete_empty_invoices,
+            skipped_incomplete_orders=result.replacement_skipped_incomplete_invoices,
+            deleted_rows=result.deleted_final_rows,
+            inserted_rows=result.inserted_final_rows,
+            orphan_rows=result.orphan_rows,
+            dry_run=False,
+        )
+
+    log_event(
+        logger=logger,
+        phase="order_line_items_rebuild_window",
+        status="ok",
+        message="order_line_items historical rebuild window checkpoint",
+        run_id=run_id,
+        source=metrics.source,
+        store_code=metrics.store_code,
+        cost_center=metrics.cost_center,
+        window_start=metrics.window_start.isoformat(),
+        window_end=metrics.window_end.isoformat(),
+        inspected_orders=metrics.inspected_orders,
+        complete_with_rows_orders=metrics.complete_with_rows_orders,
+        complete_empty_orders=metrics.complete_empty_orders,
+        skipped_incomplete_orders=metrics.skipped_incomplete_orders,
+        deleted_rows=metrics.deleted_rows,
+        inserted_rows=metrics.inserted_rows,
+        orphan_rows=metrics.orphan_rows,
+        dry_run=metrics.dry_run,
+        checkpoint=metrics.checkpoint(),
+    )
+    return metrics
+
+
+def _storage_state_path(store: RebuildStore) -> Path | None:
+    raw_path = getattr(store.raw_store, "storage_state_path", None)
+    return Path(raw_path) if raw_path else None
+
+
+async def default_fetch_snapshot(
+    *,
+    source: Source,
+    store: RebuildStore,
+    window: RebuildWindow,
+    run_id: str,
+    logger: JsonLogger,
+) -> SourceSnapshot:
+    storage_state_path = _storage_state_path(store)
+    storage_state = (
+        str(storage_state_path)
+        if storage_state_path and storage_state_path.exists()
+        else None
+    )
+
+    if source == "td":
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as playwright:
+            browser = await launch_browser(playwright)
+            try:
+                context = await browser.new_context(storage_state=storage_state)
+                client = TdApiClient(
+                    store_code=store.store_code,
+                    context=context,
+                    storage_state_path=storage_state_path or Path(),
+                )
+                result = await client.fetch_reports(
+                    from_date=window.start, to_date=window.end
+                )
+                return SourceSnapshot(
+                    line_item_rows=result.garments_rows,
+                    order_snapshots=result.garment_order_snapshots,
+                )
+            finally:
+                await browser.close()
+
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as playwright:
+        browser = await launch_browser(playwright)
+        try:
+            context = await browser.new_context(storage_state=storage_state)
+            page = await context.new_page()
+            home_url = getattr(store.raw_store, "home_url", None) or getattr(
+                store.raw_store, "orders_url", None
+            )
+            if home_url:
+                await page.goto(home_url, wait_until="domcontentloaded")
+            extract = await collect_gst_orders_via_api(
+                page=page,
+                store_code=store.store_code,
+                logger=logger,
+                from_date=window.start,
+                to_date=window.end,
+            )
+            return SourceSnapshot(
+                line_item_rows=extract.order_detail_rows,
+                order_snapshots=extract.order_detail_snapshot_rows,
+            )
+        finally:
+            await browser.close()
+
+
+async def load_rebuild_stores(
+    *, sources: Sequence[Source], store_codes: Sequence[str] | None, logger: JsonLogger
+) -> list[RebuildStore]:
+    stores: list[RebuildStore] = []
+    if "td" in sources:
+        for store in await _load_td_order_stores(
+            logger=logger, store_codes=store_codes
+        ):
+            if store.cost_center:
+                stores.append(
+                    RebuildStore(
+                        source="td",
+                        store_code=store.store_code,
+                        cost_center=store.cost_center,
+                        raw_store=store,
+                    )
+                )
+    if "uc" in sources:
+        for store in await _load_uc_order_stores(
+            logger=logger, store_codes=store_codes
+        ):
+            if store.cost_center:
+                stores.append(
+                    RebuildStore(
+                        source="uc",
+                        store_code=store.store_code,
+                        cost_center=store.cost_center,
+                        raw_store=store,
+                    )
+                )
+    return stores
+
+
+async def run_rebuild(
+    *,
+    source_selection: Literal["td", "uc", "both"],
+    store_codes: Sequence[str] | None,
+    start_date: date,
+    end_date: date,
+    window_size_days: int,
+    dry_run: bool,
+    run_id: str | None = None,
+    logger: JsonLogger | None = None,
+    fetch_snapshot: SnapshotFetcher = default_fetch_snapshot,
+) -> list[WindowMetrics]:
+    if not config.database_url:
+        raise RuntimeError(
+            "database_url is required for order_line_items historical rebuild"
+        )
+    logger = logger or get_logger("order_line_items_rebuild")
+    run_id = run_id or new_run_id("order-line-items-rebuild")
+    run_date = aware_now(get_timezone())
+    sources: list[Source] = (
+        ["td", "uc"] if source_selection == "both" else [source_selection]
+    )
+    windows = iter_windows(start_date, end_date, window_size_days)
+    stores = await load_rebuild_stores(
+        sources=sources, store_codes=store_codes, logger=logger
+    )
+    metrics: list[WindowMetrics] = []
+    log_event(
+        logger=logger,
+        phase="order_line_items_rebuild",
+        status="info",
+        message="Starting order_line_items historical rebuild",
+        run_id=run_id,
+        sources=sources,
+        stores=[s.store_code for s in stores],
+        start_date=start_date.isoformat(),
+        end_date=end_date.isoformat(),
+        window_size_days=window_size_days,
+        dry_run=dry_run,
+    )
+    for store in stores:
+        for window in windows:
+            metrics.append(
+                await rebuild_window(
+                    source=store.source,
+                    store=store,
+                    window=window,
+                    run_id=run_id,
+                    run_date=run_date,
+                    database_url=config.database_url,
+                    dry_run=dry_run,
+                    logger=logger,
+                    fetch_snapshot=fetch_snapshot,
+                )
+            )
+    log_event(
+        logger=logger,
+        phase="order_line_items_rebuild",
+        status="ok",
+        message="Completed order_line_items historical rebuild",
+        run_id=run_id,
+        window_count=len(metrics),
+        dry_run=dry_run,
+    )
+    return metrics
+
+
+def _parse_date(value: str) -> date:
+    return date.fromisoformat(value)
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Rebuild order_line_items from authoritative CRM snapshots"
+    )
+    parser.add_argument("--source", choices=("td", "uc", "both"), required=True)
+    parser.add_argument(
+        "--stores",
+        nargs="*",
+        default=None,
+        help="Optional store codes; defaults to all sync_orders_flag stores for the selected source(s)",
+    )
+    parser.add_argument("--start-date", type=_parse_date, required=True)
+    parser.add_argument("--end-date", type=_parse_date, required=True)
+    parser.add_argument(
+        "--window-size", type=int, default=7, help="Window size in days"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report planned replacements without mutating order_line_items",
+    )
+    parser.add_argument("--run-id", default=None)
+    return parser
+
+
+async def _async_entrypoint(argv: Sequence[str] | None = None) -> None:
+    args = _build_parser().parse_args(list(argv) if argv is not None else None)
+    await run_rebuild(
+        source_selection=args.source,
+        store_codes=normalize_store_codes(args.stores or []),
+        start_date=args.start_date,
+        end_date=args.end_date,
+        window_size_days=args.window_size,
+        dry_run=args.dry_run,
+        run_id=args.run_id,
+    )
+
+
+def run(argv: Sequence[str] | None = None) -> None:
+    asyncio.run(_async_entrypoint(argv))
+
+
+if __name__ == "__main__":
+    run()

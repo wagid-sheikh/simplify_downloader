@@ -107,6 +107,19 @@ def _build_parser() -> argparse.ArgumentParser:
         report_subparsers.add_parser("mtd-same-day-fulfillment", help="Run MTD same-day fulfillment report")
     )
 
+    crm_parser = subparsers.add_parser("crm", help="Run CRM maintenance commands")
+    crm_subparsers = crm_parser.add_subparsers(dest="crm_command", required=True)
+    oli_rebuild = crm_subparsers.add_parser(
+        "rebuild-order-line-items",
+        help="Rebuild order_line_items from authoritative CRM snapshots",
+    )
+    oli_rebuild.add_argument("--source", choices=("td", "uc", "both"), required=True)
+    oli_rebuild.add_argument("--stores", nargs="*", default=None, help="Optional store codes")
+    oli_rebuild.add_argument("--start-date", required=True, help="Start date (YYYY-MM-DD)")
+    oli_rebuild.add_argument("--end-date", required=True, help="End date (YYYY-MM-DD)")
+    oli_rebuild.add_argument("--window-size", type=int, default=7, help="Window size in days")
+    oli_rebuild.add_argument("--dry-run", action="store_true")
+    oli_rebuild.add_argument("--run-id", default=None)
 
     recovery_parser = subparsers.add_parser("recovery", help="Run recovery maintenance commands")
     recovery_subparsers = recovery_parser.add_subparsers(dest="recovery_command", required=True)
@@ -124,7 +137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = list(argv) if argv is not None else sys.argv[1:]
 
     # Preserve existing CLI behaviour for legacy commands (e.g. run-weekly, db upgrade).
-    if args and args[0] not in {"server", "pipeline", "report", "recovery"}:
+    if args and args[0] not in {"server", "pipeline", "report", "recovery", "crm"}:
         return pipeline_cli.main(args)
 
     parser = _build_parser()
@@ -135,6 +148,26 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if parsed.command == "pipeline":
         return _run_pipeline(parsed)
+
+    if parsed.command == "crm":
+        if parsed.crm_command == "rebuild-order-line-items":
+            from app.crm_downloader.order_line_items_rebuild import run as rebuild_run
+
+            rebuild_args = [
+                "--source", parsed.source,
+                "--start-date", parsed.start_date,
+                "--end-date", parsed.end_date,
+                "--window-size", str(parsed.window_size),
+            ]
+            if parsed.stores:
+                rebuild_args.append("--stores")
+                rebuild_args.extend(parsed.stores)
+            if parsed.dry_run:
+                rebuild_args.append("--dry-run")
+            if parsed.run_id:
+                rebuild_args.extend(["--run-id", parsed.run_id])
+            rebuild_run(rebuild_args)
+            return 0
 
     if parsed.command == "recovery":
         recovery_args: list[str] = []
