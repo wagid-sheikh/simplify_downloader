@@ -4568,8 +4568,11 @@ def test_build_td_leads_summary_html_places_existing_cancelled_current_state_fir
 @pytest.mark.parametrize(
     ("stalled_phase", "expected_phase"),
     [
+        ("launch_browser", "launch_browser"),
         ("browser_context_create", "browser_context_create"),
         ("page_create", "page_create"),
+        ("storage_state_write", "storage_state_write"),
+        ("scheduler_page", "scheduler_page"),
         ("session_probe", "session_probe"),
         ("store_worker", "store_worker"),
         ("overall_gather", "overall_gather"),
@@ -4598,6 +4601,14 @@ async def test_td_leads_timeouts_persist_failed_summary_and_attempt_notification
     async def _never_returns() -> None:
         await asyncio.Event().wait()
 
+    cancellation_release = asyncio.Event()
+
+    async def _resists_cancellation() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await cancellation_release.wait()
+
     class _FakeContext:
         async def new_page(self):
             if stalled_phase == "page_create":
@@ -4605,6 +4616,8 @@ async def test_td_leads_timeouts_persist_failed_summary_and_attempt_notification
             return object()
 
         async def storage_state(self, *, path: str) -> None:
+            if stalled_phase == "storage_state_write":
+                await _never_returns()
             return None
 
         async def close(self) -> None:
@@ -4683,7 +4696,7 @@ async def test_td_leads_timeouts_persist_failed_summary_and_attempt_notification
     monkeypatch.setattr(
         td_leads_main,
         "launch_browser",
-        lambda playwright, logger: asyncio.sleep(0, result=_FakeBrowser()),
+        lambda playwright, logger: (_never_returns() if stalled_phase == "launch_browser" else asyncio.sleep(0, result=_FakeBrowser())),
     )
     monkeypatch.setattr(
         td_leads_main,
@@ -4720,14 +4733,19 @@ async def test_td_leads_timeouts_persist_failed_summary_and_attempt_notification
         monkeypatch.setattr(
             td_leads_main, "_probe_session", lambda *args, **kwargs: _never_returns()
         )
+    if stalled_phase == "scheduler_page":
+        monkeypatch.setattr(
+            td_leads_main, "_ensure_scheduler_page", lambda *args, **kwargs: _never_returns()
+        )
     if stalled_phase == "store_worker":
         monkeypatch.setattr(
             td_leads_main, "_run_store", lambda **kwargs: _never_returns()
         )
     if stalled_phase == "overall_gather":
         monkeypatch.setattr(
-            td_leads_main, "_run_store_worker", lambda **kwargs: _never_returns()
+            td_leads_main, "_run_store_worker", lambda **kwargs: _resists_cancellation()
         )
+        asyncio.get_running_loop().call_later(0.1, cancellation_release.set)
     if stalled_phase == "browser_cleanup":
         monkeypatch.setattr(td_leads_main, "_run_store_worker", _successful_worker)
 
@@ -4751,3 +4769,37 @@ async def test_td_leads_timeouts_persist_failed_summary_and_attempt_notification
     assert len(persisted_summaries) == 1
     assert persisted_summaries[0].overall_status() == "failed"
     assert notifications == [("td_crm_leads_sync", f"run-timeout-{stalled_phase}")]
+    if stalled_phase == "overall_gather":
+        assert any(event.get("message") == "cancellation_drain_timeout" and event.get("pending_task_count") == 1 for event in events)
+        await asyncio.sleep(0.1)
+
+
+@pytest.mark.asyncio
+async def test_td_leads_cancellation_drain_timeout_does_not_block_failed_summary_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[dict[str, object]] = []
+    failed_summary_path_reached = False
+    release = asyncio.Event()
+
+    async def _resists_cancellation() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    task = asyncio.create_task(_resists_cancellation())
+    await asyncio.sleep(0)
+    task.cancel()
+    monkeypatch.setattr(td_leads_main, "_timeout_seconds", lambda key, default: 0.01)
+    monkeypatch.setattr(td_leads_main, "log_event", lambda **kwargs: events.append(kwargs))
+
+    await td_leads_main._drain_cancelled_store_tasks(tasks=[task], logger=object(), run_id="run-resistant-cancel")
+    # This models the caller continuing into _persist_run_summary after drain expiry.
+    failed_summary_path_reached = True
+
+    assert failed_summary_path_reached is True
+    assert any(event.get("message") == "cancellation_drain_started" and event.get("pending_task_count") == 1 for event in events)
+    assert any(event.get("message") == "cancellation_drain_timeout" and event.get("pending_task_count") == 1 for event in events)
+    release.set()
+    await task

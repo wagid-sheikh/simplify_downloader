@@ -63,6 +63,7 @@ if [[ -n "${MAX_RUNTIME_SECONDS+x}" ]]; then
   TD_LEADS_MAX_RUNTIME_SECONDS="${MAX_RUNTIME_SECONDS}"
 fi
 TD_LEADS_STALE_OWNER_SECONDS="${TD_LEADS_STALE_OWNER_SECONDS:-300}"
+TD_LEADS_WRAPPER_NOTIFICATION_TIMEOUT_SECONDS="${TD_LEADS_WRAPPER_NOTIFICATION_TIMEOUT_SECONDS:-30}"
 STALE_OWNER_TERM_WAIT_SECONDS="${STALE_OWNER_TERM_WAIT_SECONDS:-5}"
 STALE_OWNER_KILL_WAIT_SECONDS="${STALE_OWNER_KILL_WAIT_SECONDS:-5}"
 CRON_HOME="${CRON_HOME:-${HOME:-/tmp}}"
@@ -73,6 +74,9 @@ if ! [[ "${TD_LEADS_MAX_RUNTIME_SECONDS}" =~ ^[0-9]+$ ]]; then
 fi
 if ! [[ "${TD_LEADS_STALE_OWNER_SECONDS}" =~ ^[0-9]+$ ]]; then
   TD_LEADS_STALE_OWNER_SECONDS=300
+fi
+if ! [[ "${TD_LEADS_WRAPPER_NOTIFICATION_TIMEOUT_SECONDS}" =~ ^[1-9][0-9]*$ ]]; then
+  TD_LEADS_WRAPPER_NOTIFICATION_TIMEOUT_SECONDS=30
 fi
 if ! [[ "${STALE_OWNER_TERM_WAIT_SECONDS}" =~ ^[0-9]+$ ]]; then
   STALE_OWNER_TERM_WAIT_SECONDS=5
@@ -102,13 +106,25 @@ notify_wrapper_event() {
   local owner_age_seconds="${4:-unknown}"
   local recovery_action="${5:-none}"
   local helper_module="${REPO_ROOT}/app/crm_downloader/td_leads_sync/wrapper_notifications.py"
+  local output_file="${LOCK_DIR}/td_leads_wrapper_notification_$$.$(date +%s).log"
+  local helper_pid
+  local helper_pgid
+  local helper_status=0
+  local helper_started_at
+  local duration
+  local now
   local output
 
   if [[ ! -f "${helper_module}" ]]; then
     log "[wrapper notification] status=${resulting_status} delivery=skipped helper_unavailable=${helper_module}"
     return 0
   fi
-  if output="$(poetry run python -m app.crm_downloader.td_leads_sync.wrapper_notifications \
+
+  # Alert persistence and SMTP are best-effort. Keep them in an isolated process
+  # group so neither a hung helper nor one of its descendants can retain this lock.
+  helper_started_at="$(date +%s)"
+  python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+    poetry run python -m app.crm_downloader.td_leads_sync.wrapper_notifications \
     --wrapper-timestamp "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --hostname "$(hostname)" \
     --local-lock-path "${RUN_LOCK_DIR}" \
@@ -116,11 +132,38 @@ notify_wrapper_event() {
     --owner-pgid "${owner_pgid}" \
     --owner-age-seconds "${owner_age_seconds}" \
     --recovery-action "${recovery_action}" \
-    --status "${resulting_status}" 2>&1)"; then
+    --status "${resulting_status}" > "${output_file}" 2>&1 &
+  helper_pid=$!
+  helper_pgid="${helper_pid}"
+
+  while pid_is_alive "${helper_pid}"; do
+    now="$(date +%s)"
+    duration=$((now - helper_started_at))
+    if [[ "${duration}" -ge "${TD_LEADS_WRAPPER_NOTIFICATION_TIMEOUT_SECONDS}" ]]; then
+      log "WARNING: [wrapper notification] status=${resulting_status} delivery=timeout timeout_seconds=${TD_LEADS_WRAPPER_NOTIFICATION_TIMEOUT_SECONDS} helper_pid=${helper_pid} helper_pgid=${helper_pgid}"
+      if terminate_child_process_group "${helper_pgid}" "${helper_pid}"; then
+        log "[wrapper notification] status=${resulting_status} timeout_process_group_verification=success helper_pgid=${helper_pgid}"
+      else
+        log "WARNING: [wrapper notification] status=${resulting_status} timeout_process_group_verification=failure helper_pgid=${helper_pgid}; continuing lock-safe cleanup"
+      fi
+      wait "${helper_pid}" 2>/dev/null || true
+      output="$(cat "${output_file}" 2>/dev/null || true)"
+      rm -f "${output_file}" 2>/dev/null || true
+      log "WARNING: [wrapper notification] status=${resulting_status} delivery=best_effort_abandoned result=${output}"
+      return 0
+    fi
+    sleep 1
+  done
+
+  wait "${helper_pid}" || helper_status=$?
+  output="$(cat "${output_file}" 2>/dev/null || true)"
+  rm -f "${output_file}" 2>/dev/null || true
+  if [[ "${helper_status}" -eq 0 ]]; then
     log "[wrapper notification] status=${resulting_status} delivery=success result=${output}"
   else
-    log "WARNING: [wrapper notification] status=${resulting_status} delivery=failure result=${output}"
+    log "WARNING: [wrapper notification] status=${resulting_status} delivery=failure helper_status=${helper_status} result=${output}"
   fi
+  return 0
 }
 
 log() {
@@ -366,12 +409,13 @@ acquire_local_lock() {
   fi
 
   log "[local lock] Confirmed stale-owner process group is gone; removing stale lock."
-  notify_wrapper_event "stale_owner_terminated" "${existing_pid}" "${existing_pgid}" "${lock_age_seconds}" "terminated_stale_owner_process_group"
   STALE_OWNER_RECOVERED=1
   RECOVERED_OWNER_PID="${existing_pid}"
   RECOVERED_OWNER_PGID="${existing_pgid}"
   RECOVERED_OWNER_AGE_SECONDS="${lock_age_seconds}"
   reacquire_after_stale_cleanup "${existing_pid}" "${existing_pgid}" "$@"
+  # Reacquire first: best-effort alert persistence/SMTP must not delay lock recovery.
+  notify_wrapper_event "stale_owner_terminated" "${existing_pid}" "${existing_pgid}" "${lock_age_seconds}" "terminated_stale_owner_process_group"
 }
 
 terminate_child_process_group() {
@@ -458,6 +502,7 @@ log "HOME=${HOME}"
 log "PATH=${PATH}"
 log "LANG=${LANG}"
 log "TD_LEADS_STALE_OWNER_SECONDS=${TD_LEADS_STALE_OWNER_SECONDS}"
+log "TD_LEADS_WRAPPER_NOTIFICATION_TIMEOUT_SECONDS=${TD_LEADS_WRAPPER_NOTIFICATION_TIMEOUT_SECONDS}"
 log "STALE_OWNER_TERM_WAIT_SECONDS=${STALE_OWNER_TERM_WAIT_SECONDS}"
 log "STALE_OWNER_KILL_WAIT_SECONDS=${STALE_OWNER_KILL_WAIT_SECONDS}"
 log "TD_LEADS_MAX_RUNTIME_SECONDS=${TD_LEADS_MAX_RUNTIME_SECONDS}"
@@ -548,8 +593,9 @@ else
   run_step "Script 1: td_leads_sync" "./scripts/run_local_td_leads_sync.sh"
 fi
 
-# A healthy completion closes any unresolved same-lock incident. The helper
-# suppresses this event when no alert edge is open, so ordinary runs do not email.
+# A healthy completion probes for an unresolved same-lock incident because the
+# helper owns DB-backed incident state. The bounded helper suppresses this event
+# when no alert edge is open, so ordinary runs do not email or risk lock retention.
 if [[ "${STALE_OWNER_RECOVERED}" -eq 1 ]]; then
   notify_wrapper_event "fresh_run_succeeded_after_stale_owner_terminated" "${RECOVERED_OWNER_PID}" "${RECOVERED_OWNER_PGID}" "${RECOVERED_OWNER_AGE_SECONDS}" "fresh_td_leads_run_completed_successfully"
 else

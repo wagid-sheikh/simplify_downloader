@@ -62,6 +62,7 @@ DEFAULT_TD_LEADS_BROWSER_OPERATION_TIMEOUT_SECONDS = 90
 DEFAULT_TD_LEADS_BROWSER_CLEANUP_TIMEOUT_SECONDS = 10
 DEFAULT_TD_LEADS_STORE_WORKER_TIMEOUT_SECONDS = 240
 DEFAULT_TD_LEADS_GATHER_TIMEOUT_SECONDS = 270
+DEFAULT_TD_LEADS_CANCELLATION_DRAIN_TIMEOUT_SECONDS = 10
 
 ENV_ONLY_KEYS = [
     "SECRET_KEY",
@@ -398,6 +399,7 @@ class Config:
     td_leads_browser_cleanup_timeout_seconds: int
     td_leads_store_worker_timeout_seconds: int
     td_leads_gather_timeout_seconds: int
+    td_leads_cancellation_drain_timeout_seconds: int
 
     @classmethod
     def load_from_env_and_db(cls) -> Config:
@@ -489,6 +491,7 @@ class Config:
         td_leads_browser_cleanup_timeout_seconds = _parse_positive_int(db_values.get("TD_LEADS_BROWSER_CLEANUP_TIMEOUT_SECONDS", str(DEFAULT_TD_LEADS_BROWSER_CLEANUP_TIMEOUT_SECONDS)), key="TD_LEADS_BROWSER_CLEANUP_TIMEOUT_SECONDS")
         td_leads_store_worker_timeout_seconds = _parse_positive_int(db_values.get("TD_LEADS_STORE_WORKER_TIMEOUT_SECONDS", str(DEFAULT_TD_LEADS_STORE_WORKER_TIMEOUT_SECONDS)), key="TD_LEADS_STORE_WORKER_TIMEOUT_SECONDS")
         td_leads_gather_timeout_seconds = _parse_positive_int(db_values.get("TD_LEADS_GATHER_TIMEOUT_SECONDS", str(DEFAULT_TD_LEADS_GATHER_TIMEOUT_SECONDS)), key="TD_LEADS_GATHER_TIMEOUT_SECONDS")
+        td_leads_cancellation_drain_timeout_seconds = _parse_positive_int(db_values.get("TD_LEADS_CANCELLATION_DRAIN_TIMEOUT_SECONDS", str(DEFAULT_TD_LEADS_CANCELLATION_DRAIN_TIMEOUT_SECONDS)), key="TD_LEADS_CANCELLATION_DRAIN_TIMEOUT_SECONDS")
 
         td_store_dashboard_path = _clean_text(
             db_values["TD_STORE_DASHBOARD_PATH"], key="TD_STORE_DASHBOARD_PATH"
@@ -572,6 +575,7 @@ class Config:
             td_leads_browser_cleanup_timeout_seconds=td_leads_browser_cleanup_timeout_seconds,
             td_leads_store_worker_timeout_seconds=td_leads_store_worker_timeout_seconds,
             td_leads_gather_timeout_seconds=td_leads_gather_timeout_seconds,
+            td_leads_cancellation_drain_timeout_seconds=td_leads_cancellation_drain_timeout_seconds,
         )
 
 
