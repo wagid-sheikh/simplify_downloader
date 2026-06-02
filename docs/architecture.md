@@ -190,7 +190,8 @@ The retired
 rollout, `scripts/inspect_or_kill_pipeline_stale.sh` provides an explicit one-time
 cleanup path for an obsolete global-lock directory and removes it only after its
 recorded process group is gone or has been safely terminated. The legacy
-`scripts/kill_orders_and_reports_stale.sh` entrypoint forwards to
+`scripts/kill_orders_and_reports_stale.sh` entrypoint is an orders/reports-only
+shortcut that prints explicit helper guidance before forwarding to
 `orders-reports` during rollout. The orders/reports
 wrapper launches every pipeline step in a dedicated child process group and
 enforces step-specific watchdog limits, so a stalled orders browser cleanup
@@ -232,8 +233,11 @@ unrelated ownership, verifies PID-to-PGID membership, prints snapshots before
 and after inspection, and removes a lock directory only after its process group
 is gone. It also handles the retired `tmp/cron_heavy_pipelines.lock` as an
 explicit rollout-cleanup case. The legacy
-`scripts/kill_orders_and_reports_stale.sh` command remains a forwarding wrapper
-for `orders-reports` during rollout.
+`scripts/kill_orders_and_reports_stale.sh` command remains an orders/reports-only
+forwarding shortcut during rollout. It prints the explicit helper commands for both
+`td-leads` and `orders-reports` before forwarding to `orders-reports`; it does not
+infer a pipeline from environment variables. Operators should prefer the explicit
+helper commands above.
 
 For order-sync profiler, the run additionally:
 - computes date windows per store,
