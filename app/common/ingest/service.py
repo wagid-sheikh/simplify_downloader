@@ -232,7 +232,7 @@ def _load_csv_rows(
                     f"{suppressed_failures} additional rows failed coercion; further failures suppressed"
                 ),
             )
-        if logger and total_rows > 0 and coerced_rows == 0:
+        if logger and failed_rows > 0 and coerced_rows == 0:
             log_event(
                 logger=logger,
                 phase="ingest",
@@ -461,7 +461,18 @@ async def ingest_bucket(
         except OSError:
             file_size = 0
 
-    if file_size > 0 and totals["rows"] == 0:
+    repeat_customer_identity_exclusions = {
+        key: count
+        for key, count in skipped_required_rows.items()
+        if key[0] == "repeat_customers" and key[1] == "mobile_no"
+    }
+    warning_required_rows = {
+        key: count
+        for key, count in skipped_required_rows.items()
+        if key not in repeat_customer_identity_exclusions
+    }
+
+    if file_size > 0 and totals["rows"] == 0 and not repeat_customer_identity_exclusions:
         log_event(
             logger=logger,
             phase="ingest",
@@ -479,12 +490,12 @@ async def ingest_bucket(
         message="ingestion complete",
     )
 
-    if skipped_required_rows:
+    if warning_required_rows:
         entries = []
         details = []
         total_skipped_required = 0
         for (bucket_name, column, store_code, report_date), count in sorted(
-            skipped_required_rows.items()
+            warning_required_rows.items()
         ):
             total_skipped_required += count
             entries.append(f"{bucket_name}/{column}/{store_code}-{report_date}-{count}")
@@ -519,6 +530,29 @@ async def ingest_bucket(
         )
         totals["skipped_required_rows"] = total_skipped_required
         totals["skipped_required_row_details"] = details
+    if repeat_customer_identity_exclusions:
+        counts_by_store: Dict[str, int] = defaultdict(int)
+        for (_, _, store_code, _), count in repeat_customer_identity_exclusions.items():
+            counts_by_store[store_code] += count
+        details = [
+            {"store_code": store_code, "count": count}
+            for store_code, count in sorted(counts_by_store.items())
+        ]
+        total_excluded = sum(counts_by_store.values())
+        log_event(
+            logger=logger,
+            phase="ingest",
+            bucket=bucket,
+            merged_file=str(csv_path),
+            status="info",
+            message="repeat-customer rows excluded by identity validation",
+            skipped_repeat_customer_identity_rows={
+                "total": total_excluded,
+                "details": details,
+            },
+        )
+        totals["skipped_repeat_customer_identity_rows"] = total_excluded
+        totals["skipped_repeat_customer_identity_row_details"] = details
     if store_counts is not None:
         totals["store_rows"] = dict(store_counts)
     return totals

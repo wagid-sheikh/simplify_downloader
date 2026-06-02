@@ -8,6 +8,15 @@
 
 ---
 
+### DL-027
+- **Date:** 2026-06-02
+- **Status:** Active
+- **Decision:** Silently exclude `repeat_customers` rows with missing, blank, malformed, or invalid normalized `mobile_no` values until corrected at source. These exclusions are intentionally not operator-alert conditions.
+- **Context:** `mobile_no` remains required for repeat-customer identity, but recurring source-data exclusions do not require warning-level telemetry or dashboard email correction instructions.
+- **Evidence:** `app/common/ingest/schemas.py`, `app/common/ingest/service.py`, `app/dashboard_downloader/notifications.py`, and `tests/dashboard_downloader/*`.
+- **Implications:** Excluded rows are not persisted or reported. If informational telemetry is retained, it contains aggregate counts and store codes only, never customer-sensitive row values, and it does not mark the overall dashboard run as warning.
+- **Follow-up:** Preserve silent exclusion semantics unless operators explicitly adopt a new alerting policy.
+
 ### DL-026
 - **Date:** 2026-06-02
 - **Status:** Active
@@ -51,12 +60,12 @@
 
 ### DL-021
 - **Date:** 2026-05-30
-- **Status:** Active
+- **Status:** Superseded by DL-027
 - **Decision:** Keep skipping `repeat_customers` rows missing required `mobile_no`, exclude them from repeat-customer reporting until corrected, and notify operators using store-level skipped-row counts only.
 - **Context:** A missing mobile number breaks the repeat-customer ingest identity, but notification emails must remain actionable without leaking customer-sensitive row data.
 - **Evidence:** `app/dashboard_downloader/config.py`, `app/common/ingest/service.py`, `app/dashboard_downloader/notifications.py`, and `tests/dashboard_downloader/test_notifications.py`.
-- **Implications:** Dashboard data-quality notifications list affected store codes and row counts, instruct operators to correct missing mobile numbers in the source dashboard, and require a dashboard pipeline rerun before corrected rows enter repeat-customer reporting.
-- **Follow-up:** Preserve the safe store-count-only notification boundary if future dashboard data-quality warnings add row-level diagnostics.
+- **Implications:** Historical only. DL-027 removes this operator-notification behavior while retaining silent exclusion from repeat-customer reporting.
+- **Follow-up:** See DL-027.
 
 ### DL-020
 - **Date:** 2026-05-20

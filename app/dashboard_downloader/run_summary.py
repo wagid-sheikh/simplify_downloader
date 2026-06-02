@@ -219,6 +219,24 @@ class RunAggregator:
                     for item in details
                     if isinstance(item, Mapping)
                 )
+            if isinstance(details, list) and details:
+                # Repeat-customer identity exclusions are informational only. Keep
+                # them out of warning thresholds even if an older caller emits the
+                # legacy generic skipped-required payload.
+                details = [
+                    item
+                    for item in details
+                    if not (
+                        isinstance(item, Mapping)
+                        and item.get("bucket") == "repeat_customers"
+                        and item.get("column") == "mobile_no"
+                    )
+                ]
+                total = sum(
+                    int(item.get("count") or 0)
+                    for item in details
+                    if isinstance(item, Mapping)
+                )
             self._record_data_quality_warning(
                 SKIPPED_REQUIRED_ROWS,
                 count=total,

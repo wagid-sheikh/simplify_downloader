@@ -176,3 +176,99 @@ async def test_ingest_bucket_logs_missing_mobile_summary(monkeypatch, tmp_path: 
             }
         ],
     }
+
+
+def test_load_repeat_customer_rows_silently_skips_blank_and_invalid_mobile_values(tmp_path: Path):
+    csv_path = tmp_path / "repeat_customers.csv"
+    csv_path.write_text(
+        """Store Code,Mobile No.,Customer Name
+A001,,Blank Customer
+A001,12345,Invalid Customer
+A001,+91 98765-43210,Valid Customer
+""",
+        encoding="utf-8",
+    )
+    skip_counters: defaultdict[tuple[str, str, str, str], int] = defaultdict(int)
+
+    rows = list(
+        service._load_csv_rows(
+            "repeat_customers",
+            csv_path,
+            logger=None,
+            row_context={"run_id": "test-run", "run_date": date(2024, 1, 1)},
+            skip_counters=skip_counters,
+        )
+    )
+
+    assert [row["mobile_no"] for row in rows] == ["9876543210"]
+    assert dict(skip_counters) == {
+        ("repeat_customers", "mobile_no", "A001", "2024-01-01"): 2
+    }
+
+
+@pytest.mark.asyncio
+async def test_ingest_repeat_customer_identity_exclusions_are_info_only(monkeypatch, tmp_path: Path):
+    csv_path = tmp_path / "repeat_customers.csv"
+    csv_path.write_text(
+        """Store Code,Mobile No.,Customer Name
+A001,,Sensitive Blank Customer
+A001,not-a-phone,Sensitive Invalid Customer
+A001,09876543210,Valid Customer
+""",
+        encoding="utf-8",
+    )
+
+    @asynccontextmanager
+    async def fake_session_scope(_database_url):
+        class _DummySession:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def begin(self):
+                return self
+
+        yield _DummySession()
+
+    ingested_batches: list[list[dict]] = []
+
+    async def fake_upsert_batch(_session, _bucket, rows, **_kwargs):
+        ingested_batches.append(rows)
+        return {"affected_rows": len(rows), "deduped_rows": len(rows)}
+
+    events: list[dict] = []
+
+    def fake_log_event(**kwargs):
+        events.append(kwargs)
+
+    monkeypatch.setattr(service, "session_scope", fake_session_scope)
+    monkeypatch.setattr(service, "_upsert_batch", fake_upsert_batch)
+    monkeypatch.setattr(service, "log_event", fake_log_event)
+
+    totals = await service.ingest_bucket(
+        bucket="repeat_customers",
+        csv_path=csv_path,
+        batch_size=10,
+        database_url="sqlite+aiosqlite://",
+        logger=JsonLogger(log_file_path=None),
+        run_id="test-run",
+        run_date=date(2024, 1, 1),
+    )
+
+    assert totals["rows"] == 1
+    assert totals["skipped_repeat_customer_identity_rows"] == 2
+    assert "skipped_required_rows" not in totals
+    assert [row["mobile_no"] for row in ingested_batches[0]] == ["9876543210"]
+    assert not [event for event in events if event.get("status") == "warning"]
+    telemetry = next(
+        event for event in events if "skipped_repeat_customer_identity_rows" in event
+    )
+    assert telemetry["status"] == "info"
+    assert telemetry["skipped_repeat_customer_identity_rows"] == {
+        "total": 2,
+        "details": [{"store_code": "A001", "count": 2}],
+    }
+    assert "Sensitive" not in str(events)
+    assert "not-a-phone" not in str(events)
