@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from functools import lru_cache
 from typing import Any, Dict, Iterable, Optional
@@ -146,6 +147,21 @@ def _header_lookup(header_map: Dict[str, str], key: str) -> str | None:
     return None
 
 
+def _normalize_mobile_number(value: Any) -> str | None:
+    """Normalize supported Indian mobile formats, returning ``None`` when invalid."""
+
+    raw = "" if value is None else str(value).strip()
+    if not raw:
+        return None
+    sanitized = re.sub(r"[oO]", "0", raw)
+    digits = re.sub(r"\D", "", sanitized)
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[-10:]
+    if len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
+    return digits if len(digits) == 10 else None
+
+
 class SkipRow(ValueError):
     def __init__(
         self,
@@ -203,6 +219,19 @@ def coerce_csv_row(
             report_date=data.get("run_date"),
             missing_columns=["mobile_number"],
         )
+
+    if bucket == "repeat_customers":
+        # mobile_no is the repeat-customer identity key. Silently exclude rows
+        # whose normalized value cannot safely participate in deduplication.
+        normalized_mobile = _normalize_mobile_number(data.get("mobile_no"))
+        if normalized_mobile is None:
+            raise SkipRow(
+                "repeat-customer identity excluded",
+                store_code=data.get("store_code"),
+                report_date=data.get("run_date"),
+                missing_columns=["mobile_no"],
+            )
+        data["mobile_no"] = normalized_mobile
 
     missing = [column for column in required_columns if data.get(column) is None]
     if missing:

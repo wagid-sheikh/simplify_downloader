@@ -65,11 +65,10 @@ Main runtime entrypoint is `python -m app` (`app/__main__.py`) which delegates t
   - persist run summary,
   - trigger notifications.
 
-#### Repeat-customer missing-mobile data-quality handling
-- `repeat_customers.mobile_no` is required for ingest identity. Rows missing `mobile_no` remain skipped rather than being persisted with an invalid dedupe key.
+#### Repeat-customer mobile identity handling
+- `repeat_customers.mobile_no` is required for ingest identity. Rows with missing, blank, malformed, or invalid normalized `mobile_no` values remain silently skipped rather than being persisted with an invalid dedupe key.
 - Skipped rows are excluded from repeat-customer reporting until corrected at the source and reingested.
-- Dashboard data-quality notifications expose only affected store codes and skipped-row counts; they must not include customer-sensitive row payloads or mobile numbers.
-- **Operator action:** correct the missing mobile numbers in the source dashboard, then rerun the dashboard pipeline so corrected rows can enter repeat-customer reporting.
+- These exclusions are intentionally not dashboard warning-threshold or operator-notification conditions. If aggregate informational telemetry is retained, it contains only counts and store codes; it must not include customer-sensitive row payloads or mobile values.
 
 ### 4) CRM order-sync pipelines
 - UC sync: `app/crm_downloader/uc_orders_sync/main.py`.

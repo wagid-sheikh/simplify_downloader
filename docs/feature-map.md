@@ -31,7 +31,7 @@ Practical map of where to work for major capabilities.
   - `app/common/ingest/{schemas.py,models.py,service.py}`
   - `app/common/{audit.py,cleanup.py}`
 - **Related tests:** `tests/dashboard_downloader/*`, `tests/crm_downloader/*` (shared contracts).
-- **Notes/Risks:** Dedupe and coercion behavior impacts data quality and audit counts. `repeat_customers` rows missing required `mobile_no` values are skipped and excluded from repeat-customer reporting until source correction. Dashboard data-quality notifications list affected store codes and skipped-row counts only; operators must correct mobile numbers in the source dashboard and rerun the pipeline.
+- **Notes/Risks:** Dedupe and coercion behavior impacts data quality and audit counts. `repeat_customers` rows with missing, blank, malformed, or invalid normalized `mobile_no` values are silently skipped and excluded from repeat-customer reporting until source correction. These exclusions do not raise dashboard warnings or operator-facing notification text; any retained informational telemetry is aggregate-only and must not expose customer-sensitive values.
 
 ## 4) Store dashboard summary persistence
 
