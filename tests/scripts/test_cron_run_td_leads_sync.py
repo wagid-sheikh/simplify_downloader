@@ -297,7 +297,7 @@ def test_td_leads_stale_unrelated_live_process_is_refused(tmp_path: Path) -> Non
         assert lock_dir.is_dir()
         assert "command does not belong to expected repository wrapper" in _latest_log_text(repo_root)
     finally:
-        os.killpg(owner.pid, signal.SIGKILL)
+        os.killpg(owner.pid, signal.SIGTERM)
         owner.wait()
 
 
@@ -319,7 +319,7 @@ def test_td_leads_stale_pid_pgid_mismatch_is_refused(tmp_path: Path) -> None:
         assert lock_dir.is_dir()
         assert "PID/PGID mismatch" in _latest_log_text(repo_root)
     finally:
-        os.killpg(owner.pid, signal.SIGKILL)
+        os.killpg(owner.pid, signal.SIGTERM)
         owner.wait()
 
 
@@ -340,7 +340,7 @@ def test_td_leads_stale_owner_group_is_terminated_and_lock_reacquired(tmp_path: 
         assert "Confirmed stale-owner process group is gone" in _latest_log_text(repo_root)
     finally:
         if owner.poll() is None:
-            os.killpg(owner.pid, signal.SIGKILL)
+            os.killpg(owner.pid, signal.SIGTERM)
             owner.wait()
 
 
@@ -359,7 +359,7 @@ def test_rapid_td_leads_invocations_do_not_run_concurrently(tmp_path: Path) -> N
         assert lock_dir.is_dir()
         assert "status=skipped_due_to_active_same_pipeline_owner" in _latest_log_text(repo_root)
     finally:
-        os.killpg(owner.pid, signal.SIGKILL)
+        os.killpg(owner.pid, signal.SIGTERM)
         owner.wait()
 
 
@@ -408,3 +408,35 @@ def test_td_leads_wrapper_logs_operational_notification_delivery_success(tmp_pat
     log_text = _latest_log_text(repo_root)
     assert "[wrapper notification] status=watchdog_timeout delivery=success" in log_text
     assert '{"emails_sent": 1}' in log_text
+
+
+def test_td_leads_stale_recovery_refuses_inherited_process_group(tmp_path: Path) -> None:
+    repo_root, scripts_dir = _prepare_repo(tmp_path)
+    lock_dir = repo_root / "tmp" / "cron_run_td_leads_sync.lock"
+    expected_wrapper = scripts_dir / "cron_run_td_leads_sync.sh"
+    owner = subprocess.Popen(
+        ["bash", "-c", "while :; do sleep 1; done", str(expected_wrapper)]
+    )
+    try:
+        inherited_pgid = os.getpgid(owner.pid)
+        assert inherited_pgid != owner.pid
+        _write_lock_metadata(
+            lock_dir,
+            pid=owner.pid,
+            pgid=inherited_pgid,
+            started_epoch=int(time.time()) - 10,
+            command=str(expected_wrapper),
+        )
+        _write_executable(scripts_dir / "run_local_td_leads_sync.sh", "#!/usr/bin/env bash\nexit 0\n")
+        env = os.environ.copy()
+        env.update({"TD_LEADS_STALE_OWNER_SECONDS": "0", "TMPDIR": str(repo_root)})
+
+        result = subprocess.run([str(expected_wrapper)], cwd=repo_root, env=env, check=False)
+
+        assert result.returncode == 1
+        assert owner.poll() is None
+        assert lock_dir.is_dir()
+        assert "is not an isolated wrapper-owned process group" in _latest_log_text(repo_root)
+    finally:
+        owner.terminate()
+        owner.wait(timeout=5)

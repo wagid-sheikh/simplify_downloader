@@ -1263,6 +1263,12 @@ def test_cron_terminates_timed_out_orders_group_releases_lock_and_runs_reports(
     log_text = log_files[-1].read_text(encoding="utf-8")
     assert "exceeded runtime_limit_seconds=1" in log_text
     assert "failure_class=step_runtime_timeout" in log_text
+    assert "child_pid=" in log_text
+    assert "child_pgid=" in log_text
+    assert "timeout_duration_seconds=" in log_text
+    assert "term_outcome=" in log_text
+    assert "kill_outcome=" in log_text
+    assert "final_process_group_verification=group_disappeared" in log_text
     assert "Script 1: orders_sync_run_profiler failed after 1 attempts" in log_text
     assert "orders_sync_run_profiler_rc=124" in log_text
     assert "Script 2: daily_sales_report: attempt 1/1 succeeded" in log_text
@@ -1416,7 +1422,7 @@ def test_orders_reports_stale_unrelated_live_process_is_refused(tmp_path: Path) 
         assert lock_dir.is_dir()
         assert "command does not belong to expected repository wrapper" in _latest_orders_log_text(repo_root)
     finally:
-        os.killpg(owner.pid, signal.SIGKILL)
+        os.killpg(owner.pid, signal.SIGTERM)
         owner.wait()
 
 
@@ -1437,7 +1443,7 @@ def test_orders_reports_stale_pid_pgid_mismatch_is_refused(tmp_path: Path) -> No
         assert lock_dir.is_dir()
         assert "PID/PGID mismatch" in _latest_orders_log_text(repo_root)
     finally:
-        os.killpg(owner.pid, signal.SIGKILL)
+        os.killpg(owner.pid, signal.SIGTERM)
         owner.wait()
 
 
@@ -1458,7 +1464,7 @@ def test_orders_reports_stale_owner_group_is_terminated_and_lock_reacquired(tmp_
         assert "Confirmed stale-owner process group is gone" in _latest_orders_log_text(repo_root)
     finally:
         if owner.poll() is None:
-            os.killpg(owner.pid, signal.SIGKILL)
+            os.killpg(owner.pid, signal.SIGTERM)
             owner.wait()
 
 
@@ -1477,5 +1483,121 @@ def test_rapid_orders_reports_invocations_do_not_run_concurrently(tmp_path: Path
         assert lock_dir.is_dir()
         assert "status=skipped_due_to_active_same_pipeline_owner" in _latest_orders_log_text(repo_root)
     finally:
-        os.killpg(owner.pid, signal.SIGKILL)
+        os.killpg(owner.pid, signal.SIGTERM)
         owner.wait()
+
+
+def test_timed_out_orders_step_with_surviving_descendant_preserves_lock_and_stops_wrapper(
+    tmp_path: Path,
+) -> None:
+    repo_root, scripts_dir = _prepare_minimal_orders_cron(tmp_path)
+    lock_dir = repo_root / "tmp" / "cron_run_orders_and_reports.lock"
+    wrapper_path = scripts_dir / "cron_run_orders_and_reports.sh"
+    source = wrapper_path.read_text(encoding="utf-8")
+    source = source.replace(
+        "# ============================================================================\n# cron_run_orders_and_reports.sh",
+        "# Test-only signal shim: leave the isolated child group alive after TERM/KILL.\n"
+        "kill() { return 0; }\n\n"
+        "# ============================================================================\n# cron_run_orders_and_reports.sh",
+        1,
+    )
+    _write_executable(wrapper_path, source)
+    descendant_pid_file = tmp_path / "orders-descendant.pid"
+    _write_executable(
+        scripts_dir / "orders_sync_run_profiler.sh",
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$$\" > \"${TMPDIR:-/tmp}/orders-descendant.pid\"\n"
+        "exec sleep 30\n",
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "1",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "ORDERS_STEP_TIMEOUT_SECONDS": "1",
+            "KILL_WAIT_SECONDS": "1",
+            "TMPDIR": str(tmp_path),
+        }
+    )
+
+    try:
+        result = subprocess.run(
+            [str(wrapper_path)], cwd=repo_root, env=env, check=False, timeout=10
+        )
+        descendant_pid = int(descendant_pid_file.read_text(encoding="utf-8"))
+
+        assert result.returncode == 125
+        assert lock_dir.is_dir()
+        assert not (tmp_path / "daily-ran.log").exists()
+        log_text = _latest_orders_log_text(repo_root)
+        assert "final_process_group_verification=non_zombie_members_survived" in log_text
+        assert "preserving local lock for explicit recovery and stopping wrapper safely" in log_text
+    finally:
+        if descendant_pid_file.exists():
+            descendant_pid = int(descendant_pid_file.read_text(encoding="utf-8"))
+            try:
+                os.killpg(descendant_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_orders_reports_valid_long_running_owner_inside_runtime_envelope_is_not_killed(
+    tmp_path: Path,
+) -> None:
+    repo_root, scripts_dir = _prepare_minimal_orders_cron(tmp_path)
+    lock_dir = repo_root / "tmp" / "cron_run_orders_and_reports.lock"
+    _write_executable(scripts_dir / "orders_sync_run_profiler.sh", "#!/usr/bin/env bash\nexec sleep 30\n")
+    env = os.environ.copy()
+    env.update({"ORDERS_MAX_ATTEMPTS": "1", "TMPDIR": str(repo_root)})
+    owner = subprocess.Popen([str(scripts_dir / "cron_run_orders_and_reports.sh")], cwd=repo_root, env=env)
+    try:
+        _wait_for_orders_path(lock_dir / "started_at_epoch")
+        (lock_dir / "started_at_epoch").write_text(f"{int(time.time()) - 10800}\n", encoding="utf-8")
+
+        result = subprocess.run([str(scripts_dir / "cron_run_orders_and_reports.sh")], cwd=repo_root, env=env, check=False)
+
+        assert result.returncode == 0
+        assert owner.poll() is None
+        assert lock_dir.is_dir()
+        log_text = _latest_orders_log_text(repo_root)
+        assert "status=skipped_due_to_active_same_pipeline_owner" in log_text
+        assert "stale_owner_seconds=43200" in log_text
+    finally:
+        if owner.poll() is None:
+            os.killpg(owner.pid, signal.SIGTERM)
+            owner.wait()
+
+
+def test_orders_reports_stale_recovery_refuses_inherited_process_group(
+    tmp_path: Path,
+) -> None:
+    repo_root, scripts_dir = _prepare_minimal_orders_cron(tmp_path)
+    lock_dir = repo_root / "tmp" / "cron_run_orders_and_reports.lock"
+    expected_wrapper = scripts_dir / "cron_run_orders_and_reports.sh"
+    owner = subprocess.Popen(
+        ["bash", "-c", "while :; do sleep 1; done", str(expected_wrapper)]
+    )
+    try:
+        inherited_pgid = os.getpgid(owner.pid)
+        assert inherited_pgid != owner.pid
+        _write_orders_lock_metadata(
+            lock_dir,
+            pid=owner.pid,
+            pgid=inherited_pgid,
+            started_epoch=int(time.time()) - 10,
+            command=str(expected_wrapper),
+        )
+        env = os.environ.copy()
+        env.update({"ORDERS_REPORTS_STALE_OWNER_SECONDS": "0", "TMPDIR": str(repo_root)})
+
+        result = subprocess.run([str(expected_wrapper)], cwd=repo_root, env=env, check=False)
+
+        assert result.returncode == 1
+        assert owner.poll() is None
+        assert lock_dir.is_dir()
+        assert "is not an isolated wrapper-owned process group" in _latest_orders_log_text(repo_root)
+    finally:
+        owner.terminate()
+        owner.wait(timeout=5)

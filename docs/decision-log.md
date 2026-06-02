@@ -16,6 +16,14 @@
 - **Evidence:** `app/crm_downloader/td_leads_sync/wrapper_notifications.py`, `scripts/cron_run_td_leads_sync.sh`, `alembic/versions/0121_td_leads_wrapper_ops.py`, and `tests/crm_downloader/test_td_leads_wrapper_notifications.py`.
 - **Implications:** Every operational edge is persisted in `pipeline_run_summaries`; the first same-owner suppression is emailed, repeated suppressions are retained as telemetry without cron-interval email spam, and a successful fresh run after stale-owner termination emits a recovery email. Payloads remain operational-only and redact credential-like, email, and phone-number text.
 
+### DL-025
+- **Date:** 2026-06-02
+- **Status:** Active
+- **Decision:** Relaunch both cron wrapper shells into dedicated sessions before lock acquisition, reject stale-owner group termination unless the recorded owner PID equals its PGID, shut down each wrapper's tracked active child group when stale-owner signaling reaches the wrapper, strengthen orders/reports timeout verification to cover every non-zombie child-group member, and raise the default orders/reports stale-owner threshold to `43200` seconds.
+- **Context:** An inherited wrapper PGID can include an unrelated parent or sibling, so validating only that a live wrapper PID belongs to the recorded PGID is insufficient authorization for group signaling. The previous `7200`-second orders/reports stale threshold was also shorter than the default watchdog-and-retry envelope of approximately 8 hours 4 minutes.
+- **Evidence:** `scripts/cron_run_orders_and_reports.sh`, `scripts/cron_run_td_leads_sync.sh`, `scripts/cron.env`, `scripts/cron.env.example`, `docs/architecture.md`, `tests/scripts/test_cron_run_orders_and_reports.py`, and `tests/scripts/test_cron_run_td_leads_sync.py`.
+- **Implications:** Timeout cleanup preserves the orders/reports lock for explicit recovery if any non-zombie child-group member survives `KILL`. Operators who increase retries, delays, or watchdog limits must raise `ORDERS_REPORTS_STALE_OWNER_SECONDS` above the resulting permitted runtime envelope.
+
 ### DL-024
 - **Date:** 2026-06-01
 - **Status:** Active
@@ -38,7 +46,7 @@
 - **Decision:** Bound orders-profiler loop shutdown and run each orders/reports cron step in its own watchdog-controlled child process group.
 - **Context:** A cancellation-resistant Playwright/browser cleanup could otherwise prevent a fatal profiler exception from returning non-zero, retain cron locks indefinitely, and block required reports.
 - **Evidence:** `app/crm_downloader/orders_sync_run_profiler/main.py`, `scripts/cron_run_orders_and_reports.sh`, `scripts/cron.env.example`, `tests/crm_downloader/test_orders_sync_run_profiler_rollup.py`, and `tests/scripts/test_cron_run_orders_and_reports.py`.
-- **Implications:** Profiler shutdown logs pending-task diagnostics and bounds task, async-generator, and executor cleanup waits. Cron step timeouts terminate the child process group, classify timeout exit code `124` as retryable until configured attempts are exhausted, release locks, and continue downstream report attempts.
+- **Implications:** Profiler shutdown logs pending-task diagnostics and bounds task, async-generator, and executor cleanup waits. Cron step timeouts terminate and verify the child process group, classify timeout exit code `124` as retryable until configured attempts are exhausted, release locks, and continue downstream report attempts. If complete child-group disappearance cannot be verified, the wrapper instead stops and preserves its lock for explicit recovery.
 - **Follow-up:** Tune watchdog defaults using production duration telemetry rather than disabling the watchdogs.
 
 ### DL-021

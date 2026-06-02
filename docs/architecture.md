@@ -172,8 +172,14 @@ scraped rows.
 
 The thresholds are intentionally pipeline-specific:
 `TD_LEADS_STALE_OWNER_SECONDS=300` supports the TD-leads 10–20 minute service
-objective conservatively, while `ORDERS_REPORTS_STALE_OWNER_SECONDS=7200`
-remains separately reviewed because orders/report workloads and retries differ.
+objective conservatively. The orders/reports default is
+`ORDERS_REPORTS_STALE_OWNER_SECONDS=43200` (12 hours): this exceeds the default
+worst-case watchdog-and-retry envelope of approximately 8 hours 4 minutes
+(three 90-minute orders attempts, three 30-minute daily attempts, three
+30-minute pending-deliveries attempts, one 30-minute daily rescue attempt,
+configured retry sleeps, and watchdog termination grace). Operators who raise
+attempt counts, retry sleeps, or step watchdogs must raise the stale-owner
+threshold above the resulting envelope at the same time.
 `STALE_OWNER_TERM_WAIT_SECONDS` and `STALE_OWNER_KILL_WAIT_SECONDS` bound stale-owner
 process-group shutdown. The TD-leads run-step watchdog defaults explicitly to
 `TD_LEADS_MAX_RUNTIME_SECONDS=300`; a deprecated per-invocation
@@ -185,10 +191,13 @@ cleanup path for an obsolete global-lock directory and removes it only after its
 recorded process group is gone or has been safely terminated. The legacy
 `scripts/kill_orders_and_reports_stale.sh` entrypoint forwards to
 `orders-reports` during rollout. The orders/reports
-wrapper launches every pipeline step in a dedicated child process group and
-enforces step-specific watchdog limits, so a stalled orders browser cleanup
-cannot hold its local lock or block required report generation indefinitely. The
-TD-leads wrapper uses the same dedicated-session pattern for its local sync step:
+wrapper relaunches itself into a dedicated wrapper-owned session before recording
+lock metadata, launches every pipeline step in a dedicated child process group, and
+enforces step-specific watchdog limits. Its signal trap also verifies shutdown of
+the active child group before a stale wrapper exits, so a stalled orders browser
+cleanup cannot outlive stale-owner recovery, hold its local lock, or block required
+report generation indefinitely. The
+TD-leads wrapper also isolates its wrapper shell and uses the same dedicated-session pattern for its local sync step:
 on timeout it sends group `TERM`, waits a bounded grace period, escalates group
 `KILL` while any non-zombie member survives, verifies that the group disappeared,
 and only then allows its cleanup trap to remove the local lock.

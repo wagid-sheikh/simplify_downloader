@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Stale-owner recovery signals a process group, so the wrapper must never inherit
+# a parent or sibling process group. Relaunch once in a dedicated session before
+# acquiring a lock; the wrapper PID then owns its isolated PGID.
+if [[ "${CRON_WRAPPER_SESSION_ISOLATED:-0}" != "1" ]]; then
+  export CRON_WRAPPER_SESSION_ISOLATED=1
+  exec python3 -c 'import os, sys; os.getpgrp() == os.getpid() or os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' "$0" "$@"
+fi
+
 # ============================================================================
 # cron_run_orders_and_reports.sh
 #
@@ -63,7 +71,7 @@ LOCK_CMD_FILE="${RUN_LOCK_DIR}/command"
 LOCK_PGID_FILE="${RUN_LOCK_DIR}/pgid"
 
 KILL_WAIT_SECONDS="${KILL_WAIT_SECONDS:-5}"
-ORDERS_REPORTS_STALE_OWNER_SECONDS="${ORDERS_REPORTS_STALE_OWNER_SECONDS:-7200}"
+ORDERS_REPORTS_STALE_OWNER_SECONDS="${ORDERS_REPORTS_STALE_OWNER_SECONDS:-43200}"
 STALE_OWNER_TERM_WAIT_SECONDS="${STALE_OWNER_TERM_WAIT_SECONDS:-5}"
 STALE_OWNER_KILL_WAIT_SECONDS="${STALE_OWNER_KILL_WAIT_SECONDS:-5}"
 CRON_HOME="${CRON_HOME:-${HOME:-/tmp}}"
@@ -88,7 +96,7 @@ DAILY_SALES_STEP_TIMEOUT_SECONDS="${DAILY_SALES_STEP_TIMEOUT_SECONDS:-1800}"
 PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS="${PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS:-1800}"
 
 if ! [[ "${ORDERS_REPORTS_STALE_OWNER_SECONDS}" =~ ^[0-9]+$ ]]; then
-  ORDERS_REPORTS_STALE_OWNER_SECONDS=7200
+  ORDERS_REPORTS_STALE_OWNER_SECONDS=43200
 fi
 if ! [[ "${STALE_OWNER_TERM_WAIT_SECONDS}" =~ ^[0-9]+$ ]]; then
   STALE_OWNER_TERM_WAIT_SECONDS=5
@@ -121,6 +129,10 @@ ORDERS_SYNC_PREFLIGHT_CLASSIFICATION="not_run"
 ORDERS_SYNC_PROFILER_RUN_ID=""
 ORDERS_SYNC_PROFILER_STATUS="unknown"
 RUN_LOCK_ACQUIRED=0
+TIMEOUT_HANDLING_IN_PROGRESS=0
+PRESERVE_RUN_LOCK_FOR_RECOVERY=0
+ACTIVE_CHILD_PID=""
+ACTIVE_CHILD_PGID=""
 
 
 log() {
@@ -203,18 +215,27 @@ remove_lock_artifacts() {
 }
 
 write_lock_metadata() {
+  local wrapper_pgid
+  wrapper_pgid="$(get_pid_pgid "$$")"
+  if [[ "${wrapper_pgid}" != "$$" ]]; then
+    log "ERROR: Refusing to acquire lock without a dedicated wrapper-owned process group: wrapper_pid=$$ wrapper_pgid=${wrapper_pgid:-<missing>}"
+    return 1
+  fi
   echo "$$" > "${LOCK_PID_FILE}"
   date '+%Y-%m-%d %H:%M:%S %Z' > "${LOCK_STARTED_AT_FILE}"
   date '+%s' > "${LOCK_STARTED_AT_EPOCH_FILE}"
   hostname > "${LOCK_HOST_FILE}"
   pwd > "${LOCK_CWD_FILE}"
   printf '%s\n' "$0 $*" > "${LOCK_CMD_FILE}"
-  get_pid_pgid "$$" > "${LOCK_PGID_FILE}"
+  printf '%s\n' "$$" > "${LOCK_PGID_FILE}"
 }
 
 acquire_fresh_lock() {
   if mkdir "${RUN_LOCK_DIR}" 2>/dev/null; then
-    write_lock_metadata "$@"
+    if ! write_lock_metadata "$@"; then
+      remove_lock_artifacts
+      return 1
+    fi
     RUN_LOCK_ACQUIRED=1
     log "[local lock] Lock acquired successfully. PID=$$"
     return 0
@@ -346,6 +367,10 @@ acquire_local_lock() {
     log "WARNING: PID/PGID mismatch for stale-owner candidate PID=${existing_pid}: metadata_pgid=${existing_pgid} live_pgid=${live_pgid:-<missing>}. Leaving lock untouched."
     exit 1
   fi
+  if [[ "${existing_pid}" != "${existing_pgid}" ]]; then
+    log "WARNING: Stale-owner candidate PID=${existing_pid} PGID=${existing_pgid} is not an isolated wrapper-owned process group. Leaving lock untouched."
+    exit 1
+  fi
   if ! command_references_expected_wrapper "${existing_cmd}" "${expected_script}" || ! command_references_expected_wrapper "${live_cmd}" "${expected_script}"; then
     log "WARNING: Stale-owner command does not belong to expected repository wrapper. expected=${expected_script} metadata_command=${existing_cmd:-<missing>} live_command=${live_cmd:-<missing>}. Leaving lock untouched."
     exit 1
@@ -367,23 +392,47 @@ acquire_local_lock() {
 terminate_child_process_group() {
   local pgid="$1"
   local child_pid="$2"
+  local timeout_duration="$3"
   local i
+  local term_outcome="not_needed"
+  local kill_outcome="not_needed"
+  local final_verification_outcome="group_disappeared"
 
-  log "Attempting graceful termination for child process group PGID=${pgid} (child_pid=${child_pid})"
-  kill -TERM "-${pgid}" 2>/dev/null || true
-  for ((i=1; i<=KILL_WAIT_SECONDS; i++)); do
-    if ! pid_is_alive "${child_pid}"; then
-      log "Child PID=${child_pid} terminated after process-group TERM"
+  log "timeout_watchdog child_pid=${child_pid} child_pgid=${pgid} timeout_duration_seconds=${timeout_duration} action=TERM"
+  if kill -TERM "-${pgid}" 2>/dev/null; then
+    term_outcome="sent"
+  else
+    term_outcome="signal_failed_or_group_gone"
+  fi
+  for ((i=0; i<KILL_WAIT_SECONDS; i++)); do
+    if ! process_group_is_alive "${pgid}"; then
+      log "timeout_watchdog child_pid=${child_pid} child_pgid=${pgid} timeout_duration_seconds=${timeout_duration} term_outcome=${term_outcome} kill_outcome=${kill_outcome} final_process_group_verification=${final_verification_outcome}"
       return 0
     fi
     sleep 1
   done
-  if pid_is_alive "${child_pid}"; then
-    log "Child PID=${child_pid} still alive after ${KILL_WAIT_SECONDS}s, sending SIGKILL to PGID=${pgid}"
-    kill -KILL "-${pgid}" 2>/dev/null || true
-    sleep 1
+
+  if process_group_is_alive "${pgid}"; then
+    if kill -KILL "-${pgid}" 2>/dev/null; then
+      kill_outcome="sent"
+    else
+      kill_outcome="signal_failed_or_group_gone"
+    fi
   fi
-  ! pid_is_alive "${child_pid}"
+  for ((i=0; i<KILL_WAIT_SECONDS; i++)); do
+    if ! process_group_is_alive "${pgid}"; then
+      log "timeout_watchdog child_pid=${child_pid} child_pgid=${pgid} timeout_duration_seconds=${timeout_duration} term_outcome=${term_outcome} kill_outcome=${kill_outcome} final_process_group_verification=${final_verification_outcome}"
+      return 0
+    fi
+    sleep 1
+  done
+
+  if process_group_is_alive "${pgid}"; then
+    final_verification_outcome="non_zombie_members_survived"
+    log "WARNING: timeout_watchdog child_pid=${child_pid} child_pgid=${pgid} timeout_duration_seconds=${timeout_duration} term_outcome=${term_outcome} kill_outcome=${kill_outcome} final_process_group_verification=${final_verification_outcome}"
+    return 1
+  fi
+  log "timeout_watchdog child_pid=${child_pid} child_pgid=${pgid} timeout_duration_seconds=${timeout_duration} term_outcome=${term_outcome} kill_outcome=${kill_outcome} final_process_group_verification=${final_verification_outcome}"
 }
 
 cleanup() {
@@ -397,7 +446,11 @@ cleanup() {
   fi
 
   if [[ "${RUN_LOCK_ACQUIRED}" -eq 1 ]]; then
-    remove_lock_artifacts
+    if [[ "${TIMEOUT_HANDLING_IN_PROGRESS}" -eq 1 || "${PRESERVE_RUN_LOCK_FOR_RECOVERY}" -eq 1 ]]; then
+      log "WARNING: Timeout process-group handling could not verify safe shutdown; preserving local lock for explicit recovery."
+    else
+      remove_lock_artifacts
+    fi
   fi
 }
 
@@ -416,6 +469,17 @@ on_exit() {
 on_signal() {
   local sig="$1"
   log "Signal trap triggered: ${sig}"
+  if [[ -n "${ACTIVE_CHILD_PGID}" ]] && process_group_is_alive "${ACTIVE_CHILD_PGID}"; then
+    TIMEOUT_HANDLING_IN_PROGRESS=1
+    if terminate_child_process_group "${ACTIVE_CHILD_PGID}" "${ACTIVE_CHILD_PID}" 0; then
+      ACTIVE_CHILD_PID=""
+      ACTIVE_CHILD_PGID=""
+      TIMEOUT_HANDLING_IN_PROGRESS=0
+    else
+      PRESERVE_RUN_LOCK_FOR_RECOVERY=1
+      log "WARNING: Signal cleanup could not verify child process group PGID=${ACTIVE_CHILD_PGID} disappeared; preserving local lock for explicit recovery."
+    fi
+  fi
   exit 1
 }
 
@@ -516,6 +580,8 @@ run_step() {
     python3 -c 'import os, sys; os.setsid(); os.execvp("bash", ["bash", "-c", sys.argv[1]])' "${step_cmd}" > "${attempt_log_file}" 2>&1 &
     child_pid=$!
     child_pgid="${child_pid}"
+    ACTIVE_CHILD_PID="${child_pid}"
+    ACTIVE_CHILD_PGID="${child_pgid}"
     timed_out=0
     log "${step_name}: child_pid=${child_pid} child_pgid=${child_pgid} runtime_limit_seconds=${runtime_limit_seconds}"
     while pid_is_alive "${child_pid}"; do
@@ -525,7 +591,14 @@ run_step() {
         timed_out=1
         rc=124
         log "ERROR: ${step_name}: attempt ${attempt}/${max_attempts} exceeded runtime_limit_seconds=${runtime_limit_seconds}; terminating child_pid=${child_pid} child_pgid=${child_pgid}"
-        terminate_child_process_group "${child_pgid}" "${child_pid}" || true
+        TIMEOUT_HANDLING_IN_PROGRESS=1
+        if terminate_child_process_group "${child_pgid}" "${child_pid}" "${duration}"; then
+          TIMEOUT_HANDLING_IN_PROGRESS=0
+        else
+          PRESERVE_RUN_LOCK_FOR_RECOVERY=1
+          log "WARNING: ${step_name}: child process group PGID=${child_pgid} did not disappear; preserving local lock for explicit recovery and stopping wrapper safely."
+          exit 125
+        fi
         break
       fi
       sleep 0.1
@@ -536,6 +609,8 @@ run_step() {
       wait "${child_pid}" 2>/dev/null || true
       printf '%s\n' "step_runtime_timeout runtime_limit_seconds=${runtime_limit_seconds} child_pid=${child_pid} child_pgid=${child_pgid}" >> "${attempt_log_file}"
     fi
+    ACTIVE_CHILD_PID=""
+    ACTIVE_CHILD_PGID=""
 
     if [[ "${rc}" -eq 0 ]]; then
       cat "${attempt_log_file}" >> "${LOG_FILE}"

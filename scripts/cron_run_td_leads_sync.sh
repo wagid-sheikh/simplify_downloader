@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Stale-owner recovery signals a process group, so the wrapper must never inherit
+# a parent or sibling process group. Relaunch once in a dedicated session before
+# acquiring a lock; the wrapper PID then owns its isolated PGID.
+if [[ "${CRON_WRAPPER_SESSION_ISOLATED:-0}" != "1" ]]; then
+  export CRON_WRAPPER_SESSION_ISOLATED=1
+  exec python3 -c 'import os, sys; os.getpgrp() == os.getpid() or os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' "$0" "$@"
+fi
+
 # ============================================================================
 # cron_run_td_leads_sync.sh
 #
@@ -90,6 +98,8 @@ export LANG="${LANG:-en_US.UTF-8}"
 
 RUN_LOCK_ACQUIRED=0
 TIMEOUT_HANDLING_IN_PROGRESS=0
+ACTIVE_CHILD_PID=""
+ACTIVE_CHILD_PGID=""
 STALE_OWNER_RECOVERED=0
 RECOVERED_OWNER_PID="unknown"
 RECOVERED_OWNER_PGID="unknown"
@@ -201,18 +211,27 @@ remove_lock_artifacts() {
 }
 
 write_lock_metadata() {
+  local wrapper_pgid
+  wrapper_pgid="$(get_pid_pgid "$$")"
+  if [[ "${wrapper_pgid}" != "$$" ]]; then
+    log "ERROR: Refusing to acquire lock without a dedicated wrapper-owned process group: wrapper_pid=$$ wrapper_pgid=${wrapper_pgid:-<missing>}"
+    return 1
+  fi
   echo "$$" > "${LOCK_PID_FILE}"
   date '+%Y-%m-%d %H:%M:%S %Z' > "${LOCK_STARTED_AT_FILE}"
   date '+%s' > "${LOCK_STARTED_AT_EPOCH_FILE}"
   hostname > "${LOCK_HOST_FILE}"
   pwd > "${LOCK_CWD_FILE}"
   printf '%s\n' "$0 $*" > "${LOCK_CMD_FILE}"
-  get_pid_pgid "$$" > "${LOCK_PGID_FILE}"
+  printf '%s\n' "$$" > "${LOCK_PGID_FILE}"
 }
 
 acquire_fresh_lock() {
   if mkdir "${RUN_LOCK_DIR}" 2>/dev/null; then
-    write_lock_metadata "$@"
+    if ! write_lock_metadata "$@"; then
+      remove_lock_artifacts
+      return 1
+    fi
     RUN_LOCK_ACQUIRED=1
     log "[local lock] Lock acquired successfully. PID=$$"
     return 0
@@ -349,6 +368,11 @@ acquire_local_lock() {
     notify_wrapper_event "lock_metadata_ambiguous" "${existing_pid}" "${existing_pgid}" "${lock_age_seconds}" "preserved_lock_for_operator_inspection"
     exit 1
   fi
+  if [[ "${existing_pid}" != "${existing_pgid}" ]]; then
+    log "WARNING: Stale-owner candidate PID=${existing_pid} PGID=${existing_pgid} is not an isolated wrapper-owned process group. Leaving lock untouched."
+    notify_wrapper_event "lock_metadata_ambiguous" "${existing_pid}" "${existing_pgid}" "${lock_age_seconds}" "preserved_lock_for_operator_inspection"
+    exit 1
+  fi
   if ! command_references_expected_wrapper "${existing_cmd}" "${expected_script}" || ! command_references_expected_wrapper "${live_cmd}" "${expected_script}"; then
     log "WARNING: Stale-owner command does not belong to expected repository wrapper. expected=${expected_script} metadata_command=${existing_cmd:-<missing>} live_command=${live_cmd:-<missing>}. Leaving lock untouched."
     notify_wrapper_event "lock_metadata_ambiguous" "${existing_pid}" "${existing_pgid}" "${lock_age_seconds}" "preserved_lock_for_operator_inspection"
@@ -442,6 +466,17 @@ on_exit() {
 on_signal() {
   local sig="$1"
   log "Signal trap triggered: ${sig}"
+  if [[ -n "${ACTIVE_CHILD_PGID}" ]] && process_group_is_alive "${ACTIVE_CHILD_PGID}"; then
+    TIMEOUT_HANDLING_IN_PROGRESS=1
+    if terminate_child_process_group "${ACTIVE_CHILD_PGID}" "${ACTIVE_CHILD_PID}"; then
+      ACTIVE_CHILD_PID=""
+      ACTIVE_CHILD_PGID=""
+      TIMEOUT_HANDLING_IN_PROGRESS=0
+    else
+      RUN_LOCK_ACQUIRED=0
+      log "WARNING: Signal cleanup could not verify child process group PGID=${ACTIVE_CHILD_PGID} disappeared; preserving local lock for safe recovery."
+    fi
+  fi
   exit 1
 }
 
@@ -484,6 +519,8 @@ run_step() {
   python3 -c 'import os, sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "${step_cmd[@]}" >> "${LOG_FILE}" 2>&1 &
   local child_pid=$!
   local child_pgid="${child_pid}"
+  ACTIVE_CHILD_PID="${child_pid}"
+  ACTIVE_CHILD_PGID="${child_pgid}"
   local child_status=0
   log "${step_name}: child_pid=${child_pid} child_pgid=${child_pgid} runtime_limit_seconds=${TD_LEADS_MAX_RUNTIME_SECONDS}"
   local now
@@ -496,6 +533,8 @@ run_step() {
       TIMEOUT_HANDLING_IN_PROGRESS=1
       if terminate_child_process_group "${child_pgid}" "${child_pid}"; then
         wait "${child_pid}" 2>/dev/null || true
+        ACTIVE_CHILD_PID=""
+        ACTIVE_CHILD_PGID=""
       else
         log "WARNING: ${step_name}: child process group PGID=${child_pgid} did not disappear; preserving local lock for safe recovery."
         RUN_LOCK_ACQUIRED=0
@@ -508,6 +547,8 @@ run_step() {
   done
 
   wait "${child_pid}" || child_status=$?
+  ACTIVE_CHILD_PID=""
+  ACTIVE_CHILD_PGID=""
   step_end="$(date +%s)"
   duration=$((step_end - step_start))
 
