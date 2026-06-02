@@ -75,8 +75,11 @@ process snapshots. The helper reads `pid`, `pgid`, `command`, `started_at`,
 `TERM`, escalates to `KILL` after a bounded wait, and removes locks only after
 the group is gone. It also checks the retired `tmp/cron_heavy_pipelines.lock`
 as an explicit rollout-cleanup case. The legacy
-`scripts/kill_orders_and_reports_stale.sh` forwards to `orders-reports` during
-rollout.
+`scripts/kill_orders_and_reports_stale.sh` command is an orders/reports-only
+shortcut during rollout. It prints the explicit `td-leads` and
+`orders-reports` helper commands before forwarding to `orders-reports`; it does not
+read `Pipeline` or `PIPELINE` environment variables. Prefer the explicit helper
+invocation for new operator workflows.
 
 Both cron wrappers use a pipeline-local recovery state machine rather than a
 long lock-wait loop. Each wrapper first attempts `mkdir` for its lock. On

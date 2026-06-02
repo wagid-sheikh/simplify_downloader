@@ -320,9 +320,19 @@ def test_legacy_orders_reports_wrapper_forwards_to_general_helper(tmp_path: Path
     try:
         _write_lock(lock_dir, pid=process.pid, pgid=process.pid, command=str(process.args[0]))
 
-        result = _run_recovery(legacy_wrapper)
+        result = _run_recovery(legacy_wrapper, PIPELINE="td-leads", Pipeline="td-leads")
 
         assert result.returncode == 0, result.stderr + result.stdout
+        assert "Legacy helper: inspecting orders-reports only." in result.stdout
+        assert (
+            "For TD leads, run: ./scripts/inspect_or_kill_pipeline_stale.sh td-leads"
+            in result.stdout
+        )
+        assert (
+            "For explicit orders/reports inspection, run: "
+            "./scripts/inspect_or_kill_pipeline_stale.sh orders-reports"
+            in result.stdout
+        )
         assert "Pipeline=orders-reports DRY_RUN=1 FORCE=0" in result.stdout
         assert f"Lock: {lock_dir}" in result.stdout
         assert process.poll() is None
