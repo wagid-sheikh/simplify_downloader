@@ -4,6 +4,7 @@ import asyncio
 import json
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 
@@ -4803,3 +4804,253 @@ async def test_td_leads_cancellation_drain_timeout_does_not_block_failed_summary
     assert any(event.get("message") == "cancellation_drain_timeout" and event.get("pending_task_count") == 1 for event in events)
     release.set()
     await task
+
+
+def _patch_successful_retry_store_steps(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(td_leads_main, "config", SimpleNamespace(database_url=None))
+    monkeypatch.setattr(td_leads_main, "_wait_for_otp_verification", lambda *args, **kwargs: asyncio.sleep(0, result=(True, False)))
+    monkeypatch.setattr(td_leads_main, "_wait_for_home", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(td_leads_main, "_ensure_scheduler_page", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(td_leads_main, "_collect_status_rows", lambda *args, **kwargs: asyncio.sleep(0, result=([], [])))
+    monkeypatch.setattr(td_leads_main, "_write_store_artifact", lambda **kwargs: tmp_path / "td_leads.xlsx")
+
+
+@pytest.mark.asyncio
+async def test_td_leads_store_retries_login_network_changed_once_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    events: list[dict[str, object]] = []
+    lifecycle: list[str] = []
+    login_attempts = 0
+
+    class _FakeContext:
+        def __init__(self, context_number: int) -> None:
+            self.context_number = context_number
+
+        async def new_page(self):
+            return object()
+
+        async def storage_state(self, *, path: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            lifecycle.append(f"close:{self.context_number}")
+
+    class _FakeBrowser:
+        async def new_context(self, **kwargs):
+            context_number = 1 + sum(item.startswith("create:") for item in lifecycle)
+            lifecycle.append(f"create:{context_number}")
+            return _FakeContext(context_number)
+
+    async def _fake_login(*args, **kwargs) -> bool:
+        nonlocal login_attempts
+        login_attempts += 1
+        if login_attempts == 1:
+            raise td_leads_main.PlaywrightError("page.goto: net::ERR_NETWORK_CHANGED")
+        return True
+
+    _patch_successful_retry_store_steps(monkeypatch, tmp_path)
+    monkeypatch.setattr(td_leads_main, "_perform_login", _fake_login)
+    monkeypatch.setattr(td_leads_main, "log_event", lambda **kwargs: events.append(kwargs))
+
+    result = await td_leads_main._run_store_with_transient_retry(
+        browser=_FakeBrowser(),
+        store=SimpleNamespace(store_code="A200", storage_state_path=tmp_path / "storage" / "A200.json", reports_nav_selector="#nav"),
+        run_id="run-network-retry",
+        run_env="test",
+        logger=object(),
+    )
+
+    assert result.status == "ok"
+    assert login_attempts == 2
+    assert lifecycle == ["create:1", "close:1", "create:2", "close:2"]
+    retry_event = next(event for event in events if event.get("message") == "TD leads store transient retry completed")
+    assert retry_event["store_code"] == "A200"
+    assert retry_event["failed_phase"] == "login"
+    assert retry_event["transient_classification"] == "network_changed"
+    assert retry_event["retry_attempt"] == 1
+    assert retry_event["retry_result"] == "ok"
+    assert isinstance(retry_event["total_store_duration_ms"], int)
+
+
+@pytest.mark.asyncio
+async def test_td_leads_store_retries_browser_context_create_timeout_once_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    events: list[dict[str, object]] = []
+    context_attempts = 0
+
+    class _FakeContext:
+        async def new_page(self):
+            return object()
+
+        async def storage_state(self, *, path: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    class _FakeBrowser:
+        async def new_context(self, **kwargs):
+            nonlocal context_attempts
+            context_attempts += 1
+            if context_attempts == 1:
+                await asyncio.Event().wait()
+            return _FakeContext()
+
+    _patch_successful_retry_store_steps(monkeypatch, tmp_path)
+    monkeypatch.setattr(td_leads_main, "_timeout_seconds", lambda key, default: 0.01 if key == "td_leads_browser_operation_timeout_seconds" else default)
+    monkeypatch.setattr(td_leads_main, "_perform_login", lambda *args, **kwargs: asyncio.sleep(0, result=True))
+    monkeypatch.setattr(td_leads_main, "log_event", lambda **kwargs: events.append(kwargs))
+
+    result = await td_leads_main._run_store_with_transient_retry(
+        browser=_FakeBrowser(),
+        store=SimpleNamespace(store_code="A200", storage_state_path=tmp_path / "storage" / "A200.json", reports_nav_selector="#nav"),
+        run_id="run-context-timeout-retry",
+        run_env="test",
+        logger=object(),
+    )
+
+    assert result.status == "ok"
+    assert context_attempts == 2
+    assert any(
+        event.get("failed_phase") == "browser_context_create"
+        and event.get("transient_classification") == "browser_context_create_timeout"
+        and event.get("retry_result") == "ok"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_td_leads_store_exhausts_exactly_one_transient_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[dict[str, object]] = []
+    attempts = 0
+
+    async def _fake_run_store(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        return td_leads_main.StoreLeadResult(
+            store_code="A200",
+            status="error",
+            message="page.goto: net::ERR_NETWORK_CHANGED",
+            failure_phase="login",
+            transient_classification="network_changed",
+        )
+
+    monkeypatch.setattr(td_leads_main, "_run_store", _fake_run_store)
+    monkeypatch.setattr(td_leads_main, "log_event", lambda **kwargs: events.append(kwargs))
+
+    result = await td_leads_main._run_store_with_transient_retry(
+        browser=object(),
+        store=SimpleNamespace(store_code="A200"),
+        run_id="run-exhausted-retry",
+        run_env="test",
+        logger=object(),
+    )
+
+    assert result.status == "error"
+    assert attempts == 2
+    assert [event["retry_attempt"] for event in events if "retry_attempt" in event] == [1, 1]
+    assert any(event.get("retry_result") == "error" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_td_leads_store_does_not_retry_deterministic_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = 0
+
+    async def _fake_run_store(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        return td_leads_main.StoreLeadResult(store_code="A200", status="error", message="Pickup Scheduler selector missing")
+
+    monkeypatch.setattr(td_leads_main, "_run_store", _fake_run_store)
+
+    result = await td_leads_main._run_store_with_transient_retry(
+        browser=object(),
+        store=SimpleNamespace(store_code="A200"),
+        run_id="run-deterministic-no-retry",
+        run_env="test",
+        logger=object(),
+    )
+
+    assert result.status == "error"
+    assert attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_td_leads_store_runs_bounded_context_cleanup_before_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    events: list[dict[str, object]] = []
+    lifecycle: list[str] = []
+    login_attempts = 0
+
+    class _FakeContext:
+        def __init__(self, context_number: int) -> None:
+            self.context_number = context_number
+
+        async def new_page(self):
+            return object()
+
+        async def storage_state(self, *, path: str) -> None:
+            return None
+
+        async def close(self) -> None:
+            lifecycle.append(f"close:{self.context_number}")
+
+    class _FakeBrowser:
+        async def new_context(self, **kwargs):
+            context_number = 1 + sum(item.startswith("create:") for item in lifecycle)
+            lifecycle.append(f"create:{context_number}")
+            return _FakeContext(context_number)
+
+    async def _fake_login(*args, **kwargs) -> bool:
+        nonlocal login_attempts
+        login_attempts += 1
+        if login_attempts == 1:
+            raise td_leads_main.PlaywrightError("read ECONNRESET")
+        return True
+
+    _patch_successful_retry_store_steps(monkeypatch, tmp_path)
+    monkeypatch.setattr(td_leads_main, "_perform_login", _fake_login)
+    monkeypatch.setattr(td_leads_main, "log_event", lambda **kwargs: events.append(kwargs))
+
+    result = await td_leads_main._run_store_with_transient_retry(
+        browser=_FakeBrowser(),
+        store=SimpleNamespace(store_code="A200", storage_state_path=tmp_path / "storage" / "A200.json", reports_nav_selector="#nav"),
+        run_id="run-cleanup-before-retry",
+        run_env="test",
+        logger=object(),
+    )
+
+    assert result.status == "ok"
+    assert lifecycle.index("close:1") < lifecycle.index("create:2")
+    assert any(event.get("phase_name") == "context_cleanup" and event.get("message") == "phase_completed" for event in events)
+
+
+def test_td_leads_retry_preserves_five_minute_outer_watchdog_contract() -> None:
+    script = (Path(__file__).parents[2] / "scripts" / "cron_run_td_leads_sync.sh").read_text(encoding="utf-8")
+
+    assert 'TD_LEADS_MAX_RUNTIME_SECONDS="${TD_LEADS_MAX_RUNTIME_SECONDS:-300}"' in script
+
+
+@pytest.mark.parametrize(
+    ("error_message", "expected_classification"),
+    [
+        ("page.goto: net::ERR_NAME_NOT_RESOLVED", "temporary_dns_resolution"),
+        ("browser transport failed: connection reset by peer", "playwright_connection_reset"),
+    ],
+)
+def test_td_leads_transient_classifier_handles_dns_and_connection_reset(
+    error_message: str,
+    expected_classification: str,
+) -> None:
+    classified = td_leads_main._classify_transient_store_failure(
+        td_leads_main.PlaywrightError(error_message),
+        phase_name="login",
+    )
+
+    assert classified == ("login", expected_classification)

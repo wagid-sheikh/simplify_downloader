@@ -134,6 +134,42 @@ TD_LEADS_MAX_WORKERS_DEFAULT = 2
 TD_LEADS_MAX_WORKERS_MIN = 1
 _T = TypeVar("_T")
 
+_BROWSER_TRANSIENT_PHASES = frozenset(
+    {
+        "browser_context_create",
+        "page_create",
+        "session_probe",
+        "login",
+        "otp_verification",
+        "home_wait",
+        "storage_state_write",
+        "scheduler_page",
+        *(f"scrape_status_{status_bucket}" for status_bucket, _, _ in STATUS_CONFIG),
+    }
+)
+_TRANSIENT_BROWSER_ERROR_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("network_changed", ("net::err_network_changed",)),
+    (
+        "temporary_dns_resolution",
+        (
+            "net::err_name_not_resolved",
+            "temporary failure in name resolution",
+            "name or service not known",
+            "getaddrinfo eai_again",
+            "eai_again",
+        ),
+    ),
+    (
+        "playwright_connection_reset",
+        (
+            "net::err_connection_reset",
+            "econnreset",
+            "connection reset by peer",
+            "socket hang up",
+        ),
+    ),
+)
+
 
 class TdLeadsPhaseTimeoutError(TimeoutError):
     """Typed failure raised when a bounded TD-leads async phase exceeds its deadline."""
@@ -171,7 +207,14 @@ async def _run_bounded_phase(awaitable: Awaitable[_T], *, logger: JsonLogger, ru
         task.cancel()
         task.add_done_callback(_consume_background_task_result)
         raise TdLeadsPhaseTimeoutError(phase_name=phase_name, timeout_seconds=timeout_seconds, duration_ms=duration_ms)
-    result = await task
+    try:
+        result = await task
+    except Exception as exc:
+        # Preserve the bounded operation name for the store-local retry classifier.
+        # The original exception type and traceback remain intact.
+        with contextlib.suppress(Exception):
+            setattr(exc, "td_leads_phase_name", phase_name)
+        raise
     duration_ms = int((time.perf_counter() - started_at) * 1000)
     log_event(logger=logger, phase=phase_name, message="phase_completed", duration_ms=duration_ms, **fields)
     return result
@@ -1630,6 +1673,8 @@ class StoreLeadResult:
     status_transitions: list[dict[str, Any]] = field(default_factory=list)
     lead_change_details: dict[str, Any] = field(default_factory=dict)
     task_stub: dict[str, Any] | None = None
+    failure_phase: str | None = None
+    transient_classification: str | None = None
 
 
 @dataclass
@@ -2548,6 +2593,67 @@ def _is_async_database_url(database_url: str) -> bool:
     return "+" in sa.engine.make_url(database_url).drivername
 
 
+def _classify_transient_store_failure(exc: Exception, *, phase_name: str | None = None) -> tuple[str, str] | None:
+    """Return the narrowly scoped browser-transient classification eligible for one retry."""
+    resolved_phase = phase_name or getattr(exc, "td_leads_phase_name", None) or getattr(exc, "phase_name", None)
+    if resolved_phase not in _BROWSER_TRANSIENT_PHASES:
+        return None
+    if isinstance(exc, TdLeadsPhaseTimeoutError) and resolved_phase == "browser_context_create":
+        return resolved_phase, "browser_context_create_timeout"
+
+    normalized_message = str(exc).lower()
+    for classification, patterns in _TRANSIENT_BROWSER_ERROR_PATTERNS:
+        if any(pattern in normalized_message for pattern in patterns):
+            return resolved_phase, classification
+    return None
+
+
+async def _run_store_with_transient_retry(
+    *,
+    browser: Browser,
+    store: TdStore,
+    run_id: str,
+    run_env: str,
+    logger: JsonLogger,
+) -> StoreLeadResult:
+    """Retry one browser-transient TD-leads store failure once, serially, inside its worker deadline."""
+    started_at = time.perf_counter()
+    result = await _run_store(browser=browser, store=store, run_id=run_id, run_env=run_env, logger=logger)
+    if not result.transient_classification:
+        return result
+
+    retry_attempt = 1
+    failed_phase = result.failure_phase
+    transient_classification = result.transient_classification
+    log_event(
+        logger=logger,
+        phase="store_retry",
+        status="warning",
+        message="Retrying TD leads store after transient browser failure",
+        run_id=run_id,
+        store_code=store.store_code,
+        failed_phase=failed_phase,
+        transient_classification=transient_classification,
+        retry_attempt=retry_attempt,
+    )
+    retry_result = await _run_store(browser=browser, store=store, run_id=run_id, run_env=run_env, logger=logger)
+    total_store_duration_ms = int((time.perf_counter() - started_at) * 1000)
+    log_event(
+        logger=logger,
+        phase="store_retry",
+        status="ok" if retry_result.status in {"ok", "warning"} else "error",
+        message="TD leads store transient retry completed",
+        run_id=run_id,
+        store_code=store.store_code,
+        failed_phase=failed_phase,
+        transient_classification=transient_classification,
+        retry_attempt=retry_attempt,
+        retry_result=retry_result.status,
+        total_store_duration_ms=total_store_duration_ms,
+    )
+    return retry_result
+
+
 async def _run_store(
     *,
     browser: Browser,
@@ -2655,6 +2761,8 @@ async def _run_store(
             except TdLeadsPhaseTimeoutError:
                 raise
             except Exception as exc:
+                if _classify_transient_store_failure(exc):
+                    raise
                 warning = f"status_bucket_failed:{status_bucket}:{exc}"
                 warnings.append(warning)
                 log_event(
@@ -2740,6 +2848,9 @@ async def _run_store(
     except Exception as exc:
         result.status = "error"
         result.message = f"TD leads store run failed: {exc}"
+        transient_failure = _classify_transient_store_failure(exc)
+        if transient_failure:
+            result.failure_phase, result.transient_classification = transient_failure
         log_event(
             logger=logger,
             phase="store",
@@ -2756,6 +2867,19 @@ async def _run_store(
             except Exception as exc:
                 result.status = "error"
                 result.message = f"TD leads context cleanup failed: {exc}"
+                # Never retry while a prior context may still be live: that can
+                # overlap browser work and later writes for the same store.
+                result.failure_phase = "context_cleanup"
+                result.transient_classification = None
+                log_event(
+                    logger=logger,
+                    phase="context_cleanup",
+                    status="error",
+                    message="TD leads context cleanup failed",
+                    run_id=run_id,
+                    store_code=store.store_code,
+                    error=str(exc),
+                )
 
 
 async def _run_store_worker(
@@ -2782,7 +2906,7 @@ async def _run_store_worker(
         concurrency_limited=True,
     )
     try:
-        result = await _run_bounded_phase(_run_store(browser=browser, store=store, run_id=run_id, run_env=run_env, logger=store_logger), logger=store_logger, run_id=run_id, store_code=store.store_code, phase_name="store_worker", timeout_seconds=_timeout_seconds("td_leads_store_worker_timeout_seconds", 240))
+        result = await _run_bounded_phase(_run_store_with_transient_retry(browser=browser, store=store, run_id=run_id, run_env=run_env, logger=store_logger), logger=store_logger, run_id=run_id, store_code=store.store_code, phase_name="store_worker", timeout_seconds=_timeout_seconds("td_leads_store_worker_timeout_seconds", 240))
         duration_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
         log_event(
             logger=store_logger,
