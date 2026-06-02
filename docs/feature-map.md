@@ -97,6 +97,18 @@ Practical map of where to work for major capabilities.
 - **Dependencies:** `orders_sync_log`, `pipeline_run_summaries`, notification profiles.
 - **Notes/Risks:** Concurrency + retry + status rollups can produce subtle operational edge cases.
 
+
+## 7.1) `order_line_items` historical rebuild
+
+- **Purpose:** Operator-triggered, source-authoritative rebuild of `order_line_items` for historical TD/UC windows without SQL-only deduplication.
+- **Primary paths:**
+  - `app/crm_downloader/order_line_items_rebuild.py`
+  - `app/crm_downloader/td_orders_sync/garment_ingest.py`
+  - `app/crm_downloader/uc_orders_sync/gst_publish.py`
+  - `scripts/run_local_order_line_items_rebuild.sh`
+- **CLI:** `poetry run python -m app crm rebuild-order-line-items --source td|uc|both --start-date YYYY-MM-DD --end-date YYYY-MM-DD --window-size N [--stores ...] [--dry-run]`.
+- **Notes/Risks:** Only `complete_with_rows` and `complete_empty` snapshots replace local rows; `incomplete_or_failed` preserves existing rows. Window checkpoints in structured logs are the resume contract. The command depends on valid CRM auth/session state for live source fetching.
+
 ## 8) Daily/weekly/monthly/pending reporting
 
 - **Purpose:** Generate PDFs and persist/send report artifacts.

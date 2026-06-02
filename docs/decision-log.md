@@ -232,6 +232,16 @@
 - **Follow-up:** Ensure any internal admin UI/input forms enforce these enum
   values and append-style note behavior rather than free-form overwrite.
 
+
+### DL-003
+- **Date:** 2026-06-02
+- **Status:** Active
+- **Decision:** Add a dedicated operator-triggered historical rebuild path for `order_line_items` that replays authoritative TD/UC CRM snapshots in bounded windows instead of attempting SQL-only duplicate cleanup.
+- **Context:** Historical repeated line-item rows cannot be safely classified from database shape alone because duplicate line items may be legitimate source data.
+- **Evidence:** `app/crm_downloader/order_line_items_rebuild.py`, `scripts/run_local_order_line_items_rebuild.sh`, and `tests/crm_downloader/test_order_line_items_rebuild.py`.
+- **Implications:** Operators should use `python -m app crm rebuild-order-line-items --source td|uc|both ...` with `--dry-run` first, then rerun without dry-run. Only `complete_with_rows` and `complete_empty` outcomes replace rows; incomplete source windows preserve existing data and emit resumable checkpoints.
+- **Follow-up:** Keep future dedupe/remediation requests on this replay-based path unless code and docs intentionally define a new source-authoritative contract.
+
 ### DL-001
 - **Date:** Date unknown (reconstructed from repository state)
 - **Status:** Active
