@@ -13,6 +13,7 @@ from app.crm_downloader.td_orders_sync.sales_ingest import _sales_table
 from app.crm_downloader.uc_orders_sync.archive_ingest import (
     TABLE_ARCHIVE_BASE,
     TABLE_ARCHIVE_ORDER_DETAILS,
+    TABLE_ARCHIVE_ORDER_DETAIL_SNAPSHOTS,
     TABLE_ARCHIVE_PAYMENT_DETAILS,
 )
 from app.crm_downloader.td_orders_sync.garment_ingest import order_line_items_table
@@ -73,6 +74,21 @@ async def _create_tables(db_url: str) -> None:
         sa.Column("weight", sa.Numeric(12, 3)),
         sa.Column("amount", sa.Numeric(12, 2)),
         sa.Column("line_hash", sa.String(64)),
+        sa.Column("ingest_row_seq", sa.Integer),
+    )
+    sa.Table(
+        TABLE_ARCHIVE_ORDER_DETAIL_SNAPSHOTS,
+        metadata,
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("run_id", sa.Text),
+        sa.Column("run_date", sa.DateTime(timezone=True)),
+        sa.Column("cost_center", sa.String(8)),
+        sa.Column("store_code", sa.String(8)),
+        sa.Column("order_code", sa.String(24)),
+        sa.Column("normalized_order_number", sa.String(32)),
+        sa.Column("snapshot_outcome", sa.String(32)),
+        sa.Column("detail_row_count", sa.Integer),
+        sa.Column("ingest_remarks", sa.Text),
     )
     sa.Table(
         TABLE_ARCHIVE_PAYMENT_DETAILS,
@@ -900,11 +916,18 @@ async def test_line_item_publish_assigns_serials_and_single_row_defaults(tmp_pat
         """))
         await session.execute(sa.text("""
             INSERT INTO stg_uc_archive_order_details
-            (id, run_id, run_date, cost_center, store_code, order_code, service, item_name, rate, quantity, weight, amount, order_datetime_raw, line_hash, ingest_remarks)
+            (id, run_id, run_date, cost_center, store_code, order_code, service, item_name, rate, quantity, weight, amount, order_datetime_raw, line_hash, ingest_row_seq, ingest_remarks)
             VALUES
-                (1, 'run-li', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'Dryclean', 'Shirt', 50, 1, 0.5, 50, '03 Jan 2025, 10:30 AM', 'bhash', 'r1'),
-                (2, 'run-li', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'Wash', 'Pants', 70, 2, 0.75, 140, '03 Jan 2025, 10:30 AM', 'ahash', 'r2'),
-                (3, 'run-li', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-2', 'Iron', 'Kurta', 30, 1, NULL, 30, '03 Jan 2025, 10:30 AM', NULL, 'r3')
+                (1, 'run-li', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'Dryclean', 'Shirt', 50, 1, 0.5, 50, '03 Jan 2025, 10:30 AM', 'bhash', 1, 'r1'),
+                (2, 'run-li', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'Wash', 'Pants', 70, 2, 0.75, 140, '03 Jan 2025, 10:30 AM', 'ahash', 2, 'r2'),
+                (3, 'run-li', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-2', 'Iron', 'Kurta', 30, 1, NULL, 30, '03 Jan 2025, 10:30 AM', NULL, 3, 'r3')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO stg_uc_order_detail_snapshots
+            (run_id, run_date, cost_center, store_code, order_code, normalized_order_number, snapshot_outcome, detail_row_count)
+            VALUES
+                ('run-li', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'ORD-1', 'complete_with_rows', 2),
+                ('run-li', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-2', 'ORD-2', 'complete_with_rows', 1)
         """))
         await session.commit()
 
@@ -913,16 +936,17 @@ async def test_line_item_publish_assigns_serials_and_single_row_defaults(tmp_pat
 
     async with session_scope(db_url) as session:
         rows = (await session.execute(sa.text("""
-            SELECT order_number, order_id, line_item_key, line_item_uid, is_orphan, weight
+            SELECT order_number, order_id, line_sequence, line_item_key, line_item_uid, is_orphan, weight
             FROM order_line_items
-            ORDER BY order_number, order_id
+            ORDER BY order_number, line_sequence
         """))).all()
 
-    assert [(r.order_number, r.order_id) for r in rows] == [('ORD-1', 1), ('ORD-1', 2), ('ORD-2', 1)]
-    assert rows[0].line_item_key == 'ahash'
+    assert [(r.order_number, r.line_sequence) for r in rows] == [('ORD-1', 1), ('ORD-1', 2), ('ORD-2', 1)]
+    assert [(r.order_number, r.order_id) for r in rows] == [('ORD-1', 101), ('ORD-1', 101), ('ORD-2', 102)]
+    assert rows[0].line_item_key == 'bhash'
     assert rows[2].line_item_key == 'Kurta|Iron|30.00'
-    assert rows[2].line_item_uid.endswith('|1')
-    assert Decimal(str(rows[0].weight)) == Decimal('0.75')
+    assert rows[2].line_item_uid.endswith('|3')
+    assert Decimal(str(rows[0].weight)) == Decimal('0.5')
     assert rows[2].weight is None
     assert all(not r.is_orphan for r in rows)
 
@@ -943,11 +967,18 @@ async def test_line_item_publish_emits_serial_validation_metrics(tmp_path: Path)
         """))
         await session.execute(sa.text("""
             INSERT INTO stg_uc_archive_order_details
-            (id, run_id, run_date, cost_center, store_code, order_code, service, item_name, rate, quantity, amount, order_datetime_raw, line_hash, ingest_remarks)
+            (id, run_id, run_date, cost_center, store_code, order_code, service, item_name, rate, quantity, amount, order_datetime_raw, line_hash, ingest_row_seq, ingest_remarks)
             VALUES
-                (11, 'run-validation', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-10', 'Dryclean', 'Shirt', 50, 1, 50, '03 Jan 2025, 10:30 AM', 'h1', 'r1'),
-                (12, 'run-validation', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-10', 'Wash', 'Pants', 70, 1, 70, '03 Jan 2025, 10:31 AM', 'h2', 'r2'),
-                (13, 'run-validation', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-11', 'Iron', 'Kurta', 30, 1, 30, '03 Jan 2025, 10:32 AM', 'h3', 'r3')
+                (11, 'run-validation', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-10', 'Dryclean', 'Shirt', 50, 1, 50, '03 Jan 2025, 10:30 AM', 'h1', 1, 'r1'),
+                (12, 'run-validation', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-10', 'Wash', 'Pants', 70, 1, 70, '03 Jan 2025, 10:31 AM', 'h2', 2, 'r2'),
+                (13, 'run-validation', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-11', 'Iron', 'Kurta', 30, 1, 30, '03 Jan 2025, 10:32 AM', 'h3', 3, 'r3')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO stg_uc_order_detail_snapshots
+            (run_id, run_date, cost_center, store_code, order_code, normalized_order_number, snapshot_outcome, detail_row_count)
+            VALUES
+                ('run-validation', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-10', 'ORD-10', 'complete_with_rows', 2),
+                ('run-validation', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-11', 'ORD-11', 'complete_with_rows', 1)
         """))
         await session.commit()
 
@@ -979,10 +1010,17 @@ async def test_line_item_publish_is_deterministic_and_marks_orphans(tmp_path: Pa
         """))
         await session.execute(sa.text("""
             INSERT INTO stg_uc_archive_order_details
-            (id, run_id, run_date, cost_center, store_code, order_code, service, item_name, rate, quantity, amount, order_datetime_raw, line_hash, ingest_remarks)
+            (id, run_id, run_date, cost_center, store_code, order_code, service, item_name, rate, quantity, amount, order_datetime_raw, line_hash, ingest_row_seq, ingest_remarks)
             VALUES
-                (1, 'run-det', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'Dryclean', 'Shirt', 50, 1, 50, '03 Jan 2025, 10:30 AM', 'h1', 'r1'),
-                (2, 'run-det', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-MISS', 'Wash', 'Pants', 70, 1, 70, '03 Jan 2025, 10:30 AM', 'h2', 'r2')
+                (1, 'run-det', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'Dryclean', 'Shirt', 50, 1, 50, '03 Jan 2025, 10:30 AM', 'h1', 1, 'r1'),
+                (2, 'run-det', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-MISS', 'Wash', 'Pants', 70, 1, 70, '03 Jan 2025, 10:30 AM', 'h2', 2, 'r2')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO stg_uc_order_detail_snapshots
+            (run_id, run_date, cost_center, store_code, order_code, normalized_order_number, snapshot_outcome, detail_row_count)
+            VALUES
+                ('run-det', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-1', 'ORD-1', 'complete_with_rows', 1),
+                ('run-det', '2025-01-03T00:00:00+00:00', 'CC01', 'UC567', 'ORD-MISS', 'ORD-MISS', 'complete_with_rows', 1)
         """))
         await session.commit()
 
@@ -990,7 +1028,8 @@ async def test_line_item_publish_is_deterministic_and_marks_orphans(tmp_path: Pa
     second = await publish_uc_gst_order_details_to_line_items(database_url=db_url, run_id='run-det', store_code='UC567')
 
     assert first.inserted == 2
-    assert second.updated == 2
+    assert second.inserted == 2
+    assert second.deleted_final_rows == 2
 
     async with session_scope(db_url) as session:
         count = (await session.execute(sa.text("SELECT COUNT(*) FROM order_line_items"))).scalar_one()
@@ -998,5 +1037,137 @@ async def test_line_item_publish_is_deterministic_and_marks_orphans(tmp_path: Pa
             SELECT is_orphan, ingest_remarks FROM order_line_items WHERE order_number='ORD-MISS'
         """))).one()
     assert count == 2
+    assert orphan.is_orphan
+    assert 'parent_order_missing' in (orphan.ingest_remarks or '')
+
+@pytest.mark.asyncio
+async def test_line_item_replacement_is_snapshot_authoritative(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_replacement.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO orders (id, cost_center, store_code, order_number, order_date, customer_name, mobile_number, created_at)
+            VALUES (301, 'CC01', 'UC567', 'ORD-REPL', '2025-01-01T00:00:00+00:00', 'Alice', '9999999999', '2025-01-01T00:00:00+00:00')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO order_line_items
+            (run_id, cost_center, store_code, order_id, line_sequence, order_number, line_item_key, line_item_uid, garment_name, service_name, ingest_row_seq, is_orphan)
+            VALUES
+                ('old-run', 'CC01', 'UC567', 301, 1, 'ORD-REPL', 'old-1', 'old-1', 'Old Shirt', 'Old', 1, 0),
+                ('old-run', 'CC01', 'UC567', 301, 2, 'ORD-REPL', 'old-2', 'old-2', 'Old Pants', 'Old', 2, 0)
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO stg_uc_archive_order_details
+            (id, run_id, run_date, cost_center, store_code, order_code, service, item_name, rate, quantity, amount, line_hash, ingest_row_seq)
+            VALUES (21, 'run-repl', '2025-01-02T00:00:00+00:00', 'CC01', 'UC567', 'ORD-REPL', 'Dryclean', 'New Shirt', 10, 1, 10, 'new-hash', 1)
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO stg_uc_order_detail_snapshots
+            (run_id, run_date, cost_center, store_code, order_code, normalized_order_number, snapshot_outcome, detail_row_count)
+            VALUES ('run-repl', '2025-01-02T00:00:00+00:00', 'CC01', 'UC567', 'ORD-REPL', 'ORD-REPL', 'complete_with_rows', 1)
+        """))
+        await session.commit()
+
+    first = await publish_uc_gst_order_details_to_line_items(database_url=db_url, run_id='run-repl', store_code='UC567')
+    second = await publish_uc_gst_order_details_to_line_items(database_url=db_url, run_id='run-repl', store_code='UC567')
+
+    assert first.deleted_final_rows == 2
+    assert first.inserted_final_rows == 1
+    assert second.deleted_final_rows == 1
+    assert second.inserted_final_rows == 1
+
+    async with session_scope(db_url) as session:
+        rows = (await session.execute(sa.text("""
+            SELECT order_id, line_sequence, garment_name FROM order_line_items WHERE order_number='ORD-REPL'
+        """))).all()
+    assert [(row.order_id, row.line_sequence, row.garment_name) for row in rows] == [(301, 1, 'New Shirt')]
+
+
+@pytest.mark.asyncio
+async def test_line_item_complete_empty_deletes_and_incomplete_preserves(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_empty_failed.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO orders (id, cost_center, store_code, order_number, order_date, customer_name, mobile_number, created_at)
+            VALUES
+                (401, 'CC01', 'UC567', 'ORD-EMPTY', '2025-01-01T00:00:00+00:00', 'Empty', '9999999999', '2025-01-01T00:00:00+00:00'),
+                (402, 'CC01', 'UC567', 'ORD-FAIL', '2025-01-01T00:00:00+00:00', 'Fail', '8888888888', '2025-01-01T00:00:00+00:00')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO order_line_items
+            (run_id, cost_center, store_code, order_id, line_sequence, order_number, line_item_key, line_item_uid, garment_name, service_name, ingest_row_seq, is_orphan)
+            VALUES
+                ('old-run', 'CC01', 'UC567', 401, 1, 'ORD-EMPTY', 'old-empty', 'old-empty', 'Delete Me', 'Old', 1, 0),
+                ('old-run', 'CC01', 'UC567', 402, 1, 'ORD-FAIL', 'old-fail', 'old-fail', 'Keep Me', 'Old', 1, 0)
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO stg_uc_order_detail_snapshots
+            (run_id, run_date, cost_center, store_code, order_code, normalized_order_number, snapshot_outcome, detail_row_count)
+            VALUES
+                ('run-outcomes', '2025-01-02T00:00:00+00:00', 'CC01', 'UC567', 'ORD-EMPTY', 'ORD-EMPTY', 'complete_empty', 0),
+                ('run-outcomes', '2025-01-02T00:00:00+00:00', 'CC01', 'UC567', 'ORD-FAIL', 'ORD-FAIL', 'incomplete_or_failed', 0)
+        """))
+        await session.commit()
+
+    metrics = await publish_uc_gst_order_details_to_line_items(database_url=db_url, run_id='run-outcomes', store_code='UC567')
+
+    assert metrics.complete_empty_invoices == 1
+    assert metrics.replacement_skipped_incomplete_invoices == 1
+    assert metrics.deleted_final_rows == 1
+    assert metrics.inserted_final_rows == 0
+
+    async with session_scope(db_url) as session:
+        rows = (await session.execute(sa.text("""
+            SELECT order_number, garment_name FROM order_line_items ORDER BY order_number
+        """))).all()
+    assert [(row.order_number, row.garment_name) for row in rows] == [('ORD-FAIL', 'Keep Me')]
+
+
+@pytest.mark.asyncio
+async def test_line_item_publish_preserves_identical_rows_and_orphan_diagnostics(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'publish_duplicates_orphan.sqlite'}"
+    await _create_tables(db_url)
+
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO orders (id, cost_center, store_code, order_number, order_date, customer_name, mobile_number, created_at)
+            VALUES (501, 'CC01', 'UC567', 'ORD-DUP', '2025-01-01T00:00:00+00:00', 'Dup', '9999999999', '2025-01-01T00:00:00+00:00')
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO stg_uc_archive_order_details
+            (id, run_id, run_date, cost_center, store_code, order_code, service, item_name, rate, quantity, amount, line_hash, ingest_row_seq)
+            VALUES
+                (31, 'run-dup', '2025-01-02T00:00:00+00:00', 'CC01', 'UC567', 'ORD-DUP', 'Wash', 'Shirt', 10, 1, 10, 'same-hash', 1),
+                (32, 'run-dup', '2025-01-02T00:00:00+00:00', 'CC01', 'UC567', 'ORD-DUP', 'Wash', 'Shirt', 10, 1, 10, 'same-hash', 2),
+                (33, 'run-dup', '2025-01-02T00:00:00+00:00', 'CC01', 'UC567', 'ORD-ORPH', 'Wash', 'Missing', 10, 1, 10, 'orphan-hash', 3)
+        """))
+        await session.execute(sa.text("""
+            INSERT INTO stg_uc_order_detail_snapshots
+            (run_id, run_date, cost_center, store_code, order_code, normalized_order_number, snapshot_outcome, detail_row_count)
+            VALUES
+                ('run-dup', '2025-01-02T00:00:00+00:00', 'CC01', 'UC567', 'ORD-DUP', 'ORD-DUP', 'complete_with_rows', 2),
+                ('run-dup', '2025-01-02T00:00:00+00:00', 'CC01', 'UC567', 'ORD-ORPH', 'ORD-ORPH', 'complete_with_rows', 1)
+        """))
+        await session.commit()
+
+    metrics = await publish_uc_gst_order_details_to_line_items(database_url=db_url, run_id='run-dup', store_code='UC567')
+
+    assert metrics.inserted_final_rows == 3
+    assert metrics.orphan_rows == 1
+    async with session_scope(db_url) as session:
+        rows = (await session.execute(sa.text("""
+            SELECT order_number, order_id, line_sequence, line_item_key, is_orphan, ingest_remarks
+            FROM order_line_items ORDER BY order_number, line_sequence
+        """))).all()
+    assert [(row.order_number, row.order_id, row.line_sequence, row.line_item_key) for row in rows[:2]] == [
+        ('ORD-DUP', 501, 1, 'same-hash'),
+        ('ORD-DUP', 501, 2, 'same-hash'),
+    ]
+    orphan = rows[2]
+    assert orphan.order_number == 'ORD-ORPH'
+    assert orphan.order_id is None
     assert orphan.is_orphan
     assert 'parent_order_missing' in (orphan.ingest_remarks or '')

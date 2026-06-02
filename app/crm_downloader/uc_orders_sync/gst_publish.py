@@ -20,6 +20,7 @@ from app.crm_downloader.td_orders_sync.sales_ingest import _sales_table
 from app.crm_downloader.uc_orders_sync.archive_ingest import (
     TABLE_ARCHIVE_BASE,
     TABLE_ARCHIVE_ORDER_DETAILS,
+    TABLE_ARCHIVE_ORDER_DETAIL_SNAPSHOTS,
     TABLE_ARCHIVE_PAYMENT_DETAILS,
 )
 from app.crm_downloader.uc_orders_sync.ingest import _stg_uc_orders_table
@@ -52,13 +53,21 @@ class PublishMetrics:
     preflight_diagnostics: dict[str, Any] | None = None
     post_publish_verification: dict[str, int] | None = None
     line_item_serial_validation: dict[str, Any] | None = None
+    invoices_inspected: int = 0
+    complete_with_rows_invoices: int = 0
+    complete_empty_invoices: int = 0
+    replacement_skipped_incomplete_invoices: int = 0
+    deleted_final_rows: int = 0
+    inserted_final_rows: int = 0
+    orphan_rows: int = 0
+    staging_rows_written: int = 0
 
 
 def _build_line_item_serial_validation_query() -> sa.TextClause:
     return sa.text(
         """
         WITH scoped AS (
-            SELECT order_number, order_id
+            SELECT order_number, line_sequence
             FROM order_line_items
             WHERE run_id = :run_id
               AND store_code = :store_code
@@ -66,16 +75,16 @@ def _build_line_item_serial_validation_query() -> sa.TextClause:
         per_order AS (
             SELECT
                 order_number,
-                MIN(order_id) AS min_order_id,
-                MAX(order_id) AS max_order_id,
+                MIN(line_sequence) AS min_order_id,
+                MAX(line_sequence) AS max_order_id,
                 COUNT(*) AS line_count
             FROM scoped
             GROUP BY order_number
         ),
         duplicates AS (
-            SELECT order_number, order_id, COUNT(*) AS duplicate_count
+            SELECT order_number, line_sequence AS order_id, COUNT(*) AS duplicate_count
             FROM scoped
-            GROUP BY order_number, order_id
+            GROUP BY order_number, line_sequence
             HAVING COUNT(*) > 1
         )
         SELECT
@@ -94,31 +103,31 @@ def _build_line_item_serial_validation_sample_queries(
     return {
         "min_order_id_not_1": sa.text(
             """
-            SELECT order_number, MIN(order_id) AS min_order_id, COUNT(*) AS line_count
+            SELECT order_number, MIN(line_sequence) AS min_order_id, COUNT(*) AS line_count
             FROM order_line_items
             WHERE run_id = :run_id
               AND store_code = :store_code
             GROUP BY order_number
-            HAVING MIN(order_id) <> 1
+            HAVING MIN(line_sequence) <> 1
             ORDER BY min_order_id ASC, line_count DESC, order_number ASC
             LIMIT :sample_limit
             """
         ),
         "duplicate_order_number_order_id": sa.text(
             """
-            SELECT order_number, order_id, COUNT(*) AS duplicate_count
+            SELECT order_number, line_sequence AS order_id, COUNT(*) AS duplicate_count
             FROM order_line_items
             WHERE run_id = :run_id
               AND store_code = :store_code
-            GROUP BY order_number, order_id
+            GROUP BY order_number, line_sequence
             HAVING COUNT(*) > 1
-            ORDER BY duplicate_count DESC, order_number ASC, order_id ASC
+            ORDER BY duplicate_count DESC, order_number ASC, line_sequence ASC
             LIMIT :sample_limit
             """
         ),
         "max_order_id_outliers": sa.text(
             """
-            SELECT order_number, MAX(order_id) AS max_order_id, MIN(order_id) AS min_order_id, COUNT(*) AS line_count
+            SELECT order_number, MAX(line_sequence) AS max_order_id, MIN(line_sequence) AS min_order_id, COUNT(*) AS line_count
             FROM order_line_items
             WHERE run_id = :run_id
               AND store_code = :store_code
@@ -1055,6 +1064,22 @@ async def publish_uc_gst_order_details_to_line_items(
         sa.Column("amount", sa.Numeric(12, 2)),
         sa.Column("order_datetime_raw", sa.Text),
         sa.Column("line_hash", sa.String(64)),
+        sa.Column("ingest_row_seq", sa.Integer),
+        sa.Column("ingest_remarks", sa.Text),
+        extend_existing=True,
+    )
+    snapshots = sa.Table(
+        TABLE_ARCHIVE_ORDER_DETAIL_SNAPSHOTS,
+        metadata,
+        sa.Column("id", sa.Integer),
+        sa.Column("run_id", sa.Text),
+        sa.Column("run_date", sa.DateTime(timezone=True)),
+        sa.Column("cost_center", sa.String(8)),
+        sa.Column("store_code", sa.String(8)),
+        sa.Column("order_code", sa.String(24)),
+        sa.Column("normalized_order_number", sa.String(32)),
+        sa.Column("snapshot_outcome", sa.String(32)),
+        sa.Column("detail_row_count", sa.Integer),
         sa.Column("ingest_remarks", sa.Text),
         extend_existing=True,
     )
@@ -1062,6 +1087,34 @@ async def publish_uc_gst_order_details_to_line_items(
     line_items = order_line_items_table(metadata)
 
     async with session_scope(database_url) as session:
+        outcome_rows = (
+            await session.execute(
+                sa.select(
+                    snapshots.c.run_id,
+                    snapshots.c.run_date,
+                    snapshots.c.cost_center,
+                    snapshots.c.store_code,
+                    snapshots.c.order_code,
+                    snapshots.c.normalized_order_number,
+                    snapshots.c.snapshot_outcome,
+                    snapshots.c.detail_row_count,
+                    snapshots.c.ingest_remarks,
+                ).where(
+                    sa.and_(
+                        snapshots.c.run_id == run_id,
+                        snapshots.c.store_code == store_code,
+                    )
+                )
+            )
+        ).all()
+        if not outcome_rows:
+            return metrics
+
+        metrics.invoices_inspected = len(outcome_rows)
+        metrics.complete_with_rows_invoices = sum(1 for row in outcome_rows if row.snapshot_outcome == "complete_with_rows")
+        metrics.complete_empty_invoices = sum(1 for row in outcome_rows if row.snapshot_outcome == "complete_empty")
+        metrics.replacement_skipped_incomplete_invoices = sum(1 for row in outcome_rows if row.snapshot_outcome == "incomplete_or_failed")
+
         detail_rows = (
             await session.execute(
                 sa.select(
@@ -1079,6 +1132,7 @@ async def publish_uc_gst_order_details_to_line_items(
                     details.c.amount,
                     details.c.order_datetime_raw,
                     details.c.line_hash,
+                    details.c.ingest_row_seq,
                     details.c.ingest_remarks,
                 ).where(
                     sa.and_(
@@ -1088,8 +1142,7 @@ async def publish_uc_gst_order_details_to_line_items(
                 )
             )
         ).all()
-        if not detail_rows:
-            return metrics
+        metrics.staging_rows_written = len(detail_rows)
 
         normalized_orders = {
             normalized[0]: row
@@ -1110,56 +1163,76 @@ async def publish_uc_gst_order_details_to_line_items(
             if normalized
         }
 
-        indexed_rows: list[dict[str, Any]] = []
-        for source_idx, row in enumerate(detail_rows, start=1):
+        grouped_details: dict[tuple[str, str], list[Any]] = defaultdict(list)
+        for row in detail_rows:
             join_variants = _build_join_key_variants(row.store_code, row.order_code)
             if not join_variants:
                 metrics.skipped += 1
                 metrics.warnings += 1
                 continue
-            indexed_rows.append(
-                {
-                    "source_idx": source_idx,
-                    "group_key": join_variants[0],
-                    "join_variants": join_variants,
-                    "row": row,
-                }
+            grouped_details[join_variants[0]].append(row)
+
+        for outcome in sorted(outcome_rows, key=lambda row: (_non_blank_text(row.store_code) or "", _non_blank_text(row.normalized_order_number) or "")):
+            join_variants = _build_join_key_variants(outcome.store_code, outcome.normalized_order_number or outcome.order_code)
+            if not join_variants:
+                metrics.skipped += 1
+                metrics.warnings += 1
+                continue
+            group_key = join_variants[0]
+            selected_store_code, selected_order_number = group_key
+            parent_order = next((normalized_orders.get(variant) for variant in join_variants if variant in normalized_orders), None)
+            selected_cost_center = _non_blank_text(parent_order.cost_center) if parent_order is not None else _non_blank_text(outcome.cost_center)
+            if not selected_cost_center:
+                metrics.skipped += 1
+                metrics.warnings += 1
+                continue
+
+            if outcome.snapshot_outcome == "incomplete_or_failed":
+                metrics.skipped += 1
+                metrics.reason_codes["line_item_replacement_skipped_incomplete_or_failed"] = metrics.reason_codes.get("line_item_replacement_skipped_incomplete_or_failed", 0) + 1
+                LOGGER.info(
+                    "GST line-item replacement skipped for incomplete invoice",
+                    extra={
+                        "phase": "gst_publish_order_line_items",
+                        "run_id": run_id,
+                        "store_code": store_code,
+                        "order_number": selected_order_number,
+                    },
+                )
+                continue
+
+            delete_result = await session.execute(
+                sa.delete(line_items).where(
+                    sa.and_(
+                        line_items.c.cost_center == selected_cost_center,
+                        line_items.c.order_number == selected_order_number,
+                    )
+                )
             )
+            deleted = int(delete_result.rowcount or 0)
+            metrics.deleted_final_rows += deleted
 
-        grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-        for record in indexed_rows:
-            grouped[record["group_key"]].append(record)
+            if outcome.snapshot_outcome == "complete_empty":
+                continue
 
-        for group_key in sorted(grouped.keys()):
             group_rows = sorted(
-                grouped[group_key],
-                key=lambda record: (
-                    _non_blank_text(record["row"].line_hash) or "",
-                    _non_blank_text(record["row"].item_name) or "",
-                    record["source_idx"],
+                grouped_details.get(group_key, []),
+                key=lambda row: (
+                    row.ingest_row_seq if row.ingest_row_seq is not None else 0,
+                    _non_blank_text(row.line_hash) or "",
+                    row.id or 0,
                 ),
             )
-            for serial, record in enumerate(group_rows, start=1):
-                row = record["row"]
-                join_variants = record["join_variants"]
-                parent_order = next((normalized_orders.get(variant) for variant in join_variants if variant in normalized_orders), None)
-                selected_order_number = join_variants[0][1]
-                selected_store_code = join_variants[0][0]
-                selected_cost_center = _non_blank_text(row.cost_center)
-                if parent_order is not None:
-                    selected_cost_center = _non_blank_text(parent_order.cost_center) or selected_cost_center
-                if not selected_cost_center:
-                    metrics.skipped += 1
-                    metrics.warnings += 1
-                    continue
-
+            for serial, row in enumerate(group_rows, start=1):
                 line_item_key = _normalize_line_item_key(
                     line_hash=row.line_hash,
                     item_name=row.item_name,
                     service=row.service,
                     rate=row.rate,
                 )
-                line_item_uid = f"{selected_cost_center}|{selected_order_number}|{line_item_key}|{serial}"
+                # Include the staging row sequence in the UID so byte-for-byte duplicate
+                # UC rows survive publication without pretending line_hash is identity.
+                line_item_uid = f"{selected_cost_center}|{selected_order_number}|{line_item_key}|{row.ingest_row_seq or serial}"
                 order_date = _parse_payment_datetime(row.order_datetime_raw)
                 source_updated_at = row.run_date or datetime.now(tz=ZoneInfo(os.getenv("PIPELINE_TIMEZONE", "Asia/Kolkata")))
                 status = _non_blank_text(parent_order.order_status) if parent_order is not None else None
@@ -1170,7 +1243,8 @@ async def publish_uc_gst_order_details_to_line_items(
                     "run_date": row.run_date,
                     "cost_center": selected_cost_center,
                     "store_code": selected_store_code,
-                    "order_id": serial,
+                    "order_id": parent_order.id if parent_order is not None else None,
+                    "line_sequence": serial,
                     "order_number": selected_order_number,
                     "line_item_key": line_item_key,
                     "line_item_uid": line_item_uid,
@@ -1182,28 +1256,15 @@ async def publish_uc_gst_order_details_to_line_items(
                     "order_date": order_date or (parent_order.order_date if parent_order is not None else None),
                     "updated_at": (parent_order.updated_at if parent_order is not None and parent_order.updated_at else source_updated_at),
                     "status": status,
-                    "ingest_row_seq": record["source_idx"],
+                    "ingest_row_seq": row.ingest_row_seq or serial,
                     "is_orphan": parent_order is None,
                     "ingest_remarks": ingest_remarks,
                 }
-
-                existing = (
-                    await session.execute(
-                        sa.select(line_items.c.id).where(
-                            sa.and_(
-                                line_items.c.cost_center == selected_cost_center,
-                                line_items.c.order_number == selected_order_number,
-                                line_items.c.line_item_uid == line_item_uid,
-                            )
-                        )
-                    )
-                ).first()
-                if existing:
-                    await session.execute(sa.update(line_items).where(line_items.c.id == existing.id).values(**payload))
-                    metrics.updated += 1
-                else:
-                    await session.execute(sa.insert(line_items).values(**payload))
-                    metrics.inserted += 1
+                await session.execute(sa.insert(line_items).values(**payload))
+                metrics.inserted += 1
+                metrics.inserted_final_rows += 1
+                if parent_order is None:
+                    metrics.orphan_rows += 1
 
         metrics.line_item_serial_validation = await _collect_line_item_serial_validation(
             session=session,

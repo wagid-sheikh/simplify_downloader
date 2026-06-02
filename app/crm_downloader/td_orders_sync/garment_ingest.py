@@ -78,6 +78,7 @@ def order_line_items_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("cost_center", sa.String(length=8), nullable=False),
         sa.Column("store_code", sa.String(length=8), nullable=False),
         sa.Column("order_id", sa.BigInteger()),
+        sa.Column("line_sequence", sa.Integer()),
         sa.Column("order_number", sa.String(length=32), nullable=False),
         sa.Column("api_order_id", sa.String(length=64)),
         sa.Column("api_line_item_id", sa.String(length=64)),

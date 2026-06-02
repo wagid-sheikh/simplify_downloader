@@ -82,6 +82,13 @@ GST_API_PAYMENT_COLUMNS = [
     "transaction_id",
 ]
 
+GST_API_ORDER_DETAIL_SNAPSHOT_COLUMNS = [
+    "store_code",
+    "order_code",
+    "snapshot_outcome",
+    "detail_row_count",
+]
+
 
 @dataclass
 class GstApiExtract:
@@ -89,6 +96,7 @@ class GstApiExtract:
     base_rows: list[dict[str, Any]] = field(default_factory=list)
     order_detail_rows: list[dict[str, Any]] = field(default_factory=list)
     payment_detail_rows: list[dict[str, Any]] = field(default_factory=list)
+    order_detail_snapshot_rows: list[dict[str, Any]] = field(default_factory=list)
     skipped_order_codes: list[str] = field(default_factory=list)
     skipped_order_counters: dict[str, int] = field(default_factory=dict)
     booking_lookup_hits: int = 0
@@ -103,6 +111,24 @@ class GstApiExtract:
 def _record_skip(extract: GstApiExtract, *, order_code: str, reason: str) -> None:
     extract.skipped_order_codes.append(order_code)
     extract.skipped_order_counters[reason] = extract.skipped_order_counters.get(reason, 0) + 1
+
+
+def _record_invoice_snapshot(
+    extract: GstApiExtract,
+    *,
+    store_code: str,
+    order_code: str,
+    snapshot_outcome: str,
+    detail_row_count: int,
+) -> None:
+    extract.order_detail_snapshot_rows.append(
+        {
+            "store_code": store_code,
+            "order_code": order_code,
+            "snapshot_outcome": snapshot_outcome,
+            "detail_row_count": detail_row_count,
+        }
+    )
 
 
 def _build_headers(*, bearer_token: str | None) -> dict[str, str]:
@@ -415,6 +441,13 @@ async def collect_gst_orders_via_api(
         if booking_id is None:
             extract.booking_lookup_misses += 1
             _record_skip(extract, order_code=order_code, reason="booking_lookup_miss")
+            _record_invoice_snapshot(
+                extract,
+                store_code=store_code,
+                order_code=order_code,
+                snapshot_outcome="incomplete_or_failed",
+                detail_row_count=0,
+            )
             extract.base_rows.append(base_row)
             continue
 
@@ -435,27 +468,53 @@ async def collect_gst_orders_via_api(
         extract.invoice_retry_count += invoice_retries
         if not invoice_html:
             _record_skip(extract, order_code=order_code, reason="invoice_fetch_failed")
+            _record_invoice_snapshot(
+                extract,
+                store_code=store_code,
+                order_code=order_code,
+                snapshot_outcome="incomplete_or_failed",
+                detail_row_count=0,
+            )
             # Keep the base row so aggregate order reporting still includes the order,
             # but skip order-detail extraction when invoice content is unavailable.
             extract.base_rows.append(base_row)
             continue
 
-        _, order_mode, _, _, _ = _extract_order_info(invoice_html, order_code)
-        if order_mode:
-            base_row["customer_source"] = order_mode
-            gst_row["customer_source"] = order_mode
+        try:
+            _, order_mode, _, _, _ = _extract_order_info(invoice_html, order_code)
+            if order_mode:
+                base_row["customer_source"] = order_mode
+                gst_row["customer_source"] = order_mode
 
-        invoice_address = _extract_invoice_customer_address(invoice_html)
-        if invoice_address:
-            base_row["address"] = invoice_address
-            gst_row["address"] = invoice_address
+            invoice_address = _extract_invoice_customer_address(invoice_html)
+            if invoice_address:
+                base_row["address"] = invoice_address
+                gst_row["address"] = invoice_address
 
-        extract.order_detail_rows.extend(
-            _parse_invoice_order_details(
+            detail_rows = _parse_invoice_order_details(
                 invoice_html=invoice_html,
                 store_code=store_code,
                 order_code=order_code,
             )
+        except Exception:
+            _record_skip(extract, order_code=order_code, reason="invoice_parse_failed")
+            _record_invoice_snapshot(
+                extract,
+                store_code=store_code,
+                order_code=order_code,
+                snapshot_outcome="incomplete_or_failed",
+                detail_row_count=0,
+            )
+            extract.base_rows.append(base_row)
+            continue
+
+        extract.order_detail_rows.extend(detail_rows)
+        _record_invoice_snapshot(
+            extract,
+            store_code=store_code,
+            order_code=order_code,
+            snapshot_outcome="complete_with_rows" if detail_rows else "complete_empty",
+            detail_row_count=len(detail_rows),
         )
         extract.base_rows.append(base_row)
 
@@ -478,6 +537,7 @@ async def collect_gst_orders_via_api(
         base_rows=len(extract.base_rows),
         order_detail_rows=len(extract.order_detail_rows),
         payment_detail_rows=len(extract.payment_detail_rows),
+        order_detail_snapshot_rows=len(extract.order_detail_snapshot_rows),
         booking_lookup_hits=extract.booking_lookup_hits,
         booking_lookup_misses=extract.booking_lookup_misses,
         delivered_rows_scanned=extract.delivered_rows_scanned,

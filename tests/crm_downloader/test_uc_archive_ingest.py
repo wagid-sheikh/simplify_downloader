@@ -17,6 +17,7 @@ from app.crm_downloader.uc_orders_sync.archive_ingest import (
     FILE_PAYMENT_DETAILS,
     TABLE_ARCHIVE_BASE,
     TABLE_ARCHIVE_ORDER_DETAILS,
+    TABLE_ARCHIVE_ORDER_DETAIL_SNAPSHOTS,
     TABLE_ARCHIVE_PAYMENT_DETAILS,
     ingest_uc_archive_excels,
 )
@@ -88,8 +89,24 @@ async def _create_tables(database_url: str) -> None:
         sa.Column("addons", sa.Text),
         sa.Column("amount", sa.Numeric(12, 2)),
         sa.Column("line_hash", sa.String(64)),
+        sa.Column("ingest_row_seq", sa.Integer),
         sa.Column("source_file", sa.Text),
-        sa.UniqueConstraint("store_code", "order_code", "line_hash", name="uq_stg_uc_archive_order_details_store_order_line"),
+    )
+    sa.Table(
+        TABLE_ARCHIVE_ORDER_DETAIL_SNAPSHOTS,
+        metadata,
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("run_id", sa.Text),
+        sa.Column("run_date", sa.DateTime(timezone=True)),
+        sa.Column("cost_center", sa.String(8)),
+        sa.Column("store_code", sa.String(8)),
+        sa.Column("ingest_remarks", sa.Text),
+        sa.Column("order_code", sa.String(24)),
+        sa.Column("normalized_order_number", sa.String(32)),
+        sa.Column("snapshot_outcome", sa.String(32)),
+        sa.Column("detail_row_count", sa.Integer),
+        sa.Column("source_file", sa.Text),
+        sa.UniqueConstraint("run_id", "store_code", "normalized_order_number", name="uq_uc_order_detail_snapshots_run_order"),
     )
     payment = sa.Table(
         TABLE_ARCHIVE_PAYMENT_DETAILS,
@@ -176,7 +193,7 @@ async def test_uc_archive_happy_path_and_idempotency(tmp_path: Path) -> None:
         logger=logger,
     )
     assert second.files[FILE_BASE].updated == 1
-    assert second.files[FILE_ORDER_DETAILS].updated == 1
+    assert second.files[FILE_ORDER_DETAILS].inserted == 1
     assert second.files[FILE_PAYMENT_DETAILS].updated == 1
 
 
@@ -630,3 +647,61 @@ async def test_uc_archive_order_details_wash_services_allow_blank_item_name(tmp_
         ).one()
 
     assert "missing_required_field:item_name" not in (row.ingest_remarks or "")
+
+@pytest.mark.asyncio
+async def test_order_detail_ingest_preserves_byte_identical_rows_and_snapshots(tmp_path: Path) -> None:
+    db_url = f"sqlite+aiosqlite:///{tmp_path/'duplicates.sqlite'}"
+    await _create_tables(db_url)
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("INSERT INTO store_master (store_code, cost_center) VALUES ('UC567', 'CC01')"))
+        await session.commit()
+
+    base = _write_xlsx(
+        tmp_path / "base.xlsx",
+        ["store_code", "order_code", "pickup", "delivery", "customer_name", "customer_phone", "address", "payment_text", "instructions", "customer_source", "status", "status_date"],
+        [["UC567", "ORD-DUP", None, None, "Alice", "9999999999", None, None, None, None, "Delivered", None]],
+    )
+    details = _write_xlsx(
+        tmp_path / "details.xlsx",
+        ["store_code", "order_code", "order_mode", "order_datetime", "pickup_datetime", "delivery_datetime", "service", "hsn_sac", "item_name", "rate", "quantity", "weight", "addons", "amount"],
+        [
+            ["UC567", "ORD-DUP", "Online", "raw", None, None, "Wash", "9988", "Shirt", "10", "1", "0", None, "10"],
+            ["UC567", "ORD-DUP", "Online", "raw", None, None, "Wash", "9988", "Shirt", "10", "1", "0", None, "10"],
+        ],
+    )
+    snapshots = _write_xlsx(
+        tmp_path / "snapshots.xlsx",
+        ["store_code", "order_code", "snapshot_outcome", "detail_row_count"],
+        [["UC567", "ORD-DUP", "complete_with_rows", 2]],
+    )
+    payments = _write_xlsx(
+        tmp_path / "payments.xlsx",
+        ["store_code", "order_code", "payment_mode", "amount", "payment_date", "transaction_id"],
+        [],
+    )
+
+    result = await ingest_uc_archive_excels(
+        database_url=db_url,
+        run_id="run-dup",
+        run_date=datetime(2025, 1, 5, tzinfo=timezone.utc),
+        store_code="UC567",
+        cost_center=None,
+        base_order_info_path=base,
+        order_details_path=details,
+        payment_details_path=payments,
+        order_detail_snapshots_path=snapshots,
+        logger=get_logger("test_uc_archive_ingest_duplicates"),
+    )
+
+    assert result.files[FILE_ORDER_DETAILS].inserted == 2
+    async with session_scope(db_url) as session:
+        detail_rows = (await session.execute(sa.text("""
+            SELECT order_code, line_hash, ingest_row_seq FROM stg_uc_archive_order_details ORDER BY ingest_row_seq
+        """))).all()
+        snapshot = (await session.execute(sa.text("""
+            SELECT snapshot_outcome, detail_row_count FROM stg_uc_order_detail_snapshots WHERE order_code='ORD-DUP'
+        """))).one()
+    assert len(detail_rows) == 2
+    assert detail_rows[0].line_hash == detail_rows[1].line_hash
+    assert [row.ingest_row_seq for row in detail_rows] == [1, 2]
+    assert (snapshot.snapshot_outcome, snapshot.detail_row_count) == ("complete_with_rows", 2)

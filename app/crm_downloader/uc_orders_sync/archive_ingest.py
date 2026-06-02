@@ -20,9 +20,11 @@ from app.dashboard_downloader.json_logger import JsonLogger, log_event
 TABLE_ARCHIVE_BASE = "stg_uc_archive_orders_base"
 TABLE_ARCHIVE_ORDER_DETAILS = "stg_uc_archive_order_details"
 TABLE_ARCHIVE_PAYMENT_DETAILS = "stg_uc_archive_payment_details"
+TABLE_ARCHIVE_ORDER_DETAIL_SNAPSHOTS = "stg_uc_order_detail_snapshots"
 
 FILE_BASE = "base"
 FILE_ORDER_DETAILS = "order_details"
+FILE_ORDER_DETAIL_SNAPSHOTS = "order_detail_snapshots"
 FILE_PAYMENT_DETAILS = "payment_details"
 WARNING_SAMPLE_CAP_PER_TYPE = 3
 
@@ -30,6 +32,9 @@ REASON_MISSING_STORE_CODE = "missing_store_code"
 REASON_MISSING_ORDER_CODE = "missing_order_code"
 REASON_MISSING_LINE_HASH = "missing_line_hash"
 REASON_MISSING_REQUIRED_FIELD = "missing_required_field"
+REASON_INVALID_SNAPSHOT_OUTCOME = "invalid_snapshot_outcome"
+
+SNAPSHOT_OUTCOMES = {"complete_with_rows", "complete_empty", "incomplete_or_failed"}
 
 EXPECTED_HEADERS: dict[str, tuple[str, ...]] = {
     FILE_BASE: (
@@ -61,6 +66,12 @@ EXPECTED_HEADERS: dict[str, tuple[str, ...]] = {
         "weight",
         "addons",
         "amount",
+    ),
+    FILE_ORDER_DETAIL_SNAPSHOTS: (
+        "store_code",
+        "order_code",
+        "snapshot_outcome",
+        "detail_row_count",
     ),
     FILE_PAYMENT_DETAILS: ("store_code", "order_code", "payment_mode", "amount", "payment_date", "transaction_id"),
 }
@@ -158,6 +169,25 @@ def _stg_uc_archive_order_details_table(metadata: sa.MetaData) -> sa.Table:
         sa.Column("addons", sa.Text),
         sa.Column("amount", sa.Numeric(12, 2)),
         sa.Column("line_hash", sa.String(length=64)),
+        sa.Column("ingest_row_seq", sa.Integer),
+        sa.Column("source_file", sa.Text),
+    )
+
+
+def _stg_uc_order_detail_snapshots_table(metadata: sa.MetaData) -> sa.Table:
+    return sa.Table(
+        TABLE_ARCHIVE_ORDER_DETAIL_SNAPSHOTS,
+        metadata,
+        sa.Column("id", sa.Integer, primary_key=True),
+        sa.Column("run_id", sa.Text),
+        sa.Column("run_date", sa.DateTime(timezone=True)),
+        sa.Column("cost_center", sa.String(length=8)),
+        sa.Column("store_code", sa.String(length=8)),
+        sa.Column("ingest_remarks", sa.Text),
+        sa.Column("order_code", sa.String(length=24)),
+        sa.Column("normalized_order_number", sa.String(length=32)),
+        sa.Column("snapshot_outcome", sa.String(length=32)),
+        sa.Column("detail_row_count", sa.Integer),
         sa.Column("source_file", sa.Text),
     )
 
@@ -439,6 +469,36 @@ def _service_allows_blank_item_name(service: str | None) -> bool:
     )
 
 
+def _normalize_snapshot_row(source: Mapping[str, Any], *, source_file: str, run_id: str, run_date: datetime, cost_center: str | None) -> tuple[dict[str, Any] | None, list[str], list[str]]:
+    remarks: list[str] = []
+    rejects: list[str] = []
+    store_code = _non_blank_text(source.get("store_code"), upper=True)
+    order_code = _non_blank_text(source.get("order_code"), upper=True, collapse_spaces=True)
+    outcome = _non_blank_text(source.get("snapshot_outcome"), collapse_spaces=True)
+    if not store_code:
+        rejects.append(REASON_MISSING_STORE_CODE)
+    if not order_code:
+        rejects.append(REASON_MISSING_ORDER_CODE)
+    if outcome not in SNAPSHOT_OUTCOMES:
+        rejects.append(REASON_INVALID_SNAPSHOT_OUTCOME)
+    if cost_center is None:
+        remarks.append("missing_cost_center_mapping")
+    detail_row_count = _parse_numeric(source.get("detail_row_count"), remarks, "invalid_detail_row_count", null_as_zero=True)
+    normalized = {
+        "run_id": run_id,
+        "run_date": run_date,
+        "source_file": source_file,
+        "cost_center": cost_center,
+        "store_code": store_code,
+        "order_code": order_code,
+        "normalized_order_number": order_code,
+        "snapshot_outcome": outcome,
+        "detail_row_count": int(detail_row_count or 0),
+        "ingest_remarks": _add_remarks(remarks),
+    }
+    return (None if rejects else normalized), remarks, rejects
+
+
 def _normalize_payment_row(source: Mapping[str, Any], *, source_file: str, run_id: str, run_date: datetime, cost_center: str | None) -> tuple[dict[str, Any] | None, list[str], list[str]]:
     remarks: list[str] = []
     rejects: list[str] = []
@@ -564,6 +624,8 @@ async def _ingest_file(
             normalized, remarks, row_rejects = _normalize_base_row(row, source_file=source_path.name, run_id=run_id, run_date=run_date, cost_center=resolved_cc)
         elif file_kind == FILE_ORDER_DETAILS:
             normalized, remarks, row_rejects = _normalize_order_details_row(row, source_file=source_path.name, run_id=run_id, run_date=run_date, cost_center=resolved_cc)
+        elif file_kind == FILE_ORDER_DETAIL_SNAPSHOTS:
+            normalized, remarks, row_rejects = _normalize_snapshot_row(row, source_file=source_path.name, run_id=run_id, run_date=run_date, cost_center=resolved_cc)
         else:
             normalized, remarks, row_rejects = _normalize_payment_row(row, source_file=source_path.name, run_id=run_id, run_date=run_date, cost_center=resolved_cc)
         result.warnings += len(remarks)
@@ -586,16 +648,21 @@ async def _ingest_file(
         assert normalized is not None
         normalized_rows.append(normalized)
 
-    dedupe_keys_map = {
-        FILE_BASE: ["store_code", "order_code"],
-        FILE_ORDER_DETAILS: ["store_code", "order_code", "line_hash"],
-        FILE_PAYMENT_DETAILS: ["store_code", "order_code", "payment_date_raw", "payment_mode", "amount", "transaction_id"],
-    }
-    unique_map: dict[tuple[Any, ...], dict[str, Any]] = {}
-    for row in normalized_rows:
-        key = _key_tuple(row, dedupe_keys_map[file_kind])
-        unique_map[key] = row
-    upsert_rows = list(unique_map.values())
+    if file_kind == FILE_ORDER_DETAILS:
+        upsert_rows = list(normalized_rows)
+        for ingest_row_seq, row in enumerate(upsert_rows, start=1):
+            row["ingest_row_seq"] = ingest_row_seq
+    else:
+        dedupe_keys_map = {
+            FILE_BASE: ["store_code", "order_code"],
+            FILE_ORDER_DETAIL_SNAPSHOTS: ["run_id", "store_code", "normalized_order_number"],
+            FILE_PAYMENT_DETAILS: ["store_code", "order_code", "payment_date_raw", "payment_mode", "amount", "transaction_id"],
+        }
+        unique_map: dict[tuple[Any, ...], dict[str, Any]] = {}
+        for row in normalized_rows:
+            key = _key_tuple(row, dedupe_keys_map[file_kind])
+            unique_map[key] = row
+        upsert_rows = list(unique_map.values())
 
     if not upsert_rows:
         result.reject_reasons = dict(reject_counter)
@@ -612,8 +679,12 @@ async def _ingest_file(
                 key_names = ["store_code", "order_code"]
         elif file_kind == FILE_ORDER_DETAILS:
                 table = _stg_uc_archive_order_details_table(metadata)
-                key_cols = [table.c.store_code, table.c.order_code, table.c.line_hash]
-                key_names = ["store_code", "order_code", "line_hash"]
+                key_cols = []
+                key_names = []
+        elif file_kind == FILE_ORDER_DETAIL_SNAPSHOTS:
+                table = _stg_uc_order_detail_snapshots_table(metadata)
+                key_cols = [table.c.run_id, table.c.store_code, table.c.normalized_order_number]
+                key_names = ["run_id", "store_code", "normalized_order_number"]
         else:
                 table = _stg_uc_archive_payment_details_table(metadata)
                 key_cols = [
@@ -626,12 +697,29 @@ async def _ingest_file(
                 ]
                 key_names = ["store_code", "order_code", "payment_date_raw", "payment_mode", "amount", "transaction_id"]
 
-        where_clause = _existing_rows_predicate(table, key_names, upsert_rows)
-        existing_rows = (await session.execute(sa.select(table).where(where_clause))).mappings().all()
-        existing_keys = {_key_tuple(r, key_names) for r in existing_rows}
-        use_sqlite = bind.url.get_backend_name().startswith("sqlite")
-        stmt = _build_upsert_statement(table, upsert_rows, key_cols, use_sqlite=use_sqlite)
-        await session.execute(stmt)
+        if file_kind == FILE_ORDER_DETAILS:
+            scoped_store_codes = {row["store_code"] for row in upsert_rows}
+            store_predicate = (
+                table.c.store_code == store_code
+                if store_code is not None
+                else table.c.store_code.in_(scoped_store_codes)
+            )
+            detail_scope = sa.and_(table.c.run_id == run_id, store_predicate)
+            existing_detail_count = (
+                await session.execute(
+                    sa.select(sa.func.count()).select_from(table).where(detail_scope)
+                )
+            ).scalar_one()
+            await session.execute(sa.delete(table).where(detail_scope))
+            existing_keys: set[tuple[Any, ...]] = {()} if existing_detail_count else set()
+            await session.execute(sa.insert(table).values(upsert_rows))
+        else:
+            where_clause = _existing_rows_predicate(table, key_names, upsert_rows)
+            existing_rows = (await session.execute(sa.select(table).where(where_clause))).mappings().all()
+            existing_keys = {_key_tuple(r, key_names) for r in existing_rows}
+            use_sqlite = bind.url.get_backend_name().startswith("sqlite")
+            stmt = _build_upsert_statement(table, upsert_rows, key_cols, use_sqlite=use_sqlite)
+            await session.execute(stmt)
         await session.commit()
 
     for row in upsert_rows:
@@ -666,6 +754,7 @@ async def ingest_uc_archive_excels(
     order_details_path: str | Path,
     payment_details_path: str | Path,
     logger: JsonLogger,
+    order_detail_snapshots_path: str | Path | None = None,
     cost_center_resolver: Callable[[str], str | None] | None = None,
     include_full_warning_samples: bool = False,
 ) -> ArchiveIngestResult:
@@ -690,8 +779,15 @@ async def ingest_uc_archive_excels(
         base_file=str(paths[FILE_BASE]),
         order_details_file=str(paths[FILE_ORDER_DETAILS]),
         payment_details_file=str(paths[FILE_PAYMENT_DETAILS]),
+        order_detail_snapshots_file=str(order_detail_snapshots_path) if order_detail_snapshots_path else None,
     )
-    for file_kind in [FILE_BASE, FILE_ORDER_DETAILS, FILE_PAYMENT_DETAILS]:
+    if order_detail_snapshots_path is not None:
+        paths[FILE_ORDER_DETAIL_SNAPSHOTS] = Path(order_detail_snapshots_path)
+    ingest_order = [FILE_BASE, FILE_ORDER_DETAILS]
+    if order_detail_snapshots_path is not None:
+        ingest_order.append(FILE_ORDER_DETAIL_SNAPSHOTS)
+    ingest_order.append(FILE_PAYMENT_DETAILS)
+    for file_kind in ingest_order:
         file_result, file_rejects = await _ingest_file(
             database_url=database_url,
             file_kind=file_kind,

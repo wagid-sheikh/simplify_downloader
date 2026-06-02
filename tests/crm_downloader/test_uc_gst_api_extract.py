@@ -90,6 +90,14 @@ def test_collect_gst_orders_via_api_keeps_base_row_when_invoice_fetch_fails(monk
     assert extract.base_rows[0]["address"] is None
     assert extract.base_rows[0]["instructions"] == "Handle carefully"
     assert extract.skipped_order_counters["invoice_fetch_failed"] == 1
+    assert extract.order_detail_snapshot_rows == [
+        {
+            "store_code": "UC610",
+            "order_code": "UC610-0001",
+            "snapshot_outcome": "incomplete_or_failed",
+            "detail_row_count": 0,
+        }
+    ]
     assert extract.invoice_retry_count == 0
 
 
@@ -163,6 +171,7 @@ def test_collect_gst_orders_via_api_builds_payment_rows_from_payment_details(mon
     assert extract.payment_detail_rows[1]["payment_mode"] == "UNKNOWN"
     assert extract.payment_detail_rows[1]["amount"] == 136
     assert extract.skipped_order_counters["payment_mode_unmapped"] == 1
+    assert extract.order_detail_snapshot_rows[0]["snapshot_outcome"] == "complete_empty"
     assert extract.invoice_retry_count == 0
 
 
@@ -215,6 +224,7 @@ def test_collect_gst_orders_via_api_keeps_gst_and_base_rows_when_booking_lookup_
     assert len(extract.base_rows) == 1
     assert extract.booking_lookup_misses == 1
     assert extract.skipped_order_counters["booking_lookup_miss"] == 1
+    assert extract.order_detail_snapshot_rows[0]["snapshot_outcome"] == "incomplete_or_failed"
 
 
 def test_collect_gst_orders_via_api_collects_disjoint_delivered_payment_rows(monkeypatch) -> None:
