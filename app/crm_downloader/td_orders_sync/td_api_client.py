@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 from urllib.parse import parse_qs, unquote, urlparse
 from playwright.async_api import BrowserContext, Error as PlaywrightError, Frame
 from app.crm_downloader.td_orders_sync.td_api_compare import build_api_request_metadata, parse_token_expiry
@@ -156,6 +156,7 @@ class TdApiFetchResult:
     orders_rows: list[dict[str, Any]] = field(default_factory=list)
     sales_rows: list[dict[str, Any]] = field(default_factory=list)
     garments_rows: list[dict[str, Any]] = field(default_factory=list)
+    garment_order_snapshots: list[dict[str, Any]] = field(default_factory=list)
     request_metadata: list[dict[str, Any]] = field(default_factory=list)
     endpoint_errors: dict[str, str] = field(default_factory=dict)
     endpoint_error_diagnostics: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -375,6 +376,11 @@ class TdApiClient:
         self._log_endpoint_total(endpoint=ORDERS_ENDPOINT, total_rows=len(orders_rows))
         self._log_endpoint_total(endpoint=SALES_ENDPOINT, total_rows=len(sales_rows))
         self._log_endpoint_total(endpoint=GARMENTS_ENDPOINT, total_rows=len(garments_rows))
+        garment_order_snapshots = build_garment_order_snapshots(
+            order_rows=orders_rows,
+            garment_rows=garments_rows,
+            endpoint_health=endpoint_health.get(GARMENTS_ENDPOINT),
+        )
 
         return TdApiFetchResult(
             raw_orders_payload=order_payload,
@@ -383,6 +389,7 @@ class TdApiClient:
             orders_rows=orders_rows,
             sales_rows=sales_rows,
             garments_rows=garments_rows,
+            garment_order_snapshots=garment_order_snapshots,
             request_metadata=metadata,
             endpoint_errors=errors,
             endpoint_error_diagnostics=error_diagnostics,
@@ -2168,6 +2175,70 @@ def _try_json_loads(value: str) -> Any | None:
     except Exception:
         return None
 
+
+
+def _order_number_for_snapshot(row: Mapping[str, Any]) -> str:
+    return str(
+        row.get("order_no")
+        or row.get("order_number")
+        or row.get("orderNo")
+        or row.get("orderNumber")
+        or row.get("ordernumber")
+        or row.get("orderno")
+        or ""
+    ).strip()
+
+
+def build_garment_order_snapshots(
+    *,
+    order_rows: Sequence[Mapping[str, Any]],
+    garment_rows: Sequence[Mapping[str, Any]],
+    endpoint_health: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Build the per-order TD garment snapshot contract consumed by final-table replacement.
+
+    The flat garments payload cannot represent orders with zero garments, so this scope is
+    intentionally derived from the inspected order report plus any garment-only orphan
+    references.  Final replacement is safe only when the endpoint health says the garment
+    fetch itself completed.
+    """
+    health = dict(endpoint_health or {})
+    fetch_complete = str(health.get("garments_fetch_completeness") or "unknown") == "complete"
+    order_numbers: list[str] = []
+    seen: set[str] = set()
+    for row in order_rows:
+        order_number = _order_number_for_snapshot(row)
+        if order_number and order_number not in seen:
+            seen.add(order_number)
+            order_numbers.append(order_number)
+
+    rows_by_order: dict[str, int] = {}
+    for row in garment_rows:
+        order_number = _order_number_for_snapshot(row)
+        if not order_number:
+            continue
+        rows_by_order[order_number] = rows_by_order.get(order_number, 0) + 1
+        if order_number not in seen:
+            seen.add(order_number)
+            order_numbers.append(order_number)
+
+    snapshots: list[dict[str, Any]] = []
+    for order_number in order_numbers:
+        row_count = rows_by_order.get(order_number, 0)
+        if not fetch_complete:
+            outcome = "incomplete_or_failed"
+        elif row_count > 0:
+            outcome = "complete_with_rows"
+        else:
+            outcome = "complete_empty"
+        snapshots.append(
+            {
+                "order_number": order_number,
+                "garment_snapshot_outcome": outcome,
+                "garment_row_count": row_count,
+            }
+        )
+    return snapshots
 
 def _extract_rows(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, list):

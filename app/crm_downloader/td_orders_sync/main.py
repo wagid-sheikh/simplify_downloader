@@ -218,6 +218,14 @@ def _compare_mismatch_free(metrics: Mapping[str, Any]) -> bool:
     )
 
 
+def _compare_quality_passed(metrics: Mapping[str, Any]) -> bool:
+    return (
+        int(metrics.get("missing_in_api") or 0) <= _int_env("TD_GARMENT_COMPARE_MAX_MISSING", 0)
+        and int(metrics.get("amount_mismatches") or 0) <= _int_env("TD_GARMENT_COMPARE_MAX_AMOUNT_MISMATCH", 0)
+        and int(metrics.get("status_mismatches") or 0) <= _int_env("TD_GARMENT_COMPARE_MAX_STATUS_MISMATCH", 0)
+    )
+
+
 def _build_garments_health_summary(
     *,
     api_fetch_result: TdApiFetchResult | None,
@@ -226,6 +234,15 @@ def _build_garments_health_summary(
     endpoint_health = dict((api_fetch_result.endpoint_health or {}).get("/garments/details") or {}) if api_fetch_result else {}
     row_count = int(garment_ingest_result.row_count or 0) if garment_ingest_result else 0
     orphan_rows = int(garment_ingest_result.orphan_rows or 0) if garment_ingest_result else 0
+    replacement_metrics = {
+        "authoritative_orders_inspected": int(garment_ingest_result.authoritative_orders_inspected or 0) if garment_ingest_result else 0,
+        "complete_with_rows_orders": int(garment_ingest_result.complete_with_rows_orders or 0) if garment_ingest_result else 0,
+        "complete_empty_orders": int(garment_ingest_result.complete_empty_orders or 0) if garment_ingest_result else 0,
+        "replacement_skipped_incomplete_orders": int(garment_ingest_result.replacement_skipped_incomplete_orders or 0) if garment_ingest_result else 0,
+        "deleted_final_rows": int(garment_ingest_result.deleted_final_rows or 0) if garment_ingest_result else 0,
+        "inserted_final_rows": int(garment_ingest_result.inserted_final_rows or 0) if garment_ingest_result else 0,
+        "staging_rows_written": int(garment_ingest_result.staging_rows or 0) if garment_ingest_result else 0,
+    }
     completeness = str(endpoint_health.get("garments_fetch_completeness") or "unknown")
     incomplete_reason = endpoint_health.get("garments_incomplete_reason")
     if orphan_rows > 0:
@@ -248,6 +265,7 @@ def _build_garments_health_summary(
         "garments_expected_page_count": endpoint_health.get("garments_expected_page_count"),
         "garments_timeout_count": int(endpoint_health.get("garments_timeout_count") or 0),
         "garments_retry_count": int(endpoint_health.get("garments_retry_count") or 0),
+        **replacement_metrics,
     }
 
 
@@ -8489,11 +8507,15 @@ async def _run_store_discovery(
             and config.database_url
             and getattr(store, "cost_center", None)
             and "api_fetch_result" in locals()
-            and api_fetch_result.garments_rows
+            and (api_fetch_result.garments_rows or api_fetch_result.garment_order_snapshots)
         ):
             try:
+                garments_endpoint_health = dict((api_fetch_result.endpoint_health or {}).get("/garments/details") or {})
+                replacement_allowed = str(garments_endpoint_health.get("garments_fetch_completeness") or "unknown") == "complete"
                 garment_ingest_result = await ingest_td_garment_rows(
                     rows=api_fetch_result.garments_rows,
+                    authoritative_order_scope=api_fetch_result.garment_order_snapshots,
+                    replacement_allowed=replacement_allowed,
                     store_code=store.store_code,
                     cost_center=store.cost_center,
                     run_id=run_id,
@@ -8505,14 +8527,19 @@ async def _run_store_discovery(
                 log_event(
                     logger=store_logger,
                     phase="garment_ingest",
-                    message="TD garment sync completed",
+                    message="TD garment snapshot replacement completed" if replacement_allowed else "TD garment snapshot replacement skipped",
+                    status="success" if replacement_allowed else "warning",
                     store_code=store.store_code,
-                    row_count=garment_ingest_result.row_count,
-                    source_id_duplicates=garment_ingest_result.source_id_duplicate_rows,
-                    metric_definition="Counts unexpected duplicate occurrences of non-empty source IDs (api_line_item_id/api_garment_id); repeated same-item orders without source IDs are not counted.",
-                    changed_rows=garment_ingest_result.changed_rows,
-                    late_updates=garment_ingest_result.late_updates,
+                    authoritative_orders_inspected=garment_ingest_result.authoritative_orders_inspected,
+                    complete_with_rows_orders=garment_ingest_result.complete_with_rows_orders,
+                    complete_empty_orders=garment_ingest_result.complete_empty_orders,
+                    replacement_skipped_incomplete_orders=garment_ingest_result.replacement_skipped_incomplete_orders,
+                    deleted_final_rows=garment_ingest_result.deleted_final_rows,
+                    inserted_final_rows=garment_ingest_result.inserted_final_rows,
+                    staging_rows_written=garment_ingest_result.staging_rows,
                     orphan_rows=garment_ingest_result.orphan_rows,
+                    replacement_allowed=replacement_allowed,
+                    garments_fetch_completeness=garments_endpoint_health.get("garments_fetch_completeness"),
                 )
             except Exception as exc:
                 log_event(
@@ -8535,10 +8562,13 @@ async def _run_store_discovery(
         if orders_report and garment_ingest_result:
             orders_report.garment_reconciliation = {
                 "row_count": garment_ingest_result.row_count,
-                "source_id_duplicates": garment_ingest_result.source_id_duplicate_rows,
-                "metric_definition": "Counts unexpected duplicate occurrences of non-empty source IDs (api_line_item_id/api_garment_id); historical 'duplicates' values were based on synthetic line_item_uid frequency and are not directly comparable.",
-                "changed_rows": garment_ingest_result.changed_rows,
-                "late_updates": garment_ingest_result.late_updates,
+                "authoritative_orders_inspected": garment_ingest_result.authoritative_orders_inspected,
+                "complete_with_rows_orders": garment_ingest_result.complete_with_rows_orders,
+                "complete_empty_orders": garment_ingest_result.complete_empty_orders,
+                "replacement_skipped_incomplete_orders": garment_ingest_result.replacement_skipped_incomplete_orders,
+                "deleted_final_rows": garment_ingest_result.deleted_final_rows,
+                "inserted_final_rows": garment_ingest_result.inserted_final_rows,
+                "staging_rows_written": garment_ingest_result.staging_rows,
                 "orphan_rows": garment_ingest_result.orphan_rows,
             }
 

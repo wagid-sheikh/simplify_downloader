@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -28,6 +28,12 @@ class TdGarmentIngestResult:
     late_updates: int
     orphan_rows: int
     warnings: list[str] = field(default_factory=list)
+    authoritative_orders_inspected: int = 0
+    complete_with_rows_orders: int = 0
+    complete_empty_orders: int = 0
+    replacement_skipped_incomplete_orders: int = 0
+    deleted_final_rows: int = 0
+    inserted_final_rows: int = 0
 
 
 def stg_td_garments_table(metadata: sa.MetaData) -> sa.Table:
@@ -93,6 +99,52 @@ def order_line_items_table(metadata: sa.MetaData) -> sa.Table:
     )
 
 
+
+def _order_number_from_mapping(row: Mapping[str, Any]) -> str:
+    return str(
+        row.get("order_no")
+        or row.get("order_number")
+        or row.get("orderNo")
+        or row.get("orderNumber")
+        or ""
+    ).strip()
+
+
+def _snapshot_outcome_from_mapping(row: Mapping[str, Any]) -> str:
+    raw = str(
+        row.get("outcome")
+        or row.get("garment_snapshot_outcome")
+        or row.get("garments_snapshot_outcome")
+        or row.get("status")
+        or ""
+    ).strip().lower()
+    if raw in {"complete_with_rows", "complete_empty", "incomplete_or_failed"}:
+        return raw
+    if raw in {"complete", "with_rows", "rows"}:
+        return "complete_with_rows"
+    if raw in {"empty", "no_rows", "zero_rows"}:
+        return "complete_empty"
+    return "incomplete_or_failed"
+
+
+def _authoritative_scope_from_rows(
+    *,
+    authoritative_order_scope: Sequence[Mapping[str, Any]] | None,
+    normalized_by_order: Mapping[str, list[dict[str, Any]]],
+    replacement_allowed: bool,
+) -> dict[str, str]:
+    scope: dict[str, str] = {}
+    if authoritative_order_scope is not None:
+        for item in authoritative_order_scope:
+            order_number = _order_number_from_mapping(item)
+            if not order_number:
+                continue
+            scope[order_number] = _snapshot_outcome_from_mapping(item)
+        return scope
+
+    fallback_outcome = "complete_with_rows" if replacement_allowed else "incomplete_or_failed"
+    return {order_number: fallback_outcome for order_number in normalized_by_order}
+
 def _parse_decimal(value: Any) -> Decimal | None:
     if value in (None, ""):
         return None
@@ -149,6 +201,8 @@ async def ingest_td_garment_rows(
     window_from_date: date,
     window_to_date: date,
     database_url: str,
+    authoritative_order_scope: Sequence[Mapping[str, Any]] | None = None,
+    replacement_allowed: bool = True,
 ) -> TdGarmentIngestResult:
     metadata = sa.MetaData()
     stg_table = stg_td_garments_table(metadata)
@@ -159,13 +213,7 @@ async def ingest_td_garment_rows(
     normalized: list[dict[str, Any]] = []
 
     for row_seq, row in enumerate(rows, start=1):
-        order_number = str(
-            row.get("order_no")
-            or row.get("order_number")
-            or row.get("orderNo")
-            or row.get("orderNumber")
-            or ""
-        ).strip()
+        order_number = _order_number_from_mapping(row)
         if not order_number:
             warnings.append("Skipped garment row without order number")
             continue
@@ -220,8 +268,23 @@ async def ingest_td_garment_rows(
         if isinstance(r.get("order_date"), datetime) and r["order_date"].date() < window_from_date
     )
 
-    if not normalized:
-        return TdGarmentIngestResult(0, 0, 0, 0, 0, 0, 0, source_id_duplicate_rows, 0, late_updates, 0, warnings)
+    normalized_by_order: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in normalized:
+        normalized_by_order[row["order_number"]].append(row)
+    authoritative_scope = _authoritative_scope_from_rows(
+        authoritative_order_scope=authoritative_order_scope,
+        normalized_by_order=normalized_by_order,
+        replacement_allowed=replacement_allowed,
+    )
+    if not replacement_allowed:
+        authoritative_scope = {order_number: "incomplete_or_failed" for order_number in authoritative_scope}
+
+    authoritative_orders_inspected = len(authoritative_scope)
+    complete_with_rows_orders = sum(1 for outcome in authoritative_scope.values() if outcome == "complete_with_rows")
+    complete_empty_orders = sum(1 for outcome in authoritative_scope.values() if outcome == "complete_empty")
+    replacement_skipped_incomplete_orders = sum(
+        1 for outcome in authoritative_scope.values() if outcome == "incomplete_or_failed"
+    )
 
     async with session_scope(database_url) as session:
         bind = session.bind
@@ -258,51 +321,81 @@ async def ingest_td_garment_rows(
             }
             await session.execute(_make_insert(stg_table, stg_values, use_sqlite=use_sqlite))
 
-            final_values = {
-                "run_id": run_id,
-                "run_date": run_date,
-                "cost_center": cost_center,
-                "store_code": store_code,
-                "order_id": order_id,
-                "order_number": row["order_number"],
-                "api_order_id": row.get("api_order_id"),
-                "api_line_item_id": row.get("api_line_item_id"),
-                "api_garment_id": row.get("api_garment_id"),
-                "line_item_key": row["line_item_key"],
-                "line_item_uid": row["line_item_uid"],
-                "garment_name": row.get("garment_name"),
-                "service_name": row.get("service_name"),
-                "quantity": row.get("quantity"),
-                "weight": row.get("weight"),
-                "amount": row.get("amount"),
-                "order_date": row.get("order_date"),
-                "updated_at": row.get("updated_at"),
-                "status": row.get("status"),
-                "ingest_row_seq": row["ingest_row_seq"],
-                "is_orphan": is_orphan,
-                "ingest_remarks": remarks,
-            }
-            await session.execute(_make_insert(line_items_table, final_values, use_sqlite=use_sqlite))
+        deleted_final_rows = 0
+        inserted_final_rows = 0
+        replaceable_orders = [
+            order_number
+            for order_number, outcome in authoritative_scope.items()
+            if outcome in {"complete_with_rows", "complete_empty"}
+        ]
+        for order_number in replaceable_orders:
+            delete_result = await session.execute(
+                sa.delete(line_items_table).where(
+                    line_items_table.c.cost_center == cost_center,
+                    line_items_table.c.order_number == order_number,
+                )
+            )
+            deleted_final_rows += max(int(delete_result.rowcount or 0), 0)
+
+        for order_number, outcome in authoritative_scope.items():
+            if outcome != "complete_with_rows":
+                continue
+            for row in normalized_by_order.get(order_number, []):
+                order_id = order_map.get(row["order_number"])
+                is_orphan = order_id is None
+                remarks = "ORPHAN_ORDER_REFERENCE: missing orders.id for (cost_center, order_number)" if is_orphan else ""
+                final_values = {
+                    "run_id": run_id,
+                    "run_date": run_date,
+                    "cost_center": cost_center,
+                    "store_code": store_code,
+                    "order_id": order_id,
+                    "order_number": row["order_number"],
+                    "api_order_id": row.get("api_order_id"),
+                    "api_line_item_id": row.get("api_line_item_id"),
+                    "api_garment_id": row.get("api_garment_id"),
+                    "line_item_key": row["line_item_key"],
+                    "line_item_uid": row["line_item_uid"],
+                    "garment_name": row.get("garment_name"),
+                    "service_name": row.get("service_name"),
+                    "quantity": row.get("quantity"),
+                    "weight": row.get("weight"),
+                    "amount": row.get("amount"),
+                    "order_date": row.get("order_date"),
+                    "updated_at": row.get("updated_at"),
+                    "status": row.get("status"),
+                    "ingest_row_seq": row["ingest_row_seq"],
+                    "is_orphan": is_orphan,
+                    "ingest_remarks": remarks,
+                }
+                await session.execute(_make_insert(line_items_table, final_values, use_sqlite=use_sqlite))
+                inserted_final_rows += 1
 
         await session.commit()
 
     total = len(normalized)
     stg_inserted = total
-    final_inserted = total
+    final_inserted = inserted_final_rows
 
     return TdGarmentIngestResult(
         staging_rows=total,
         staging_inserted=stg_inserted,
         staging_updated=total - stg_inserted,
-        final_rows=total,
+        final_rows=inserted_final_rows,
         final_inserted=final_inserted,
-        final_updated=total - final_inserted,
+        final_updated=0,
         row_count=total,
         source_id_duplicate_rows=source_id_duplicate_rows,
         changed_rows=0,
         late_updates=late_updates,
         orphan_rows=orphan_rows,
         warnings=warnings,
+        authoritative_orders_inspected=authoritative_orders_inspected,
+        complete_with_rows_orders=complete_with_rows_orders,
+        complete_empty_orders=complete_empty_orders,
+        replacement_skipped_incomplete_orders=replacement_skipped_incomplete_orders,
+        deleted_final_rows=deleted_final_rows,
+        inserted_final_rows=inserted_final_rows,
     )
 
 
