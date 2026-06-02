@@ -408,3 +408,67 @@ def test_td_leads_wrapper_logs_operational_notification_delivery_success(tmp_pat
     log_text = _latest_log_text(repo_root)
     assert "[wrapper notification] status=watchdog_timeout delivery=success" in log_text
     assert '{"emails_sent": 1}' in log_text
+
+
+def _install_wrapper_notification_helper(repo_root: Path, scripts_dir: Path, poetry_body: str) -> Path:
+    helper_path = repo_root / "app" / "crm_downloader" / "td_leads_sync" / "wrapper_notifications.py"
+    helper_path.parent.mkdir(parents=True)
+    helper_path.write_text("# marker file for wrapper helper availability\n", encoding="utf-8")
+    bin_dir = repo_root / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    _write_executable(bin_dir / "poetry", poetry_body)
+    return bin_dir
+
+
+def test_td_leads_success_recovery_probe_timeout_does_not_retain_lock(tmp_path: Path) -> None:
+    repo_root, scripts_dir = _prepare_repo(tmp_path)
+    _write_executable(scripts_dir / "run_local_td_leads_sync.sh", "#!/usr/bin/env bash\nexit 0\n")
+    bin_dir = _install_wrapper_notification_helper(repo_root, scripts_dir, "#!/usr/bin/env bash\nexec sleep 30\n")
+    env = os.environ.copy()
+    env.update({"TMPDIR": str(repo_root), "CRON_PATH": str(bin_dir), "TD_LEADS_WRAPPER_NOTIFICATION_TIMEOUT_SECONDS": "1", "KILL_WAIT_SECONDS": "1"})
+
+    result = subprocess.run([str(scripts_dir / "cron_run_td_leads_sync.sh")], cwd=repo_root, env=env, check=False, timeout=8)
+
+    assert result.returncode == 0
+    assert not (repo_root / "tmp" / "cron_run_td_leads_sync.lock").exists()
+    log_text = _latest_log_text(repo_root)
+    assert "status=fresh_run_succeeded_after_stale_owner_terminated delivery=timeout" in log_text
+    assert "timeout_process_group_verification=success" in log_text
+
+
+def test_td_leads_notification_failure_does_not_retain_lock(tmp_path: Path) -> None:
+    repo_root, scripts_dir = _prepare_repo(tmp_path)
+    _write_executable(scripts_dir / "run_local_td_leads_sync.sh", "#!/usr/bin/env bash\nexit 0\n")
+    bin_dir = _install_wrapper_notification_helper(repo_root, scripts_dir, "#!/usr/bin/env bash\nprintf 'simulated SMTP or DB failure\\n' >&2\nexit 1\n")
+    env = os.environ.copy()
+    env.update({"TMPDIR": str(repo_root), "CRON_PATH": str(bin_dir)})
+
+    result = subprocess.run([str(scripts_dir / "cron_run_td_leads_sync.sh")], cwd=repo_root, env=env, check=False, timeout=8)
+
+    assert result.returncode == 0
+    assert not (repo_root / "tmp" / "cron_run_td_leads_sync.lock").exists()
+    assert "delivery=failure" in _latest_log_text(repo_root)
+
+
+def test_td_leads_stale_reacquisition_precedes_stalled_alert_helper(tmp_path: Path) -> None:
+    repo_root, scripts_dir = _prepare_repo(tmp_path)
+    lock_dir = repo_root / "tmp" / "cron_run_td_leads_sync.lock"
+    _write_executable(scripts_dir / "run_local_td_leads_sync.sh", "#!/usr/bin/env bash\nif mkdir \"${TMPDIR:-/tmp}/hold-once\" 2>/dev/null; then exec sleep 30; fi\nexit 0\n")
+    bin_dir = _install_wrapper_notification_helper(repo_root, scripts_dir, "#!/usr/bin/env bash\nexec sleep 30\n")
+    env = os.environ.copy()
+    env.update({"TMPDIR": str(repo_root), "CRON_PATH": str(bin_dir), "TD_LEADS_STALE_OWNER_SECONDS": "0", "STALE_OWNER_TERM_WAIT_SECONDS": "1", "STALE_OWNER_KILL_WAIT_SECONDS": "1", "TD_LEADS_WRAPPER_NOTIFICATION_TIMEOUT_SECONDS": "1", "KILL_WAIT_SECONDS": "1"})
+    owner = subprocess.Popen([str(scripts_dir / "cron_run_td_leads_sync.sh")], cwd=repo_root, env=env, start_new_session=True)
+    try:
+        _wait_for_path(lock_dir / "pid")
+        result = subprocess.run([str(scripts_dir / "cron_run_td_leads_sync.sh")], cwd=repo_root, env=env, check=False, timeout=12)
+        owner.wait(timeout=5)
+
+        assert result.returncode == 0
+        assert not lock_dir.exists()
+        log_text = _latest_log_text(repo_root)
+        assert log_text.index("Fresh lock acquired after stale cleanup") < log_text.index("status=stale_owner_terminated delivery=timeout")
+        assert "timeout_process_group_verification=success" in log_text
+    finally:
+        if owner.poll() is None:
+            os.killpg(owner.pid, signal.SIGKILL)
+            owner.wait()

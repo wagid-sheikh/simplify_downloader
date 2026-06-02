@@ -171,3 +171,19 @@ async def test_missing_notification_profile_is_reported_without_losing_telemetry
 
 async def _async_result(value):
     return value
+
+
+@pytest.mark.asyncio
+async def test_smtp_failure_propagates_to_bounded_shell_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(notifications, "_load_previous_events", lambda _url: _async_result([]))
+    monkeypatch.setattr(notifications, "_persist_event", lambda *_args, **_kwargs: _async_result("tdlw-smtp-failure"))
+
+    async def _raise_smtp_failure(*_args, **_kwargs):
+        raise RuntimeError("simulated SMTP failure")
+
+    monkeypatch.setattr(notifications, "send_notifications_for_run", _raise_smtp_failure)
+
+    with pytest.raises(RuntimeError, match="simulated SMTP failure"):
+        await notifications.process_wrapper_event(_event())

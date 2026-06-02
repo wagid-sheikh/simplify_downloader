@@ -166,7 +166,14 @@ path, owner PID/PGID/age, recovery action, and resulting status. Delivery uses a
 dedicated DB-driven profile/template. Repeated suppressions for the same active
 owner are persisted but deduplicated after the initial email; a successfully
 completed fresh run after stale-owner termination emits a recovery email. The
-wrapper log records helper delivery success or failure. Operational event content
+wrapper log records helper delivery success, failure, or timeout. The helper always runs
+in a dedicated child process group bounded by
+`TD_LEADS_WRAPPER_NOTIFICATION_TIMEOUT_SECONDS=30`; timeout handling terminates and
+verifies the full helper process group, then continues lock-safe recovery or cleanup.
+Stale-owner recovery reacquires the fresh lock before attempting best-effort alert
+persistence or SMTP. Successful runs retain a bounded recovery probe because only the
+DB-backed helper can determine whether an unresolved prior incident needs closure.
+Operational event content
 must not include credentials, CRM payloads, customer names, mobile numbers, or
 scraped rows.
 
@@ -191,7 +198,13 @@ cannot hold its local lock or block required report generation indefinitely. The
 TD-leads wrapper uses the same dedicated-session pattern for its local sync step:
 on timeout it sends group `TERM`, waits a bounded grace period, escalates group
 `KILL` while any non-zombie member survives, verifies that the group disappeared,
-and only then allows its cleanup trap to remove the local lock.
+and only then allows its cleanup trap to remove the local lock. Inside the Python
+TD-leads flow, browser launch, storage-state writes, scheduler navigation, ingest,
+order-history/reporting enrichment, and browser cleanup are application-bounded.
+After an overall worker-gather timeout, cancellation drain is separately bounded by
+`TD_LEADS_CANCELLATION_DRAIN_TIMEOUT_SECONDS=10`; a resistant task is logged and
+failed-summary persistence continues. The shell watchdog remains the final
+process-level safety boundary for any abandoned async work.
 
 If a TD-leads or orders-and-reports run leaves a stale lock behind, inspect the
 specific pipeline before any manual termination. The general operator helper

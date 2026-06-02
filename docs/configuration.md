@@ -46,15 +46,17 @@ Recommended variables for the cron env file:
 | `CRON_PATH` | Extra PATH entries needed for Poetry/Python. |
 | `ENV_FILE` | (Optional) Override the env file path; defaults to `scripts/cron.env`. |
 | `TD_LEADS_MAX_RUNTIME_SECONDS` | TD-leads sync watchdog; defaults explicitly to `300`. A deprecated direct per-invocation `MAX_RUNTIME_SECONDS` compatibility override takes precedence when it is set. |
-| `TD_LEADS_BROWSER_OPERATION_TIMEOUT_SECONDS` | DB-backed Python deadline for each ordinary TD-leads Playwright operation, including context/page creation, session checks, login/home waits, and each status-bucket scrape; defaults to `90`. This is intentionally separate from the outer shell watchdog. |
+| `TD_LEADS_BROWSER_OPERATION_TIMEOUT_SECONDS` | DB-backed Python deadline for each ordinary TD-leads phase, including browser launch, context/page creation, session checks, login/home waits, storage-state writes, scheduler navigation, each status-bucket scrape, ingest, and order-history enrichment; defaults to `90`. This is intentionally separate from the outer shell watchdog. |
 | `TD_LEADS_BROWSER_CLEANUP_TIMEOUT_SECONDS` | DB-backed Python deadline for each TD-leads Playwright context/browser cleanup phase; defaults to `10`. |
 | `TD_LEADS_STORE_WORKER_TIMEOUT_SECONDS` | DB-backed Python deadline for one TD-leads store worker; defaults to `240`. |
 | `TD_LEADS_GATHER_TIMEOUT_SECONDS` | DB-backed Python deadline for the complete TD-leads worker collection; defaults to `270`. Pending workers are cancelled before failed-run summary persistence and notification delivery; keep this below the shell watchdog configured for the deployment workload. |
+| `TD_LEADS_CANCELLATION_DRAIN_TIMEOUT_SECONDS` | DB-backed Python deadline for draining cancelled TD-leads workers after the overall gather times out; defaults to `10`. Expiry is logged and failed-summary persistence continues while the shell watchdog remains the final process boundary. |
 | `ORDERS_STEP_TIMEOUT_SECONDS` | Per-attempt watchdog for the orders profiler step; defaults to `5400`. Timed-out attempts are retryable until `ORDERS_MAX_ATTEMPTS` is exhausted. |
 | `DAILY_SALES_STEP_TIMEOUT_SECONDS` | Per-attempt watchdog for Daily Sales report generation; defaults to `1800`. |
 | `PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS` | Per-attempt watchdog for Pending Deliveries report generation; defaults to `1800`. |
 | `ORDERS_SYNC_PROFILER_SHUTDOWN_TIMEOUT_SECONDS` | Bound for each profiler loop-shutdown phase; defaults to `5`. |
 | `TD_LEADS_STALE_OWNER_SECONDS` | TD-leads local-lock age threshold before strict stale-owner process-group recovery; defaults to `300` seconds to support the 10–20 minute service objective conservatively. |
+| `TD_LEADS_WRAPPER_NOTIFICATION_TIMEOUT_SECONDS` | Best-effort TD-leads wrapper operational-notification watchdog; defaults to `30`. Alert persistence and SMTP run in a dedicated child process group and are terminated and verified on timeout so notification delivery cannot retain the local lock. |
 | `ORDERS_REPORTS_STALE_OWNER_SECONDS` | Separately reviewed orders/reports local-lock age threshold before strict stale-owner process-group recovery; defaults to `7200` seconds because normal workload and retries differ from TD leads. |
 | `STALE_OWNER_TERM_WAIT_SECONDS` | Bounded grace period after sending `TERM` to a validated stale-owner process group; defaults to `5`. |
 | `STALE_OWNER_KILL_WAIT_SECONDS` | Bounded verification period after escalating a surviving validated stale-owner process group to `KILL`; defaults to `5`. |

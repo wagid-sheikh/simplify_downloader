@@ -149,20 +149,46 @@ def _timeout_seconds(config_key: str, default: int) -> int:
     return int(getattr(config, config_key, default))
 
 
+def _consume_background_task_result(task: asyncio.Future[Any]) -> None:
+    """Consume eventual background exceptions after a bounded phase abandons a stuck task."""
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        task.result()
+
+
 async def _run_bounded_phase(awaitable: Awaitable[_T], *, logger: JsonLogger, run_id: str, store_code: str | None, phase_name: str, timeout_seconds: float) -> _T:
-    """Execute one async phase with structured start, completion, and timeout telemetry."""
+    """Execute one async phase without waiting indefinitely for cancellation cooperation."""
     started_at = time.perf_counter()
     fields = {"run_id": run_id, "store_code": store_code, "phase_name": phase_name, "timeout_seconds": timeout_seconds}
     log_event(logger=logger, phase=phase_name, status="info", message="phase_started", **fields)
-    try:
-        result = await asyncio.wait_for(awaitable, timeout=timeout_seconds)
-    except asyncio.TimeoutError as exc:
+    task = asyncio.ensure_future(awaitable)
+    done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
+    if not done:
         duration_ms = int((time.perf_counter() - started_at) * 1000)
         log_event(logger=logger, phase=phase_name, status="error", message="phase_timeout", duration_ms=duration_ms, **fields)
-        raise TdLeadsPhaseTimeoutError(phase_name=phase_name, timeout_seconds=timeout_seconds, duration_ms=duration_ms) from exc
+        # wait_for() waits for cancellation acknowledgement. A browser or DB await
+        # can resist cancellation, so abandon it after requesting cancellation and
+        # let the outer shell watchdog remain the final process-level boundary.
+        task.cancel()
+        task.add_done_callback(_consume_background_task_result)
+        raise TdLeadsPhaseTimeoutError(phase_name=phase_name, timeout_seconds=timeout_seconds, duration_ms=duration_ms)
+    result = await task
     duration_ms = int((time.perf_counter() - started_at) * 1000)
     log_event(logger=logger, phase=phase_name, message="phase_completed", duration_ms=duration_ms, **fields)
     return result
+
+
+async def _drain_cancelled_store_tasks(*, tasks: Sequence[asyncio.Task[Any]], logger: JsonLogger, run_id: str) -> None:
+    """Bound cancellation cleanup so failed-summary persistence remains reachable."""
+    timeout_seconds = _timeout_seconds("td_leads_cancellation_drain_timeout_seconds", 10)
+    pending_before = sum(not task.done() for task in tasks)
+    fields = {"run_id": run_id, "pending_task_count": pending_before, "timeout_seconds": timeout_seconds}
+    log_event(logger=logger, phase="cancellation_drain", status="info", message="cancellation_drain_started", **fields)
+    _, pending = await asyncio.wait(tasks, timeout=timeout_seconds)
+    pending_after = len(pending)
+    if pending_after:
+        log_event(logger=logger, phase="cancellation_drain", status="error", message="cancellation_drain_timeout", run_id=run_id, pending_task_count=pending_after, timeout_seconds=timeout_seconds)
+        return
+    log_event(logger=logger, phase="cancellation_drain", message="cancellation_drain_completed", run_id=run_id, pending_task_count=0, timeout_seconds=timeout_seconds)
 OPEN_STATUS_CANDIDATES: tuple[str, ...] = ("pending", "open", "new", "in_progress")
 OPEN_LEADS_OUTPUT_COLUMNS: tuple[str, ...] = (
     "store_code",
@@ -2609,9 +2635,9 @@ async def _run_store(
             return result
 
         store.storage_state_path.parent.mkdir(parents=True, exist_ok=True)
-        await context.storage_state(path=str(store.storage_state_path))
+        await _run_bounded_phase(context.storage_state(path=str(store.storage_state_path)), logger=logger, run_id=run_id, store_code=store.store_code, phase_name="storage_state_write", timeout_seconds=operation_timeout)
 
-        if not await _ensure_scheduler_page(page, store=store, logger=logger, run_id=run_id):
+        if not await _run_bounded_phase(_ensure_scheduler_page(page, store=store, logger=logger, run_id=run_id), logger=logger, run_id=run_id, store_code=store.store_code, phase_name="scheduler_page", timeout_seconds=operation_timeout):
             result.status = "error"
             result.message = "Pickup Scheduler page could not be opened"
             return result
@@ -2664,12 +2690,19 @@ async def _run_store(
                     db_url_async=_is_async_database_url(config.database_url),
                     db_code_path="async_session_scope",
                 )
-            ingest_result = await ingest_td_crm_leads_rows(
-                rows=all_rows,
+            ingest_result = await _run_bounded_phase(
+                ingest_td_crm_leads_rows(
+                    rows=all_rows,
+                    run_id=run_id,
+                    run_env=run_env,
+                    source_file=artifact_path.name,
+                    database_url=config.database_url,
+                ),
+                logger=logger,
                 run_id=run_id,
-                run_env=run_env,
-                source_file=artifact_path.name,
-                database_url=config.database_url,
+                store_code=store.store_code,
+                phase_name="ingest",
+                timeout_seconds=operation_timeout,
             )
 
         result.rows = all_rows
@@ -2686,7 +2719,7 @@ async def _run_store(
         result.lead_change_details = dict(ingest_result.lead_change_details) if ingest_result else {}
         result.task_stub = dict(ingest_result.task_stub) if ingest_result else None
         if config.database_url:
-            await _enrich_td_lead_rows_with_order_history(database_url=config.database_url, rows=result.rows)
+            await _run_bounded_phase(_enrich_td_lead_rows_with_order_history(database_url=config.database_url, rows=result.rows), logger=logger, run_id=run_id, store_code=store.store_code, phase_name="order_history_enrichment", timeout_seconds=operation_timeout)
         result.status = "warning" if warnings else "ok"
         result.message = "Completed" if not warnings else "Completed with warnings"
 
@@ -2847,73 +2880,92 @@ async def main(
         )
 
         async with async_playwright() as playwright:
-            browser = await launch_browser(playwright=playwright, logger=logger)
             try:
-                semaphore = asyncio.Semaphore(max_workers)
-                tasks = [
-                    asyncio.create_task(
-                        _run_store_worker(
-                            browser=browser,
-                            store=store,
-                            logger=logger,
-                            run_env=resolved_run_env,
-                            run_id=resolved_run_id,
-                            semaphore=semaphore,
-                        )
-                    )
-                    for store in stores
-                ]
+                browser = await _run_bounded_phase(launch_browser(playwright=playwright, logger=logger), logger=logger, run_id=resolved_run_id, store_code=None, phase_name="launch_browser", timeout_seconds=_timeout_seconds("td_leads_browser_operation_timeout_seconds", 90))
+            except Exception as exc:
+                summary.run_had_worker_exception = True
+                log_event(logger=logger, phase="launch_browser", status="error", message="TD leads browser launch failed", run_id=resolved_run_id, error=str(exc))
+                browser = None
+            if browser is not None:
                 try:
-                    worker_results = await _run_bounded_phase(asyncio.gather(*tasks, return_exceptions=True), logger=logger, run_id=resolved_run_id, store_code=None, phase_name="overall_gather", timeout_seconds=_timeout_seconds("td_leads_gather_timeout_seconds", 270))
-                except TdLeadsPhaseTimeoutError:
-                    summary.run_had_worker_exception = True
-                    for task in tasks:
-                        if not task.done():
-                            task.cancel()
-                    await asyncio.gather(*tasks, return_exceptions=True)
-                    worker_results = []
-                by_store_code: dict[str, StoreLeadResult] = {}
-                run_had_worker_exception = False
-                for worker_result in worker_results:
-                    if isinstance(worker_result, Exception):
-                        run_had_worker_exception = True
-                        log_event(
-                            logger=logger,
-                            phase="store",
-                            status="error",
-                            message="Unhandled TD leads worker exception",
-                            run_id=resolved_run_id,
-                            error=str(worker_result),
+                    semaphore = asyncio.Semaphore(max_workers)
+                    tasks = [
+                        asyncio.create_task(
+                            _run_store_worker(
+                                browser=browser,
+                                store=store,
+                                logger=logger,
+                                run_env=resolved_run_env,
+                                run_id=resolved_run_id,
+                                semaphore=semaphore,
+                            )
                         )
-                        continue
-                    by_store_code[worker_result.store_code] = worker_result.result
-                if run_had_worker_exception:
-                    summary.run_had_worker_exception = True
+                        for store in stores
+                    ]
+                    try:
+                        worker_results = await _run_bounded_phase(asyncio.gather(*tasks, return_exceptions=True), logger=logger, run_id=resolved_run_id, store_code=None, phase_name="overall_gather", timeout_seconds=_timeout_seconds("td_leads_gather_timeout_seconds", 270))
+                    except TdLeadsPhaseTimeoutError:
+                        summary.run_had_worker_exception = True
+                        for task in tasks:
+                            if not task.done():
+                                task.cancel()
+                        await _drain_cancelled_store_tasks(tasks=tasks, logger=logger, run_id=resolved_run_id)
+                        worker_results = []
+                    by_store_code: dict[str, StoreLeadResult] = {}
+                    run_had_worker_exception = False
+                    for worker_result in worker_results:
+                        if isinstance(worker_result, Exception):
+                            run_had_worker_exception = True
+                            log_event(
+                                logger=logger,
+                                phase="store",
+                                status="error",
+                                message="Unhandled TD leads worker exception",
+                                run_id=resolved_run_id,
+                                error=str(worker_result),
+                            )
+                            continue
+                        by_store_code[worker_result.store_code] = worker_result.result
+                    if run_had_worker_exception:
+                        summary.run_had_worker_exception = True
 
-                for store in stores:
-                    summary.store_results[store.store_code] = by_store_code.get(
-                        store.store_code,
-                        StoreLeadResult(
-                            store_code=store.store_code,
-                            status="error",
-                            message="Store worker did not return a result",
-                        ),
-                    )
-            finally:
-                try:
-                    await _run_bounded_phase(browser.close(), logger=logger, run_id=resolved_run_id, store_code=None, phase_name="browser_cleanup", timeout_seconds=_timeout_seconds("td_leads_browser_cleanup_timeout_seconds", 10))
-                except Exception:
-                    summary.run_had_worker_exception = True
+                    for store in stores:
+                        summary.store_results[store.store_code] = by_store_code.get(
+                            store.store_code,
+                            StoreLeadResult(
+                                store_code=store.store_code,
+                                status="error",
+                                message="Store worker did not return a result",
+                            ),
+                        )
+                finally:
+                    try:
+                        await _run_bounded_phase(browser.close(), logger=logger, run_id=resolved_run_id, store_code=None, phase_name="browser_cleanup", timeout_seconds=_timeout_seconds("td_leads_browser_cleanup_timeout_seconds", 10))
+                    except Exception:
+                        summary.run_had_worker_exception = True
 
     finished_at = datetime.now(timezone.utc)
     if reporting_mode in {"meeting", "day_end"}:
-        reporting_payload = await build_td_leads_reporting_payload(
-            database_url=config.database_url,
-            report_date=summary.report_date,
-            reference_ts=finished_at,
-            open_leads_high_age_threshold_days=_resolve_td_open_lead_age_threshold_days(),
-        )
-        reporting_schema_errors = _validate_td_reporting_payload_schema(reporting_payload)
+        try:
+            reporting_payload = await _run_bounded_phase(
+                build_td_leads_reporting_payload(
+                    database_url=config.database_url,
+                    report_date=summary.report_date,
+                    reference_ts=finished_at,
+                    open_leads_high_age_threshold_days=_resolve_td_open_lead_age_threshold_days(),
+                ),
+                logger=logger,
+                run_id=resolved_run_id,
+                store_code=None,
+                phase_name="reporting_payload",
+                timeout_seconds=_timeout_seconds("td_leads_browser_operation_timeout_seconds", 90),
+            )
+        except Exception as exc:
+            summary.run_had_worker_exception = True
+            reporting_schema_errors = [f"reporting_payload_failed:{exc}"]
+            log_event(logger=logger, phase="reporting", status="error", message="TD reporting payload generation failed", run_id=resolved_run_id, reporting_mode=reporting_mode, error=str(exc))
+        if reporting_payload is not None:
+            reporting_schema_errors = _validate_td_reporting_payload_schema(reporting_payload)
         if reporting_schema_errors:
             log_event(
                 logger=logger,

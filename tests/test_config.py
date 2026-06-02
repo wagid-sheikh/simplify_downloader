@@ -57,6 +57,7 @@ def _base_rows(secret_key: str) -> dict[str, str]:
         "TD_LEADS_BROWSER_CLEANUP_TIMEOUT_SECONDS": "10",
         "TD_LEADS_STORE_WORKER_TIMEOUT_SECONDS": "240",
         "TD_LEADS_GATHER_TIMEOUT_SECONDS": "270",
+        "TD_LEADS_CANCELLATION_DRAIN_TIMEOUT_SECONDS": "10",
     }
     rows["TD_GLOBAL_PASSWORD"] = encrypt_secret(secret_key, "change-me-global-password")
     rows["REPORT_EMAIL_SMTP_PASSWORD"] = encrypt_secret(secret_key, "change-me-smtp-password")
