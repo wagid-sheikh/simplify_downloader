@@ -19,16 +19,16 @@ set -euo pipefail
 # - Bash 3.2 compatible (no associative arrays, no mapfile)
 #
 # Orders profiler exit semantics:
-# - orders_sync_run_profiler.sh performs a DNS/TCP preflight named
-#   tcp_connectivity_preflight before launching Playwright. Optional app-layer
-#   HTTP checks are classified separately so operators do not mistake TCP
-#   reachability for full application readiness.
+# - This wrapper runs a bounded DNS/TCP preflight retry envelope before launching
+#   orders_sync_run_profiler.sh and Playwright. Optional app-layer HTTP checks are
+#   classified separately so operators do not mistake TCP reachability for full
+#   application readiness.
 # - orders_sync_run_profiler.sh normally preserves legacy non-breaking CLI behavior
 #   for persisted overall_status="failed" after summaries/notifications are written.
 # - Set ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS=1 to make that profiler CLI step
 #   return non-zero when the final profiler overall_status is "failed". This wrapper
-#   logs orders_sync_run_profiler_rc and continues to report pipelines; required
-#   report pipeline failures still control the final cron exit status below.
+#   logs orders_sync_run_profiler_rc and continues to report pipelines; failures
+#   in orders sync or either required report control the final cron exit status.
 # ============================================================================
 # Usage examples:
 #   # Local/manual run; reports always regenerate.
@@ -73,6 +73,10 @@ ORDERS_RETRY_DELAY_SECONDS="${ORDERS_RETRY_DELAY_SECONDS:-30}"
 ORDERS_RETRY_BACKOFF_MULTIPLIER="${ORDERS_RETRY_BACKOFF_MULTIPLIER:-2}"
 ORDERS_RETRY_MAX_DELAY_SECONDS="${ORDERS_RETRY_MAX_DELAY_SECONDS:-300}"
 ORDERS_RETRY_JITTER_SECONDS="${ORDERS_RETRY_JITTER_SECONDS:-10}"
+ORDERS_PREFLIGHT_MAX_ATTEMPTS="${ORDERS_PREFLIGHT_MAX_ATTEMPTS:-3}"
+ORDERS_PREFLIGHT_RETRY_DELAY_SECONDS="${ORDERS_PREFLIGHT_RETRY_DELAY_SECONDS:-10}"
+ORDERS_PREFLIGHT_RETRY_BACKOFF_MULTIPLIER="${ORDERS_PREFLIGHT_RETRY_BACKOFF_MULTIPLIER:-2}"
+ORDERS_PREFLIGHT_RETRY_MAX_DELAY_SECONDS="${ORDERS_PREFLIGHT_RETRY_MAX_DELAY_SECONDS:-60}"
 DAILY_MAX_ATTEMPTS="${DAILY_MAX_ATTEMPTS:-3}"
 DAILY_RETRY_DELAY_SECONDS="${DAILY_RETRY_DELAY_SECONDS:-10}"
 PENDING_MAX_ATTEMPTS="${PENDING_MAX_ATTEMPTS:-3}"
@@ -98,6 +102,18 @@ if ! [[ "${STALE_OWNER_KILL_WAIT_SECONDS}" =~ ^[0-9]+$ ]]; then
 fi
 if ! [[ "${DAILY_RESCUE_AFTER_PENDING_SUCCESS}" =~ ^[01]$ ]]; then
   DAILY_RESCUE_AFTER_PENDING_SUCCESS=1
+fi
+if ! [[ "${ORDERS_PREFLIGHT_MAX_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]]; then
+  ORDERS_PREFLIGHT_MAX_ATTEMPTS=3
+fi
+if ! [[ "${ORDERS_PREFLIGHT_RETRY_DELAY_SECONDS}" =~ ^[0-9]+$ ]]; then
+  ORDERS_PREFLIGHT_RETRY_DELAY_SECONDS=10
+fi
+if ! [[ "${ORDERS_PREFLIGHT_RETRY_BACKOFF_MULTIPLIER}" =~ ^[1-9][0-9]*$ ]]; then
+  ORDERS_PREFLIGHT_RETRY_BACKOFF_MULTIPLIER=2
+fi
+if ! [[ "${ORDERS_PREFLIGHT_RETRY_MAX_DELAY_SECONDS}" =~ ^[0-9]+$ ]]; then
+  ORDERS_PREFLIGHT_RETRY_MAX_DELAY_SECONDS=60
 fi
 for timeout_var_name in ORDERS_STEP_TIMEOUT_SECONDS DAILY_SALES_STEP_TIMEOUT_SECONDS PENDING_DELIVERIES_STEP_TIMEOUT_SECONDS; do
   timeout_var_value="${!timeout_var_name}"
@@ -666,13 +682,29 @@ is_deterministic_code_error() {
 }
 
 
+is_transient_orders_preflight_classification() {
+  case "$1" in
+    dns_resolution_failed|tcp_connection_failed|tcp_connection_timeout|app_layer_http_connectivity_failed|tcp_and_app_layer_failed|tcp_failed|app_layer_failed|legacy_failed)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+
 run_orders_connectivity_preflight() {
   local preflight_script="./scripts/orders_sync_connectivity_preflight.sh"
   local preflight_log_file
   local preflight_start
   local preflight_end
   local duration
+  local attempt=1
   local rc=0
+  local retry_delay_seconds="${ORDERS_PREFLIGHT_RETRY_DELAY_SECONDS}"
+  local retry_decision
+  local classification
 
   if [[ "${ORDERS_SYNC_SKIP_CONNECTIVITY_PREFLIGHT:-0}" = "1" ]]; then
     section "Skipping orders sync tcp_connectivity_preflight"
@@ -683,36 +715,67 @@ run_orders_connectivity_preflight() {
 
   section "Running orders sync tcp_connectivity_preflight"
   log "Command: ${preflight_script}"
+  log "Preflight attempts configured: ${ORDERS_PREFLIGHT_MAX_ATTEMPTS}; retry_delay_seconds=${ORDERS_PREFLIGHT_RETRY_DELAY_SECONDS}; retry_backoff_multiplier=${ORDERS_PREFLIGHT_RETRY_BACKOFF_MULTIPLIER}; retry_max_delay_seconds=${ORDERS_PREFLIGHT_RETRY_MAX_DELAY_SECONDS}"
+  if [[ "${retry_delay_seconds}" -gt "${ORDERS_PREFLIGHT_RETRY_MAX_DELAY_SECONDS}" ]]; then
+    retry_delay_seconds="${ORDERS_PREFLIGHT_RETRY_MAX_DELAY_SECONDS}"
+  fi
   preflight_start="$(date +%s)"
-  preflight_log_file="$(mktemp "${LOCK_DIR}/orders_sync_connectivity_preflight.XXXXXX.log")"
 
-  if bash "${preflight_script}" > "${preflight_log_file}" 2>&1; then
-    rc=0
-  else
-    rc=$?
-  fi
+  while [[ "${attempt}" -le "${ORDERS_PREFLIGHT_MAX_ATTEMPTS}" ]]; do
+    preflight_log_file="$(mktemp "${LOCK_DIR}/orders_sync_connectivity_preflight.XXXXXX.log")"
+    log "orders_sync_connectivity_preflight attempt=${attempt}/${ORDERS_PREFLIGHT_MAX_ATTEMPTS} status=starting"
 
-  cat "${preflight_log_file}" >> "${LOG_FILE}"
-  ORDERS_SYNC_PREFLIGHT_CLASSIFICATION="$(sed -n 's/.*orders_sync_preflight_summary classification=\([^ ]*\).*/\1/p' "${preflight_log_file}" | tail -n 1)"
-  if [[ -z "${ORDERS_SYNC_PREFLIGHT_CLASSIFICATION}" ]]; then
-    if [[ "${rc}" -eq 0 ]]; then
-      ORDERS_SYNC_PREFLIGHT_CLASSIFICATION="legacy_success"
+    if bash "${preflight_script}" > "${preflight_log_file}" 2>&1; then
+      rc=0
     else
-      ORDERS_SYNC_PREFLIGHT_CLASSIFICATION="legacy_failed"
+      rc=$?
     fi
-  fi
-  rm -f "${preflight_log_file}" 2>/dev/null || true
 
-  preflight_end="$(date +%s)"
-  duration=$((preflight_end - preflight_start))
+    cat "${preflight_log_file}" >> "${LOG_FILE}"
+    classification="$(sed -n 's/.*orders_sync_preflight_summary classification=\([^ ]*\).*/\1/p' "${preflight_log_file}" | tail -n 1)"
+    if [[ -z "${classification}" ]]; then
+      if [[ "${rc}" -eq 0 ]]; then
+        classification="legacy_success"
+      else
+        classification="legacy_failed"
+      fi
+    fi
+    rm -f "${preflight_log_file}" 2>/dev/null || true
+    ORDERS_SYNC_PREFLIGHT_CLASSIFICATION="${classification}"
 
-  if [[ "${rc}" -ne 0 ]]; then
-    log "ERROR: failure_class=connectivity_preflight_failure; orders sync tcp_connectivity_preflight failed with classification=${ORDERS_SYNC_PREFLIGHT_CLASSIFICATION} exit_code=${rc} after ${duration}s; skipping orders_sync_run_profiler before Playwright launch."
-    return "${rc}"
-  fi
+    if [[ "${rc}" -eq 0 ]]; then
+      log "orders_sync_connectivity_preflight attempt=${attempt}/${ORDERS_PREFLIGHT_MAX_ATTEMPTS} status=passed classification=${classification} retry_decision=not_needed"
+      preflight_end="$(date +%s)"
+      duration=$((preflight_end - preflight_start))
+      log "orders sync tcp_connectivity_preflight completed with classification=${classification} attempts_used=${attempt} in ${duration}s"
+      return 0
+    fi
 
-  log "orders sync tcp_connectivity_preflight completed with classification=${ORDERS_SYNC_PREFLIGHT_CLASSIFICATION} in ${duration}s"
-  return 0
+    retry_decision="retry"
+    if ! is_transient_orders_preflight_classification "${classification}"; then
+      retry_decision="fail_fast"
+    elif [[ "${attempt}" -ge "${ORDERS_PREFLIGHT_MAX_ATTEMPTS}" ]]; then
+      retry_decision="exhausted"
+    fi
+    log "orders_sync_connectivity_preflight attempt=${attempt}/${ORDERS_PREFLIGHT_MAX_ATTEMPTS} status=failed classification=${classification} failure_class=${classification} exit_code=${rc} retry_decision=${retry_decision}"
+
+    if [[ "${retry_decision}" != "retry" ]]; then
+      preflight_end="$(date +%s)"
+      duration=$((preflight_end - preflight_start))
+      log "ERROR: failure_class=connectivity_preflight_failure; orders sync tcp_connectivity_preflight failed with classification=${classification} exit_code=${rc} attempts_used=${attempt} retry_decision=${retry_decision} after ${duration}s; skipping orders_sync_run_profiler before Playwright launch."
+      return "${rc}"
+    fi
+
+    log "orders_sync_connectivity_preflight attempt=${attempt}/${ORDERS_PREFLIGHT_MAX_ATTEMPTS} retry_decision=retry next_attempt=$((attempt + 1)) sleep_seconds=${retry_delay_seconds}"
+    sleep "${retry_delay_seconds}"
+    retry_delay_seconds=$((retry_delay_seconds * ORDERS_PREFLIGHT_RETRY_BACKOFF_MULTIPLIER))
+    if [[ "${retry_delay_seconds}" -gt "${ORDERS_PREFLIGHT_RETRY_MAX_DELAY_SECONDS}" ]]; then
+      retry_delay_seconds="${ORDERS_PREFLIGHT_RETRY_MAX_DELAY_SECONDS}"
+    fi
+    attempt=$((attempt + 1))
+  done
+
+  return "${rc}"
 }
 
 extract_orders_sync_observability() {

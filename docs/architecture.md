@@ -239,6 +239,18 @@ forwarding shortcut during rollout. It prints the explicit helper commands for b
 infer a pipeline from environment variables. Operators should prefer the explicit
 helper commands above.
 
+For order-sync profiler, the orders/reports wrapper first runs a bounded connectivity
+preflight retry envelope before Playwright starts. Every attempt checks all required
+hosts and records host-level DNS, TCP, and optional app-layer HTTP outcomes. DNS
+resolution failures, TCP connection failures/timeouts, and temporary app-layer HTTP
+failures are retryable; deterministic preflight configuration failures fail fast. The
+profiler launches only when all required hosts pass. Exhausted retries preserve degraded
+report generation: the profiler is skipped, downstream reports receive
+`--orders-sync-upstream-status failed`, and the wrapper exits non-zero after the reports
+run. `ORDERS_PREFLIGHT_MAX_ATTEMPTS`, `ORDERS_PREFLIGHT_RETRY_DELAY_SECONDS`,
+`ORDERS_PREFLIGHT_RETRY_BACKOFF_MULTIPLIER`, and
+`ORDERS_PREFLIGHT_RETRY_MAX_DELAY_SECONDS` keep that envelope bounded.
+
 For order-sync profiler, the run additionally:
 - computes date windows per store,
 - runs TD/UC sync workers,
