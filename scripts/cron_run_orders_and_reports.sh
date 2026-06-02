@@ -121,6 +121,7 @@ ORDERS_SYNC_PREFLIGHT_CLASSIFICATION="not_run"
 ORDERS_SYNC_PROFILER_RUN_ID=""
 ORDERS_SYNC_PROFILER_STATUS="unknown"
 RUN_LOCK_ACQUIRED=0
+TIMEOUT_HANDLING_IN_PROGRESS=0
 
 
 log() {
@@ -371,19 +372,31 @@ terminate_child_process_group() {
 
   log "Attempting graceful termination for child process group PGID=${pgid} (child_pid=${child_pid})"
   kill -TERM "-${pgid}" 2>/dev/null || true
-  for ((i=1; i<=KILL_WAIT_SECONDS; i++)); do
-    if ! pid_is_alive "${child_pid}"; then
-      log "Child PID=${child_pid} terminated after process-group TERM"
+  for ((i=0; i<KILL_WAIT_SECONDS; i++)); do
+    if ! process_group_is_alive "${pgid}"; then
+      log "Confirmed child process group PGID=${pgid} disappeared after TERM"
       return 0
     fi
     sleep 1
   done
-  if pid_is_alive "${child_pid}"; then
-    log "Child PID=${child_pid} still alive after ${KILL_WAIT_SECONDS}s, sending SIGKILL to PGID=${pgid}"
+
+  if process_group_is_alive "${pgid}"; then
+    log "Child process group PGID=${pgid} still has non-zombie members after ${KILL_WAIT_SECONDS}s; sending KILL"
     kill -KILL "-${pgid}" 2>/dev/null || true
-    sleep 1
   fi
-  ! pid_is_alive "${child_pid}"
+  for ((i=0; i<KILL_WAIT_SECONDS; i++)); do
+    if ! process_group_is_alive "${pgid}"; then
+      log "Confirmed child process group PGID=${pgid} disappeared after KILL"
+      return 0
+    fi
+    sleep 1
+  done
+
+  if process_group_is_alive "${pgid}"; then
+    log "WARNING: Child process group PGID=${pgid} still has non-zombie members after KILL"
+    return 1
+  fi
+  log "Confirmed child process group PGID=${pgid} disappeared after KILL"
 }
 
 cleanup() {
@@ -397,7 +410,11 @@ cleanup() {
   fi
 
   if [[ "${RUN_LOCK_ACQUIRED}" -eq 1 ]]; then
-    remove_lock_artifacts
+    if [[ "${TIMEOUT_HANDLING_IN_PROGRESS}" -eq 1 ]]; then
+      log "WARNING: Timeout process-group handling is incomplete or failed verification; preserving local lock for explicit operator recovery."
+    else
+      remove_lock_artifacts
+    fi
   fi
 }
 
@@ -525,7 +542,14 @@ run_step() {
         timed_out=1
         rc=124
         log "ERROR: ${step_name}: attempt ${attempt}/${max_attempts} exceeded runtime_limit_seconds=${runtime_limit_seconds}; terminating child_pid=${child_pid} child_pgid=${child_pgid}"
-        terminate_child_process_group "${child_pgid}" "${child_pid}" || true
+        TIMEOUT_HANDLING_IN_PROGRESS=1
+        if terminate_child_process_group "${child_pgid}" "${child_pid}"; then
+          wait "${child_pid}" 2>/dev/null || true
+          TIMEOUT_HANDLING_IN_PROGRESS=0
+        else
+          log "WARNING: ${step_name}: child process group PGID=${child_pgid} did not disappear; preserving local lock for explicit operator recovery and aborting wrapper safely."
+          exit 1
+        fi
         break
       fi
       sleep 0.1

@@ -8,6 +8,14 @@
 
 ---
 
+### DL-026
+- **Date:** 2026-06-02
+- **Status:** Active
+- **Decision:** Bring the orders/reports watchdog timeout path to parity with TD leads by verifying complete non-zombie child process-group disappearance before releasing `tmp/cron_run_orders_and_reports.lock`.
+- **Context:** The orders/reports timeout helper previously reported success as soon as the immediate child PID exited. A CRM/browser descendant could therefore survive group `TERM`, continue work after local-lock cleanup, and overlap retries or downstream reports. Timeout handling now sends group `TERM`, waits for all non-zombie members to disappear, escalates group `KILL` only when needed, verifies again after `KILL`, preserves the local lock when verification fails, and aborts downstream execution safely on that fail-safe path.
+- **Evidence:** `scripts/cron_run_orders_and_reports.sh`, `tests/scripts/test_cron_run_orders_and_reports.py`, `docs/architecture.md`, and `docs/feature-map.md`.
+- **Implications:** Verified orders-profiler timeouts remain retryable with exit code `124`, and downstream reports retain the existing required-step behavior. Unverified timeout cleanup requires explicit operator recovery because the wrapper intentionally leaves its pipeline-specific local lock in place.
+
 ### DL-025
 - **Date:** 2026-06-01
 - **Status:** Active

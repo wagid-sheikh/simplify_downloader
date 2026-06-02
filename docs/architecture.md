@@ -194,11 +194,12 @@ recorded process group is gone or has been safely terminated. The legacy
 `orders-reports` during rollout. The orders/reports
 wrapper launches every pipeline step in a dedicated child process group and
 enforces step-specific watchdog limits, so a stalled orders browser cleanup
-cannot hold its local lock or block required report generation indefinitely. The
-TD-leads wrapper uses the same dedicated-session pattern for its local sync step:
-on timeout it sends group `TERM`, waits a bounded grace period, escalates group
-`KILL` while any non-zombie member survives, verifies that the group disappeared,
-and only then allows its cleanup trap to remove the local lock. Inside the Python
+cannot hold its local lock or block required report generation indefinitely.
+Both the TD-leads and orders/reports wrappers use the same dedicated-session
+watchdog pattern: on timeout each sends group `TERM`, waits a bounded grace
+period, escalates group `KILL` while any non-zombie member survives, verifies
+complete non-zombie process-group disappearance, and only then allows its cleanup
+trap to remove the pipeline-specific local lock. Inside the Python
 TD-leads flow, browser launch, storage-state writes, scheduler navigation, ingest,
 order-history/reporting enrichment, and browser cleanup are application-bounded.
 After an overall worker-gather timeout, cancellation drain is separately bounded by

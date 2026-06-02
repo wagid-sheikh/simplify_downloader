@@ -1200,6 +1200,22 @@ def test_pending_deliveries_wrapper_keeps_upstream_args_out_of_recovery(tmp_path
     assert "--orders-sync-upstream-run-id orders-run-1" in report_args
 
 
+def _pid_is_non_zombie_alive(pid: int) -> bool:
+    result = subprocess.run(
+        ["ps", "-o", "state=", "-p", str(pid)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return bool(result.stdout.strip()) and not result.stdout.strip().startswith("Z")
+
+
+def _replace_orders_process_group_helper(source: str, replacement: str) -> str:
+    start = source.index("process_group_is_alive() {")
+    end = source.index("\n}\n", start) + len("\n}\n")
+    return source[:start] + replacement + source[end:]
+
+
 def test_cron_terminates_timed_out_orders_group_releases_lock_and_runs_reports(
     tmp_path: Path,
 ) -> None:
@@ -1216,7 +1232,11 @@ def test_cron_terminates_timed_out_orders_group_releases_lock_and_runs_reports(
     _write_successful_preflight(scripts_dir)
     _write_executable(
         scripts_dir / "orders_sync_run_profiler.sh",
-        "#!/usr/bin/env bash\nexec sleep 30\n",
+        "#!/usr/bin/env bash\n"
+        "trap '' TERM\n"
+        "(trap '' TERM; while :; do sleep 1; done) &\n"
+        "printf '%s\n' \"$!\" > \"${TMPDIR:-/tmp}/orders-descendant-pid\"\n"
+        "while :; do sleep 1; done\n",
     )
     _write_executable(
         scripts_dir / "run_local_reports_daily_sales.sh",
@@ -1255,6 +1275,8 @@ def test_cron_terminates_timed_out_orders_group_releases_lock_and_runs_reports(
     assert result.returncode == 1
     assert (tmp_path / "daily-ran.log").read_text(encoding="utf-8").strip() == "daily ran"
     assert (tmp_path / "pending-ran.log").read_text(encoding="utf-8").strip() == "pending ran"
+    descendant_pid = int((tmp_path / "orders-descendant-pid").read_text(encoding="utf-8").strip())
+    assert not _pid_is_non_zombie_alive(descendant_pid)
     assert not (tmp_dir / "cron_run_orders_and_reports.lock").exists()
     assert not (tmp_dir / "cron_heavy_pipelines.lock").exists()
 
@@ -1266,6 +1288,100 @@ def test_cron_terminates_timed_out_orders_group_releases_lock_and_runs_reports(
     assert "Script 1: orders_sync_run_profiler failed after 1 attempts" in log_text
     assert "orders_sync_run_profiler_rc=124" in log_text
     assert "Script 2: daily_sales_report: attempt 1/1 succeeded" in log_text
+
+
+def test_cron_preserves_lock_and_aborts_when_timeout_group_verification_fails(
+    tmp_path: Path,
+) -> None:
+    repo_root, scripts_dir = _prepare_minimal_orders_cron(tmp_path)
+    source_path = scripts_dir / "cron_run_orders_and_reports.sh"
+    source = source_path.read_text(encoding="utf-8")
+    source = _replace_orders_process_group_helper(
+        source,
+        "process_group_is_alive() {\n  return 0\n}\n",
+    )
+    _write_executable(source_path, source)
+    _write_executable(
+        scripts_dir / "orders_sync_run_profiler.sh",
+        "#!/usr/bin/env bash\nexec sleep 30\n",
+    )
+    _write_executable(
+        scripts_dir / "run_local_reports_daily_sales.sh",
+        "#!/usr/bin/env bash\nprintf 'daily ran\n' > \"${TMPDIR:-/tmp}/daily-ran.log\"\n",
+    )
+    _write_executable(
+        scripts_dir / "run_local_reports_pending_deliveries.sh",
+        "#!/usr/bin/env bash\nprintf 'pending ran\n' > \"${TMPDIR:-/tmp}/pending-ran.log\"\n",
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "1",
+            "ORDERS_STEP_TIMEOUT_SECONDS": "1",
+            "KILL_WAIT_SECONDS": "1",
+            "TMPDIR": str(repo_root),
+        }
+    )
+
+    result = subprocess.run(
+        [str(source_path)],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 1
+    assert (repo_root / "tmp" / "cron_run_orders_and_reports.lock").is_dir()
+    assert not (repo_root / "daily-ran.log").exists()
+    assert not (repo_root / "pending-ran.log").exists()
+    log_text = _latest_orders_log_text(repo_root)
+    assert "still has non-zombie members after KILL" in log_text
+    assert (
+        "preserving local lock for explicit operator recovery and aborting wrapper safely" in log_text
+    )
+    assert "Timeout process-group handling is incomplete or failed verification" in log_text
+
+
+def test_zombie_only_process_group_remnants_do_not_retain_orders_reports_lock(
+    tmp_path: Path,
+) -> None:
+    repo_root, scripts_dir = _prepare_minimal_orders_cron(tmp_path)
+    _write_executable(
+        scripts_dir / "orders_sync_run_profiler.sh",
+        "#!/usr/bin/env bash\n"
+        "trap '' TERM\n"
+        "(exit 0) &\n"
+        "while :; do sleep 1; done\n",
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "1",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "ORDERS_STEP_TIMEOUT_SECONDS": "1",
+            "KILL_WAIT_SECONDS": "1",
+            "TMPDIR": str(repo_root),
+        }
+    )
+
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+
+    assert result.returncode == 1
+    assert not (repo_root / "tmp" / "cron_run_orders_and_reports.lock").exists()
+    assert "disappeared after KILL" in _latest_orders_log_text(repo_root)
 
 
 def _write_orders_lock_metadata(
