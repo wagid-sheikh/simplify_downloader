@@ -39,7 +39,7 @@ class _FakeContext:
 
 
 class _FakeBrowser:
-    async def new_context(self, storage_state: str | None = None) -> _FakeContext:
+    async def new_context(self, storage_state: str | None = None, **_kwargs) -> _FakeContext:
         return _FakeContext()
 
 
@@ -87,33 +87,22 @@ async def test_archive_orchestration_uses_api_only_and_produces_archive_outputs(
     monkeypatch.setattr(uc_main, "_try_direct_gst_reports", AsyncMock(return_value=(False, None)))
     monkeypatch.setattr(uc_main, "_navigate_to_archive_orders", AsyncMock(return_value=True))
 
-    monkeypatch.setattr(
-        uc_main,
-        "collect_gst_orders_via_api",
-        AsyncMock(
-            return_value=uc_main.GstApiExtract(
-                gst_rows=[{"order_number": "UC-100"}],
-                base_rows=[{"order_code": "UC-100"}],
-                order_detail_rows=[],
-                payment_detail_rows=[],
-            )
-        ),
-    )
-
-    collect_archive_api_mock = AsyncMock(
-        return_value=SimpleNamespace(
-            base_rows=[{"store_code": "A100", "order_code": "UC-100"}],
-            order_detail_rows=[{"store_code": "A100", "order_code": "UC-100"}],
-            payment_detail_rows=[{"store_code": "A100", "order_code": "UC-100"}],
-            skipped_order_codes=[],
-            skipped_order_counters={},
-            page_count=1,
-            api_total=1,
-            extractor_reason_codes=[],
-            extractor_error_counters={},
+    collect_gst_mock = AsyncMock(
+        return_value=uc_main.GstApiExtract(
+            gst_rows=[{"order_number": "UC-100"}],
+            base_rows=[{"order_code": "UC-100"}],
+            order_detail_rows=[],
+            payment_detail_rows=[],
+            order_detail_snapshot_rows=[{
+                "store_code": "A100",
+                "order_code": "UC-100",
+                "snapshot_outcome": "complete_empty",
+                "detail_row_count": 0,
+            }],
         )
     )
-    monkeypatch.setattr(uc_main, "collect_archive_orders_via_api", collect_archive_api_mock)
+    monkeypatch.setattr(uc_main, "collect_gst_orders_via_api", collect_gst_mock)
+
 
     ui_extract_mock = AsyncMock(side_effect=AssertionError("UI archive path must remain disabled"))
     monkeypatch.setattr(uc_main, "_collect_archive_orders", ui_extract_mock)
@@ -140,7 +129,24 @@ async def test_archive_orchestration_uses_api_only_and_produces_archive_outputs(
     monkeypatch.setattr(
         uc_main,
         "publish_uc_gst_order_details_to_line_items",
-        AsyncMock(return_value=SimpleNamespace(inserted=1, updated=0, skipped=0, warnings=0, reason_codes=[])),
+        AsyncMock(
+            return_value=SimpleNamespace(
+                inserted=1,
+                updated=0,
+                deleted_final_rows=0,
+                skipped=0,
+                warnings=0,
+                reason_codes=[],
+                line_item_serial_validation={},
+                invoices_inspected=1,
+                complete_with_rows_invoices=0,
+                complete_empty_invoices=1,
+                replacement_skipped_incomplete_invoices=0,
+                inserted_final_rows=0,
+                orphan_rows=0,
+                staging_rows_written=0,
+            )
+        ),
     )
     monkeypatch.setattr(
         uc_main,
@@ -156,6 +162,7 @@ async def test_archive_orchestration_uses_api_only_and_produces_archive_outputs(
                 missing_parent_count=0,
                 preflight_warning=False,
                 preflight_diagnostics={},
+                    post_publish_verification={},
             )
         ),
     )
@@ -173,13 +180,14 @@ async def test_archive_orchestration_uses_api_only_and_produces_archive_outputs(
         download_timeout_ms=1000,
     )
 
-    assert collect_archive_api_mock.await_count == 1
+    assert collect_gst_mock.await_count == 1
     assert ui_extract_mock.await_count == 0
 
     expected_files = {
         "A100-uc_gst-base_order_info_20250101_20250101_run-api-1.xlsx",
         "A100-uc_gst-order_details_20250101_20250101_run-api-1.xlsx",
         "A100-uc_gst-payment_details_20250101_20250101_run-api-1.xlsx",
+        "A100-uc_gst-order_detail_snapshots_20250101_20250101_run-api-1.xlsx",
     }
     assert expected_files.issubset({path.name for path in tmp_path.glob("*.xlsx")})
 

@@ -34,6 +34,7 @@ from app.crm_downloader.uc_orders_sync.archive_ingest import ingest_uc_archive_e
 from app.crm_downloader.uc_orders_sync.gst_api_extract import (
     GST_API_BASE_COLUMNS,
     GST_API_GST_COLUMNS,
+    GST_API_ORDER_DETAIL_SNAPSHOT_COLUMNS,
     GstApiExtract,
     collect_gst_orders_via_api,
 )
@@ -260,6 +261,12 @@ ARCHIVE_PAYMENT_COLUMNS = [
     "amount",
     "payment_date",
     "transaction_id",
+]
+ARCHIVE_ORDER_DETAIL_SNAPSHOT_COLUMNS = [
+    "store_code",
+    "order_code",
+    "snapshot_outcome",
+    "detail_row_count",
 ]
 DATE_PICKER_POPUP_SELECTORS = (
     ".calendar-body.show",
@@ -1485,6 +1492,18 @@ def _write_excel_rows(
         sheet.append([row.get(column) for column in columns])
     workbook.save(path)
     return len(rows)
+
+
+def _resolve_uc_archive_extraction_mode() -> str:
+    mode = (os.getenv("UC_ARCHIVE_EXTRACTION_MODE") or "api").strip().lower()
+    if mode in {"", "api", "api_only"}:
+        ui_enabled = (os.getenv("UC_ARCHIVE_UI_ENABLED") or "").strip().lower()
+        if ui_enabled in {"1", "true", "yes", "on"}:
+            raise ValueError("UC archive UI extraction is no longer supported; use GST-derived API staging feed")
+        return "api"
+    if mode == "ui":
+        raise ValueError("UC archive sync no longer supports UI extraction; use GST-derived API staging feed")
+    raise ValueError(f"Unsupported UC archive extraction mode: {mode}")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -3634,7 +3653,7 @@ async def _run_store_discovery(
     storage_state_value = str(storage_state_path) if storage_state_exists else None
     context = await browser.new_context(
         storage_state=storage_state_value,
-        ignore_https_errors=config.uc_ignore_https_errors,
+        ignore_https_errors=getattr(config, "uc_ignore_https_errors", False),
     )
     page = await context.new_page()
     outcome = StoreOutcome(status="error", message="uninitialized")
@@ -3686,9 +3705,11 @@ async def _run_store_discovery(
         gst_api_base_path: Path | None = None
         gst_api_order_details_path: Path | None = None
         gst_api_payment_details_path: Path | None = None
+        gst_api_order_detail_snapshots_path: Path | None = None
         staging_feed_base_path: Path | None = None
         staging_feed_order_details_path: Path | None = None
         staging_feed_payment_details_path: Path | None = None
+        staging_feed_order_detail_snapshots_path: Path | None = None
 
         if storage_state_exists:
             log_event(
@@ -3857,6 +3878,13 @@ async def _run_store_discovery(
                 artifact_type="payment_details",
                 run_id=run_id,
             )
+            gst_api_order_detail_snapshots_path = download_dir / _format_gst_derived_filename(
+                store.store_code,
+                from_date,
+                to_date,
+                artifact_type="order_detail_snapshots",
+                run_id=run_id,
+            )
             _write_excel_rows(
                 gst_api_gst_path,
                 gst_api_extract.gst_rows,
@@ -3877,9 +3905,15 @@ async def _run_store_discovery(
                 gst_api_extract.payment_detail_rows,
                 ARCHIVE_PAYMENT_COLUMNS,
             )
+            _write_excel_rows(
+                gst_api_order_detail_snapshots_path,
+                gst_api_extract.order_detail_snapshot_rows,
+                GST_API_ORDER_DETAIL_SNAPSHOT_COLUMNS,
+            )
             staging_feed_base_path = gst_api_base_path
             staging_feed_order_details_path = gst_api_order_details_path
             staging_feed_payment_details_path = gst_api_payment_details_path
+            staging_feed_order_detail_snapshots_path = gst_api_order_detail_snapshots_path
             log_event(
                 logger=logger,
                 phase="gst_api_extract",
@@ -3893,6 +3927,7 @@ async def _run_store_discovery(
                 base_rows=len(gst_api_extract.base_rows),
                 order_detail_rows=len(gst_api_extract.order_detail_rows),
                 payment_detail_rows=len(gst_api_extract.payment_detail_rows),
+                order_detail_snapshot_rows=len(gst_api_extract.order_detail_snapshot_rows),
             )
             gst_ingest_stage_statuses[STAGE_CREATED_COHORT_EXTRACT] = "success"
             gst_ingest_stage_metrics[STAGE_CREATED_COHORT_EXTRACT] = {
@@ -4231,6 +4266,7 @@ async def _run_store_discovery(
                         staging_feed_base_path,
                         staging_feed_order_details_path,
                         staging_feed_payment_details_path,
+                        staging_feed_order_detail_snapshots_path,
                     )
                     if path is None or not path.exists()
                 ]
@@ -4250,6 +4286,7 @@ async def _run_store_discovery(
                     order_details_path=staging_feed_order_details_path,
                     payment_details_path=staging_feed_payment_details_path,
                     logger=logger,
+                    order_detail_snapshots_path=staging_feed_order_detail_snapshots_path,
                     include_full_warning_samples=_env_bool(
                         "UC_ARCHIVE_INGEST_FULL_WARNING_SAMPLES_DEBUG",
                         default=False,
@@ -4356,10 +4393,19 @@ async def _run_store_discovery(
                     gst_publish_order_line_items = {
                         "inserted": line_items_publish.inserted,
                         "updated": line_items_publish.updated,
+                        "deleted": line_items_publish.deleted_final_rows,
                         "skipped": line_items_publish.skipped,
                         "warnings": line_items_publish.warnings,
                         "reason_codes": line_items_publish.reason_codes,
                         "line_item_serial_validation": line_items_publish.line_item_serial_validation,
+                        "invoices_inspected": line_items_publish.invoices_inspected,
+                        "complete_with_rows_invoices": line_items_publish.complete_with_rows_invoices,
+                        "complete_empty_invoices": line_items_publish.complete_empty_invoices,
+                        "replacement_skipped_incomplete_invoices": line_items_publish.replacement_skipped_incomplete_invoices,
+                        "deleted_final_rows": line_items_publish.deleted_final_rows,
+                        "inserted_final_rows": line_items_publish.inserted_final_rows,
+                        "orphan_rows": line_items_publish.orphan_rows,
+                        "staging_rows_written": line_items_publish.staging_rows_written,
                     }
                     log_event(
                         logger=logger,
