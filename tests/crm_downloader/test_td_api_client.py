@@ -25,6 +25,7 @@ from app.crm_downloader.td_orders_sync.td_api_artifacts import (
 from app.crm_downloader.td_orders_sync.td_api_client import (
     TdApiClient,
     TdApiClientConfig,
+    build_garment_order_snapshots,
     _build_garments_incomplete_reason,
     _extract_rows,
     _filter_summary_rows,
@@ -2220,3 +2221,27 @@ async def test_garments_pagination_budget_exhaustion_records_structured_reason(t
     assert health["garments_attempted_page_count"] == 1
     assert health["garments_completed_page_count"] == 1
     assert health["garments_expected_page_count"] == 3
+
+
+def test_build_garment_order_snapshots_marks_rows_empty_and_incomplete() -> None:
+    complete_snapshots = build_garment_order_snapshots(
+        order_rows=[{"orderNumber": "1001"}, {"orderNumber": "1002"}],
+        garment_rows=[{"orderNumber": "1001", "line_item_key": "L1"}],
+        endpoint_health={"garments_fetch_completeness": "complete"},
+    )
+
+    assert complete_snapshots == [
+        {"order_number": "1001", "garment_snapshot_outcome": "complete_with_rows", "garment_row_count": 1},
+        {"order_number": "1002", "garment_snapshot_outcome": "complete_empty", "garment_row_count": 0},
+    ]
+
+    incomplete_snapshots = build_garment_order_snapshots(
+        order_rows=[{"orderNumber": "1001"}],
+        garment_rows=[{"orderNumber": "1001", "line_item_key": "L1"}, {"orderNumber": "9999", "line_item_key": "ORPHAN"}],
+        endpoint_health={"garments_fetch_completeness": "incomplete"},
+    )
+
+    assert incomplete_snapshots == [
+        {"order_number": "1001", "garment_snapshot_outcome": "incomplete_or_failed", "garment_row_count": 1},
+        {"order_number": "9999", "garment_snapshot_outcome": "incomplete_or_failed", "garment_row_count": 1},
+    ]

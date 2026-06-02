@@ -543,3 +543,42 @@ def test_garments_health_summary_marks_orphaned_parent_relationship_incomplete()
     assert summary["garments_attempted_page_count"] == 2
     assert summary["garments_completed_page_count"] == 2
     assert summary["garments_expected_page_count"] == 2
+
+
+def test_garments_health_summary_exposes_replacement_metrics() -> None:
+    from app.crm_downloader.td_orders_sync.garment_ingest import TdGarmentIngestResult
+    from app.crm_downloader.td_orders_sync.td_api_client import TdApiFetchResult
+
+    summary = _build_garments_health_summary(
+        api_fetch_result=TdApiFetchResult(
+            endpoint_health={"/garments/details": {"garments_fetch_completeness": "complete"}}
+        ),
+        garment_ingest_result=TdGarmentIngestResult(
+            staging_rows=3,
+            staging_inserted=3,
+            staging_updated=0,
+            final_rows=2,
+            final_inserted=2,
+            final_updated=0,
+            row_count=3,
+            source_id_duplicate_rows=0,
+            changed_rows=0,
+            late_updates=0,
+            orphan_rows=1,
+            authoritative_orders_inspected=4,
+            complete_with_rows_orders=2,
+            complete_empty_orders=1,
+            replacement_skipped_incomplete_orders=1,
+            deleted_final_rows=5,
+            inserted_final_rows=2,
+        ),
+    )
+
+    assert summary["authoritative_orders_inspected"] == 4
+    assert summary["complete_with_rows_orders"] == 2
+    assert summary["complete_empty_orders"] == 1
+    assert summary["replacement_skipped_incomplete_orders"] == 1
+    assert summary["deleted_final_rows"] == 5
+    assert summary["inserted_final_rows"] == 2
+    assert summary["staging_rows_written"] == 3
+    assert summary["orphan_rows"] == 1
