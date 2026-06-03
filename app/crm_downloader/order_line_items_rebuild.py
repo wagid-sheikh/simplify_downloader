@@ -72,6 +72,7 @@ class WindowMetrics:
     cost_center: str
     window_start: date
     window_end: date
+    uc_child_run_id: str | None = None
     inspected_orders: int = 0
     complete_with_rows_orders: int = 0
     complete_empty_orders: int = 0
@@ -82,7 +83,7 @@ class WindowMetrics:
     dry_run: bool = False
 
     def checkpoint(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "source": self.source,
             "store_code": self.store_code,
             "cost_center": self.cost_center,
@@ -97,6 +98,9 @@ class WindowMetrics:
             "inserted_rows": self.inserted_rows,
             "orphan_rows": self.orphan_rows,
         }
+        if self.uc_child_run_id:
+            payload["uc_child_run_id"] = self.uc_child_run_id
+        return payload
 
 
 class SnapshotFetcher(Protocol):
@@ -122,6 +126,13 @@ def iter_windows(
             start_date=start_date, end_date=end_date, window_days=window_size_days
         )
     ]
+
+
+def _uc_child_run_id(*, run_id: str, store: RebuildStore, window: RebuildWindow) -> str:
+    return (
+        f"{run_id}:uc:{store.store_code}:{window.start.isoformat()}:"
+        f"{window.end.isoformat()}"
+    )
 
 
 def _order_number(row: Mapping[str, Any]) -> str:
@@ -354,6 +365,11 @@ async def rebuild_window(
     logger: JsonLogger,
     fetch_snapshot: SnapshotFetcher,
 ) -> WindowMetrics:
+    uc_child_run_id = (
+        _uc_child_run_id(run_id=run_id, store=store, window=window)
+        if source == "uc"
+        else None
+    )
     snapshot = await fetch_snapshot(
         source=source, store=store, window=window, run_id=run_id, logger=logger
     )
@@ -382,15 +398,18 @@ async def rebuild_window(
             store=store, window=window, result=result, dry_run=False
         )
     else:
+        assert uc_child_run_id is not None
         await _stage_uc_snapshot(
             database_url=database_url,
-            run_id=run_id,
+            run_id=uc_child_run_id,
             store=store,
             snapshot=snapshot,
             run_date=run_date,
         )
         result = await publish_uc_gst_order_details_to_line_items(
-            database_url=database_url, run_id=run_id, store_code=store.store_code
+            database_url=database_url,
+            run_id=uc_child_run_id,
+            store_code=store.store_code,
         )
         metrics = WindowMetrics(
             source="uc",
@@ -398,6 +417,7 @@ async def rebuild_window(
             cost_center=store.cost_center,
             window_start=window.start,
             window_end=window.end,
+            uc_child_run_id=uc_child_run_id,
             inspected_orders=result.invoices_inspected,
             complete_with_rows_orders=result.complete_with_rows_invoices,
             complete_empty_orders=result.complete_empty_invoices,
@@ -407,6 +427,9 @@ async def rebuild_window(
             orphan_rows=result.orphan_rows,
             dry_run=False,
         )
+
+    if uc_child_run_id and metrics.uc_child_run_id is None:
+        metrics.uc_child_run_id = uc_child_run_id
 
     log_event(
         logger=logger,
@@ -427,6 +450,7 @@ async def rebuild_window(
         inserted_rows=metrics.inserted_rows,
         orphan_rows=metrics.orphan_rows,
         dry_run=metrics.dry_run,
+        uc_child_run_id=metrics.uc_child_run_id,
         checkpoint=metrics.checkpoint(),
     )
     return metrics
@@ -778,6 +802,11 @@ async def run_rebuild(
         windows = iter_windows(store_start_date, end_date, source_window_days)
         for window in windows:
             key = (store.source, store.store_code.upper(), window.start, window.end)
+            uc_child_run_id = (
+                _uc_child_run_id(run_id=run_id, store=store, window=window)
+                if store.source == "uc"
+                else None
+            )
             expected_windows.add(key)
             existing = progress_rows.get(key)
             existing_status = _window_status(existing)
@@ -794,6 +823,7 @@ async def run_rebuild(
                     cost_center=store.cost_center,
                     window_start=window.start.isoformat(),
                     window_end=window.end.isoformat(),
+                    uc_child_run_id=uc_child_run_id,
                     dry_run=dry_run,
                     resume=resume,
                 )
@@ -820,6 +850,7 @@ async def run_rebuild(
                     cost_center=store.cost_center,
                     window_start=window.start.isoformat(),
                     window_end=window.end.isoformat(),
+                    uc_child_run_id=uc_child_run_id,
                     prior_status=existing_status,
                     dry_run=dry_run,
                     resume=resume,
@@ -872,6 +903,7 @@ async def run_rebuild(
                             cost_center=store.cost_center,
                             window_start=window.start.isoformat(),
                             window_end=window.end.isoformat(),
+                            uc_child_run_id=uc_child_run_id,
                             attempt_no=attempt_no,
                             error_message=str(exc),
                             dry_run=dry_run,
@@ -888,6 +920,7 @@ async def run_rebuild(
                         cost_center=store.cost_center,
                         window_start=window.start.isoformat(),
                         window_end=window.end.isoformat(),
+                        uc_child_run_id=uc_child_run_id,
                         attempt_no=attempt_no,
                         error_message=str(exc),
                         dry_run=dry_run,
