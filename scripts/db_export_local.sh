@@ -2,21 +2,12 @@
 set -euo pipefail
 
 # ============================================================
-# Export local PostgreSQL DB into a gzipped SQL dump and copy
-# it to the server.
+# Export PostgreSQL DB configured by .env into a gzipped SQL dump.
 #
 # - Reads POSTGRES_* from the project .env at repo root.
 # - Local output goes into ./db_dumps/
-# - Then scp's the dump to the server:
-#     ssh host: tsv-crm
-#     path    : /home/tsv-crm/tsvcrm/simplify_downloader/db_dumps
+# - Does not copy the dump to any remote server.
 # ============================================================
-
-# ---------- CONFIGURE SERVER TARGET HERE ----------
-SERVER_SSH_HOST="tsv-crm"
-SERVER_PROJECT_DIR="/home/tsv-crm/tsvcrm/simplify_downloader"
-SERVER_DUMP_DIR="${SERVER_PROJECT_DIR}/db_dumps"
-# --------------------------------------------------
 
 # Resolve project root as "one level above scripts/"
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -64,14 +55,17 @@ pg_dump \
 unset PGPASSWORD
 
 echo "[db_export_local] Local dump created."
+echo "[db_export_local] Done."
 
 # ---------- COPY TO SERVER ----------
-echo "[db_export_local] Ensuring remote dump dir exists: ${SERVER_DUMP_DIR}"
-ssh "$SERVER_SSH_HOST" "mkdir -p '$SERVER_DUMP_DIR'"
-
-echo "[db_export_local] Copying dump to server..."
-scp "$DUMP_FILE" "${SERVER_SSH_HOST}:${SERVER_DUMP_DIR}/"
-
-echo "[db_export_local] Done."
-echo "[db_export_local] Remote file should now be at:"
-echo "  ${SERVER_SSH_HOST}:${SERVER_DUMP_DIR}/$(basename "$DUMP_FILE")"
+# Remote-copy behavior intentionally disabled. This script now only exports the
+# database configured by POSTGRES_* values into the local ./db_dumps directory.
+#
+# echo "[db_export_local] Ensuring remote dump dir exists: ${SERVER_DUMP_DIR}"
+# ssh "$SERVER_SSH_HOST" "mkdir -p '$SERVER_DUMP_DIR'"
+#
+# echo "[db_export_local] Copying dump to server..."
+# scp "$DUMP_FILE" "${SERVER_SSH_HOST}:${SERVER_DUMP_DIR}/"
+#
+# echo "[db_export_local] Remote file should now be at:"
+# echo "  ${SERVER_SSH_HOST}:${SERVER_DUMP_DIR}/$(basename "$DUMP_FILE")"
