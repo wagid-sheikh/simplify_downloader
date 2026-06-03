@@ -246,6 +246,367 @@ async def test_uc_rebuild_uses_publish_replacement_path(
 
 
 @pytest.mark.asyncio
+async def test_uc_rebuild_stages_and_publishes_each_window_with_child_run_ids(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                "INSERT INTO orders (id, cost_center, store_code, order_number) VALUES "
+                "(1,'CC01','UC001','ORD-W1'), (2,'CC01','UC001','ORD-W2')"
+            )
+        )
+        await session.commit()
+
+    async def fetcher(**kwargs):
+        order_number = f"ORD-W{kwargs['window'].start.day}"
+        return rebuild.SourceSnapshot(
+            line_item_rows=[
+                {
+                    "order_number": order_number,
+                    "line_hash": f"hash-{order_number}",
+                    "item_name": f"Item {order_number}",
+                    "service": "Wash",
+                    "quantity": 1,
+                }
+            ],
+            order_snapshots=[
+                {
+                    "order_number": order_number,
+                    "snapshot_outcome": "complete_with_rows",
+                    "detail_row_count": 1,
+                }
+            ],
+        )
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="uc",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 2),
+        window_size_days=1,
+        dry_run=False,
+        run_id="parent",
+        fetch_snapshot=fetcher,
+    )
+
+    assert [metric.uc_child_run_id for metric in metrics] == [
+        "parent:uc:UC001:2025-01-01:2025-01-01",
+        "parent:uc:UC001:2025-01-02:2025-01-02",
+    ]
+    assert [metric.inserted_rows for metric in metrics] == [1, 1]
+    staged = await _rows(
+        db_url,
+        "SELECT run_id, order_code FROM stg_uc_order_detail_snapshots ORDER BY run_id",
+    )
+    assert [(row.run_id, row.order_code) for row in staged] == [
+        ("parent:uc:UC001:2025-01-01:2025-01-01", "ORD-W1"),
+        ("parent:uc:UC001:2025-01-02:2025-01-02", "ORD-W2"),
+    ]
+    final_rows = await _rows(
+        db_url,
+        "SELECT run_id, order_number FROM order_line_items ORDER BY order_number",
+    )
+    assert [(row.run_id, row.order_number) for row in final_rows] == [
+        ("parent:uc:UC001:2025-01-01:2025-01-01", "ORD-W1"),
+        ("parent:uc:UC001:2025-01-02:2025-01-02", "ORD-W2"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_uc_same_order_in_multiple_windows_uses_distinct_staging_identity(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                "CREATE UNIQUE INDEX uq_test_uc_snapshot_run_store_order "
+                "ON stg_uc_order_detail_snapshots (run_id, store_code, normalized_order_number)"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO orders (id, cost_center, store_code, order_number) VALUES (1,'CC01','UC001','ORD-SAME')"
+            )
+        )
+        await session.commit()
+
+    async def fetcher(**kwargs):
+        suffix = kwargs["window"].start.isoformat()
+        return rebuild.SourceSnapshot(
+            line_item_rows=[
+                {
+                    "order_number": "ORD-SAME",
+                    "line_hash": f"line-{suffix}",
+                    "item_name": f"Item {suffix}",
+                    "service": "Wash",
+                    "quantity": 1,
+                }
+            ],
+            order_snapshots=[
+                {
+                    "order_number": "ORD-SAME",
+                    "snapshot_outcome": "complete_with_rows",
+                    "detail_row_count": 1,
+                }
+            ],
+        )
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="uc",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 2),
+        window_size_days=1,
+        dry_run=False,
+        run_id="same-parent",
+        fetch_snapshot=fetcher,
+    )
+
+    assert len(metrics) == 2
+    assert [metric.deleted_rows for metric in metrics] == [0, 1]
+    snapshots = await _rows(
+        db_url,
+        "SELECT run_id, normalized_order_number FROM stg_uc_order_detail_snapshots ORDER BY run_id",
+    )
+    assert [(row.run_id, row.normalized_order_number) for row in snapshots] == [
+        ("same-parent:uc:UC001:2025-01-01:2025-01-01", "ORD-SAME"),
+        ("same-parent:uc:UC001:2025-01-02:2025-01-02", "ORD-SAME"),
+    ]
+    final_rows = await _rows(
+        db_url,
+        "SELECT garment_name FROM order_line_items WHERE order_number='ORD-SAME'",
+    )
+    assert [row.garment_name for row in final_rows] == ["Item 2025-01-02"]
+
+
+@pytest.mark.asyncio
+async def test_uc_later_window_metrics_are_scoped_to_later_child_run(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                "INSERT INTO orders (id, cost_center, store_code, order_number) VALUES "
+                "(1,'CC01','UC001','ORD-A'), (2,'CC01','UC001','ORD-B'), (3,'CC01','UC001','ORD-C')"
+            )
+        )
+        await session.commit()
+
+    async def fetcher(**kwargs):
+        if kwargs["window"].start == date(2025, 1, 1):
+            orders = ["ORD-A", "ORD-B"]
+        else:
+            orders = ["ORD-C"]
+        return rebuild.SourceSnapshot(
+            line_item_rows=[
+                {
+                    "order_number": order_number,
+                    "line_hash": f"line-{order_number}",
+                    "item_name": order_number,
+                    "service": "Wash",
+                    "quantity": 1,
+                }
+                for order_number in orders
+            ],
+            order_snapshots=[
+                {
+                    "order_number": order_number,
+                    "snapshot_outcome": "complete_with_rows",
+                    "detail_row_count": 1,
+                }
+                for order_number in orders
+            ],
+        )
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="uc",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 2),
+        window_size_days=1,
+        dry_run=False,
+        run_id="metrics-parent",
+        fetch_snapshot=fetcher,
+    )
+
+    assert [metric.inspected_orders for metric in metrics] == [2, 1]
+    assert [metric.inserted_rows for metric in metrics] == [2, 1]
+    assert metrics[1].uc_child_run_id == "metrics-parent:uc:UC001:2025-01-02:2025-01-02"
+
+
+@pytest.mark.asyncio
+async def test_source_both_preserves_td_parent_and_uc_child_window_behavior(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                "INSERT INTO orders (id, cost_center, store_code, order_number) VALUES "
+                "(1,'CC01','TD001','ORD-TD'), (2,'CC01','UC001','ORD-UC')"
+            )
+        )
+        await session.commit()
+
+    async def fetcher(**kwargs):
+        if kwargs["source"] == "td":
+            return rebuild.SourceSnapshot(
+                line_item_rows=[
+                    {
+                        "order_number": "ORD-TD",
+                        "line_item_key": "td-line",
+                        "garment_name": "TD Shirt",
+                    }
+                ],
+                order_snapshots=[
+                    {
+                        "order_number": "ORD-TD",
+                        "garment_snapshot_outcome": "complete_with_rows",
+                    }
+                ],
+            )
+        return rebuild.SourceSnapshot(
+            line_item_rows=[
+                {
+                    "order_number": "ORD-UC",
+                    "line_hash": "uc-line",
+                    "item_name": "UC Shirt",
+                    "service": "Wash",
+                    "quantity": 1,
+                }
+            ],
+            order_snapshots=[
+                {
+                    "order_number": "ORD-UC",
+                    "snapshot_outcome": "complete_with_rows",
+                    "detail_row_count": 1,
+                }
+            ],
+        )
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="both",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=False,
+        run_id="both-parent",
+        fetch_snapshot=fetcher,
+    )
+
+    assert [(metric.source, metric.uc_child_run_id) for metric in metrics] == [
+        ("td", None),
+        ("uc", "both-parent:uc:UC001:2025-01-01:2025-01-01"),
+    ]
+    final_rows = await _rows(
+        db_url,
+        "SELECT store_code, order_number, run_id FROM order_line_items ORDER BY store_code",
+    )
+    assert [(row.store_code, row.order_number, row.run_id) for row in final_rows] == [
+        ("TD001", "ORD-TD", "both-parent"),
+        ("UC001", "ORD-UC", "both-parent:uc:UC001:2025-01-01:2025-01-01"),
+    ]
+    progress = await _rows(
+        db_url,
+        "SELECT source, store_code, run_id, status FROM order_line_items_rebuild_progress ORDER BY source",
+    )
+    assert [
+        (row.source, row.store_code, row.run_id, row.status) for row in progress
+    ] == [
+        ("td", "TD001", "both-parent", "success"),
+        ("uc", "UC001", "both-parent", "success"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resume_progress_uses_source_store_window_while_uc_staging_uses_child_run(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    await rebuild._ensure_progress_table(db_url)
+    async with session_scope(db_url) as session:
+        await session.execute(
+            sa.text(
+                "INSERT INTO order_line_items_rebuild_progress "
+                "(source, store_code, cost_center, window_start, window_end, run_id, status, attempt_no) "
+                "VALUES ('uc', 'UC001', 'CC01', '2025-01-01', '2025-01-01', 'old-parent', 'success', 1)"
+            )
+        )
+        await session.execute(
+            sa.text(
+                "INSERT INTO orders (id, cost_center, store_code, order_number) VALUES (1,'CC01','UC001','ORD-RESUME')"
+            )
+        )
+        await session.commit()
+    seen: list[date] = []
+
+    async def fetcher(**kwargs):
+        seen.append(kwargs["window"].start)
+        return rebuild.SourceSnapshot(
+            line_item_rows=[
+                {
+                    "order_number": "ORD-RESUME",
+                    "line_hash": "resume-line",
+                    "item_name": "Resume Item",
+                    "service": "Wash",
+                    "quantity": 1,
+                }
+            ],
+            order_snapshots=[
+                {
+                    "order_number": "ORD-RESUME",
+                    "snapshot_outcome": "complete_with_rows",
+                    "detail_row_count": 1,
+                }
+            ],
+        )
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="uc",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 2),
+        window_size_days=1,
+        dry_run=False,
+        resume=True,
+        run_id="resume-parent",
+        fetch_snapshot=fetcher,
+    )
+
+    assert seen == [date(2025, 1, 2)]
+    assert [metric.uc_child_run_id for metric in metrics] == [
+        "resume-parent:uc:UC001:2025-01-02:2025-01-02"
+    ]
+    staged = await _rows(
+        db_url,
+        "SELECT run_id, order_code FROM stg_uc_order_detail_snapshots",
+    )
+    assert [(row.run_id, row.order_code) for row in staged] == [
+        ("resume-parent:uc:UC001:2025-01-02:2025-01-02", "ORD-RESUME")
+    ]
+    progress = await _rows(
+        db_url,
+        "SELECT window_start, window_end, run_id, status FROM order_line_items_rebuild_progress ORDER BY window_start",
+    )
+    assert [
+        (row.window_start, row.window_end, row.run_id, row.status) for row in progress
+    ] == [
+        ("2025-01-01", "2025-01-01", "old-parent", "success"),
+        ("2025-01-02", "2025-01-02", "resume-parent", "success"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_complete_empty_deletes_existing_rows(patch_config_and_stores) -> None:
     db_url = patch_config_and_stores
     await _create_common_tables(db_url)
@@ -362,6 +723,12 @@ async def test_resumability_emits_source_store_window_checkpoints(
         ("uc", "UC001", "2025-01-03", "2025-01-03"),
     ]
     assert all(item["dry_run"] for item in checkpoints)
+    assert [
+        item.get("uc_child_run_id") for item in checkpoints if item["source"] == "uc"
+    ] == [
+        "resume:uc:UC001:2025-01-01:2025-01-02",
+        "resume:uc:UC001:2025-01-03:2025-01-03",
+    ]
 
 
 @pytest.mark.asyncio
