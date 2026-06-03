@@ -78,13 +78,17 @@ def _write_lock(
 
 
 def _run_recovery(
-    recovery_script: Path, pipeline: str | None = None, **env_overrides: str
+    recovery_script: Path,
+    pipeline: str | None = None,
+    extra_args: list[str] | None = None,
+    **env_overrides: str,
 ) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env.update(env_overrides)
     args = [str(recovery_script)]
     if pipeline is not None:
         args.append(pipeline)
+    args.extend(extra_args or [])
     return subprocess.run(
         args,
         cwd=recovery_script.parent.parent,
@@ -101,6 +105,96 @@ def _stop_process(process: subprocess.Popen[str]) -> None:
     process.wait(timeout=5)
 
 
+def test_help_describes_pipelines_dry_run_force_and_examples(tmp_path: Path) -> None:
+    recovery_script, _, _ = _prepare_scripts(tmp_path)
+
+    result = _run_recovery(recovery_script, "--help")
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert result.stderr == ""
+    assert "Valid pipelines:" in result.stdout
+    assert "td-leads" in result.stdout
+    assert "orders-reports" in result.stdout
+    assert "Default mode is dry-run" in result.stdout
+    assert "Terminate the process group" in result.stdout
+    assert "Examples:" in result.stdout
+    assert "orders-reports FORCE=1" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["--force"],
+        ["FORCE=1"],
+    ],
+)
+def test_argument_force_forms_terminate_pipeline_process_group(
+    tmp_path: Path, extra_args: list[str]
+) -> None:
+    recovery_script, _, scripts_dir = _prepare_scripts(tmp_path)
+    lock_dir = _lock_dir(tmp_path, "orders-reports")
+    process = _start_repo_process(scripts_dir)
+    try:
+        _write_lock(
+            lock_dir, pid=process.pid, pgid=process.pid, command=str(process.args[0])
+        )
+
+        result = _run_recovery(
+            recovery_script,
+            "orders-reports",
+            extra_args=extra_args,
+            TERM_WAIT_SECONDS="0",
+            KILL_WAIT_SECONDS="0",
+        )
+        process.wait(timeout=5)
+
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "Pipeline=orders-reports DRY_RUN=1 FORCE=1" in result.stdout
+        assert f"Sending TERM to process group -{process.pid}" in result.stdout
+        assert not lock_dir.exists()
+    finally:
+        _stop_process(process)
+
+
+def test_orders_report_typo_normalizes_to_orders_reports(tmp_path: Path) -> None:
+    recovery_script, _, scripts_dir = _prepare_scripts(tmp_path)
+    lock_dir = _lock_dir(tmp_path, "orders-reports")
+    process = _start_repo_process(scripts_dir)
+    try:
+        _write_lock(
+            lock_dir, pid=process.pid, pgid=process.pid, command=str(process.args[0])
+        )
+
+        result = _run_recovery(recovery_script, "orders-report")
+
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "Pipeline=orders-reports DRY_RUN=1 FORCE=0" in result.stdout
+        assert f"Lock: {lock_dir}" in result.stdout
+        assert process.poll() is None
+    finally:
+        _stop_process(process)
+
+
+def test_rejects_unknown_option_with_usage(tmp_path: Path) -> None:
+    recovery_script, _, _ = _prepare_scripts(tmp_path)
+
+    result = _run_recovery(recovery_script, "orders-reports", extra_args=["--bogus"])
+
+    assert result.returncode == 2
+    assert "Unknown option: --bogus" in result.stderr
+    assert "Usage:" in result.stderr
+
+
+def test_rejects_extra_pipeline_argument_with_usage(tmp_path: Path) -> None:
+    recovery_script, _, _ = _prepare_scripts(tmp_path)
+
+    result = _run_recovery(recovery_script, "td-leads", extra_args=["orders-reports"])
+
+    assert result.returncode == 2
+    assert "Unexpected argument: orders-reports" in result.stderr
+    assert "Usage:" in result.stderr
+
+
 @pytest.mark.parametrize("pipeline", ["td-leads", "orders-reports"])
 def test_dry_run_inspects_pipeline_lock_without_terminating_process(
     tmp_path: Path, pipeline: str
@@ -109,7 +203,9 @@ def test_dry_run_inspects_pipeline_lock_without_terminating_process(
     lock_dir = _lock_dir(tmp_path, pipeline)
     process = _start_repo_process(scripts_dir)
     try:
-        _write_lock(lock_dir, pid=process.pid, pgid=process.pid, command=str(process.args[0]))
+        _write_lock(
+            lock_dir, pid=process.pid, pgid=process.pid, command=str(process.args[0])
+        )
 
         result = _run_recovery(recovery_script, pipeline)
 
@@ -135,7 +231,9 @@ def test_force_terminates_pipeline_process_group_and_removes_lock(
     lock_dir = _lock_dir(tmp_path, pipeline)
     process = _start_repo_process(scripts_dir)
     try:
-        _write_lock(lock_dir, pid=process.pid, pgid=process.pid, command=str(process.args[0]))
+        _write_lock(
+            lock_dir, pid=process.pid, pgid=process.pid, command=str(process.args[0])
+        )
 
         result = _run_recovery(
             recovery_script,
@@ -159,7 +257,9 @@ def test_force_escalates_to_kill_after_bounded_term_wait(tmp_path: Path) -> None
     lock_dir = _lock_dir(tmp_path, "td-leads")
     process = _start_repo_process(scripts_dir, ignore_term=True)
     try:
-        _write_lock(lock_dir, pid=process.pid, pgid=process.pid, command=str(process.args[0]))
+        _write_lock(
+            lock_dir, pid=process.pid, pgid=process.pid, command=str(process.args[0])
+        )
 
         result = _run_recovery(
             recovery_script,
@@ -177,12 +277,16 @@ def test_force_escalates_to_kill_after_bounded_term_wait(tmp_path: Path) -> None
         _stop_process(process)
 
 
-def test_rejects_unrelated_lock_command_without_terminating_process(tmp_path: Path) -> None:
+def test_rejects_unrelated_lock_command_without_terminating_process(
+    tmp_path: Path,
+) -> None:
     recovery_script, _, scripts_dir = _prepare_scripts(tmp_path)
     lock_dir = _lock_dir(tmp_path, "orders-reports")
     process = _start_repo_process(scripts_dir)
     try:
-        _write_lock(lock_dir, pid=process.pid, pgid=process.pid, command="/usr/bin/sleep 999")
+        _write_lock(
+            lock_dir, pid=process.pid, pgid=process.pid, command="/usr/bin/sleep 999"
+        )
 
         result = _run_recovery(recovery_script, "orders-reports", FORCE="1")
 
@@ -229,7 +333,11 @@ def test_rejects_non_numeric_process_metadata(
     [
         ("started_at", "not-a-time", "Skipping: malformed start time [not-a-time]."),
         ("host", "not a host", "Skipping: malformed host [not a host]."),
-        ("cwd", "relative/path", "Skipping: malformed working directory [relative/path]."),
+        (
+            "cwd",
+            "relative/path",
+            "Skipping: malformed working directory [relative/path].",
+        ),
     ],
 )
 def test_rejects_malformed_descriptive_metadata(
@@ -259,13 +367,19 @@ def test_rejects_malformed_descriptive_metadata(
         _stop_process(process)
 
 
-@pytest.mark.parametrize("missing_name", ["pid", "pgid", "command", "started_at", "host", "cwd"])
-def test_rejects_lock_directory_with_missing_metadata(tmp_path: Path, missing_name: str) -> None:
+@pytest.mark.parametrize(
+    "missing_name", ["pid", "pgid", "command", "started_at", "host", "cwd"]
+)
+def test_rejects_lock_directory_with_missing_metadata(
+    tmp_path: Path, missing_name: str
+) -> None:
     recovery_script, _, scripts_dir = _prepare_scripts(tmp_path)
     lock_dir = _lock_dir(tmp_path, "orders-reports")
     process = _start_repo_process(scripts_dir)
     try:
-        _write_lock(lock_dir, pid=process.pid, pgid=process.pid, command=str(process.args[0]))
+        _write_lock(
+            lock_dir, pid=process.pid, pgid=process.pid, command=str(process.args[0])
+        )
         (lock_dir / missing_name).unlink()
 
         result = _run_recovery(recovery_script, "orders-reports", FORCE="1")
@@ -296,7 +410,9 @@ def test_force_removes_dead_owner_lock(tmp_path: Path) -> None:
     assert not lock_dir.exists()
 
 
-def test_force_removes_obsolete_global_lock_after_recorded_group_is_gone(tmp_path: Path) -> None:
+def test_force_removes_obsolete_global_lock_after_recorded_group_is_gone(
+    tmp_path: Path,
+) -> None:
     recovery_script, _, scripts_dir = _prepare_scripts(tmp_path)
     process = _start_repo_process(scripts_dir)
     command = str(process.args[0])
@@ -313,12 +429,16 @@ def test_force_removes_obsolete_global_lock_after_recorded_group_is_gone(tmp_pat
     assert not obsolete_lock.exists()
 
 
-def test_legacy_orders_reports_wrapper_forwards_to_general_helper(tmp_path: Path) -> None:
+def test_legacy_orders_reports_wrapper_forwards_to_general_helper(
+    tmp_path: Path,
+) -> None:
     _, legacy_wrapper, scripts_dir = _prepare_scripts(tmp_path)
     lock_dir = _lock_dir(tmp_path, "orders-reports")
     process = _start_repo_process(scripts_dir)
     try:
-        _write_lock(lock_dir, pid=process.pid, pgid=process.pid, command=str(process.args[0]))
+        _write_lock(
+            lock_dir, pid=process.pid, pgid=process.pid, command=str(process.args[0])
+        )
 
         result = _run_recovery(legacy_wrapper, PIPELINE="td-leads", Pipeline="td-leads")
 
