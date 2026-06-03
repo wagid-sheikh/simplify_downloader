@@ -119,6 +119,8 @@ def test_help_describes_pipelines_dry_run_force_and_examples(tmp_path: Path) -> 
     assert "Terminate the process group" in result.stdout
     assert "Examples:" in result.stdout
     assert "orders-reports FORCE=1" in result.stdout
+    assert "--force orders-reports" in result.stdout
+    assert "orders-report" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -154,6 +156,79 @@ def test_argument_force_forms_terminate_pipeline_process_group(
         assert not lock_dir.exists()
     finally:
         _stop_process(process)
+
+
+def test_force_option_can_precede_pipeline_name(tmp_path: Path) -> None:
+    recovery_script, _, scripts_dir = _prepare_scripts(tmp_path)
+    lock_dir = _lock_dir(tmp_path, "orders-reports")
+    process = _start_repo_process(scripts_dir)
+    try:
+        _write_lock(
+            lock_dir, pid=process.pid, pgid=process.pid, command=str(process.args[0])
+        )
+
+        result = _run_recovery(
+            recovery_script,
+            extra_args=["--force", "orders-reports"],
+            TERM_WAIT_SECONDS="0",
+            KILL_WAIT_SECONDS="0",
+        )
+        process.wait(timeout=5)
+
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "Pipeline=orders-reports DRY_RUN=1 FORCE=1" in result.stdout
+        assert f"Sending TERM to process group -{process.pid}" in result.stdout
+        assert not lock_dir.exists()
+    finally:
+        _stop_process(process)
+
+
+def test_no_lock_message_names_selected_pipeline_and_relative_path(tmp_path: Path) -> None:
+    recovery_script, _, _ = _prepare_scripts(tmp_path)
+
+    result = _run_recovery(recovery_script, "orders-reports")
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (
+        "No active/stale lock found for orders-reports at "
+        "tmp/cron_run_orders_and_reports.lock."
+    ) in result.stdout
+
+
+def test_environment_style_pipeline_assignment_prints_targeted_correction(
+    tmp_path: Path,
+) -> None:
+    recovery_script, _, _ = _prepare_scripts(tmp_path)
+
+    result = _run_recovery(recovery_script, "Pipeline=orders-reports")
+
+    assert result.returncode == 2
+    assert (
+        "Do not pass the pipeline as an environment-style assignment: "
+        "Pipeline=orders-reports"
+    ) in result.stderr
+    assert (
+        "Use: ./scripts/inspect_or_kill_pipeline_stale.sh orders-reports"
+        in result.stderr
+    )
+
+
+def test_pipeline_environment_variable_prints_targeted_correction(
+    tmp_path: Path,
+) -> None:
+    recovery_script, _, _ = _prepare_scripts(tmp_path)
+
+    result = _run_recovery(recovery_script, Pipeline="orders-reports")
+
+    assert result.returncode == 2
+    assert (
+        "Do not pass the pipeline as an environment variable: "
+        "Pipeline=orders-reports"
+    ) in result.stderr
+    assert (
+        "Use: ./scripts/inspect_or_kill_pipeline_stale.sh orders-reports"
+        in result.stderr
+    )
 
 
 def test_orders_report_typo_normalizes_to_orders_reports(tmp_path: Path) -> None:
