@@ -10,10 +10,11 @@ KILL_WAIT_SECONDS="${KILL_WAIT_SECONDS:-1}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP_DIR="$REPO_ROOT/tmp"
 OBSOLETE_GLOBAL_LOCK_DIR="$TMP_DIR/cron_heavy_pipelines.lock"
+PROFILER_STORE_LOCKS_DIR="${PROFILER_STORE_LOCKS_DIR:-$REPO_ROOT/app/crm_downloader/data/orders_sync_run_profiler_locks}"
 
 usage() {
   cat <<EOF
-Usage: $0 [--force] {td-leads|orders-reports|orders-report} [FORCE=1]
+Usage: $0 [--force] {td-leads|orders-reports|orders-report|profiler-store-locks} [FORCE=1]
 
 Inspect or recover a stale pipeline lock. Default mode is dry-run: the script
 prints metadata and process snapshots without terminating anything. Use --force,
@@ -24,6 +25,8 @@ Valid pipelines:
   td-leads        Inspect/recover tmp/cron_run_td_leads_sync.lock
   orders-reports  Inspect/recover tmp/cron_run_orders_and_reports.lock
                   Alias accepted: orders-report
+  profiler-store-locks
+                  Inspect orders_sync_run_profiler per-store lock metadata
 
 Options:
   -h, --help      Show this help message
@@ -34,6 +37,7 @@ Examples:
   $0 td-leads
   $0 orders-reports
   $0 orders-report
+  $0 profiler-store-locks
   $0 --force orders-reports
   $0 orders-reports --force
   FORCE=1 $0 orders-reports
@@ -53,7 +57,7 @@ print_pipeline_correction() {
   esac
 
   case "$corrected_name" in
-    td-leads|orders-reports)
+    td-leads|orders-reports|profiler-store-locks)
       echo "Use: ./scripts/inspect_or_kill_pipeline_stale.sh $corrected_name" >&2
       ;;
   esac
@@ -124,6 +128,9 @@ case "$PIPELINE_NAME" in
   orders-reports)
     PIPELINE_LOCK_DIR="$TMP_DIR/cron_run_orders_and_reports.lock"
     ;;
+  profiler-store-locks)
+    PIPELINE_LOCK_DIR=""
+    ;;
   *)
     echo "Unknown pipeline: $PIPELINE_NAME" >&2
     usage >&2
@@ -165,6 +172,115 @@ read_required_metadata() {
 is_valid_target_command() {
   local command="$1"
   [[ "$command" == *"$REPO_ROOT/scripts/"* ]] || [[ "$command" == *"$REPO_ROOT/app/"* ]]
+}
+
+read_optional_metadata() {
+  local lock_dir="$1"
+  local metadata_name="$2"
+  local metadata_file="$lock_dir/$metadata_name"
+  local value=""
+
+  if [ ! -f "$metadata_file" ]; then
+    echo "missing metadata file $metadata_file"
+    return 1
+  fi
+
+  value="$(cat "$metadata_file" 2>/dev/null)" || {
+    echo "unreadable metadata file $metadata_file"
+    return 1
+  }
+
+  if [ -z "$value" ] || [[ "$value" == *$'\n'* ]]; then
+    echo "malformed metadata file $metadata_file"
+    return 1
+  fi
+
+  printf '%s' "$value"
+}
+
+print_store_lock_metadata_field() {
+  local lock_dir="$1"
+  local name="$2"
+  local value
+
+  value="$(read_optional_metadata "$lock_dir" "$name")" || {
+    echo "  $name: <${value}>"
+    return 1
+  }
+  echo "  $name: $value"
+  return 0
+}
+
+inspect_profiler_store_lock() {
+  local lock_dir="$1"
+  local pid pgid metadata_ok=1
+
+  [ -d "$lock_dir" ] || return 0
+
+  echo
+  echo "Profiler store lock: $lock_dir"
+  for name in pid pgid started_at started_at_epoch host cwd command run_id store_code; do
+    print_store_lock_metadata_field "$lock_dir" "$name" || metadata_ok=0
+  done
+
+  pid="$(read_optional_metadata "$lock_dir" pid >/dev/null 2>&1 && cat "$lock_dir/pid" 2>/dev/null | tr -d '\n')"
+  pgid="$(read_optional_metadata "$lock_dir" pgid >/dev/null 2>&1 && cat "$lock_dir/pgid" 2>/dev/null | tr -d '\n')"
+
+  if [ -n "$pid" ]; then
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+      if kill -0 "$pid" 2>/dev/null; then
+        echo "  owner_pid_alive: true"
+      else
+        echo "  owner_pid_alive: false"
+      fi
+    else
+      echo "  owner_pid_alive: unknown (non-numeric PID [$pid])"
+      metadata_ok=0
+    fi
+  else
+    echo "  owner_pid_alive: unknown"
+  fi
+
+  if [ -n "$pgid" ]; then
+    if [[ "$pgid" =~ ^[1-9][0-9]*$ ]]; then
+      if pgid_alive "$pgid"; then
+        echo "  owner_pgid_alive: true"
+        print_snapshot "Store-lock snapshot for PGID $pgid:" "$pgid"
+      else
+        echo "  owner_pgid_alive: false"
+        if [ "$FORCE" = "1" ]; then
+          echo "  FORCE=1: owner process group is gone; removing profiler store lock directory."
+          rm -rf "$lock_dir"
+        fi
+      fi
+    else
+      echo "  owner_pgid_alive: unknown (non-numeric PGID [$pgid])"
+      metadata_ok=0
+    fi
+  else
+    echo "  owner_pgid_alive: unknown"
+  fi
+
+  if [ "$metadata_ok" != "1" ]; then
+    echo "  metadata_status: invalid; no termination/removal attempted for this lock."
+  fi
+}
+
+inspect_profiler_store_locks() {
+  if [ ! -d "$PROFILER_STORE_LOCKS_DIR" ]; then
+    echo "No profiler store locks found at ${PROFILER_STORE_LOCKS_DIR#$REPO_ROOT/}."
+    return 0
+  fi
+
+  local found=0
+  while IFS= read -r lock_dir; do
+    found=1
+    inspect_profiler_store_lock "$lock_dir"
+  done < <(find "$PROFILER_STORE_LOCKS_DIR" -maxdepth 1 -type d -name '*.lock' | sort)
+
+  if [ "$found" = "0" ]; then
+    echo "No profiler store locks found at ${PROFILER_STORE_LOCKS_DIR#$REPO_ROOT/}."
+  fi
 }
 
 pgid_alive() {
@@ -444,12 +560,18 @@ if [ "$DRY_RUN" = "1" ] && [ "$FORCE" = "1" ]; then
   echo "FORCE=1 overrides dry run and allows termination."
 fi
 
-if [ -d "$PIPELINE_LOCK_DIR" ]; then
+if [ "$PIPELINE_NAME" = "profiler-store-locks" ]; then
+  inspect_profiler_store_locks
+elif [ -d "$PIPELINE_LOCK_DIR" ]; then
   inspect_or_kill_process_group "$PIPELINE_LOCK_DIR"
+  if [ "$PIPELINE_NAME" = "orders-reports" ]; then
+    inspect_profiler_store_locks
+  fi
 else
   echo "No active/stale lock found for $PIPELINE_NAME at ${PIPELINE_LOCK_DIR#$REPO_ROOT/}."
   if [ "$PIPELINE_NAME" = "orders-reports" ]; then
     inspect_orders_reports_orphans
+    inspect_profiler_store_locks
   fi
 fi
 

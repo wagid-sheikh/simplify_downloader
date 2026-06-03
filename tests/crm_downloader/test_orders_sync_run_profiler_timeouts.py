@@ -113,6 +113,119 @@ async def _run_profiler_with_real_store_processing(
 
 
 @pytest.mark.asyncio
+async def test_store_lock_creates_metadata_and_cleans_up_after_unlock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(profiler, "default_download_dir", lambda: tmp_path)
+
+    lock_path = tmp_path / "orders_sync_run_profiler_locks" / "A817.lock"
+    async with profiler.store_lock("A817", run_id="metadata-run", timeout_seconds=0.1):
+        assert lock_path.is_dir()
+        assert (lock_path / "lock").is_file()
+        metadata = {
+            name: (lock_path / name).read_text(encoding="utf-8").strip()
+            for name in profiler.STORE_LOCK_METADATA_FILES
+        }
+        assert metadata["pid"] == str(profiler.os.getpid())
+        assert metadata["pgid"] == str(profiler.os.getpgid(0))
+        assert float(metadata["started_at_epoch"]) > 0
+        assert metadata["host"]
+        assert metadata["cwd"] == profiler.os.getcwd()
+        assert metadata["command"]
+        assert metadata["run_id"] == "metadata-run"
+        assert metadata["store_code"] == "A817"
+
+    assert not lock_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_store_lock_timeout_log_includes_owner_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(profiler, "default_download_dir", lambda: tmp_path)
+    stream = io.StringIO()
+    logger = profiler.JsonLogger(run_id="waiter-run", stream=stream, log_file_path=None)
+
+    lock_path = tmp_path / "orders_sync_run_profiler_locks" / "LOCKED.lock"
+    lock_path.mkdir(parents=True)
+    profiler._write_store_lock_metadata(lock_path, run_id="owner-run", store_code="LOCKED")
+    locked_handle = open(lock_path / "lock", "w", encoding="utf-8")
+    fcntl.flock(locked_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    try:
+        with pytest.raises(profiler.StoreLockTimeoutError):
+            async with profiler.store_lock(
+                "LOCKED", logger=logger, run_id="waiter-run", timeout_seconds=0.001
+            ):
+                pass
+    finally:
+        fcntl.flock(locked_handle, fcntl.LOCK_UN)
+        locked_handle.close()
+
+    timeout_event = next(
+        event
+        for event in _events(stream)
+        if event["message"] == "Timed out acquiring orders profiler store lock"
+    )
+    assert timeout_event["owner_metadata"]["run_id"] == "owner-run"
+    assert timeout_event["owner_metadata"]["store_code"] == "LOCKED"
+    assert timeout_event["owner_metadata"]["pid"] == str(profiler.os.getpid())
+    assert timeout_event["owner_metadata_errors"] == []
+    assert timeout_event["owner_pid_alive"] is True
+    assert timeout_event["owner_pgid_alive"] is True
+
+
+@pytest.mark.parametrize(
+    ("metadata_edits", "expected_errors"),
+    [
+        ({"pid": "not-a-pid"}, {"malformed:pid"}),
+        ({"host": None}, {"missing:host"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_store_lock_timeout_reports_missing_or_malformed_metadata_safely(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    metadata_edits: dict[str, str | None],
+    expected_errors: set[str],
+) -> None:
+    monkeypatch.setattr(profiler, "default_download_dir", lambda: tmp_path)
+    stream = io.StringIO()
+    logger = profiler.JsonLogger(run_id="waiter-run", stream=stream, log_file_path=None)
+
+    lock_path = tmp_path / "orders_sync_run_profiler_locks" / "BROKEN.lock"
+    lock_path.mkdir(parents=True)
+    profiler._write_store_lock_metadata(lock_path, run_id="owner-run", store_code="BROKEN")
+    for name, value in metadata_edits.items():
+        metadata_file = lock_path / name
+        if value is None:
+            metadata_file.unlink()
+        else:
+            metadata_file.write_text(f"{value}\n", encoding="utf-8")
+
+    locked_handle = open(lock_path / "lock", "w", encoding="utf-8")
+    fcntl.flock(locked_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    try:
+        with pytest.raises(profiler.StoreLockTimeoutError):
+            async with profiler.store_lock(
+                "BROKEN", logger=logger, run_id="waiter-run", timeout_seconds=0.001
+            ):
+                pass
+    finally:
+        fcntl.flock(locked_handle, fcntl.LOCK_UN)
+        locked_handle.close()
+
+    timeout_event = next(
+        event
+        for event in _events(stream)
+        if event["message"] == "Timed out acquiring orders profiler store lock"
+    )
+    assert expected_errors.issubset(set(timeout_event["owner_metadata_errors"]))
+    assert timeout_event["owner_metadata"].get("store_code") == "BROKEN"
+
+
+@pytest.mark.asyncio
 async def test_store_lock_timeout_marks_store_failed_and_continues_when_store_locks_enabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -124,7 +237,9 @@ async def test_store_lock_timeout_marks_store_failed_and_continues_when_store_lo
     lock_dir = tmp_path / "orders_sync_run_profiler_locks"
     lock_dir.mkdir(parents=True)
     lock_path = lock_dir / "LOCKED.lock"
-    locked_handle = open(lock_path, "w", encoding="utf-8")
+    lock_path.mkdir()
+    profiler._write_store_lock_metadata(lock_path, run_id="owner-run", store_code="LOCKED")
+    locked_handle = open(lock_path / "lock", "w", encoding="utf-8")
     fcntl.flock(locked_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     stream = io.StringIO()
@@ -171,6 +286,8 @@ async def test_store_lock_timeout_marks_store_failed_and_continues_when_store_lo
         event["phase"] == "store_lock"
         and event["message"] == "Timed out acquiring orders profiler store lock"
         and event["failure_reason"] == "store_lock_timeout"
+        and event["owner_metadata"]["run_id"] == "owner-run"
+        and event["owner_pid_alive"] is True
         for event in events
     )
     assert any(
