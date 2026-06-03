@@ -26,6 +26,147 @@ def _write_successful_preflight(scripts_dir: Path) -> None:
     )
 
 
+def test_cron_uses_bsd_safe_mktemp_templates(tmp_path: Path) -> None:
+    repo_root = tmp_path
+    scripts_dir = repo_root / "scripts"
+    bin_dir = repo_root / "bin"
+    logs_dir = repo_root / "logs"
+    scripts_dir.mkdir(parents=True)
+    bin_dir.mkdir()
+    logs_dir.mkdir()
+
+    source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
+    _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
+    _write_successful_preflight(scripts_dir)
+    for child_script in (
+        "orders_sync_run_profiler.sh",
+        "run_local_reports_daily_sales.sh",
+        "run_local_reports_pending_deliveries.sh",
+    ):
+        _write_executable(scripts_dir / child_script, "#!/usr/bin/env bash\nexit 0\n")
+
+    mktemp_calls = tmp_path / "mktemp-calls.log"
+    _write_executable(
+        bin_dir / "mktemp",
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "template=\"${1:-}\"\n"
+        f"printf '%s\\n' \"${{template}}\" >> {mktemp_calls}\n"
+        "if [[ -z \"${template}\" || \"${template}\" == *XXXXXX.* ]]; then\n"
+        "  exit 2\n"
+        "fi\n"
+        "case \"${template}\" in\n"
+        "  *XXXXXX) ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n"
+        "dir=\"${template%/*}\"\n"
+        "base=\"${template##*/}\"\n"
+        "prefix=\"${base%XXXXXX}\"\n"
+        "path=\"${dir}/${prefix}$$_${RANDOM}\"\n"
+        ": > \"${path}\"\n"
+        "printf '%s\\n' \"${path}\"\n",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "CRON_PATH": str(bin_dir),
+            "ORDERS_MAX_ATTEMPTS": "1",
+            "ORDERS_PREFLIGHT_MAX_ATTEMPTS": "1",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "TMPDIR": str(tmp_path),
+        }
+    )
+
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+    calls = mktemp_calls.read_text(encoding="utf-8").splitlines()
+    assert any(call.endswith("/cron_step_attempt.XXXXXX") for call in calls)
+    assert any(
+        call.endswith("/orders_sync_connectivity_preflight.XXXXXX") for call in calls
+    )
+    assert all("XXXXXX.log" not in call for call in calls)
+    assert not list((repo_root / "tmp").glob("cron_step_attempt.XXXXXX.log"))
+    assert not list(
+        (repo_root / "tmp").glob("orders_sync_connectivity_preflight.XXXXXX.log")
+    )
+
+
+def test_cron_mktemp_empty_path_fails_before_launching_children(tmp_path: Path) -> None:
+    repo_root = tmp_path
+    scripts_dir = repo_root / "scripts"
+    bin_dir = repo_root / "bin"
+    logs_dir = repo_root / "logs"
+    scripts_dir.mkdir(parents=True)
+    bin_dir.mkdir()
+    logs_dir.mkdir()
+
+    source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
+    _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
+    for child_script in (
+        "orders_sync_connectivity_preflight.sh",
+        "orders_sync_run_profiler.sh",
+        "run_local_reports_daily_sales.sh",
+        "run_local_reports_pending_deliveries.sh",
+    ):
+        _write_executable(
+            scripts_dir / child_script,
+            "#!/usr/bin/env bash\n"
+            f"printf '{child_script} launched\\n' >> {tmp_path / 'launched.log'}\n"
+            "exit 0\n",
+        )
+    _write_executable(
+        bin_dir / "mktemp",
+        "#!/usr/bin/env bash\n"
+        "# Simulate a broken mktemp that exits successfully but returns no path.\n"
+        "exit 0\n",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "CRON_PATH": str(bin_dir),
+            "ORDERS_MAX_ATTEMPTS": "1",
+            "ORDERS_PREFLIGHT_MAX_ATTEMPTS": "1",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "TMPDIR": str(tmp_path),
+        }
+    )
+
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert not (tmp_path / "launched.log").exists()
+    log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
+    assert log_files
+    log_text = log_files[-1].read_text(encoding="utf-8")
+    assert (
+        f"ERROR: failed to create preflight log file under {repo_root / 'tmp'}" in log_text
+    )
+    assert f"ERROR: failed to create attempt log file under {repo_root / 'tmp'}" in log_text
+
+
 def _run_pending_deliveries_wrapper(tmp_path: Path, *args: str) -> list[str]:
     repo_root = tmp_path
     scripts_dir = repo_root / "scripts"
