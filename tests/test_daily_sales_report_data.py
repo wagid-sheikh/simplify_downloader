@@ -2071,14 +2071,18 @@ async def test_grouped_auto_clear_requires_sufficient_grouped_payment_proof(
     assert report.to_be_recovered == []
     async with session_scope(database_url) as session:
         rows = (await session.execute(sa.text("""
-            SELECT order_number, recovery_status, recovery_notes
+            SELECT order_number, recovery_status, recovery_category, recovery_notes
             FROM orders
             ORDER BY order_number
         """))).mappings().all()
 
     assert {row["order_number"]: row["recovery_status"] for row in rows} == {
-        "GROUP-1": "NONE",
-        "GROUP-2": "NONE",
+        "GROUP-1": "RECOVERED",
+        "GROUP-2": "RECOVERED",
+    }
+    assert {row["order_number"]: row["recovery_category"] for row in rows} == {
+        "GROUP-1": "PAYMENT_PROOF_AUTO_RECOVERED",
+        "GROUP-2": "PAYMENT_PROOF_AUTO_RECOVERED",
     }
     for row in rows:
         assert "payment_collections.payment_ids=1" in row["recovery_notes"]

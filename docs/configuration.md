@@ -72,9 +72,13 @@ edges are persisted to `pipeline_run_summaries`; repeated same-owner suppression
 are deduplicated for email delivery.
 
 For manual operator recovery, use `scripts/inspect_or_kill_pipeline_stale.sh`
-with the explicit `td-leads` or `orders-reports` pipeline name. It defaults to
-dry-run inspection; set `FORCE=1` only after reviewing its before-and-after
-process snapshots. The helper reads `pid`, `pgid`, `command`, `started_at`,
+with the explicit `td-leads` or `orders-reports` pipeline name; `orders-report`
+is accepted as an orders/reports alias. It defaults to dry-run inspection; use
+`--force`, environment `FORCE=1`, or trailing `FORCE=1` only after reviewing its
+before-and-after process snapshots. The helper prints an explicit
+`No active/stale lock found ... at tmp/...` message when the selected local lock
+directory is absent and a targeted correction for assignment-style mistakes such
+as `Pipeline=orders-reports`. It reads `pid`, `pgid`, `command`, `started_at`,
 `host`, and `cwd` lock metadata, verifies process-group ownership before sending
 `TERM`, escalates to `KILL` after a bounded wait, and removes locks only after
 the group is gone. It also checks the retired `tmp/cron_heavy_pipelines.lock`

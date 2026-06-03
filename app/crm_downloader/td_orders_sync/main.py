@@ -94,6 +94,13 @@ INGEST_SOURCE_BY_MODE: Mapping[str, str] = {
     "api_primary": "api_rows",
     "api_only": "api_rows",
 }
+UI_ORDERS_NAVIGATION_WARNING = "ui_navigation_warning: Orders container did not load from Reports navigation"
+OVERDUE_ORDERS_POPUP_SELECTOR = "#pnlOrderOverDuePopup"
+ORDERS_OVERDUE_POPUP_BLOCKED_REASON = "orders_overdue_popup_blocked"
+ORDERS_OVERDUE_POPUP_BLOCKED_MESSAGE = "Overdue orders popup blocks Orders navigation; skipping store"
+API_ONLY_NAVIGATION_WARNING_MESSAGE = (
+    "API primary ingestion succeeded; UI Orders verification/navigation failed"
+)
 SUMMARY_ROW_MARKERS = ("total order", "grand total")
 
 
@@ -1016,6 +1023,22 @@ class TdStore:
             self.sync_config.get("reports_nav_selector")
         )
         return _normalize_id_selector(raw or "#achrOrderReport")
+
+
+@dataclass
+class OrdersNavigationResult:
+    ready: bool
+    reason: str | None = None
+    modal_selector: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.ready
+
+
+def _coerce_orders_navigation_result(value: OrdersNavigationResult | bool) -> OrdersNavigationResult:
+    if isinstance(value, OrdersNavigationResult):
+        return value
+    return OrdersNavigationResult(ready=bool(value))
 
 
 @dataclass
@@ -3752,15 +3775,29 @@ async def _capture_orders_left_nav_snapshot(
     )
 
 
-async def _dismiss_overdue_modal(page: Page, *, wait_timeout_ms: int) -> tuple[str, str | None]:
-    modal_selectors = ["#pnlOrderOverDuePopup", ".modal.in", ".modal.show"]
+async def _is_overdue_orders_popup_visible(page: Page) -> bool:
+    modal = page.locator(OVERDUE_ORDERS_POPUP_SELECTOR)
+    try:
+        return bool(await modal.count()) and await modal.first.is_visible()
+    except Exception:
+        return False
+
+
+async def _dismiss_generic_orders_modal(page: Page, *, wait_timeout_ms: int) -> tuple[str, str | None]:
+    """Best-effort dismissal for generic modals only.
+
+    The overdue-orders popup is intentionally excluded because operators must
+    resolve it at the source; forcing through it causes noisy retries and
+    misleading navigation failures for the affected store/window.
+    """
+    modal_selectors = [".modal.in", ".modal.show"]
     close_selectors = [
-        "#pnlOrderOverDuePopup button.close",
-        "#pnlOrderOverDuePopup button[data-dismiss='modal']",
-        "#pnlOrderOverDuePopup .modal-footer button",
         ".modal.in button.close",
         ".modal.in button[data-dismiss='modal']",
         ".modal.in .modal-footer button",
+        ".modal.show button.close",
+        ".modal.show button[data-dismiss='modal']",
+        ".modal.show .modal-footer button",
     ]
 
     active_selector: str | None = None
@@ -3816,7 +3853,7 @@ async def _navigate_to_orders_container(
     capture_left_nav: bool = False,
     nav_snapshot_context: str | None = None,
     sales_only_mode: bool = False,
-) -> bool:
+) -> OrdersNavigationResult:
     target_pattern = re.compile(r"/Reports/OrderReport", re.IGNORECASE)
     snapshot_context = nav_snapshot_context or "orders_entry"
 
@@ -3862,26 +3899,48 @@ async def _navigate_to_orders_container(
         except Exception:
             return False, "container_not_visible"
 
-    modal_log_emitted = False
+    popup_skip_logged = False
+    generic_modal_log_emitted = False
 
-    async def _handle_overdue_modal() -> tuple[str, str | None]:
-        nonlocal modal_log_emitted
-        modal_status, modal_selector = await _dismiss_overdue_modal(
+    async def _overdue_popup_skip_result() -> OrdersNavigationResult | None:
+        nonlocal popup_skip_logged
+        if not await _is_overdue_orders_popup_visible(page):
+            return None
+        if not popup_skip_logged:
+            log_event(
+                logger=logger,
+                phase="orders",
+                status="warning",
+                message=ORDERS_OVERDUE_POPUP_BLOCKED_MESSAGE,
+                store_code=store.store_code,
+                modal_selector=OVERDUE_ORDERS_POPUP_SELECTOR,
+                reason=ORDERS_OVERDUE_POPUP_BLOCKED_REASON,
+            )
+            popup_skip_logged = True
+        return OrdersNavigationResult(
+            ready=False,
+            reason=ORDERS_OVERDUE_POPUP_BLOCKED_REASON,
+            modal_selector=OVERDUE_ORDERS_POPUP_SELECTOR,
+        )
+
+    async def _handle_generic_modal() -> tuple[str, str | None]:
+        nonlocal generic_modal_log_emitted
+        modal_status, modal_selector = await _dismiss_generic_orders_modal(
             page, wait_timeout_ms=min(nav_timeout_ms, 5_000)
         )
-        if modal_status != "absent" and not modal_log_emitted:
+        if modal_status != "absent" and not generic_modal_log_emitted:
             log_event(
                 logger=logger,
                 phase="orders",
                 status="warning" if modal_status == "blocking" else "info",
-                message="Overdue modal dismissed before navigation"
+                message="Generic modal dismissed before navigation"
                 if modal_status == "dismissed"
-                else "Overdue modal blocking navigation",
+                else "Generic modal blocking navigation",
                 store_code=store.store_code,
                 modal_status=modal_status,
                 modal_selector=modal_selector,
             )
-            modal_log_emitted = True
+            generic_modal_log_emitted = True
         return modal_status, modal_selector
 
     if target_pattern.search(page.url or ""):
@@ -3893,7 +3952,7 @@ async def _navigate_to_orders_container(
             final_url=page.url,
         )
         await _log_left_nav(f"{snapshot_context}:already_loaded")
-        return True
+        return OrdersNavigationResult(ready=True)
 
     async def _ensure_nav_root_ready() -> bool:
         nav_root = page.locator("ul.nav.nav-sidebar")
@@ -3918,6 +3977,10 @@ async def _navigate_to_orders_container(
         initial_probe_window = asyncio.get_event_loop().time() + min(nav_timeout_ms / 1000, 3)
 
         while asyncio.get_event_loop().time() < deadline:
+            popup_skip = await _overdue_popup_skip_result()
+            if popup_skip is not None:
+                return False, ORDERS_OVERDUE_POPUP_BLOCKED_REASON, nav_root_seen
+            await _handle_generic_modal()
             try:
                 nav_root_seen = nav_root_seen or await page.locator("ul.nav.nav-sidebar").first.is_visible()
             except Exception:
@@ -3937,7 +4000,15 @@ async def _navigate_to_orders_container(
                 and asyncio.get_event_loop().time() > initial_probe_window
             ):
                 try:
+                    popup_skip = await _overdue_popup_skip_result()
+                    if popup_skip is not None:
+                        return False, ORDERS_OVERDUE_POPUP_BLOCKED_REASON, nav_root_seen
+                    await _handle_generic_modal()
                     await page.reload(wait_until="domcontentloaded", timeout=min(nav_timeout_ms, 5_000))
+                    popup_skip = await _overdue_popup_skip_result()
+                    if popup_skip is not None:
+                        return False, ORDERS_OVERDUE_POPUP_BLOCKED_REASON, nav_root_seen
+                    await _handle_generic_modal()
                 except Exception:
                     pass
                 continue
@@ -3960,6 +4031,12 @@ async def _navigate_to_orders_container(
 
     nav_ready, initial_locator_label, nav_root_seen = await _await_initial_nav_entrypoint()
     if not nav_ready:
+        if initial_locator_label == ORDERS_OVERDUE_POPUP_BLOCKED_REASON:
+            return OrdersNavigationResult(
+                ready=False,
+                reason=ORDERS_OVERDUE_POPUP_BLOCKED_REASON,
+                modal_selector=OVERDUE_ORDERS_POPUP_SELECTOR,
+            )
         page_title = await _safe_page_title(page)
         log_event(
             logger=logger,
@@ -3975,7 +4052,7 @@ async def _navigate_to_orders_container(
             page_title=page_title,
             step=snapshot_context,
         )
-        return False
+        return OrdersNavigationResult(ready=False, reason="navigation_not_ready")
 
     if not nav_root_seen:
         log_event(
@@ -4028,28 +4105,15 @@ async def _navigate_to_orders_container(
             await asyncio.sleep(1)
             continue
 
-        overlay_checks = 0
-        modal_status, modal_selector = await _handle_overdue_modal()
-        while modal_status == "blocking" and overlay_checks < 2:
-            if not attempt_diagnostic_logged:
-                log_event(
-                    logger=logger,
-                    phase="orders",
-                    status="warning",
-                    message="Overlay blocking Orders click; retrying",
-                    store_code=store.store_code,
-                    modal_selector=modal_selector,
-                    attempt=attempt,
-                )
-                attempt_diagnostic_logged = True
-            overlay_checks += 1
-            await asyncio.sleep(1)
-            modal_status, modal_selector = await _handle_overdue_modal()
+        popup_skip = await _overdue_popup_skip_result()
+        if popup_skip is not None:
+            return popup_skip
 
+        modal_status, modal_selector = await _handle_generic_modal()
         if modal_status == "blocking":
             attempt_record.update(
                 {
-                    "reason": "modal_blocking",
+                    "reason": "generic_modal_blocking",
                     "modal_selector": modal_selector,
                 }
             )
@@ -4108,6 +4172,10 @@ async def _navigate_to_orders_container(
             attempts.append(attempt_record)
             appended_attempt = True
             if attempt < max_attempts:
+                popup_skip = await _overdue_popup_skip_result()
+                if popup_skip is not None:
+                    return popup_skip
+                await _handle_generic_modal()
                 await asyncio.sleep(1)
                 continue
 
@@ -4125,7 +4193,7 @@ async def _navigate_to_orders_container(
                 locator_strategy=locator_label,
                 attempt=attempt,
             )
-            return True
+            return OrdersNavigationResult(ready=True)
 
         await asyncio.sleep(1)
 
@@ -4143,7 +4211,7 @@ async def _navigate_to_orders_container(
         nav_selector=nav_selector,
         attempts=attempts,
     )
-    return False
+    return OrdersNavigationResult(ready=False, reason="navigation_failed_after_retries")
 
 
 def _build_sales_report_url(store: TdStore, current_url: str | None = None) -> str | None:
@@ -4416,21 +4484,23 @@ async def _navigate_to_sales_report(
             retry_status=retry_label,
             nav_selector=nav_selector,
         )
-        ready = await _navigate_to_orders_container(
-            page,
-            store=store,
-            logger=logger,
-            nav_selector=nav_selector,
-            nav_timeout_ms=nav_timeout_ms,
-            capture_left_nav=True,
-            nav_snapshot_context=f"sales_left_nav:{retry_label}",
-            sales_only_mode=sales_only_mode,
+        navigation_result = _coerce_orders_navigation_result(
+            await _navigate_to_orders_container(
+                page,
+                store=store,
+                logger=logger,
+                nav_selector=nav_selector,
+                nav_timeout_ms=nav_timeout_ms,
+                capture_left_nav=True,
+                nav_snapshot_context=f"sales_left_nav:{retry_label}",
+                sales_only_mode=sales_only_mode,
+            )
         )
         transitions.append({"label": "after_orders_nav", "url": page.url or ""})
-        if ready:
+        if navigation_result.ready:
             return True, page.url or "", transitions, "ok"
 
-        return False, page.url or "", transitions, "orders_not_ready"
+        return False, page.url or "", transitions, navigation_result.reason or "orders_not_ready"
 
     async def _locate_sales_left_nav() -> tuple[Locator | None, str | None, list[dict[str, Any]], bool]:
         def _normalize_label(value: str | None) -> str:
@@ -7217,6 +7287,256 @@ async def _run_store_discovery_worker(
 
 
 
+
+class TdApiPrimaryIngestionError(RuntimeError):
+    """Raised when API rows were fetched but the API-primary ingest step failed."""
+
+
+def _log_dashboard_context_trial_event(
+    *,
+    logger: JsonLogger,
+    store_code: str,
+    source_mode: str,
+    status: str,
+    message: str,
+    trial_attempted: bool,
+    trial_success: bool,
+    fallback_used: bool,
+    runtime_delta_ms: int,
+    context_source: str,
+    orders_cookie_shape_attempted: bool,
+    orders_cookie_shape_success: bool,
+    orders_cookie_shape_failure_reason: str | None,
+    orders_cookie_shape_fallback_used: bool,
+    orders_cookie_shape_runtime_delta_ms: int | None,
+) -> None:
+    log_event(
+        logger=logger,
+        phase="api",
+        status=status,
+        message=message,
+        store_code=store_code,
+        source_mode=source_mode,
+        trial_attempted=trial_attempted,
+        trial_success=trial_success,
+        fallback_used=fallback_used,
+        runtime_delta_ms=runtime_delta_ms,
+        context_source=context_source,
+        orders_cookie_shape_attempted=orders_cookie_shape_attempted,
+        orders_cookie_shape_success=orders_cookie_shape_success,
+        orders_cookie_shape_failure_reason=orders_cookie_shape_failure_reason,
+        orders_cookie_shape_fallback_used=orders_cookie_shape_fallback_used,
+        orders_cookie_shape_runtime_delta_ms=orders_cookie_shape_runtime_delta_ms,
+    )
+
+
+def _has_sufficient_api_primary_data(
+    *,
+    orders_report: StoreReport | None,
+    sales_report: StoreReport | None,
+    run_orders: bool,
+    run_sales: bool,
+) -> bool:
+    """Return whether API-primary results are enough to treat UI verification as non-fatal."""
+    if run_orders and not (
+        orders_report
+        and orders_report.status in {"ok", "warning"}
+        and (orders_report.rows_downloaded or 0) > 0
+    ):
+        return False
+    if run_sales and not (sales_report and sales_report.status in {"ok", "warning", "skipped"}):
+        return False
+    return True
+
+
+async def _execute_api_primary_ingestion(
+    *,
+    context: BrowserContext,
+    store: TdStore,
+    logger: JsonLogger,
+    source_mode: str,
+    run_id: str,
+    run_date: datetime,
+    run_start_date: date,
+    run_end_date: date,
+    run_orders: bool,
+    run_sales: bool,
+    download_dir: Path,
+    summary: TdOrdersDiscoverySummary,
+    stored_state_path: str | None,
+    report_iframe_src: str | None = None,
+    context_source: str = "iframe",
+) -> tuple[StoreReport | None, StoreReport | None, TdApiFetchResult, list[dict[str, Any]]]:
+    api_fetch_result = TdApiFetchResult()
+    request_metadata: list[dict[str, Any]] = []
+    artifact_warnings: list[str] = []
+    try:
+        api_client = TdApiClient(
+            store_code=store.store_code,
+            context=context,
+            storage_state_path=store.storage_state_path,
+            report_iframe_src=report_iframe_src,
+        )
+        session_artifact = api_client.read_session_artifact()
+        log_event(
+            logger=logger,
+            phase="api",
+            message="Prepared API client from per-store session artifact",
+            store_code=store.store_code,
+            storage_state=stored_state_path,
+            artifact_has_cookies=bool(session_artifact.get("cookies")),
+            artifact_has_origins=bool(session_artifact.get("origins")),
+            source_mode=source_mode,
+            context_source=context_source,
+        )
+        api_fetch_result = await api_client.fetch_reports(from_date=run_start_date, to_date=run_end_date)
+        request_metadata.extend(api_fetch_result.request_metadata)
+        artifact_result = persist_td_api_artifacts(
+            download_dir=download_dir,
+            store_code=store.store_code,
+            from_date=run_start_date,
+            to_date=run_end_date,
+            raw_orders=api_fetch_result.raw_orders_payload,
+            raw_sales=api_fetch_result.raw_sales_payload,
+            raw_garments=api_fetch_result.raw_garments_payload,
+            order_rows=api_fetch_result.orders_rows,
+            sale_rows=api_fetch_result.sales_rows,
+            garments_rows=api_fetch_result.garments_rows,
+        )
+        artifact_warnings = list(artifact_result.warnings)
+        log_event(
+            logger=logger,
+            phase="api",
+            message="Fetched TD API reports",
+            store_code=store.store_code,
+            source_mode=source_mode,
+            context_source=context_source,
+            orders_cookie_shape_attempted=api_fetch_result.orders_cookie_shape_attempted,
+            orders_cookie_shape_success=api_fetch_result.orders_cookie_shape_success,
+            orders_cookie_shape_failure_reason=api_fetch_result.orders_cookie_shape_failure_reason,
+            orders_cookie_shape_fallback_used=api_fetch_result.orders_cookie_shape_fallback_used,
+            orders_cookie_shape_runtime_delta_ms=api_fetch_result.orders_cookie_shape_runtime_delta_ms,
+            orders_rows=len(api_fetch_result.orders_rows),
+            sales_rows=len(api_fetch_result.sales_rows),
+            garments_rows=len(api_fetch_result.garments_rows),
+            endpoint_errors=api_fetch_result.endpoint_errors,
+        )
+    except Exception as exc:
+        log_event(
+            logger=logger,
+            phase="api",
+            status="warning",
+            message="TD API fetch failed; continuing according to source mode",
+            store_code=store.store_code,
+            source_mode=source_mode,
+            context_source=context_source,
+            error=str(exc),
+        )
+        if source_mode == "api_only":
+            raise
+
+    if source_mode not in {"api_only", "api_primary"}:
+        return None, None, api_fetch_result, request_metadata
+
+    api_orders_ingest_result: TdOrdersIngestResult | None = None
+    api_sales_ingest_result: TdSalesIngestResult | None = None
+    if config.database_url:
+        try:
+            if not store.cost_center:
+                raise ValueError("Missing cost_center for TD store; cannot ingest API orders/sales")
+            if run_orders and api_fetch_result.orders_rows:
+                api_orders_ingest_result = await ingest_td_orders_rows(
+                    rows=api_fetch_result.orders_rows,
+                    store_code=store.store_code,
+                    cost_center=store.cost_center or "",
+                    run_id=run_id,
+                    run_date=run_date,
+                    database_url=config.database_url,
+                    logger=logger,
+                )
+                summary.add_ingest_remarks(api_orders_ingest_result.ingest_remarks)
+            if run_sales and api_fetch_result.sales_rows:
+                api_sales_ingest_result = await ingest_td_sales_rows(
+                    rows=api_fetch_result.sales_rows,
+                    store_code=store.store_code,
+                    cost_center=store.cost_center or "",
+                    run_id=run_id,
+                    run_date=run_date,
+                    database_url=config.database_url,
+                    logger=logger,
+                )
+                summary.add_ingest_remarks(api_sales_ingest_result.ingest_remarks)
+        except Exception as exc:
+            raise TdApiPrimaryIngestionError(str(exc)) from exc
+
+    orders_status = "ok" if api_fetch_result.orders_rows else ("skipped" if not run_orders else "error")
+    if api_orders_ingest_result and api_orders_ingest_result.warnings:
+        orders_status = "warning"
+    sales_status = "ok" if api_fetch_result.sales_rows else ("skipped" if not run_sales else "warning")
+    if api_sales_ingest_result and api_sales_ingest_result.warnings:
+        sales_status = "warning"
+
+    orders_report = StoreReport(
+        status=orders_status,
+        message=("Orders sourced from API and ingested" if config.database_url else "Orders sourced from API"),
+        warning_rows=(api_orders_ingest_result.warning_rows if api_orders_ingest_result else list(api_fetch_result.orders_rows)),
+        compare_rows_orders=(api_orders_ingest_result.parsed_rows if api_orders_ingest_result else list(api_fetch_result.orders_rows)),
+        rows_downloaded=len(api_fetch_result.orders_rows),
+        rows_ingested=(api_orders_ingest_result.final_rows if api_orders_ingest_result else len(api_fetch_result.orders_rows)),
+        staging_rows=(api_orders_ingest_result.staging_rows if api_orders_ingest_result else None),
+        final_rows=(api_orders_ingest_result.final_rows if api_orders_ingest_result else len(api_fetch_result.orders_rows)),
+        warnings=(api_orders_ingest_result.warnings if api_orders_ingest_result else []),
+        amount_metrics=(api_orders_ingest_result.amount_metrics if api_orders_ingest_result else {}),
+        source_mode=source_mode,
+    )
+    sales_report = StoreReport(
+        status=sales_status,
+        message=(
+            "Sales sourced from API and ingested"
+            if (run_sales and config.database_url)
+            else ("Sales sourced from API" if run_sales else "Sales sync skipped by flag")
+        ),
+        warning_rows=(api_sales_ingest_result.warning_rows if api_sales_ingest_result else list(api_fetch_result.sales_rows)),
+        compare_rows_sales=(api_sales_ingest_result.parsed_rows if api_sales_ingest_result else list(api_fetch_result.sales_rows)),
+        rows_downloaded=len(api_fetch_result.sales_rows),
+        rows_ingested=(api_sales_ingest_result.final_rows if api_sales_ingest_result else len(api_fetch_result.sales_rows)),
+        staging_rows=(api_sales_ingest_result.staging_rows if api_sales_ingest_result else None),
+        final_rows=(api_sales_ingest_result.final_rows if api_sales_ingest_result else len(api_fetch_result.sales_rows)),
+        warnings=(api_sales_ingest_result.warnings if api_sales_ingest_result else []),
+        source_mode=source_mode,
+    )
+    for artifact_warning in artifact_warnings:
+        _append_unique_warning(orders_report, f"api_artifact_persistence_warning: {artifact_warning}")
+        _append_unique_warning(sales_report, f"api_artifact_persistence_warning: {artifact_warning}")
+    for endpoint, error_code in (api_fetch_result.endpoint_errors or {}).items():
+        _append_unique_warning(orders_report, f"api_endpoint_warning:{endpoint}={error_code}")
+
+    garments_health = dict((api_fetch_result.endpoint_health or {}).get("/garments/details") or {})
+    garments_completeness = str(garments_health.get("garments_fetch_completeness") or "unknown")
+    garments_budget_state = str(garments_health.get("garments_budget_state") or "within_budget")
+    _apply_garments_health_to_report(orders_report, garments_health)
+    if garments_budget_state == "near_limit" and garments_completeness == "complete":
+        _append_unique_warning(orders_report, "garments_budget_warning: near limit, no data loss")
+    elif garments_completeness == "incomplete":
+        _append_unique_warning(
+            orders_report,
+            "DATA INCOMPLETE: TD garment details fetch incomplete; "
+            f"reason={(orders_report.garments_incomplete_reason or {}).get('message', 'unknown')}; "
+            "garment-dependent downstream reports may be incomplete",
+        )
+        orders_report.status = "warning"
+    log_event(
+        logger=logger,
+        phase="window_summary",
+        status=("warning" if garments_completeness == "incomplete" else "info"),
+        message="TD garments per-store run summary",
+        store_code=store.store_code,
+        garments_budget_state=garments_budget_state,
+        garments_fetch_completeness=garments_completeness,
+        garments_final_row_count=orders_report.garments_final_row_count,
+    )
+    return orders_report, sales_report, api_fetch_result, request_metadata
+
 async def _run_store_discovery(
     *,
     browser: Browser,
@@ -7552,20 +7872,123 @@ async def _run_store_discovery(
         else:
             iframe_locator: FrameLocator | None = None
             iframe_src: str | None = None
-            container_ready = await _navigate_to_orders_container(
-                page,
-                store=store,
-                logger=store_logger,
-                nav_selector=nav_selector,
-                nav_timeout_ms=nav_timeout_ms,
-                capture_left_nav=True,
-                nav_snapshot_context="orders_iframe",
-                sales_only_mode=sales_only_mode,
+            navigation_result = _coerce_orders_navigation_result(
+                await _navigate_to_orders_container(
+                    page,
+                    store=store,
+                    logger=store_logger,
+                    nav_selector=nav_selector,
+                    nav_timeout_ms=nav_timeout_ms,
+                    capture_left_nav=True,
+                    nav_snapshot_context="orders_iframe",
+                    sales_only_mode=sales_only_mode,
+                )
             )
-            if not container_ready:
+            if not navigation_result.ready:
+                if navigation_result.reason == ORDERS_OVERDUE_POPUP_BLOCKED_REASON:
+                    orders_report = StoreReport(
+                        status="skipped",
+                        message=ORDERS_OVERDUE_POPUP_BLOCKED_MESSAGE,
+                        source_mode=source_mode,
+                        warnings=[ORDERS_OVERDUE_POPUP_BLOCKED_REASON],
+                    )
+                    sales_report = StoreReport(
+                        status="skipped",
+                        message=ORDERS_OVERDUE_POPUP_BLOCKED_MESSAGE,
+                        source_mode=source_mode,
+                        warnings=[ORDERS_OVERDUE_POPUP_BLOCKED_REASON],
+                    )
+                    outcome = StoreOutcome(
+                        status="warning",
+                        message=ORDERS_OVERDUE_POPUP_BLOCKED_MESSAGE,
+                        ingest_status="skipped",
+                        failure_stage=ORDERS_OVERDUE_POPUP_BLOCKED_REASON,
+                        observability_warnings=[ORDERS_OVERDUE_POPUP_BLOCKED_REASON],
+                        final_url=page.url,
+                        verification_seen=verification_seen,
+                        storage_state=stored_state_path,
+                    )
+                    return
+
+                if source_mode == "api_only":
+                    try:
+                        orders_report, sales_report, api_fetch_result, request_metadata = await _execute_api_primary_ingestion(
+                            context=context,
+                            store=store,
+                            logger=store_logger,
+                            source_mode=source_mode,
+                            run_id=run_id,
+                            run_date=run_date,
+                            run_start_date=run_start_date,
+                            run_end_date=run_end_date,
+                            run_orders=run_orders,
+                            run_sales=run_sales,
+                            download_dir=download_dir,
+                            summary=summary,
+                            stored_state_path=stored_state_path,
+                            context_source="dashboard_only",
+                        )
+                        api_request_metadata.extend(request_metadata)
+                    except Exception as exc:
+                        error_text = str(exc)
+                        api_failure_stage = "ingest" if isinstance(exc, TdApiPrimaryIngestionError) else "fetch"
+                        orders_report = StoreReport(
+                            status="error",
+                            message="TD API ingestion failed after UI Orders navigation failed",
+                            error_message=error_text,
+                            source_mode=source_mode,
+                        )
+                        outcome = StoreOutcome(
+                            status="error",
+                            message=f"TD API ingestion failed after UI Orders navigation failed: {exc}",
+                            failure_stage=api_failure_stage,
+                            final_url=page.url,
+                            verification_seen=verification_seen,
+                            storage_state=stored_state_path,
+                        )
+                        return
+
+                    if _has_sufficient_api_primary_data(
+                        orders_report=orders_report,
+                        sales_report=sales_report,
+                        run_orders=run_orders,
+                        run_sales=run_sales,
+                    ):
+                        _append_unique_warning(orders_report, UI_ORDERS_NAVIGATION_WARNING)
+                        log_event(
+                            logger=store_logger,
+                            phase="orders",
+                            status="warning",
+                            message="Orders container navigation failed after retries; API-only ingestion succeeded",
+                            store_code=store.store_code,
+                            source_mode=source_mode,
+                            final_url=page.url,
+                            orders_rows=len(api_fetch_result.orders_rows),
+                            sales_rows=len(api_fetch_result.sales_rows),
+                        )
+                        outcome = StoreOutcome(
+                            status="warning",
+                            message=API_ONLY_NAVIGATION_WARNING_MESSAGE,
+                            final_url=page.url,
+                            verification_seen=verification_seen,
+                            storage_state=stored_state_path,
+                        )
+                        return
+
+                    outcome = StoreOutcome(
+                        status="error",
+                        message="API-only ingestion did not return sufficient data after UI Orders navigation failed",
+                        failure_stage="fetch",
+                        final_url=page.url,
+                        verification_seen=verification_seen,
+                        storage_state=stored_state_path,
+                    )
+                    return
+
                 outcome = StoreOutcome(
                     status="error",
                     message="Orders container did not load from Reports navigation",
+                    failure_stage="ui_navigation",
                     final_url=page.url,
                     verification_seen=verification_seen,
                     storage_state=stored_state_path,

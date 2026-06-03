@@ -543,7 +543,14 @@ run_step() {
     log "${step_name}: attempt ${attempt}/${max_attempts} starting (report_date=${report_date}, regenerate=true)"
     step_start="$(date +%s)"
 
-    attempt_log_file="$(mktemp "${LOCK_DIR}/cron_step_attempt.XXXXXX.log")"
+    if ! mkdir -p "${LOCK_DIR}"; then
+      log "ERROR: failed to create attempt log directory ${LOCK_DIR}"
+      return 1
+    fi
+    if ! attempt_log_file="$(mktemp "${LOCK_DIR}/cron_step_attempt.XXXXXX")" || [[ -z "${attempt_log_file}" ]]; then
+      log "ERROR: failed to create attempt log file under ${LOCK_DIR}"
+      return 1
+    fi
     rc=0
 
     python3 -c 'import os, sys; os.setsid(); os.execvp("bash", ["bash", "-c", sys.argv[1]])' "${step_cmd}" > "${attempt_log_file}" 2>&1 &
@@ -722,7 +729,14 @@ run_orders_connectivity_preflight() {
   preflight_start="$(date +%s)"
 
   while [[ "${attempt}" -le "${ORDERS_PREFLIGHT_MAX_ATTEMPTS}" ]]; do
-    preflight_log_file="$(mktemp "${LOCK_DIR}/orders_sync_connectivity_preflight.XXXXXX.log")"
+    if ! mkdir -p "${LOCK_DIR}"; then
+      log "ERROR: failed to create preflight log directory ${LOCK_DIR}"
+      return 1
+    fi
+    if ! preflight_log_file="$(mktemp "${LOCK_DIR}/orders_sync_connectivity_preflight.XXXXXX")" || [[ -z "${preflight_log_file}" ]]; then
+      log "ERROR: failed to create preflight log file under ${LOCK_DIR}"
+      return 1
+    fi
     log "orders_sync_connectivity_preflight attempt=${attempt}/${ORDERS_PREFLIGHT_MAX_ATTEMPTS} status=starting"
 
     if bash "${preflight_script}" > "${preflight_log_file}" 2>&1; then

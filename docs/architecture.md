@@ -214,6 +214,7 @@ defaults to dry-run inspection:
 ```bash
 ./scripts/inspect_or_kill_pipeline_stale.sh td-leads
 ./scripts/inspect_or_kill_pipeline_stale.sh orders-reports
+./scripts/inspect_or_kill_pipeline_stale.sh orders-report  # accepted alias
 ```
 
 Review the printed process-group snapshots and confirm that they belong to this
@@ -221,12 +222,17 @@ repository. Only then run the explicit termination step for the affected
 pipeline:
 
 ```bash
-FORCE=1 ./scripts/inspect_or_kill_pipeline_stale.sh td-leads
+./scripts/inspect_or_kill_pipeline_stale.sh --force td-leads
 FORCE=1 ./scripts/inspect_or_kill_pipeline_stale.sh orders-reports
+./scripts/inspect_or_kill_pipeline_stale.sh orders-reports FORCE=1
 ```
 
 The helper maps those names to `tmp/cron_run_td_leads_sync.lock` and
-`tmp/cron_run_orders_and_reports.lock`, validates directory-based lock metadata
+`tmp/cron_run_orders_and_reports.lock`, accepts the `orders-report` alias,
+prints a direct `No active/stale lock found ... at tmp/...` message when the
+selected lock directory is absent, and prints a targeted correction for common
+assignment-style mistakes such as `Pipeline=orders-reports`. It validates
+directory-based lock metadata
 (`pid`, `pgid`, `command`, `started_at`, `host`, and `cwd`), refuses malformed or
 unrelated ownership, verifies PID-to-PGID membership, prints snapshots before
 and after inspection, and removes a lock directory only after its process group
