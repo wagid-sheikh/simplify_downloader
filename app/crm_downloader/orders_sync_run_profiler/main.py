@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import errno
 import fcntl
 import json
 import math
 import os
 import random
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -61,6 +63,11 @@ PREFLIGHT_ENV = "ORDERS_SYNC_PROFILER_DB_PREFLIGHT"
 MAX_CONNECTION_RETRIES_ENV = "ORDERS_SYNC_PROFILER_DB_RETRIES"
 SHUTDOWN_TIMEOUT_ENV = "ORDERS_SYNC_PROFILER_SHUTDOWN_TIMEOUT_SECONDS"
 DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+STORE_LOCK_TIMEOUT_ENV = "ORDERS_SYNC_PROFILER_STORE_LOCK_TIMEOUT_SECONDS"
+WINDOW_STATE_TIMEOUT_ENV = "ORDERS_SYNC_PROFILER_WINDOW_STATE_TIMEOUT_SECONDS"
+DEFAULT_STORE_LOCK_TIMEOUT_SECONDS = 30.0
+DEFAULT_WINDOW_STATE_TIMEOUT_SECONDS = 30.0
+STORE_LOCK_RETRY_INTERVAL_SECONDS = 0.1
 
 
 def _resolve_pool_settings() -> PoolSettings:
@@ -153,18 +160,105 @@ class StoreRunResult:
     row_facts: dict[str, list[dict[str, Any]]]
 
 
-@asynccontextmanager
-async def store_lock(store_code: str) -> Iterable[None]:
+class StoreLockTimeoutError(RuntimeError):
+    """Raised when the per-store profiler lock is unavailable past the bound."""
+
+    def __init__(self, *, store_code: str, lock_path: str, timeout_seconds: float) -> None:
+        super().__init__(f"Timed out acquiring store lock for {store_code} after {timeout_seconds:g}s")
+        self.store_code = store_code
+        self.lock_path = lock_path
+        self.timeout_seconds = timeout_seconds
+
+
+class WindowStateTimeoutError(RuntimeError):
+    """Raised when loading the last successful window state exceeds the bound."""
+
+
+def _store_lock_path(store_code: str) -> Any:
     lock_dir = default_download_dir() / "orders_sync_run_profiler_locks"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = lock_dir / f"{store_code}.lock"
+    return lock_dir / f"{store_code}.lock"
+
+
+def _resolve_positive_timeout_seconds(env_name: str, default: float) -> float:
+    return max(0.001, _env_float(env_name, default))
+
+
+@asynccontextmanager
+async def store_lock(
+    store_code: str,
+    *,
+    logger: JsonLogger | None = None,
+    run_id: str | None = None,
+    timeout_seconds: float | None = None,
+) -> Iterable[None]:
+    lock_path = _store_lock_path(store_code)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved_timeout = (
+        _resolve_positive_timeout_seconds(STORE_LOCK_TIMEOUT_ENV, DEFAULT_STORE_LOCK_TIMEOUT_SECONDS)
+        if timeout_seconds is None
+        else max(0.001, float(timeout_seconds))
+    )
+    if logger is not None:
+        log_event(
+            logger=logger,
+            phase="store_lock",
+            status="info",
+            message="Acquiring orders profiler store lock",
+            run_id=run_id,
+            store_code=store_code,
+            lock_path=str(lock_path),
+            timeout_seconds=resolved_timeout,
+        )
+
     handle = open(lock_path, "w", encoding="utf-8")
+    start_monotonic = time.monotonic()
+    acquired = False
     try:
-        await asyncio.to_thread(fcntl.flock, handle, fcntl.LOCK_EX)
+        while True:
+            try:
+                await asyncio.to_thread(fcntl.flock, handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                    raise
+                elapsed = time.monotonic() - start_monotonic
+                if elapsed >= resolved_timeout:
+                    elapsed_ms = int(elapsed * 1000)
+                    if logger is not None:
+                        log_event(
+                            logger=logger,
+                            phase="store_lock",
+                            status="error",
+                            message="Timed out acquiring orders profiler store lock",
+                            run_id=run_id,
+                            store_code=store_code,
+                            lock_path=str(lock_path),
+                            timeout_seconds=resolved_timeout,
+                            elapsed_ms=elapsed_ms,
+                            failure_reason="store_lock_timeout",
+                        )
+                    raise StoreLockTimeoutError(
+                        store_code=store_code, lock_path=str(lock_path), timeout_seconds=resolved_timeout
+                    )
+                await asyncio.sleep(min(STORE_LOCK_RETRY_INTERVAL_SECONDS, resolved_timeout - elapsed))
+        elapsed_ms = int((time.monotonic() - start_monotonic) * 1000)
+        if logger is not None:
+            log_event(
+                logger=logger,
+                phase="store_lock",
+                status="info",
+                message="Acquired orders profiler store lock",
+                run_id=run_id,
+                store_code=store_code,
+                lock_path=str(lock_path),
+                elapsed_ms=elapsed_ms,
+            )
         yield
     finally:
         try:
-            await asyncio.to_thread(fcntl.flock, handle, fcntl.LOCK_UN)
+            if acquired:
+                await asyncio.to_thread(fcntl.flock, handle, fcntl.LOCK_UN)
         finally:
             handle.close()
 
@@ -241,6 +335,16 @@ def _env_int(name: str, default: int) -> int:
         return default
     try:
         return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
     except (TypeError, ValueError):
         return default
 
@@ -1238,6 +1342,44 @@ def _init_ingestion_totals() -> dict[str, int]:
     }
 
 
+def _failed_store_result(
+    *,
+    store: StoreProfile,
+    pipeline_group: str,
+    pipeline_name: str,
+    failure_reason: str,
+    error_message: str,
+) -> StoreRunResult:
+    status_counts = _init_status_counts()
+    status_counts["failed"] = 1
+    return StoreRunResult(
+        store_code=store.store_code,
+        pipeline_group=pipeline_group,
+        pipeline_name=pipeline_name,
+        cost_center=store.cost_center,
+        overall_status="failed",
+        window_count=0,
+        windows=[],
+        status_counts=status_counts,
+        window_audit=[
+            {
+                "window_index": None,
+                "store_code": store.store_code,
+                "from_date": None,
+                "to_date": None,
+                "status": "failed",
+                "status_note": failure_reason,
+                "failure_reason": failure_reason,
+                "error_message": error_message,
+                "attempts": [],
+            }
+        ],
+        ingestion_totals=_init_ingestion_totals(),
+        row_facts=_init_row_facts(),
+    )
+
+
+
 def _coerce_int(value: Any) -> int | None:
     if value is None:
         return None
@@ -1532,6 +1674,79 @@ def _build_profiler_notification_payload(
     }
 
 
+async def _fetch_last_success_window_end_with_timeout(
+    *,
+    logger: JsonLogger,
+    database_url: str,
+    pipeline_id: int,
+    store_code: str,
+    run_id: str,
+) -> date | None:
+    timeout_seconds = _resolve_positive_timeout_seconds(
+        WINDOW_STATE_TIMEOUT_ENV, DEFAULT_WINDOW_STATE_TIMEOUT_SECONDS
+    )
+    log_event(
+        logger=logger,
+        phase="window_state",
+        status="info",
+        message="Fetching last successful orders sync window state",
+        run_id=run_id,
+        store_code=store_code,
+        pipeline_id=pipeline_id,
+        timeout_seconds=timeout_seconds,
+    )
+    start_monotonic = time.monotonic()
+    try:
+        last_success = await asyncio.wait_for(
+            fetch_last_success_window_end(
+                database_url=database_url, pipeline_id=pipeline_id, store_code=store_code
+            ),
+            timeout=timeout_seconds,
+        )
+    except asyncio.TimeoutError as exc:
+        elapsed_ms = int((time.monotonic() - start_monotonic) * 1000)
+        log_event(
+            logger=logger,
+            phase="window_state",
+            status="error",
+            message="Timed out fetching last successful orders sync window state",
+            run_id=run_id,
+            store_code=store_code,
+            pipeline_id=pipeline_id,
+            timeout_seconds=timeout_seconds,
+            elapsed_ms=elapsed_ms,
+            failure_reason="window_state_timeout",
+        )
+        raise WindowStateTimeoutError("window_state_timeout") from exc
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - start_monotonic) * 1000)
+        log_event(
+            logger=logger,
+            phase="window_state",
+            status="error",
+            message="Failed fetching last successful orders sync window state",
+            run_id=run_id,
+            store_code=store_code,
+            pipeline_id=pipeline_id,
+            elapsed_ms=elapsed_ms,
+            error=str(exc),
+        )
+        raise
+    elapsed_ms = int((time.monotonic() - start_monotonic) * 1000)
+    log_event(
+        logger=logger,
+        phase="window_state",
+        status="info",
+        message="Fetched last successful orders sync window state",
+        run_id=run_id,
+        store_code=store_code,
+        pipeline_id=pipeline_id,
+        elapsed_ms=elapsed_ms,
+        last_success_window_end=last_success.isoformat() if last_success else None,
+    )
+    return last_success
+
+
 async def _run_store_windows(
     *,
     logger: JsonLogger,
@@ -1568,9 +1783,38 @@ async def _run_store_windows(
         overlap_days=overlap_days,
     )
     end_date = to_date or aware_now(get_timezone()).date()
-    last_success = await fetch_last_success_window_end(
-        database_url=config.database_url, pipeline_id=pipeline_id, store_code=store.store_code
-    )
+    try:
+        last_success = await _fetch_last_success_window_end_with_timeout(
+            logger=logger,
+            database_url=config.database_url,
+            pipeline_id=pipeline_id,
+            store_code=store.store_code,
+            run_id=run_id,
+        )
+    except WindowStateTimeoutError:
+        detail_lines.append("window_state_timeout: timed out loading last successful window state.")
+        status_counts["failed"] = 1
+        return (
+            "failed",
+            [],
+            detail_lines,
+            status_counts,
+            [
+                {
+                    "window_index": None,
+                    "store_code": store.store_code,
+                    "from_date": None,
+                    "to_date": None,
+                    "status": "failed",
+                    "status_note": "window_state_timeout",
+                    "failure_reason": "window_state_timeout",
+                    "error_message": "Timed out loading last successful window state",
+                    "attempts": [],
+                }
+            ],
+            ingestion_totals,
+            row_facts,
+        )
     start_date = resolve_orders_sync_start_date(
         end_date=end_date,
         last_success=last_success,
@@ -2001,28 +2245,37 @@ async def _process_store(
     from_date: date | None,
     to_date: date | None,
 ) -> StoreRunResult:
-    async with store_lock(store.store_code):
-        (
-            overall_status,
-            windows,
-            _detail_lines,
-            status_counts,
-            window_audit,
-            ingestion_totals,
-            row_facts,
-        ) = await _run_store_windows(
-            logger=logger,
+    try:
+        async with store_lock(store.store_code, logger=logger, run_id=run_id):
+            (
+                overall_status,
+                windows,
+                _detail_lines,
+                status_counts,
+                window_audit,
+                ingestion_totals,
+                row_facts,
+            ) = await _run_store_windows(
+                logger=logger,
+                store=store,
+                pipeline_name=pipeline_name,
+                pipeline_id=pipeline_id,
+                pipeline_fn=pipeline_fn,
+                run_env=run_env,
+                run_id=run_id,
+                backfill_days=backfill_days,
+                window_days=window_days,
+                overlap_days=overlap_days,
+                from_date=from_date,
+                to_date=to_date,
+            )
+    except StoreLockTimeoutError as exc:
+        return _failed_store_result(
             store=store,
+            pipeline_group=pipeline_group,
             pipeline_name=pipeline_name,
-            pipeline_id=pipeline_id,
-            pipeline_fn=pipeline_fn,
-            run_env=run_env,
-            run_id=run_id,
-            backfill_days=backfill_days,
-            window_days=window_days,
-            overlap_days=overlap_days,
-            from_date=from_date,
-            to_date=to_date,
+            failure_reason="store_lock_timeout",
+            error_message=str(exc),
         )
     return StoreRunResult(
         store_code=store.store_code,
