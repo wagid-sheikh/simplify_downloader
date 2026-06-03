@@ -113,9 +113,10 @@ async def _run_profiler_with_real_store_processing(
 
 
 @pytest.mark.asyncio
-async def test_store_lock_timeout_marks_store_failed_and_continues(
+async def test_store_lock_timeout_marks_store_failed_and_continues_when_store_locks_enabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setenv("ORDERS_SYNC_PROFILER_ENABLE_STORE_LOCKS", "1")
     monkeypatch.setenv("ORDERS_SYNC_PROFILER_STORE_LOCK_TIMEOUT_SECONDS", "0.05")
     monkeypatch.setenv("ORDERS_SYNC_PROFILER_WINDOW_STATE_TIMEOUT_SECONDS", "1")
     monkeypatch.setattr(profiler, "default_download_dir", lambda: tmp_path)
@@ -182,9 +183,67 @@ async def test_store_lock_timeout_marks_store_failed_and_continues(
 
 
 @pytest.mark.asyncio
+async def test_default_profiler_path_does_not_acquire_per_store_locks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("ORDERS_SYNC_PROFILER_ENABLE_STORE_LOCKS", raising=False)
+    monkeypatch.setenv("ORDERS_SYNC_PROFILER_STORE_LOCK_TIMEOUT_SECONDS", "0.05")
+    monkeypatch.setenv("ORDERS_SYNC_PROFILER_WINDOW_STATE_TIMEOUT_SECONDS", "1")
+    monkeypatch.setattr(profiler, "default_download_dir", lambda: tmp_path)
+
+    lock_dir = tmp_path / "orders_sync_run_profiler_locks"
+    lock_dir.mkdir(parents=True)
+    inert_lock_path = lock_dir / "LOCKED.lock"
+    locked_handle = open(inert_lock_path, "w", encoding="utf-8")
+    fcntl.flock(locked_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    stream = io.StringIO()
+    inserted_summaries: list[dict] = []
+    pipeline_run_ids: list[str] = []
+
+    async def fake_fetch_last_success_window_end(**_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(
+        profiler, "fetch_last_success_window_end", fake_fetch_last_success_window_end
+    )
+
+    try:
+        await _run_profiler_with_real_store_processing(
+            monkeypatch,
+            stores=[_store("LOCKED"), _store("NOLOCK")],
+            stream=stream,
+            inserted_summaries=inserted_summaries,
+            pipeline_run_ids=pipeline_run_ids,
+        )
+    finally:
+        fcntl.flock(locked_handle, fcntl.LOCK_UN)
+        locked_handle.close()
+
+    stores_by_code = inserted_summaries[-1]["metrics_json"]["store_totals"]
+    assert stores_by_code["LOCKED"]["overall_status"] == "success"
+    assert stores_by_code["NOLOCK"]["overall_status"] == "success"
+    assert pipeline_run_ids == [
+        "profiler-timeout-run_LOCKED_001",
+        "profiler-timeout-run_NOLOCK_001",
+    ]
+    assert not (lock_dir / "NOLOCK.lock").exists()
+
+    events = _events(stream)
+    assert any(
+        event["phase"] == "init"
+        and event["message"]
+        == "Per-store profiler locks disabled; using wrapper run lock"
+        for event in events
+    )
+    assert not any(event["phase"] == "store_lock" for event in events)
+
+
+@pytest.mark.asyncio
 async def test_window_state_timeout_marks_store_failed_logs_boundary_and_continues(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.delenv("ORDERS_SYNC_PROFILER_ENABLE_STORE_LOCKS", raising=False)
     monkeypatch.setenv("ORDERS_SYNC_PROFILER_STORE_LOCK_TIMEOUT_SECONDS", "1")
     monkeypatch.setenv("ORDERS_SYNC_PROFILER_WINDOW_STATE_TIMEOUT_SECONDS", "0.05")
     monkeypatch.setattr(profiler, "default_download_dir", lambda: tmp_path)
