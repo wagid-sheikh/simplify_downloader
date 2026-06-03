@@ -60,6 +60,10 @@ FAIL_ON_FAILED_STATUS_ENV = "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS"
 TD_GARMENT_INCOMPLETE_COMPLETENESS = "incomplete"
 TD_GARMENT_INCOMPLETE_STATUS = "success_with_warnings"
 TD_GARMENT_DATA_INCOMPLETE_WARNING_PREFIX = "TD_GARMENT_DATA_INCOMPLETE"
+PROFILER_STORE_LOCK_ORCHESTRATION_FAILURE_REASON = "profiler_store_lock_timeout"
+PROFILER_STORE_LOCK_ORCHESTRATION_FAILURE_MESSAGE = (
+    "All stores failed before window planning due to profiler store locks"
+)
 CRON_POOL_SIZE_ENV = "ORDERS_SYNC_PROFILER_DB_POOL_SIZE"
 CRON_MAX_OVERFLOW_ENV = "ORDERS_SYNC_PROFILER_DB_MAX_OVERFLOW"
 PREFLIGHT_ENV = "ORDERS_SYNC_PROFILER_DB_PREFLIGHT"
@@ -1503,6 +1507,7 @@ def _failed_store_result(
     pipeline_name: str,
     failure_reason: str,
     error_message: str,
+    lock_path: str | None = None,
 ) -> StoreRunResult:
     status_counts = _init_status_counts()
     status_counts["failed"] = 1
@@ -1525,6 +1530,7 @@ def _failed_store_result(
                 "status_note": failure_reason,
                 "failure_reason": failure_reason,
                 "error_message": error_message,
+                "lock_path": lock_path,
                 "attempts": [],
             }
         ],
@@ -1720,6 +1726,53 @@ def _profiler_failed_window_entries(window_audit: Iterable[Mapping[str, Any]] | 
     return entries
 
 
+def _store_result_failure_reasons(result: StoreRunResult) -> set[str]:
+    reasons: set[str] = set()
+    for window in result.window_audit:
+        reason = str(window.get("failure_reason") or "").strip()
+        if reason:
+            reasons.add(reason)
+    return reasons
+
+
+def _all_store_lock_timeout_orchestration_failure(
+    results: Sequence[StoreRunResult],
+) -> dict[str, Any] | None:
+    if not results:
+        return None
+    if any(result.window_count != 0 for result in results):
+        return None
+    failed_results = [
+        result
+        for result in results
+        if _normalize_rollup_status(result.overall_status) == "failed"
+    ]
+    if len(failed_results) != len(results):
+        return None
+    if any(
+        _store_result_failure_reasons(result) != {"store_lock_timeout"}
+        for result in failed_results
+    ):
+        return None
+
+    failed_store_codes = sorted(result.store_code for result in failed_results)
+    lock_paths = sorted(
+        {
+            str(window.get("lock_path"))
+            for result in failed_results
+            for window in result.window_audit
+            if window.get("lock_path")
+        }
+    )
+    return {
+        "failure_scope": "profiler_orchestrator",
+        "failure_reason": PROFILER_STORE_LOCK_ORCHESTRATION_FAILURE_REASON,
+        "message": PROFILER_STORE_LOCK_ORCHESTRATION_FAILURE_MESSAGE,
+        "failed_store_codes": failed_store_codes,
+        "lock_paths": lock_paths,
+    }
+
+
 def _build_profiler_summary_text(
     *,
     run_id: str,
@@ -1730,6 +1783,7 @@ def _build_profiler_summary_text(
     store_entries: Sequence[Mapping[str, Any]],
     window_summary: Mapping[str, Any],
     warnings: Sequence[str],
+    orchestration_failure: Mapping[str, Any] | None = None,
 ) -> str:
     total_seconds = max(0, int((finished_at - started_at).total_seconds()))
     hours = total_seconds // 3600
@@ -1749,8 +1803,23 @@ def _build_profiler_summary_text(
         ),
         f"Missing Windows: {window_summary.get('missing_windows', 0)}",
         "",
-        "Per Store Summary:",
     ]
+    if orchestration_failure:
+        failed_codes = (
+            ", ".join(orchestration_failure.get("failed_store_codes") or []) or "unknown"
+        )
+        lock_paths = ", ".join(orchestration_failure.get("lock_paths") or []) or "unknown"
+        lines.extend(
+            [
+                "ORCHESTRATION FAILURE:",
+                f"Reason: {orchestration_failure.get('message') or PROFILER_STORE_LOCK_ORCHESTRATION_FAILURE_MESSAGE}",
+                f"Failure Scope: {orchestration_failure.get('failure_scope') or 'profiler_orchestrator'}",
+                f"Failed Stores: {failed_codes}",
+                f"Lock Paths: {lock_paths}",
+                "",
+            ]
+        )
+    lines.append("Per Store Summary:")
     if not store_entries:
         lines.append("- (none)")
     for entry in store_entries:
@@ -1813,6 +1882,7 @@ def _build_profiler_notification_payload(
     warnings: Sequence[str],
     total_time_taken: str,
     row_facts: Mapping[str, Sequence[Mapping[str, Any]]],
+    orchestration_failure: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
@@ -1821,6 +1891,7 @@ def _build_profiler_notification_payload(
         "stores": list(store_entries),
         "window_summary": dict(window_summary),
         "warnings": list(warnings),
+        "orchestration_failure": dict(orchestration_failure or {}),
         "row_facts": dict(row_facts),
         "started_at": started_at.isoformat(),
         "finished_at": finished_at.isoformat(),
@@ -2455,6 +2526,7 @@ async def _process_store(
             pipeline_name=pipeline_name,
             failure_reason="store_lock_timeout",
             error_message=str(exc),
+            lock_path=exc.lock_path,
         )
     return StoreRunResult(
         store_code=store.store_code,
@@ -2623,6 +2695,20 @@ async def main(
         ]
     )
     all_results = [result for group in group_results for result in group]
+    orchestration_failure = _all_store_lock_timeout_orchestration_failure(all_results)
+    if orchestration_failure:
+        log_event(
+            logger=logger,
+            phase="orchestrator",
+            status="error",
+            message=PROFILER_STORE_LOCK_ORCHESTRATION_FAILURE_MESSAGE,
+            run_id=resolved_run_id,
+            run_env=resolved_env,
+            failure_scope=orchestration_failure["failure_scope"],
+            failure_reason=orchestration_failure["failure_reason"],
+            failed_store_codes=orchestration_failure["failed_store_codes"],
+            lock_paths=orchestration_failure["lock_paths"],
+        )
     total_status_counts = _init_status_counts()
     pipeline_totals: dict[str, dict[str, Any]] = {}
     store_totals: dict[str, dict[str, Any]] = {}
@@ -2732,6 +2818,15 @@ async def main(
                 for window in result.window_audit
             )
     overall_status = _select_summary_overall_status(total_status_counts)
+    if orchestration_failure:
+        overall_status = "failed"
+        orchestration_warning = (
+            "PROFILER_ORCHESTRATION_FAILURE: "
+            f"{orchestration_failure['message']}; "
+            f"failed_stores={', '.join(orchestration_failure['failed_store_codes'])}; "
+            f"lock_paths={', '.join(orchestration_failure['lock_paths']) or 'unknown'}"
+        )
+        warning_messages.insert(0, orchestration_warning)
     warning_windows_total = int(total_status_counts.get("success_with_warnings", 0) or 0)
     if warning_windows_total > 0 and not any(
         entry.startswith("WINDOW_WARNINGS:") for entry in warning_messages
@@ -2784,6 +2879,7 @@ async def main(
         store_entries=store_entries,
         window_summary=window_summary,
         warnings=warning_messages,
+        orchestration_failure=orchestration_failure,
     )
     summary_record = {
         "pipeline_name": PIPELINE_NAME,
@@ -2796,6 +2892,11 @@ async def main(
         "overall_status": overall_status,
         "summary_text": summary_text,
         "phases_json": {
+            "orchestrator": {
+                "ok": 0 if orchestration_failure else 1,
+                "warning": 0,
+                "error": 1 if orchestration_failure else 0,
+            },
             "window": {
                 "ok": total_status_counts.get("success", 0)
                 + total_status_counts.get("skipped", 0),
@@ -2816,6 +2917,7 @@ async def main(
             "secondary_totals": secondary_totals,
             "row_facts": row_facts,
             "uc_warning_count": uc_warning_count_total,
+            "orchestration_failure": orchestration_failure,
             "notification_payload": _build_profiler_notification_payload(
                 run_id=resolved_run_id,
                 run_env=resolved_env,
@@ -2827,6 +2929,7 @@ async def main(
                 warnings=warning_messages,
                 total_time_taken=total_time_taken,
                 row_facts=row_facts,
+                orchestration_failure=orchestration_failure,
             ),
         },
     }

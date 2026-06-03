@@ -425,3 +425,90 @@ async def test_window_state_timeout_marks_store_failed_logs_boundary_and_continu
         and event["store_code"] == "OK"
         for event in events
     )
+
+
+@pytest.mark.asyncio
+async def test_all_store_lock_timeouts_surface_as_profiler_orchestration_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("ORDERS_SYNC_PROFILER_ENABLE_STORE_LOCKS", "1")
+    monkeypatch.setenv("ORDERS_SYNC_PROFILER_STORE_LOCK_TIMEOUT_SECONDS", "0.05")
+    monkeypatch.setattr(profiler, "default_download_dir", lambda: tmp_path)
+
+    lock_dir = tmp_path / "orders_sync_run_profiler_locks"
+    lock_dir.mkdir(parents=True)
+    locked_handles = []
+    for store_code in ("LOCKA", "LOCKB"):
+        lock_path = lock_dir / f"{store_code}.lock"
+        lock_path.mkdir()
+        profiler._write_store_lock_metadata(
+            lock_path, run_id="owner-run", store_code=store_code
+        )
+        handle = open(lock_path / "lock", "w", encoding="utf-8")
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        locked_handles.append(handle)
+
+    stream = io.StringIO()
+    inserted_summaries: list[dict] = []
+    pipeline_run_ids: list[str] = []
+
+    try:
+        await _run_profiler_with_real_store_processing(
+            monkeypatch,
+            stores=[_store("LOCKA"), _store("LOCKB")],
+            stream=stream,
+            inserted_summaries=inserted_summaries,
+            pipeline_run_ids=pipeline_run_ids,
+        )
+    finally:
+        for handle in locked_handles:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+            handle.close()
+
+    assert pipeline_run_ids == []
+    summary = inserted_summaries[-1]
+    orchestration_failure = summary["metrics_json"]["orchestration_failure"]
+    expected_lock_paths = sorted(
+        str(lock_dir / f"{store_code}.lock") for store_code in ("LOCKA", "LOCKB")
+    )
+    assert summary["overall_status"] == "failed"
+    assert summary["phases_json"]["orchestrator"] == {
+        "ok": 0,
+        "warning": 0,
+        "error": 1,
+    }
+    assert orchestration_failure == {
+        "failure_scope": "profiler_orchestrator",
+        "failure_reason": "profiler_store_lock_timeout",
+        "message": "All stores failed before window planning due to profiler store locks",
+        "failed_store_codes": ["LOCKA", "LOCKB"],
+        "lock_paths": expected_lock_paths,
+    }
+    assert "ORCHESTRATION FAILURE:" in summary["summary_text"]
+    assert (
+        "All stores failed before window planning due to profiler store locks"
+        in summary["summary_text"]
+    )
+    assert summary["metrics_json"]["notification_payload"]["warnings"][0].startswith(
+        "PROFILER_ORCHESTRATION_FAILURE: All stores failed before window planning due to profiler store locks"
+    )
+    assert (
+        summary["metrics_json"]["notification_payload"]["orchestration_failure"]
+        == orchestration_failure
+    )
+    assert all(
+        store["window_audit"][0]["lock_path"] in expected_lock_paths
+        for store in summary["metrics_json"]["store_totals"].values()
+    )
+
+    events = _events(stream)
+    assert any(
+        event["phase"] == "orchestrator"
+        and event["status"] == "error"
+        and event["message"] == "All stores failed before window planning due to profiler store locks"
+        and event["failed_store_codes"] == ["LOCKA", "LOCKB"]
+        and event["lock_paths"] == expected_lock_paths
+        and event["failure_scope"] == "profiler_orchestrator"
+        and event["failure_reason"] == "profiler_store_lock_timeout"
+        for event in events
+    )
