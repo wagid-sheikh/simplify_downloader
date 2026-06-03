@@ -63,6 +63,7 @@ PREFLIGHT_ENV = "ORDERS_SYNC_PROFILER_DB_PREFLIGHT"
 MAX_CONNECTION_RETRIES_ENV = "ORDERS_SYNC_PROFILER_DB_RETRIES"
 SHUTDOWN_TIMEOUT_ENV = "ORDERS_SYNC_PROFILER_SHUTDOWN_TIMEOUT_SECONDS"
 DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+STORE_LOCKS_ENABLED_ENV = "ORDERS_SYNC_PROFILER_ENABLE_STORE_LOCKS"
 STORE_LOCK_TIMEOUT_ENV = "ORDERS_SYNC_PROFILER_STORE_LOCK_TIMEOUT_SECONDS"
 WINDOW_STATE_TIMEOUT_ENV = "ORDERS_SYNC_PROFILER_WINDOW_STATE_TIMEOUT_SECONDS"
 DEFAULT_STORE_LOCK_TIMEOUT_SECONDS = 30.0
@@ -2244,9 +2245,34 @@ async def _process_store(
     overlap_days: int | None,
     from_date: date | None,
     to_date: date | None,
+    enable_store_locks: bool,
 ) -> StoreRunResult:
     try:
-        async with store_lock(store.store_code, logger=logger, run_id=run_id):
+        if enable_store_locks:
+            async with store_lock(store.store_code, logger=logger, run_id=run_id):
+                (
+                    overall_status,
+                    windows,
+                    _detail_lines,
+                    status_counts,
+                    window_audit,
+                    ingestion_totals,
+                    row_facts,
+                ) = await _run_store_windows(
+                    logger=logger,
+                    store=store,
+                    pipeline_name=pipeline_name,
+                    pipeline_id=pipeline_id,
+                    pipeline_fn=pipeline_fn,
+                    run_env=run_env,
+                    run_id=run_id,
+                    backfill_days=backfill_days,
+                    window_days=window_days,
+                    overlap_days=overlap_days,
+                    from_date=from_date,
+                    to_date=to_date,
+                )
+        else:
             (
                 overall_status,
                 windows,
@@ -2324,6 +2350,7 @@ async def main(
         )
         return
     pool_settings = _resolve_pool_settings()
+    enable_store_locks = _env_flag(STORE_LOCKS_ENABLED_ENV)
     log_event(
         logger=logger,
         phase="init",
@@ -2334,6 +2361,24 @@ async def main(
         db_pool_size=pool_settings.pool_size,
         db_pool_max_overflow=pool_settings.max_overflow,
     )
+    if enable_store_locks:
+        log_event(
+            logger=logger,
+            phase="init",
+            status="info",
+            message="Per-store profiler locks enabled",
+            run_id=resolved_run_id,
+            env_flag=STORE_LOCKS_ENABLED_ENV,
+        )
+    else:
+        log_event(
+            logger=logger,
+            phase="init",
+            status="info",
+            message="Per-store profiler locks disabled; using wrapper run lock",
+            run_id=resolved_run_id,
+            env_flag=STORE_LOCKS_ENABLED_ENV,
+        )
     if db_preflight:
         await _log_db_preflight(
             logger=logger, run_id=resolved_run_id, database_url=config.database_url, pool_settings=pool_settings
@@ -2410,6 +2455,7 @@ async def main(
                             overlap_days=overlap_days,
                             from_date=from_date,
                             to_date=to_date,
+                            enable_store_locks=enable_store_locks,
                         ),
                     )
                 finally:
