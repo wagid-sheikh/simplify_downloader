@@ -542,3 +542,153 @@ def test_rejects_unknown_pipeline(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "Unknown pipeline: unknown" in result.stderr
+
+
+def _start_script_process(
+    script_path: Path, *, cwd: Path, ignore_term: bool = False
+) -> subprocess.Popen[str]:
+    term_trap = "trap '' TERM INT" if ignore_term else "trap 'exit 0' TERM INT"
+    _write_executable(
+        script_path,
+        f"#!/usr/bin/env bash\n{term_trap}\nwhile true; do sleep 1; done\n",
+    )
+    return subprocess.Popen(
+        [str(script_path)], cwd=cwd, start_new_session=True, text=True
+    )
+
+
+def test_orders_reports_no_lock_prints_validated_orphan_candidates_without_killing(
+    tmp_path: Path,
+) -> None:
+    recovery_script, _, scripts_dir = _prepare_scripts(tmp_path)
+    orphan = _start_script_process(
+        scripts_dir / "cron_run_orders_and_reports.sh", cwd=tmp_path
+    )
+    try:
+        result = _run_recovery(recovery_script, "orders-reports")
+
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "No active/stale lock found for orders-reports" in result.stdout
+        assert (
+            "No lock found, but possible orphaned orders/reports processes exist"
+            in result.stdout
+        )
+        assert "PID PPID PGID ELAPSED COMMAND" in result.stdout
+        assert str(orphan.pid) in result.stdout
+        assert str(orphan.pid) in result.stdout.split(str(orphan.pid), 1)[1]
+        assert "cron_run_orders_and_reports.sh" in result.stdout
+        assert "Dry run only: FORCE!=1, no orphan termination executed." in result.stdout
+        assert orphan.poll() is None
+    finally:
+        _stop_process(orphan)
+
+
+def test_orders_reports_force_terminates_only_validated_orphan_process_groups(
+    tmp_path: Path,
+) -> None:
+    recovery_script, _, scripts_dir = _prepare_scripts(tmp_path)
+    orphan = _start_script_process(
+        scripts_dir / "orders_sync_run_profiler.sh", cwd=tmp_path
+    )
+    try:
+        result = _run_recovery(
+            recovery_script,
+            "orders-reports",
+            FORCE="1",
+            TERM_WAIT_SECONDS="0",
+            KILL_WAIT_SECONDS="0",
+        )
+        orphan.wait(timeout=5)
+
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert (
+            "No lock found, but possible orphaned orders/reports processes exist"
+            in result.stdout
+        )
+        assert "FORCE=1: terminating validated orphan process groups." in result.stdout
+        assert f"Sending TERM to orphan process group -{orphan.pid}" in result.stdout
+    finally:
+        _stop_process(orphan)
+
+
+def test_orders_reports_orphan_detection_includes_repo_python_module_commands(
+    tmp_path: Path,
+) -> None:
+    recovery_script, _, _ = _prepare_scripts(tmp_path)
+    process = subprocess.Popen(
+        ["bash", "-c", "exec -a 'python -m app crm orders sync' sleep 999"],
+        cwd=tmp_path,
+        start_new_session=True,
+        text=True,
+    )
+    try:
+        result = _run_recovery(recovery_script, "orders-reports")
+
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert (
+            "No lock found, but possible orphaned orders/reports processes exist"
+            in result.stdout
+        )
+        assert "python -m app crm orders sync" in result.stdout
+        assert str(process.pid) in result.stdout
+        assert process.poll() is None
+    finally:
+        _stop_process(process)
+
+
+def test_orders_reports_orphan_detection_rejects_name_match_without_repo_validation(
+    tmp_path: Path,
+) -> None:
+    recovery_script, _, _ = _prepare_scripts(tmp_path)
+    unrelated_cwd = tmp_path.parent / f"outside_repo_{tmp_path.name}"
+    unrelated_cwd.mkdir()
+    process = subprocess.Popen(
+        ["bash", "-c", "exec -a cron_run_orders_and_reports.sh sleep 999"],
+        cwd=unrelated_cwd,
+        start_new_session=True,
+        text=True,
+    )
+    try:
+        result = _run_recovery(
+            recovery_script,
+            "orders-reports",
+            FORCE="1",
+            TERM_WAIT_SECONDS="0",
+            KILL_WAIT_SECONDS="0",
+        )
+
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "No active/stale lock found for orders-reports" in result.stdout
+        assert "possible orphaned orders/reports processes" not in result.stdout
+        assert "Sending TERM to orphan process group" not in result.stdout
+        assert process.poll() is None
+    finally:
+        _stop_process(process)
+
+
+def test_orders_reports_orphan_detection_includes_repo_browser_descendants(
+    tmp_path: Path,
+) -> None:
+    recovery_script, _, scripts_dir = _prepare_scripts(tmp_path)
+    profiler = scripts_dir / "orders_sync_run_profiler.sh"
+    _write_executable(
+        profiler,
+        "#!/usr/bin/env bash\n"
+        "trap 'exit 0' TERM INT\n"
+        "bash -c 'exec -a chromium sleep 999' &\n"
+        "wait\n",
+    )
+    process = subprocess.Popen(
+        [str(profiler)], cwd=tmp_path, start_new_session=True, text=True
+    )
+    try:
+        time.sleep(0.2)
+        result = _run_recovery(recovery_script, "orders-reports")
+
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "orders_sync_run_profiler.sh" in result.stdout
+        assert "chromium" in result.stdout
+        assert "PID PPID PGID ELAPSED COMMAND" in result.stdout
+        assert process.poll() is None
+    finally:
+        _stop_process(process)

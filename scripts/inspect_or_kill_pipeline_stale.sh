@@ -187,6 +187,143 @@ pid_command() {
   ps -o command= -p "$pid" 2>/dev/null
 }
 
+process_cwd() {
+  local pid="$1"
+  readlink "/proc/$pid/cwd" 2>/dev/null || true
+}
+
+path_belongs_to_repo() {
+  local path="$1"
+  [ "$path" = "$REPO_ROOT" ] || [[ "$path" == "$REPO_ROOT"/* ]]
+}
+
+command_mentions_repo() {
+  local command="$1"
+  [[ "$command" == *"$REPO_ROOT/"* ]]
+}
+
+process_belongs_to_repo() {
+  local pid="$1"
+  local command="$2"
+  local cwd
+
+  if command_mentions_repo "$command"; then
+    return 0
+  fi
+
+  cwd="$(process_cwd "$pid")"
+  [ -n "$cwd" ] && path_belongs_to_repo "$cwd"
+}
+
+is_orders_reports_primary_command() {
+  local pid="$1"
+  local command="$2"
+
+  if [[ "$command" == *"cron_run_orders_and_reports.sh"* ]] || \
+     [[ "$command" == *"orders_sync_run_profiler.sh"* ]]; then
+    process_belongs_to_repo "$pid" "$command"
+    return $?
+  fi
+
+  if [[ "$command" == *"python"* ]] && [[ "$command" == *" -m app"* ]] && \
+     { [[ "$command" == *"orders sync"* ]] || \
+       [[ "$command" == *"orders-sync"* ]] || \
+       [[ "$command" == *"orders_sync"* ]] || \
+       [[ "$command" == *"profiler"* ]]; }; then
+    process_belongs_to_repo "$pid" "$command"
+    return $?
+  fi
+
+  return 1
+}
+
+is_likely_browser_command() {
+  local command="$1"
+  case "$command" in
+    *playwright*|*chromium*|*chrome*|*Google\ Chrome*|*msedge*|*firefox*|*webkit*)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+print_orphan_candidates() {
+  local candidates_file="$1"
+
+  echo "PID PPID PGID ELAPSED COMMAND"
+  sort -n -k1,1 "$candidates_file" | while IFS='|' read -r pid ppid pgid etime command; do
+    [ -n "$pid" ] || continue
+    printf '%s %s %s %s %s\n' "$pid" "$ppid" "$pgid" "$etime" "$command"
+  done
+}
+
+inspect_orders_reports_orphans() {
+  local candidates_file primary_pgids_file all_processes_file tmp_line
+  local pid ppid pgid etime command
+
+  candidates_file="$(mktemp "${TMPDIR:-/tmp}/orders_reports_orphans.XXXXXX")"
+  primary_pgids_file="$(mktemp "${TMPDIR:-/tmp}/orders_reports_orphan_pgids.XXXXXX")"
+  all_processes_file="$(mktemp "${TMPDIR:-/tmp}/orders_reports_processes.XXXXXX")"
+
+  ps -axo pid=,ppid=,pgid=,etime=,command= >"$all_processes_file"
+
+  while read -r pid ppid pgid etime command; do
+    [ -n "${pid:-}" ] || continue
+    if is_orders_reports_primary_command "$pid" "${command:-}"; then
+      printf '%s|%s|%s|%s|%s\n' "$pid" "$ppid" "$pgid" "$etime" "$command" >>"$candidates_file"
+      printf '%s\n' "$pgid" >>"$primary_pgids_file"
+    fi
+  done <"$all_processes_file"
+
+  sort -u -o "$primary_pgids_file" "$primary_pgids_file"
+
+  while read -r pid ppid pgid etime command; do
+    [ -n "${pid:-}" ] || continue
+    if is_likely_browser_command "${command:-}" && \
+       grep -qx "$pgid" "$primary_pgids_file" && \
+       process_belongs_to_repo "$pid" "${command:-}"; then
+      tmp_line="${pid}|${ppid}|${pgid}|${etime}|${command}"
+      grep -Fqx "$tmp_line" "$candidates_file" || printf '%s\n' "$tmp_line" >>"$candidates_file"
+    fi
+  done <"$all_processes_file"
+
+  if [ ! -s "$candidates_file" ]; then
+    rm -f "$candidates_file" "$primary_pgids_file" "$all_processes_file"
+    return 0
+  fi
+
+  echo "No lock found, but possible orphaned orders/reports processes exist"
+  print_orphan_candidates "$candidates_file"
+
+  if [ "$FORCE" != "1" ]; then
+    echo "Dry run only: FORCE!=1, no orphan termination executed."
+    rm -f "$candidates_file" "$primary_pgids_file" "$all_processes_file"
+    return 0
+  fi
+
+  echo "FORCE=1: terminating validated orphan process groups."
+  cut -d'|' -f3 "$candidates_file" | sort -u | while read -r pgid; do
+    [ -n "$pgid" ] || continue
+    if ! [[ "$pgid" =~ ^[1-9][0-9]*$ ]]; then
+      echo "Skipping malformed orphan PGID [$pgid]."
+      continue
+    fi
+    echo "Sending TERM to orphan process group -$pgid"
+    kill -TERM "-$pgid" 2>/dev/null || true
+  done
+  sleep "$TERM_WAIT_SECONDS"
+
+  cut -d'|' -f3 "$candidates_file" | sort -u | while read -r pgid; do
+    [ -n "$pgid" ] || continue
+    if pgid_alive "$pgid"; then
+      echo "Orphan PGID $pgid still alive; sending KILL to process group -$pgid"
+      kill -KILL "-$pgid" 2>/dev/null || true
+    fi
+  done
+  sleep "$KILL_WAIT_SECONDS"
+  rm -f "$candidates_file" "$primary_pgids_file" "$all_processes_file"
+}
+
 remove_lock_if_group_gone() {
   local lock_dir="$1"
   local pgid="$2"
@@ -311,6 +448,9 @@ if [ -d "$PIPELINE_LOCK_DIR" ]; then
   inspect_or_kill_process_group "$PIPELINE_LOCK_DIR"
 else
   echo "No active/stale lock found for $PIPELINE_NAME at ${PIPELINE_LOCK_DIR#$REPO_ROOT/}."
+  if [ "$PIPELINE_NAME" = "orders-reports" ]; then
+    inspect_orders_reports_orphans
+  fi
 fi
 
 # Rollout cleanup only: wrappers no longer create this directory. Keep this
