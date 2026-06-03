@@ -603,7 +603,10 @@ run_step_with_retries() {
     fi
     rc=0
 
-    python3 -c 'import os, sys; os.setsid(); os.execvp("bash", ["bash", "-c", sys.argv[1]])' "${step_cmd}" > "${attempt_log_file}" 2>&1 &
+    # Start a tiny session-leading wrapper so $! remains the process-group
+    # leader while the wrapper tees step output as it is produced. A naive
+    # outer pipeline would make $! point at tee and break watchdog PGID kills.
+    python3 -c 'import os, sys; os.setsid(); os.execvp("bash", ["bash", "-c", sys.argv[1], "cron-step-output-wrapper", sys.argv[2], sys.argv[3], sys.argv[4]])' 'bash -c "$1" 2>&1 | tee -a "$2" >> "$3"; exit "${PIPESTATUS[0]}"' "${step_cmd}" "${attempt_log_file}" "${LOG_FILE}" &
     child_pid=$!
     child_pgid="${child_pid}"
     ACTIVE_CHILD_PID="${child_pid}"
@@ -634,22 +637,19 @@ run_step_with_retries() {
       wait "${child_pid}" || rc=$?
     else
       wait "${child_pid}" 2>/dev/null || true
-      printf '%s\n' "step_runtime_timeout runtime_limit_seconds=${runtime_limit_seconds} child_pid=${child_pid} child_pgid=${child_pgid}" >> "${attempt_log_file}"
+      printf '%s\n' "step_runtime_timeout runtime_limit_seconds=${runtime_limit_seconds} child_pid=${child_pid} child_pgid=${child_pgid}" | tee -a "${attempt_log_file}" >> "${LOG_FILE}"
     fi
     ACTIVE_CHILD_PID=""
     ACTIVE_CHILD_PGID=""
     ACTIVE_STEP_NAME=""
 
     if [[ "${rc}" -eq 0 ]]; then
-      cat "${attempt_log_file}" >> "${LOG_FILE}"
       rm -f "${attempt_log_file}" 2>/dev/null || true
       step_end="$(date +%s)"
       duration=$((step_end - step_start))
       log "${step_name}: attempt ${attempt}/${max_attempts} succeeded in ${duration}s"
       return 0
     else
-      cat "${attempt_log_file}" >> "${LOG_FILE}"
-
       if [[ "${timed_out}" -eq 1 ]]; then
         log "WARNING: ${step_name}: failure_class=step_runtime_timeout; retrying if attempts remain (exit_code=${rc})."
       elif is_deterministic_code_error "${attempt_log_file}"; then
