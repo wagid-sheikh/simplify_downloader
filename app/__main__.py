@@ -115,10 +115,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     oli_rebuild.add_argument("--source", choices=("td", "uc", "both"), required=True)
     oli_rebuild.add_argument("--stores", nargs="*", default=None, help="Optional store codes")
-    oli_rebuild.add_argument("--start-date", required=True, help="Start date (YYYY-MM-DD)")
+    oli_rebuild.add_argument(
+        "--start-date",
+        default=None,
+        help="Start date (YYYY-MM-DD); defaults to store_master.start_date",
+    )
     oli_rebuild.add_argument("--end-date", required=True, help="End date (YYYY-MM-DD)")
-    oli_rebuild.add_argument("--window-size", type=int, default=7, help="Window size in days")
+    oli_rebuild.add_argument(
+        "--window-size",
+        type=int,
+        default=None,
+        help="Requested window size in days; CRM fetches are capped at 30 days",
+    )
     oli_rebuild.add_argument("--dry-run", action="store_true")
+    oli_rebuild.add_argument("--resume", action="store_true")
     oli_rebuild.add_argument("--run-id", default=None)
 
     recovery_parser = subparsers.add_parser("recovery", help="Run recovery maintenance commands")
@@ -153,17 +163,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         if parsed.crm_command == "rebuild-order-line-items":
             from app.crm_downloader.order_line_items_rebuild import run as rebuild_run
 
-            rebuild_args = [
-                "--source", parsed.source,
-                "--start-date", parsed.start_date,
-                "--end-date", parsed.end_date,
-                "--window-size", str(parsed.window_size),
-            ]
+            rebuild_args = ["--source", parsed.source, "--end-date", parsed.end_date]
+            if parsed.start_date:
+                rebuild_args.extend(["--start-date", parsed.start_date])
+            if parsed.window_size:
+                rebuild_args.extend(["--window-size", str(parsed.window_size)])
             if parsed.stores:
                 rebuild_args.append("--stores")
                 rebuild_args.extend(parsed.stores)
             if parsed.dry_run:
                 rebuild_args.append("--dry-run")
+            if parsed.resume:
+                rebuild_args.append("--resume")
             if parsed.run_id:
                 rebuild_args.extend(["--run-id", parsed.run_id])
             rebuild_run(rebuild_args)

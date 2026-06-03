@@ -362,3 +362,220 @@ async def test_resumability_emits_source_store_window_checkpoints(
         ("uc", "UC001", "2025-01-03", "2025-01-03"),
     ]
     assert all(item["dry_run"] for item in checkpoints)
+
+
+@pytest.mark.asyncio
+async def test_full_range_invocation_expands_expected_crm_safe_windows(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    seen: list[tuple[date, date]] = []
+
+    async def fetcher(**kwargs):
+        seen.append((kwargs["window"].start, kwargs["window"].end))
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 3, 5),
+        window_size_days=90,
+        dry_run=True,
+        run_id="full-range",
+        fetch_snapshot=fetcher,
+    )
+
+    assert seen == [
+        (date(2025, 1, 1), date(2025, 1, 30)),
+        (date(2025, 1, 31), date(2025, 3, 1)),
+        (date(2025, 3, 2), date(2025, 3, 5)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_retryable_failed_window_is_retried(patch_config_and_stores) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    attempts = 0
+
+    async def fetcher(**kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TimeoutError("navigation failed while loading CRM report")
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    metrics = await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 1),
+        window_size_days=1,
+        dry_run=True,
+        run_id="retry",
+        fetch_snapshot=fetcher,
+    )
+
+    assert attempts == 2
+    assert len(metrics) == 1
+    rows = await _rows(
+        db_url,
+        "SELECT status, attempt_no FROM order_line_items_rebuild_progress WHERE run_id='retry'",
+    )
+    assert [(row.status, row.attempt_no) for row in rows] == [("success", 2)]
+
+
+@pytest.mark.asyncio
+async def test_missing_window_detection_reports_failed_windows(
+    patch_config_and_stores, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    missing_events: list[dict[str, Any]] = []
+
+    def capture_log_event(**kwargs):
+        if kwargs.get("phase") == "order_line_items_rebuild_missing_windows":
+            missing_events.append(kwargs)
+
+    async def fetcher(**kwargs):
+        if kwargs["window"].start == date(2025, 1, 2):
+            raise RuntimeError("permanent crm failure")
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    monkeypatch.setattr(rebuild, "log_event", capture_log_event)
+    metrics = await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 2),
+        window_size_days=1,
+        dry_run=True,
+        run_id="missing",
+        fetch_snapshot=fetcher,
+    )
+
+    assert len(metrics) == 1
+    assert missing_events[-1]["missing_window_count"] == 1
+    assert missing_events[-1]["missing_windows"] == [
+        {
+            "source": "td",
+            "store_code": "TD001",
+            "window_start": "2025-01-02",
+            "window_end": "2025-01-02",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resume_skips_last_success_and_processes_remaining_window(
+    patch_config_and_stores,
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    await rebuild._ensure_progress_table(db_url)
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("""
+            INSERT INTO order_line_items_rebuild_progress
+            (source, store_code, cost_center, window_start, window_end, run_id, status, attempt_no)
+            VALUES ('td', 'TD001', 'CC01', '2025-01-01', '2025-01-01', 'old', 'success', 1)
+        """))
+        await session.commit()
+    seen: list[date] = []
+
+    async def fetcher(**kwargs):
+        seen.append(kwargs["window"].start)
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 2),
+        window_size_days=1,
+        dry_run=True,
+        resume=True,
+        run_id="resume-success",
+        fetch_snapshot=fetcher,
+    )
+
+    assert seen == [date(2025, 1, 2)]
+
+
+@pytest.mark.asyncio
+async def test_store_start_date_used_when_start_date_omitted(
+    patch_config_and_stores, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+    async with session_scope(db_url) as session:
+        await session.execute(sa.text("""
+            CREATE TABLE store_master (
+                store_code TEXT, sync_group TEXT, start_date DATE
+            )
+        """))
+        await session.execute(
+            sa.text("INSERT INTO store_master VALUES ('TD001', 'TD', '2025-02-10')")
+        )
+        await session.commit()
+    seen: list[date] = []
+
+    async def fetcher(**kwargs):
+        seen.append(kwargs["window"].start)
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=None,
+        end_date=date(2025, 2, 10),
+        window_size_days=1,
+        dry_run=True,
+        run_id="store-start",
+        fetch_snapshot=fetcher,
+    )
+
+    assert seen == [date(2025, 2, 10)]
+
+
+@pytest.mark.asyncio
+async def test_source_specific_lower_limit_overrides_thirty_day_cap(
+    patch_config_and_stores, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_url = patch_config_and_stores
+    await _create_common_tables(db_url)
+
+    async def load_stores(*, sources, store_codes, logger):
+        return [
+            rebuild.RebuildStore(
+                source="td",
+                store_code="TD001",
+                cost_center="CC01",
+                sync_config={"td_crm_source_window_days": 10},
+            )
+        ]
+
+    monkeypatch.setattr(rebuild, "load_rebuild_stores", load_stores)
+    seen: list[tuple[date, date]] = []
+
+    async def fetcher(**kwargs):
+        seen.append((kwargs["window"].start, kwargs["window"].end))
+        return rebuild.SourceSnapshot(line_item_rows=[], order_snapshots=[])
+
+    await rebuild.run_rebuild(
+        source_selection="td",
+        store_codes=None,
+        start_date=date(2025, 1, 1),
+        end_date=date(2025, 1, 25),
+        window_size_days=90,
+        dry_run=True,
+        run_id="lower-limit",
+        fetch_snapshot=fetcher,
+    )
+
+    assert seen == [
+        (date(2025, 1, 1), date(2025, 1, 10)),
+        (date(2025, 1, 11), date(2025, 1, 20)),
+        (date(2025, 1, 21), date(2025, 1, 25)),
+    ]

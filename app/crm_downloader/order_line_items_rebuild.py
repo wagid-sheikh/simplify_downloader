@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Literal, Mapping, Protocol, Sequence
 
@@ -12,6 +12,11 @@ import sqlalchemy as sa
 from app.common.date_utils import aware_now, get_timezone, normalize_store_codes
 from app.common.db import session_scope
 from app.config import config
+from app.crm_downloader.orders_sync_window import (
+    build_non_overlapping_windows,
+    resolve_crm_source_window_days,
+    should_retry_window_status,
+)
 from app.crm_downloader.browser import launch_browser
 from app.crm_downloader.td_orders_sync.garment_ingest import (
     TdGarmentIngestResult,
@@ -50,6 +55,8 @@ class RebuildStore:
     store_code: str
     cost_center: str
     raw_store: Any | None = None
+    sync_config: Mapping[str, Any] = field(default_factory=dict)
+    start_date: date | None = None
 
 
 @dataclass
@@ -107,17 +114,14 @@ class SnapshotFetcher(Protocol):
 def iter_windows(
     start_date: date, end_date: date, window_size_days: int
 ) -> list[RebuildWindow]:
-    if window_size_days < 1:
-        raise ValueError("window_size_days must be at least 1")
     if end_date < start_date:
         raise ValueError("end date must be on or after start date")
-    windows: list[RebuildWindow] = []
-    current = start_date
-    while current <= end_date:
-        window_end = min(current + timedelta(days=window_size_days - 1), end_date)
-        windows.append(RebuildWindow(start=current, end=window_end))
-        current = window_end + timedelta(days=1)
-    return windows
+    return [
+        RebuildWindow(start=window_start, end=window_end)
+        for window_start, window_end in build_non_overlapping_windows(
+            start_date=start_date, end_date=end_date, window_days=window_size_days
+        )
+    ]
 
 
 def _order_number(row: Mapping[str, Any]) -> str:
@@ -497,6 +501,172 @@ async def default_fetch_snapshot(
             await browser.close()
 
 
+def _coerce_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _store_sync_config(store: Any) -> Mapping[str, Any]:
+    raw = getattr(store, "sync_config", None)
+    return raw if isinstance(raw, Mapping) else {}
+
+
+async def _load_store_start_dates(
+    *, database_url: str, stores: Sequence[RebuildStore]
+) -> dict[tuple[Source, str], date]:
+    if not stores:
+        return {}
+    clauses: list[str] = []
+    params: dict[str, Any] = {}
+    for index, store in enumerate(stores):
+        clauses.append(
+            f"(UPPER(store_code) = :store_code_{index} AND sync_group = :sync_group_{index})"
+        )
+        params[f"store_code_{index}"] = store.store_code.upper()
+        params[f"sync_group_{index}"] = store.source.upper()
+    async with session_scope(database_url) as session:
+        result = await session.execute(
+            sa.text(
+                "SELECT UPPER(store_code) AS store_code, sync_group, start_date "
+                f"FROM store_master WHERE {' OR '.join(clauses)}"
+            ),
+            params,
+        )
+        return {
+            (str(row.sync_group).lower(), str(row.store_code).upper()): parsed
+            for row in result
+            if (parsed := _coerce_date(row.start_date)) is not None
+        }
+
+
+async def _ensure_progress_table(database_url: str) -> None:
+    async with session_scope(database_url) as session:
+        await session.execute(sa.text("""
+            CREATE TABLE IF NOT EXISTS order_line_items_rebuild_progress (
+                source TEXT NOT NULL,
+                store_code TEXT NOT NULL,
+                cost_center TEXT,
+                window_start DATE NOT NULL,
+                window_end DATE NOT NULL,
+                run_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempt_no INTEGER NOT NULL DEFAULT 1,
+                error_message TEXT,
+                complete_with_rows_orders INTEGER NOT NULL DEFAULT 0,
+                complete_empty_orders INTEGER NOT NULL DEFAULT 0,
+                skipped_incomplete_orders INTEGER NOT NULL DEFAULT 0,
+                deleted_rows INTEGER NOT NULL DEFAULT 0,
+                inserted_rows INTEGER NOT NULL DEFAULT 0,
+                orphan_rows INTEGER NOT NULL DEFAULT 0,
+                dry_run BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (source, store_code, window_start, window_end)
+            )
+        """))
+        await session.commit()
+
+
+async def _fetch_progress_rows(
+    database_url: str,
+) -> dict[tuple[Source, str, date, date], Mapping[str, Any]]:
+    await _ensure_progress_table(database_url)
+    async with session_scope(database_url) as session:
+        result = await session.execute(
+            sa.text("SELECT * FROM order_line_items_rebuild_progress")
+        )
+        rows: dict[tuple[Source, str, date, date], Mapping[str, Any]] = {}
+        for row in result.mappings():
+            window_start = _coerce_date(row.get("window_start"))
+            window_end = _coerce_date(row.get("window_end"))
+            if not window_start or not window_end:
+                continue
+            rows[
+                (
+                    str(row.get("source")).lower(),
+                    str(row.get("store_code")).upper(),
+                    window_start,
+                    window_end,
+                )
+            ] = dict(row)
+        return rows
+
+
+async def _write_progress(
+    *,
+    database_url: str,
+    store: RebuildStore,
+    window: RebuildWindow,
+    run_id: str,
+    status: str,
+    attempt_no: int,
+    metrics: WindowMetrics | None = None,
+    error_message: str | None = None,
+    dry_run: bool = False,
+) -> None:
+    await _ensure_progress_table(database_url)
+    values = {
+        "source": store.source,
+        "store_code": store.store_code,
+        "cost_center": store.cost_center,
+        "window_start": window.start,
+        "window_end": window.end,
+        "run_id": run_id,
+        "status": status,
+        "attempt_no": attempt_no,
+        "error_message": error_message,
+        "complete_with_rows_orders": (
+            metrics.complete_with_rows_orders if metrics else 0
+        ),
+        "complete_empty_orders": metrics.complete_empty_orders if metrics else 0,
+        "skipped_incomplete_orders": (
+            metrics.skipped_incomplete_orders if metrics else 0
+        ),
+        "deleted_rows": metrics.deleted_rows if metrics else 0,
+        "inserted_rows": metrics.inserted_rows if metrics else 0,
+        "orphan_rows": metrics.orphan_rows if metrics else 0,
+        "dry_run": metrics.dry_run if metrics else dry_run,
+    }
+    async with session_scope(database_url) as session:
+        await session.execute(
+            sa.text(
+                "DELETE FROM order_line_items_rebuild_progress "
+                "WHERE source = :source AND store_code = :store_code "
+                "AND window_start = :window_start AND window_end = :window_end"
+            ),
+            values,
+        )
+        await session.execute(
+            sa.text("""
+            INSERT INTO order_line_items_rebuild_progress
+            (source, store_code, cost_center, window_start, window_end, run_id, status, attempt_no, error_message,
+             complete_with_rows_orders, complete_empty_orders, skipped_incomplete_orders, deleted_rows, inserted_rows,
+             orphan_rows, dry_run, updated_at)
+            VALUES (:source, :store_code, :cost_center, :window_start, :window_end, :run_id, :status, :attempt_no, :error_message,
+             :complete_with_rows_orders, :complete_empty_orders, :skipped_incomplete_orders, :deleted_rows, :inserted_rows,
+             :orphan_rows, :dry_run, CURRENT_TIMESTAMP)
+        """),
+            values,
+        )
+        await session.commit()
+
+
+def _is_success_status(status: Any) -> bool:
+    return str(status or "").strip().lower() in {"success", "success_with_warnings"}
+
+
+def _window_status(row: Mapping[str, Any] | None) -> str | None:
+    return str(row.get("status") or "").strip().lower() if row else None
+
+
 async def load_rebuild_stores(
     *, sources: Sequence[Source], store_codes: Sequence[str] | None, logger: JsonLogger
 ) -> list[RebuildStore]:
@@ -512,6 +682,7 @@ async def load_rebuild_stores(
                         store_code=store.store_code,
                         cost_center=store.cost_center,
                         raw_store=store,
+                        sync_config=_store_sync_config(store),
                     )
                 )
     if "uc" in sources:
@@ -525,6 +696,7 @@ async def load_rebuild_stores(
                         store_code=store.store_code,
                         cost_center=store.cost_center,
                         raw_store=store,
+                        sync_config=_store_sync_config(store),
                     )
                 )
     return stores
@@ -534,10 +706,11 @@ async def run_rebuild(
     *,
     source_selection: Literal["td", "uc", "both"],
     store_codes: Sequence[str] | None,
-    start_date: date,
+    start_date: date | None,
     end_date: date,
-    window_size_days: int,
+    window_size_days: int | None,
     dry_run: bool,
+    resume: bool = False,
     run_id: str | None = None,
     logger: JsonLogger | None = None,
     fetch_snapshot: SnapshotFetcher = default_fetch_snapshot,
@@ -552,11 +725,29 @@ async def run_rebuild(
     sources: list[Source] = (
         ["td", "uc"] if source_selection == "both" else [source_selection]
     )
-    windows = iter_windows(start_date, end_date, window_size_days)
     stores = await load_rebuild_stores(
         sources=sources, store_codes=store_codes, logger=logger
     )
+    if start_date is None:
+        start_dates = await _load_store_start_dates(
+            database_url=config.database_url, stores=stores
+        )
+        stores = [
+            RebuildStore(
+                source=store.source,
+                store_code=store.store_code,
+                cost_center=store.cost_center,
+                raw_store=store.raw_store,
+                sync_config=store.sync_config,
+                start_date=start_dates.get((store.source, store.store_code.upper()))
+                or store.start_date,
+            )
+            for store in stores
+        ]
+    progress_rows = await _fetch_progress_rows(config.database_url) if resume else {}
     metrics: list[WindowMetrics] = []
+    expected_windows: set[tuple[Source, str, date, date]] = set()
+    successful_windows: set[tuple[Source, str, date, date]] = set()
     log_event(
         logger=logger,
         phase="order_line_items_rebuild",
@@ -565,34 +756,194 @@ async def run_rebuild(
         run_id=run_id,
         sources=sources,
         stores=[s.store_code for s in stores],
-        start_date=start_date.isoformat(),
+        start_date=start_date.isoformat() if start_date else None,
         end_date=end_date.isoformat(),
-        window_size_days=window_size_days,
+        requested_window_size_days=window_size_days,
+        max_source_window_days=30,
         dry_run=dry_run,
+        resume=resume,
     )
     for store in stores:
-        for window in windows:
-            metrics.append(
-                await rebuild_window(
-                    source=store.source,
-                    store=store,
-                    window=window,
-                    run_id=run_id,
-                    run_date=run_date,
-                    database_url=config.database_url,
-                    dry_run=dry_run,
-                    logger=logger,
-                    fetch_snapshot=fetch_snapshot,
-                )
+        store_start_date = start_date or store.start_date
+        if store_start_date is None:
+            raise RuntimeError(
+                f"start_date is required for {store.source}:{store.store_code} "
+                "because store_master.start_date is not set"
             )
+        source_window_days = resolve_crm_source_window_days(
+            sync_config=store.sync_config,
+            source=store.source,
+            requested_window_days=window_size_days,
+        )
+        windows = iter_windows(store_start_date, end_date, source_window_days)
+        for window in windows:
+            key = (store.source, store.store_code.upper(), window.start, window.end)
+            expected_windows.add(key)
+            existing = progress_rows.get(key)
+            existing_status = _window_status(existing)
+            if resume and _is_success_status(existing_status):
+                successful_windows.add(key)
+                log_event(
+                    logger=logger,
+                    phase="order_line_items_rebuild_window",
+                    status="info",
+                    message="Skipping previously successful order_line_items rebuild window",
+                    run_id=run_id,
+                    source=store.source,
+                    store_code=store.store_code,
+                    cost_center=store.cost_center,
+                    window_start=window.start.isoformat(),
+                    window_end=window.end.isoformat(),
+                    dry_run=dry_run,
+                    resume=resume,
+                )
+                continue
+            if (
+                resume
+                and existing_status
+                and not should_retry_window_status(
+                    status=existing_status,
+                    error_message=(
+                        str(existing.get("error_message") or "") if existing else None
+                    ),
+                    status_note=None,
+                )
+            ):
+                log_event(
+                    logger=logger,
+                    phase="order_line_items_rebuild_window",
+                    status="info",
+                    message="Skipping non-retryable prior order_line_items rebuild window status",
+                    run_id=run_id,
+                    source=store.source,
+                    store_code=store.store_code,
+                    cost_center=store.cost_center,
+                    window_start=window.start.isoformat(),
+                    window_end=window.end.isoformat(),
+                    prior_status=existing_status,
+                    dry_run=dry_run,
+                    resume=resume,
+                )
+                continue
+            max_attempts = (
+                2
+                if should_retry_window_status(
+                    status=existing_status or "failed",
+                    error_message=None,
+                    status_note=None,
+                )
+                else 1
+            )
+            for attempt_no in range(1, max_attempts + 1):
+                try:
+                    metric = await rebuild_window(
+                        source=store.source,
+                        store=store,
+                        window=window,
+                        run_id=run_id,
+                        run_date=run_date,
+                        database_url=config.database_url,
+                        dry_run=dry_run,
+                        logger=logger,
+                        fetch_snapshot=fetch_snapshot,
+                    )
+                except Exception as exc:
+                    await _write_progress(
+                        database_url=config.database_url,
+                        store=store,
+                        window=window,
+                        run_id=run_id,
+                        status="failed",
+                        attempt_no=attempt_no,
+                        error_message=str(exc),
+                        dry_run=dry_run,
+                    )
+                    if attempt_no < max_attempts and should_retry_window_status(
+                        status="failed", error_message=str(exc), status_note=None
+                    ):
+                        log_event(
+                            logger=logger,
+                            phase="order_line_items_rebuild_window",
+                            status="warning",
+                            message="Retrying order_line_items rebuild window after retryable failure",
+                            run_id=run_id,
+                            source=store.source,
+                            store_code=store.store_code,
+                            cost_center=store.cost_center,
+                            window_start=window.start.isoformat(),
+                            window_end=window.end.isoformat(),
+                            attempt_no=attempt_no,
+                            error_message=str(exc),
+                            dry_run=dry_run,
+                        )
+                        continue
+                    log_event(
+                        logger=logger,
+                        phase="order_line_items_rebuild_window",
+                        status="error",
+                        message="order_line_items rebuild window failed",
+                        run_id=run_id,
+                        source=store.source,
+                        store_code=store.store_code,
+                        cost_center=store.cost_center,
+                        window_start=window.start.isoformat(),
+                        window_end=window.end.isoformat(),
+                        attempt_no=attempt_no,
+                        error_message=str(exc),
+                        dry_run=dry_run,
+                    )
+                    break
+                else:
+                    metrics.append(metric)
+                    successful_windows.add(key)
+                    await _write_progress(
+                        database_url=config.database_url,
+                        store=store,
+                        window=window,
+                        run_id=run_id,
+                        status="success",
+                        attempt_no=attempt_no,
+                        metrics=metric,
+                        dry_run=dry_run,
+                    )
+                    break
+    missing_windows = sorted(
+        expected_windows - successful_windows,
+        key=lambda item: (item[0], item[1], item[2], item[3]),
+    )
+    log_event(
+        logger=logger,
+        phase="order_line_items_rebuild_missing_windows",
+        status="warning" if missing_windows else "ok",
+        message=(
+            "Detected missing order_line_items rebuild windows"
+            if missing_windows
+            else "No missing order_line_items rebuild windows detected"
+        ),
+        run_id=run_id,
+        missing_window_count=len(missing_windows),
+        missing_windows=[
+            {
+                "source": source,
+                "store_code": store_code,
+                "window_start": window_start.isoformat(),
+                "window_end": window_end.isoformat(),
+            }
+            for source, store_code, window_start, window_end in missing_windows
+        ],
+        dry_run=dry_run,
+    )
     log_event(
         logger=logger,
         phase="order_line_items_rebuild",
-        status="ok",
+        status="ok" if not missing_windows else "warning",
         message="Completed order_line_items historical rebuild",
         run_id=run_id,
         window_count=len(metrics),
+        expected_window_count=len(expected_windows),
+        missing_window_count=len(missing_windows),
         dry_run=dry_run,
+        resume=resume,
     )
     return metrics
 
@@ -612,15 +963,23 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional store codes; defaults to all sync_orders_flag stores for the selected source(s)",
     )
-    parser.add_argument("--start-date", type=_parse_date, required=True)
+    parser.add_argument("--start-date", type=_parse_date, default=None)
     parser.add_argument("--end-date", type=_parse_date, required=True)
     parser.add_argument(
-        "--window-size", type=int, default=7, help="Window size in days"
+        "--window-size",
+        type=int,
+        default=None,
+        help="Requested CRM source window size in days; source fetches are capped at 30 days",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Report planned replacements without mutating order_line_items",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip successful windows recorded in order_line_items_rebuild_progress and retry retryable failures",
     )
     parser.add_argument("--run-id", default=None)
     return parser
@@ -635,6 +994,7 @@ async def _async_entrypoint(argv: Sequence[str] | None = None) -> None:
         end_date=args.end_date,
         window_size_days=args.window_size,
         dry_run=args.dry_run,
+        resume=args.resume,
         run_id=args.run_id,
     )
 
