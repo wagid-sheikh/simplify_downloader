@@ -1460,6 +1460,7 @@ The table structure of `stg_bank` and `bank` are almost identical. If stg_bank.r
 
 - First executable slice: **TD Orders** only — perform login with session probe, enter iframe, and wait for hydration. No date selection or download in this increment.
   - Steps: launch per-store context with storage_state probe → navigate to home with store_code in URL → open Reports → Orders container → enter iframe `#ifrmReport` → wait for iframe `src` to be non-empty → wait for hydration cues (spinner gone or primary controls visible).
+  - If TD shows `#pnlOrderOverDuePopup` before Orders navigation, treat that store/window as a terminal skip with reason `orders_overdue_popup_blocked`; do not dismiss the modal or retry the Orders click, and continue with the next store/window.
   - Outputs to capture during runs:
     - Observed selectors/roles inside the iframe (buttons/links like Expand, Download Historical Report, Generate Report).
     - Spinner/loader cues and how they disappear (classes, aria labels, or text).
