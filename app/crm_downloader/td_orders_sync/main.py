@@ -95,6 +95,9 @@ INGEST_SOURCE_BY_MODE: Mapping[str, str] = {
     "api_only": "api_rows",
 }
 UI_ORDERS_NAVIGATION_WARNING = "ui_navigation_warning: Orders container did not load from Reports navigation"
+OVERDUE_ORDERS_POPUP_SELECTOR = "#pnlOrderOverDuePopup"
+ORDERS_OVERDUE_POPUP_BLOCKED_REASON = "orders_overdue_popup_blocked"
+ORDERS_OVERDUE_POPUP_BLOCKED_MESSAGE = "Overdue orders popup blocks Orders navigation; skipping store"
 API_ONLY_NAVIGATION_WARNING_MESSAGE = (
     "API primary ingestion succeeded; UI Orders verification/navigation failed"
 )
@@ -1020,6 +1023,22 @@ class TdStore:
             self.sync_config.get("reports_nav_selector")
         )
         return _normalize_id_selector(raw or "#achrOrderReport")
+
+
+@dataclass
+class OrdersNavigationResult:
+    ready: bool
+    reason: str | None = None
+    modal_selector: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.ready
+
+
+def _coerce_orders_navigation_result(value: OrdersNavigationResult | bool) -> OrdersNavigationResult:
+    if isinstance(value, OrdersNavigationResult):
+        return value
+    return OrdersNavigationResult(ready=bool(value))
 
 
 @dataclass
@@ -3756,15 +3775,29 @@ async def _capture_orders_left_nav_snapshot(
     )
 
 
-async def _dismiss_overdue_modal(page: Page, *, wait_timeout_ms: int) -> tuple[str, str | None]:
-    modal_selectors = ["#pnlOrderOverDuePopup", ".modal.in", ".modal.show"]
+async def _is_overdue_orders_popup_visible(page: Page) -> bool:
+    modal = page.locator(OVERDUE_ORDERS_POPUP_SELECTOR)
+    try:
+        return bool(await modal.count()) and await modal.first.is_visible()
+    except Exception:
+        return False
+
+
+async def _dismiss_generic_orders_modal(page: Page, *, wait_timeout_ms: int) -> tuple[str, str | None]:
+    """Best-effort dismissal for generic modals only.
+
+    The overdue-orders popup is intentionally excluded because operators must
+    resolve it at the source; forcing through it causes noisy retries and
+    misleading navigation failures for the affected store/window.
+    """
+    modal_selectors = [".modal.in", ".modal.show"]
     close_selectors = [
-        "#pnlOrderOverDuePopup button.close",
-        "#pnlOrderOverDuePopup button[data-dismiss='modal']",
-        "#pnlOrderOverDuePopup .modal-footer button",
         ".modal.in button.close",
         ".modal.in button[data-dismiss='modal']",
         ".modal.in .modal-footer button",
+        ".modal.show button.close",
+        ".modal.show button[data-dismiss='modal']",
+        ".modal.show .modal-footer button",
     ]
 
     active_selector: str | None = None
@@ -3820,7 +3853,7 @@ async def _navigate_to_orders_container(
     capture_left_nav: bool = False,
     nav_snapshot_context: str | None = None,
     sales_only_mode: bool = False,
-) -> bool:
+) -> OrdersNavigationResult:
     target_pattern = re.compile(r"/Reports/OrderReport", re.IGNORECASE)
     snapshot_context = nav_snapshot_context or "orders_entry"
 
@@ -3866,26 +3899,48 @@ async def _navigate_to_orders_container(
         except Exception:
             return False, "container_not_visible"
 
-    modal_log_emitted = False
+    popup_skip_logged = False
+    generic_modal_log_emitted = False
 
-    async def _handle_overdue_modal() -> tuple[str, str | None]:
-        nonlocal modal_log_emitted
-        modal_status, modal_selector = await _dismiss_overdue_modal(
+    async def _overdue_popup_skip_result() -> OrdersNavigationResult | None:
+        nonlocal popup_skip_logged
+        if not await _is_overdue_orders_popup_visible(page):
+            return None
+        if not popup_skip_logged:
+            log_event(
+                logger=logger,
+                phase="orders",
+                status="warning",
+                message=ORDERS_OVERDUE_POPUP_BLOCKED_MESSAGE,
+                store_code=store.store_code,
+                modal_selector=OVERDUE_ORDERS_POPUP_SELECTOR,
+                reason=ORDERS_OVERDUE_POPUP_BLOCKED_REASON,
+            )
+            popup_skip_logged = True
+        return OrdersNavigationResult(
+            ready=False,
+            reason=ORDERS_OVERDUE_POPUP_BLOCKED_REASON,
+            modal_selector=OVERDUE_ORDERS_POPUP_SELECTOR,
+        )
+
+    async def _handle_generic_modal() -> tuple[str, str | None]:
+        nonlocal generic_modal_log_emitted
+        modal_status, modal_selector = await _dismiss_generic_orders_modal(
             page, wait_timeout_ms=min(nav_timeout_ms, 5_000)
         )
-        if modal_status != "absent" and not modal_log_emitted:
+        if modal_status != "absent" and not generic_modal_log_emitted:
             log_event(
                 logger=logger,
                 phase="orders",
                 status="warning" if modal_status == "blocking" else "info",
-                message="Overdue modal dismissed before navigation"
+                message="Generic modal dismissed before navigation"
                 if modal_status == "dismissed"
-                else "Overdue modal blocking navigation",
+                else "Generic modal blocking navigation",
                 store_code=store.store_code,
                 modal_status=modal_status,
                 modal_selector=modal_selector,
             )
-            modal_log_emitted = True
+            generic_modal_log_emitted = True
         return modal_status, modal_selector
 
     if target_pattern.search(page.url or ""):
@@ -3897,7 +3952,7 @@ async def _navigate_to_orders_container(
             final_url=page.url,
         )
         await _log_left_nav(f"{snapshot_context}:already_loaded")
-        return True
+        return OrdersNavigationResult(ready=True)
 
     async def _ensure_nav_root_ready() -> bool:
         nav_root = page.locator("ul.nav.nav-sidebar")
@@ -3922,9 +3977,10 @@ async def _navigate_to_orders_container(
         initial_probe_window = asyncio.get_event_loop().time() + min(nav_timeout_ms / 1000, 3)
 
         while asyncio.get_event_loop().time() < deadline:
-            # The overdue popup can be present before the left navigation is usable.
-            # Clear it during the entrypoint probe as well as immediately before clicks.
-            await _handle_overdue_modal()
+            popup_skip = await _overdue_popup_skip_result()
+            if popup_skip is not None:
+                return False, ORDERS_OVERDUE_POPUP_BLOCKED_REASON, nav_root_seen
+            await _handle_generic_modal()
             try:
                 nav_root_seen = nav_root_seen or await page.locator("ul.nav.nav-sidebar").first.is_visible()
             except Exception:
@@ -3944,9 +4000,15 @@ async def _navigate_to_orders_container(
                 and asyncio.get_event_loop().time() > initial_probe_window
             ):
                 try:
-                    await _handle_overdue_modal()
+                    popup_skip = await _overdue_popup_skip_result()
+                    if popup_skip is not None:
+                        return False, ORDERS_OVERDUE_POPUP_BLOCKED_REASON, nav_root_seen
+                    await _handle_generic_modal()
                     await page.reload(wait_until="domcontentloaded", timeout=min(nav_timeout_ms, 5_000))
-                    await _handle_overdue_modal()
+                    popup_skip = await _overdue_popup_skip_result()
+                    if popup_skip is not None:
+                        return False, ORDERS_OVERDUE_POPUP_BLOCKED_REASON, nav_root_seen
+                    await _handle_generic_modal()
                 except Exception:
                     pass
                 continue
@@ -3969,6 +4031,12 @@ async def _navigate_to_orders_container(
 
     nav_ready, initial_locator_label, nav_root_seen = await _await_initial_nav_entrypoint()
     if not nav_ready:
+        if initial_locator_label == ORDERS_OVERDUE_POPUP_BLOCKED_REASON:
+            return OrdersNavigationResult(
+                ready=False,
+                reason=ORDERS_OVERDUE_POPUP_BLOCKED_REASON,
+                modal_selector=OVERDUE_ORDERS_POPUP_SELECTOR,
+            )
         page_title = await _safe_page_title(page)
         log_event(
             logger=logger,
@@ -3984,7 +4052,7 @@ async def _navigate_to_orders_container(
             page_title=page_title,
             step=snapshot_context,
         )
-        return False
+        return OrdersNavigationResult(ready=False, reason="navigation_not_ready")
 
     if not nav_root_seen:
         log_event(
@@ -4037,28 +4105,15 @@ async def _navigate_to_orders_container(
             await asyncio.sleep(1)
             continue
 
-        overlay_checks = 0
-        modal_status, modal_selector = await _handle_overdue_modal()
-        while modal_status == "blocking" and overlay_checks < 2:
-            if not attempt_diagnostic_logged:
-                log_event(
-                    logger=logger,
-                    phase="orders",
-                    status="warning",
-                    message="Overlay blocking Orders click; retrying",
-                    store_code=store.store_code,
-                    modal_selector=modal_selector,
-                    attempt=attempt,
-                )
-                attempt_diagnostic_logged = True
-            overlay_checks += 1
-            await asyncio.sleep(1)
-            modal_status, modal_selector = await _handle_overdue_modal()
+        popup_skip = await _overdue_popup_skip_result()
+        if popup_skip is not None:
+            return popup_skip
 
+        modal_status, modal_selector = await _handle_generic_modal()
         if modal_status == "blocking":
             attempt_record.update(
                 {
-                    "reason": "modal_blocking",
+                    "reason": "generic_modal_blocking",
                     "modal_selector": modal_selector,
                 }
             )
@@ -4117,7 +4172,10 @@ async def _navigate_to_orders_container(
             attempts.append(attempt_record)
             appended_attempt = True
             if attempt < max_attempts:
-                await _handle_overdue_modal()
+                popup_skip = await _overdue_popup_skip_result()
+                if popup_skip is not None:
+                    return popup_skip
+                await _handle_generic_modal()
                 await asyncio.sleep(1)
                 continue
 
@@ -4135,7 +4193,7 @@ async def _navigate_to_orders_container(
                 locator_strategy=locator_label,
                 attempt=attempt,
             )
-            return True
+            return OrdersNavigationResult(ready=True)
 
         await asyncio.sleep(1)
 
@@ -4153,7 +4211,7 @@ async def _navigate_to_orders_container(
         nav_selector=nav_selector,
         attempts=attempts,
     )
-    return False
+    return OrdersNavigationResult(ready=False, reason="navigation_failed_after_retries")
 
 
 def _build_sales_report_url(store: TdStore, current_url: str | None = None) -> str | None:
@@ -4426,21 +4484,23 @@ async def _navigate_to_sales_report(
             retry_status=retry_label,
             nav_selector=nav_selector,
         )
-        ready = await _navigate_to_orders_container(
-            page,
-            store=store,
-            logger=logger,
-            nav_selector=nav_selector,
-            nav_timeout_ms=nav_timeout_ms,
-            capture_left_nav=True,
-            nav_snapshot_context=f"sales_left_nav:{retry_label}",
-            sales_only_mode=sales_only_mode,
+        navigation_result = _coerce_orders_navigation_result(
+            await _navigate_to_orders_container(
+                page,
+                store=store,
+                logger=logger,
+                nav_selector=nav_selector,
+                nav_timeout_ms=nav_timeout_ms,
+                capture_left_nav=True,
+                nav_snapshot_context=f"sales_left_nav:{retry_label}",
+                sales_only_mode=sales_only_mode,
+            )
         )
         transitions.append({"label": "after_orders_nav", "url": page.url or ""})
-        if ready:
+        if navigation_result.ready:
             return True, page.url or "", transitions, "ok"
 
-        return False, page.url or "", transitions, "orders_not_ready"
+        return False, page.url or "", transitions, navigation_result.reason or "orders_not_ready"
 
     async def _locate_sales_left_nav() -> tuple[Locator | None, str | None, list[dict[str, Any]], bool]:
         def _normalize_label(value: str | None) -> str:
@@ -7812,17 +7872,44 @@ async def _run_store_discovery(
         else:
             iframe_locator: FrameLocator | None = None
             iframe_src: str | None = None
-            container_ready = await _navigate_to_orders_container(
-                page,
-                store=store,
-                logger=store_logger,
-                nav_selector=nav_selector,
-                nav_timeout_ms=nav_timeout_ms,
-                capture_left_nav=True,
-                nav_snapshot_context="orders_iframe",
-                sales_only_mode=sales_only_mode,
+            navigation_result = _coerce_orders_navigation_result(
+                await _navigate_to_orders_container(
+                    page,
+                    store=store,
+                    logger=store_logger,
+                    nav_selector=nav_selector,
+                    nav_timeout_ms=nav_timeout_ms,
+                    capture_left_nav=True,
+                    nav_snapshot_context="orders_iframe",
+                    sales_only_mode=sales_only_mode,
+                )
             )
-            if not container_ready:
+            if not navigation_result.ready:
+                if navigation_result.reason == ORDERS_OVERDUE_POPUP_BLOCKED_REASON:
+                    orders_report = StoreReport(
+                        status="skipped",
+                        message=ORDERS_OVERDUE_POPUP_BLOCKED_MESSAGE,
+                        source_mode=source_mode,
+                        warnings=[ORDERS_OVERDUE_POPUP_BLOCKED_REASON],
+                    )
+                    sales_report = StoreReport(
+                        status="skipped",
+                        message=ORDERS_OVERDUE_POPUP_BLOCKED_MESSAGE,
+                        source_mode=source_mode,
+                        warnings=[ORDERS_OVERDUE_POPUP_BLOCKED_REASON],
+                    )
+                    outcome = StoreOutcome(
+                        status="warning",
+                        message=ORDERS_OVERDUE_POPUP_BLOCKED_MESSAGE,
+                        ingest_status="skipped",
+                        failure_stage=ORDERS_OVERDUE_POPUP_BLOCKED_REASON,
+                        observability_warnings=[ORDERS_OVERDUE_POPUP_BLOCKED_REASON],
+                        final_url=page.url,
+                        verification_seen=verification_seen,
+                        storage_state=stored_state_path,
+                    )
+                    return
+
                 if source_mode == "api_only":
                     try:
                         orders_report, sales_report, api_fetch_result, request_metadata = await _execute_api_primary_ingestion(
