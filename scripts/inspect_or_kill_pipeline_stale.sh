@@ -12,15 +12,74 @@ TMP_DIR="$REPO_ROOT/tmp"
 OBSOLETE_GLOBAL_LOCK_DIR="$TMP_DIR/cron_heavy_pipelines.lock"
 
 usage() {
-  echo "Usage: $0 {td-leads|orders-reports}" >&2
+  cat <<EOF
+Usage: $0 [--force] {td-leads|orders-reports}
+
+Inspect or recover a stale pipeline lock. Default mode is dry-run: the script
+prints metadata and process snapshots without terminating anything. Use --force
+(or FORCE=1) only when you intend to terminate the recorded process group.
+
+Valid pipelines:
+  td-leads        Inspect/recover tmp/cron_run_td_leads_sync.lock
+  orders-reports  Inspect/recover tmp/cron_run_orders_and_reports.lock
+                  Alias accepted: orders-report
+
+Options:
+  -h, --help      Show this help message
+  --force         Terminate the process group with TERM, then KILL if needed,
+                  and remove the lock only after the group is gone
+
+Examples:
+  $0 orders-reports
+  FORCE=1 $0 orders-reports
+  $0 orders-reports --force
+  $0 orders-reports FORCE=1
+  $0 orders-report
+EOF
 }
 
-if [ "$#" -ne 1 ]; then
-  usage
+PIPELINE_NAME=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --force)
+      FORCE="1"
+      ;;
+    FORCE=1)
+      FORCE="1"
+      ;;
+    --*)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      if [ -n "$PIPELINE_NAME" ]; then
+        echo "Unexpected argument: $1" >&2
+        usage >&2
+        exit 2
+      fi
+      PIPELINE_NAME="$1"
+      ;;
+  esac
+  shift
+done
+
+if [ -z "$PIPELINE_NAME" ]; then
+  echo "Missing pipeline name." >&2
+  usage >&2
   exit 2
 fi
 
-PIPELINE_NAME="$1"
+case "$PIPELINE_NAME" in
+  orders-report)
+    PIPELINE_NAME="orders-reports"
+    ;;
+esac
+
 case "$PIPELINE_NAME" in
   td-leads)
     PIPELINE_LOCK_DIR="$TMP_DIR/cron_run_td_leads_sync.lock"
@@ -30,7 +89,7 @@ case "$PIPELINE_NAME" in
     ;;
   *)
     echo "Unknown pipeline: $PIPELINE_NAME" >&2
-    usage
+    usage >&2
     exit 2
     ;;
 esac
