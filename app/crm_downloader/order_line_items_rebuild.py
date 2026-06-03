@@ -996,10 +996,16 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional store codes; defaults to all sync_orders_flag stores for the selected source(s)",
     )
-    parser.add_argument("--start-date", type=_parse_date, default=None)
-    parser.add_argument("--end-date", type=_parse_date, required=True)
+    parser.add_argument(
+        "--start-date", "--from-date", dest="start_date", type=_parse_date, default=None
+    )
+    parser.add_argument(
+        "--end-date", "--to-date", dest="end_date", type=_parse_date, required=True
+    )
     parser.add_argument(
         "--window-size",
+        "--window-days",
+        dest="window_size",
         type=int,
         default=None,
         help="Requested CRM source window size in days; source fetches are capped at 30 days",
