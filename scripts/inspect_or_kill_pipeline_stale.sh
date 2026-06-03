@@ -13,11 +13,12 @@ OBSOLETE_GLOBAL_LOCK_DIR="$TMP_DIR/cron_heavy_pipelines.lock"
 
 usage() {
   cat <<EOF
-Usage: $0 [--force] {td-leads|orders-reports}
+Usage: $0 [--force] {td-leads|orders-reports|orders-report} [FORCE=1]
 
 Inspect or recover a stale pipeline lock. Default mode is dry-run: the script
-prints metadata and process snapshots without terminating anything. Use --force
-(or FORCE=1) only when you intend to terminate the recorded process group.
+prints metadata and process snapshots without terminating anything. Use --force,
+environment FORCE=1, or trailing FORCE=1 only when you intend to terminate
+the recorded process group.
 
 Valid pipelines:
   td-leads        Inspect/recover tmp/cron_run_td_leads_sync.lock
@@ -30,15 +31,34 @@ Options:
                   and remove the lock only after the group is gone
 
 Examples:
+  $0 td-leads
   $0 orders-reports
-  FORCE=1 $0 orders-reports
-  $0 orders-reports --force
-  $0 orders-reports FORCE=1
   $0 orders-report
+  $0 --force orders-reports
+  $0 orders-reports --force
+  FORCE=1 $0 orders-reports
+  $0 orders-reports FORCE=1
 EOF
 }
 
 PIPELINE_NAME=""
+print_pipeline_correction() {
+  local typed_name="$1"
+  local corrected_name="$typed_name"
+
+  case "$corrected_name" in
+    orders-report)
+      corrected_name="orders-reports"
+      ;;
+  esac
+
+  case "$corrected_name" in
+    td-leads|orders-reports)
+      echo "Use: ./scripts/inspect_or_kill_pipeline_stale.sh $corrected_name" >&2
+      ;;
+  esac
+}
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -h|--help)
@@ -56,6 +76,12 @@ while [ "$#" -gt 0 ]; do
       usage >&2
       exit 2
       ;;
+    Pipeline=*|PIPELINE=*|pipeline=*)
+      echo "Do not pass the pipeline as an environment-style assignment: $1" >&2
+      print_pipeline_correction "${1#*=}"
+      usage >&2
+      exit 2
+      ;;
     *)
       if [ -n "$PIPELINE_NAME" ]; then
         echo "Unexpected argument: $1" >&2
@@ -69,7 +95,18 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ -z "$PIPELINE_NAME" ]; then
-  echo "Missing pipeline name." >&2
+  if [ -n "${Pipeline:-}" ]; then
+    echo "Do not pass the pipeline as an environment variable: Pipeline=$Pipeline" >&2
+    print_pipeline_correction "$Pipeline"
+  elif [ -n "${PIPELINE:-}" ]; then
+    echo "Do not pass the pipeline as an environment variable: PIPELINE=$PIPELINE" >&2
+    print_pipeline_correction "$PIPELINE"
+  elif [ -n "${pipeline:-}" ]; then
+    echo "Do not pass the pipeline as an environment variable: pipeline=$pipeline" >&2
+    print_pipeline_correction "$pipeline"
+  else
+    echo "Missing pipeline name." >&2
+  fi
   usage >&2
   exit 2
 fi
@@ -270,7 +307,11 @@ if [ "$DRY_RUN" = "1" ] && [ "$FORCE" = "1" ]; then
   echo "FORCE=1 overrides dry run and allows termination."
 fi
 
-inspect_or_kill_process_group "$PIPELINE_LOCK_DIR"
+if [ -d "$PIPELINE_LOCK_DIR" ]; then
+  inspect_or_kill_process_group "$PIPELINE_LOCK_DIR"
+else
+  echo "No active/stale lock found for $PIPELINE_NAME at ${PIPELINE_LOCK_DIR#$REPO_ROOT/}."
+fi
 
 # Rollout cleanup only: wrappers no longer create this directory. Keep this
 # explicit path until deployed hosts have removed any legacy global lock.
