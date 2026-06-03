@@ -77,6 +77,36 @@ def _write_lock(
         (lock_dir / name).write_text(f"{value}\n", encoding="utf-8")
 
 
+def _write_profiler_store_lock(
+    lock_dir: Path,
+    *,
+    pid: int | str,
+    pgid: int | str,
+    command: str,
+    store_code: str = "A817",
+    run_id: str = "profiler-run",
+    started_at: str = "2026-05-31T12:00:00+00:00",
+    started_at_epoch: int | str = 1780228800,
+    host: str = "test-host",
+    cwd: str | None = None,
+) -> None:
+    lock_dir.mkdir(parents=True)
+    metadata = {
+        "pid": pid,
+        "pgid": pgid,
+        "started_at": started_at,
+        "started_at_epoch": started_at_epoch,
+        "host": host,
+        "cwd": cwd or str(lock_dir.parent.parent),
+        "command": command,
+        "run_id": run_id,
+        "store_code": store_code,
+    }
+    for name, value in metadata.items():
+        (lock_dir / name).write_text(f"{value}\n", encoding="utf-8")
+    (lock_dir / "lock").write_text("", encoding="utf-8")
+
+
 def _run_recovery(
     recovery_script: Path,
     pipeline: str | None = None,
@@ -121,6 +151,7 @@ def test_help_describes_pipelines_dry_run_force_and_examples(tmp_path: Path) -> 
     assert "orders-reports FORCE=1" in result.stdout
     assert "--force orders-reports" in result.stdout
     assert "orders-report" in result.stdout
+    assert "profiler-store-locks" in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -502,6 +533,92 @@ def test_force_removes_obsolete_global_lock_after_recorded_group_is_gone(
     assert result.returncode == 0, result.stderr + result.stdout
     assert f"Obsolete global lock rollout cleanup: {obsolete_lock}" in result.stdout
     assert not obsolete_lock.exists()
+
+
+def test_profiler_store_lock_mode_inspects_metadata_and_owner_liveness(
+    tmp_path: Path,
+) -> None:
+    recovery_script, _, scripts_dir = _prepare_scripts(tmp_path)
+    process = _start_repo_process(scripts_dir)
+    profiler_lock_root = tmp_path / "app" / "crm_downloader" / "data" / "orders_sync_run_profiler_locks"
+    lock_dir = profiler_lock_root / "A817.lock"
+    try:
+        _write_profiler_store_lock(
+            lock_dir,
+            pid=process.pid,
+            pgid=process.pid,
+            command=str(process.args[0]),
+            store_code="A817",
+            run_id="profiler-run-123",
+            cwd=str(tmp_path),
+        )
+
+        result = _run_recovery(recovery_script, "profiler-store-locks")
+
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "Pipeline=profiler-store-locks DRY_RUN=1 FORCE=0" in result.stdout
+        assert f"Profiler store lock: {lock_dir}" in result.stdout
+        assert "  store_code: A817" in result.stdout
+        assert "  run_id: profiler-run-123" in result.stdout
+        assert "  owner_pid_alive: true" in result.stdout
+        assert "  owner_pgid_alive: true" in result.stdout
+        assert f"Store-lock snapshot for PGID {process.pid}:" in result.stdout
+        assert lock_dir.is_dir()
+        assert process.poll() is None
+    finally:
+        _stop_process(process)
+
+
+def test_orders_reports_inspection_also_surfaces_profiler_store_locks(
+    tmp_path: Path,
+) -> None:
+    recovery_script, _, scripts_dir = _prepare_scripts(tmp_path)
+    process = _start_repo_process(scripts_dir)
+    profiler_lock_root = tmp_path / "app" / "crm_downloader" / "data" / "orders_sync_run_profiler_locks"
+    lock_dir = profiler_lock_root / "A817.lock"
+    try:
+        _write_profiler_store_lock(
+            lock_dir, pid=process.pid, pgid=process.pid, command=str(process.args[0])
+        )
+
+        result = _run_recovery(recovery_script, "orders-reports")
+
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert "No active/stale lock found for orders-reports" in result.stdout
+        assert f"Profiler store lock: {lock_dir}" in result.stdout
+    finally:
+        _stop_process(process)
+
+
+def test_profiler_store_lock_mode_reports_missing_and_malformed_metadata_safely(
+    tmp_path: Path,
+) -> None:
+    recovery_script, _, scripts_dir = _prepare_scripts(tmp_path)
+    process = _start_repo_process(scripts_dir)
+    profiler_lock_root = tmp_path / "app" / "crm_downloader" / "data" / "orders_sync_run_profiler_locks"
+    missing_lock = profiler_lock_root / "MISSING.lock"
+    malformed_lock = profiler_lock_root / "MALFORMED.lock"
+    try:
+        _write_profiler_store_lock(
+            missing_lock, pid=process.pid, pgid=process.pid, command=str(process.args[0])
+        )
+        (missing_lock / "host").unlink()
+        _write_profiler_store_lock(
+            malformed_lock, pid="not-a-pid", pgid=process.pid, command=str(process.args[0])
+        )
+
+        result = _run_recovery(recovery_script, "profiler-store-locks", FORCE="1")
+
+        assert result.returncode == 0, result.stderr + result.stdout
+        assert f"host: <missing metadata file {missing_lock / 'host'}>" in result.stdout
+        assert "owner_pid_alive: unknown (non-numeric PID [not-a-pid])" in result.stdout
+        assert "metadata_status: invalid; no termination/removal attempted for this lock." in result.stdout
+        assert "Sending TERM" not in result.stdout
+        assert process.poll() is None
+        assert missing_lock.is_dir()
+        assert malformed_lock.is_dir()
+    finally:
+        _stop_process(process)
 
 
 def test_legacy_orders_reports_wrapper_forwards_to_general_helper(

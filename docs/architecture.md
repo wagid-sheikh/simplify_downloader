@@ -215,6 +215,7 @@ defaults to dry-run inspection:
 ./scripts/inspect_or_kill_pipeline_stale.sh td-leads
 ./scripts/inspect_or_kill_pipeline_stale.sh orders-reports
 ./scripts/inspect_or_kill_pipeline_stale.sh orders-report  # accepted alias
+./scripts/inspect_or_kill_pipeline_stale.sh profiler-store-locks
 ```
 
 Review the printed process-group snapshots and confirm that they belong to this
@@ -236,8 +237,13 @@ directory-based lock metadata
 (`pid`, `pgid`, `command`, `started_at`, `host`, and `cwd`), refuses malformed or
 unrelated ownership, verifies PID-to-PGID membership, prints snapshots before
 and after inspection, and removes a lock directory only after its process group
-is gone. It also handles the retired `tmp/cron_heavy_pipelines.lock` as an
-explicit rollout-cleanup case. The legacy
+is gone. The same helper also exposes the opt-in/debug order-sync profiler
+per-store locks through `profiler-store-locks` and includes those locks when
+operators inspect `orders-reports`; each
+`app/crm_downloader/data/orders_sync_run_profiler_locks/<store>.lock/` directory
+prints `pid`, `pgid`, `started_at`, `started_at_epoch`, `host`, `cwd`, `command`,
+`run_id`, `store_code`, and PID/PGID liveness. It also handles the retired
+`tmp/cron_heavy_pipelines.lock` as an explicit rollout-cleanup case. The legacy
 `scripts/kill_orders_and_reports_stale.sh` command remains an orders/reports-only
 forwarding shortcut during rollout. It prints the explicit helper commands for both
 `td-leads` and `orders-reports` before forwarding to `orders-reports`; it does not

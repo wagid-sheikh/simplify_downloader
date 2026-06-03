@@ -8,6 +8,9 @@ import json
 import math
 import os
 import random
+import shlex
+import socket
+import sys
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -57,12 +60,17 @@ FAIL_ON_FAILED_STATUS_ENV = "ORDERS_SYNC_PROFILER_FAIL_ON_FAILED_STATUS"
 TD_GARMENT_INCOMPLETE_COMPLETENESS = "incomplete"
 TD_GARMENT_INCOMPLETE_STATUS = "success_with_warnings"
 TD_GARMENT_DATA_INCOMPLETE_WARNING_PREFIX = "TD_GARMENT_DATA_INCOMPLETE"
+PROFILER_STORE_LOCK_ORCHESTRATION_FAILURE_REASON = "profiler_store_lock_timeout"
+PROFILER_STORE_LOCK_ORCHESTRATION_FAILURE_MESSAGE = (
+    "All stores failed before window planning due to profiler store locks"
+)
 CRON_POOL_SIZE_ENV = "ORDERS_SYNC_PROFILER_DB_POOL_SIZE"
 CRON_MAX_OVERFLOW_ENV = "ORDERS_SYNC_PROFILER_DB_MAX_OVERFLOW"
 PREFLIGHT_ENV = "ORDERS_SYNC_PROFILER_DB_PREFLIGHT"
 MAX_CONNECTION_RETRIES_ENV = "ORDERS_SYNC_PROFILER_DB_RETRIES"
 SHUTDOWN_TIMEOUT_ENV = "ORDERS_SYNC_PROFILER_SHUTDOWN_TIMEOUT_SECONDS"
 DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+STORE_LOCKS_ENABLED_ENV = "ORDERS_SYNC_PROFILER_ENABLE_STORE_LOCKS"
 STORE_LOCK_TIMEOUT_ENV = "ORDERS_SYNC_PROFILER_STORE_LOCK_TIMEOUT_SECONDS"
 WINDOW_STATE_TIMEOUT_ENV = "ORDERS_SYNC_PROFILER_WINDOW_STATE_TIMEOUT_SECONDS"
 DEFAULT_STORE_LOCK_TIMEOUT_SECONDS = 30.0
@@ -174,9 +182,131 @@ class WindowStateTimeoutError(RuntimeError):
     """Raised when loading the last successful window state exceeds the bound."""
 
 
+STORE_LOCK_METADATA_FILES = (
+    "pid",
+    "pgid",
+    "started_at",
+    "started_at_epoch",
+    "host",
+    "cwd",
+    "command",
+    "run_id",
+    "store_code",
+)
+STORE_LOCK_HANDLE_FILE = "lock"
+
+
 def _store_lock_path(store_code: str) -> Any:
     lock_dir = default_download_dir() / "orders_sync_run_profiler_locks"
     return lock_dir / f"{store_code}.lock"
+
+
+def _store_lock_handle_path(store_code: str) -> Any:
+    return _store_lock_path(store_code) / STORE_LOCK_HANDLE_FILE
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _pgid_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _read_store_lock_metadata(lock_path: Any) -> dict[str, Any]:
+    metadata: dict[str, str] = {}
+    errors: list[str] = []
+    for name in STORE_LOCK_METADATA_FILES:
+        metadata_file = lock_path / name
+        try:
+            value = metadata_file.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            errors.append(f"missing:{name}")
+            continue
+        except OSError as exc:
+            errors.append(f"unreadable:{name}:{exc}")
+            continue
+        value = value.rstrip("\n")
+        if not value or "\n" in value:
+            errors.append(f"malformed:{name}")
+            continue
+        metadata[name] = value
+
+    owner_pid_alive: bool | None = None
+    owner_pgid_alive: bool | None = None
+    pid_value = metadata.get("pid")
+    pgid_value = metadata.get("pgid")
+    if pid_value is not None:
+        try:
+            owner_pid_alive = _process_alive(int(pid_value))
+        except ValueError:
+            errors.append("malformed:pid")
+    if pgid_value is not None:
+        try:
+            owner_pgid_alive = _pgid_alive(int(pgid_value))
+        except ValueError:
+            errors.append("malformed:pgid")
+
+    return {
+        "owner_metadata": metadata,
+        "owner_metadata_errors": errors,
+        "owner_pid_alive": owner_pid_alive,
+        "owner_pgid_alive": owner_pgid_alive,
+    }
+
+
+def _build_store_lock_metadata(*, run_id: str | None, store_code: str) -> dict[str, str]:
+    now = datetime.now(timezone.utc)
+    command = shlex.join([sys.executable, *sys.argv])
+    return {
+        "pid": str(os.getpid()),
+        "pgid": str(os.getpgid(0)),
+        "started_at": now.isoformat(),
+        "started_at_epoch": str(now.timestamp()),
+        "host": socket.gethostname(),
+        "cwd": os.getcwd(),
+        "command": command,
+        "run_id": run_id or "unknown",
+        "store_code": store_code,
+    }
+
+
+def _write_store_lock_metadata(lock_path: Any, *, run_id: str | None, store_code: str) -> None:
+    metadata = _build_store_lock_metadata(run_id=run_id, store_code=store_code)
+    for name, value in metadata.items():
+        metadata_file = lock_path / name
+        temp_file = lock_path / f".{name}.tmp"
+        temp_file.write_text(f"{value}\n", encoding="utf-8")
+        os.replace(temp_file, metadata_file)
+
+
+def _cleanup_store_lock_metadata(lock_path: Any) -> None:
+    for name in (*STORE_LOCK_METADATA_FILES, STORE_LOCK_HANDLE_FILE):
+        try:
+            (lock_path / name).unlink()
+        except FileNotFoundError:
+            pass
+    for temp_file in lock_path.glob(".*.tmp"):
+        try:
+            temp_file.unlink()
+        except FileNotFoundError:
+            pass
+    try:
+        lock_path.rmdir()
+    except OSError:
+        pass
 
 
 def _resolve_positive_timeout_seconds(env_name: str, default: float) -> float:
@@ -193,6 +323,8 @@ async def store_lock(
 ) -> Iterable[None]:
     lock_path = _store_lock_path(store_code)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.mkdir(exist_ok=True)
+    lock_handle_path = _store_lock_handle_path(store_code)
     resolved_timeout = (
         _resolve_positive_timeout_seconds(STORE_LOCK_TIMEOUT_ENV, DEFAULT_STORE_LOCK_TIMEOUT_SECONDS)
         if timeout_seconds is None
@@ -210,21 +342,43 @@ async def store_lock(
             timeout_seconds=resolved_timeout,
         )
 
-    handle = open(lock_path, "w", encoding="utf-8")
+    handle: Any | None = None
     start_monotonic = time.monotonic()
     acquired = False
     try:
         while True:
+            lock_path.mkdir(exist_ok=True)
+            handle = open(lock_handle_path, "w", encoding="utf-8")
             try:
                 await asyncio.to_thread(fcntl.flock, handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try:
+                    handle_stat = os.fstat(handle.fileno())
+                    path_stat = lock_handle_path.stat()
+                except FileNotFoundError:
+                    await asyncio.to_thread(fcntl.flock, handle, fcntl.LOCK_UN)
+                    handle.close()
+                    handle = None
+                    await asyncio.sleep(STORE_LOCK_RETRY_INTERVAL_SECONDS)
+                    continue
+                if (handle_stat.st_dev, handle_stat.st_ino) != (path_stat.st_dev, path_stat.st_ino):
+                    # A previous owner cleaned up the directory between open() and flock(); retry on the live path.
+                    await asyncio.to_thread(fcntl.flock, handle, fcntl.LOCK_UN)
+                    handle.close()
+                    handle = None
+                    await asyncio.sleep(STORE_LOCK_RETRY_INTERVAL_SECONDS)
+                    continue
                 acquired = True
                 break
             except OSError as exc:
+                if handle is not None:
+                    handle.close()
+                    handle = None
                 if exc.errno not in {errno.EACCES, errno.EAGAIN}:
                     raise
                 elapsed = time.monotonic() - start_monotonic
                 if elapsed >= resolved_timeout:
                     elapsed_ms = int(elapsed * 1000)
+                    owner_snapshot = _read_store_lock_metadata(lock_path)
                     if logger is not None:
                         log_event(
                             logger=logger,
@@ -237,11 +391,13 @@ async def store_lock(
                             timeout_seconds=resolved_timeout,
                             elapsed_ms=elapsed_ms,
                             failure_reason="store_lock_timeout",
+                            **owner_snapshot,
                         )
                     raise StoreLockTimeoutError(
                         store_code=store_code, lock_path=str(lock_path), timeout_seconds=resolved_timeout
                     )
                 await asyncio.sleep(min(STORE_LOCK_RETRY_INTERVAL_SECONDS, resolved_timeout - elapsed))
+        _write_store_lock_metadata(lock_path, run_id=run_id, store_code=store_code)
         elapsed_ms = int((time.monotonic() - start_monotonic) * 1000)
         if logger is not None:
             log_event(
@@ -257,10 +413,12 @@ async def store_lock(
         yield
     finally:
         try:
-            if acquired:
+            if acquired and handle is not None:
+                _cleanup_store_lock_metadata(lock_path)
                 await asyncio.to_thread(fcntl.flock, handle, fcntl.LOCK_UN)
         finally:
-            handle.close()
+            if handle is not None:
+                handle.close()
 
 
 def _coerce_dict(raw: Any) -> Mapping[str, Any]:
@@ -1349,6 +1507,7 @@ def _failed_store_result(
     pipeline_name: str,
     failure_reason: str,
     error_message: str,
+    lock_path: str | None = None,
 ) -> StoreRunResult:
     status_counts = _init_status_counts()
     status_counts["failed"] = 1
@@ -1371,6 +1530,7 @@ def _failed_store_result(
                 "status_note": failure_reason,
                 "failure_reason": failure_reason,
                 "error_message": error_message,
+                "lock_path": lock_path,
                 "attempts": [],
             }
         ],
@@ -1566,6 +1726,53 @@ def _profiler_failed_window_entries(window_audit: Iterable[Mapping[str, Any]] | 
     return entries
 
 
+def _store_result_failure_reasons(result: StoreRunResult) -> set[str]:
+    reasons: set[str] = set()
+    for window in result.window_audit:
+        reason = str(window.get("failure_reason") or "").strip()
+        if reason:
+            reasons.add(reason)
+    return reasons
+
+
+def _all_store_lock_timeout_orchestration_failure(
+    results: Sequence[StoreRunResult],
+) -> dict[str, Any] | None:
+    if not results:
+        return None
+    if any(result.window_count != 0 for result in results):
+        return None
+    failed_results = [
+        result
+        for result in results
+        if _normalize_rollup_status(result.overall_status) == "failed"
+    ]
+    if len(failed_results) != len(results):
+        return None
+    if any(
+        _store_result_failure_reasons(result) != {"store_lock_timeout"}
+        for result in failed_results
+    ):
+        return None
+
+    failed_store_codes = sorted(result.store_code for result in failed_results)
+    lock_paths = sorted(
+        {
+            str(window.get("lock_path"))
+            for result in failed_results
+            for window in result.window_audit
+            if window.get("lock_path")
+        }
+    )
+    return {
+        "failure_scope": "profiler_orchestrator",
+        "failure_reason": PROFILER_STORE_LOCK_ORCHESTRATION_FAILURE_REASON,
+        "message": PROFILER_STORE_LOCK_ORCHESTRATION_FAILURE_MESSAGE,
+        "failed_store_codes": failed_store_codes,
+        "lock_paths": lock_paths,
+    }
+
+
 def _build_profiler_summary_text(
     *,
     run_id: str,
@@ -1576,6 +1783,7 @@ def _build_profiler_summary_text(
     store_entries: Sequence[Mapping[str, Any]],
     window_summary: Mapping[str, Any],
     warnings: Sequence[str],
+    orchestration_failure: Mapping[str, Any] | None = None,
 ) -> str:
     total_seconds = max(0, int((finished_at - started_at).total_seconds()))
     hours = total_seconds // 3600
@@ -1595,8 +1803,23 @@ def _build_profiler_summary_text(
         ),
         f"Missing Windows: {window_summary.get('missing_windows', 0)}",
         "",
-        "Per Store Summary:",
     ]
+    if orchestration_failure:
+        failed_codes = (
+            ", ".join(orchestration_failure.get("failed_store_codes") or []) or "unknown"
+        )
+        lock_paths = ", ".join(orchestration_failure.get("lock_paths") or []) or "unknown"
+        lines.extend(
+            [
+                "ORCHESTRATION FAILURE:",
+                f"Reason: {orchestration_failure.get('message') or PROFILER_STORE_LOCK_ORCHESTRATION_FAILURE_MESSAGE}",
+                f"Failure Scope: {orchestration_failure.get('failure_scope') or 'profiler_orchestrator'}",
+                f"Failed Stores: {failed_codes}",
+                f"Lock Paths: {lock_paths}",
+                "",
+            ]
+        )
+    lines.append("Per Store Summary:")
     if not store_entries:
         lines.append("- (none)")
     for entry in store_entries:
@@ -1659,6 +1882,7 @@ def _build_profiler_notification_payload(
     warnings: Sequence[str],
     total_time_taken: str,
     row_facts: Mapping[str, Sequence[Mapping[str, Any]]],
+    orchestration_failure: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
@@ -1667,6 +1891,7 @@ def _build_profiler_notification_payload(
         "stores": list(store_entries),
         "window_summary": dict(window_summary),
         "warnings": list(warnings),
+        "orchestration_failure": dict(orchestration_failure or {}),
         "row_facts": dict(row_facts),
         "started_at": started_at.isoformat(),
         "finished_at": finished_at.isoformat(),
@@ -2244,9 +2469,34 @@ async def _process_store(
     overlap_days: int | None,
     from_date: date | None,
     to_date: date | None,
+    enable_store_locks: bool,
 ) -> StoreRunResult:
     try:
-        async with store_lock(store.store_code, logger=logger, run_id=run_id):
+        if enable_store_locks:
+            async with store_lock(store.store_code, logger=logger, run_id=run_id):
+                (
+                    overall_status,
+                    windows,
+                    _detail_lines,
+                    status_counts,
+                    window_audit,
+                    ingestion_totals,
+                    row_facts,
+                ) = await _run_store_windows(
+                    logger=logger,
+                    store=store,
+                    pipeline_name=pipeline_name,
+                    pipeline_id=pipeline_id,
+                    pipeline_fn=pipeline_fn,
+                    run_env=run_env,
+                    run_id=run_id,
+                    backfill_days=backfill_days,
+                    window_days=window_days,
+                    overlap_days=overlap_days,
+                    from_date=from_date,
+                    to_date=to_date,
+                )
+        else:
             (
                 overall_status,
                 windows,
@@ -2276,6 +2526,7 @@ async def _process_store(
             pipeline_name=pipeline_name,
             failure_reason="store_lock_timeout",
             error_message=str(exc),
+            lock_path=exc.lock_path,
         )
     return StoreRunResult(
         store_code=store.store_code,
@@ -2324,6 +2575,7 @@ async def main(
         )
         return
     pool_settings = _resolve_pool_settings()
+    enable_store_locks = _env_flag(STORE_LOCKS_ENABLED_ENV)
     log_event(
         logger=logger,
         phase="init",
@@ -2334,6 +2586,24 @@ async def main(
         db_pool_size=pool_settings.pool_size,
         db_pool_max_overflow=pool_settings.max_overflow,
     )
+    if enable_store_locks:
+        log_event(
+            logger=logger,
+            phase="init",
+            status="info",
+            message="Per-store profiler locks enabled",
+            run_id=resolved_run_id,
+            env_flag=STORE_LOCKS_ENABLED_ENV,
+        )
+    else:
+        log_event(
+            logger=logger,
+            phase="init",
+            status="info",
+            message="Per-store profiler locks disabled; using wrapper run lock",
+            run_id=resolved_run_id,
+            env_flag=STORE_LOCKS_ENABLED_ENV,
+        )
     if db_preflight:
         await _log_db_preflight(
             logger=logger, run_id=resolved_run_id, database_url=config.database_url, pool_settings=pool_settings
@@ -2410,6 +2680,7 @@ async def main(
                             overlap_days=overlap_days,
                             from_date=from_date,
                             to_date=to_date,
+                            enable_store_locks=enable_store_locks,
                         ),
                     )
                 finally:
@@ -2424,6 +2695,20 @@ async def main(
         ]
     )
     all_results = [result for group in group_results for result in group]
+    orchestration_failure = _all_store_lock_timeout_orchestration_failure(all_results)
+    if orchestration_failure:
+        log_event(
+            logger=logger,
+            phase="orchestrator",
+            status="error",
+            message=PROFILER_STORE_LOCK_ORCHESTRATION_FAILURE_MESSAGE,
+            run_id=resolved_run_id,
+            run_env=resolved_env,
+            failure_scope=orchestration_failure["failure_scope"],
+            failure_reason=orchestration_failure["failure_reason"],
+            failed_store_codes=orchestration_failure["failed_store_codes"],
+            lock_paths=orchestration_failure["lock_paths"],
+        )
     total_status_counts = _init_status_counts()
     pipeline_totals: dict[str, dict[str, Any]] = {}
     store_totals: dict[str, dict[str, Any]] = {}
@@ -2533,6 +2818,15 @@ async def main(
                 for window in result.window_audit
             )
     overall_status = _select_summary_overall_status(total_status_counts)
+    if orchestration_failure:
+        overall_status = "failed"
+        orchestration_warning = (
+            "PROFILER_ORCHESTRATION_FAILURE: "
+            f"{orchestration_failure['message']}; "
+            f"failed_stores={', '.join(orchestration_failure['failed_store_codes'])}; "
+            f"lock_paths={', '.join(orchestration_failure['lock_paths']) or 'unknown'}"
+        )
+        warning_messages.insert(0, orchestration_warning)
     warning_windows_total = int(total_status_counts.get("success_with_warnings", 0) or 0)
     if warning_windows_total > 0 and not any(
         entry.startswith("WINDOW_WARNINGS:") for entry in warning_messages
@@ -2585,6 +2879,7 @@ async def main(
         store_entries=store_entries,
         window_summary=window_summary,
         warnings=warning_messages,
+        orchestration_failure=orchestration_failure,
     )
     summary_record = {
         "pipeline_name": PIPELINE_NAME,
@@ -2597,6 +2892,11 @@ async def main(
         "overall_status": overall_status,
         "summary_text": summary_text,
         "phases_json": {
+            "orchestrator": {
+                "ok": 0 if orchestration_failure else 1,
+                "warning": 0,
+                "error": 1 if orchestration_failure else 0,
+            },
             "window": {
                 "ok": total_status_counts.get("success", 0)
                 + total_status_counts.get("skipped", 0),
@@ -2617,6 +2917,7 @@ async def main(
             "secondary_totals": secondary_totals,
             "row_facts": row_facts,
             "uc_warning_count": uc_warning_count_total,
+            "orchestration_failure": orchestration_failure,
             "notification_payload": _build_profiler_notification_payload(
                 run_id=resolved_run_id,
                 run_env=resolved_env,
@@ -2628,6 +2929,7 @@ async def main(
                 warnings=warning_messages,
                 total_time_taken=total_time_taken,
                 row_facts=row_facts,
+                orchestration_failure=orchestration_failure,
             ),
         },
     }

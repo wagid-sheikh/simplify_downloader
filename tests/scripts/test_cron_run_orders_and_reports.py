@@ -906,6 +906,83 @@ def test_cron_does_not_retry_deterministic_environment_or_cli_errors(
     assert "Script 1: orders_sync_run_profiler: attempt 2/3 starting" not in log_text
 
 
+def test_cron_skips_retries_for_profiler_store_lock_timeout(tmp_path: Path) -> None:
+    repo_root = tmp_path
+    scripts_dir = repo_root / "scripts"
+    logs_dir = repo_root / "logs"
+    tmp_dir = repo_root / "tmp"
+    scripts_dir.mkdir(parents=True)
+    logs_dir.mkdir()
+    tmp_dir.mkdir()
+
+    source_cron = Path("scripts/cron_run_orders_and_reports.sh").read_text(encoding="utf-8")
+    _write_executable(scripts_dir / "cron_run_orders_and_reports.sh", source_cron)
+    _write_successful_preflight(scripts_dir)
+    _write_executable(
+        scripts_dir / "orders_sync_run_profiler.sh",
+        """#!/usr/bin/env bash
+COUNT_FILE="${TMPDIR:-/tmp}/orders-call-count"
+count=0
+[[ -f "${COUNT_FILE}" ]] && count=$(cat "${COUNT_FILE}")
+count=$((count + 1))
+printf '%s' "${count}" > "${COUNT_FILE}"
+echo '{"phase":"store","message":"Timed out acquiring orders profiler store lock","run_id":"profiler-lock-timeout_TD001","store_code":"TD001","failure_reason":"store_lock_timeout"}'
+exit 1
+""",
+    )
+    _write_executable(
+        scripts_dir / "run_local_reports_daily_sales.sh",
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"${TMPDIR:-/tmp}/daily-args.log\"\n"
+        "exit 0\n",
+    )
+    _write_executable(
+        scripts_dir / "run_local_reports_pending_deliveries.sh",
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"${TMPDIR:-/tmp}/pending-args.log\"\n"
+        "exit 0\n",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "ORDERS_MAX_ATTEMPTS": "3",
+            "ORDERS_RETRY_DELAY_SECONDS": "0",
+            "ORDERS_RETRY_JITTER_SECONDS": "0",
+            "DAILY_MAX_ATTEMPTS": "1",
+            "PENDING_MAX_ATTEMPTS": "1",
+            "DAILY_RESCUE_AFTER_PENDING_SUCCESS": "0",
+            "TMPDIR": str(tmp_path),
+        }
+    )
+
+    result = subprocess.run(
+        [str(scripts_dir / "cron_run_orders_and_reports.sh")],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert (tmp_path / "orders-call-count").read_text(encoding="utf-8") == "1"
+
+    daily_args = (tmp_path / "daily-args.log").read_text(encoding="utf-8")
+    pending_args = (tmp_path / "pending-args.log").read_text(encoding="utf-8")
+    assert "--orders-sync-upstream-status failed" in daily_args
+    assert "--orders-sync-upstream-status failed" in pending_args
+
+    log_files = sorted(logs_dir.glob("cron_run_orders_and_reports_*.log"))
+    assert log_files
+    log_text = log_files[-1].read_text(encoding="utf-8")
+    assert "failure_class=profiler_store_lock_timeout; retry_skipped=true" in log_text
+    assert "retry_skipped_reason=profiler_store_lock_timeout" in log_text
+    assert "failed_stores=TD001" in log_text
+    assert "downstream reports will continue with orders-sync upstream status failed" in log_text
+    assert "Script 1: orders_sync_run_profiler: attempt 2/3 starting" not in log_text
+
+
 def test_cron_retries_transient_orders_profiler_failure(tmp_path: Path) -> None:
     repo_root = tmp_path
     scripts_dir = repo_root / "scripts"
